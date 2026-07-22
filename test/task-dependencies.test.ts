@@ -12,6 +12,10 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const {
+  firstWorkEpisodePromptAfter,
+  historicalTaskWorkEpisodeBindingsForTask,
+} = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -64,6 +68,94 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
   };
   if (match.state === "merged" && match.mergedAt === null) match.mergedAt = Date.now();
   return match;
+}
+
+async function historicalTaskSetup(
+  suffix: string,
+  transition: "branch change" | "reset",
+  includeBeforePrompt: boolean,
+) {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = `historical-task-${suffix}`;
+  const prerequisiteId = `historical-prerequisite-${suffix}`;
+  const cwd = `/repo/historical-task-${suffix}`;
+  const branch = `feat/historical-task-${suffix}`;
+  const url = `https://github.com/example/repo/pull/${suffix}`;
+  registry.upsertTask(baseTask({
+    id: prerequisiteId,
+    title: `Historical prerequisite ${suffix}`,
+    status: "running",
+    worktreePath: cwd,
+  }));
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: branch })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `historical-task-${suffix}-episode`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask(prerequisiteId)!, sessionId: id });
+  registry.bindTaskToWorkEpisode(prerequisiteId, id);
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: Number(suffix),
+      branch,
+      agentSessionId: `historical-task-${suffix}-episode`,
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+    })]]),
+    new Set(),
+  );
+  const beforePrompt = includeBeforePrompt
+    ? tasks.create({
+        ...createInput,
+        title: `Wait before historical task prompt ${suffix}`,
+        backlog: true,
+        dependencies: [{ type: "task", taskId: prerequisiteId }],
+      })
+    : null;
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const promptAt = Date.now();
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `historical-task-${suffix}-episode`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue the prerequisite after its pending merge",
+    ts: promptAt,
+  });
+  const afterPrompt = tasks.create({
+    ...createInput,
+    title: `Wait after historical task prompt ${suffix}`,
+    backlog: true,
+    dependencies: [{ type: "task", taskId: prerequisiteId }],
+  });
+  if (transition === "branch change") {
+    registry.applyDiscovery([
+      discovered(id, cwd, { gitBranch: `${branch}-next` }),
+    ]);
+  } else {
+    registry.resetWorkEpisode(id);
+  }
+  const replacement = registry.workEpisodeForSession(id)!;
+  return {
+    registry,
+    tasks,
+    prerequisiteId,
+    url,
+    originalEpisode,
+    replacement,
+    promptAt,
+    beforePrompt,
+    afterPrompt,
+  };
 }
 
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
@@ -540,6 +632,88 @@ for (const transition of ["branch change", "reset"] as const) {
     assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
   });
 }
+
+for (const [transition, suffix] of [
+  ["branch change", "88"],
+  ["reset", "89"],
+] as const) {
+  test(`task dependency provenance survives a ${transition}`, async () => {
+    const setup = await historicalTaskSetup(suffix, transition, true);
+    assert.notEqual(setup.replacement.episodeId, setup.originalEpisode.episodeId);
+    assert.equal(
+      historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId)[0]?.prUrl,
+      setup.url,
+    );
+    assert.ok(setup.registry.dependencyPrPollTargets().includes(setup.url));
+
+    await pollAndReconcilePrs(
+      setup.registry,
+      async () => null,
+      async (candidate) =>
+        candidate === setup.url
+          ? { state: "merged", mergedAt: setup.promptAt - 1 }
+          : null,
+    );
+
+    const beforeEdge = setup.registry.getTask(setup.beforePrompt!.id)?.dependencies[0];
+    const afterEdge = setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0];
+    assert.equal(beforeEdge?.satisfiedAt, setup.promptAt - 1);
+    assert.equal(afterEdge?.satisfiedAt, null);
+    assert.deepEqual(
+      setup.tasks.dependencyBlockers(setup.registry.getTask(setup.beforePrompt!.id)!),
+      [],
+    );
+    assert.equal(
+      setup.tasks.dependencyBlockers(setup.registry.getTask(setup.afterPrompt.id)!).length,
+      1,
+    );
+    assert.deepEqual(
+      historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId),
+      [],
+    );
+  });
+}
+
+test("editing away an edge prunes retained task provenance", async () => {
+  const setup = await historicalTaskSetup("90", "branch change", false);
+  assert.equal(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId).length, 1);
+  assert.equal(
+    firstWorkEpisodePromptAfter(
+      setup.originalEpisode.sessionId,
+      setup.originalEpisode.episodeId,
+      setup.promptAt - 1,
+    ),
+    setup.promptAt,
+  );
+
+  const updated = await setup.tasks.update(setup.afterPrompt.id, { dependencies: [] });
+  assert.equal(updated.ok, true);
+  assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId), []);
+  assert.equal(
+    firstWorkEpisodePromptAfter(
+      setup.originalEpisode.sessionId,
+      setup.originalEpisode.episodeId,
+      setup.promptAt - 1,
+    ),
+    null,
+  );
+});
+
+test("removing a dependent prunes retained task provenance", async () => {
+  const setup = await historicalTaskSetup("91", "reset", false);
+  assert.equal(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId).length, 1);
+
+  setup.registry.removeTask(setup.afterPrompt.id);
+  assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId), []);
+  assert.equal(
+    firstWorkEpisodePromptAfter(
+      setup.originalEpisode.sessionId,
+      setup.originalEpisode.episodeId,
+      setup.promptAt - 1,
+    ),
+    null,
+  );
+});
 
 test("post-merge episode rollover preserves running task ownership", () => {
   const registry = new Registry();

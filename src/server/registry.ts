@@ -100,8 +100,10 @@ import {
   sessionCostFor,
   taskIdForSession as dbTaskIdForSession,
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
+  deleteHistoricalTaskWorkEpisodeBinding,
   deleteSessionWorkEpisode,
   deleteWorkEpisodePrompts,
+  historicalTaskWorkEpisodeBindings,
   invalidateTaskWorkEpisodeBindings,
   rebindPendingSessionWorkEpisode,
   replaceSessionWorkEpisode,
@@ -118,6 +120,7 @@ import {
   loadInspectorInspections,
   markWorkEpisodeMerged,
   recordWorkEpisodePrompt,
+  workEpisodePromptIdentities,
 } from "./db.ts";
 import type { SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -419,6 +422,7 @@ export class Registry extends EventEmitter {
     // terminal tasks would push them past the recent cap.
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
+    this.cleanupDependencyProvenance();
   }
 
   snapshot(): {
@@ -1379,6 +1383,7 @@ export class Registry extends EventEmitter {
       this.emitEvent({ type: "task_upsert", task: next });
     }
     this.resyncSessionTask(sessionId);
+    this.cleanupDependencyProvenance();
   }
 
   private startWorkEpisode(
@@ -1396,7 +1401,7 @@ export class Registry extends EventEmitter {
     this.prObservations.delete(sessionId);
     if (!agentSessionId) {
       deleteSessionWorkEpisode(sessionId);
-      if (previous) this.pruneWorkEpisodePrompts(previous);
+      this.cleanupDependencyProvenance();
       return null;
     }
     const episode: SessionWorkEpisode = {
@@ -1414,33 +1419,42 @@ export class Registry extends EventEmitter {
       updatedAt: startedAt,
     };
     replaceSessionWorkEpisode(episode);
-    if (previous && previous.episodeId !== episode.episodeId) {
-      this.pruneWorkEpisodePrompts(previous);
-    }
+    if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
   }
 
-  private hasPendingSessionDependency(
-    episode: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
-  ): boolean {
-    return [...this.tasks.values()].some((task) =>
-      task.dependencies.some(
-        (dependency) =>
-          dependency.type === "session" &&
-          dependency.satisfiedAt === null &&
-          dependency.sessionId === episode.sessionId &&
-          dependency.episodeId === episode.episodeId &&
-          dependency.agentSessionId === episode.agentSessionId,
-      ),
-    );
-  }
-
-  private pruneWorkEpisodePrompts(
-    episode: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
-  ): void {
-    if (sessionWorkEpisodeFor(episode.sessionId)?.episodeId === episode.episodeId) return;
-    if (this.hasPendingSessionDependency(episode)) return;
-    deleteWorkEpisodePrompts(episode.sessionId, episode.episodeId);
+  private cleanupDependencyProvenance(): void {
+    const taskIds = new Set<string>();
+    const episodeKeys = new Set<string>();
+    for (const task of this.tasks.values()) {
+      for (const dependency of task.dependencies) {
+        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.type === "task") {
+          if (this.tasks.has(dependency.taskId)) taskIds.add(dependency.taskId);
+        } else if (dependency.episodeId !== null) {
+          episodeKeys.add(`${dependency.sessionId}\0${dependency.episodeId}`);
+        }
+      }
+    }
+    for (const binding of historicalTaskWorkEpisodeBindings()) {
+      const active = taskWorkEpisodeForTask(binding.taskId);
+      if (
+        !taskIds.has(binding.taskId) ||
+        binding.prUrl === null ||
+        binding.mergedAt !== null ||
+        active?.episodeId === binding.episodeId
+      ) {
+        deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        continue;
+      }
+      episodeKeys.add(`${binding.sessionId}\0${binding.episodeId}`);
+    }
+    for (const identity of workEpisodePromptIdentities()) {
+      const current = sessionWorkEpisodeFor(identity.sessionId);
+      if (current?.episodeId === identity.episodeId) continue;
+      if (episodeKeys.has(`${identity.sessionId}\0${identity.episodeId}`)) continue;
+      deleteWorkEpisodePrompts(identity.sessionId, identity.episodeId);
+    }
   }
 
   private rebindPendingSessionDependencies(
@@ -1508,6 +1522,7 @@ export class Registry extends EventEmitter {
       "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
     > & { prUrl: string },
     mergedAt: number,
+    taskIds = new Set<string>(),
   ): boolean {
     const current = sessionWorkEpisodeFor(target.sessionId);
     const isCurrent = Boolean(
@@ -1524,7 +1539,7 @@ export class Registry extends EventEmitter {
     const promptAt = firstWorkEpisodePromptAfter(target.sessionId, target.episodeId, mergedAt);
     const dependencyBoundaryAt = promptAt ?? (latestPromptAt !== null ? mergedAt : null);
     const binding = taskWorkEpisodeForSession(target.sessionId);
-    const taskId =
+    const activeTaskId =
       binding &&
       binding.episodeId === target.episodeId &&
       binding.agentSessionId === target.agentSessionId &&
@@ -1532,6 +1547,7 @@ export class Registry extends EventEmitter {
       binding.prUrl === target.prUrl
         ? binding.taskId
         : null;
+    if (activeTaskId !== null) taskIds.add(activeTaskId);
 
     for (const task of [...this.tasks.values()]) {
       let changed = false;
@@ -1545,7 +1561,7 @@ export class Registry extends EventEmitter {
           dependency.branch === target.branch &&
           dependency.prUrl === target.prUrl;
         const matchesTask =
-          dependency.type === "task" && taskId !== null && dependency.taskId === taskId;
+          dependency.type === "task" && taskIds.has(dependency.taskId);
         if (!matchesSession && !matchesTask) return dependency;
         if (
           dependencyBoundaryAt !== null &&
@@ -1573,7 +1589,7 @@ export class Registry extends EventEmitter {
     ) {
       this.rebindPendingSessionDependencies(target, current, current.startedAt);
     }
-    this.pruneWorkEpisodePrompts(target);
+    this.cleanupDependencyProvenance();
     return rolledOver;
   }
 
@@ -1802,6 +1818,7 @@ export class Registry extends EventEmitter {
       updatedAt: at,
     };
     dbBindTaskWorkEpisode(binding);
+    this.cleanupDependencyProvenance();
     return true;
   }
 
@@ -1978,6 +1995,12 @@ export class Registry extends EventEmitter {
   dependencyPrPollTargets(): string[] {
     const urls = new Set<string>();
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
+    const historical = new Map<string, TaskWorkEpisodeBinding[]>();
+    for (const binding of historicalTaskWorkEpisodeBindings()) {
+      const list = historical.get(binding.taskId) ?? [];
+      list.push(binding);
+      historical.set(binding.taskId, list);
+    }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
         if (dependency.satisfiedAt !== null) continue;
@@ -1991,6 +2014,9 @@ export class Registry extends EventEmitter {
           bindings.set(dependency.taskId, binding);
         }
         if (binding?.prUrl) urls.add(binding.prUrl);
+        for (const prior of historical.get(dependency.taskId) ?? []) {
+          if (prior.prUrl) urls.add(prior.prUrl);
+        }
       }
     }
     return [...urls];
@@ -1999,13 +2025,40 @@ export class Registry extends EventEmitter {
   reconcileDependencyPrMerges(mergedUrls: Map<string, number>): void {
     if (mergedUrls.size === 0) return;
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
-    const targets = new Map<
-      string,
-      Pick<
+    const targets = new Map<string, {
+      episode: Pick<
         SessionWorkEpisode,
         "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
-      > & { prUrl: string }
-    >();
+      > & { prUrl: string };
+      taskIds: Set<string>;
+      historical: Array<{ taskId: string; episodeId: string }>;
+    }>();
+    const addTarget = (
+      episode: Pick<
+        SessionWorkEpisode,
+        "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+      > & { prUrl: string },
+      taskId: string | null = null,
+      retained = false,
+    ): void => {
+      const key = `${episode.sessionId}\0${episode.episodeId}\0${episode.prUrl}`;
+      const target = targets.get(key) ?? {
+        episode,
+        taskIds: new Set<string>(),
+        historical: [],
+      };
+      if (taskId !== null) {
+        target.taskIds.add(taskId);
+        if (retained) target.historical.push({ taskId, episodeId: episode.episodeId });
+      }
+      targets.set(key, target);
+    };
+    const historical = new Map<string, TaskWorkEpisodeBinding[]>();
+    for (const binding of historicalTaskWorkEpisodeBindings()) {
+      const list = historical.get(binding.taskId) ?? [];
+      list.push(binding);
+      historical.set(binding.taskId, list);
+    }
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
         if (dependency.satisfiedAt !== null) continue;
@@ -2018,8 +2071,7 @@ export class Registry extends EventEmitter {
           ) {
             continue;
           }
-          const key = `${dependency.sessionId}\0${dependency.episodeId}\0${dependency.prUrl}`;
-          targets.set(key, {
+          addTarget({
             sessionId: dependency.sessionId,
             episodeId: dependency.episodeId,
             agentSessionId: dependency.agentSessionId,
@@ -2033,20 +2085,34 @@ export class Registry extends EventEmitter {
           binding = taskWorkEpisodeForTask(dependency.taskId);
           bindings.set(dependency.taskId, binding);
         }
-        if (!binding?.prUrl || !mergedUrls.has(binding.prUrl)) continue;
-        const key = `${binding.sessionId}\0${binding.episodeId}\0${binding.prUrl}`;
-        targets.set(key, {
-          sessionId: binding.sessionId,
-          episodeId: binding.episodeId,
-          agentSessionId: binding.agentSessionId,
-          branch: binding.branch,
-          prUrl: binding.prUrl,
-        });
+        const candidates = [binding, ...(historical.get(dependency.taskId) ?? [])];
+        for (const candidate of candidates) {
+          if (!candidate?.prUrl || !mergedUrls.has(candidate.prUrl)) continue;
+          addTarget(
+            {
+              sessionId: candidate.sessionId,
+              episodeId: candidate.episodeId,
+              agentSessionId: candidate.agentSessionId,
+              branch: candidate.branch,
+              prUrl: candidate.prUrl,
+            },
+            dependency.taskId,
+            candidate !== binding,
+          );
+        }
       }
     }
     for (const target of targets.values()) {
-      this.reconcileWorkEpisodeMerge(target, mergedUrls.get(target.prUrl)!);
+      this.reconcileWorkEpisodeMerge(
+        target.episode,
+        mergedUrls.get(target.episode.prUrl)!,
+        target.taskIds,
+      );
+      for (const binding of target.historical) {
+        deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+      }
     }
+    this.cleanupDependencyProvenance();
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -2729,6 +2795,9 @@ export class Registry extends EventEmitter {
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task): void {
     const previous = this.tasks.get(task.id);
+    const dependenciesChanged = Boolean(
+      previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
+    );
     const displaced = dbUpsertTask(task);
     for (const id of displaced) {
       const prior = this.tasks.get(id);
@@ -2745,6 +2814,7 @@ export class Registry extends EventEmitter {
     }
     if (task.sessionId) this.resyncSessionTask(task.sessionId);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
+    if (dependenciesChanged) this.cleanupDependencyProvenance();
   }
 
   /**
@@ -2761,10 +2831,13 @@ export class Registry extends EventEmitter {
     );
     if (evictable.length <= RECENT_TERMINAL_TASKS) return;
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);
+    let removed = false;
     for (const t of evictable.slice(RECENT_TERMINAL_TASKS)) {
       this.tasks.delete(t.id);
       this.emitEvent({ type: "task_remove", id: t.id });
+      removed = true;
     }
+    if (removed) this.cleanupDependencyProvenance();
   }
 
   removeTask(id: string): void {
@@ -2773,6 +2846,7 @@ export class Registry extends EventEmitter {
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
+    this.cleanupDependencyProvenance();
   }
 
   /**

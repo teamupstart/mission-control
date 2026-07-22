@@ -279,7 +279,9 @@ export class Registry extends EventEmitter {
     modelId: string | null;
     previous: ThinkingLevel;
     effort: ThinkingLevel;
+    effortRevision: string | null;
   }>();
+  private runtimeEffortRevisions = new Map<string, string>();
   /**
    * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
    * subset of `Session.agentSessionId` / `transcriptPath` that was read off the live
@@ -845,6 +847,7 @@ export class Registry extends EventEmitter {
       modelId: s.meta.modelId,
       previous: s.meta.thinkingLevel ?? effort,
       effort,
+      effortRevision: this.runtimeEffortRevisions.get(sessionId) ?? null,
     });
     if (s.meta.thinkingLevel === effort) return;
     const updated: Session = {
@@ -1281,6 +1284,8 @@ export class Registry extends EventEmitter {
       metaFromStatusLine(ingest, Date.now()),
       agentSessionId,
       s.transcriptPath,
+      "statusline",
+      null,
     );
     const next: Session = { ...s, meta, agentSessionId };
     // A statusLine can be the first thing to bind an agent session id (it carries one and
@@ -1489,6 +1494,9 @@ export class Registry extends EventEmitter {
   applyRuntimeMeta(sessionId: string, read: RuntimeMetaRead | null, source: MetaSource): void {
     const s = this.sessions.get(sessionId);
     if (!s || !read) return;
+    if (read.effortRevision !== null) {
+      this.runtimeEffortRevisions.set(sessionId, read.effortRevision);
+    }
     const now = Date.now();
     if (
       s.meta?.source === "statusline" &&
@@ -1501,6 +1509,8 @@ export class Registry extends EventEmitter {
       metaFromRead(read, source, now),
       s.agentSessionId,
       s.transcriptPath,
+      source,
+      read.effortRevision,
     );
     const changed = !metaDisplayEqual(s.meta, meta);
     const next: Session = { ...s, meta };
@@ -1606,6 +1616,7 @@ export class Registry extends EventEmitter {
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.observedEfforts.delete(id);
+    this.runtimeEffortRevisions.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
@@ -1621,6 +1632,8 @@ export class Registry extends EventEmitter {
     meta: SessionMeta,
     agentSessionId: string | null,
     transcriptPath: string | null,
+    source: MetaSource,
+    effortRevision: string | null,
   ): SessionMeta {
     const observed = this.observedEfforts.get(sessionId);
     if (!observed) return meta;
@@ -1629,7 +1642,12 @@ export class Registry extends EventEmitter {
       (observed.agentSessionId !== null && agentSessionId !== null && agentSessionId !== observed.agentSessionId) ||
       (observed.transcriptPath !== null && transcriptPath !== null && transcriptPath !== observed.transcriptPath) ||
       meta.thinkingLevel === observed.effort ||
-      (meta.thinkingLevel !== observed.previous && meta.thinkingLevel !== null)
+      (meta.thinkingLevel !== null &&
+        (meta.thinkingLevel !== observed.previous ||
+          source === "statusline" ||
+          (observed.effortRevision !== null &&
+            effortRevision !== null &&
+            effortRevision !== observed.effortRevision)))
     ) {
       this.observedEfforts.delete(sessionId);
       return meta;

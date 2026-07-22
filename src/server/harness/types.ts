@@ -39,6 +39,7 @@ export interface RuntimeMetaRead {
   contextPct: number | null;
   longContext: boolean;
   thinkingLevel: ThinkingLevel | null;
+  effortRevision: string | null;
 }
 
 /** What a passive read yields about a session's liveness. */

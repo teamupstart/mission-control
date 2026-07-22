@@ -62,6 +62,7 @@ const transcriptRead: RuntimeMetaRead = {
   contextPct: 10,
   longContext: false,
   thinkingLevel: "high",
+  effortRevision: "turn-1",
 };
 
 test("applyStatusLine populates meta on the bound session (exact %, effort, model)", () => {
@@ -144,7 +145,11 @@ test("passive metadata reconciles an independently changed effort", () => {
   const r = seeded();
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   r.recordObservedSessionEffort("s1", "xhigh");
-  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "medium" }, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, thinkingLevel: "medium", effortRevision: "turn-2" },
+    "transcript",
+  );
   assert.equal(metaOf(r)?.thinkingLevel, "medium");
 });
 
@@ -152,8 +157,24 @@ test("a confirmed effort releases the observation to later passive metadata", ()
   const r = seeded();
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   r.recordObservedSessionEffort("s1", "xhigh");
-  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "xhigh" }, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, thinkingLevel: "xhigh", effortRevision: "turn-2" },
+    "transcript",
+  );
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("a newer passive revision publishes a native return to the prior effort", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, thinkingLevel: "high", effortRevision: "turn-2" },
+    "transcript",
+  );
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 

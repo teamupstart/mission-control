@@ -11,7 +11,7 @@ process.env.MISSION_USAGE_POLL_MS = "15";
 
 const { Registry } = await import("../src/server/registry.ts");
 const { startUsagePoller, usageSourceKey } = await import("../src/server/usage.ts");
-const { reportedUsageLedgerHasRows, usageCursorFor } = await import("../src/server/db.ts");
+const { commitUsageRead, openDb, reportedUsageLedgerHasRows, usageCursorFor } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -158,6 +158,67 @@ test("a shortened live source stays quarantined until its proven path changes", 
     assert.ok(usageCursorFor(usageSourceKey("codex", "conversation-reset", nextPath)).offset > 0);
   } finally {
     console.warn = originalWarn;
+    stop();
+  }
+});
+
+test("an observed byte-idle source refreshes its cursor retention timestamp", async () => {
+  const path = join(home, "rollout-idle.jsonl");
+  const sessionMeta = JSON.stringify({
+    timestamp: "2026-07-22T13:59:00.000Z",
+    type: "session_meta",
+    payload: {
+      id: "conversation-idle",
+      timestamp: "2026-07-22T13:59:00.000Z",
+      cwd: "/repo-idle",
+      source: "cli",
+    },
+  });
+  const turn = JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.6-sol" } });
+  const contents = `${sessionMeta}\n${turn}\n${token("2026-07-22T14:00:00.000Z")}\n`;
+  writeFileSync(path, contents);
+  const sourceKey = usageSourceKey("codex", "conversation-idle", path);
+  commitUsageRead({
+    sourceKey,
+    noteKey: "conversation-idle",
+    sessionId: "codex-idle",
+    agent: "codex",
+    cursor: {
+      offset: Buffer.byteLength(contents),
+      modelId: "gpt-5.6-sol",
+      discardPartial: false,
+    },
+    events: [],
+    updatedAt: 1,
+  });
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "codex-idle",
+    agent: "codex",
+    name: "codex",
+    nameSource: "process",
+    cwd: "/repo-idle",
+    gitBranch: "main",
+    gitRoot: null,
+    repoRoot: null,
+    nomistakesGated: false,
+    pid: 44,
+    tty: "ttys44",
+    terminals: [],
+    startedAt: 0,
+    agentSessionId: "conversation-idle",
+    transcriptPath: path,
+  } satisfies DiscoveredSession]);
+  const stop = startUsagePoller(registry);
+  try {
+    await eventually(() => {
+      const row = openDb()
+        .prepare(`SELECT updated_at FROM usage_sources WHERE source_key = ?`)
+        .get(sourceKey) as { updated_at: number } | undefined;
+      return (row?.updated_at ?? 0) > 1;
+    });
+    assert.equal(usageCursorFor(sourceKey).offset, Buffer.byteLength(contents));
+  } finally {
     stop();
   }
 });

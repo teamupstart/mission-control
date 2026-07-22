@@ -1,5 +1,5 @@
 import { envVar } from "./config.ts";
-import { commitUsageRead, usageCursorFor } from "./db.ts";
+import { commitUsageRead, touchUsageSource, usageCursorFor } from "./db.ts";
 import { transcriptFor, usageFor } from "./harness/index.ts";
 import type { Session } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
@@ -8,6 +8,7 @@ import { unref } from "./util/timers.ts";
 const USAGE_POLL_MS = Number(envVar("USAGE_POLL_MS") ?? 4000);
 const USAGE_READ_BYTES = 1024 * 1024;
 const FINAL_DRAIN_MS = 30_000;
+const SOURCE_TOUCH_MS = 24 * 60 * 60 * 1000;
 
 interface HeldSource {
   session: Session;
@@ -32,6 +33,7 @@ export function startUsagePoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const held = new Map<string, HeldSource>();
+  const lastTouched = new Map<string, number>();
   // A shortened file is an in-place rewrite, not a new append-only source. Keep that
   // exact conversation/path quarantined for this daemon lifetime; changing either value
   // produces a new source key and is the only evidence that makes reading safe again.
@@ -49,6 +51,13 @@ export function startUsagePoller(registry: Registry): () => void {
         const path = transcript.locate(session);
         if (!path) continue;
         const sourceKey = usageSourceKey(session.agent, session.agentSessionId, path);
+        // Cursor retention is age-based, so an observed but byte-idle source still needs
+        // a heartbeat. Throttle in memory: SQLite receives at most one write per source/day,
+        // not one UPDATE on every four-second usage poll.
+        if (now - (lastTouched.get(sourceKey) ?? 0) >= SOURCE_TOUCH_MS) {
+          touchUsageSource(sourceKey, now);
+          lastTouched.set(sourceKey, now);
+        }
         if (rejected.has(sourceKey)) continue;
         held.set(sourceKey, { session, path, lastSeen: now });
       }
@@ -89,6 +98,7 @@ export function startUsagePoller(registry: Registry): () => void {
             events,
             updatedAt: now,
           });
+          lastTouched.set(sourceKey, now);
           if (events.length > 0) registry.applyDurableUsage(source.session.agentSessionId);
         }
         more ||= read.more;

@@ -1754,6 +1754,13 @@ export function usageCursorFor(sourceKey: string): UsageSourceCursor {
     : { offset: 0, modelId: null, discardPartial: false };
 }
 
+/** Keep an observed source's cursor alive without changing its committed byte position. */
+export function touchUsageSource(sourceKey: string, observedAt: number): boolean {
+  return openDb()
+    .prepare(`UPDATE usage_sources SET updated_at = ? WHERE source_key = ?`)
+    .run(observedAt, sourceKey).changes > 0;
+}
+
 /**
  * Commit request events and their new cursor atomically.
  *

@@ -52,6 +52,8 @@ export interface SessionViewProps {
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
   onOpenFiles: (id: string) => void;
+  /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
+  fileTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   onReset: (id: string) => void;
   /**

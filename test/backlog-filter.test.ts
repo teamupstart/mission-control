@@ -40,6 +40,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onOpenFiles: () => {},
+    fileTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
     onKilled: () => {},

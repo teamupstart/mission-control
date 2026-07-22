@@ -1796,11 +1796,13 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
+| <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
+| <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
-| <kbd>f</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
-| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session's terminal home | Selected session |
+| <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 

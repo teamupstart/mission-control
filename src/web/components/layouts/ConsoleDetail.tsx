@@ -95,6 +95,13 @@ export function ConsoleDetail({
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
 
+  // App owns shortcut routing across layouts. A request aimed at this mounted detail
+  // reveals the same Files tab its tab button does; the nonce makes repeated presses
+  // observable even when the session id has not changed.
+  useEffect(() => {
+    if (view.fileTabRequest?.sessionId === session.id) setTab("files");
+  }, [view.fileTabRequest, session.id]);
+
   /**
    * The console's one compose box lives in the conversation tab, so "I want to type
    * now" means going there - not opening a second, lesser send box in the footer, which

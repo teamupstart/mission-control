@@ -96,7 +96,7 @@ test("shift is a modifier on a letter, so Shift+O and o are distinct chords", ()
 });
 
 test("a shifted letter does not collapse onto the bare letter's action", () => {
-  // The rename default only works because these differ; the flip side is that
+  // The file-picker default only works because these differ; the flip side is that
   // Shift+S no longer reaches "send".
   assert.equal(chordFromEvent(key("S", { shift: true })), "shift+s");
   assert.notEqual(chordFromEvent(key("S", { shift: true })), chordFromEvent(key("s")));
@@ -162,9 +162,13 @@ test("every default binding is bindable and round-trips through its chord form",
   }
 });
 
-test("rename defaults to Shift+O and every default round-trips from a keypress", () => {
+test("file actions own f and Shift+O and every default round-trips from a keypress", () => {
   const rename = ACTIONS.find((a) => a.id === "rename");
-  assert.equal(rename?.defaultBinding, "shift+o");
+  const files = ACTIONS.find((a) => a.id === "files");
+  const filePicker = ACTIONS.find((a) => a.id === "filePicker");
+  assert.equal(files?.defaultBinding, "f");
+  assert.equal(filePicker?.defaultBinding, "shift+o");
+  assert.equal(rename?.defaultBinding, "shift+r");
   // Every default binding must be something chordFromEvent can actually produce,
   // or the action would be unreachable.
   const producible = new Set([
@@ -174,11 +178,13 @@ test("rename defaults to Shift+O and every default round-trips from a keypress",
     chordFromEvent(key("/")),
     chordFromEvent(key("e")),
     chordFromEvent(key("d")),
+    chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("s")),
     chordFromEvent(key("f")),
+    chordFromEvent(key("p")),
     chordFromEvent(key("q")),
     chordFromEvent(key("Tab", { shift: true })),
-    chordFromEvent(key("O", { shift: true })),
+    chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("k")),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);

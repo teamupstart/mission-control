@@ -38,6 +38,7 @@ import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 import { FileWindow } from "./components/FileWindow.tsx";
+import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 
 /**
@@ -108,6 +109,11 @@ export function App(): React.JSX.Element {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>("keyboard");
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
+  const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
+  const [fileTabRequest, setFileTabRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
@@ -248,6 +254,11 @@ export function App(): React.JSX.Element {
     if (filesSessionId) files.flush(filesSessionId);
     setFilesSessionId(null);
   }, [filesSessionId, files.flush]);
+  const closeFilePicker = useCallback(() => setFilePickerSessionId(null), []);
+  const requestFilesTab = useCallback((sessionId: string) => {
+    files.ensure(sessionId);
+    setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
+  }, [files.ensure]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -268,8 +279,9 @@ export function App(): React.JSX.Element {
       { sessionId: diffSessionId, close: closeDiff },
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: filesSessionId, close: closeFiles },
+      { sessionId: filePickerSessionId, close: closeFilePicker },
     ],
-    [diffSessionId, resetSessionId, filesSessionId, closeDiff, closeReset, closeFiles],
+    [diffSessionId, resetSessionId, filesSessionId, filePickerSessionId, closeDiff, closeReset, closeFiles, closeFilePicker],
   );
 
   const sorted = useMemo(() => {
@@ -353,6 +365,15 @@ export function App(): React.JSX.Element {
   const expandedForView =
     layout === "grid" ? expandedId : layout === "board" ? boardOpenId : selectedId;
 
+  // A tab request is an instruction for the detail currently on screen, not a saved tab
+  // preference. Leaving that detail consumes it so returning to the session later starts
+  // on Conversation as usual.
+  useEffect(() => {
+    setFileTabRequest((request) =>
+      request && request.sessionId !== expandedForView ? null : request,
+    );
+  }, [expandedForView]);
+
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
@@ -363,6 +384,9 @@ export function App(): React.JSX.Element {
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
+  const filePickerSession = filePickerSessionId
+    ? sessions.find((s) => s.id === filePickerSessionId) ?? null
+    : null;
 
   function openReviews(): void {
     const first = pendingReviews[0];
@@ -398,6 +422,7 @@ export function App(): React.JSX.Element {
       setDiffSessionId(id);
     },
     onOpenFiles: setFilesSessionId,
+    fileTabRequest,
     files,
     onReset: setResetSessionId,
     onKilled,
@@ -639,6 +664,31 @@ export function App(): React.JSX.Element {
         setDiffSessionId(selectedId);
         return;
       }
+      if (chord === bindings.files) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel?.cwd) return;
+        // Cards has no tab strip, so its expanded editor is the extracted workspace.
+        // Console and the Board drill-in reveal their shared integrated Files tab.
+        const gridExpanded = layout === "grid" && expandedId === sel.id;
+        const detailOpen = layout === "console" || (layout === "board" && boardOpen);
+        if (!gridExpanded && !detailOpen) return;
+        e.preventDefault();
+        if (layout === "grid") {
+          files.ensure(sel.id);
+          setFilesSessionId(sel.id);
+        } else {
+          requestFilesTab(sel.id);
+        }
+        return;
+      }
+      if (chord === bindings.filePicker) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel?.cwd) return;
+        e.preventDefault();
+        files.ensure(sel.id);
+        setFilePickerSessionId(sel.id);
+        return;
+      }
       if (chord === bindings.rename) {
         if (!selectedId) return;
         const sel = visible.find((s) => s.id === selectedId);
@@ -685,7 +735,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout]);
+  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -879,6 +929,24 @@ export function App(): React.JSX.Element {
           <FileWindow session={filesSession} controller={files} onClose={closeFiles} />
         )}
 
+        {filePickerSession && (
+          <FilePicker
+            session={filePickerSession}
+            controller={files}
+            onClose={closeFilePicker}
+            onChoose={(path) => {
+              files.select(filePickerSession.id, path);
+              closeFilePicker();
+              if (layout === "grid") {
+                setFilesSessionId(filePickerSession.id);
+              } else {
+                if (layout === "board") setBoardOpen(true);
+                requestFilesTab(filePickerSession.id);
+              }
+            }}
+          />
+        )}
+
         {settingsOpen && (
           <SettingsModal
             onClose={() => setSettingsOpen(false)}
@@ -947,6 +1015,14 @@ export function App(): React.JSX.Element {
               setDiffCommit(null);
               setDiffSessionId(selected.id);
             }}
+            onFiles={() => {
+              files.ensure(selected.id);
+              setFilesSessionId(selected.id);
+            }}
+            onFilePicker={() => {
+              files.ensure(selected.id);
+              setFilePickerSessionId(selected.id);
+            }}
             onReset={() => setResetSessionId(selected.id)}
             onRename={() => setRenamingId(selected.id)}
             onDeselect={() => setSelectedId(null)}
@@ -969,6 +1045,8 @@ function CommandBar({
   onToggleExpand,
   onAction,
   onDiff,
+  onFiles,
+  onFilePicker,
   onReset,
   onRename,
   onDeselect,
@@ -979,6 +1057,8 @@ function CommandBar({
   onToggleExpand: () => void;
   onAction: (action: "startSend" | "focusPane" | "toggleQueue" | "cycleMode" | "requestKill") => void;
   onDiff: () => void;
+  onFiles: () => void;
+  onFilePicker: () => void;
   onReset: () => void;
   onRename: () => void;
   onDeselect: () => void;
@@ -1049,9 +1129,19 @@ function CommandBar({
           </>
         )}
         {session.cwd && (
-          <button className="keycap-btn" onClick={onDiff}>
-            <kbd>{formatChord(bindings.diff)}</kbd> diff
-          </button>
+          <>
+            <button className="keycap-btn" onClick={onDiff}>
+              <kbd>{formatChord(bindings.diff)}</kbd> diff
+            </button>
+            {expanded && (
+              <button className="keycap-btn" onClick={onFiles}>
+                <kbd>{formatChord(bindings.files)}</kbd> files
+              </button>
+            )}
+            <button className="keycap-btn" onClick={onFilePicker}>
+              <kbd>{formatChord(bindings.filePicker)}</kbd> find file
+            </button>
+          </>
         )}
         {live && session.cwd && (
           <button className="keycap-btn" onClick={onReset} title="Reset to origin & clear context">

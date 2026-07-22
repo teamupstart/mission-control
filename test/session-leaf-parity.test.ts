@@ -412,6 +412,7 @@ test("card and console detail agree on every shared leaf", () => {
         onOpenReviews: () => {},
         onOpenDiff: () => {},
         onOpenFiles: () => {},
+        fileTabRequest: null,
         files: {} as SessionFilesController,
         onReset: () => {},
         onKilled: () => {},

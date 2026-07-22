@@ -3,8 +3,28 @@ import { basicSetup } from "codemirror";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
-import { LanguageDescription } from "@codemirror/language";
+import { HighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
+import { tags } from "@lezer/highlight";
+
+// The source editor is part of Mission Control, not a light CodeMirror island. Every
+// token uses the application's semantic palette: blue for callable/navigation symbols,
+// green for string data, orange for literals, purple for control flow, and the existing
+// terracotta type accent. All of them inherit the active app theme through CSS variables.
+const missionHighlight = HighlightStyle.define([
+  { tag: [tags.comment, tags.meta], color: "var(--dim)", fontStyle: "italic" },
+  { tag: [tags.keyword, tags.controlKeyword, tags.moduleKeyword, tags.modifier], color: "var(--purple)" },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.url], color: "var(--idle)" },
+  { tag: [tags.number, tags.bool, tags.atom, tags.null], color: "var(--attention)" },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: "var(--syntax-type)" },
+  { tag: [tags.function(tags.variableName), tags.labelName, tags.tagName], color: "var(--working)" },
+  { tag: [tags.propertyName, tags.attributeName], color: "var(--attention)" },
+  { tag: [tags.operator, tags.punctuation, tags.bracket], color: "var(--muted)" },
+  { tag: [tags.heading, tags.strong], color: "var(--fg)", fontWeight: "700" },
+  { tag: [tags.emphasis], color: "var(--fg)", fontStyle: "italic" },
+  { tag: [tags.link], color: "var(--working)", textDecoration: "underline" },
+  { tag: [tags.invalid], color: "var(--danger)", textDecoration: "underline wavy" },
+]);
 
 export function FileEditor({
   path,
@@ -38,6 +58,7 @@ export function FileEditor({
         extensions: [
           basicSetup,
           keymap.of([indentWithTab]),
+          syntaxHighlighting(missionHighlight),
           language.of([]),
           editable.of(EditorView.editable.of(!readOnly)),
           EditorView.contentAttributes.of({ spellcheck: "false", "aria-label": `Editor for ${path}` }),
@@ -46,13 +67,20 @@ export function FileEditor({
             if (update.focusChanged && !update.view.hasFocus) blurRef.current();
           }),
           EditorView.theme({
-            "&": { height: "100%", backgroundColor: "var(--surface, #111820)", color: "var(--text, #dce6ee)" },
-            ".cm-scroller": { fontFamily: "var(--mono, ui-monospace, monospace)", fontSize: "12px" },
-            ".cm-gutters": { backgroundColor: "var(--surface-2, #17212b)", color: "var(--dim, #778899)", border: "0" },
-            ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--accent, #5fc4ff) 8%, transparent)" },
-            ".cm-content": { caretColor: "var(--accent, #5fc4ff)" },
-            ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgba(71, 151, 210, .32) !important" },
-          }),
+            "&": { height: "100%", backgroundColor: "var(--bg-2)", color: "var(--fg)" },
+            ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "13px", lineHeight: "1.55" },
+            ".cm-content": { caretColor: "var(--working)", padding: "8px 0" },
+            ".cm-line": { padding: "0 10px" },
+            ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--dim)", borderRight: "1px solid var(--border)" },
+            ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in oklab, var(--working) 10%, transparent)" },
+            ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "color-mix(in oklab, var(--working) 28%, transparent) !important" },
+            ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--working)" },
+            ".cm-panels": { backgroundColor: "var(--panel)", color: "var(--fg)" },
+            ".cm-panels input": { backgroundColor: "var(--bg-2)", color: "var(--fg)", border: "1px solid var(--border)" },
+            ".cm-tooltip": { backgroundColor: "var(--panel-2)", color: "var(--fg)", border: "1px solid var(--border)" },
+            ".cm-searchMatch": { backgroundColor: "color-mix(in oklab, var(--attention) 28%, transparent)" },
+            ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "color-mix(in oklab, var(--working) 34%, transparent)" },
+          }, { dark: true }),
         ],
       }),
     });

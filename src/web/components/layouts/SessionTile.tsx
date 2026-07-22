@@ -210,7 +210,7 @@ export function SessionTile({
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
       <span className="tile-runtime-line">
-        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
         <CostChip cost={session.cost} />
       </span>
 

@@ -33,12 +33,13 @@ process.env.CODEX_HOME = join(home, "codex");
 
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { AGENT_IDENTITY } = await import("../src/shared/agent.ts");
-const { HARNESS_CAPABILITIES, capabilitiesFor, skillsAgents, workQueueUnsupportedWhy } = await import(
+const { HARNESS_CAPABILITIES, capabilitiesFor, skillsAgents, supportsSessionEffort, workQueueUnsupportedWhy } = await import(
   "../src/shared/harness-capabilities.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
+const { EffortPicker } = await import("../src/web/components/EffortPicker.tsx");
 const { pickableModes } = await import("../src/web/lib/format.ts");
 const { reloadOwed, pendingReloads } = await import("../src/server/skills/reload.ts");
 const { tickTargets } = await import("../src/server/foreman/queue-machine.ts");
@@ -46,7 +47,7 @@ const { decidePromptedWrapup } = await import("../src/server/foreman/prompted-wr
 const { resetToOrigin } = await import("../src/server/actions.ts");
 const { bindSession } = await import("../src/server/terminal/registry.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
-const { mkSession } = await import("./helpers/session-fixture.ts");
+const { meta, mkSession } = await import("./helpers/session-fixture.ts");
 const { mkOriginAndClone } = await import("./helpers/git-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -122,6 +123,14 @@ test("each shipped harness declares its launch-time effort syntax", () => {
   ]);
 });
 
+test("the live effort picker follows the selected model, not the launch default", () => {
+  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), true);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
+  assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "max"), true);
+  assert.equal(capabilitiesFor("claude").effort?.sessionPicker.command, "/model");
+  assert.equal(capabilitiesFor("codex").effort?.sessionPicker.command, "/model");
+});
+
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
   // A guard nothing exercises rots. Codex used to be the live proof for all five; it now
   // declares `skills`, `workQueue`, `clearContext` and `mcp`, so those four moved to
@@ -190,6 +199,23 @@ test("a harness with no permission modes offers none to pick, so the picker draw
     );
     assert.match(html, /mode-plan/, "the other half: a harness that HAS modes still renders them");
   }
+});
+
+test("a live session renders its effort as a picker, with only its model's options", () => {
+  const sol = renderToStaticMarkup(
+    createElement(EffortPicker, {
+      session: mkSession({ agent: "codex", meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }) }),
+    }),
+  );
+  assert.match(sol, /Change effort for this session/);
+  const older = renderToStaticMarkup(
+    createElement(EffortPicker, {
+      session: mkSession({ agent: "codex", meta: meta({ modelId: "gpt-5.5", thinkingLevel: "high" }) }),
+    }),
+  );
+  // The menu itself mounts after a click, but the same model-aware selector feeds it.
+  assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
+  assert.match(older, /Reasoning effort: high/);
 });
 
 // ---- skills ----

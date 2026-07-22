@@ -20,6 +20,7 @@ import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
+import { supportsSessionEffort } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
@@ -298,6 +299,54 @@ export async function sendText(
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
   return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit, deps));
+}
+
+/**
+ * Change reasoning effort through the harness's own model picker. This is deliberately
+ * conversation-scoped: neither harness config nor a task's launch override can rewrite
+ * a process that is already running.
+ */
+export async function setSessionEffort(
+  session: Session,
+  target: import("@shared/types.ts").ThinkingLevel,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<ActionResult> {
+  const spec = harnessFor(session.agent).effort;
+  const modelId = session.meta?.modelId ?? null;
+  const current = session.meta?.thinkingLevel ?? null;
+  if (!spec) return { ok: false, error: "this agent has no reasoning-effort control" };
+  if (!current) return { ok: false, error: "the selected model's current effort is not known yet" };
+  if (!supportsSessionEffort(session.agent, modelId, target)) {
+    return { ok: false, error: `${target} effort is not supported by the selected model` };
+  }
+  const from = spec.levelsFor(modelId).indexOf(current);
+  const to = spec.levelsFor(modelId).indexOf(target);
+  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed" };
+  if (from === to) return { ok: true };
+
+  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), async () => {
+    const pane = deps.pane(session);
+    if (!pane) return { ok: false, error: NO_HANDLE };
+    const opened = await writeText(pane, spec.sessionPicker.command);
+    if (!opened.ok) return opened;
+    const submitted = await sendKeys(pane, ["enter"]);
+    if (!submitted.ok) return submitted;
+    // The picker is a TUI event loop, not a line-oriented shell. Give it the harness's
+    // normal composer settle time before sending arrows; this also keeps a delayed redraw
+    // from receiving a commit keystroke as prompt text.
+    const control = controlFor(session);
+    await sleep(control.kind === "keystroke" ? control.settleMs : 400);
+    if (!spec.sessionPicker.visible.test((await deps.capture(session)) ?? "")) {
+      return { ok: false, error: "the agent's effort picker did not open; no setting was changed" };
+    }
+    const direction: Key = to > from ? "right" : "left";
+    const moved = await sendKeys(pane, Array.from({ length: Math.abs(to - from) }, () => direction));
+    if (!moved.ok) return moved;
+    if (spec.sessionPicker.commit === "enter") return sendKeys(pane, ["enter"]);
+    // Claude's picker reserves `s` for "use this session only"; it is a picker key,
+    // not prompt text, so it deliberately has no trailing Enter.
+    return writeText(pane, "s");
+  });
 }
 
 async function sendTextLocked(

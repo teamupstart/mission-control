@@ -813,6 +813,21 @@ body {
   border-color: color-mix(in oklab, var(--think-color, var(--muted)) 32%, var(--border-soft));
   background: color-mix(in oklab, var(--think-color, var(--muted)) 12%, var(--panel-2));
 }
+.rt-think-btn {
+  cursor: pointer;
+  /* Buttons otherwise inherit the card's 16px body type and grow past the
+     model pill; keep the session picker visually identical to static effort. */
+  font-size: 11px;
+  line-height: 1;
+}
+.rt-think-btn:hover,
+.rt-think-btn.open {
+  border-color: color-mix(in oklab, currentColor 48%, var(--border-soft));
+}
+.rt-think-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .rt-think-glyph {
   font-size: 9px;
   opacity: 0.85;

@@ -14,6 +14,7 @@ import { PRIORITY_LABELS } from "@shared/task.ts";
 import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { EffortPicker } from "./EffortPicker.tsx";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -524,7 +525,7 @@ export function RenameEditor({
  * tile draws its whole body as spans, and this row has to nest into that flow - and into
  * any button-like container a layout wraps it in - without being invalid HTML.
  */
-export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
+export function RuntimeMetaRow({ meta, session }: { meta: SessionMeta; session?: Session }): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;
   if (!meta.model && !meta.thinkingLevel && !hasCtx) return null;
   const tone = contextTone(meta.contextPct);
@@ -540,17 +541,20 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
           {meta.longContext && <span className="rt-1m">1M</span>}
         </span>
       )}
-      {meta.thinkingLevel && (
-        <span
-          className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
-          title={`Reasoning effort: ${meta.thinkingLevel}`}
-        >
-          <span className="rt-think-glyph" aria-hidden>
-            ✦
+      {meta.thinkingLevel &&
+        (session ? (
+          <EffortPicker session={session} />
+        ) : (
+          <span
+            className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
+            title={`Reasoning effort: ${meta.thinkingLevel}`}
+          >
+            <span className="rt-think-glyph" aria-hidden>
+              ✦
+            </span>
+            {meta.thinkingLevel}
           </span>
-          {meta.thinkingLevel}
-        </span>
-      )}
+        ))}
       {hasCtx && (
         <span className={`rt-ctx rt-ctx-${tone}`} title={ctxTitle}>
           <span className="rt-meter" aria-hidden>

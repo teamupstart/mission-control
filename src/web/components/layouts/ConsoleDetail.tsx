@@ -166,7 +166,7 @@ export function ConsoleDetail({
           onOpenReviews={() => view.onOpenReviews(session.id)}
         />
         <span className="detail-head-spacer" />
-        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
         <CostChip cost={session.cost} />
       </header>
 

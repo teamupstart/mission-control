@@ -413,6 +413,12 @@ export const SetPermissionModeSchema = z.object({
 });
 export type SetPermissionModeInput = z.infer<typeof SetPermissionModeSchema>;
 
+/** Change the reasoning effort of the currently selected model in a live session. */
+export const SetSessionEffortSchema = z.object({
+  effort: EffortLevelSchema,
+});
+export type SetSessionEffortInput = z.infer<typeof SetSessionEffortSchema>;
+
 /** Close a task with a human-recorded outcome (the `/stow` intent -> result loop). */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),

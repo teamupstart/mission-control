@@ -263,7 +263,7 @@ export function SessionCard({
           and no telemetry yet (no chip), or telemetry and no statusLine (no runtime row),
           so neither may gate the other. */}
       <span className="card-runtime-line">
-        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} />}
         <CostChip cost={session.cost} />
       </span>
 

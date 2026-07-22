@@ -162,8 +162,25 @@ export interface McpSpec {
 export interface EffortSpec {
   /** Values the harness accepts, in increasing order of reasoning spend. */
   levels: readonly ThinkingLevel[];
+  /**
+   * Values the model currently selected in a session accepts. A harness-level list is
+   * still needed for launch settings, where no session model exists yet; the live
+   * picker must ask the model because providers can expose different ceilings.
+   */
+  levelsFor(modelId: string | null): readonly ThinkingLevel[];
   /** Exact argv fragment that applies one level to a newly launched session. */
   launchArgs(level: ThinkingLevel): readonly string[];
+  /**
+   * The harness's own, session-scoped model picker. Both shipped TUIs expose effort
+   * there; Mission Control opens it and drives only the horizontal effort control.
+   */
+  sessionPicker: {
+    command: string;
+    /** A conservative confirmation that the native picker has rendered. */
+    visible: RegExp;
+    /** How the harness commits the changed selection to this conversation. */
+    commit: "enter" | "session-key";
+  };
 }
 
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
@@ -217,7 +234,14 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control" },
     effort: {
       levels: THINKING_LEVELS,
+      levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--effort", level],
+      // Claude's `/model` picker labels `s` as "use this session only".
+      sessionPicker: {
+        command: "/model",
+        visible: /effort[\s\S]*(?:←|left|right|adjust)/i,
+        commit: "session-key",
+      },
     },
   },
   codex: {
@@ -254,9 +278,18 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
     effort: {
       levels: CODEX_EFFORT_LEVELS,
+      // GPT-5.6 supports max; the older GPT-5.5 catalog entry predates it. Keep
+      // this model-aware rather than making the live picker promise max everywhere.
+      levelsFor: (modelId) => (modelId?.toLowerCase().startsWith("gpt-5.6") ? THINKING_LEVELS : CODEX_EFFORT_LEVELS),
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
       // closed enum, so it is both valid here and safe on tmux's shell command line.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
+      // Codex's `/model` picker commits to the current conversation on Enter.
+      sessionPicker: {
+        command: "/model",
+        visible: /(?:reasoning|selected) effort/i,
+        commit: "enter",
+      },
     },
   },
 };
@@ -276,6 +309,15 @@ export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
 
 export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
   return HARNESS_CAPABILITIES[agent].effort?.levels.includes(level) ?? false;
+}
+
+/** Whether an effort is selectable for one live session's currently selected model. */
+export function supportsSessionEffort(
+  agent: AgentType,
+  modelId: string | null,
+  level: ThinkingLevel,
+): boolean {
+  return HARNESS_CAPABILITIES[agent].effort?.levelsFor(modelId).includes(level) ?? false;
 }
 
 /**

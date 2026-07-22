@@ -32,7 +32,7 @@
     "start": "tsx src/server/index.ts",
     "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx 'test/**/*.test.ts'",
+    "test": "node --test --test-concurrency=2 --import tsx 'test/**/*.test.ts'",
     "init": "node scripts/init.mjs",
     "session": "node scripts/new-session.mjs",
     "worktree-setup": "node scripts/worktree-setup.mjs",

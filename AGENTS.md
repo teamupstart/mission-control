@@ -598,7 +598,9 @@ Do not report a UI change as working on the strength of the diff.
   and "works in the app" are different claims.
 - Be picky. If something looks off next to what you changed, fix it or say so.
 
-CI runs `npm run typecheck`, `npm test`, `npm run build` on Node 24 and 25. There is no linter.
+CI runs `npm run typecheck`, `npm test`, `npm run build`, and the bundle smoke check on Node 24
+(the supported floor) and Node 26 (the current release). The test runner uses two concurrent,
+isolated test-file workers; there is no linter.
 
 ## House rules
 

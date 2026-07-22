@@ -32,9 +32,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # >=24 is required (node:sqlite is used unflagged from Node 24). 24 is the
-        # supported floor; 25 matches the current dev environment.
-        node-version: ['24', '25']
+        # >=24 is required (node:sqlite is used unflagged from Node 24). Test the
+        # supported floor and the current release. Node 25 is EOL.
+        node-version: ['24', '26']
 
     name: check (node ${{ matrix.node-version }})
 
@@ -54,6 +54,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # `npm test` runs two isolated test files at a time. Keeping the remaining gates
+      # sequential avoids competing with those workers for the runner's CPU and memory.
       - name: Test
         run: npm test
 

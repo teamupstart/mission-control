@@ -48,9 +48,19 @@ export function FilePicker({
   );
   const activeIndex = shown.length > 0 ? Math.min(active, shown.length - 1) : -1;
 
-  useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
-  useEffect(() => inputRef.current?.focus(), []);
-  useEffect(() => activeRef.current?.scrollIntoView({ block: "nearest" }), [activeIndex]);
+  useEffect(() => {
+    controller.ensure(session.id);
+  }, [controller.ensure, session.id]);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    // Chrome may return a thenable from scrollIntoView. An expression-bodied effect
+    // implicitly handed that value to React as a cleanup function; Strict Mode called
+    // it while replaying effects and unmounted the entire app with "destroy is not a
+    // function". A block body makes the effect's no-cleanup contract explicit.
+    activeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
 
   function chooseActive(): void {
     const file = shown[activeIndex];

@@ -32,6 +32,16 @@ test("the picker owns arrow movement and Enter selection", () => {
   assert.match(source, /event\.key === "ArrowUp"/);
   assert.match(source, /onSubmit=\{\(event\) => \{[\s\S]*?chooseActive\(\)/);
   assert.match(source, /aria-activedescendant=/);
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{[\s\S]*?activeRef\.current\?\.scrollIntoView\([\s\S]*?\n\s*\}, \[activeIndex\]\)/,
+    "scrollIntoView must not be implicitly returned as React's effect cleanup",
+  );
+  assert.doesNotMatch(
+    source,
+    /useEffect\(\(\) => activeRef\.current\?\.scrollIntoView/,
+    "an expression-bodied scroll effect crashes Strict Mode when Chrome returns a thenable",
+  );
 });
 
 test("file shortcuts route through the customizable registry and Files tab request", () => {

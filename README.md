@@ -2061,7 +2061,12 @@ step aside while a run is parked, where the gate line already conveys that state
 When a run is parked at a gate you can **approve / fix / skip** it right there;
 those map to `no-mistakes axi respond --action …` (fix lets you pick findings and
 add guidance). Approve and skip confirm first since they advance the pipeline
-toward pushing your branch. [Foreman](#foreman-auto-responder), if enabled, can take
+toward pushing your branch. Once the dashboard accepts a response, the actions give
+way to its submission status while the blocking command runs. If that command fails,
+the strip shows its diagnostic and leaves the gate retryable. When the next gate arrives
+before the session's terminal has caught up, the strip labels the earlier response and
+distinguishes the new findings as a later round or pipeline step.
+[Foreman](#foreman-auto-responder), if enabled, can take
 the first look at a parked gate for you: it reads the finding the run relayed and
 either answers it or escalates it as a decision brief, rather than leaving the run
 parked until you get to it.

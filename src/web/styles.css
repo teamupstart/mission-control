@@ -1195,6 +1195,30 @@ body {
   color: var(--exited);
   width: 100%;
 }
+.nm-submit-state {
+  padding-top: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.nm-submit-state strong {
+  color: var(--working);
+}
+.nm-submit-state .mono {
+  color: var(--fg);
+}
+.nm-round-note {
+  padding: 3px 0 5px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.nm-round-note strong {
+  color: var(--working);
+}
+.nm-round-note .mono {
+  color: var(--fg);
+}
 .nm-fix {
   display: flex;
   flex-direction: column;

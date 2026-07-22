@@ -43,7 +43,7 @@ const { logGateReply, dropGateReply, gateRepliesFor, pruneGateReplies, hooksEver
   await import("../src/server/db.ts");
 const { classifyPending } = await import("../src/server/foreman/pending.ts");
 const { applyVerdict, planFromVerdict } = await import("../src/server/foreman/verdict.ts");
-const { respond, isResponding } = await import("../src/server/nomistakes.ts");
+const { respond, isResponding, responseForRun } = await import("../src/server/nomistakes.ts");
 import { gateParked } from "@shared/session.ts";
 import type { GateReplyRow } from "../src/server/db.ts";
 import type { ForemanActions, ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
@@ -278,6 +278,8 @@ function fakeAxi(): string {
     bin,
     `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "no-mistakes 0.0-fake"; exit 0; fi
+if [ -f ./respond-stdout-error ]; then cat ./respond-stdout-error; exit 1; fi
+if [ -f ./respond-error ]; then cat ./respond-error >&2; exit 1; fi
 if [ -f ./respond-fails ]; then exit 1; fi
 exit 0
 `,
@@ -314,20 +316,64 @@ test("a respond the gate never received reports itself undelivered", async () =>
   const cwd = tmp("respond-fail-");
   writeFileSync(join(cwd, "respond-fails"), "");
   const undo: string[] = [];
-  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => undo.push("retracted") });
+  const runId = "run-dashboard-fail";
+  const r = await respond(noSessions, cwd, "fix", {
+    runId,
+    step: "review",
+    findings: ["the-finding"],
+    onUndelivered: () => undo.push("retracted"),
+  });
   // Accepted only means SPAWNED. Delivery isn't known yet - that's the whole problem.
   assert.equal(r.ok, true);
   await settled(cwd);
   assert.deepEqual(undo, ["retracted"]);
+  assert.deepEqual(responseForRun(runId), {
+    responseId: 1,
+    runId,
+    step: "review",
+    action: "fix",
+    findingIds: ["the-finding"],
+    status: "failed",
+    error: "no-mistakes exited with status 1",
+  });
 });
 
 test("a delivered respond keeps its byline", async () => {
   const cwd = tmp("respond-ok-");
+  const runId = "run-dashboard-ok";
   let retracted = false;
-  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => (retracted = true) });
+  const r = await respond(noSessions, cwd, "fix", {
+    runId,
+    onUndelivered: () => (retracted = true),
+  });
   assert.equal(r.ok, true);
   await settled(cwd);
   assert.equal(retracted, false, "a delivered decision keeps its author");
+  assert.equal(responseForRun(runId)?.status, "submitted", "the next gate can identify the prior response");
+});
+
+test("a failed respond retains a bounded dashboard error", async () => {
+  const cwd = tmp("respond-large-error-");
+  const runId = "run-dashboard-large-error";
+  writeFileSync(join(cwd, "respond-error"), `opening diagnosis\n${"x".repeat(10_000)}\nfinal diagnosis`);
+  const r = await respond(noSessions, cwd, "fix", { runId });
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  const error = responseForRun(runId)?.error ?? "";
+  assert.equal(error.length, 4000);
+  assert.match(error, /^\n… \[earlier output truncated\]\n/);
+  assert.match(error, /final diagnosis$/);
+  assert.doesNotMatch(error, /opening diagnosis/);
+});
+
+test("a failed respond surfaces the CLI's stdout diagnosis", async () => {
+  const cwd = tmp("respond-stdout-error-");
+  const runId = "run-dashboard-stdout-error";
+  writeFileSync(join(cwd, "respond-stdout-error"), "error: the gate already moved");
+  const r = await respond(noSessions, cwd, "fix", { runId });
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  assert.equal(responseForRun(runId)?.error, "error: the gate already moved");
 });
 
 // ---- the foreman side: classify -> plan -> apply ----

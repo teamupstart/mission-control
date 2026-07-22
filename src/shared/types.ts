@@ -1170,6 +1170,19 @@ export interface NmFinding {
   description: string;
 }
 
+/** A dashboard gate decision and its retained asynchronous delivery state. */
+export interface NmGateResponse {
+  /** Monotonic daemon-local identity for this response attempt. */
+  responseId: number;
+  runId: string;
+  step: string;
+  action: "approve" | "fix" | "skip";
+  findingIds: string[];
+  status: "submitting" | "submitted" | "failed";
+  /** Present only after the CLI exits non-zero or cannot be spawned. */
+  error: string | null;
+}
+
 /** Compact view of a no-mistakes run, as surfaced on a session card. */
 export interface NmRunSummary {
   /**
@@ -1218,6 +1231,8 @@ export interface NmRunSummary {
    */
   activeSteps: NmActiveStep[];
   findings: NmFinding[];
+  /** Dashboard response state overlaid by the daemon; not part of `axi status`. */
+  response?: NmGateResponse | null;
   outcome: string | null; // once landed: checks-passed | passed | failed | cancelled
 }
 

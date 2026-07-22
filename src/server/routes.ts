@@ -749,6 +749,8 @@ export function buildApp(
 
     const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, {
       ...parsed.data,
+      runId: gate?.id,
+      step: step ?? undefined,
       // Undelivered is un-authored. The gate the user answered may be one the run has
       // already moved past (status is polled, so the Fix box can be ~seconds stale),
       // and `axi respond` then exits non-zero having said nothing. Left behind, that

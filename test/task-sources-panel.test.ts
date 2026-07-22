@@ -100,6 +100,8 @@ test("a configured source is a compact overview row with its health", () => {
   assert.match(html, /GitHub issues/);
   assert.match(html, /Paused/);
   assert.match(html, /Configured task sources/);
+  assert.match(html, /role="listitem"><button class="ts-directory-row"/);
+  assert.doesNotMatch(html, /<button[^>]*role="listitem"/);
 });
 
 // "Never swept" and "swept, found nothing" are the two states most easily confused, and

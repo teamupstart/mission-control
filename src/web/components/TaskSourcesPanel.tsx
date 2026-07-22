@@ -641,11 +641,13 @@ function SourceDirectory({
           const health = sourceHealth(src, status);
           const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : "Healthy";
           return (
-            <button className="ts-directory-row" role="listitem" key={src.id} onClick={() => onSelect(src.id)}>
-              <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
-              <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
-              <span className="ts-directory-chevron" aria-hidden>›</span>
-            </button>
+            <div className="ts-directory-item" role="listitem" key={src.id}>
+              <button className="ts-directory-row" onClick={() => onSelect(src.id)}>
+                <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
+                <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
+                <span className="ts-directory-chevron" aria-hidden>›</span>
+              </button>
+            </div>
           );
         })}
         {visible.length === 0 && <p className="ts-directory-empty">No sources match these filters.</p>}

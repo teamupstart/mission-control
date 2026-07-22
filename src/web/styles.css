@@ -4906,7 +4906,7 @@ kbd {
   text-align: left;
   cursor: pointer;
 }
-.ts-directory-row:last-of-type { border-bottom: 0; }
+.ts-directory-item:last-child .ts-directory-row { border-bottom: 0; }
 .ts-directory-row:hover { background: color-mix(in oklab, var(--working) 6%, var(--panel)); }
 .ts-directory-main { min-width: 0; flex: 1; }
 .ts-directory-main strong,

@@ -79,7 +79,7 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
 - **Three mark vocabularies still disagree**: `RailRow` glyphs, `SessionTile` `.tile-flag`
   chips, `SessionCard` chips (+ `queueChipView` in `lib/queue.ts`). A new session-level signal
   must be added to all three. Known gap, next thing worth unifying. `CostChip` is the worked
-  example: the figure in three surfaces, a `$` glyph in the rail's `marks`, and one shared
+  example: the figure in three surfaces, an `≈$` glyph in the rail's `marks`, and one shared
   `costIsNotable` (`@shared/cost.ts`) deciding where the line sits - not three thresholds.
 - Console detail CSS reaches into shared components with descendant selectors
   (`.detail-conv > .transcript`, `.detail-foot .actions`). Changing `TranscriptPanel` or

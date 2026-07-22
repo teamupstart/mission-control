@@ -5,19 +5,18 @@ import { compactTokens, contextTone, fmtRunway, fmtUsd, untilReset } from "../li
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 /**
- * The topbar's fleet economics: what today cost, how fast it is going, and how long the
- * subscription's windows last at that rate.
+ * The topbar's fleet economics: today's API-equivalent estimate, its recent rate, and how
+ * long each provider's quota windows last at their own consumption rate.
  *
  * Four figures and a projection, chosen because each answers a question the others cannot:
- * spend is the total, burn is the derivative, tokens are the work the dollars bought (and
- * the only figure a Max subscriber's notional dollars cannot give them), and cost-per-PR
- * is the one that turns all three into a unit price for shipped work. The runway is the
- * only forward-looking thing on the strip, and it is the reason the strip exists: a rate
- * limit that arrives mid-task is a surprise, and this is what stops it being one.
+ * estimated cost is the total, recent rate is its derivative, tokens are the measured work,
+ * and estimated cost-per-PR turns the first figure into a unit price for shipped work. The
+ * runway is the only forward-looking thing on the strip, and it is the reason the strip
+ * exists: a rate limit that arrives mid-task is a surprise, and this is what stops it being one.
  *
  * Every figure degrades on its own rather than as a block. No telemetry -> the caller
- * renders nothing at all (a `$0.00` would claim a fleet that cost nothing). No PRs opened
- * today -> no cost-per-PR, rather than a division by zero dressed as `$0.00`. No
+ * renders nothing at all (an `≈$0.00` would claim a measured zero). No PRs opened today ->
+ * no cost-per-PR, rather than a division by zero dressed as `≈$0.00`. No
  * `rate_limits` (an API-key user, or a session before its first API response) -> no
  * runway, rather than a bar at 0%.
  *

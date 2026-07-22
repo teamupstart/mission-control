@@ -6,15 +6,22 @@ Rendered: `plan.html` beside this file - open that for the diagrams.
 Supersedes the "Cost & token telemetry" bullet in an earlier feature-ideas note that was
 never checked in.
 
+> **Historical scope.** This document owns the original Claude OTel/statusLine ingestion
+> rationale. The current fleet vocabulary, Codex estimator, completeness rules, and ledger
+> extensions are owned by the
+> [unified Claude and Codex cost plan](../codex-cost-estimates/plan.md). Terms such as
+> "spend", "burn", and "Codex out of scope" below describe this first implementation phase,
+> not the current product contract.
+
 Built as written, with three decisions the plan left open resolved in the code:
 
 - **Two install prompts, not one.** `npm run install-telemetry` (the `env` block) is separate
   from `npm run install-statusline` (the wrapper), because they are two different asks of the
-  user's config and someone may well want the spend figures without us near their status line.
+  user's config and someone may well want the estimate figures without us near their status line.
   In the app, the Cost settings toggle owns the env block; `removeIntegrations` still tears it
   down unconditionally.
 - **Export interval: 15s**, settable 5s-60s in Settings → Cost.
-- **Rail treatment: glyph-when-notable.** `RailRow` pushes a `$` mark once `costIsNotable`
+- **Rail treatment: glyph-when-notable.** `RailRow` pushes an `≈$` mark once `costIsNotable`
   (`@shared/cost.ts`) says so; the other three surfaces carry the figure via `CostChip`.
 
 Two things the plan did not anticipate, both found while building:
@@ -352,7 +359,7 @@ Nothing will catch a forgotten rail mark. That is the riskiest item in the chang
 3. `Session` field + comparator + read route. The compiler walks you through this one.
 4. `CostChip` + the four surfaces + parity test.
 5. Statusline wrapper: add `rate_limits`; install prompt.
-6. Fleet strip: spend, burn rate, and the two rate-limit bars.
+6. Fleet strip: estimated total, recent rate, and the two rate-limit bars.
 7. Settings panel.
 8. Optional: transcript backfill for pre-feature history, behind an `app_config` flag and
    labelled approximate.
@@ -364,7 +371,8 @@ Step 5 adds the subscription view.
 ## Open questions
 
 Kept as they were asked. The first three were answered while building - the answers are at
-the top of this file. The last two stand: Codex is out of scope, cost-per-PR is deferred.
+the top of this file. Codex and cost-per-PR were implemented later; the
+[unified cost plan](../codex-cost-estimates/plan.md) owns those current contracts.
 
 **Two config edits, not one.** OTel needs an `env` block; rate limits need the statusline
 wrapper. Both touch the user's `settings.json`. Worth deciding whether install is one
@@ -376,18 +384,14 @@ Lowering it increases request volume from every session on the machine. 10-15s i
 right; worth measuring.
 
 **Rail treatment.** `RailRow.tsx:52-54` sets an explicit budget: "Two lines, never four
-[...] a rail you can only fit six sessions in has stopped being a rail." A full `$1.24` in
+[...] a rail you can only fit six sessions in has stopped being a rail." A full `≈$1.24` in
 `.rail-meta` is honest but costs horizontal room on the tightest surface. A glyph in the
 `marks` array only when over budget fits the existing vocabulary but makes the rail the one
 place cost is invisible until it is a problem. Leaning glyph-when-notable.
 
-**Codex.** Out of scope, and the schema carries an `agent` column for it. Codex on this
-machine stores state in `~/.codex/state_5.sqlite` with a single `tokens_used` scalar - no
-tier split, no cost - so it cannot be priced to the same confidence. Codex cards should read
-"not tracked" rather than show a number with a different error bar beside a Claude one.
-
-**Cost per PR** needs a join from ledger rows to a PR, which `Session.prUrl` gives only
-while the session lives. Deferred; `note_key` on every row keeps the join possible later.
+**Codex and cost per PR.** These original open questions are closed. See the
+[unified cost plan](../codex-cost-estimates/plan.md) for request-level rollout pricing,
+completeness-aware fleet totals, and the proven-PR denominator.
 
 ## Implementation
 
@@ -402,10 +406,12 @@ Two additions to the wire model, no more:
 - **`Session.cost: SessionCost | null`** - a per-session denormalized summary, resolved from
   the ledger by `note_key`, exactly like `Session.goal`. Drives the badge.
 - **`ServerEvent` gains `{ type: "cost_fleet", fleet: FleetCost }`** - a new top-level
-  collection for the topbar strip (fleet spend + burn + rate limits). Rate limits are
+  collection for the topbar strip (fleet estimate + recent rate + rate limits). Rate limits are
   account-global, so they ride here, not on each session.
 
-There is deliberately **no** `Session.rateLimits` field and no pricing table in the runtime.
+There is deliberately **no** `Session.rateLimits` field. This Claude-only ingestion path needs
+no price table; the later Codex estimator owns a separate versioned snapshot described in the
+[unified cost plan](../codex-cost-estimates/plan.md).
 
 ### 0. Wire format the receiver must parse (verified on the wire)
 

@@ -172,21 +172,21 @@ const EPISODE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
  *
  * The most generous of the four, because it is the only one whose value is CUMULATIVE:
  * every other record answers a question about one session, while these rows are summed
- * to answer "what did the fleet spend last quarter". Deleting one does not make a record
- * less legible, it makes a total wrong. Two quarters is enough to compare one against the
- * last; the rows are a handful of numbers each, on a table that grows with export windows
- * rather than with events, so generosity is nearly free here.
+ * to answer "what was the fleet's API-equivalent estimate last quarter". Deleting one does
+ * not make a record less legible, it makes a total wrong. Two quarters is enough to compare
+ * one against the last; the rows are a handful of numbers each, on a table that grows with
+ * export windows rather than with events, so generosity is nearly free here.
  */
 const USAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 /** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
 const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /**
- * Floor on how often the fleet spend figures are recomputed off the back of a sweep.
+ * Floor on how often the fleet estimate figures are recomputed off the back of a sweep.
  *
  * The sweep is ~1.5s and this is two SUM queries on the synchronous handle that also
  * serves hook ingest and SSE, so it is not free. Nothing here is urgent either: an
  * ingest recomputes immediately (that is when the number actually changed), and this
- * exists only so a QUIET fleet still rolls "today" over at midnight and lets the burn
+ * exists only so a QUIET fleet still rolls "today" over at midnight and lets the recent
  * rate decay instead of freezing at the last export's value.
  */
 const FLEET_COST_IDLE_INTERVAL_MS = 30 * 1000;
@@ -398,7 +398,7 @@ export class Registry extends EventEmitter {
       tasks: [...this.tasks.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
-      // blank strip over a ledger that already holds a week of spend.
+      // blank strip over a ledger that already holds a week of estimated usage.
       fleetCost: this.fleetCostNow(),
     };
   }
@@ -492,9 +492,9 @@ export class Registry extends EventEmitter {
     // only guard on that write, so it must never be computed from a partial map.
     this.syncAllOrphanHints();
     this.pruneQueues(now);
-    // Throttled hard: an ingest already recomputes at the moment spend changes, so this
-    // is only here to keep a QUIET fleet honest - "today" has to roll over at midnight,
-    // and the burn rate has to fall back to zero when the exports stop.
+    // Throttled hard: an ingest already recomputes when estimated usage changes, so this is
+    // only here to keep a QUIET fleet honest - "today" has to roll over at midnight, and the
+    // recent rate has to fall back to zero when the exports stop.
     if (now - this.lastFleetCostAt >= FLEET_COST_IDLE_INTERVAL_MS) this.recomputeFleetCost(now);
   }
 
@@ -529,8 +529,8 @@ export class Registry extends EventEmitter {
     } catch (err) {
       console.error("[registry] foreman episode prune failed:", err);
     }
-    // Fourth, and independently caught like the three above: these are the rows a spend
-    // total is summed from, so a throw here must not be able to take the sweep - or the
+    // Fourth, and independently caught like the three above: these are the rows an estimate
+    // is summed from, so a throw here must not be able to take the sweep - or the
     // other three prunes - down with it.
     try {
       pruneUsageLedger(now - USAGE_RETENTION_MS);
@@ -684,7 +684,7 @@ export class Registry extends EventEmitter {
     base.goal = this.goalSummaryFor(base);
     // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
     // of the time. First sight is the case that matters: the ledger outlives the daemon,
-    // so a session rebuilt after a restart has spend recorded by a previous process and
+    // so a session rebuilt after a restart has usage recorded by a previous process and
     // must not read as unpriced until some later hook happens to fire. After that nothing
     // reaches the figure except the ingest, which re-denormalizes through
     // `syncSessionsForCost` itself - and this is an aggregate over every ledger row for
@@ -1436,7 +1436,7 @@ export class Registry extends EventEmitter {
     // A statusLine can be the first thing to bind an agent session id (it carries one and
     // fires on every render, where a hook fires on events). That rotates the note key, so
     // re-resolve the cost the same way `applyHook` re-resolves note/goal/queue - otherwise
-    // a session picks up its already-ledgered spend only on the next unrelated change.
+    // a session picks up its already-ledgered estimate only on the next unrelated change.
     //
     // On a ROTATION only, though, and that is the whole of the condition below. This runs
     // on every terminal render, and `sessionCostFor` aggregates every ledger row for the
@@ -1497,7 +1497,7 @@ export class Registry extends EventEmitter {
    * PII that is never read cannot be written by a later change to a row mapper.
    *
    * A datapoint with no `session.id` is DROPPED rather than bucketed under a placeholder.
-   * It is unattributable by construction (that attribute is what ties spend to a card),
+   * It is unattributable by construction (that attribute is what ties usage to a card),
    * and a synthetic bucket would quietly become the fleet's largest "session" the moment
    * `OTEL_METRICS_INCLUDE_SESSION_ID` were ever set false - which is precisely the
    * misconfiguration the daemon warns about at boot.
@@ -1510,7 +1510,7 @@ export class Registry extends EventEmitter {
           const isCost = m.name === "claude_code.cost.usage";
           const isTokens = m.name === "claude_code.token.usage";
           // `claude_code.session.count` and `claude_code.active_time.total` also arrive
-          // on this stream and are deliberately ignored - neither is spend.
+          // on this stream and are deliberately ignored - neither is cost or token usage.
           if (!isCost && !isTokens) continue;
           const sum = m.sum;
           if (!sum) continue;
@@ -1598,7 +1598,7 @@ export class Registry extends EventEmitter {
       tokensToday: fleetTokensSince(dayStart),
       // The one figure here that is not the ledger's. Cheap - a COUNT over an adoption
       // table that gains single-digit rows a day - and it shares the local-midnight
-      // boundary with the spend, which is what makes dividing one by the other mean
+      // boundary with the estimate, which is what makes dividing one by the other mean
       // anything.
       prsToday: prsOpenedSince(dayStart),
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
@@ -3043,7 +3043,7 @@ export function epochMsFromNanos(ns: string | null): number | null {
   }
 }
 
-/** Local midnight for `now`, the boundary "spend today" is measured from. */
+/** Local midnight for `now`, the boundary "estimated cost today" is measured from. */
 export function startOfLocalDay(now: number): number {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
@@ -3187,7 +3187,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
   // being written only by the ingest: a session that binds its agent session id LATE
   // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each
-  // re-resolve the figure on that rotation - picking up a whole backlog of spend with no
+  // re-resolve the figure on that rotation - picking up a whole backlog of usage with no
   // other field moving. Left out, the badge would appear only on the next unrelated
   // change. (`syncSessionsForCost` emits directly for the key it touched, so the ingest
   // itself does not depend on this.)

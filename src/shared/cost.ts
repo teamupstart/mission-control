@@ -9,13 +9,13 @@ import type { AgentType, RateLimitWindow, SessionCost } from "./types.ts";
 // live in `@shared` to prevent. So the threshold lives here and every surface asks.
 //
 // Deliberately NOT a session tone: `TONE_ORDER` drives grid sort, rail sections and board
-// columns, and none of those should reorder by spend. This is a chip modifier only.
+// columns, and none of those should reorder by estimated cost. This is a chip modifier only.
 
-/** Where a session's spend sits, for the chip's colour and the rail's glyph. */
+/** Where a session's API-equivalent estimate sits, for the chip's colour and rail glyph. */
 export type CostTone = "normal" | "attention" | "danger";
 
 /**
- * Dollars at which one session's spend is worth noticing, and worth stopping at.
+ * Estimated dollars at which one session is worth noticing, and worth stopping at.
  *
  * Round numbers, not measured ones - there is no "correct" figure here, and pretending
  * otherwise would be false precision. They are set where a person running a fleet would
@@ -27,7 +27,7 @@ export type CostTone = "normal" | "attention" | "danger";
 export const COST_ATTENTION_USD = 5;
 export const COST_DANGER_USD = 20;
 
-/** The tone for a spend figure. `null`/unpriced reads as `normal` - absence is not alarm. */
+/** The tone for an estimate. `null`/unpriced reads as `normal` - absence is not alarm. */
 export function costTone(costUsd: number | null | undefined): CostTone {
   if (costUsd == null) return "normal";
   if (costUsd >= COST_DANGER_USD) return "danger";
@@ -36,10 +36,10 @@ export function costTone(costUsd: number | null | undefined): CostTone {
 }
 
 /**
- * Whether a session's spend has earned a place in a mark vocabulary.
+ * Whether a session's estimate has earned a place in a mark vocabulary.
  *
  * The rail is the surface this exists for: `RailRow` budgets itself two lines and a full
- * `$1.24` in `.rail-meta` costs horizontal room on the tightest surface in the app. So the
+ * `≈$1.24` in `.rail-meta` costs horizontal room on the tightest surface in the app. So the
  * rail shows a glyph only once the number is notable, and the routine case stays invisible
  * there - a deliberate trade, and the one place cost is not on screen at all times.
  */

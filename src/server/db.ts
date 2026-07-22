@@ -292,7 +292,7 @@ export function openDb(): DatabaseSync {
       PRIMARY KEY (source_id, external_id)
     );
 
-    -- What the fleet has spent, one row per OpenTelemetry export window.
+    -- API-equivalent estimates and token usage, one row per source event or export window.
     --
     -- Its OWN table rather than a new kind in session_events, and the reason is written
     -- down at logEvent below: that table has exactly one writer, and hooksEverSeen asks
@@ -1656,7 +1656,7 @@ export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number)
   return Number(r.changes);
 }
 
-// ---- usage ledger (what the fleet has spent) ----
+// ---- usage ledger (API-equivalent estimates and token usage) ----
 
 /**
  * The columns an OTel datapoint may land in, keyed by the name the ingest uses.

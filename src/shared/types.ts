@@ -358,7 +358,7 @@ export interface Session {
   /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**
-   * What this session has spent so far, denormalized off the usage ledger and keyed on
+   * This session's API-equivalent estimate, denormalized off the usage ledger and keyed on
    * the same stable note key as `note` and `goal` - never on `id`, which re-mints on
    * every restart while the ledger is meant to outlive the session.
    *
@@ -1679,7 +1679,7 @@ export type ServerEvent =
       reviews: ReviewItem[];
       tasks: Task[];
       /**
-       * Fleet spend at connect time. Carried in the snapshot rather than waited for,
+       * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
        */
@@ -1692,8 +1692,8 @@ export type ServerEvent =
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   /**
-   * Fleet-wide spend and the subscription's rate limits. A top-level collection, not a
-   * per-session field: the rate limits are account-global, so hanging them off each
+   * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
+   * not a per-session field: the rate limits are account-global, so hanging them off each
    * session would ship the same numbers N times and invite N places to disagree.
    */
   | { type: "cost_fleet"; fleet: FleetCost };

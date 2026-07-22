@@ -37,8 +37,18 @@ async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void
 
 test("the poller prices a proven Codex rollout once and performs a final exit drain", async () => {
   const path = join(home, "rollout.jsonl");
+  const sessionMeta = JSON.stringify({
+    timestamp: "2026-07-22T11:59:00.000Z",
+    type: "session_meta",
+    payload: {
+      id: "conversation-42",
+      timestamp: "2026-07-22T11:59:00.000Z",
+      cwd: "/repo",
+      source: "cli",
+    },
+  });
   const turn = JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.6-sol" } });
-  writeFileSync(path, `${turn}\n${token("2026-07-22T12:00:00.000Z")}\n`);
+  writeFileSync(path, `${sessionMeta}\n${turn}\n${token("2026-07-22T12:00:00.000Z")}\n`);
   const registry = new Registry();
   const discovered = {
     syntheticId: "codex-live",
@@ -73,7 +83,7 @@ test("the poller prices a proven Codex rollout once and performs a final exit dr
     appendFileSync(path, `${token("2026-07-22T12:01:00.000Z")}\n`);
     await eventually(() => registry.getSession("codex-live")?.cost?.input === 1_400);
     assert.equal(usageCursorFor("codex:conversation-42").offset, Buffer.byteLength(
-      `${turn}\n${token("2026-07-22T12:00:00.000Z")}\n${token("2026-07-22T12:01:00.000Z")}\n`,
+      `${sessionMeta}\n${turn}\n${token("2026-07-22T12:00:00.000Z")}\n${token("2026-07-22T12:01:00.000Z")}\n`,
     ));
   } finally {
     stop();

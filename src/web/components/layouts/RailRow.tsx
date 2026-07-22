@@ -40,7 +40,7 @@ export function RailRow({
   if (session.note) marks.push("◆");
   if (session.queue && session.queue.openCount > 0) marks.push(`≡${session.queue.openCount}`);
   // Cost is the one signal the rail states as a GLYPH rather than a figure, and only once
-  // it is notable. The two-line budget below is why: a full "$1.24" in `.rail-meta` is
+  // it is notable. The two-line budget below is why: a full "≈$1.24" in `.rail-meta` is
   // honest but spends horizontal room on the tightest surface in the app, on every row,
   // for a number that is usually unremarkable. The trade is real and worth naming - the
   // rail is the one place a routine cost is invisible until it isn't. The other three

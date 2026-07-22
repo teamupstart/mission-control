@@ -14,7 +14,7 @@
   <div class="eyebrow">Mission Control · implemented locally</div>
   <h1>Unified Claude and Codex API-equivalent cost estimates</h1>
   <p class="lede">Turn both harnesses' request usage into one durable, clearly qualified API-equivalent estimate while retaining which calculator produced each ledger row and keeping subscription quota separate.</p>
-  <div class="meta"><span class="tag">Status · awaiting operator test before PR</span><span class="tag">Source · local rollout JSONL</span><span class="tag">Pricing · versioned standard API rates</span><span class="tag">No network at runtime</span></div>
+  <div class="meta"><span class="tag">Status · implemented</span><span class="tag">Source · local rollout JSONL</span><span class="tag">Pricing · versioned standard API rates</span><span class="tag">No network at runtime</span></div>
 
   <nav><a href="#outcome">Outcome</a><a href="#decisions">Decisions</a><a href="#evidence">Evidence</a><a href="#flow">Data flow</a><a href="#design">Design</a><a href="#ui">UI</a><a href="#files">Files</a><a href="#tests">Verification</a><a href="#review">Review</a></nav>
 
@@ -81,13 +81,13 @@
     <ol class="steps">
       <li><strong>Add cost provenance.</strong><span>Add <code>CostBasis</code> and distinct pricing-model/version lists to <code>SessionCost</code>. Keep the calculator provenance in each ledger row while presenting both known bases as API-equivalent estimates. Existing <code>Session.cost = byJson</code> already enforces visible changes.</span></li>
       <li><strong>Add a server-only harness usage capability.</strong><span><code>HARNESSES.codex</code> supplies a request reader and estimator; Claude declares null because OTLP metrics remain its source. Consumers call <code>usageFor(session)</code>.</span></li>
-      <li><strong>Read append-only JSONL safely.</strong><span>Resume from a durable byte offset, process only complete lines, preserve active model, cap catch-up at 1 MiB, and derive replay-stable event identities from conversation id + timestamp + raw record.</span></li>
+      <li><strong>Read append-only JSONL safely.</strong><span>Resume from a durable byte offset, process only complete lines, preserve active model, cap catch-up at 1 MiB, and derive replay-stable event identities from timestamp + raw record. The ledger conflict key adds the proven conversation id.</span></li>
       <li><strong>Price with a pinned registry.</strong><span>Exact model match only. Separate uncached input, cache reads, cache writes, and output. Apply long-context rules per request. Persist full precision and round only in UI.</span></li>
-      <li><strong>Persist cursor and event atomically.</strong><span>Add <code>usage_sources</code>; migrate <code>usage_ledger</code> with basis, known, and pricing-version columns. An identity conflict preserves the original economic snapshot and updates only missing provenance, so replay cannot double count or reprice history.</span></li>
+      <li><strong>Persist cursor and event atomically.</strong><span>Add <code>usage_sources</code>; migrate <code>usage_ledger</code> with basis, known, pricing-version, and reasoning-output columns. An identity conflict preserves the original economic snapshot and updates only missing provenance, so replay cannot double count or reprice history.</span></li>
       <li><strong>Drain through a generic collector.</strong><span>Start <code>src/server/usage.ts</code> beside runtime metadata. Require proven conversation id, catch up immediately while <code>more</code>, and hold a removed session for a final 30-second grace drain.</span></li>
       <li><strong>Combine fleet SQL with completeness.</strong><span>Known Claude and Codex estimates use one sum. Tokens include every basis, including unpriced rows. Any unpriced row makes that time window partial, and cost/PR is withheld rather than understated.</span></li>
       <li><strong>Update every UI vocabulary.</strong><span>Shared CostChip handles all three figure layouts and prefixes every dollar with <code>≈</code>. Rail uses the same convention. FleetStrip renders one combined estimate while quota stays separate.</span></li>
-      <li><strong>Correct the contracts and docs.</strong><span>README, Settings, AGENTS, shared comments, fixtures, and tests stop claiming that Codex has only an opaque token scalar.</span></li>
+      <li><strong>Correct the contracts and docs.</strong><span>README, Settings, shared comments, fixtures, and tests stop claiming that Codex has only an opaque token scalar.</span></li>
     </ol>
 
     <div class="warning"><p><strong>Critical SQL rule:</strong> existing Claude ledger rows must migrate to <code>reported / known</code>. An unknown-model Codex row still stores tokens, but any unknown row makes both the session and matching fleet-window dollar total null—never a silently partial estimate.</p></div>
@@ -113,7 +113,7 @@
       <tr><td>Daemon</td><td><code>src/server/usage.ts</code><br><code>src/server/index.ts</code><br><code>src/server/registry.ts</code></td><td>Collector lifecycle, session sync, fleet recompute</td></tr>
       <tr><td>Storage</td><td><code>src/server/db.ts</code></td><td>Migration, cursors, atomic event upsert, completeness-aware combined sum</td></tr>
       <tr><td>Web</td><td><code>session-bits.tsx</code><br><code>RailRow.tsx</code><br><code>FleetStrip.tsx</code><br><code>CostSettingsPanel.tsx</code></td><td>Calculator provenance, layout parity, unified estimate language</td></tr>
-      <tr><td>Docs</td><td><code>README.md</code><br><code>AGENTS.md</code></td><td>Replace stale scalar/no-tier claims</td></tr>
+      <tr><td>Docs</td><td><code>README.md</code></td><td>Replace stale scalar/no-tier claims</td></tr>
     </tbody></table></div>
     <p class="small">No new HTTP route, Electron IPC capability, overlay, build entry point, or ServerEvent variant.</p>
   </section>
@@ -148,7 +148,6 @@
 npm test -- test/runtime-meta.test.ts test/fleet-strip.test.ts test/session-leaf-parity.test.ts
 npm run typecheck
 npm test
-npm run lint
 npm run build</code></pre>
   </section>
 
@@ -166,5 +165,5 @@ npm run build</code></pre>
 
   <section><h2>Acceptance summary</h2><div class="accept"><p>Supported Claude and Codex sessions show consistently qualified estimates everywhere; fleet totals, rates, and cost/PR combine all known estimates; unknowns produce an explicit partial state; request events remain durable and replay-safe; quota stays separate; and the implementation adds no external configuration or credential dependency.</p></div></section>
 
-  <footer>Rendered review companion for <a href="plan.md">docs/plans/codex-cost-estimates/plan.md</a>. The design is implemented locally and awaiting operator testing before any PR.</footer>
+  <footer>Rendered review companion for <a href="plan.md">docs/plans/codex-cost-estimates/plan.md</a>. The design is implemented.</footer>
 </main></body></html>

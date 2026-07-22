@@ -1,6 +1,6 @@
 # Unified Claude and Codex API-equivalent cost estimates
 
-Status: implemented locally; awaiting operator test before PR
+Status: implemented
 Owner: ai-harness (Mission Control)
 Rendered: `plan.html` beside this file - open that for the review layout and data-flow diagram.
 
@@ -171,7 +171,7 @@ Codex's distinction between ChatGPT and API-key billing comes from the official
 - A versioned standard API price registry and pure estimator.
 - Durable, retry-safe Codex rows in `usage_ledger`.
 - Exact session attribution through `session_meta.id` / discovered `agentSessionId`.
-- One final grace drain after a rollout stops being live.
+- A 30-second final drain window after a rollout stops being live.
 - Session cost provenance and pricing-version metadata.
 - One completeness-aware Claude + Codex fleet estimate and combined cost/PR.
 - Cards, Console, Board detail, Board tile, Console/Board rail marks, Settings copy, and README.
@@ -323,8 +323,9 @@ The reader:
    `input_tokens - cached_input_tokens - cache_write_input_tokens`, clamped at zero.
 6. Preserves cached reads, cache writes, output, and reasoning output separately.
 7. Uses the record timestamp for `ts`.
-8. Builds `identity` from a SHA-256 of conversation id, record timestamp, and exact raw line.
-   Re-reading a chunk or resetting a cursor therefore upserts the same ledger row.
+8. Builds the event identity from a SHA-256 of the record timestamp and exact raw line. The
+   ledger's conflict key also includes the proven conversation id as `note_key`, so replaying
+   a chunk upserts the same row without allowing two conversations to collide.
 9. Treats a shorter file as `reset: true`. The orchestrator starts a new generation only when
    the session header proves a different conversation id. A shorter file with the same id is
    refused and logged for inspection; it never assumes an in-place rewrite is the same stream.
@@ -388,13 +389,14 @@ CREATE TABLE IF NOT EXISTS usage_sources (
 New tables need no migration. The cursor table contains no prompt, cwd, email, account id, or
 tool data.
 
-Add three columns to `usage_ledger`'s create block and, because it is an existing table, three
+Add four columns to `usage_ledger`'s create block and, because it is an existing table, four
 matching `addColumn` calls in `migrate()`:
 
 ```sql
 cost_basis     TEXT NOT NULL DEFAULT 'reported',
 cost_known     INTEGER NOT NULL DEFAULT 1,
-pricing_version TEXT NOT NULL DEFAULT ''
+pricing_version TEXT NOT NULL DEFAULT '',
+reasoning_output INTEGER NOT NULL DEFAULT 0
 ```
 
 Existing Claude rows become reported/known automatically. A Codex event writes all token
@@ -404,7 +406,7 @@ columns atomically with:
 - `session_id`: the current synthetic session id when live, provenance only;
 - `agent`: `codex`;
 - `model_id`: the model active for that request;
-- `query_source`: main/subagent/auxiliary when proven;
+- `query_source`: `main`; separate subagent rollouts are not ingested in this version;
 - `window_end_ns`: `codex:<event identity>`; text is already the dedup key;
 - `ts`: rollout event timestamp;
 - `cost_usd`: estimated value or zero when unpriced;
@@ -412,11 +414,11 @@ columns atomically with:
 - `cost_known`: 1 or 0;
 - `pricing_version`: the estimator snapshot or empty.
 
-Add `upsertUsageEvent` rather than issuing six `upsertUsageCell` calls. It performs one
-all-column insert in a transaction with the cursor advance. On identity conflict, preserve the
-original tokens, dollars, basis, and pricing version and update only missing live-session
-provenance. That makes a replay safe and prevents a later rate-table release from silently
-repricing history. A crash produces either both the event rows and new cursor or neither.
+Add `commitUsageRead` rather than issuing six `upsertUsageCell` calls. It performs each
+all-column event insert in one transaction with the cursor advance. On identity conflict, it
+preserves the original tokens, dollars, basis, and pricing version and updates only missing
+live-session provenance. That makes a replay safe and prevents a later rate-table release from
+silently repricing history. A crash produces either both the event rows and new cursor or neither.
 
 `sessionCostFor` returns `costUsd: null` if any row for the session has `cost_known = 0`.
 Showing a partial dollar total as complete would be worse than retaining the honest token-only
@@ -443,9 +445,10 @@ Each tick:
 6. Re-denormalize `Session.cost` through the existing `syncSessionsForCost(noteKey)`.
 7. Recompute the fleet strip only when ledger-visible values changed.
 
-Keep the last path/id binding for 30 seconds after a session leaves `liveSessions()` and drain
-it once more. This catches a final `token_count` written immediately before process exit. The
-grace map is bounded to recently live sessions and drops after a successful EOF drain or TTL.
+Keep the last path/id binding for 30 seconds after a session leaves `liveSessions()` and keep
+draining it during that window. This catches a final `token_count` written immediately before
+or shortly after process exit. The grace map is bounded to recently live sessions and drops at
+the TTL.
 
 This poller is separate from `runtime-meta.ts`: catch-up reads can consume several chunks and
 write SQLite, while metadata promises one bounded passive read per live session. Both still
@@ -523,13 +526,12 @@ That limitation should be visible rather than buried in README prose.
 
 Update together:
 
-- `README.md` Cost telemetry section: four sources now (Claude OTel, Claude statusLine, Codex
-  rollouts, versioned standard price table), one fleet meaning, and API-equivalent caveat.
+- `README.md` Cost telemetry section: Claude OTel, Claude statusLine, and Codex rollouts priced
+  by the versioned standard-rate snapshot, with one fleet meaning and API-equivalent caveat.
 - `src/shared/types.ts` comments on `SessionCost` and `Session.cost`.
 - `src/shared/cost.ts::COST_UNSUPPORTED`: Codex no longer unsupported; document unknown-model
   degradation instead of the obsolete scalar claim.
 - `CostSettingsPanel` copy.
-- `AGENTS.md` cost worked-example text if it still states that Codex has no tier split.
 
 Do not describe the estimate as OpenAI-reported cost. OpenAI reports tokens; Mission Control
 does the price arithmetic.
@@ -552,7 +554,7 @@ does the price arithmetic.
 | `src/web/components/layouts/RailRow.tsx` | Basis-aware notable-cost mark/accessibility. |
 | `src/web/components/FleetStrip.tsx` | Unified estimate/rate/cost-per-PR and partial state. |
 | `src/web/components/CostSettingsPanel.tsx` | Explain both estimators and their shared meaning. |
-| `README.md`, `AGENTS.md` | Replace obsolete no-tier/no-price claims and document semantics. |
+| `README.md` | Replace obsolete no-tier/no-price claims and document semantics. |
 
 No new route, Electron capability, overlay, build entry point, or `ServerEvent` variant is
 needed.
@@ -578,7 +580,7 @@ needed.
 - A record split across chunks is emitted once after completion.
 - Replay emits the same identity.
 - Cache-write tokens are separated from uncached input.
-- Malformed, negative, non-finite, and missing-identity records degrade safely.
+- Malformed, negative, non-finite, and missing-timestamp records degrade safely.
 - File truncation/replacement returns reset rather than replaying against a stale cursor.
 
 ### Ledger tests - extend `test/usage-ledger.test.ts`
@@ -597,7 +599,7 @@ needed.
 
 ### Registry and lifecycle tests
 
-- Extend `test/runtime-meta.test.ts` or add `test/usage-collector.test.ts` for catch-up,
+- Add `test/usage-poller.test.ts` for catch-up,
   immediate session sync, multi-chunk drain, restart, `/clear` conversation rotation, and the
   final post-exit grace drain.
 - Keep the existing regression that a hook cannot blank passive Codex usage.
@@ -625,12 +627,11 @@ npm test -- test/codex-pricing.test.ts test/codex-usage.test.ts test/usage-ledge
 npm test -- test/runtime-meta.test.ts test/fleet-strip.test.ts test/session-leaf-parity.test.ts
 npm run typecheck
 npm test
-npm run lint
 npm run build
 ```
 
-Use the repository's no-mistakes pipeline only when the implementation is ready to validate
-and ship; writing this plan does not invoke it.
+The repository has no separate formatter or lint script; `npm run typecheck` is its configured
+static-analysis gate. Shipping validation is driven through the no-mistakes pipeline.
 
 ## Rollout sequence
 
@@ -643,8 +644,8 @@ and ship; writing this plan does not invoke it.
 6. Replace the live cumulative-only writer with the ledger-backed session summary, retaining
    the unpriced fallback for unknown models.
 7. Update `CostChip`, rail mark, unified FleetStrip, Settings copy, and layout/parity tests.
-8. Update README, AGENTS, and stale inline comments.
-9. Run focused tests, full typecheck/test/lint/build, then inspect one real live Codex card and
+8. Update README and stale inline comments.
+9. Run focused tests, full typecheck/test/build, then inspect one real live Codex card and
    compare its token arithmetic by hand against its rollout.
 
 Steps 1-6 can land behind no new UI behavior until the basis-aware chip is ready. Do not briefly

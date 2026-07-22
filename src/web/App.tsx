@@ -1249,7 +1249,7 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): Re
  * by exactly this row's height. The strip is the tallest thing the topbar can grow, which
  * is the whole reason it folds.
  *
- * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's spend
+ * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's estimate
  * stays visible even collapsed (the work queue's precedent is its `count`) so folding the
  * strip away never hides the one figure worth a glance.
  */

@@ -662,7 +662,7 @@ thinking / context row, and the topbar grows a foldable **Usage** row:
 The runway is the only forward-looking number in the app, and it is an average
 extrapolated forward - which is why it is written `~41 min`, and why a window the current
 pace does not exhaust reads **clears** rather than a made-up time. It is projected from
-the window's own percentage and nothing else: the dollar burn and the quota are different
+the window's own percentage and nothing else: the estimated cost rate and the quota are different
 meters, so deriving one from the other would be a confident number about the wrong thing.
 An average cannot see a burst; a fleet that idled all morning and then started six
 sessions reads as calm for a while.
@@ -2357,7 +2357,7 @@ it via DNS-rebinding - a defense that matters now that dispatch can launch agent
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook,
 statusLine, OTLP metrics (`/v1/metrics`) and MCP ingress are authenticated with a
 per-machine token in `~/.mission-control/token` so other local processes can't spoof
-session, task, or spend state. Cost datapoints arrive carrying `user.email`,
+session, task, or cost-estimate state. Cost datapoints arrive carrying `user.email`,
 `user.account_uuid`, `user.account_id` and `organization.id`; the ingest reads four
 attributes and discards the rest before anything is written, so none of it reaches the
 database. Session and task

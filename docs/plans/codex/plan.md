@@ -3,7 +3,8 @@
 > Historical implementation analysis. Current user-facing behavior is documented in
 > [Foreman](../../../README.md#foreman-auto-responder) and
 > [Work queues](../../../README.md#work-queues-load-a-session-up-and-walk-away); capability
-> ownership lives in `HARNESS_CAPABILITIES` and `HARNESSES`.
+> ownership lives in `HARNESS_CAPABILITIES` and `HARNESSES`. The current cost contract is
+> owned by the [unified Claude and Codex cost plan](../codex-cost-estimates/plan.md).
 
 Codex is a registered harness with a card, a dispatch path and a model picker. Everything
 past that is declared absent. This plan is about the fact that **most of those declarations
@@ -463,13 +464,9 @@ covers every declared event, and neither installer names an event itself.
   A constant documenting a decision that nothing enforces is the thing the two-record design
   exists to prevent.
 
-**Honest caveat, and the one part of the original argument that survives**: turning tokens
-into dollars still needs a price table for `gpt-5*` ids, and `plan_type:"free"` /
-subscription accounts have notional dollars. So **`costUsd` may legitimately stay null** -
-but token counts and rate-limit windows are reportable at Claude's fidelity today, and the
-`costTone` / `costIsNotable` thresholds should not be fed a number with a different error bar.
-Recommendation: report tokens and rate limits; leave `costUsd` null with a *narrower*
-sentence.
+**Resolved later:** the [unified cost plan](../codex-cost-estimates/plan.md) owns the current
+decision: exact known models use a versioned Standard API-rate snapshot, unknown models stay
+token-only, and every priced Claude or Codex figure is qualified as an API-equivalent estimate.
 
 ---
 
@@ -579,8 +576,9 @@ These need an answer before the phases they gate are built.
 1. **Hook install consent.** Writing `~/.codex/config.toml` and persisting a hook trust hash
    is a heavier consent than symlinking a skills directory. Opt-in toggle in the integrations
    installer, or on by default with a disclosure?
-2. **`costUsd` for Codex.** Report tokens and rate limits but leave dollars null (recommended),
-   or price `gpt-5*` from a table and accept a different error bar beside Claude's figure?
+2. **`costUsd` for Codex.** Resolved by the
+   [unified cost plan](../codex-cost-estimates/plan.md): exact known models are priced from a
+   versioned Standard API snapshot; unknown models remain token-only.
 3. **`McpSpec.scope`.** Make it nullable for harnesses without a scope concept, or give Codex
    a synthetic one?
 4. **Phase 2 vs Phase 4 shipping order.** Phase 2 is free and unblocks `settledIdle`; Phase 4

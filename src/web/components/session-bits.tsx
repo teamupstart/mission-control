@@ -592,9 +592,9 @@ export function RuntimeMetaRow({
  * draws its whole body as spans, and this has to nest into that flow without being
  * invalid HTML.
  *
- * Renders NOTHING when there is nothing to say - an unpriced session (no telemetry, or
- * none yet) and a session that genuinely cost nothing both get no chip, because a `$0.00`
- * would assert the one of those two that is false.
+ * Renders NOTHING only when there is no summary or no usage. An unpriced session with tokens
+ * keeps its token-only chip; a zero-dollar, zero-token summary stays absent because `≈$0.00`
+ * would claim evidence the ledger does not carry.
  */
 export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
   if (!cost) return null;

@@ -1804,7 +1804,7 @@ Links in a formatted transcript that resolve inside that session's checkout open
 same session's Files workspace. Console and Board reveal their integrated Files tab; Cards
 reuse the extracted Files window. Checkout-relative links and absolute paths beneath the
 checkout are accepted, including optional line and column suffixes. External links keep
-their normal browser behavior, and paths outside the checkout are never claimed. HTML and
+their normal browser behavior, and resolved paths outside the checkout never open. HTML and
 Markdown open in Preview by default, while ordinary text opens in the editor. HTML preview
 remains inert: checkout-local stylesheets are inlined through the contained file reader,
 without granting the sandbox scripts or network access.

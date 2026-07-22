@@ -28,8 +28,9 @@ Implemented on 2026-07-21.
 - Added visible autosave/offline/failure/conflict recovery and reset/session-removal cleanup.
 - Added session-aware transcript file links, Markdown preview, checkout-local HTML stylesheet
   inlining, and explicit failures for invalid or stale file links.
-- Verified with TypeScript, the full production build, and the full 2,563-test suite. The
-  implemented dashboard was also opened from the local Vite build in Chrome for review.
+- The original 2026-07-21 implementation was verified with TypeScript, the full production
+  build, and the then-current 2,563-test suite; its dashboard was also opened from the local
+  Vite build in Chrome for review.
 
 The remaining Manual checklist below is hands-on acceptance coverage, especially Electron
 visual behavior, IME, and a live simultaneous agent edit; it is not unimplemented feature scope.

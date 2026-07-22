@@ -1143,8 +1143,9 @@ panel owns the config it writes.
 
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
-Claude Code or Codex session, reads the transcript to understand the goal **and the session's terminal
-screen to see the ask itself**, then:
+Claude Code session or Mission Control-launched Codex session that has reported a hook,
+reads the transcript to understand the goal **and the session's terminal screen to see
+the ask itself**, then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;
@@ -1171,13 +1172,15 @@ reasoning kept as the recommendation - rather than typed at a menu that would di
 You get the same affordance for the same reason: a menu on any session is offered to you as
 [clickable rows](#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
 reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
-a session in `needs-you` on its own, Foreman also picks up sessions parked on one that no
-hook has told it about - and it treats the menu itself as the question, rather than waiting
-for a hook to agree that one is being asked. That gap is real and measurable: Claude reports
-`AskUserQuestion` as *work in progress* when the menu opens and only says it is waiting for
-you about six seconds later, so an ask caught in between used to be handed straight back to
-you as "no reply channel", with an answer Foreman had already written. The menu's own rows
-identify the ask, so one question costs one review however the hooks land.
+a session in `needs-you` on its own, Foreman can pick up a Claude session parked on one that
+no hook has reported yet: Claude's hooks are machine-scoped, so the visible menu supplies the
+missing state without crossing a launch boundary. That gap is real and measurable: Claude
+reports `AskUserQuestion` as *work in progress* when the menu opens and only says it is
+waiting for you about six seconds later, so an ask caught in between used to be handed
+straight back to you as "no reply channel", with an answer Foreman had already written. The
+menu's own rows identify the ask, so one question costs one review however the hooks land.
+Codex hooks are launch-scoped instead: an operator-started Codex menu remains available as
+clickable rows for you, but is explicitly excluded from Foreman automation.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it

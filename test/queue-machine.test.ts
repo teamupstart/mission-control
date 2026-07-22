@@ -393,6 +393,7 @@ test("tickTargets requires hook authorization for launch-scoped Codex triage", (
     agent: "codex",
     hooksSeen: false,
     paneDialog: menu,
+    queue: mkSummary({ openCount: 1 }),
   });
   const launchedCodex = mkSession({ id: "launched-codex", agent: "codex", paneDialog: menu });
   const operatorClaude = mkSession({
@@ -403,7 +404,11 @@ test("tickTargets requires hook authorization for launch-scoped Codex triage", (
 
   assert.deepEqual(
     tickTargets([operatorCodex, launchedCodex, operatorClaude], ["drain"]).map((s) => s.id),
-    ["launched-codex", "operator-claude"],
+    ["launched-codex", "operator-claude", "operator-codex"],
+  );
+  assert.equal(
+    tick({ session: operatorCodex, bucket: "needs-you", items: [mkItem()] }).kind,
+    "escalate",
   );
 });
 

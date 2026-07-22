@@ -306,6 +306,31 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
       activity: "May I write to config.json?",
       lastActivity: Date.now() - 5_000,
     }),
+    mkSession(repo, {
+      id: "s3",
+      agent: "codex",
+      agentSessionId: null,
+      name: "operator-codex",
+      state: "awaiting_input",
+      activity: "Run this command?",
+      instrumented: false,
+      hooksSeen: false,
+      lastActivity: Date.now() - 5_000,
+      queue: {
+        openCount: 1,
+        totalCount: 1,
+        inFlightState: null,
+        inFlightIntent: null,
+        round: 0,
+        blockingGaps: 0,
+        verifiedCount: 0,
+        escalatedCount: 0,
+        drained: false,
+        wrapupAskedAt: null,
+        wrapupAnswered: false,
+        updatedAt: 0,
+      },
+    }),
   ];
 
   const stub = await startStub((req, url) => {
@@ -372,6 +397,11 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   assert.ok(
     stub.calls.some((c) => c.method === "GET" && c.path === "/api/sessions/s2/note"),
     `triage stalled behind the queue read\n${out}`,
+  );
+  assert.equal(
+    stub.calls.some((c) => c.path === "/api/sessions/s3/note"),
+    false,
+    `operator-started Codex crossed the hook boundary\n${out}`,
   );
 });
 

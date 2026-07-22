@@ -331,7 +331,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   //    episode. This sits above the in-flight branch on purpose: an item in
   //    `in_progress` whose agent is asking something must not be "verified" as
   //    though the silence meant completion.
-  if (bucket === "needs-you") return { kind: "triage" };
+  if (bucket === "needs-you" && foremanCanHandleNeedsYou(session)) return { kind: "triage" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

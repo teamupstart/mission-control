@@ -975,6 +975,62 @@ test("a pinned PR remains attributable after its head advances", () => {
   assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
 });
 
+test("a current-episode PR can first pin after its remote head advances", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "advanced-before-first-poll";
+  const cwd = "/repo/advanced-before-first-poll";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/advanced-before-poll" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "advanced-before-poll-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const episode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for the PR advanced before polling",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  const url = "https://github.com/example/repo/pull/45";
+  const createdAt = episode.startedAt + 1;
+
+  await pollAndReconcilePrs(registry, async () => ({
+    url,
+    number: 45,
+    state: "open",
+    checks: "passing",
+    createdAt,
+    headSha: "remote-head-after-push",
+    worktreeHeadSha: "local-head-before-push",
+  }));
+
+  assert.equal(registry.getSession(id)?.prUrl, url);
+  let edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, url);
+  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+
+  await pollAndReconcilePrs(registry, async () => ({
+    url,
+    number: 45,
+    state: "merged",
+    checks: "passing",
+    createdAt,
+    headSha: "remote-head-at-merge",
+    worktreeHeadSha: "local-head-before-push",
+  }));
+
+  edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, url);
+  assert.ok(edge?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
 test("an unrelated hook PR hint cannot block the validated episode PR", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

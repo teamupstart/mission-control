@@ -1628,6 +1628,10 @@ export class Registry extends EventEmitter {
     if (!match.episodeId || !session.agentSessionId) return null;
     const episode = sessionWorkEpisodeFor(session.id);
     const firstAssociation = episode?.prUrl === null;
+    const matchesPolledWorktreeHead =
+      match.worktreeHeadSha !== null && match.headSha === match.worktreeHeadSha;
+    const createdDuringEpisode =
+      episode !== null && match.createdAt !== null && match.createdAt >= episode.startedAt;
     if (
       !episode ||
       episode.awaitingAgentRebind ||
@@ -1635,8 +1639,7 @@ export class Registry extends EventEmitter {
       episode.agentSessionId !== match.agentSessionId ||
       match.branch !== session.gitBranch ||
       match.headSha === null ||
-      (firstAssociation &&
-        (match.worktreeHeadSha === null || match.headSha !== match.worktreeHeadSha)) ||
+      (firstAssociation && !matchesPolledWorktreeHead && !createdDuringEpisode) ||
       (match.createdAt !== null && match.createdAt < episode.startedAt) ||
       (episode.prUrl !== null && episode.prUrl !== match.url)
     ) {

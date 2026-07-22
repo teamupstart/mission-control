@@ -149,6 +149,7 @@ export function openDb(): DatabaseSync {
       agent         TEXT NOT NULL,
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
+      dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       model         TEXT,
       effort        TEXT,
       -- Where a task source swept this task from. The LINK BACK only: identity for
@@ -698,6 +699,7 @@ function migrate(d: DatabaseSync): void {
   // column is not `TEXT NOT NULL DEFAULT ''`.
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
+  addColumn(d, "tasks", "dependencies", "TEXT");
 
   // Usage provenance and immutable pricing metadata. Old rows are Claude's reported
   // telemetry, so the defaults are the truthful migration rather than a placeholder.
@@ -1455,6 +1457,7 @@ interface TaskRow {
   agent: string;
   priority: string | null;
   labels: string | null;
+  dependencies: string | null;
   model: string | null;
   effort: string | null;
   source_id: string | null;
@@ -1488,6 +1491,38 @@ function parseLabels(raw: string | null): string[] {
   }
 }
 
+/** Read dependency JSON defensively: one stale row must not take down the backlog. */
+function parseTaskDependencies(raw: string | null): Task["dependencies"] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: Task["dependencies"] = [];
+    const seen = new Set<string>();
+    for (const value of parsed) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
+      if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
+        const key = `task:${row.taskId}`;
+        if (!seen.has(key)) out.push({ type: "task", taskId: row.taskId, title: row.title, satisfiedAt });
+        seen.add(key);
+      } else if (
+        row.type === "session" &&
+        typeof row.sessionId === "string" &&
+        typeof row.title === "string"
+      ) {
+        const key = `session:${row.sessionId}`;
+        if (!seen.has(key)) out.push({ type: "session", sessionId: row.sessionId, title: row.title, satisfiedAt });
+        seen.add(key);
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** A stale/newer effort value cannot be trusted onto tmux's shell command line. */
 function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
   return raw && supportsEffort(agent, raw as NonNullable<Task["effort"]>)
@@ -1509,6 +1544,7 @@ function rowToTask(r: TaskRow): Task {
     // unbounded tag. A malformed blob reads as no labels rather than throwing - one
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
+    dependencies: parseTaskDependencies(r.dependencies),
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     // Both key columns or nothing: half a provenance would render as a link to an item
@@ -1538,14 +1574,15 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, model, effort,
+         id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
          provider, tmux_session, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
-         priority=excluded.priority, labels=excluded.labels, model=excluded.model, effort=excluded.effort,
+         priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
+         model=excluded.model, effort=excluded.effort,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
@@ -1560,6 +1597,7 @@ export function upsertTask(t: Task): void {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
+      t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
       t.model,
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,

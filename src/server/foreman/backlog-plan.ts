@@ -171,13 +171,51 @@ export function sanitizePlan(report: BacklogReport, backlog: Task[]): BacklogPla
 
   dropCyclicEdges(order, deps);
 
-  const entries = topoOrder(order, deps).map((id) => ({
+  // Operator-declared edges are facts, not the planner's opinion. Add them to a
+  // combined graph first, then discard only MODEL edges that would point back across
+  // one and deadlock the backlog. The ordinary model-only cycle repair above stays
+  // unchanged, preserving its narrow deterministic cut.
+  const combined = new Map<string, string[]>(
+    backlog.map((task) => [
+      task.id,
+      task.dependencies.flatMap((dependency) =>
+        dependency.type === "task" &&
+        dependency.satisfiedAt === null &&
+        known.has(dependency.taskId)
+          ? [dependency.taskId]
+          : [],
+      ),
+    ]),
+  );
+  for (const id of order) {
+    const kept: string[] = [];
+    for (const dependency of deps.get(id) ?? []) {
+      if (pathReaches(dependency, id, combined)) continue;
+      kept.push(dependency);
+      const edges = combined.get(id) ?? [];
+      if (!edges.includes(dependency)) combined.set(id, [...edges, dependency]);
+    }
+    deps.set(id, kept);
+  }
+
+  const entries = topoOrder(order, combined).map((id) => ({
     taskId: id,
     dependsOn: deps.get(id) ?? [],
     reason: byId.get(id)?.reason?.trim() || null,
   }));
 
   return { entries, note: report.note?.trim() || null };
+}
+
+function pathReaches(from: string, target: string, deps: Map<string, string[]>): boolean {
+  const seen = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (id === target) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return (deps.get(id) ?? []).some(visit);
+  };
+  return visit(from);
 }
 
 /**

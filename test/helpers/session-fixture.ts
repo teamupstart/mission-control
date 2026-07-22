@@ -149,6 +149,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     agent: "claude",
     priority: null,
     labels: [],
+    dependencies: [],
     model: null,
     effort: null,
     source: null,

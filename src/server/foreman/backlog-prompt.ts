@@ -53,6 +53,8 @@ ORDERING (the array order):
 RULES:
 - Include EVERY task from the list exactly once. Omitting one is a malformed reply.
 - Use ids EXACTLY as given. Never invent an id, and never make a task depend on itself.
+- A task's "operator dependencies" are fixed facts. Preserve their direction and NEVER add a
+  reverse dependency that would form a cycle with one.
 - NEVER create a cycle: if A waits for B, B must not wait for A, directly or through others.
 - "dependsOn" defaults to []. Most real backlogs are mostly independent - a reply where everything
   depends on something is almost certainly wrong.`;
@@ -65,6 +67,14 @@ export function buildBacklogPrompt(tasks: Task[]): string {
     lines.push(`title: ${t.title}`);
     lines.push(`kind: ${t.kind} (${t.kind === "ship" ? "deliver a change" : "investigate and report"})`);
     lines.push(`repo: ${t.repoRoot}`);
+    const declared = t.dependencies.filter((dependency) => dependency.satisfiedAt === null);
+    if (declared.length > 0) {
+      lines.push(
+        `operator dependencies: ${declared
+          .map((dependency) => dependency.type === "task" ? dependency.taskId : dependency.title)
+          .join(", ")}`,
+      );
+    }
     lines.push("intent:");
     // Fenced, because the intent is text a human typed and may itself contain anything -
     // including something that reads like an instruction to this model. The fence plus

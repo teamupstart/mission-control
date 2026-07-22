@@ -1028,6 +1028,34 @@ export type WorktreeProvider = "treehouse" | "git";
  */
 export type TaskPriority = "low" | "med" | "high" | "blocker";
 
+/**
+ * An operator-declared prerequisite for a task.
+ *
+ * Task references are the durable form: selecting an active session that already
+ * carries a Mission Control task is normalized to that task by the daemon. A bare
+ * session reference is kept only for operator-started work with no task row of its
+ * own. `title` is a display snapshot so a stopped/removed target can still explain
+ * what is blocking the dependent task.
+ *
+ * `satisfiedAt` is deliberately persisted on the edge, not inferred forever from a
+ * live session. A merged PR can outlive the process that opened it, and terminal task
+ * rows are eventually pruned from the in-memory registry; once observed, completion
+ * must therefore remain true without either object being present.
+ */
+export type TaskDependency =
+  | {
+      type: "task";
+      taskId: string;
+      title: string;
+      satisfiedAt: number | null;
+    }
+  | {
+      type: "session";
+      sessionId: string;
+      title: string;
+      satisfiedAt: number | null;
+    };
+
 export interface Task {
   id: string;
   /** Short label - source of the tmux session slug and the card title. */
@@ -1044,6 +1072,8 @@ export interface Task {
    * trimmed, deduped and capped.
    */
   labels: string[];
+  /** Operator-declared prerequisites. Unmet entries force this task to stay backlogged. */
+  dependencies: TaskDependency[];
   /**
    * Model override for this task, or null to follow the harness default configured
    * in Settings. Null is NOT "the default as it stood when this was shelved" - the

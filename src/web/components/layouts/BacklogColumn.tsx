@@ -121,6 +121,7 @@ function BacklogCard({
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const blocked = blockers.length > 0;
+  const declaredBlocked = blockers.some((blocker) => blocker.source === "declared");
 
   async function launch(): Promise<void> {
     setBusy(true);
@@ -134,10 +135,9 @@ function BacklogCard({
       className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
         nextUp ? " is-next" : ""
       }`}
-      // Blocked cards stay draggable and launchable on purpose. Foreman's dependency
-      // read is a model's opinion, and the human overruling it is a legitimate,
-      // one-gesture answer - the card only has to be honest about what it thinks.
-      draggable={!busy}
+      // Foreman's inferred edge remains overridable. An operator-declared dependency is
+      // policy, so both drag-to-assign and launch are disabled until it completes.
+      draggable={!busy && !declaredBlocked}
       onDragStart={(e) => {
         // The id travels in the payload (the only thing the drop needs); the repo goes
         // up to the board as state, because which tiles may accept this card has to be
@@ -230,14 +230,16 @@ function BacklogCard({
           e.stopPropagation();
           void launch();
         }}
-        disabled={busy}
+        disabled={busy || declaredBlocked}
         title={
-          blocked
+          declaredBlocked
+            ? `Waiting for: ${blockers.filter((blocker) => blocker.source === "declared").map((blocker) => blocker.title).join(", ")}`
+            : blocked
             ? "Launch it anyway, ahead of what Foreman thinks it's waiting on"
             : "Dispatch into a fresh worktree"
         }
       >
-        {busy ? "dispatching…" : blocked ? "launch anyway" : "launch new agent"}
+        {busy ? "dispatching…" : declaredBlocked ? "waiting for dependencies" : blocked ? "launch anyway" : "launch new agent"}
       </button>
     </article>
   );

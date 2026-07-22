@@ -1353,6 +1353,15 @@ export class Registry extends EventEmitter {
       next.inspector = this.inspectorSummaryFor(next);
       this.sessions.set(id, next);
       this.emitSession(next);
+      if (state === "merged") {
+        // Completion is copied onto dependency EDGES while the proof is live. The PR
+        // chip is session-scoped and disappears when the process/branch does; a task
+        // waiting on it must remain unblocked after that.
+        const at = Date.now();
+        this.satisfySessionDependencies(id, at);
+        const task = this.activeTaskFor(id, next.cwd);
+        if (task) this.satisfyTaskDependencies(task.id, at);
+      }
     }
   }
 
@@ -1962,6 +1971,39 @@ export class Registry extends EventEmitter {
 
   getTask(id: string): Task | undefined {
     return this.tasks.get(id);
+  }
+
+  /** Persist that an observed merged PR completed a task dependency target. */
+  satisfyTaskDependencies(taskId: string, at = Date.now()): void {
+    this.satisfyDependencies(
+      (dependency) => dependency.type === "task" && dependency.taskId === taskId,
+      at,
+    );
+  }
+
+  /** Persist that an observed merged PR completed a standalone-session target. */
+  satisfySessionDependencies(sessionId: string, at = Date.now()): void {
+    this.satisfyDependencies(
+      (dependency) => dependency.type === "session" && dependency.sessionId === sessionId,
+      at,
+    );
+  }
+
+  private satisfyDependencies(
+    matches: (dependency: Task["dependencies"][number]) => boolean,
+    at: number,
+  ): void {
+    // Snapshot before writing: `upsertTask` can prune terminal rows and resync session
+    // decorations, both of which mutate registry maps.
+    for (const task of [...this.tasks.values()]) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.satisfiedAt !== null || !matches(dependency)) return dependency;
+        changed = true;
+        return { ...dependency, satisfiedAt: at };
+      });
+      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
+    }
   }
 
   listTasks(): Task[] {

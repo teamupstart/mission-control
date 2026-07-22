@@ -1,5 +1,5 @@
 import { test } from "node:test";
-import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -86,6 +86,26 @@ test("a fresh dispatch is untouched by the edit mode", () => {
   assert.doesNotMatch(html, /Edit backlog task/);
 });
 
+test("the dependency picker offers both backlog tasks and active sessions", () => {
+  const prerequisite = mkTask({ id: "pre", title: "Create the schema", kind: "ship" });
+  const html = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(DispatchLayer, {
+        open: true,
+        editTask: null,
+        tasks: [prerequisite],
+        sessions: [mkSession({ id: "active", name: "Manual investigation", task: null })],
+        onClose: () => {},
+      }),
+    ),
+  );
+  assert.match(html, /<optgroup label="Backlog tasks">/);
+  assert.match(html, /Create the schema \(ship\)/);
+  assert.match(html, /<optgroup label="Active sessions">/);
+  assert.match(html, /Manual investigation/);
+  assert.match(html, /Ship dependencies wait for a merged PR/);
+});
+
 test("a backlog card carries a focusable way into the editor, not just a click handler", () => {
   // The card-wide click is the gesture; the title is the control. Without a real
   // button the task is reachable by mouse only - and the column is a list of prose
@@ -104,4 +124,25 @@ test("a backlog card carries a focusable way into the editor, not just a click h
   // And the launch button is still its own action, sitting inside a card that is now
   // also clickable.
   assert.match(html, /class="bl-launch"/);
+});
+
+test("a declared dependency disables both dragging and manual launch", () => {
+  const dependency = mkTask({ id: "pre", title: "Merge this first", status: "running" });
+  const blocked = mkTask({
+    id: "blocked",
+    dependencies: [{ type: "task", taskId: dependency.id, title: dependency.title, satisfiedAt: null }],
+  });
+  const html = renderToStaticMarkup(
+    createElement(BacklogColumn, {
+      tasks: [blocked],
+      allTasks: [dependency, blocked],
+      plan: null,
+      onAssignError: () => {},
+      onDragging: () => {},
+      onEdit: () => {},
+    }),
+  );
+  assert.match(html, /draggable="false"/);
+  assert.match(html, /<button class="bl-launch"[^>]*disabled=""/);
+  assert.match(html, /waiting for dependencies/);
 });

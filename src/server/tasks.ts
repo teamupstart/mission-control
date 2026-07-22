@@ -6,15 +6,17 @@ import type {
   ResetResult,
   Session,
   Task,
+  TaskDependency,
   TaskKind,
   TaskPriority,
 } from "@shared/types.ts";
-import type { UpdateTask } from "@shared/protocol.ts";
+import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
+import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import {
@@ -47,6 +49,8 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Prerequisites selected from current backlog tasks or live sessions. */
+  dependencies?: TaskDependencyInput[];
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -61,6 +65,9 @@ export interface Ok {
   ok: boolean;
   error?: string;
 }
+
+/** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
+export class TaskDependencyError extends Error {}
 
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
@@ -157,6 +164,137 @@ export class TaskManager {
     return this.registry.getTask(id);
   }
 
+  /** Explicit blockers are enforced on every path that can start a task. */
+  dependencyBlockers(task: Task): BacklogBlocker[] {
+    return declaredBlockers(task, this.registry.listTasks());
+  }
+
+  /**
+   * Resolve untrusted ids to durable dependency edges and reject deadlocks.
+   *
+   * A selected session already carrying a task becomes a task edge. That is what lets
+   * the dependency survive a process restart and follow the work through its PR merge.
+   * Bare operator-started sessions remain session edges.
+   */
+  private resolveDependencies(
+    inputs: TaskDependencyInput[],
+    taskId: string,
+    current: Task["dependencies"] = [],
+  ): TaskDependency[] {
+    const existing = new Map(
+      current.map((dependency) => [
+        dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`,
+        dependency,
+      ]),
+    );
+    const sessions = this.registry.snapshot().sessions;
+    const resolved: TaskDependency[] = [];
+    const seen = new Set<string>();
+
+    for (const input of inputs) {
+      let dependency: TaskDependency;
+      if (input.type === "session") {
+        const session = sessions.find((candidate) => candidate.id === input.sessionId && candidate.state !== "exited");
+        // Preserve an existing edge whose target disappeared so the operator can edit
+        // other fields or remove dependencies without the daemon resurrecting/dropping it.
+        if (!session) {
+          const kept = existing.get(`session:${input.sessionId}`);
+          if (!kept) throw new TaskDependencyError("dependency session is no longer active");
+          dependency = kept;
+        } else if (session.task && this.registry.getTask(session.task.id)) {
+          const target = this.registry.getTask(session.task.id)!;
+          const previouslySatisfied =
+            existing.get(`task:${target.id}`)?.satisfiedAt ??
+            existing.get(`session:${session.id}`)?.satisfiedAt;
+          dependency = {
+            type: "task",
+            taskId: target.id,
+            title: target.title,
+            satisfiedAt:
+              target.kind === "scout" && target.status === "done"
+                ? target.completedAt ?? Date.now()
+                : session.prState === "merged"
+                  ? Date.now()
+                  : previouslySatisfied ?? null,
+          };
+        } else {
+          dependency = {
+            type: "session",
+            sessionId: session.id,
+            title: session.name,
+            // Satisfaction is monotonic. A merged PR chip is intentionally retracted
+            // when a pane changes branch, but a dependency already proved complete
+            // must not become blocking again when the task is edited afterwards.
+            satisfiedAt:
+              session.prState === "merged"
+                ? Date.now()
+                : existing.get(`session:${session.id}`)?.satisfiedAt ?? null,
+          };
+        }
+      } else {
+        const target = this.registry.getTask(input.taskId);
+        if (!target) {
+          const kept = existing.get(`task:${input.taskId}`);
+          if (!kept) throw new TaskDependencyError("dependency task is no longer available");
+          dependency = kept;
+        } else {
+          const activeSession = sessions.find(
+            (session) => session.state !== "exited" && session.task?.id === target.id,
+          );
+          const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
+          if (!eligible && !existing.has(`task:${target.id}`)) {
+            throw new TaskDependencyError("dependency task is neither backlogged nor active");
+          }
+          dependency = {
+            type: "task",
+            taskId: target.id,
+            title: target.title,
+            satisfiedAt:
+              target.kind === "scout" && target.status === "done"
+                ? target.completedAt ?? Date.now()
+                : activeSession?.prState === "merged"
+                  ? Date.now()
+                  : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+          };
+        }
+      }
+
+      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      if (dependency.type === "task" && dependency.taskId === taskId) {
+        throw new TaskDependencyError("a task cannot depend on itself");
+      }
+      if (!seen.has(key)) resolved.push(dependency);
+      seen.add(key);
+    }
+
+    if (this.createsDependencyCycle(taskId, resolved)) {
+      throw new TaskDependencyError("task dependencies cannot form a cycle");
+    }
+    return resolved;
+  }
+
+  private createsDependencyCycle(taskId: string, proposed: TaskDependency[]): boolean {
+    const tasks = new Map(this.registry.listTasks().map((task) => [task.id, task]));
+    const visiting = new Set<string>();
+    const reachesTask = (id: string): boolean => {
+      if (id === taskId) return true;
+      if (visiting.has(id)) return false;
+      visiting.add(id);
+      const dependencies = id === taskId ? proposed : tasks.get(id)?.dependencies ?? [];
+      for (const dependency of dependencies) {
+        if (dependency.satisfiedAt !== null || dependency.type !== "task") continue;
+        if (reachesTask(dependency.taskId)) return true;
+      }
+      return false;
+    };
+    return proposed.some(
+      (dependency) =>
+        dependency.satisfiedAt === null &&
+        dependency.type === "task" &&
+        reachesTask(dependency.taskId),
+    );
+  }
+
   /**
    * Create a task, and - when the operator left the title blank - name it with a model
    * before anything downstream reads that name.
@@ -168,14 +306,18 @@ export class TaskManager {
   create(input: CreateTaskInput): Task {
     const now = Date.now();
     const explicitTitle = input.title?.trim();
+    const id = randomUUID();
+    const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const task: Task = {
-      id: randomUUID(),
+      id,
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
       agent: input.agent,
       priority: input.priority ?? null,
       labels: input.labels ?? [],
+      dependencies,
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
       // defaults it happened to see (see `resolveDispatchModel` and
@@ -189,7 +331,7 @@ export class TaskManager {
       provider: null,
       tmuxSession: null,
       sessionId: null,
-      status: input.backlog ? "backlog" : "dispatching",
+      status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,
       error: null,
@@ -200,11 +342,11 @@ export class TaskManager {
     };
     this.registry.upsertTask(task);
     if (explicitTitle) {
-      if (!input.backlog) void this.dispatcher.dispatch(task.id);
+      if (task.status === "dispatching") void this.dispatcher.dispatch(task.id);
     } else {
       // Registered synchronously, before this returns, so no caller can observe the task
       // without also observing that its title is still in flight.
-      const settled = this.autoTitleThenDispatch(task.id, input.intent, input.backlog)
+      const settled = this.autoTitleThenDispatch(task.id, input.intent, task.status === "backlog")
         .catch((err) => console.error("[title] titling failed:", err))
         .finally(() => this.titling.delete(task.id));
       this.titling.set(task.id, settled);
@@ -272,6 +414,7 @@ export class TaskManager {
     const t = this.registry.getTask(id);
     if (!t) return null;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      if (this.dependencyBlockers(t).length > 0) return t;
       // A task-specific model is an explicit operator choice and must always win. Foreman
       // supplies this only for a fresh backlog launch; persisting it before the async
       // dispatcher starts makes the task card's model match the command line it will use.
@@ -295,7 +438,8 @@ export class TaskManager {
    * point would change the card and nothing else, which is worse than a refusal. Every
    * other status is a conflict the caller shows, not retries.
    *
-   * `priority` and `labels` are exempt because nothing is provisioned from them. They
+   * Dependencies share that guard because changing them can change whether launch is
+   * allowed. `priority` and `labels` are exempt because nothing is provisioned from them. They
    * are annotation, so re-marking a RUNNING task `blocker` is safe, and re-marking a
    * finished one keeps the record honest - the two things the guard above is protecting
    * simply are not at stake. Refusing them would make the board's priority picker dead
@@ -321,6 +465,15 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
+    let dependencies = t.dependencies;
+    try {
+      if (patch.dependencies !== undefined) {
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+      }
+    } catch (error) {
+      if (error instanceof TaskDependencyError) return { ok: false, error: error.message };
+      throw error;
+    }
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
@@ -337,6 +490,7 @@ export class TaskManager {
       // clearing the field back to unset, and `?? t.priority` would silently ignore them.
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
+      dependencies,
       // `undefined` leaves an override as it stands unless the agent changed; `null` is
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
@@ -387,6 +541,14 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    const dependencyBlockers = this.dependencyBlockers(t);
+    if (dependencyBlockers.length > 0) {
+      return {
+        ok: false,
+        error: `task is waiting on ${dependencyBlockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
     }
 
     const s = this.registry.getSession(sessionId);
@@ -677,6 +839,7 @@ export class TaskManager {
       updatedAt: now,
     };
     this.registry.upsertTask(updated);
+    if (updated.kind === "scout") this.registry.satisfyTaskDependencies(updated.id, now);
     return updated;
   }
 

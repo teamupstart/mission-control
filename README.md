@@ -836,6 +836,16 @@ what it's working on. It's headless until you want it - click **Focus** on the c
 it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
 launching it yet.
 
+**Dependencies** can be selected from tasks already in the backlog and from active
+sessions. They are durable scheduling constraints, not notes: if any selected dependency
+is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
+forced into the backlog. A ship task or a standalone active session completes only when
+its PR is observed **merged**; marking a ship task done or merely opening its PR does not
+release dependents. Scout tasks have no shipping PR, so **Mark done** is their completion
+signal. The board and Sitrep name what a task is waiting for, and neither manual launch,
+drag-to-assign, nor Foreman can start it early. Reopen the backlog task to add or remove
+dependencies; cycles are refused.
+
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can glance at
 the grid mid-thought without losing it. The draft is cleared only once the task is actually
@@ -1566,7 +1576,8 @@ Three knobs, in the Foreman popover under **Backlog**:
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
 **you** clicked, because blocking a button you pressed to protect a background scheduler's
-budget is the worse surprise.
+budget is the worse surprise. An unmet dependency is different: it is a task-level ordering
+constraint and blocks every scheduling path, manual ones included.
 
 **It only ever launches in Live mode, on an allowlisted repo** - the same gate the
 automated wrap-up actions clear, for the same reason. Launching an agent starts unattended
@@ -1575,7 +1586,7 @@ sitting in front of; both are more consequential than answering a prompt. In **d
 and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
-**Dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
+**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
 (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every backlog item's title and intent
 and returns an order plus, for each item, what it must wait for. The reply isn't trusted as
 written: ids that aren't in the backlog are dropped, self-references are dropped, **only the
@@ -1585,6 +1596,11 @@ a forgotten item would leave the plan permanently stale, which is an unbounded r
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
 the items in, and the plan is stored in dependency order. The read re-runs only when the
 backlog **gains** an item, so a steady backlog costs nothing.
+
+Operator-selected dependencies from the dispatch form are separate, persisted facts. The
+planner sees them, cannot reverse or remove them, and its inferred graph is sanitized
+against them so an inferred reverse edge cannot deadlock the backlog. Those facts remain
+enforced when autopilot is off or its model plan is missing.
 
 **The read's time budget scales with the backlog** (`60s + 15s` an item, capped at 10 min;
 `FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the model writes one entry

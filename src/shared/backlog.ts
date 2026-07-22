@@ -24,6 +24,8 @@ export interface BacklogBlocker {
   taskId: string;
   title: string;
   state: BlockerState;
+  /** Declared blockers are policy and cannot be manually overridden; inferred ones can. */
+  source: "declared" | "inferred";
 }
 
 /** The plan's entries by task id. Empty map for a missing plan, so callers need no branch. */
@@ -106,6 +108,41 @@ export function blockersFor(
   return blockersIn(task, backlogIndex(tasks, plan));
 }
 
+/** Operator-declared blockers only, for surfaces that do not render Foreman's plan. */
+export function declaredBlockers(task: Task, tasks: Task[]): BacklogBlocker[] {
+  return declaredBlockersIn(task, new Map(tasks.map((candidate) => [candidate.id, candidate])));
+}
+
+function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
+  const out: BacklogBlocker[] = [];
+  for (const dependency of task.dependencies) {
+    if (dependency.satisfiedAt !== null) continue;
+    if (dependency.type === "session") {
+      out.push({
+        taskId: dependency.sessionId,
+        title: dependency.title,
+        state: "waiting",
+        source: "declared",
+      });
+      continue;
+    }
+    const target = byId.get(dependency.taskId);
+    // Scout work has no PR to merge. Marking it done is its completion signal; this
+    // dynamic check also covers the small window before TaskManager stamps the edge.
+    if (target?.kind === "scout" && target.status === "done") continue;
+    out.push({
+      taskId: dependency.taskId,
+      title: target?.title ?? dependency.title,
+      state:
+        !target || target.status === "cancelled" || target.status === "failed"
+          ? "stopped"
+          : "waiting",
+      source: "declared",
+    });
+  }
+  return out;
+}
+
 /**
  * The two lookups every blocker question needs, built once for a whole pass.
  *
@@ -117,28 +154,75 @@ export function blockersFor(
 export interface BacklogIndex {
   entries: Map<string, BacklogPlanEntry>;
   byId: Map<string, Task>;
+  /** Memoized transitive closure of unresolved operator-declared task edges. */
+  declaredReachability: Map<string, Set<string>>;
 }
 
 /** Build the lookups `blockersIn` reads. See `BacklogIndex`. */
 export function backlogIndex(tasks: Task[], plan: BacklogPlan | null): BacklogIndex {
-  return { entries: planEntries(plan), byId: new Map(tasks.map((t) => [t.id, t])) };
+  return {
+    entries: planEntries(plan),
+    byId: new Map(tasks.map((t) => [t.id, t])),
+    declaredReachability: new Map(),
+  };
 }
 
 /** `blockersFor` against a prebuilt index. Same answer, no rebuild. */
 export function blockersIn(task: Task, index: BacklogIndex): BacklogBlocker[] {
+  const out = declaredBlockersIn(task, index.byId);
+  const declaredTaskIds = new Set(
+    task.dependencies.flatMap((dependency) =>
+      dependency.type === "task" ? [dependency.taskId] : [],
+    ),
+  );
   const entry = index.entries.get(task.id);
-  if (!entry || entry.dependsOn.length === 0) return [];
-  const out: BacklogBlocker[] = [];
+  if (!entry || entry.dependsOn.length === 0) return out;
   for (const id of entry.dependsOn) {
+    // The operator's edge is the stronger statement and has stricter completion
+    // semantics for ship tasks. Do not render the same prerequisite twice.
+    if (declaredTaskIds.has(id)) continue;
+    // The plan may predate an operator edit that added the opposite declared edge.
+    // Plans are coverage-based and deliberately do not go stale on every task edit, so
+    // enforce the same "model cannot reverse a fact" rule at read time as sanitizer
+    // does at write time. This closes the edit-to-next-replan window without burning a
+    // model call merely because somebody changed a dependency.
+    if (declaredPathReaches(id, task.id, index)) continue;
     const dep = index.byId.get(id);
     if (!dep || dep.status === "done") continue;
     out.push({
       taskId: dep.id,
       title: dep.title,
       state: dep.status === "cancelled" || dep.status === "failed" ? "stopped" : "waiting",
+      source: "inferred",
     });
   }
   return out;
+}
+
+function declaredPathReaches(from: string, target: string, index: BacklogIndex): boolean {
+  return declaredReachable(from, index, new Set()).has(target);
+}
+
+function declaredReachable(
+  from: string,
+  index: BacklogIndex,
+  visiting: Set<string>,
+): Set<string> {
+  const cached = index.declaredReachability.get(from);
+  if (cached) return cached;
+  if (visiting.has(from)) return new Set();
+  visiting.add(from);
+  const reachable = new Set<string>();
+  for (const dependency of index.byId.get(from)?.dependencies ?? []) {
+    if (dependency.satisfiedAt !== null || dependency.type !== "task") continue;
+    reachable.add(dependency.taskId);
+    for (const descendant of declaredReachable(dependency.taskId, index, visiting)) {
+      reachable.add(descendant);
+    }
+  }
+  visiting.delete(from);
+  index.declaredReachability.set(from, reachable);
+  return reachable;
 }
 
 /**

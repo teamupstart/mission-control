@@ -1806,8 +1806,8 @@ reuse the extracted Files window. Checkout-relative links and absolute paths ben
 checkout are accepted, including optional line and column suffixes. External links keep
 their normal browser behavior, and resolved paths outside the checkout never open. HTML and
 Markdown open in Preview by default, while ordinary text opens in the editor. HTML preview
-remains inert: checkout-local stylesheets are inlined through the contained file reader,
-without granting the sandbox scripts or network access.
+remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
+file reader, without granting the sandbox scripts or network access.
 
 ## Keyboard shortcuts
 

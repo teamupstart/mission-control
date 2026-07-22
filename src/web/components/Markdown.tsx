@@ -17,7 +17,7 @@ function WorkspaceAnchor({
   const handler = useRef(onLink);
   handler.current = onLink;
   const [claim, setClaim] = useState<{ href: string; value: boolean } | null>(null);
-  const claimed = claim?.href === href && claim.value;
+  const claimed = claim?.href === href && claim?.value === true;
 
   useEffect(() => {
     let live = true;

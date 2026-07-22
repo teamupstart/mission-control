@@ -19,7 +19,8 @@ handling add most of the new cost.
 
 ## Implementation status
 
-Implemented on 2026-07-21.
+The initial workspace was implemented on 2026-07-21; transcript links and expanded previews
+were added on 2026-07-22.
 
 - Added bounded git-backed file discovery, contained UTF-8 reads, binary/oversize states,
   revisioned saves, conflict responses, and same-directory atomic replacement.
@@ -264,10 +265,11 @@ Prepend a restrictive CSP meta tag:
 - `form-action 'none'`
 - `navigate-to 'none'` where supported
 
-HTML preview supports inline CSS, data/blob images, and checkout-local stylesheet links.
-Relative stylesheet paths are resolved against the HTML document, read through the existing
-containment-checked session file API, and inlined before the document enters the opaque
-sandbox. Remote stylesheets are neither fetched nor inlined. Other relative assets, scripts,
+HTML preview supports inline CSS, data/blob images, and a bounded set of checkout-local
+stylesheet links. Relative stylesheet paths are resolved against the HTML document, read
+through the existing containment-checked session file API, de-duplicated, and inlined before
+the document enters the opaque sandbox. Obsolete read batches are cancelled when the preview
+changes. Remote stylesheets are neither fetched nor inlined. Other relative assets, scripts,
 multi-page navigation, and application preview need a separately isolated preview
 origin/process later. Editing support is not a reason to loosen this boundary.
 

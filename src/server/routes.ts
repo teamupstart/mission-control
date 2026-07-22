@@ -70,6 +70,7 @@ import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { workQueueUnsupportedWhy } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import {
   claimForemanLease,
@@ -329,10 +330,10 @@ export function buildApp(
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    // `unavailable` covers every reason there are no turns to serve - the harness keeps
-    // no conversation (Codex's rollout is metadata only), or its file hasn't appeared
-    // yet - because the readers downstream degrade the same way for all of them: Tier 1
-    // routes UP rather than judging a session it couldn't read.
+    // `unavailable` covers every reason there are no turns to serve - a harness declares
+    // no conversation capability, or its file hasn't appeared yet - because the readers
+    // downstream degrade the same way for all of them: Tier 1 routes UP rather than
+    // judging a session it couldn't read.
     const t = sessionMessages(session);
     if (!t) return c.json({ messages: [], truncated: false, unavailable: true });
     const since = Number(c.req.query("since"));
@@ -870,12 +871,12 @@ export function buildApp(
     const parsed = await parseBody(c, AddWorkItemSchema);
     if (!parsed.ok) return parsed.res;
     const item = queues.add(session.id, parsed.data.intent);
-    // The session resolved above, so the only refusal `ensureQueue` has left is the
-    // Claude-only one - and saying "no such session" about a session that plainly
-    // exists sends the caller hunting for the wrong bug.
+    // The session resolved above, so a refusal is a harness-capability answer rather
+    // than "no such session". Compose it from the same registry the panel reads so a
+    // future harness with no queue support cannot inherit a stale vendor-specific lie.
     if (!item) {
       return c.json(
-        { error: "work queues are Claude-only - Foreman reads transcripts to check the work" },
+        { error: workQueueUnsupportedWhy(session.agent) ?? "could not create work queue" },
         409,
       );
     }

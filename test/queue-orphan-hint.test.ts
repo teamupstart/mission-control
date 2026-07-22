@@ -148,28 +148,15 @@ test("evicting a session surfaces its queue on an idle sibling AT ONCE", async (
   assert.equal(hinted.orphanedQueue?.itemCount, 1);
 });
 
-test("re-attach REFUSES a session that could never run the queue", () => {
-  // `orphanedQueueFor` matches on cwd alone, so the hint is offered beside any live
-  // session at the orphan's directory - a Codex one included. `tickTargets` filters
-  // to claude, so re-keying onto Codex is a one-way trip: the queue never ticks
-  // again, and because that session now HOLDS the key, the queue counts as live -
-  // so neither the cwd hint nor the cross-session orphan sweep will ever offer it
-  // again. Permanently stranded, with no surface, by a button the panel itself says
-  // shouldn't work ("Work queues are Claude-only for now").
+test("re-attach accepts a Codex session now that its queue can run", () => {
   const registry = new Registry();
   const codex = mkDiscovered({ syntheticId: "codex-1", agent: "codex", cwd: "/mixed" });
   registry.applyDiscovery([codex]);
   seedQueue("stranded-key", "/mixed");
 
-  assert.equal(registry.reattachQueue("stranded-key", "codex-1"), false);
-
-  // Refusing is only right if the batch is still THERE, still offered, and still
-  // re-attachable by the claude session that turns up next.
-  const claude = mkDiscovered({ syntheticId: "claude-1", agent: "claude", cwd: "/mixed", pid: 9, tty: "ttys9" });
-  registry.applyDiscovery([codex, claude]);
-  assert.equal(registry.getSession("claude-1")?.orphanedQueue?.noteKey, "stranded-key");
-  assert.equal(registry.reattachQueue("stranded-key", "claude-1"), true);
-  assert.equal(registry.getQueue("claude-1")?.items.length, 1);
+  assert.equal(registry.reattachQueue("stranded-key", "codex-1"), true);
+  assert.equal(registry.getQueue("codex-1")?.items.length, 1);
+  assert.equal(registry.getSession("codex-1")?.orphanedQueue, null);
 });
 
 test("a session the SessionEnd hook marked exited stops holding its key", async (t) => {

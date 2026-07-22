@@ -235,11 +235,14 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
     },
-    // Not for want of evidence any more - Codex reports hooks and its rollout parses into
-    // turns. What is missing is the DELIVERY half: `tickTargets` would have Foreman drive
-    // a Codex pane, and that path has never been run against one. Flipping this is the
-    // unlock `docs/plans/codex/plan.md` phase 8 describes, not a line to change on its own.
-    workQueue: null,
+    // Codex reports pickup/completion through its launch-scoped hooks, its rollout parses
+    // back into turns, and its keystroke control spec drives the same generic delivery
+    // path as Claude. A manually-started Codex without those hooks still takes the
+    // per-session refusal below rather than accepting a queue it cannot verify.
+    workQueue: {
+      uninstrumentedWhy:
+        "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Start Codex through Mission Control so its launch-scoped hooks are attached before queuing work here.",
+    },
     // Measured against 0.144.x, where `/clear` is Codex's own slash command and not, as
     // this said while the value was null, a line that would land in the prompt as text.
     clearContext: { command: "/clear" },

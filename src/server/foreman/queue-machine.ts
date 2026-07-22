@@ -209,10 +209,9 @@ export function tickTargets(
    */
   triggers: readonly WrapupTrigger[],
 ): Session[] {
-  // Both halves gate on the `workQueue` capability rather than on an agent id: a harness
-  // with none reports no hooks and has no readable turns, so the machine could neither
-  // tell when it picked an item up nor check that it finished one. Selecting it would be
-  // a branch that can never advance.
+  // Both halves gate on the `workQueue` capability rather than on an agent id: the
+  // capability is the harness's declaration that observation AND pane delivery are
+  // available. Selecting one that lacks either would be a branch that can never advance.
   const needsYou = sessions
     .filter((s) => capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));

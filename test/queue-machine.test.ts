@@ -382,10 +382,13 @@ test("tickTargets takes needs-you first (oldest-waiting first), and never lists 
   );
 });
 
-test("tickTargets ignores exited sessions and non-claude agents", () => {
+test("tickTargets ignores exited sessions and includes a Codex queue", () => {
   const gone = mkSession({ id: "gone", state: "exited", queue: mkSummary({ openCount: 1 }) });
   const codex = mkSession({ id: "codex", agent: "codex", queue: mkSummary({ openCount: 1 }) });
-  assert.deepEqual(tickTargets([gone, codex], ["drain"]), []);
+  assert.deepEqual(
+    tickTargets([gone, codex], ["drain"]).map((s) => s.id),
+    ["codex"],
+  );
 });
 
 // ---- decideQueueTick: the precedence, in order ----

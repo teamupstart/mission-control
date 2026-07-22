@@ -56,13 +56,13 @@ test("folding marks the shell, which is what hides the body", () => {
 });
 
 test("every branch the panel renders through can fold", () => {
-  // Same shell, four ways in. `blocked` (a Codex session - no transcript to verify
-  // against) and the nothing-queued default take different `return`s out of the
-  // component, and both must still carry the marker.
+  // Same shell through the nothing-queued default and each harness's uninstrumented
+  // refusal. They take different `return`s out of the component, and all must still
+  // carry the marker.
   const branches: Array<[string, Session]> = [
     ["nothing queued", mkSession()],
-    ["blocked", mkSession({ agent: "codex" })],
-    ["no hooks", mkSession({ hooksSeen: false })],
+    ["Codex without launch hooks", mkSession({ agent: "codex", hooksSeen: false })],
+    ["Claude without hooks", mkSession({ hooksSeen: false })],
   ];
   for (const [name, session] of branches) {
     const html = render({ session, collapsed: true });

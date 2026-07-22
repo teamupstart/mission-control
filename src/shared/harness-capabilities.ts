@@ -184,7 +184,7 @@ export interface EffortSpec {
   } | null;
 }
 
-const CLAUDE_PICKER_VISIBLE = /select model[\s\S]*use this session only/i;
+const CLAUDE_PICKER_VISIBLE = /◉\s+(?:xhigh|medium|high|max|low)\s+effort[\s\S]*use this session only/i;
 
 function claudeComposerReady(paneText: string): boolean {
   const prompt = paneText
@@ -197,9 +197,7 @@ function claudeComposerReady(paneText: string): boolean {
 
 function claudePickerSelection(paneText: string, model: string): ThinkingLevel | null {
   if (!CLAUDE_PICKER_VISIBLE.test(paneText)) return null;
-  const selected = paneText.split("\n").find((line) => line.includes("❯"));
-  if (!selected || !selected.toLowerCase().includes(model.toLowerCase())) return null;
-  const match = /\b(xhigh|medium|high|max|low)\b/i.exec(selected);
+  const match = /^\s*◉\s+(xhigh|medium|high|max|low)\s+effort\b/im.exec(paneText);
   return match ? (match[1]!.toLowerCase() as ThinkingLevel) : null;
 }
 

@@ -4,6 +4,7 @@ import { setSessionEffort, type PaneDeps } from "../src/server/actions.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
 import { meta, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
+import { MODEL_PICKER_XHIGH } from "./fixtures/claude-panes.ts";
 
 const NORMAL = `
 ❯
@@ -15,14 +16,7 @@ const pending = (command: string): string => `
 ⏸ manual mode on
 `;
 
-const picker = (level: string): string => `
-Select model
-
-❯ 1. Opus 4.8  ${level}
-  2. Sonnet 4.6  high
-
-←/→ adjust · Enter set as default · s use this session only · Esc cancel
-`;
+const picker = (level: string): string => MODEL_PICKER_XHIGH.replace("xHigh", level);
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 
@@ -46,8 +40,8 @@ function driven(start = NORMAL): { deps: PaneDeps; did: string[]; screen: () => 
       keys: async (keys: readonly Key[]) => {
         did.push(`keys:${keys.join(",")}`);
         if (keys[0] === "enter" && screen.includes("/model")) screen = picker("high");
-        else if (keys[0] === "right" && screen.includes("  xhigh")) screen = picker("max");
-        else if (keys[0] === "right" && screen.includes("  high")) screen = picker("xhigh");
+        else if (keys[0] === "right" && screen.includes("◉ xhigh")) screen = picker("max");
+        else if (keys[0] === "right" && screen.includes("◉ high")) screen = picker("xhigh");
         return ok();
       },
       paste: async () => ok(),

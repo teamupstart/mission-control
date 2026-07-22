@@ -49,6 +49,7 @@ const { bindSession } = await import("../src/server/terminal/registry.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { meta, mkSession } = await import("./helpers/session-fixture.ts");
 const { mkOriginAndClone } = await import("./helpers/git-fixture.ts");
+const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -129,6 +130,10 @@ test("the live effort picker follows the selected model, not the launch default"
   assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
   assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "max"), true);
   assert.equal(capabilitiesFor("claude").effort?.sessionPicker?.command, "/model");
+  assert.equal(
+    capabilitiesFor("claude").effort?.sessionPicker?.selected(MODEL_PICKER_XHIGH, "Opus 4.8"),
+    "xhigh",
+  );
   assert.equal(capabilitiesFor("codex").effort?.sessionPicker, null);
 });
 

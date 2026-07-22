@@ -274,8 +274,9 @@ else, if you want those too.
 
 Claude Code and Codex are not the same product, and several features below work for
 one and not the other. Rather than testing "is this Claude?" at each of those places,
-every agent **declares** what it has: permission modes, skills, work queues, a command
-that clears its context, an MCP client. Absent is a first-class answer.
+every agent **declares** what it has: permission modes, skills, work queues, reasoning
+effort controls, a command that clears its context, an MCP client. Absent is a first-class
+answer.
 
 That is why the differences you see are consistent rather than piecemeal. A Codex card
 draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
@@ -461,6 +462,14 @@ you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 It makes the model / thinking / context figures on the cards exact (without it they come
 from a passive transcript read), and it is the only source of the
 [cost telemetry](#cost-telemetry) plan meters.
+
+When Mission Control can safely read and write the live session, its thinking badge is
+also a picker: click it to see the effort levels Mission Control can safely apply to the
+selected model and choose one for that session. A successful change uses the harness's
+native session-only control; it never changes **Settings → Harnesses → Default effort**
+or what future sessions start with. Until the current model and effort have a trustworthy
+passive baseline, or when the pane cannot be written, the badge stays read-only. The same
+picker appears on Cards, in Console detail, and on Board tiles.
 
 ### Session status colors
 

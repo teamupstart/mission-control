@@ -158,7 +158,7 @@ export interface McpSpec {
   serverName: string;
 }
 
-/** Selecting and applying reasoning effort when a harness is launched. */
+/** Selecting and applying reasoning effort at launch and in a live session. */
 export interface EffortSpec {
   /** Values the harness accepts, in increasing order of reasoning spend. */
   levels: readonly ThinkingLevel[];

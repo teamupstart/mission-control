@@ -346,6 +346,7 @@ export interface Session {
    * Codex rollout). Null until we've read the session at least once.
    */
   meta: SessionMeta | null;
+  /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**
    * What this session has spent so far, denormalized off the usage ledger and keyed on

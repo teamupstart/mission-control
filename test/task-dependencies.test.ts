@@ -22,7 +22,11 @@ const createInput = {
   backlog: false,
 };
 
-function discovered(id: string, cwd: string): DiscoveredSession {
+function discovered(
+  id: string,
+  cwd: string,
+  over: Partial<DiscoveredSession> = {},
+): DiscoveredSession {
   return {
     syntheticId: id,
     agent: "claude",
@@ -37,6 +41,7 @@ function discovered(id: string, cwd: string): DiscoveredSession {
     tty: null,
     terminals: [],
     startedAt: 0,
+    ...over,
   };
 }
 
@@ -146,6 +151,77 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
   });
   assert.equal(updated.ok, true);
   assert.equal(updated.task?.dependencies[0]?.satisfiedAt, satisfiedAt);
+});
+
+test("a reused standalone session cannot satisfy an earlier episode with an unrelated PR", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.applyDiscovery([
+    discovered("reused-standalone", "/repo", { gitBranch: "feat/original" }),
+  ]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "episode-original",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+  });
+  const dependent = tasks.create({
+    ...createInput,
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: "reused-standalone" }],
+  });
+
+  registry.reconcilePrs(
+    new Map([
+      [
+        "reused-standalone",
+        {
+          url: "https://github.com/example/repo/pull/10",
+          number: 10,
+          state: "open" as const,
+          checks: "passing" as const,
+        },
+      ],
+    ]),
+    new Set(),
+  );
+  const pinned = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(pinned?.type === "session" ? pinned.prUrl : null, "https://github.com/example/repo/pull/10");
+
+  const restarted = new Registry();
+  const restartedTasks = new TaskManager(restarted);
+  restarted.applyDiscovery([
+    discovered("reused-standalone", "/repo", { gitBranch: "feat/unrelated" }),
+  ]);
+  restarted.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "episode-unrelated",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+  });
+  restarted.reconcilePrs(
+    new Map([
+      [
+        "reused-standalone",
+        {
+          url: "https://github.com/example/repo/pull/11",
+          number: 11,
+          state: "merged" as const,
+          checks: "passing" as const,
+        },
+      ],
+    ]),
+    new Set(),
+  );
+
+  const edge = restarted.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, "https://github.com/example/repo/pull/10");
+  assert.equal(restartedTasks.dependencyBlockers(restarted.getTask(dependent.id)!).length, 1);
 });
 
 test("completing a scout satisfies its dependents, while dependency cycles are refused", async () => {

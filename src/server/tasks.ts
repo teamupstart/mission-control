@@ -196,13 +196,19 @@ export class TaskManager {
     for (const input of inputs) {
       let dependency: TaskDependency;
       if (input.type === "session") {
+        const kept = existing.get(`session:${input.sessionId}`);
+        if (kept?.type === "session") {
+          dependency = kept;
+          const key = `session:${dependency.sessionId}`;
+          if (!seen.has(key)) resolved.push(dependency);
+          seen.add(key);
+          continue;
+        }
         const session = sessions.find((candidate) => candidate.id === input.sessionId && candidate.state !== "exited");
         // Preserve an existing edge whose target disappeared so the operator can edit
         // other fields or remove dependencies without the daemon resurrecting/dropping it.
         if (!session) {
-          const kept = existing.get(`session:${input.sessionId}`);
-          if (!kept) throw new TaskDependencyError("dependency session is no longer active");
-          dependency = kept;
+          throw new TaskDependencyError("dependency session is no longer active");
         } else if (session.task && this.registry.getTask(session.task.id)) {
           const target = this.registry.getTask(session.task.id)!;
           const previouslySatisfied =
@@ -220,17 +226,17 @@ export class TaskManager {
                   : previouslySatisfied ?? null,
           };
         } else {
+          if (!session.prUrl && !session.agentSessionId && !session.gitBranch) {
+            throw new TaskDependencyError("dependency session has no stable work identity yet");
+          }
           dependency = {
             type: "session",
             sessionId: session.id,
             title: session.name,
-            // Satisfaction is monotonic. A merged PR chip is intentionally retracted
-            // when a pane changes branch, but a dependency already proved complete
-            // must not become blocking again when the task is edited afterwards.
-            satisfiedAt:
-              session.prState === "merged"
-                ? Date.now()
-                : existing.get(`session:${session.id}`)?.satisfiedAt ?? null,
+            agentSessionId: session.agentSessionId,
+            branch: session.gitBranch,
+            prUrl: session.prUrl,
+            satisfiedAt: session.prState === "merged" ? Date.now() : null,
           };
         }
       } else {

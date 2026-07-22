@@ -1354,12 +1354,12 @@ export class Registry extends EventEmitter {
       next.inspector = this.inspectorSummaryFor(next);
       this.sessions.set(id, next);
       this.emitSession(next);
+      const at = Date.now();
+      this.reconcileSessionDependencies(next, match, at);
       if (state === "merged") {
         // Completion is copied onto dependency EDGES while the proof is live. The PR
         // chip is session-scoped and disappears when the process/branch does; a task
         // waiting on it must remain unblocked after that.
-        const at = Date.now();
-        this.satisfySessionDependencies(id, at);
         const taskId = dbTaskIdForSession(id) ?? this.activeTaskForCwd(next.cwd)?.id;
         if (taskId) this.satisfyTaskDependencies(taskId, at);
       }
@@ -1982,12 +1982,38 @@ export class Registry extends EventEmitter {
     );
   }
 
-  /** Persist that an observed merged PR completed a standalone-session target. */
-  satisfySessionDependencies(sessionId: string, at = Date.now()): void {
-    this.satisfyDependencies(
-      (dependency) => dependency.type === "session" && dependency.sessionId === sessionId,
-      at,
-    );
+  private reconcileSessionDependencies(session: Session, match: PrMatch | null, at: number): void {
+    for (const task of [...this.tasks.values()]) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (
+          dependency.type !== "session" ||
+          dependency.sessionId !== session.id ||
+          dependency.satisfiedAt !== null
+        ) {
+          return dependency;
+        }
+        if (dependency.prUrl !== null) {
+          if (match?.url !== dependency.prUrl) return dependency;
+        } else {
+          if (dependency.agentSessionId !== null) {
+            if (dependency.agentSessionId !== session.agentSessionId) return dependency;
+          } else if (dependency.branch === null) {
+            return dependency;
+          }
+          if (dependency.branch !== null && dependency.branch !== session.gitBranch) {
+            return dependency;
+          }
+        }
+        if (!match) return dependency;
+        const prUrl = dependency.prUrl ?? match.url;
+        const satisfiedAt = match.state === "merged" ? at : null;
+        if (prUrl === dependency.prUrl && satisfiedAt === dependency.satisfiedAt) return dependency;
+        changed = true;
+        return { ...dependency, prUrl, satisfiedAt };
+      });
+      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
+    }
   }
 
   private satisfyDependencies(

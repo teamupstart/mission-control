@@ -1532,7 +1532,17 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
         typeof row.title === "string"
       ) {
         const key = `session:${row.sessionId}`;
-        if (!seen.has(key)) out.push({ type: "session", sessionId: row.sessionId, title: row.title, satisfiedAt });
+        if (!seen.has(key)) {
+          out.push({
+            type: "session",
+            sessionId: row.sessionId,
+            title: row.title,
+            agentSessionId: typeof row.agentSessionId === "string" ? row.agentSessionId : null,
+            branch: typeof row.branch === "string" ? row.branch : null,
+            prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
+            satisfiedAt,
+          });
+        }
         seen.add(key);
       }
     }

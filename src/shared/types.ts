@@ -1053,6 +1053,9 @@ export type TaskDependency =
       type: "session";
       sessionId: string;
       title: string;
+      agentSessionId: string | null;
+      branch: string | null;
+      prUrl: string | null;
       satisfiedAt: number | null;
     };
 

@@ -28,14 +28,28 @@ import rehypeHighlight from "rehype-highlight";
 export const Markdown = memo(function Markdown({
   children,
   breaks = false,
+  onLinkClick,
 }: {
   children: string;
   breaks?: boolean;
+  /** Return true when a session-aware caller claimed the href as a workspace file. */
+  onLinkClick?: (href: string) => boolean;
 }): React.JSX.Element {
   return (
     <ReactMarkdown
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
       rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
+      components={onLinkClick ? {
+        a: ({ node: _node, href, onClick: _onClick, ...props }) => (
+          <a
+            {...props}
+            href={href}
+            onClick={(event) => {
+              if (href && onLinkClick(href)) event.preventDefault();
+            }}
+          />
+        ),
+      } : undefined}
     >
       {children}
     </ReactMarkdown>

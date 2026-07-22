@@ -52,6 +52,8 @@ export interface SessionViewProps {
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
   onOpenFiles: (id: string) => void;
+  /** Open a Markdown href only when it resolves inside this session's checkout. */
+  onOpenFile: (id: string, href: string) => boolean;
   /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
   fileTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
@@ -94,6 +96,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenReviews: () => p.onOpenReviews(s.id),
     onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
     onOpenFiles: () => p.onOpenFiles(s.id),
+    onOpenFile: (href: string) => p.onOpenFile(s.id, href),
     onReset: () => p.onReset(s.id),
     onKilled: () => p.onKilled(s.id),
     resetNonce: p.resetNonces[s.id] ?? 0,

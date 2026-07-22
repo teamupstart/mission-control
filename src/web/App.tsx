@@ -40,6 +40,7 @@ import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.t
 import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
+import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -259,6 +260,21 @@ export function App(): React.JSX.Element {
     files.ensure(sessionId);
     setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, [files.ensure]);
+  const openSessionFile = useCallback((sessionId: string, href: string): boolean => {
+    const session = sessions.find((candidate) => candidate.id === sessionId);
+    const target = session?.cwd ? workspaceFileTarget(href, session.cwd) : null;
+    if (!target) return false;
+    files.ensure(sessionId);
+    files.select(sessionId, target.path);
+    if (layout === "grid") {
+      setFilesSessionId(sessionId);
+    } else {
+      setSelectedId(sessionId);
+      if (layout === "board") setBoardOpen(true);
+      requestFilesTab(sessionId);
+    }
+    return true;
+  }, [files.ensure, files.select, layout, requestFilesTab, sessions]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -423,6 +439,7 @@ export function App(): React.JSX.Element {
       setDiffSessionId(id);
     },
     onOpenFiles: setFilesSessionId,
+    onOpenFile: openSessionFile,
     fileTabRequest,
     files,
     onReset: setResetSessionId,

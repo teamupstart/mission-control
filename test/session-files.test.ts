@@ -45,12 +45,14 @@ test("reads UTF-8 text by content and classifies HTML independently", async (t) 
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, "README"), "hello π\n");
   await writeFile(path.join(dir, "page.html"), "<h1>Hello</h1>");
+  await writeFile(path.join(dir, "notes.md"), "# Notes");
   const text = await readSessionFile(dir, "README");
   assert.equal(text.kind, "text");
   assert.equal(text.editable, true);
   assert.equal(text.text, "hello π\n");
   assert.match(text.revision, /^[a-f0-9]{64}$/);
   assert.equal((await readSessionFile(dir, "page.html")).kind, "html");
+  assert.equal((await readSessionFile(dir, "notes.md")).kind, "markdown");
 });
 
 test("rejects binary, invalid UTF-8, oversized, traversal, and symlink escape targets", async (t) => {
@@ -106,7 +108,7 @@ test("save locks serialize writers for the same target", async () => {
 test("async file results cannot recreate a dropped session", () => {
   const state: SessionFilesState = {
     files: [], listState: "ready", listError: null, selectedPath: null,
-    mode: "editor", buffers: {},
+    openError: null, mode: "editor", buffers: {},
   };
   const sessions = { active: state };
   let called = false;

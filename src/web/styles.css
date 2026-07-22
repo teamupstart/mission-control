@@ -2030,6 +2030,7 @@ body {
 .file-codemirror .cm-editor { height: 100%; }
 .file-codemirror .cm-scroller { overflow: auto; }
 .html-preview { flex: 1; min-width: 0; min-height: 0; border: 0; background: white; }
+.file-markdown-preview { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px; }
 .file-notice {
   flex: none;
   display: flex;

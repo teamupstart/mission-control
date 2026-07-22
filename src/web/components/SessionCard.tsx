@@ -80,6 +80,7 @@ export function SessionCard({
   onOpenReviews,
   onOpenDiff,
   onOpenFiles,
+  onOpenFile,
   onReset,
   onKilled,
   resetNonce = 0,
@@ -107,6 +108,8 @@ export function SessionCard({
   onOpenDiff?: (commit?: string) => void;
   /** Open this checkout's shared file workspace. */
   onOpenFiles?: () => void;
+  /** Open a link in this session's file workspace when it is checkout-contained. */
+  onOpenFile?: (href: string) => boolean;
   onReset?: () => void;
   /** This card's session was killed (successfully), so focus mode has nothing left to show. */
   onKilled?: () => void;
@@ -392,6 +395,7 @@ export function SessionCard({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}
+              onOpenFile={onOpenFile}
               resetNonce={resetNonce}
             />
           )}

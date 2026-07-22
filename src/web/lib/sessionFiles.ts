@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionFileDocument, SessionFileEntry } from "@shared/types.ts";
 import { api } from "./api.ts";
+import { pathDefaultsToPreview } from "./workspaceLinks.ts";
 
 export type FileSaveState =
   | "saved"
@@ -30,6 +31,7 @@ export interface SessionFilesState {
   files: SessionFileEntry[];
   listState: "idle" | "loading" | "ready" | "failed";
   listError: string | null;
+  openError: string | null;
   selectedPath: string | null;
   mode: "preview" | "editor";
   buffers: Record<string, FileBuffer>;
@@ -51,7 +53,7 @@ export interface SessionFilesController {
 
 const EMPTY_SESSION: SessionFilesState = {
   files: [], listState: "idle", listError: null, selectedPath: null,
-  mode: "preview", buffers: {},
+  openError: null, mode: "preview", buffers: {},
 };
 
 export function updateExistingSession(
@@ -95,7 +97,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     if (existing && !force) return;
     const result = await api.readFile(sessionId, filePath);
     if (!result.ok) {
-      updateExisting(sessionId, (s) => ({ ...s, listError: result.error }));
+      updateExisting(sessionId, (s) => ({ ...s, openError: result.error }));
       return;
     }
     const doc = result.file;
@@ -104,7 +106,8 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
         ? s
         : {
             ...s,
-            mode: doc.kind === "html" ? s.mode : "editor",
+            mode: doc.kind === "html" || doc.kind === "markdown" ? s.mode : "editor",
+            openError: null,
             buffers: {
               ...s.buffers,
               [filePath]: {
@@ -245,7 +248,12 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const select = useCallback((sessionId: string, filePath: string) => {
     const previous = sessionsRef.current[sessionId]?.selectedPath;
     if (previous && previous !== filePath) void save(sessionId, previous);
-    update(sessionId, (s) => ({ ...s, selectedPath: filePath }));
+    update(sessionId, (s) => ({
+      ...s,
+      selectedPath: filePath,
+      openError: null,
+      mode: pathDefaultsToPreview(filePath) ? "preview" : "editor",
+    }));
     void loadFile(sessionId, filePath);
   }, [loadFile, save, update]);
 

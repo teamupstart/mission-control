@@ -55,6 +55,7 @@ export function TranscriptPanel({
   dialogOpen = false,
   episodes = [],
   onReplyBox,
+  onOpenFile,
   resetNonce = 0,
   ref,
 }: {
@@ -95,6 +96,8 @@ export function TranscriptPanel({
    * there is one is this panel's fact alone.
    */
   onReplyBox?: (present: boolean) => void;
+  /** Claim links that resolve to a file in this transcript's session checkout. */
+  onOpenFile?: (href: string) => boolean;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
@@ -287,7 +290,7 @@ export function TranscriptPanel({
               ) : row.kind === "tools" ? (
                 <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_IDENTITY[agent].speaker} />
               ) : (
-                <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} />
+                <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} onOpenFile={onOpenFile} />
               ),
             )}
           </>
@@ -349,7 +352,15 @@ export function TranscriptPanel({
   );
 }
 
-function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): React.JSX.Element {
+function Turn({
+  m,
+  agentLabel,
+  onOpenFile,
+}: {
+  m: TranscriptMessage;
+  agentLabel: string;
+  onOpenFile?: (href: string) => boolean;
+}): React.JSX.Element {
   const [richText] = useRichText();
   // A turn the human didn't type says who did. Much of the "user" side of a supervised
   // session is Foreman delivering work or the dashboard reloading skills, and reading
@@ -364,7 +375,7 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
         // the `pre-wrap` raw text for parsed blocks.
         <div className={`turn-text${richText ? " markdown" : ""}`}>
-          {richText ? <Markdown breaks>{m.text}</Markdown> : m.text}
+          {richText ? <Markdown breaks onLinkClick={onOpenFile}>{m.text}</Markdown> : m.text}
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}

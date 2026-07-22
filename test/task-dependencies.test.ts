@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { PrMatch } from "../src/server/registry.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -41,6 +43,18 @@ function discovered(
     tty: null,
     terminals: [],
     startedAt: 0,
+    ...over,
+  };
+}
+
+function prMatch(over: Partial<PrMatch> = {}): PrMatch {
+  return {
+    url: "https://github.com/example/repo/pull/1",
+    number: 1,
+    state: "open",
+    checks: "passing",
+    branch: "feat/dependency",
+    agentSessionId: null,
     ...over,
   };
 }
@@ -103,12 +117,12 @@ test("a merged PR durably satisfies dependencies selected through an active task
     new Map([
       [
         "merge-session",
-        {
+        prMatch({
           url: "https://github.com/example/repo/pull/1",
           number: 1,
           state: "merged" as const,
           checks: "passing" as const,
-        },
+        }),
       ],
     ]),
     new Set(),
@@ -132,12 +146,12 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
     new Map([
       [
         "standalone-session",
-        {
+        prMatch({
           url: "https://github.com/example/repo/pull/2",
           number: 2,
           state: "merged" as const,
           checks: "passing" as const,
-        },
+        }),
       ],
     ]),
     new Set(),
@@ -177,12 +191,14 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
     new Map([
       [
         "reused-standalone",
-        {
+        prMatch({
           url: "https://github.com/example/repo/pull/10",
           number: 10,
           state: "open" as const,
           checks: "passing" as const,
-        },
+          branch: "feat/original",
+          agentSessionId: "episode-original",
+        }),
       ],
     ]),
     new Set(),
@@ -207,12 +223,14 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
     new Map([
       [
         "reused-standalone",
-        {
+        prMatch({
           url: "https://github.com/example/repo/pull/11",
           number: 11,
           state: "merged" as const,
           checks: "passing" as const,
-        },
+          branch: "feat/unrelated",
+          agentSessionId: "episode-unrelated",
+        }),
       ],
     ]),
     new Set(),
@@ -244,12 +262,14 @@ test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
       new Map([
         [
           id,
-          {
+          prMatch({
             url: `https://github.com/example/repo/pull/${state === "open" ? 20 : 21}`,
             number: state === "open" ? 20 : 21,
             state,
             checks: "passing" as const,
-          },
+            branch: `feat/${state}-old`,
+            agentSessionId: `${state}-old-episode`,
+          }),
         ],
       ]),
       new Set(),
@@ -276,6 +296,65 @@ test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
     assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
     assert.equal(tasks.dependencyBlockers(dependent).length, 1);
   }
+});
+
+test("an in-flight PR poll cannot cross work episodes", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "poll-race";
+  const cwd = "/repo/poll-race";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/poll-old" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "poll-old-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  let queryStarted!: () => void;
+  let finishQuery!: (match: Omit<PrMatch, "branch" | "agentSessionId">) => void;
+  const started = new Promise<void>((resolve) => {
+    queryStarted = resolve;
+  });
+  const result = new Promise<Omit<PrMatch, "branch" | "agentSessionId">>((resolve) => {
+    finishQuery = resolve;
+  });
+  const polling = pollAndReconcilePrs(registry, async () => {
+    queryStarted();
+    return result;
+  });
+  await started;
+
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/poll-new" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "poll-new-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for the new work episode",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+
+  finishQuery({
+    url: "https://github.com/example/repo/pull/30",
+    number: 30,
+    state: "merged",
+    checks: "passing",
+  });
+  await polling;
+
+  assert.equal(registry.getSession(id)?.prUrl, null);
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
 });
 
 test("completing a scout satisfies its dependents, while dependency cycles are refused", async () => {

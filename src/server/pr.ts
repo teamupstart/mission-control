@@ -22,7 +22,7 @@ import { run } from "./util/exec.ts";
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
-type PrLookup = "error" | null | PrMatch;
+type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId">;
 
 /**
  * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
@@ -144,7 +144,10 @@ function checksOf(p: unknown): PrChecks | null {
  * queried; reconciliation still clears any stale link they carry, which is what
  * retires a chip after the session moves off the branch its PR belonged to.
  */
-export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
+export async function pollAndReconcilePrs(
+  registry: Registry,
+  lookup: (cwd: string, branch: string) => Promise<PrLookup> = queryPr,
+): Promise<void> {
   const targets = registry.prPollTargets();
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
@@ -162,14 +165,20 @@ export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
   const results = new Map<string, PrLookup>();
   await Promise.all(
     [...byCwd].map(async ([cwd, branch]) => {
-      results.set(cwd, await queryPr(cwd, branch));
+      results.set(cwd, await lookup(cwd, branch));
     }),
   );
 
   for (const t of queryable) {
     const r = results.get(t.cwd);
     if (r === "error") skip.add(t.id);
-    else if (r) found.set(t.id, r);
+    else if (r) {
+      found.set(t.id, {
+        ...r,
+        branch: t.branch as string,
+        agentSessionId: t.agentSessionId,
+      });
+    }
     // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
   }
   registry.reconcilePrs(found, skip);

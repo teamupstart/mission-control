@@ -360,7 +360,9 @@ test("assignment revalidates dependencies at the prompt boundary", async () => {
 });
 
 test("a reused session attributes its merged PR only to the current task after restart", async () => {
-  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-current-binding-");
+  const { r, tasks, sessionId, clone, agentSessionId } = setupInRepo(
+    "mission-assign-current-binding-",
+  );
   r.upsertTask(
     mkTask({
       id: "binding-previous",
@@ -428,6 +430,8 @@ test("a reused session attributes its merged PR only to the current task after r
           number: 99,
           state: "merged" as const,
           checks: "passing" as const,
+          branch: null,
+          agentSessionId,
         },
       ],
     ]),

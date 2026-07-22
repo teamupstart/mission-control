@@ -129,6 +129,8 @@ export type PrMatch = {
   state: PrState;
   /** Rolled-up CI status for the PR, or null when it carries no checks. */
   checks: PrChecks | null;
+  branch: string;
+  agentSessionId: string | null;
 };
 
 export type PrObservation = {
@@ -1329,11 +1331,29 @@ export class Registry extends EventEmitter {
    * with it). Everything else is a candidate - the poller decides which actually
    * warrant a `gh` call, and any candidate left without a match is cleared.
    */
-  prPollTargets(): { id: string; cwd: string; branch: string | null; prUrl: string | null }[] {
-    const out: { id: string; cwd: string; branch: string | null; prUrl: string | null }[] = [];
+  prPollTargets(): {
+    id: string;
+    cwd: string;
+    branch: string | null;
+    prUrl: string | null;
+    agentSessionId: string | null;
+  }[] {
+    const out: {
+      id: string;
+      cwd: string;
+      branch: string | null;
+      prUrl: string | null;
+      agentSessionId: string | null;
+    }[] = [];
     for (const s of this.sessions.values()) {
       if (!s.cwd || s.state === "exited") continue;
-      out.push({ id: s.id, cwd: s.cwd, branch: s.gitBranch, prUrl: s.prUrl });
+      out.push({
+        id: s.id,
+        cwd: s.cwd,
+        branch: s.gitBranch,
+        prUrl: s.prUrl,
+        agentSessionId: s.agentSessionId,
+      });
     }
     return out;
   }
@@ -1357,6 +1377,11 @@ export class Registry extends EventEmitter {
     for (const [id, s] of this.sessions) {
       if (skip.has(id)) continue;
       const match = found.get(id) ?? null;
+      if (
+        match &&
+        (match.branch !== s.gitBranch || match.agentSessionId !== s.agentSessionId)
+      )
+        continue;
       const url = match?.url ?? null;
       const number = match?.number ?? null;
       const state = match?.state ?? null;
@@ -1364,8 +1389,8 @@ export class Registry extends EventEmitter {
       if (match) {
         this.prObservations.set(id, {
           url: match.url,
-          branch: s.gitBranch,
-          agentSessionId: s.agentSessionId,
+          branch: match.branch,
+          agentSessionId: match.agentSessionId,
         });
       } else {
         this.prObservations.delete(id);

@@ -271,44 +271,65 @@ test("a standalone dependency follows an expected reset identity rebind", () => 
   assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
 });
 
-test("an expired reset rebind cannot adopt unrelated later work", () => {
+test("old-identity work disarms a pending reset rebind", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const id = "expired-reset-rebind";
-  const cwd = "/repo/expired-reset-rebind";
+  const id = "old-identity-resumed";
+  const cwd = "/repo/old-identity-resumed";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
   registry.applyHook({
     agent: "claude",
     event: "Stop",
-    sessionId: "expired-before-clear",
+    sessionId: "original-identity",
     cwd,
     transcriptPath: null,
     env: {},
   });
   registry.resetWorkEpisode(id, {
     awaitingAgentRebind: true,
-    previousAgentSessionId: "expired-before-clear",
-    at: 1,
+    previousAgentSessionId: "original-identity",
   });
-  const expiredEpisode = registry.workEpisodeForSession(id)!;
+  const pendingEpisode = registry.workEpisodeForSession(id)!;
+  registry.upsertTask(
+    baseTask({
+      id: "old-identity-task",
+      title: "Work resumed without rebind",
+      status: "running",
+      sessionId: id,
+    }),
+  );
+  assert.equal(registry.bindTaskToWorkEpisode("old-identity-task", id), false);
   const dependent = tasks.create({
     ...createInput,
-    title: "Wait for abandoned reset work",
+    title: "Wait for original identity work",
     backlog: true,
-    dependencies: [{ type: "session", sessionId: id }],
+    dependencies: [{ type: "task", taskId: "old-identity-task" }],
   });
 
   registry.applyHook({
     agent: "claude",
-    event: "Stop",
+    event: "UserPromptSubmit",
+    sessionId: "original-identity",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue the assigned task",
+  });
+  assert.equal(registry.workEpisodeForSession(id)?.episodeId, pendingEpisode.episodeId);
+  assert.equal(registry.workEpisodeForSession(id)?.awaitingAgentRebind, false);
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
     sessionId: "unrelated-later-identity",
     cwd,
     transcriptPath: null,
     env: {},
+    source: "clear",
   });
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/unrelated-later" })]);
   const unrelatedEpisode = registry.workEpisodeForSession(id)!;
-  assert.notEqual(unrelatedEpisode.episodeId, expiredEpisode.episodeId);
+  assert.notEqual(unrelatedEpisode.episodeId, pendingEpisode.episodeId);
+  assert.equal(registry.getTask("old-identity-task")?.sessionId, null);
   registry.reconcilePrs(
     new Map([
       [
@@ -329,6 +350,82 @@ test("an expired reset rebind cannot adopt unrelated later work", () => {
 
   assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
+test("a delayed daemon restart resolves pending ownership from hook identity", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "delayed-restart-rebind";
+  const cwd = "/repo/delayed-restart-rebind";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "restart-before-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "restart-before-clear",
+    at: 1,
+  });
+  const pendingEpisode = registry.workEpisodeForSession(id)!;
+  registry.upsertTask(
+    baseTask({
+      id: "delayed-restart-task",
+      title: "Survive delayed restart",
+      status: "running",
+      sessionId: id,
+    }),
+  );
+  assert.equal(registry.bindTaskToWorkEpisode("delayed-restart-task", id), false);
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for delayed restart work",
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "delayed-restart-task" }],
+  });
+
+  const restarted = new Registry();
+  restarted.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/delayed-restart" })]);
+  assert.equal(restarted.workEpisodeForSession(id)?.episodeId, pendingEpisode.episodeId);
+  assert.equal(restarted.workEpisodeForSession(id)?.awaitingAgentRebind, true);
+  restarted.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: "restart-after-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    source: "clear",
+  });
+  const reboundEpisode = restarted.workEpisodeForSession(id)!;
+  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
+  assert.equal(reboundEpisode.agentSessionId, "restart-after-clear");
+  assert.equal(reboundEpisode.awaitingAgentRebind, false);
+  assert.equal(restarted.getTask("delayed-restart-task")?.sessionId, id);
+  restarted.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/5",
+          number: 5,
+          state: "merged",
+          branch: "feat/delayed-restart",
+          agentSessionId: "restart-after-clear",
+          episodeId: reboundEpisode.episodeId,
+          createdAt: reboundEpisode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.ok(restarted.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(restarted.getTask(dependent.id)!), []);
 });
 
 test("a reused standalone session cannot satisfy an earlier episode with an unrelated PR", () => {

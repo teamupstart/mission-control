@@ -6,6 +6,7 @@ import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session, Task } from "../src/shared/types.ts";
 import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
 // What is at stake: the nav-bar filter box is one control, and the operator reads it as
 // applying to the board. It did not apply to the Backlog column - that column read the
@@ -38,6 +39,8 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onToggleExpand: () => {},
     onOpenReviews: () => {},
     onOpenDiff: () => {},
+    onOpenFiles: () => {},
+    files: {} as SessionFilesController,
     onReset: () => {},
     onKilled: () => {},
     resetNonces: {},

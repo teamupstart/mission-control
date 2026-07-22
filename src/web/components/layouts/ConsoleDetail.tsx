@@ -28,8 +28,9 @@ import {
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
+import { FileWorkspace } from "../FileWorkspace.tsx";
 
-type Tab = "conversation" | "queue" | "gate" | "diff";
+type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
 /**
  * This session's Foreman episodes, refetched whenever its note moves.
@@ -129,6 +130,7 @@ export function ConsoleDetail({
         { id: "queue" as const, label: "Work queue", pip: queueCount },
         { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0 },
         { id: "diff" as const, label: "Diff", pip: 0 },
+        { id: "files" as const, label: "Files", pip: 0 },
       ],
     [queueCount, gateNeedsYou],
   );
@@ -329,6 +331,19 @@ export function ConsoleDetail({
               </div>
             ) : (
               <p className="detail-empty">No working directory to diff.</p>
+            )}
+          </div>
+        )}
+        {tab === "files" && (
+          <div className="detail-files">
+            {session.cwd ? (
+              <FileWorkspace
+                session={session}
+                controller={view.files}
+                onExtract={() => view.onOpenFiles(session.id)}
+              />
+            ) : (
+              <p className="detail-empty">No working directory to browse.</p>
             )}
           </div>
         )}

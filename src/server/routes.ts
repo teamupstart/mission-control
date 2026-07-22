@@ -35,6 +35,8 @@ import {
   ResolveReviewSchema,
   SelectOptionSchema,
   SendTextSchema,
+  SaveSessionFileSchema,
+  SessionFilePathSchema,
   SubmitOptionsSchema,
   RecordEpisodeSchema,
   ResolveEpisodeSchema,
@@ -132,6 +134,13 @@ import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos, resolveRepoRoot } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
+import {
+  listSessionFiles,
+  MAX_SESSION_EDITOR_BYTES,
+  readSessionFile,
+  saveSessionFile,
+  SessionFileError,
+} from "./session-files.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
@@ -295,6 +304,62 @@ export function buildApp(
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+  app.get("/api/sessions/:id/files", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    try {
+      return c.json({ files: await listSessionFiles(session.cwd) });
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
+    }
+  });
+  app.get("/api/sessions/:id/file", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    const parsed = SessionFilePathSchema.safeParse({ path: c.req.query("path") });
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    try {
+      return c.json(await readSessionFile(session.cwd, parsed.data.path));
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      return c.json({ error: known?.message ?? "could not read session file" }, status);
+    }
+  });
+  app.put(
+    "/api/sessions/:id/file",
+    bodyLimit({
+      // JSON escaping can expand a valid 2 MiB UTF-8 document substantially. The
+      // decoded byte cap is rechecked by `saveSessionFile`; this only prevents an
+      // unbounded body from being buffered before validation.
+      maxSize: MAX_SESSION_EDITOR_BYTES * 6 + 16 * 1024,
+      onError: (c) => c.json({ ok: false, error: "file save request is too large" }, 413),
+    }),
+    async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    const parsed = await parseBody(c, SaveSessionFileSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const result = await saveSessionFile(
+        session.cwd,
+        parsed.data.path,
+        parsed.data.text,
+        parsed.data.expectedRevision,
+      );
+      if (!result.ok && result.status === 409) return c.json(result, 409);
+      return c.json(result);
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      const status = known?.status === 403 ? 403 : known?.status === 413 ? 413 : 400;
+      return c.json({ ok: false, error: known?.message ?? "could not save session file" }, status);
+    }
+    },
+  );
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
   // Git repos under the workspace roots - the pickable bases for a new dispatch.

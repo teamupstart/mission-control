@@ -1646,3 +1646,21 @@ export const InjectPromptSchema = z.object({
   origin: z.enum(["human", "foreman"]).default("human"),
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
+
+/** A checkout-relative file path. The daemon still performs canonical containment checks. */
+export const SessionFilePathSchema = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type SessionFilePath = z.infer<typeof SessionFilePathSchema>;
+
+/**
+ * Autosave one existing text file. `expectedRevision` is the SHA-256 returned by the
+ * last read/save; it makes a write a compare-and-swap instead of silently replacing an
+ * agent's concurrent edit.
+ */
+export const SaveSessionFileSchema = z.object({
+  path: z.string().min(1).max(4096),
+  text: z.string().max(2 * 1024 * 1024),
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type SaveSessionFile = z.infer<typeof SaveSessionFileSchema>;

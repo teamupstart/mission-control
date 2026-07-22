@@ -6,6 +6,7 @@ import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkSession, nm } from "./helpers/session-fixture.ts";
+import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
 // The board tile is meant to be triaged WITHOUT opening it, so what's worth testing is the
 // static markup of a tile with nothing selected: it must surface the live activity, the named
@@ -29,6 +30,8 @@ function props(sessions: Session[]): SessionViewProps {
     onToggleExpand: () => {},
     onOpenReviews: () => {},
     onOpenDiff: () => {},
+    onOpenFiles: () => {},
+    files: {} as SessionFilesController,
     onReset: () => {},
     onKilled: () => {},
     resetNonces: {},

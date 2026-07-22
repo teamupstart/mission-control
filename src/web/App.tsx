@@ -37,6 +37,8 @@ import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.t
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
+import { FileWindow } from "./components/FileWindow.tsx";
+import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -105,6 +107,7 @@ export function App(): React.JSX.Element {
   // initialCategory, which re-reads on each open because the modal remounts.
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>("keyboard");
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
+  const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
@@ -115,14 +118,16 @@ export function App(): React.JSX.Element {
   // by pushed state. This nonce is the reply box's remount key, so a reset re-hydrates
   // it from the now-empty draft, matching how reset visibly clears the queue.
   const [resetNonces, setResetNonces] = useState<Record<string, number>>({});
+  const files = useSessionFilesStore(connected);
 
   // A session was reset: forget its half-written send and reply text (the reset
   // discarded the task they were about), and bump its nonce so an open reply box
   // remounts empty rather than keeping stale text behind the closing modal.
   const onSessionReset = useCallback((id: string) => {
     dropMessageDrafts(id);
+    files.drop(id);
     setResetNonces((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 }));
-  }, []);
+  }, [files.drop]);
   // Which card's title is being edited (its inline rename box is open). App owns
   // this so the rename shortcut and a title click drive the same one card.
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -239,6 +244,10 @@ export function App(): React.JSX.Element {
     setDiffCommit(null);
   }, []);
   const closeReset = useCallback(() => setResetSessionId(null), []);
+  const closeFiles = useCallback(() => {
+    if (filesSessionId) files.flush(filesSessionId);
+    setFilesSessionId(null);
+  }, [filesSessionId, files.flush]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -258,8 +267,9 @@ export function App(): React.JSX.Element {
     () => [
       { sessionId: diffSessionId, close: closeDiff },
       { sessionId: resetSessionId, close: closeReset },
+      { sessionId: filesSessionId, close: closeFiles },
     ],
-    [diffSessionId, resetSessionId, closeDiff, closeReset],
+    [diffSessionId, resetSessionId, filesSessionId, closeDiff, closeReset, closeFiles],
   );
 
   const sorted = useMemo(() => {
@@ -352,6 +362,7 @@ export function App(): React.JSX.Element {
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
+  const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
 
   function openReviews(): void {
     const first = pendingReviews[0];
@@ -386,6 +397,8 @@ export function App(): React.JSX.Element {
       setDiffCommit(commit ?? null);
       setDiffSessionId(id);
     },
+    onOpenFiles: setFilesSessionId,
+    files,
     onReset: setResetSessionId,
     onKilled,
     resetNonces,
@@ -440,8 +453,11 @@ export function App(): React.JSX.Element {
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
+    for (const id of Object.keys(files.sessions)) {
+      if (!sessions.some((session) => session.id === id)) files.drop(id);
+    }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, expandedId, sessionBoundOverlays, renamingId]);
+  }, [sessions, visible, selectedId, expandedId, sessionBoundOverlays, renamingId, files.sessions, files.drop]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -859,6 +875,10 @@ export function App(): React.JSX.Element {
           <DiffViewer session={diffSession} commit={diffCommit} onClose={closeDiff} />
         )}
 
+        {filesSession && (
+          <FileWindow session={filesSession} controller={files} onClose={closeFiles} />
+        )}
+
         {settingsOpen && (
           <SettingsModal
             onClose={() => setSettingsOpen(false)}
@@ -873,6 +893,9 @@ export function App(): React.JSX.Element {
         {resetSession && (
           <ResetModal
             session={resetSession}
+            unsavedFiles={Object.values(files.sessions[resetSession.id]?.buffers ?? {}).filter(
+              (buffer) => buffer.saveState !== "saved" && buffer.saveState !== "readonly",
+            ).length}
             onReset={() => onSessionReset(resetSession.id)}
             onClose={() => setResetSessionId(null)}
           />

@@ -54,10 +54,10 @@ function entryFor(id: string): Entry {
   return e;
 }
 
-/** A newly re-enabled source must earn a healthy status with a new sweep. */
+/** A paused source has no current health until it is swept in that state. */
 function observeEnabled(inst: TaskSourceInstance): Entry {
   const e = entryFor(inst.id);
-  if (e.enabled === false && inst.enabled) {
+  if (e.enabled === true && !inst.enabled) {
     e.lastSweepAt = null;
     e.lastError = null;
     e.lastFiled = 0;
@@ -101,7 +101,7 @@ export async function sweepOnce(
   inst: TaskSourceInstance,
   tasks: TaskManager,
 ): Promise<SweepReport> {
-  const entry = entryFor(inst.id);
+  const entry = observeEnabled(inst);
   if (entry.sweeping) {
     return {
       sourceId: inst.id,

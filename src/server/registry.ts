@@ -96,6 +96,7 @@ import {
   pruneUsageSources,
   reorderQueueItems,
   sessionCostFor,
+  taskIdForSession as dbTaskIdForSession,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -1359,8 +1360,8 @@ export class Registry extends EventEmitter {
         // waiting on it must remain unblocked after that.
         const at = Date.now();
         this.satisfySessionDependencies(id, at);
-        const task = this.activeTaskFor(id, next.cwd);
-        if (task) this.satisfyTaskDependencies(task.id, at);
+        const taskId = dbTaskIdForSession(id) ?? this.activeTaskForCwd(next.cwd)?.id;
+        if (taskId) this.satisfyTaskDependencies(taskId, at);
       }
     }
   }

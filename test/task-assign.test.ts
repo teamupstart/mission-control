@@ -400,13 +400,25 @@ test("a reused session attributes its merged PR only to the current task after r
   });
   assert.equal(assigned.ok, true);
   assert.equal(r.getTask("binding-previous")?.sessionId, null);
-  assert.equal((await tasks.update("binding-previous", { priority: "high" })).ok, true);
+  const completed = tasks.complete("binding-current", "opened pull request")!;
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(
+      mkTask({
+        id: `binding-newer-terminal-${i}`,
+        repoRoot: clone,
+        status: "done",
+        completedAt: completed.updatedAt + i + 1,
+        updatedAt: completed.updatedAt + i + 1,
+      }),
+    );
+  }
+  assert.equal(r.getTask("binding-current"), undefined);
 
   const restarted = new Registry();
+  assert.equal(restarted.getTask("binding-current"), undefined);
   restarted.applyDiscovery([
     mkDiscovered({ syntheticId: sessionId, cwd: clone, gitRoot: clone, repoRoot: clone }),
   ]);
-  assert.equal(restarted.getSession(sessionId)?.task?.id, "binding-current");
   restarted.reconcilePrs(
     new Map([
       [

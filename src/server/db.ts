@@ -705,8 +705,9 @@ function migrate(d: DatabaseSync): void {
       SELECT id, ROW_NUMBER() OVER (
         PARTITION BY session_id
         ORDER BY
-          CASE status WHEN 'running' THEN 0 WHEN 'dispatching' THEN 1 ELSE 2 END,
-          COALESCE(dispatched_at, created_at) DESC,
+          CASE WHEN dispatched_at IS NULL THEN 1 ELSE 0 END,
+          dispatched_at DESC,
+          created_at DESC,
           updated_at DESC,
           id DESC
       ) AS position
@@ -1649,6 +1650,16 @@ export function getTask(id: string): Task | undefined {
     | TaskRow
     | undefined;
   return r ? rowToTask(r) : undefined;
+}
+
+export function taskIdForSession(sessionId: string): string | null {
+  const row = openDb()
+    .prepare(
+      `SELECT id FROM tasks
+       WHERE session_id = ? AND status NOT IN ('backlog', 'cancelled')`,
+    )
+    .get(sessionId) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 export function deleteTask(id: string): void {

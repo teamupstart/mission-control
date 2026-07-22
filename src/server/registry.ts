@@ -300,6 +300,7 @@ export class Registry extends EventEmitter {
   private effortFreshnessGuards = new Map<string, {
     agentSessionId: string | null;
     transcriptPath: string | null;
+    model: string | null;
     modelId: string | null;
     effortRevision: string | null;
     statusLineTimestamp: number | null;
@@ -924,6 +925,7 @@ export class Registry extends EventEmitter {
     const freshness = {
       agentSessionId: s.agentSessionId,
       transcriptPath: s.transcriptPath,
+      model: s.meta.model,
       modelId: s.meta.modelId,
       effortRevision: this.runtimeEffortRevisions.get(sessionId)!,
       statusLineTimestamp: this.statusLineTimestamps.get(sessionId) ?? null,
@@ -1857,7 +1859,11 @@ export class Registry extends EventEmitter {
       : isLaterEffortRevision(guard.effortRevision, effortRevision);
     if (!fresh) {
       return {
-        meta: { ...meta, thinkingLevel: currentEffort },
+        // This reading has not proved it is newer than the setting we just verified.
+        // Its model is as stale as its effort: keeping one but not the other lets the
+        // reconciliation below treat the stale model id as a real model change and
+        // discard the verified observation.
+        meta: { ...meta, model: guard.model, modelId: guard.modelId, thinkingLevel: currentEffort },
         rejectedStatusLineEffort: source === "statusline",
       };
     }

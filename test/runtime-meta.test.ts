@@ -212,6 +212,7 @@ test("an opaque passive revision cannot overwrite a verified effort change", () 
     "transcript",
   );
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.modelId, "claude-sonnet-5");
 });
 
 test("a new agent session releases the prior session's observed effort", () => {

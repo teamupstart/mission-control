@@ -200,6 +200,137 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
   assert.equal(updated.task?.dependencies[0]?.satisfiedAt, satisfiedAt);
 });
 
+test("a standalone dependency follows an expected reset identity rebind", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "standalone-reset-rebind";
+  const cwd = "/repo/standalone-reset-rebind";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "standalone-before-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "standalone-before-clear",
+  });
+  const pendingEpisode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait across reset identity",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  assert.equal(dependent.dependencies[0]?.type, "session");
+  assert.equal(
+    dependent.dependencies[0]?.type === "session"
+      ? dependent.dependencies[0].agentSessionId
+      : null,
+    "standalone-before-clear",
+  );
+
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "standalone-after-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reset-rebind" })]);
+  const reboundEpisode = registry.workEpisodeForSession(id)!;
+  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/3",
+          number: 3,
+          state: "merged",
+          branch: "feat/reset-rebind",
+          agentSessionId: "standalone-after-clear",
+          episodeId: reboundEpisode.episodeId,
+          createdAt: reboundEpisode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(
+    edge?.type === "session" ? edge.agentSessionId : null,
+    "standalone-after-clear",
+  );
+  assert.ok(edge?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
+test("an expired reset rebind cannot adopt unrelated later work", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "expired-reset-rebind";
+  const cwd = "/repo/expired-reset-rebind";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "expired-before-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "expired-before-clear",
+    at: 1,
+  });
+  const expiredEpisode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for abandoned reset work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "unrelated-later-identity",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/unrelated-later" })]);
+  const unrelatedEpisode = registry.workEpisodeForSession(id)!;
+  assert.notEqual(unrelatedEpisode.episodeId, expiredEpisode.episodeId);
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/4",
+          number: 4,
+          state: "merged",
+          branch: "feat/unrelated-later",
+          agentSessionId: "unrelated-later-identity",
+          episodeId: unrelatedEpisode.episodeId,
+          createdAt: unrelatedEpisode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
 test("a reused standalone session cannot satisfy an earlier episode with an unrelated PR", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

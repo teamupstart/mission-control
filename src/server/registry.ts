@@ -217,6 +217,7 @@ const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
  * rate decay instead of freezing at the last export's value.
  */
 const FLEET_COST_IDLE_INTERVAL_MS = 30 * 1000;
+const WORK_EPISODE_REBIND_TTL_MS = 30 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /**
@@ -1417,6 +1418,17 @@ export class Registry extends EventEmitter {
       }
       return episode;
     }
+    if (
+      existing.awaitingAgentRebind &&
+      Date.now() > existing.startedAt + WORK_EPISODE_REBIND_TTL_MS
+    ) {
+      existing = {
+        ...existing,
+        awaitingAgentRebind: false,
+        updatedAt: Date.now(),
+      };
+      replaceSessionWorkEpisode(existing);
+    }
     if (existing.agentSessionId !== session.agentSessionId) {
       if (
         existing.awaitingAgentRebind &&
@@ -2326,8 +2338,7 @@ export class Registry extends EventEmitter {
           !match ||
           dependency.episodeId === null ||
           dependency.agentSessionId === null ||
-          dependency.episodeId !== match.episodeId ||
-          dependency.agentSessionId !== match.agentSessionId
+          dependency.episodeId !== match.episodeId
         ) {
           return dependency;
         }
@@ -2335,17 +2346,19 @@ export class Registry extends EventEmitter {
           if (match.url !== dependency.prUrl) return dependency;
         }
         const branch = match.branch;
+        const agentSessionId = match.agentSessionId;
         const prUrl = dependency.prUrl ?? match.url;
         const satisfiedAt = match.state === "merged" ? at : null;
         if (
           branch === dependency.branch &&
+          agentSessionId === dependency.agentSessionId &&
           prUrl === dependency.prUrl &&
           satisfiedAt === dependency.satisfiedAt
         ) {
           return dependency;
         }
         changed = true;
-        return { ...dependency, branch, prUrl, satisfiedAt };
+        return { ...dependency, branch, agentSessionId, prUrl, satisfiedAt };
       });
       if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
     }

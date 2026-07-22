@@ -154,7 +154,8 @@ export async function respond(
     .then(
       async (res) => {
         if (res.code !== 0) {
-          const error = res.stderr.trim() || `no-mistakes exited with status ${res.code}`;
+          const error =
+            res.stdout.trim() || res.stderr.trim() || `no-mistakes exited with status ${res.code}`;
           console.error(`[nomistakes] respond ${action} failed:`, error);
           if (opts.runId) {
             const prior = responseByRun.get(opts.runId);

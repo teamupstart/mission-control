@@ -139,6 +139,32 @@ test("a follow-up gate distinguishes its findings from the earlier terminal ques
   assert.match(html, />Fix</, "the newer round remains independently actionable");
 });
 
+test("a response from an earlier step is not described as a newer review round", () => {
+  const html = render(
+    run({
+      awaitingAgent: "parked 10s",
+      gateStep: "test",
+      findings: [
+        { id: "test-failure", severity: "error", file: "test/a.test.ts", action: "auto-fix", description: "later" },
+      ],
+      response: {
+        runId: "01KXNAB6G2H92SN09FBYX1Z13A",
+        step: "review",
+        action: "fix",
+        findingIds: ["review-finding"],
+        status: "submitted",
+        error: null,
+      },
+    }),
+    true,
+  );
+  assert.doesNotMatch(
+    html,
+    /newer review round/,
+    "a later pipeline step is not another round of the review gate",
+  );
+});
+
 test("an asynchronous gate response failure is visible and retryable", () => {
   const html = render(
     run({

@@ -280,11 +280,15 @@ function GateActions({
   }
 
   const prior = nm.response?.status === "submitted" ? nm.response : null;
+  const priorStep = prior?.step;
+  const sameStep = priorStep && priorStep === nm.gateStep;
   const roundNote = prior ? (
     <div className="nm-round-note">
       <strong>Previous {prior.action === "fix" ? "fix" : prior.action} submitted:</strong>{" "}
       {prior.findingIds.length > 0 && <span className="mono">{prior.findingIds.join(", ")}. </span>}
-      The findings above are a newer review round and may not match the terminal&apos;s earlier question.
+      {sameStep
+        ? `The findings above are a newer ${priorStep} round and may not match the terminal's earlier question.`
+        : "The findings above are from a later pipeline step and may not match the terminal's earlier question."}
     </div>
   ) : null;
 

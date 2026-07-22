@@ -278,6 +278,7 @@ function fakeAxi(): string {
     bin,
     `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "no-mistakes 0.0-fake"; exit 0; fi
+if [ -f ./respond-stdout-error ]; then cat ./respond-stdout-error; exit 1; fi
 if [ -f ./respond-error ]; then cat ./respond-error >&2; exit 1; fi
 if [ -f ./respond-fails ]; then exit 1; fi
 exit 0
@@ -362,6 +363,16 @@ test("a failed respond retains a bounded dashboard error", async () => {
   assert.match(error, /^\n… \[earlier output truncated\]\n/);
   assert.match(error, /final diagnosis$/);
   assert.doesNotMatch(error, /opening diagnosis/);
+});
+
+test("a failed respond surfaces the CLI's stdout diagnosis", async () => {
+  const cwd = tmp("respond-stdout-error-");
+  const runId = "run-dashboard-stdout-error";
+  writeFileSync(join(cwd, "respond-stdout-error"), "error: the gate already moved");
+  const r = await respond(noSessions, cwd, "fix", { runId });
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  assert.equal(responseForRun(runId)?.error, "error: the gate already moved");
 });
 
 // ---- the foreman side: classify -> plan -> apply ----

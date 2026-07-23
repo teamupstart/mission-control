@@ -7,6 +7,7 @@ import {
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
+import { declaredBlockers } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
@@ -214,8 +215,9 @@ export function ReportPanel({
         </Section>
 
         <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
-          {backlog.map((t) => (
-            <div className="report-row" key={t.id}>
+          {backlog.map((t) => {
+            const blockers = declaredBlockers(t, tasks);
+            return <div className="report-row" key={t.id}>
               {/* Two lines, not one. This panel is narrow and a backlog row carries a
                   title, a priority, a kind, up to three labels and a repo path - on a
                   single flex line those fought each other and every one of them lost:
@@ -240,17 +242,27 @@ export function ReportPanel({
                   <LabelChips labels={t.labels} max={3} />
                   <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
                 </span>
+                {blockers.length > 0 && (
+                  <span className="report-line report-line-sub">
+                    Waiting for {blockers.map((blocker) => blocker.title).join(", ")}
+                  </span>
+                )}
               </div>
               <div className="report-row-actions">
-                <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
-                  Dispatch
+                <button
+                  className="btn btn-send"
+                  onClick={() => void api.dispatchBacklog(t.id)}
+                  disabled={blockers.length > 0}
+                  title={blockers.length > 0 ? "Dependencies must complete first" : undefined}
+                >
+                  {blockers.length > 0 ? "Waiting" : "Dispatch"}
                 </button>
                 <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(t.id)}>
                   Delete
                 </button>
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
         </Section>
 
         <Section title="Recent outcomes" tone="neutral" count={recent.length} empty="No finished tasks yet.">

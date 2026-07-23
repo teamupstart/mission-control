@@ -59,6 +59,48 @@ function seedLegacyDb(): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run("legacy-2", "Already shipped", "did it", "ship", "claude", "/repo", "done", 1, 1);
+  raw
+    .prepare(
+      `INSERT INTO tasks
+       (id, title, intent, kind, agent, repo_root, session_id, status,
+        created_at, updated_at, dispatched_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "legacy-stale-running",
+      "Older task",
+      "old work",
+      "ship",
+      "claude",
+      "/repo",
+      "reused-session",
+      "running",
+      10,
+      1000,
+      100,
+      null,
+    );
+  raw
+    .prepare(
+      `INSERT INTO tasks
+       (id, title, intent, kind, agent, repo_root, session_id, status,
+        created_at, updated_at, dispatched_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "legacy-current-done",
+      "Newer task",
+      "new work",
+      "ship",
+      "claude",
+      "/repo",
+      "reused-session",
+      "done",
+      20,
+      200,
+      200,
+      300,
+    );
   raw.close();
 }
 
@@ -82,6 +124,11 @@ test("a migrated task is still loaded as active, so a real backlog survives the 
 
 test("the migration leaves non-queued rows alone", () => {
   assert.equal(getTask("legacy-2")?.status, "done");
+});
+
+test("binding migration keeps the latest assignment across lifecycle states", () => {
+  assert.equal(getTask("legacy-stale-running")?.sessionId, null);
+  assert.equal(getTask("legacy-current-done")?.sessionId, "reused-session");
 });
 
 /*

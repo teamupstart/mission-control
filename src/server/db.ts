@@ -149,6 +149,7 @@ export function openDb(): DatabaseSync {
       agent         TEXT NOT NULL,
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
+      dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
       model         TEXT,
       effort        TEXT,
       -- Where a task source swept this task from. The LINK BACK only: identity for
@@ -162,6 +163,7 @@ export function openDb(): DatabaseSync {
       branch        TEXT,
       provider      TEXT,
       tmux_session  TEXT,
+      terminal_resource_id TEXT,
       session_id    TEXT,
       status        TEXT NOT NULL,
       outcome       TEXT,
@@ -174,6 +176,59 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
+
+    CREATE TABLE IF NOT EXISTS session_work_episodes (
+      session_id       TEXT PRIMARY KEY,
+      episode_id       TEXT NOT NULL UNIQUE,
+      agent_session_id TEXT NOT NULL,
+      branch           TEXT,
+      pr_url           TEXT,
+      pr_head_sha      TEXT,
+      merged_at        INTEGER,
+      prompted_at      INTEGER,
+      awaiting_agent_rebind INTEGER NOT NULL DEFAULT 0,
+      rebind_from_transcript_path TEXT,
+      started_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS session_work_episode_prompts (
+      session_id  TEXT NOT NULL,
+      episode_id  TEXT NOT NULL,
+      prompted_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, episode_id, prompted_at)
+    );
+
+    CREATE TABLE IF NOT EXISTS task_work_episode_bindings (
+      task_id          TEXT PRIMARY KEY,
+      episode_id       TEXT NOT NULL,
+      session_id       TEXT NOT NULL,
+      agent_session_id TEXT NOT NULL,
+      branch           TEXT,
+      pr_url           TEXT,
+      pr_head_sha      TEXT,
+      merged_at        INTEGER,
+      bound_at         INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_work_episode_session
+      ON task_work_episode_bindings(session_id);
+
+    CREATE TABLE IF NOT EXISTS historical_task_work_episode_bindings (
+      task_id          TEXT NOT NULL,
+      episode_id       TEXT NOT NULL,
+      session_id       TEXT NOT NULL,
+      agent_session_id TEXT NOT NULL,
+      branch           TEXT,
+      pr_url           TEXT,
+      pr_head_sha      TEXT,
+      merged_at        INTEGER,
+      bound_at         INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      PRIMARY KEY (task_id, episode_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_historical_task_work_episode_session
+      ON historical_task_work_episode_bindings(session_id, episode_id);
 
     -- Every decision Foreman has faced on a session, append-only: the question it
     -- was asked, what it concluded, and what was actually sent back.
@@ -698,6 +753,32 @@ function migrate(d: DatabaseSync): void {
   // column is not `TEXT NOT NULL DEFAULT ''`.
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
+  addColumn(d, "tasks", "dependencies", "TEXT");
+  addColumn(d, "tasks", "terminal_resource_id", "TEXT");
+  addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
+  addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
+  addColumn(d, "session_work_episodes", "prompted_at", "INTEGER");
+  addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
+  d.exec(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        PARTITION BY session_id
+        ORDER BY
+          CASE WHEN dispatched_at IS NULL THEN 1 ELSE 0 END,
+          dispatched_at DESC,
+          created_at DESC,
+          updated_at DESC,
+          id DESC
+      ) AS position
+      FROM tasks
+      WHERE session_id IS NOT NULL
+    )
+    UPDATE tasks SET session_id = NULL
+    WHERE id IN (SELECT id FROM ranked WHERE position > 1);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session
+      ON tasks(session_id) WHERE session_id IS NOT NULL;
+  `);
 
   // Usage provenance and immutable pricing metadata. Old rows are Claude's reported
   // telemetry, so the defaults are the truthful migration rather than a placeholder.
@@ -1455,6 +1536,7 @@ interface TaskRow {
   agent: string;
   priority: string | null;
   labels: string | null;
+  dependencies: string | null;
   model: string | null;
   effort: string | null;
   source_id: string | null;
@@ -1465,6 +1547,7 @@ interface TaskRow {
   branch: string | null;
   provider: string | null;
   tmux_session: string | null;
+  terminal_resource_id: string | null;
   session_id: string | null;
   status: string;
   outcome: string | null;
@@ -1483,6 +1566,64 @@ function parseLabels(raw: string | null): string[] {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return normalizeLabels(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return [];
+  }
+}
+
+/** Read dependency JSON defensively: one stale row must not take down the backlog. */
+function parseTaskDependencies(raw: string | null): Task["dependencies"] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: Task["dependencies"] = [];
+    const seen = new Set<string>();
+    for (const value of parsed) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
+      const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
+      if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
+        const key = `task:${row.taskId}`;
+        if (!seen.has(key)) {
+          out.push({
+            type: "task",
+            taskId: row.taskId,
+            title: row.title,
+            sessionId: typeof row.sessionId === "string" ? row.sessionId : null,
+            episodeId: typeof row.episodeId === "string" ? row.episodeId : null,
+            agentSessionId: typeof row.agentSessionId === "string" ? row.agentSessionId : null,
+            branch: typeof row.branch === "string" ? row.branch : null,
+            prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
+            selectedAt,
+            satisfiedAt,
+          });
+        }
+        seen.add(key);
+      } else if (
+        row.type === "session" &&
+        typeof row.sessionId === "string" &&
+        typeof row.title === "string"
+      ) {
+        const key = `session:${row.sessionId}`;
+        if (!seen.has(key)) {
+          out.push({
+            type: "session",
+            sessionId: row.sessionId,
+            title: row.title,
+            episodeId: typeof row.episodeId === "string" ? row.episodeId : null,
+            agentSessionId: typeof row.agentSessionId === "string" ? row.agentSessionId : null,
+            branch: typeof row.branch === "string" ? row.branch : null,
+            prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
+            selectedAt,
+            satisfiedAt,
+          });
+        }
+        seen.add(key);
+      }
+    }
+    return out;
   } catch {
     return [];
   }
@@ -1509,6 +1650,7 @@ function rowToTask(r: TaskRow): Task {
     // unbounded tag. A malformed blob reads as no labels rather than throwing - one
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
+    dependencies: parseTaskDependencies(r.dependencies),
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     // Both key columns or nothing: half a provenance would render as a link to an item
@@ -1522,6 +1664,7 @@ function rowToTask(r: TaskRow): Task {
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
     tmuxSession: r.tmux_session,
+    terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
     status: r.status as TaskStatus,
     outcome: r.outcome,
@@ -1534,39 +1677,61 @@ function rowToTask(r: TaskRow): Task {
   };
 }
 
-export function upsertTask(t: Task): void {
-  openDb()
-    .prepare(
+export function upsertTask(t: Task): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const displaced = t.sessionId
+      ? (d
+          .prepare(`SELECT id FROM tasks WHERE session_id = ? AND id <> ?`)
+          .all(t.sessionId, t.id) as unknown as Array<{ id: string }>).map((row) => row.id)
+      : [];
+    if (t.sessionId) {
+      d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ? AND id <> ?`).run(
+        t.sessionId,
+        t.id,
+      );
+    }
+    d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, model, effort,
+         id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, tmux_session, session_id, status, outcome, outcome_url, error,
+         provider, tmux_session, terminal_resource_id, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
-         priority=excluded.priority, labels=excluded.labels, model=excluded.model, effort=excluded.effort,
+         priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
+         model=excluded.model, effort=excluded.effort,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
+         provider=excluded.provider, tmux_session=excluded.tmux_session,
+         terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
-    )
-    .run(
+    ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
       // Stored as NULL rather than "[]" when empty, so the column reads the same for a
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
+      t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
       t.model,
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
-      t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.tmuxSession, t.terminalResourceId, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
+    if (ownsTransaction) d.exec("COMMIT");
+    return displaced;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function getTask(id: string): Task | undefined {
@@ -1576,8 +1741,555 @@ export function getTask(id: string): Task | undefined {
   return r ? rowToTask(r) : undefined;
 }
 
+export function taskIdForSession(sessionId: string): string | null {
+  const row = openDb()
+    .prepare(
+      `SELECT id FROM tasks
+       WHERE session_id = ? AND status NOT IN ('backlog', 'cancelled')`,
+    )
+    .get(sessionId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+export interface SessionWorkEpisode {
+  episodeId: string;
+  sessionId: string;
+  agentSessionId: string;
+  branch: string | null;
+  prUrl: string | null;
+  prHeadSha: string | null;
+  mergedAt: number | null;
+  promptedAt: number | null;
+  awaitingAgentRebind: boolean;
+  rebindFromTranscriptPath: string | null;
+  startedAt: number;
+  updatedAt: number;
+}
+
+export interface TaskWorkEpisodeBinding {
+  taskId: string;
+  episodeId: string;
+  sessionId: string;
+  agentSessionId: string;
+  branch: string | null;
+  prUrl: string | null;
+  prHeadSha: string | null;
+  mergedAt: number | null;
+  boundAt: number;
+  updatedAt: number;
+}
+
+type SessionWorkEpisodeRow = {
+  episode_id: string;
+  session_id: string;
+  agent_session_id: string;
+  branch: string | null;
+  pr_url: string | null;
+  pr_head_sha: string | null;
+  merged_at: number | null;
+  prompted_at: number | null;
+  awaiting_agent_rebind: number;
+  rebind_from_transcript_path: string | null;
+  started_at: number;
+  updated_at: number;
+};
+
+type TaskWorkEpisodeRow = {
+  task_id: string;
+  episode_id: string;
+  session_id: string;
+  agent_session_id: string;
+  branch: string | null;
+  pr_url: string | null;
+  pr_head_sha: string | null;
+  merged_at: number | null;
+  bound_at: number;
+  updated_at: number;
+};
+
+function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpisode {
+  return {
+    episodeId: row.episode_id,
+    sessionId: row.session_id,
+    agentSessionId: row.agent_session_id,
+    branch: row.branch,
+    prUrl: row.pr_url,
+    prHeadSha: row.pr_head_sha,
+    mergedAt: row.merged_at,
+    promptedAt: row.prompted_at,
+    awaitingAgentRebind: Boolean(row.awaiting_agent_rebind),
+    rebindFromTranscriptPath: row.rebind_from_transcript_path,
+    startedAt: row.started_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding {
+  return {
+    taskId: row.task_id,
+    episodeId: row.episode_id,
+    sessionId: row.session_id,
+    agentSessionId: row.agent_session_id,
+    branch: row.branch,
+    prUrl: row.pr_url,
+    prHeadSha: row.pr_head_sha,
+    mergedAt: row.merged_at,
+    boundAt: row.bound_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function sessionWorkEpisodeFor(sessionId: string): SessionWorkEpisode | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM session_work_episodes WHERE session_id = ?`)
+    .get(sessionId) as unknown as SessionWorkEpisodeRow | undefined;
+  return row ? sessionWorkEpisodeFromRow(row) : null;
+}
+
+export interface TaskDependencyRewrite {
+  taskId: string;
+  dependencies: Task["dependencies"];
+  updatedAt: number;
+}
+
+function writeSessionWorkEpisode(d: DatabaseSync, episode: SessionWorkEpisode): void {
+  d.prepare(
+    `INSERT INTO session_work_episodes
+       (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, prompted_at,
+        awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET
+       episode_id       = excluded.episode_id,
+       agent_session_id = excluded.agent_session_id,
+       branch           = excluded.branch,
+       pr_url            = excluded.pr_url,
+       pr_head_sha       = excluded.pr_head_sha,
+       merged_at         = excluded.merged_at,
+       prompted_at       = excluded.prompted_at,
+       awaiting_agent_rebind = excluded.awaiting_agent_rebind,
+       rebind_from_transcript_path = excluded.rebind_from_transcript_path,
+       started_at       = excluded.started_at,
+       updated_at       = excluded.updated_at`,
+  ).run(
+    episode.sessionId,
+    episode.episodeId,
+    episode.agentSessionId,
+    episode.branch,
+    episode.prUrl,
+    episode.prHeadSha,
+    episode.mergedAt,
+    episode.promptedAt,
+    episode.awaitingAgentRebind ? 1 : 0,
+    episode.rebindFromTranscriptPath,
+    episode.startedAt,
+    episode.updatedAt,
+  );
+  if (episode.promptedAt !== null) {
+    d.prepare(
+      `INSERT OR IGNORE INTO session_work_episode_prompts
+         (session_id, episode_id, prompted_at)
+       VALUES (?, ?, ?)`,
+    ).run(episode.sessionId, episode.episodeId, episode.promptedAt);
+  }
+}
+
+function writeTaskDependencyRewrites(
+  d: DatabaseSync,
+  rewrites: TaskDependencyRewrite[],
+): void {
+  const update = d.prepare(
+    `UPDATE tasks SET dependencies = ?, updated_at = ? WHERE id = ?`,
+  );
+  for (const rewrite of rewrites) {
+    const result = update.run(
+      rewrite.dependencies.length > 0 ? JSON.stringify(rewrite.dependencies) : null,
+      rewrite.updatedAt,
+      rewrite.taskId,
+    );
+    if (Number(result.changes) !== 1) {
+      throw new Error(`task disappeared during dependency rebind: ${rewrite.taskId}`);
+    }
+  }
+}
+
+function invalidateTaskOwnershipInTransaction(
+  d: DatabaseSync,
+  sessionId: string,
+  at: number,
+): string[] {
+  const rows = d
+    .prepare(
+      `SELECT task_id FROM task_work_episode_bindings WHERE session_id = ?
+       UNION SELECT id AS task_id FROM tasks WHERE session_id = ?`,
+    )
+    .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
+  d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
+  d.prepare(
+    `UPDATE tasks SET
+       session_id = NULL,
+       status = CASE WHEN status IN ('dispatching', 'running') THEN 'cancelled' ELSE status END,
+       completed_at = CASE
+         WHEN status IN ('dispatching', 'running') THEN COALESCE(completed_at, ?)
+         ELSE completed_at
+       END,
+       updated_at = MAX(updated_at, ?)
+     WHERE session_id = ?`,
+  ).run(at, at, sessionId);
+  return rows.map((row) => row.task_id);
+}
+
+export function replaceSessionWorkEpisodeWithDependencies(
+  episode: SessionWorkEpisode,
+  rewrites: TaskDependencyRewrite[],
+  invalidateOwnershipSessionId: string | null = null,
+): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const invalidatedTaskIds = invalidateOwnershipSessionId === null
+      ? []
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId, episode.updatedAt);
+    writeSessionWorkEpisode(d, episode);
+    writeTaskDependencyRewrites(d, rewrites);
+    if (ownsTransaction) d.exec("COMMIT");
+    return invalidatedTaskIds;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
+  replaceSessionWorkEpisodeWithDependencies(episode, []);
+}
+
+export function deleteSessionWorkEpisodeWithOwnership(
+  sessionId: string,
+  at = Date.now(),
+): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const invalidatedTaskIds = invalidateTaskOwnershipInTransaction(d, sessionId, at);
+    d.prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+    if (ownsTransaction) d.exec("COMMIT");
+    return invalidatedTaskIds;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export interface PendingSessionWorkEpisodeRebindResult {
+  rebound: boolean;
+  invalidatedTaskIds: string[];
+}
+
+export function rebindPendingSessionWorkEpisodeWithDependencies(
+  sessionId: string,
+  episodeId: string,
+  agentSessionId: string,
+  now: number,
+  rewrites: TaskDependencyRewrite[],
+  invalidateOwnershipSessionId: string | null = null,
+): PendingSessionWorkEpisodeRebindResult {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const pending = d
+      .prepare(
+        `SELECT 1 FROM session_work_episodes
+         WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
+      )
+      .get(sessionId, episodeId);
+    if (!pending) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return { rebound: false, invalidatedTaskIds: [] };
+    }
+    const invalidatedTaskIds = invalidateOwnershipSessionId === null
+      ? []
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId, now);
+    const result = d
+      .prepare(
+        `UPDATE session_work_episodes
+         SET agent_session_id = ?, awaiting_agent_rebind = 0,
+             rebind_from_transcript_path = NULL, updated_at = ?
+         WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
+      )
+      .run(agentSessionId, now, sessionId, episodeId);
+    if (Number(result.changes) !== 1) {
+      throw new Error(`pending work episode disappeared during rebind: ${sessionId}`);
+    }
+    if (invalidateOwnershipSessionId === null) {
+      d.prepare(
+        `UPDATE task_work_episode_bindings
+         SET agent_session_id = ?, updated_at = ?
+        WHERE session_id = ? AND episode_id = ?`,
+      ).run(agentSessionId, now, sessionId, episodeId);
+    }
+    writeTaskDependencyRewrites(d, rewrites);
+    if (ownsTransaction) d.exec("COMMIT");
+    return { rebound: true, invalidatedTaskIds };
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function rebindPendingSessionWorkEpisode(
+  sessionId: string,
+  episodeId: string,
+  agentSessionId: string,
+  now: number,
+): boolean {
+  return rebindPendingSessionWorkEpisodeWithDependencies(
+    sessionId,
+    episodeId,
+    agentSessionId,
+    now,
+    [],
+  ).rebound;
+}
+
+export function deleteSessionWorkEpisode(sessionId: string): void {
+  openDb().prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+}
+
+export function deleteWorkEpisodePrompts(sessionId: string, episodeId: string): void {
+  openDb()
+    .prepare(
+      `DELETE FROM session_work_episode_prompts WHERE session_id = ? AND episode_id = ?`,
+    )
+    .run(sessionId, episodeId);
+}
+
+export function workEpisodePromptIdentities(): Array<{
+  sessionId: string;
+  episodeId: string;
+}> {
+  const rows = openDb()
+    .prepare(
+      `SELECT DISTINCT session_id, episode_id FROM session_work_episode_prompts`,
+    )
+    .all() as unknown as Array<{ session_id: string; episode_id: string }>;
+  return rows.map((row) => ({ sessionId: row.session_id, episodeId: row.episode_id }));
+}
+
+export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
+      `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
+    ).run(binding.sessionId, binding.taskId);
+    d.prepare(
+      `INSERT INTO task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO UPDATE SET
+         episode_id       = excluded.episode_id,
+         session_id       = excluded.session_id,
+         agent_session_id = excluded.agent_session_id,
+         branch           = excluded.branch,
+         pr_url           = excluded.pr_url,
+         pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = excluded.merged_at,
+         bound_at         = excluded.bound_at,
+         updated_at       = excluded.updated_at`,
+    ).run(
+      binding.taskId,
+      binding.episodeId,
+      binding.sessionId,
+      binding.agentSessionId,
+      binding.branch,
+      binding.prUrl,
+      binding.prHeadSha,
+      binding.mergedAt,
+      binding.boundAt,
+      binding.updatedAt,
+    );
+    if (ownsTransaction) d.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function taskWorkEpisodeForSession(sessionId: string): TaskWorkEpisodeBinding | null {
+  const row = openDb()
+    .prepare(
+      `SELECT b.* FROM task_work_episode_bindings b
+       JOIN tasks t ON t.id = b.task_id
+       WHERE b.session_id = ? AND t.status NOT IN ('backlog', 'cancelled')`,
+    )
+    .get(sessionId) as unknown as TaskWorkEpisodeRow | undefined;
+  return row ? taskWorkEpisodeFromRow(row) : null;
+}
+
+export function taskWorkEpisodeForTask(taskId: string): TaskWorkEpisodeBinding | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM task_work_episode_bindings WHERE task_id = ?`)
+    .get(taskId) as unknown as TaskWorkEpisodeRow | undefined;
+  return row ? taskWorkEpisodeFromRow(row) : null;
+}
+
+export function historicalTaskWorkEpisodeBindings(): TaskWorkEpisodeBinding[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM historical_task_work_episode_bindings ORDER BY updated_at DESC`)
+    .all() as unknown as TaskWorkEpisodeRow[];
+  return rows.map(taskWorkEpisodeFromRow);
+}
+
+export function historicalTaskWorkEpisodeBindingsForTask(
+  taskId: string,
+): TaskWorkEpisodeBinding[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM historical_task_work_episode_bindings
+       WHERE task_id = ? ORDER BY bound_at DESC`,
+    )
+    .all(taskId) as unknown as TaskWorkEpisodeRow[];
+  return rows.map(taskWorkEpisodeFromRow);
+}
+
+export function deleteHistoricalTaskWorkEpisodeBinding(
+  taskId: string,
+  episodeId: string,
+): void {
+  openDb()
+    .prepare(
+      `DELETE FROM historical_task_work_episode_bindings
+       WHERE task_id = ? AND episode_id = ?`,
+    )
+    .run(taskId, episodeId);
+}
+
+export function updateWorkEpisodePr(
+  sessionId: string,
+  episodeId: string,
+  branch: string,
+  prUrl: string,
+  prHeadSha: string | null,
+  now: number,
+): boolean {
+  const d = openDb();
+  const result = d
+    .prepare(
+      `UPDATE session_work_episodes
+       SET branch = ?, pr_url = ?, pr_head_sha = ?, updated_at = ?
+       WHERE session_id = ? AND episode_id = ? AND (pr_url IS NULL OR pr_url = ?)`,
+    )
+    .run(branch, prUrl, prHeadSha, now, sessionId, episodeId, prUrl);
+  if (Number(result.changes) === 0) return false;
+  d.prepare(
+    `UPDATE task_work_episode_bindings
+     SET branch = ?, pr_url = ?, pr_head_sha = ?, updated_at = ?
+     WHERE session_id = ? AND episode_id = ? AND (pr_url IS NULL OR pr_url = ?)`,
+  ).run(branch, prUrl, prHeadSha, now, sessionId, episodeId, prUrl);
+  return true;
+}
+
+export function recordWorkEpisodePrompt(
+  sessionId: string,
+  episodeId: string,
+  promptedAt: number,
+): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const result = d.prepare(
+      `UPDATE session_work_episodes
+       SET prompted_at = MAX(COALESCE(prompted_at, 0), ?), updated_at = MAX(updated_at, ?)
+       WHERE session_id = ? AND episode_id = ?`,
+    ).run(promptedAt, promptedAt, sessionId, episodeId);
+    if (Number(result.changes) > 0) {
+      d.prepare(
+        `INSERT OR IGNORE INTO session_work_episode_prompts
+           (session_id, episode_id, prompted_at)
+         VALUES (?, ?, ?)`,
+      ).run(sessionId, episodeId, promptedAt);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+    return Number(result.changes) > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function firstWorkEpisodePromptAfter(
+  sessionId: string,
+  episodeId: string,
+  after: number,
+): number | null {
+  const row = openDb()
+    .prepare(
+      `SELECT prompted_at FROM session_work_episode_prompts
+       WHERE session_id = ? AND episode_id = ? AND prompted_at > ?
+       ORDER BY prompted_at ASC
+       LIMIT 1`,
+    )
+    .get(sessionId, episodeId, after) as { prompted_at: number } | undefined;
+  return row?.prompted_at ?? null;
+}
+
+export function markWorkEpisodeMerged(
+  sessionId: string,
+  episodeId: string,
+  prUrl: string,
+  now: number,
+): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const session = d
+      .prepare(
+        `UPDATE session_work_episodes
+         SET merged_at = COALESCE(merged_at, ?), updated_at = MAX(updated_at, ?)
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
+    const binding = d
+      .prepare(
+        `UPDATE task_work_episode_bindings
+         SET merged_at = COALESCE(merged_at, ?), updated_at = MAX(updated_at, ?)
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
+    if (ownsTransaction) d.exec("COMMIT");
+    return Number(session.changes) > 0 || Number(binding.changes) > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const taskIds = invalidateTaskOwnershipInTransaction(d, sessionId, Date.now());
+    if (ownsTransaction) d.exec("COMMIT");
+    return taskIds;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function deleteTask(id: string): void {
-  openDb().prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+  const d = openDb();
+  d.prepare(`DELETE FROM task_work_episode_bindings WHERE task_id = ?`).run(id);
+  d.prepare(`DELETE FROM historical_task_work_episode_bindings WHERE task_id = ?`).run(id);
+  d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
 }
 
 export function listTasks(): Task[] {
@@ -1613,7 +2325,7 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 }
 
 /**
- * Terminal tasks that still hold a worktree (a `done` task awaiting reclaim, or a
+ * Terminal tasks that still hold resources (a task awaiting reclaim, or a
  * failed-but-alive dispatch). Loaded regardless of the recent cap so their live
  * resources are always reconciled on start rather than orphaned once newer terminal
  * tasks push them past the cap.
@@ -1621,7 +2333,9 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 export function loadResourceHoldingTerminalTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status IN ('done','failed') AND worktree_path IS NOT NULL`,
+      `SELECT * FROM tasks
+       WHERE status IN ('done','failed','cancelled')
+         AND (worktree_path IS NOT NULL OR tmux_session IS NOT NULL)`,
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);

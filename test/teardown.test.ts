@@ -66,3 +66,16 @@ test("teardownWorktree never deletes a non-harness branch", async () => {
 
   rmSync(repo, { recursive: true, force: true });
 });
+
+test("teardownWorktree reports cleanup failure", async () => {
+  await assert.rejects(
+    teardownWorktree({
+      repoRoot: "/missing/teardown-repo",
+      worktreePath: "/missing/teardown-worktree",
+      branch: "harness/missing",
+      provider: "git",
+      tmuxSession: null,
+    }),
+    /git worktree remove failed/,
+  );
+});

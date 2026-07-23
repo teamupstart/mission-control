@@ -103,6 +103,49 @@ test("a two-task cycle is broken rather than stored - both would block forever",
   assert.equal(readyBacklog([a, b], stored(plan)).length, 1);
 });
 
+test("a model edge can never reverse an operator-declared dependency", () => {
+  const foundation = mkTask();
+  const followup = mkTask({
+    dependencies: [
+      {
+        type: "task",
+        taskId: foundation.id,
+        title: foundation.title,
+        sessionId: null,
+        episodeId: null,
+        agentSessionId: null,
+        branch: null,
+        prUrl: null,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
+  });
+  const plan = sanitizePlan(
+    report([
+      // The model got it backwards. Its edge must be removed; the declared edge is
+      // enforced from the task row and also determines the readout order.
+      { id: foundation.id, dependsOn: [followup.id] },
+      { id: followup.id, dependsOn: [] },
+    ]),
+    [foundation, followup],
+  );
+  assert.deepEqual(plan.entries.map((entry) => [entry.taskId, entry.dependsOn]), [
+    [foundation.id, []],
+    [followup.id, []],
+  ]);
+
+  // A stored plan can be older than an operator edit. The shared reader applies the
+  // same rule immediately, before Foreman ever has a reason to replan.
+  const staleReverse = planFor([
+    [foundation.id, [followup.id]],
+    [followup.id, []],
+  ]);
+  assert.deepEqual(readyBacklog([foundation, followup], staleReverse).map((task) => task.id), [
+    foundation.id,
+  ]);
+});
+
 test("a genuine dependency SURVIVES being listed in priority order, not topological order", () => {
   // The prompt asks for a topological order and the model routinely answers by
   // priority. Judging edges by position in that array would silently delete the
@@ -307,6 +350,55 @@ test("with no plan at all nothing is blocked - the board renders exactly as it d
   const t = mkTask();
   assert.deepEqual(blockersFor(t, null, [t]), []);
   assert.equal(readyBacklog([t], null).length, 1);
+});
+
+test("an operator-declared ship dependency blocks without a Foreman plan until its merge is recorded", () => {
+  const dep = mkTask({ status: "running" });
+  const t = mkTask({
+    dependencies: [
+      {
+        type: "task",
+        taskId: dep.id,
+        title: dep.title,
+        sessionId: null,
+        episodeId: null,
+        agentSessionId: null,
+        branch: null,
+        prUrl: null,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
+  });
+  const [blocker] = blockersFor(t, null, [dep, t]);
+  assert.equal(blocker?.source, "declared");
+  assert.equal(blocker?.state, "waiting");
+  assert.deepEqual(readyBacklog([dep, t], null), []);
+
+  const satisfied = { ...t, dependencies: [{ ...t.dependencies[0]!, satisfiedAt: 123 }] };
+  assert.deepEqual(readyBacklog([dep, satisfied], null).map((task) => task.id), [t.id]);
+});
+
+test("a completed scout remains blocked without a merged PR", () => {
+  const scout = mkTask({ kind: "scout", status: "done" });
+  const t = mkTask({
+    dependencies: [
+      {
+        type: "task",
+        taskId: scout.id,
+        title: scout.title,
+        sessionId: null,
+        episodeId: null,
+        agentSessionId: null,
+        branch: null,
+        prUrl: null,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
+  });
+  assert.equal(blockersFor(t, null, [scout, t]).length, 1);
+  assert.deepEqual(readyBacklog([scout, t], null), []);
 });
 
 // ---- ordering ------------------------------------------------------------------------

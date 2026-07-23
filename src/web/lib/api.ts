@@ -41,6 +41,7 @@ import type {
   UiConfigView,
   TaskSourcesConfigPatch,
   UpdateTask,
+  TaskDependencyInput,
 } from "@shared/protocol.ts";
 import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -344,6 +345,8 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Backlog-task or live-session prerequisites. */
+  dependencies?: TaskDependencyInput[];
   backlog?: boolean;
 }
 
@@ -417,7 +420,7 @@ export const api = {
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
   /**
    * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker. Rewriting repo/intent/title/kind/agent/model/effort is refused (409)
+   * priority picker. Rewriting repo/intent/title/kind/agent/model/effort/dependencies is refused (409)
    * once the task has been dispatched, when its launch configuration is already in use;
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.

@@ -839,6 +839,17 @@ what it's working on. It's headless until you want it - click **Focus** on the c
 it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
 launching it yet.
 
+**Dependencies** can be selected from tasks already in the backlog and from active
+sessions. They are durable scheduling constraints, not notes: if any selected dependency
+is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
+forced into the backlog. Every task or standalone active session completes only when its
+PR is observed **merged**; marking a task done or merely opening its PR does not release
+dependents. Active sessions without observable hook instrumentation are not eligible
+dependencies because Mission Control cannot distinguish their next work episode from an
+earlier merged PR. The board and Sitrep name what a task is waiting for, and neither manual
+launch, drag-to-assign, nor Foreman can start it early. Reopen the backlog task to add or
+remove dependencies; cycles are refused.
+
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can glance at
 the grid mid-thought without losing it. The draft is cleared only once the task is actually
@@ -893,10 +904,10 @@ is where a stale name is most confusing - nobody watched that handover happen.
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
-[Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
-text itself, plus more screenshots dropped onto it. **Model** and **Effort** included - and
-putting either back on **Default** un-pins it, so the task goes back to following the
-corresponding harness default when it finally launches. **Save** keeps it in the backlog;
+[Roundup](#roundup) panel. Every field is editable, including its dependencies and more
+screenshots dropped onto it. Put **Model** or **Effort** back on **Default** to un-pin it,
+so the task follows the corresponding harness default when it finally launches. **Save**
+keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
@@ -1569,7 +1580,8 @@ Three knobs, in the Foreman popover under **Backlog**:
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
 **you** clicked, because blocking a button you pressed to protect a background scheduler's
-budget is the worse surprise.
+budget is the worse surprise. An unmet dependency is different: it is a task-level ordering
+constraint and blocks every scheduling path, manual ones included.
 
 **It only ever launches in Live mode, on an allowlisted repo** - the same gate the
 automated wrap-up actions clear, for the same reason. Launching an agent starts unattended
@@ -1578,7 +1590,7 @@ sitting in front of; both are more consequential than answering a prompt. In **d
 and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
-**Dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
+**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
 (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every backlog item's title and intent
 and returns an order plus, for each item, what it must wait for. The reply isn't trusted as
 written: ids that aren't in the backlog are dropped, self-references are dropped, **only the
@@ -1589,7 +1601,12 @@ loop. Every dependency that isn't part of a cycle survives, whatever order the m
 the items in, and the plan is stored in dependency order. The read re-runs only when the
 backlog **gains** an item, so a steady backlog costs nothing.
 
-**The read's time budget scales with the backlog** (`60s + 15s` an item, capped at 10 min;
+Operator-selected dependencies from the dispatch form are separate, persisted facts. The
+planner sees them, cannot reverse or remove them, and its inferred graph is sanitized
+against them so an inferred reverse edge cannot deadlock the backlog. Those facts remain
+enforced when autopilot is off or its model plan is missing.
+
+**The read's time budget scales with the backlog** (`60s + 20s` an item, capped at 10 min;
 `FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the model writes one entry
 per task, so a two-dozen-item backlog is minutes of wall clock where a handful of items is
 seconds. A fixed cap worked on a short backlog and then stopped working for good once one
@@ -1644,13 +1661,14 @@ Autopilot **confirms the rest of that reset unattended**, and it has already rul
 what the confirmation protects: an agent is only "free" here with an empty work queue,
 and clearing the context is how a handover works at all.
 
-On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
-what an item waits on, a **next up** mark on the one it would take next, and - for a
-dependency that was cancelled or failed, which will never clear on its own - the attention
-tone. Blocked cards stay draggable and launchable (**launch anyway**): a dependency read is
-a model's opinion, and overruling it should be one gesture. The Foreman popover carries the
-live readout - `2/3 agents · 4 ready · 1 blocked` - so "why is nothing launching?" is
-answerable without reading a log.
+On the **board**, the Backlog column shows a **blocked** chip naming what an item waits on,
+a **next up** mark on the one Foreman would take next, and - for a dependency that was
+cancelled or failed, which will never clear on its own - the attention tone. A card blocked
+only by Foreman's inferred dependencies stays draggable and launchable (**launch anyway**),
+because the model's read is an opinion. An operator-selected dependency is authoritative:
+its card reads **waiting for dependencies** and cannot be launched or assigned early. The
+Foreman popover carries the live readout - `2/3 agents · 4 ready · 1 blocked` - so "why is
+nothing launching?" is answerable without reading a log.
 
 ## Half-written text is kept
 
@@ -2320,7 +2338,7 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
-| `FOREMAN_BACKLOG_TIMEOUT_MS` | scales with the backlog | Backlog autopilot: hard cap on one dependency read. Unset, the budget is `60s + 15s` per backlog item, capped at 10 min - the reply carries one written entry per task, so a fixed cap silently stops working once the backlog outgrows it. Set it to pin a flat ceiling instead. Three failures in a row and Foreman schedules serially |
+| `FOREMAN_BACKLOG_TIMEOUT_MS` | scales with the backlog | Backlog autopilot: hard cap on one dependency read. Unset, the budget is `60s + 20s` per backlog item, capped at 10 min - the reply carries one written entry per task, so a fixed cap silently stops working once the backlog outgrows it. Set it to pin a flat ceiling instead. Three failures in a row and Foreman schedules serially |
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |

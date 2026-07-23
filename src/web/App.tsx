@@ -1078,6 +1078,8 @@ export function App(): React.JSX.Element {
               <DispatchLayer
                 open={dispatchOpen || editingTask != null}
                 editTask={editingTask}
+                tasks={tasks}
+                sessions={sessions}
                 onClose={closeDispatch}
               />
 

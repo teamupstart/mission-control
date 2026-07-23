@@ -354,6 +354,28 @@ const TASK_TRIAGE_FIELDS = {
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
 };
 
+/** A dependency target selected from the backlog or the live-session list. */
+export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
+  z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+]);
+export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
+
+const TaskDependenciesSchema = z
+  .array(TaskDependencyInputSchema)
+  .max(50)
+  .superRefine((dependencies, ctx) => {
+    const seen = new Set<string>();
+    for (let i = 0; i < dependencies.length; i++) {
+      const dependency = dependencies[i]!;
+      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      if (seen.has(key)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i], message: "duplicate task dependency" });
+      }
+      seen.add(key);
+    }
+  });
+
 /**
  * A model id, in the only shape that is safe to hand to a harness CLI.
  *
@@ -392,6 +414,7 @@ export const DispatchSchema = z
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
     backlog: z.boolean().optional().default(false),
+    dependencies: TaskDependenciesSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
   })
   .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
@@ -451,10 +474,12 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model` and `effort` are PROVISIONING fields -
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort` and `dependencies` are
+ * PROVISIONING fields -
  * repo, intent and title are cut into a branch name and a tmux session at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
- * command line - so a patch touching any of them is refused once the task has left the backlog.
+ * command line, while dependencies decide whether a launch is allowed - so a patch touching
+ * any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
  *
@@ -477,6 +502,7 @@ export const UpdateTaskSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    dependencies: TaskDependenciesSchema.optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
   .refine(

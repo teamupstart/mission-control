@@ -6,15 +6,17 @@ import type {
   ResetResult,
   Session,
   Task,
+  TaskDependency,
   TaskKind,
   TaskPriority,
 } from "@shared/types.ts";
-import type { UpdateTask } from "@shared/protocol.ts";
+import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
+import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import {
@@ -47,6 +49,8 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Prerequisites selected from current backlog tasks or live sessions. */
+  dependencies?: TaskDependencyInput[];
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -61,6 +65,9 @@ export interface Ok {
   ok: boolean;
   error?: string;
 }
+
+/** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
+export class TaskDependencyError extends Error {}
 
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
@@ -131,6 +138,8 @@ export class TaskManager {
    * Held here rather than checked at the route so the invariant holds on every path.
    */
   private titling = new Map<string, Promise<void>>();
+  private assigningTasks = new Set<string>();
+  private assigningSessions = new Set<string>();
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
@@ -140,11 +149,14 @@ export class TaskManager {
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
-      // running/failed/done only when they still hold a worktree to check/reclaim.
+      // terminal tasks only when they still hold resources to check/reclaim.
       const needsReconcile =
         t.status === "dispatching" ||
-        (Boolean(t.worktreePath) &&
-          (t.status === "running" || t.status === "failed" || t.status === "done"));
+        ((Boolean(t.worktreePath) || Boolean(t.tmuxSession)) &&
+          (t.status === "running" ||
+            t.status === "failed" ||
+            t.status === "done" ||
+            t.status === "cancelled"));
       if (needsReconcile) void this.reconcileOnStartup(t);
     }
   }
@@ -155,6 +167,184 @@ export class TaskManager {
 
   get(id: string): Task | undefined {
     return this.registry.getTask(id);
+  }
+
+  /** Explicit blockers are enforced on every path that can start a task. */
+  dependencyBlockers(task: Task): BacklogBlocker[] {
+    return declaredBlockers(task, this.registry.listTasks());
+  }
+
+  private observedPrFor(session: Session, taskId?: string): string | null {
+    const observation = this.registry.prObservationFor(session.id);
+    const episode = this.registry.workEpisodeForSession(session.id);
+    if (
+      !observation ||
+      !episode ||
+      observation.url !== session.prUrl ||
+      observation.branch !== session.gitBranch ||
+      observation.agentSessionId !== session.agentSessionId ||
+      observation.episodeId !== episode.episodeId ||
+      (taskId !== undefined && !this.registry.taskOwnsWorkEpisode(taskId, session.id, observation.url))
+    ) {
+      return null;
+    }
+    return observation.url;
+  }
+
+  /**
+   * Resolve untrusted ids to durable dependency edges and reject deadlocks.
+   *
+   * A selected session already carrying a task becomes a task edge. That is what lets
+   * the dependency survive a process restart and follow the work through its PR merge.
+   * Bare operator-started sessions remain session edges.
+   */
+  private resolveDependencies(
+    inputs: TaskDependencyInput[],
+    taskId: string,
+    current: Task["dependencies"] = [],
+  ): TaskDependency[] {
+    const selectedAt = Date.now();
+    const existing = new Map(
+      current.map((dependency) => [
+        dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`,
+        dependency,
+      ]),
+    );
+    const sessions = this.registry.snapshot().sessions;
+    const resolved: TaskDependency[] = [];
+    const seen = new Set<string>();
+
+    for (const input of inputs) {
+      let dependency: TaskDependency;
+      if (input.type === "session") {
+        const kept = existing.get(`session:${input.sessionId}`);
+        if (kept?.type === "session") {
+          dependency = kept;
+          const key = `session:${dependency.sessionId}`;
+          if (!seen.has(key)) resolved.push(dependency);
+          seen.add(key);
+          continue;
+        }
+        const session = sessions.find((candidate) => candidate.id === input.sessionId && candidate.state !== "exited");
+        // Preserve an existing edge whose target disappeared so the operator can edit
+        // other fields or remove dependencies without the daemon resurrecting/dropping it.
+        if (!session) {
+          throw new TaskDependencyError("dependency session is no longer active");
+        }
+        const episode = this.registry.workEpisodeForSession(session.id);
+        if (!session.agentSessionId || !episode || episode.awaitingAgentRebind) {
+          throw new TaskDependencyError("dependency session has no stable work identity yet");
+        } else if (!session.hooksSeen) {
+          throw new TaskDependencyError("dependency session has no observable work lifecycle");
+        } else if (session.task && this.registry.getTask(session.task.id)) {
+          const target = this.registry.getTask(session.task.id)!;
+          const observedPr = this.observedPrFor(session, target.id);
+          const previouslySatisfied =
+            existing.get(`task:${target.id}`)?.satisfiedAt ??
+            existing.get(`session:${session.id}`)?.satisfiedAt;
+          const previousEdge =
+            existing.get(`task:${target.id}`) ?? existing.get(`session:${session.id}`);
+          dependency = {
+            type: "task",
+            taskId: target.id,
+            title: target.title,
+            sessionId: previousEdge?.sessionId ?? session.id,
+            episodeId: previousEdge?.episodeId ?? episode?.episodeId ?? null,
+            agentSessionId: previousEdge?.agentSessionId ?? episode?.agentSessionId ?? null,
+            branch: previousEdge?.branch ?? episode?.branch ?? null,
+            prUrl: previousEdge?.prUrl ?? observedPr,
+            selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
+            satisfiedAt:
+              observedPr && session.prState === "merged"
+                ? Date.now()
+                : previouslySatisfied ?? null,
+          };
+        } else {
+          const observedPr = this.observedPrFor(session);
+          dependency = {
+            type: "session",
+            sessionId: session.id,
+            title: session.name,
+            episodeId: episode.episodeId,
+            agentSessionId: session.agentSessionId,
+            branch: session.gitBranch,
+            prUrl: observedPr,
+            selectedAt,
+            satisfiedAt: observedPr && session.prState === "merged" ? Date.now() : null,
+          };
+        }
+      } else {
+        const target = this.registry.getTask(input.taskId);
+        if (!target) {
+          const kept = existing.get(`task:${input.taskId}`);
+          if (!kept) throw new TaskDependencyError("dependency task is no longer available");
+          dependency = kept;
+        } else {
+          const activeSession = sessions.find(
+            (session) => session.state !== "exited" && session.task?.id === target.id,
+          );
+          const previousEdge = existing.get(`task:${target.id}`);
+          const binding = this.registry.workEpisodeForTask(target.id);
+          const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
+          const eligible = target.status === "backlog" || Boolean(activeSession);
+          if (!eligible && !existing.has(`task:${target.id}`)) {
+            throw new TaskDependencyError("dependency task is neither backlogged nor active");
+          }
+          if (target.status !== "backlog" && activeSession && !activeSession.hooksSeen && !previousEdge) {
+            throw new TaskDependencyError("dependency task has no observable work lifecycle");
+          }
+          dependency = {
+            type: "task",
+            taskId: target.id,
+            title: target.title,
+            sessionId: previousEdge?.sessionId ?? binding?.sessionId ?? null,
+            episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
+            agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
+            branch: previousEdge?.branch ?? binding?.branch ?? null,
+            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
+            selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
+            satisfiedAt:
+              observedPr && activeSession?.prState === "merged"
+                ? Date.now()
+                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+          };
+        }
+      }
+
+      const key = dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+      if (dependency.type === "task" && dependency.taskId === taskId) {
+        throw new TaskDependencyError("a task cannot depend on itself");
+      }
+      if (!seen.has(key)) resolved.push(dependency);
+      seen.add(key);
+    }
+
+    if (this.createsDependencyCycle(taskId, resolved)) {
+      throw new TaskDependencyError("task dependencies cannot form a cycle");
+    }
+    return resolved;
+  }
+
+  private createsDependencyCycle(taskId: string, proposed: TaskDependency[]): boolean {
+    const tasks = new Map(this.registry.listTasks().map((task) => [task.id, task]));
+    const visiting = new Set<string>();
+    const reachesTask = (id: string): boolean => {
+      if (id === taskId) return true;
+      if (visiting.has(id)) return false;
+      visiting.add(id);
+      const dependencies = id === taskId ? proposed : tasks.get(id)?.dependencies ?? [];
+      for (const dependency of dependencies) {
+        if (dependency.satisfiedAt !== null || dependency.type !== "task") continue;
+        if (reachesTask(dependency.taskId)) return true;
+      }
+      return false;
+    };
+    return proposed.some(
+      (dependency) =>
+        dependency.satisfiedAt === null &&
+        dependency.type === "task" &&
+        reachesTask(dependency.taskId),
+    );
   }
 
   /**
@@ -168,14 +358,18 @@ export class TaskManager {
   create(input: CreateTaskInput): Task {
     const now = Date.now();
     const explicitTitle = input.title?.trim();
+    const id = randomUUID();
+    const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
+    const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const task: Task = {
-      id: randomUUID(),
+      id,
       title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
       agent: input.agent,
       priority: input.priority ?? null,
       labels: input.labels ?? [],
+      dependencies,
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
       // defaults it happened to see (see `resolveDispatchModel` and
@@ -188,8 +382,9 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
-      status: input.backlog ? "backlog" : "dispatching",
+      status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,
       error: null,
@@ -200,11 +395,11 @@ export class TaskManager {
     };
     this.registry.upsertTask(task);
     if (explicitTitle) {
-      if (!input.backlog) void this.dispatcher.dispatch(task.id);
+      if (task.status === "dispatching") void this.dispatcher.dispatch(task.id);
     } else {
       // Registered synchronously, before this returns, so no caller can observe the task
       // without also observing that its title is still in flight.
-      const settled = this.autoTitleThenDispatch(task.id, input.intent, input.backlog)
+      const settled = this.autoTitleThenDispatch(task.id, input.intent, task.status === "backlog")
         .catch((err) => console.error("[title] titling failed:", err))
         .finally(() => this.titling.delete(task.id));
       this.titling.set(task.id, settled);
@@ -271,7 +466,9 @@ export class TaskManager {
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
     if (!t) return null;
+    if (this.assigningTasks.has(id)) return t;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      if (this.dependencyBlockers(t).length > 0) return t;
       // A task-specific model is an explicit operator choice and must always win. Foreman
       // supplies this only for a fresh backlog launch; persisting it before the async
       // dispatcher starts makes the task card's model match the command line it will use.
@@ -295,7 +492,8 @@ export class TaskManager {
    * point would change the card and nothing else, which is worse than a refusal. Every
    * other status is a conflict the caller shows, not retries.
    *
-   * `priority` and `labels` are exempt because nothing is provisioned from them. They
+   * Dependencies share that guard because changing them can change whether launch is
+   * allowed. `priority` and `labels` are exempt because nothing is provisioned from them. They
    * are annotation, so re-marking a RUNNING task `blocker` is safe, and re-marking a
    * finished one keeps the record honest - the two things the guard above is protecting
    * simply are not at stake. Refusing them would make the board's priority picker dead
@@ -309,6 +507,9 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
+      return { ok: false, error: "task is being assigned" };
+    }
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
@@ -320,6 +521,15 @@ export class TaskManager {
     const effort = patch.effort === undefined ? (agentChanged ? null : t.effort) : patch.effort;
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
+    }
+    let dependencies = t.dependencies;
+    try {
+      if (patch.dependencies !== undefined) {
+        dependencies = this.resolveDependencies(patch.dependencies, t.id, t.dependencies);
+      }
+    } catch (error) {
+      if (error instanceof TaskDependencyError) return { ok: false, error: error.message };
+      throw error;
     }
     const next: Task = {
       ...t,
@@ -337,6 +547,7 @@ export class TaskManager {
       // clearing the field back to unset, and `?? t.priority` would silently ignore them.
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
+      dependencies,
       // `undefined` leaves an override as it stands unless the agent changed; `null` is
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
@@ -378,19 +589,48 @@ export class TaskManager {
    * window they hold open is where this method's ordering rules can be broken.
    */
   async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
-    const inject = opts.inject ?? injectPrompt;
-    const paneReady = opts.paneReady ?? paneAcceptsPrompt;
-    const reset = opts.reset ?? ((s: Session) => resetSession(this.registry, s, true));
-    const doRename = opts.rename ?? rename;
-
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
+    const dependencyBlockers = this.dependencyBlockers(t);
+    if (dependencyBlockers.length > 0) {
+      return {
+        ok: false,
+        error: `task is waiting on ${dependencyBlockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
+    }
 
     const s = this.registry.getSession(sessionId);
     if (!s) return { ok: false, error: "no such session", scope: "session" };
+    if (this.assigningTasks.has(id)) {
+      return { ok: false, error: "task is already being assigned", scope: "task" };
+    }
+    if (this.assigningSessions.has(sessionId)) {
+      return { ok: false, error: "that agent is already taking another task", scope: "session" };
+    }
+    this.assigningTasks.add(id);
+    this.assigningSessions.add(sessionId);
+    try {
+      return await this.assignReserved(t, s, opts);
+    } finally {
+      this.assigningTasks.delete(id);
+      this.assigningSessions.delete(sessionId);
+    }
+  }
+
+  private async assignReserved(
+    t: Task,
+    s: Session,
+    opts: AssignOptions,
+  ): Promise<AssignOutcome> {
+    const inject = opts.inject ?? injectPrompt;
+    const paneReady = opts.paneReady ?? paneAcceptsPrompt;
+    const reset = opts.reset ?? ((session: Session) => resetSession(this.registry, session, true));
+    const doRename = opts.rename ?? rename;
+
     if (s.state !== "idle") {
       return {
         ok: false,
@@ -431,6 +671,14 @@ export class TaskManager {
       return {
         ok: false,
         error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})`,
+        scope: "session",
+      };
+    }
+    const resourceOwner = this.registry.taskResourceOwnerForSession(s.id);
+    if (resourceOwner) {
+      return {
+        ok: false,
+        error: `that agent still holds resources for ${resourceOwner.title} - clean up that task before reusing it`,
         scope: "session",
       };
     }
@@ -484,7 +732,7 @@ export class TaskManager {
     // Re-read immediately before the destructive step. The idle check above is by now
     // several git invocations old, and the reset itself spends up to 30s in a fetch -
     // an agent a human woke up in that window must not be reset out from under them.
-    const fresh = this.registry.getSession(sessionId);
+    const fresh = this.registry.getSession(s.id);
     if (
       !fresh ||
       !fresh.instrumented ||
@@ -511,11 +759,50 @@ export class TaskManager {
         scope: "session",
       };
     }
+    if (done.workIdentityReady === false || (!opts.reset && !done.workIdentityReady)) {
+      return {
+        ok: false,
+        error: "could not confirm the agent's new work identity, so the task was not typed",
+        scope: "session",
+      };
+    }
+    if (opts.reset) {
+      this.registry.resetWorkEpisode(s.id);
+    }
+    if (this.registry.workEpisodeForSession(s.id)?.awaitingAgentRebind) {
+      return {
+        ok: false,
+        error: "could not confirm the agent's new work identity, so the task was not typed",
+        scope: "session",
+      };
+    }
+
+    const ready = this.registry.getTask(t.id);
+    if (!ready || ready.status !== "backlog") {
+      return {
+        ok: false,
+        error: ready ? `task is ${ready.status}, not in the backlog` : "no such task",
+        scope: "task",
+      };
+    }
+    const blockers = this.dependencyBlockers(ready);
+    if (blockers.length > 0) {
+      return {
+        ok: false,
+        error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
+    }
 
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
-    const r = await inject(s, t.intent);
+    const r = await inject(
+      this.registry.getSession(s.id) ?? s,
+      ready.intent,
+      undefined,
+      () => this.registry.promptResourceBlockerForSession(s.id),
+    );
     if (!r.ok) {
       return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
     }
@@ -525,7 +812,7 @@ export class TaskManager {
     // for a retriage to land, and priority/labels stay editable in every status - so a
     // stale spread here writes yesterday's priority back over one just set on the card,
     // silently, on a gesture that was only meant to hand the task to an agent.
-    const cur = this.registry.getTask(id) ?? t;
+    const cur = this.registry.getTask(t.id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({
       ...cur,
@@ -534,14 +821,15 @@ export class TaskManager {
       dispatchedAt: now,
       updatedAt: now,
     });
+    this.registry.bindTaskToWorkEpisode(t.id, s.id);
     // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
     // Last, and after the claim: it is the one step here that changes nothing about
     // whether the task is running, so it must not sit in front of anything that does.
     await this.renameForTask(
       // Re-read for the same reason the task is: the reset detached the checkout and the
       // injection took a round trip, and `rename` targets the tmux session BY NAME.
-      this.registry.getSession(sessionId) ?? s,
-      this.registry.getTask(id) ?? cur,
+      this.registry.getSession(s.id) ?? s,
+      this.registry.getTask(t.id) ?? cur,
       doRename,
     );
     return { ok: true };
@@ -639,7 +927,13 @@ export class TaskManager {
     }
     // Re-read before tearing down so we don't miss resources a concurrent dispatch
     // created during the kill above. teardownWorktree also kills the tmux session.
-    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    const teardownTarget = this.registry.getTask(id) ?? t;
+    let teardownError: string | null = null;
+    try {
+      await teardownWorktree(teardownTarget);
+    } catch (error) {
+      teardownError = error instanceof Error ? error.message : String(error);
+    }
 
     // Merge onto the LATEST snapshot, not a stale one, so we don't resurrect fields
     // the dispatcher patched during the awaits.
@@ -648,14 +942,17 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "cancelled",
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      tmuxSession: null,
+      worktreePath: teardownError === null ? null : cur.worktreePath,
+      branch: teardownError === null ? null : cur.branch,
+      provider: teardownError === null ? null : cur.provider,
+      tmuxSession: teardownError === null ? null : cur.tmuxSession,
+      terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
       updatedAt: now,
     });
-    return { ok: true };
+    return teardownError === null
+      ? { ok: true }
+      : { ok: false, error: `task cancelled, but its resources remain tracked: ${teardownError}` };
   }
 
   /**
@@ -688,7 +985,14 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    try {
+      await teardownWorktree(this.registry.getTask(id) ?? t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     const cur = this.registry.getTask(id) ?? t;
     this.registry.upsertTask({
       ...cur,
@@ -696,6 +1000,7 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
     });
@@ -710,7 +1015,16 @@ export class TaskManager {
     }
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
-    if (t.worktreePath) await teardownWorktree(t).catch(() => {});
+    if (t.worktreePath || t.tmuxSession) {
+      try {
+        await teardownWorktree(t);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
     this.registry.removeTask(id);
     return { ok: true };
   }
@@ -741,16 +1055,30 @@ export class TaskManager {
           updatedAt: Date.now(),
         });
       }
-      return; // running / failed / done stay as loaded; their session re-binds by cwd
+      return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
-    // The agent is gone - reclaim its worktree. A `done` task keeps its status and
-    // outcome (its work was already recorded); everything else becomes `failed`.
-    await teardownWorktree(t).catch(() => {});
+    // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
+    try {
+      await teardownWorktree(t);
+    } catch (error) {
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...t,
+        status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
+        error:
+          t.status === "done" || t.status === "cancelled"
+            ? t.error
+            : `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        sessionId: null,
+        updatedAt: now,
+      });
+      return;
+    }
     this.registry.upsertTask({
       ...t,
-      status: t.status === "done" ? "done" : "failed",
+      status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
       error:
-        t.status === "done"
+        t.status === "done" || t.status === "cancelled"
           ? t.error
           : t.status === "dispatching"
             ? "dispatch interrupted by a restart - re-dispatch"
@@ -759,6 +1087,7 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
     });

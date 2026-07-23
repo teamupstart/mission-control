@@ -273,6 +273,7 @@ function handleOf(c: TerminalCandidate): TerminalHandle {
       kind: "multiplexer",
       backend: c.backend,
       session: p.session,
+      sessionName: p.sessionName,
       windowIndex: p.windowIndex,
       windowName: p.windowName,
       paneId: p.paneId,

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
+import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
@@ -43,7 +44,10 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
  * human-readable reason rather than crashing the daemon.
  */
 export class Dispatcher {
-  constructor(private registry: Registry) {}
+  constructor(
+    private registry: Registry,
+    private teardown: typeof teardownWorktree = teardownWorktree,
+  ) {}
 
   async dispatch(taskId: string): Promise<void> {
     const task = this.registry.getTask(taskId);
@@ -106,11 +110,14 @@ export class Dispatcher {
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
+      this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
       if (await this.abortIfSettled(taskId)) return;
 
       // Discovery only proves the process exists. Wait for the agent to prove it can
       // READ before typing at it - see `awaitReady`.
       const { session, instrumented } = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
+      const readyResourceId = innermostTerminalResourceId(session);
+      if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;
 
       // Set the mode BEFORE the first prompt, so the task runs in it from the start -
@@ -122,6 +129,7 @@ export class Dispatcher {
 
       if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: session.id });
+      this.registry.bindTaskToWorkEpisode(taskId, session.id);
     } catch (err) {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
@@ -131,8 +139,7 @@ export class Dispatcher {
       // leaving it as a reclaimable done-with-worktree task.
       if (cur.status !== "dispatching") {
         if (cur.status === "cancelled") {
-          await teardownWorktree(cur).catch(() => {});
-          this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+          await this.teardownTaskResources(taskId, cur, cur.error);
         }
         return;
       }
@@ -156,16 +163,12 @@ export class Dispatcher {
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
-        await teardownWorktree(cur).catch(() => {});
         this.patch(taskId, {
           status: "failed",
           error: message,
-          worktreePath: null,
-          branch: null,
-          provider: null,
-          tmuxSession: null,
           sessionId: null,
         });
+        await this.teardownTaskResources(taskId, cur, message);
       }
     }
   }
@@ -273,7 +276,12 @@ export class Dispatcher {
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
         : null;
 
-      const sent = await injectPrompt(session, intent);
+      const sent = await injectPrompt(
+        session,
+        intent,
+        undefined,
+        () => this.registry.promptResourceBlockerForSession(session.id),
+      );
       if (!sent.ok) {
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
       }
@@ -312,10 +320,35 @@ export class Dispatcher {
     // them KEPT (Mark done must not discard work). Only tear down for a cancel.
     const cur = this.registry.getTask(taskId);
     if (cur?.status === "cancelled") {
-      await teardownWorktree(cur).catch(() => {});
-      this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+      await this.teardownTaskResources(taskId, cur, cur.error);
     }
     return true;
+  }
+
+  private async teardownTaskResources(
+    taskId: string,
+    task: Task,
+    baseError: string | null,
+  ): Promise<boolean> {
+    try {
+      await this.teardown(task);
+      this.patch(taskId, {
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        tmuxSession: null,
+        terminalResourceId: null,
+      });
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.patch(taskId, {
+        error: baseError
+          ? `${baseError} - resource cleanup failed: ${detail}`
+          : `resource cleanup failed: ${detail}`,
+      });
+      return false;
+    }
   }
 
   /** Merge fields onto the CURRENT registry task, never a stale local snapshot. */
@@ -494,16 +527,33 @@ export async function teardownWorktree(task: {
     // Hand the lease back to the pool. Never fall back to `git worktree remove` for
     // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
     // and leak the lease. If return fails, leave it for the pool to reconcile.
-    await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    const returned = await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    if (returned.code !== 0) {
+      throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
+    }
     return;
   }
-  await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
+  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
     timeoutMs: 30000,
   });
+  if (removed.code !== 0) {
+    const repo = await run("git", ["-C", task.repoRoot, "rev-parse", "--is-inside-work-tree"]);
+    if (repo.code !== 0 || existsSync(task.worktreePath)) {
+      throw new Error(`git worktree remove failed: ${removed.stderr.trim() || `exit ${removed.code}`}`);
+    }
+  }
   // Our git-fallback trees sit on a throwaway `harness/…` branch; drop it so a
   // retry of the same task can recreate it. Never touch a non-harness branch.
   if (task.branch && task.branch.startsWith("harness/")) {
-    await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], { timeoutMs: 15000 });
+    const deleted = await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], {
+      timeoutMs: 15000,
+    });
+    if (deleted.code !== 0) {
+      const exists = await run("git", ["-C", task.repoRoot, "show-ref", "--verify", `refs/heads/${task.branch}`]);
+      if (exists.code === 0) {
+        throw new Error(`git branch delete failed: ${deleted.stderr.trim() || `exit ${deleted.code}`}`);
+      }
+    }
   }
 }
 

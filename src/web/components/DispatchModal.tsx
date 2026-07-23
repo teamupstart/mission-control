@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
   type Task,
+  type Session,
   type TaskKind,
   type AgentType,
   type TaskPriority,
@@ -9,7 +10,7 @@ import {
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import type { HarnessesConfig } from "@shared/protocol.ts";
+import type { HarnessesConfig, TaskDependencyInput } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
@@ -65,7 +66,8 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.agent === EMPTY_DISPATCH_DRAFT.agent &&
     d.priority === EMPTY_DISPATCH_DRAFT.priority &&
     d.model === EMPTY_DISPATCH_DRAFT.model &&
-    d.effort === EMPTY_DISPATCH_DRAFT.effort
+    d.effort === EMPTY_DISPATCH_DRAFT.effort &&
+    d.dependencies.length === 0
   );
 }
 
@@ -143,11 +145,15 @@ function defaultEffortOptionLabel(
 export function DispatchLayer({
   open,
   editTask,
+  tasks = [],
+  sessions = [],
   onClose,
 }: {
   open: boolean;
   /** The backlog task being edited, or null for a fresh dispatch. */
   editTask: Task | null;
+  tasks?: Task[];
+  sessions?: Session[];
   onClose: () => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
@@ -272,6 +278,8 @@ export function DispatchLayer({
         // and the box you land in is that task's, not the previous card's.
         key={editTask.id}
         mode={{ kind: "edit", task: editTask }}
+        tasks={tasks}
+        sessions={sessions}
         draft={editDraft}
         onDraftChange={onEditDraftChange}
         onAttachmentsChange={onEditAttachmentsChange}
@@ -284,6 +292,8 @@ export function DispatchLayer({
   return (
     <DispatchModal
       mode={{ kind: "new" }}
+      tasks={tasks}
+      sessions={sessions}
       draft={draft}
       onDraftChange={setDraft}
       onAttachmentsChange={onAttachmentsChange}
@@ -311,6 +321,8 @@ export function DispatchLayer({
  */
 function DispatchModal({
   mode,
+  tasks,
+  sessions,
   draft,
   onDraftChange,
   onAttachmentsChange,
@@ -319,6 +331,8 @@ function DispatchModal({
   onSubmitted,
 }: {
   mode: DispatchMode;
+  tasks: Task[];
+  sessions: Session[];
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
@@ -343,6 +357,64 @@ function DispatchModal({
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
   const labels = parseLabelInput(draft.labels);
+  const dependencyKey = (dependency: TaskDependencyInput): string =>
+    dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+  const dependencyByKey = useMemo(() => {
+    const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
+    for (const task of tasks) {
+      if (task.status !== "backlog" || task.id === editing?.id) continue;
+      out.set(`task:${task.id}`, {
+        input: { type: "task", taskId: task.id },
+        label: `${task.title} (${task.kind})`,
+        group: "backlog",
+      });
+    }
+    for (const session of sessions) {
+      if (
+        session.state === "exited" ||
+        !session.hooksSeen ||
+        (editing !== null && session.task?.id === editing.id)
+      ) continue;
+      const linkedTask = session.task
+        ? tasks.find((task) => task.id === session.task?.id)
+        : undefined;
+      const input: TaskDependencyInput = linkedTask
+        ? { type: "task", taskId: linkedTask.id }
+        : { type: "session", sessionId: session.id };
+      const key = dependencyKey(input);
+      if (out.has(key)) continue;
+      out.set(key, {
+        input,
+        label: `${session.task?.title ?? session.name}${session.prState === "merged" ? " (merged)" : session.prState === "open" ? " (PR open)" : ""}`,
+        group: "session",
+      });
+    }
+    // Keep disappeared targets visible in an edit. They remain blocking until removed,
+    // but hiding them from the select would also make them impossible to remove.
+    for (const dependency of editing?.dependencies ?? []) {
+      const input: TaskDependencyInput = dependency.type === "task"
+        ? { type: "task", taskId: dependency.taskId }
+        : { type: "session", sessionId: dependency.sessionId };
+      const key = dependencyKey(input);
+      if (!out.has(key)) out.set(key, { input, label: `${dependency.title} (unavailable)`, group: "session" });
+    }
+    return out;
+  }, [editing, sessions, tasks]);
+  const dependencyKeys = draft.dependencies.map(dependencyKey);
+  const selectedDependenciesUnmet = draft.dependencies.some((dependency) => {
+    const stored = editing?.dependencies.find((candidate) =>
+      dependencyKey(
+        candidate.type === "task"
+          ? { type: "task", taskId: candidate.taskId }
+          : { type: "session", sessionId: candidate.sessionId },
+      ) === dependencyKey(dependency),
+    );
+    if (stored?.satisfiedAt != null) return false;
+    if (dependency.type === "session") {
+      return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
+    }
+    return sessions.find((session) => session.task?.id === dependency.taskId)?.prState !== "merged";
+  });
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -388,7 +460,13 @@ function DispatchModal({
     // An image still uploading has no path yet, so dispatching now would launch the
     // agent on a task missing the screenshot it was written around. The buttons say
     // so; this also guards ⌘Enter, which doesn't.
-    if (!draft.repoRoot.trim() || !draft.intent.trim() || busy || drop.uploading) return;
+    if (
+      !draft.repoRoot.trim() ||
+      !draft.intent.trim() ||
+      busy ||
+      drop.uploading ||
+      Boolean(editing && dispatchNow && selectedDependenciesUnmet)
+    ) return;
     setPending(dispatchNow ? "dispatch" : "shelve");
     setError(null);
     // Submitting is an async network POST, so this promise can resolve after the
@@ -436,6 +514,7 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
+          dependencies: submitted.dependencies,
           backlog: !dispatchNow,
         });
     // An edit is a save first and a launch second, so the two are two calls: the save
@@ -662,6 +741,40 @@ function DispatchModal({
 
         <label className="field">
           <span className="field-label">
+            Dependencies{" "}
+            <span className="field-hint">optional - ⌘/Ctrl-click to choose several</span>
+          </span>
+          <select
+            className="field-input dependency-select"
+            multiple
+            size={Math.min(7, Math.max(3, dependencyByKey.size))}
+            value={dependencyKeys}
+            onChange={(event) => {
+              const dependencies = Array.from(event.currentTarget.selectedOptions)
+                .map((option) => dependencyByKey.get(option.value)?.input)
+                .filter((dependency): dependency is TaskDependencyInput => dependency !== undefined);
+              update({ dependencies });
+            }}
+          >
+            <optgroup label="Backlog tasks">
+              {[...dependencyByKey.entries()]
+                .filter(([, option]) => option.group === "backlog")
+                .map(([key, option]) => <option key={key} value={key}>{option.label}</option>)}
+            </optgroup>
+            <optgroup label="Active sessions">
+              {[...dependencyByKey.entries()]
+                .filter(([, option]) => option.group === "session")
+                .map(([key, option]) => <option key={key} value={key}>{option.label}</option>)}
+            </optgroup>
+          </select>
+          <span className="field-hint">
+            Every dependency waits for its merged PR. Sessions without observable hooks cannot be selected.
+            {selectedDependenciesUnmet ? " This task will stay in the backlog." : ""}
+          </span>
+        </label>
+
+        <label className="field">
+          <span className="field-label">
             Task <span className="field-hint">drop or paste images to attach them</span>
           </span>
           <div className="drop-zone" {...drop.dropProps}>
@@ -718,10 +831,24 @@ function DispatchModal({
         <button
           className="btn btn-primary"
           onClick={() => void submit(true)}
-          disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
-          title="⌘/Ctrl+Enter"
+          disabled={
+            busy ||
+            drop.uploading ||
+            !draft.repoRoot.trim() ||
+            !draft.intent.trim() ||
+            Boolean(editing && selectedDependenciesUnmet)
+          }
+          title={selectedDependenciesUnmet ? "Dependencies must complete first; schedule this in the backlog" : "⌘/Ctrl+Enter"}
         >
-          {pending === "dispatch" ? "Dispatching…" : drop.uploading ? "Uploading…" : "Dispatch now"}
+          {pending === "dispatch"
+            ? "Dispatching…"
+            : drop.uploading
+              ? "Uploading…"
+              : selectedDependenciesUnmet
+                ? editing
+                  ? "Waiting for dependencies"
+                  : "Schedule after dependencies"
+                : "Dispatch now"}
         </button>
       </footer>
     </Overlay>

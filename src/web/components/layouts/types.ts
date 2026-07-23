@@ -52,6 +52,8 @@ export interface SessionViewProps {
   onToggleExpand: (id: string) => void;
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
+  /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
+  diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;
   onOpenFiles: (id: string) => void;
   /** Open a Markdown href only when it resolves inside this session's checkout. */
   onOpenFile: (id: string, href: string, probe?: boolean) => boolean | Promise<boolean>;

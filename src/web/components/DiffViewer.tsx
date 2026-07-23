@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import { parsePatch, type DiffFile } from "../lib/diff.ts";
@@ -22,6 +22,49 @@ export function DiffViewer({
   session: Session;
   commit?: string | null;
   onClose: () => void;
+}): React.JSX.Element {
+  const viewerKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  return (
+    <Overlay
+      id={OVERLAY_IDS.diff}
+      onClose={onClose}
+      className="diff-viewer"
+      role="dialog"
+      ariaLabel="Session diff"
+      onKeyDown={(e) => viewerKeyRef.current?.(e)}
+    >
+      <DiffViewerContent session={session} commit={commit} onClose={onClose} onViewerKeyRef={viewerKeyRef} />
+    </Overlay>
+  );
+}
+
+/**
+ * The console and board give a session's diff a real tab, so they reuse the same
+ * reader without creating a screen-owning overlay. Cards do not have that tab and
+ * continue to use the modal wrapper above.
+ */
+export function InlineDiffViewer({
+  session,
+  commit,
+}: {
+  session: Session;
+  commit?: string | null;
+}): React.JSX.Element {
+  return <DiffViewerContent session={session} commit={commit} inline />;
+}
+
+function DiffViewerContent({
+  session,
+  commit,
+  onClose,
+  inline = false,
+  onViewerKeyRef,
+}: {
+  session: Session;
+  commit?: string | null;
+  onClose?: () => void;
+  inline?: boolean;
+  onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,6 +113,7 @@ export function DiffViewer({
     },
     [files.length],
   );
+  if (onViewerKeyRef) onViewerKeyRef.current = onViewerKey;
 
   // Keep the picked file visible in the list, and show its diff from the top.
   useEffect(() => {
@@ -78,17 +122,13 @@ export function DiffViewer({
   }, [activeIdx]);
 
   return (
-    <Overlay
-      id={OVERLAY_IDS.diff}
-      onClose={onClose}
-      className="diff-viewer"
-      role="dialog"
-      ariaLabel="Session diff"
-      onKeyDown={onViewerKey}
+    <div
+      className={`diff-viewer-content${inline ? " diff-viewer-inline" : ""}`}
+      onKeyDown={inline ? (e) => onViewerKey(e.nativeEvent) : undefined}
     >
       <header className="diff-head">
         <div className="diff-title">
-          <h2 title={session.name}>{session.name}</h2>
+          {!inline && <h2 title={session.name}>{session.name}</h2>}
           {/* A commit diff is ONE commit, so it must not borrow the range
               wording below: "<branch> vs <base>" would read as everything since
               that parent, which is the larger diff and the wrong one. */}
@@ -117,9 +157,11 @@ export function DiffViewer({
             </span>
           )}
         </div>
-        <button className="icon-btn" aria-label="Close" onClick={onClose}>
-          ✕
-        </button>
+        {onClose && (
+          <button className="icon-btn" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        )}
       </header>
 
       <div className="diff-body">
@@ -160,7 +202,7 @@ export function DiffViewer({
           </>
         )}
       </div>
-    </Overlay>
+    </div>
   );
 }
 

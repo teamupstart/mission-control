@@ -4321,6 +4321,22 @@ kbd {
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+.diff-viewer-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The session detail already supplies the identity and its outer frame. The reader
+   fills only that tab, preserving the modal's master-detail layout without a second
+   title bar or a screen-sized container. */
+.diff-viewer-inline {
+  background: var(--panel);
+}
+.diff-viewer-inline:focus-visible {
+  outline: none;
+}
 .diff-head {
   display: flex;
   align-items: center;

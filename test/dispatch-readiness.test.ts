@@ -203,6 +203,48 @@ test("pi prompt delivery is accepted by a new exact-transcript user message", as
   assert.equal(sends, 1);
 });
 
+test("pi prompt delivery accepts a user record larger than the tail window", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "pi-large", agent: "pi", cwd: "/wt/pi-large" }),
+  ]);
+  const path = join(home, "pi-large.jsonl");
+  writeFileSync(path, `${JSON.stringify({ type: "session", id: "pi-large" })}\n`);
+  let sends = 0;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    inject: async () => {
+      sends += 1;
+      appendFileSync(
+        path,
+        `${JSON.stringify({
+          type: "message",
+          id: "prompt-large",
+          timestamp: new Date().toISOString(),
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "x".repeat(600 * 1024) }],
+          },
+        })}\n`,
+      );
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  const deliverIntent = (
+    dispatcher as unknown as {
+      deliverIntent(
+        id: string,
+        intent: string,
+        cwd: string,
+        instrumented: boolean,
+        piTranscriptPath: string,
+      ): Promise<void>;
+    }
+  ).deliverIntent.bind(dispatcher);
+
+  await deliverIntent("pi-large", "do the work", "/wt/pi-large", false, path);
+  assert.equal(sends, 1);
+});
+
 test("pi prompt delivery rejects metadata-only transcript growth", async () => {
   const registry = new Registry();
   registry.applyDiscovery([

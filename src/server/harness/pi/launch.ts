@@ -70,12 +70,15 @@ export async function waitForPiPromptAccepted(
   const safeTimeout =
     Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : DEFAULT_ACCEPT_TIMEOUT_MS;
   const deadline = now() + safeTimeout;
+  let pos = offset;
 
   for (;;) {
     if (deps.isLive?.() === false) return false;
-    const appended = piMessages.since(path, offset);
-    if (appended.reset) return false;
-    if (appended.messages.some((message) => message.role === "user")) return true;
+    try {
+      const appended = piMessages.appended(path, pos);
+      pos = appended.pos;
+      if (appended.messages.some((message) => message.role === "user")) return true;
+    } catch {}
     const remaining = deadline - now();
     if (remaining <= 0) return false;
     await wait(Math.min(100, remaining));

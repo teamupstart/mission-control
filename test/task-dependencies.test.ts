@@ -1171,7 +1171,7 @@ for (const [suffix, failureIndex, boundary] of [
         setup.registry.resetWorkEpisode(setup.id);
       };
       if (failureIndex === -1) failEpisodeMutation(setup.id, reset);
-      else failDependencyRewrite(dependentIds[failureIndex], reset);
+      else failDependencyRewrite(dependentIds[failureIndex]!, reset);
     });
 
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
@@ -1254,7 +1254,7 @@ for (const [suffix, failureIndex, boundary] of [
         });
       };
       if (failureIndex === -1) failEpisodeMutation(setup.id, rebind);
-      else failDependencyRewrite(dependentIds[failureIndex], rebind);
+      else failDependencyRewrite(dependentIds[failureIndex]!, rebind);
     });
 
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, null);

@@ -6,6 +6,11 @@ and tmux sessions.
 This file lists the **surfaces that have to move together**. For what the product does and
 how to run it, read `README.md`.
 
+## IMPORTANT
+
+NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead always fix the inspector 
+issues, push the code, monitor the CI / PR for new inspector comments, and repeat until all inspector concerns are fixed.
+
 ## Architecture
 
 | Where | Entry | What |

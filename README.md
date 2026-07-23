@@ -756,6 +756,11 @@ exposes six tools:
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
+Each option-based question or plan decision set is an independent review. Dismiss resolves
+only that review, persists without a fabricated answer, and releases its blocked tool call.
+These reviews keep the session under **Needs you** while any set remains pending; submitting
+or dismissing the final set clears that review-based signal.
+
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
 

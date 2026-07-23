@@ -1,6 +1,6 @@
 ---
 name: html-plans
-description: Render every written plan as a self-contained HTML page beside its markdown, draw data/request-flow changes between major components or external services as inline SVG diagrams, and when a plan has open choices, present them as selectable options the human submits from the Mission Control dashboard. Use whenever you write, publish, render, or share a plan, or a plan needs the human to decide between options.
+description: Render every written plan as a self-contained HTML page beside its markdown, draw data/request-flow changes between major components or external services as inline SVG diagrams, and when a plan has open choices, present them as selectable options the human can submit or dismiss from the Mission Control dashboard. Use whenever you write, publish, render, or share a plan, or a plan needs the human to decide between options.
 metadata:
   mission:
     category: planning
@@ -92,10 +92,13 @@ human selects and submits, and act on what comes back.
 
 Call the Mission Control MCP tool **`request_plan_decisions`**. It shows the plan in the
 dashboard with your decision points rendered as radio buttons (choose one) or checkboxes
-(choose many) plus a Submit button, **blocks until the human submits**, and returns their
-selections as the tool result. You do not need to know your session id or post anything
-yourself - the dashboard binds the answer straight back to this session. Append the phased
-implementation follow-up above after these plan-specific decisions.
+(choose many) plus Submit and Dismiss buttons, **blocks until the human submits or dismisses
+that decision set**, and returns either their selections or an explicit dismissal as the
+tool result. You do not need to know your session id or post anything yourself - the
+dashboard binds the resolution straight back to this session. Append the phased
+implementation follow-up above after these plan-specific decisions. If the request is
+dismissed, stop without applying a choice or invoking `phased-plan`; never infer selections
+from an unanswered form.
 
 Arguments:
 
@@ -149,8 +152,8 @@ Example:
 ```
 
 Still emit `plan.html` as above - the static page is the skimmable copy; the interactive
-decisions live in the dashboard. Proceed only on the selections the tool returns, and resolve
-those selections into the source before invoking `phased-plan`.
+decisions live in the dashboard. Proceed only on selections the tool actually returns, and
+resolve those selections into the source before invoking `phased-plan`.
 
 ## When the plan changes a flow: draw it
 

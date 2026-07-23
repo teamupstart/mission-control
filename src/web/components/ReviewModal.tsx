@@ -11,9 +11,9 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
  * sent back with a note; a question is answered - as free text, or by picking from the
- * options the agent supplied; a `plan-decisions` plan is answered by submitting its
- * selections. Each resolution unblocks the agent that is waiting on it (for
- * diff/input/plan-decisions) via the MCP long-poll.
+ * options the agent supplied; a selectable question or `plan-decisions` plan can also be
+ * dismissed without submitting selections. Each resolution unblocks only the agent wait
+ * for that review (for diff/input/plan-decisions) via the MCP long-poll.
  *
  * The options case is what a dispatched session's clarifying question looks like now:
  * `ask-channel.ts` disallows Claude's built-in `AskUserQuestion`, so instead of drawing a
@@ -108,12 +108,12 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
       )}
 
       {/*
-        A question with discrete options is answered by the form, whichever kind asked it -
-        `plan-decisions` (several choices about a plan) or an `input` that `request_input`
-        raised with options, which is what a dispatched session now sends instead of drawing
-        Claude's built-in `AskUserQuestion` menu on its terminal. A `plan-decisions` with no
-        decisions cannot be resolved at all (the schema forbids creating one); an `input`
-        with none is the open-ended ask, and still gets the textarea.
+        A question with discrete options is submitted or dismissed by the form, whichever
+        kind asked it - `plan-decisions` (several choices about a plan) or an `input` that
+        `request_input` raised with options, which is what a dispatched session now sends
+        instead of drawing Claude's built-in `AskUserQuestion` menu on its terminal. A
+        `plan-decisions` with no decisions cannot be created (the schema forbids it); an
+        `input` with none is the open-ended ask, and still gets the textarea.
       */}
       {decisions ? (
         <DecisionForm

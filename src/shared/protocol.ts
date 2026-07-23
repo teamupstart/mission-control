@@ -253,8 +253,8 @@ export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
  * An MCP-driven agent creating a review item bound to its session's pane.
  *
  * A `plan-decisions` review must carry at least one decision: the whole point of the
- * kind is that the human answers something, and a decision-less one would reach the
- * dashboard as a form that can only resolve the review on an empty response.
+ * kind is to present selectable choices, and a decision-less one would reach the
+ * dashboard as an empty form with nothing to submit.
  *
  * `input` MAY carry decisions too, and carries exactly one when it does - that is
  * `request_input` asking with discrete options, the replacement for Claude's built-in

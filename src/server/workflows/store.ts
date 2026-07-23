@@ -1285,57 +1285,74 @@ export class WorkflowStore {
         ORDER BY r.updated_at DESC, r.id ASC`,
     ).all() as unknown as Array<Record<string, unknown>>;
     return rows.flatMap((row) => {
-      try {
-        const run = parseWorkflowRunRow(row);
-        const submission = this.latestSubmission(run.id);
-        const latestAttempts = new Map<string, WorkflowNodeAttempt>();
-        if (submission) {
-          for (const attempt of this.listAttempts(submission.id)) {
-            latestAttempts.set(attempt.nodeId, attempt);
-          }
-        }
-        const attempts = [...latestAttempts.values()];
-        return [{
-          id: run.id,
-          bindingId: run.bindingId,
-          workflowId: typeof row.workflow_id === "string"
-            ? row.workflow_id
-            : `missing:${run.workflowVersionId}`,
-          workflowName: typeof row.workflow_name === "string"
-            ? row.workflow_name
-            : "Missing workflow version",
-          workflowVersion: Number(row.workflow_version ?? 0),
-          sessionId: typeof row.session_id === "string" ? row.session_id : null,
-          noteKey: String(row.note_key),
-          status: run.status,
-          phase: run.currentPhase,
-          round: Number(row.current_round),
-          maxRepairRounds: run.maxRepairRounds,
-          activePersonaNames: attempts.flatMap((attempt) =>
-            attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
-              ? [attempt.persona.name]
-              : []),
-          failedPersonaCount: attempts.filter((attempt) => {
-            const verdict = attempt.verdict;
-            return Boolean(
-              verdict
-              && !Array.isArray(verdict)
-              && typeof verdict === "object"
-              && verdict.verdict === "fail",
-            );
-          }).length,
-          bypassedPersonaReview: false,
-          updatedAt: run.updatedAt,
-        }];
-      } catch (error) {
-        diagnose(error);
-        return [];
-      }
+      const summary = this.runSummaryFromRow(row);
+      return summary ? [summary] : [];
     });
   }
 
   runSummary(id: string): WorkflowRunSummary | null {
-    return this.listRunSummaries().find((run) => run.id === id) ?? null;
+    const row = this.db.prepare(
+      `SELECT r.*, b.note_key, b.session_id,
+              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
+              COALESCE(MAX(s.round), 0) AS current_round
+         FROM workflow_runs r
+         JOIN workflow_bindings b ON b.id = r.binding_id
+         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
+         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
+         LEFT JOIN workflow_submissions s ON s.run_id = r.id
+        WHERE r.id = ?
+        GROUP BY r.id`,
+    ).get(id) as Record<string, unknown> | undefined;
+    return row ? this.runSummaryFromRow(row) : null;
+  }
+
+  private runSummaryFromRow(row: Record<string, unknown>): WorkflowRunSummary | null {
+    try {
+      const run = parseWorkflowRunRow(row);
+      const submission = this.latestSubmission(run.id);
+      const latestAttempts = new Map<string, WorkflowNodeAttempt>();
+      if (submission) {
+        for (const attempt of this.listAttempts(submission.id)) {
+          latestAttempts.set(attempt.nodeId, attempt);
+        }
+      }
+      const attempts = [...latestAttempts.values()];
+      return {
+        id: run.id,
+        bindingId: run.bindingId,
+        workflowId: typeof row.workflow_id === "string"
+          ? row.workflow_id
+          : `missing:${run.workflowVersionId}`,
+        workflowName: typeof row.workflow_name === "string"
+          ? row.workflow_name
+          : "Missing workflow version",
+        workflowVersion: Number(row.workflow_version ?? 0),
+        sessionId: typeof row.session_id === "string" ? row.session_id : null,
+        noteKey: String(row.note_key),
+        status: run.status,
+        phase: run.currentPhase,
+        round: Number(row.current_round),
+        maxRepairRounds: run.maxRepairRounds,
+        activePersonaNames: attempts.flatMap((attempt) =>
+          attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
+            ? [attempt.persona.name]
+            : []),
+        failedPersonaCount: attempts.filter((attempt) => {
+          const verdict = attempt.verdict;
+          return Boolean(
+            verdict
+            && !Array.isArray(verdict)
+            && typeof verdict === "object"
+            && verdict.verdict === "fail",
+          );
+        }).length,
+        bypassedPersonaReview: false,
+        updatedAt: run.updatedAt,
+      };
+    } catch (error) {
+      diagnose(error);
+      return null;
+    }
   }
 
   getSubmission(id: string): WorkflowSubmission | null {

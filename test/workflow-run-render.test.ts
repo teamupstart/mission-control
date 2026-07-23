@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { WorkflowRunDetail } from "../src/shared/workflow.ts";
-import { WorkflowRunView } from "../src/web/workflows/WorkflowRuns.tsx";
+import {
+  WorkflowRunView,
+  workflowNodeStatuses,
+} from "../src/web/workflows/WorkflowRuns.tsx";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
@@ -194,6 +197,37 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.match(html, /Open session/);
   assert.match(html, /persona verdict/);
   assert.doesNotMatch(html, />Send</);
+});
+
+test("run canvas statuses come only from the latest repair submission", () => {
+  const oldAttempt = {
+    ...detail.attempts[0]!,
+    id: "old-attempt-3",
+    attempt: 3,
+    state: "error" as const,
+    verdict: null,
+  };
+  const latestSubmission = {
+    ...detail.submissions[0]!,
+    id: "submission-2",
+    round: 2,
+    status: "running" as const,
+  };
+  const latestAttempt = {
+    ...detail.attempts[0]!,
+    id: "latest-attempt-1",
+    submissionId: latestSubmission.id,
+    attempt: 1,
+    state: "running" as const,
+    verdict: null,
+  };
+  assert.deepEqual(workflowNodeStatuses({
+    ...detail,
+    submissions: [detail.submissions[0]!, latestSubmission],
+    attempts: [oldAttempt, latestAttempt],
+  }), {
+    persona: "running",
+  });
 });
 
 test("binding selection reuses only the requested immutable version", () => {

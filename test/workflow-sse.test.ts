@@ -141,12 +141,18 @@ test("compact workflow run summaries converge through snapshot, incremental SSE,
   assert.equal(registry.snapshot().workflowRunSummaries.length, 1);
   assert.equal("version" in registry.snapshot().workflowRunSummaries[0]!, false);
   assert.equal("context" in registry.snapshot().workflowRunSummaries[0]!, false);
+  const listRunSummaries = store.listRunSummaries;
+  store.listRunSummaries = () => {
+    throw new Error("incremental publication scanned workflow history");
+  };
+  assert.equal(store.runSummary("run")?.id, "run");
   const events: ServerEvent[] = [];
   const unsubscribe = registry.subscribe((event) => events.push(event));
   manager.cancel("run", "cancel-request", 3);
   unsubscribe();
   assert.equal(events.at(-1)?.type, "workflow_run_upsert");
   assert.equal(registry.snapshot().workflowRunSummaries[0]?.status, "cancelled");
+  store.listRunSummaries = listRunSummaries;
 
   const reconnect = new Registry();
   new PersonaManager(reconnect, store);

@@ -68,10 +68,19 @@ function VerdictCard({
 
 export function workflowNodeStatuses(detail: WorkflowRunDetail): Record<string, string> {
   const statuses: Record<string, string> = {};
+  const latestSubmission = detail.submissions.reduce<WorkflowRunDetail["submissions"][number] | null>(
+    (latest, submission) => latest === null || submission.round > latest.round ? submission : latest,
+    null,
+  );
+  if (!latestSubmission) return statuses;
+  const latestAttempts = new Map<string, WorkflowRunDetail["attempts"][number]>();
   for (const attempt of detail.attempts) {
-    const previous = detail.attempts.find((item) =>
-      item.nodeId === attempt.nodeId && item.attempt > attempt.attempt);
-    if (previous) continue;
+    if (attempt.submissionId !== latestSubmission.id) continue;
+    const previous = latestAttempts.get(attempt.nodeId);
+    if (previous && previous.attempt > attempt.attempt) continue;
+    latestAttempts.set(attempt.nodeId, attempt);
+  }
+  for (const attempt of latestAttempts.values()) {
     const verdict = attempt.verdict as unknown as PersonaVerdict | null;
     statuses[attempt.nodeId] = verdict?.verdict ?? attempt.state;
   }

@@ -3,7 +3,6 @@ import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { useInspector } from "../useInspector.ts";
-import { useLlm } from "../useLlm.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
@@ -19,6 +18,7 @@ import { useTaskSources } from "../useTaskSources.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
+import type { LlmState } from "../useLlm.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
@@ -67,6 +67,7 @@ export function SettingsModal({
   onClose,
   foreman,
   cost,
+  llm,
   layout,
   onLayoutChange,
   initialCategory = "keyboard",
@@ -85,6 +86,7 @@ export function SettingsModal({
    * would leave the strip on the old choice after an edit, and poll for it twice.
    */
   cost: CostState;
+  llm: LlmState;
   /**
    * The live layout, OWNED BY App for the same reason as `foreman`: App renders the
    * layout, so it holds the state and this panel only edits it. A local `useLayoutMode()`
@@ -104,9 +106,6 @@ export function SettingsModal({
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // modal reads the Inspector config, so it polls only while the modal is open.
   const inspector = useInspector();
-  // Owned here for the same reason as `inspector`: nothing outside this modal reads which
-  // provider the app's offline work runs on, so it polls only while the modal is open.
-  const llm = useLlm();
   // Owned here for the same reason as `inspector`: nothing outside this modal reads the
   // Shipping config, so it polls only while the modal is open.
   const shipping = useShipping();

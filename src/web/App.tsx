@@ -26,6 +26,7 @@ import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useCost } from "./useCost.ts";
+import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
@@ -41,6 +42,9 @@ import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
+import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
+import { useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import { AppPageShell } from "./components/AppPageShell.tsx";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -60,7 +64,9 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
 ];
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, fleetCost, connected, hasSnapshot } = useEventStream();
+  const { sessions, reviews, tasks, personas, fleetCost, connected, hasSnapshot } = useEventStream();
+  const [workflowDirty, setWorkflowDirty] = useState(false);
+  const { route, navigate } = useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -77,6 +83,7 @@ export function App(): React.JSX.Element {
   // and the Cost panel read the same `view` setting, so a local copy in the modal would
   // leave the strip showing the old choice until the next reload - and double-poll.
   const cost = useCost();
+  const llm = useLlm();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
@@ -156,6 +163,7 @@ export function App(): React.JSX.Element {
   useLayoutEffect(() => {
     overlaysRef.current = overlays;
   }, [overlays]);
+  const isOverlayOpen = useCallback(() => overlaysRef.current.anyOpen, []);
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
@@ -576,6 +584,10 @@ export function App(): React.JSX.Element {
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
+      // The Workflows page owns its own editor and navigation keys. Fleet shortcuts must not
+      // dispatch, select, or drive a session merely because its state remains mounted in App.
+      if (route.page === "workflows") return;
+
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
       // others. Asking the registry rather than listing overlays here is the point: a new
@@ -762,7 +774,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab]);
+  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, route.page]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -842,6 +854,20 @@ export function App(): React.JSX.Element {
               from the filter/stats, so they read as one cluster and wrap as a
               unit. `live` stays outside it: that is status, not an action. */}
           <div className="topbar-actions">
+            <button
+              className="ghost-btn workflow-nav-btn"
+              onClick={() =>
+                navigate(
+                  route.page === "fleet"
+                    ? { page: "workflows", tab: "personas" }
+                    : { page: "fleet" },
+                )
+              }
+              aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
+            >
+              <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
+              {route.page === "fleet" ? "Workflows" : "Fleet"}
+            </button>
             <ForemanBar
               state={foreman}
               onOpenSettings={() => {
@@ -890,6 +916,21 @@ export function App(): React.JSX.Element {
           />
         </header>
 
+        <AppPageShell
+          page={route.page}
+          workflows={(
+            <WorkflowPage
+              tab={route.page === "workflows" ? route.tab : "workflows"}
+              personas={personas}
+              llm={llm}
+              isOverlayOpen={isOverlayOpen}
+              onTab={(tab) => navigate({ page: "workflows", tab })}
+              onDirtyChange={setWorkflowDirty}
+            />
+          )}
+          fleet={(
+            <>
+
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
             rail beside a "no session selected" pane, five empty board columns.
@@ -905,47 +946,6 @@ export function App(): React.JSX.Element {
             {layout === "console" && <ConsoleView {...viewProps} />}
             {layout === "board" && <BoardView {...viewProps} />}
           </>
-        )}
-
-        {modalSession && modalReviews.length > 0 && (
-          <ReviewModal
-            session={modalSession}
-            reviews={modalReviews}
-            onClose={() => setReviewSessionId(null)}
-          />
-        )}
-
-        <DispatchLayer
-          open={dispatchOpen || editingTask != null}
-          editTask={editingTask}
-          onClose={closeDispatch}
-        />
-
-        {reportOpen && (
-          <ReportPanel
-            sessions={sessions}
-            tasks={tasks}
-            onClose={() => setReportOpen(false)}
-            onOpenReviews={(id) => {
-              setReportOpen(false);
-              setReviewSessionId(id);
-            }}
-            onEditTask={(id) => {
-              setReportOpen(false);
-              openTaskEditor(id);
-            }}
-          />
-        )}
-
-        {digest && (
-          <AwayDigestCard
-            digest={digest}
-            onDismiss={dismissDigest}
-            onOpenReport={() => {
-              dismissDigest();
-              setReportOpen(true);
-            }}
-          />
         )}
 
         {diffSession && (
@@ -971,17 +971,6 @@ export function App(): React.JSX.Element {
                 requestFilesTab(filePickerSession.id);
               }
             }}
-          />
-        )}
-
-        {settingsOpen && (
-          <SettingsModal
-            onClose={() => setSettingsOpen(false)}
-            foreman={foreman}
-            cost={cost}
-            initialCategory={settingsCategory}
-            layout={layout}
-            onLayoutChange={setLayout}
           />
         )}
 
@@ -1055,6 +1044,65 @@ export function App(): React.JSX.Element {
             onDeselect={() => setSelectedId(null)}
           />
         )}
+            </>
+          )}
+          overlays={(
+            <>
+              {modalSession && modalReviews.length > 0 && (
+                <ReviewModal
+                  session={modalSession}
+                  reviews={modalReviews}
+                  onClose={() => setReviewSessionId(null)}
+                />
+              )}
+
+              <DispatchLayer
+                open={dispatchOpen || editingTask != null}
+                editTask={editingTask}
+                onClose={closeDispatch}
+              />
+
+              {reportOpen && (
+                <ReportPanel
+                  sessions={sessions}
+                  tasks={tasks}
+                  onClose={() => setReportOpen(false)}
+                  onOpenReviews={(id) => {
+                    setReportOpen(false);
+                    setReviewSessionId(id);
+                  }}
+                  onEditTask={(id) => {
+                    setReportOpen(false);
+                    openTaskEditor(id);
+                  }}
+                />
+              )}
+
+              {digest && (
+                <AwayDigestCard
+                  digest={digest}
+                  onDismiss={dismissDigest}
+                  onOpenReport={() => {
+                    dismissDigest();
+                    setReportOpen(true);
+                  }}
+                />
+              )}
+
+              {settingsOpen && (
+                <SettingsModal
+                  onClose={() => setSettingsOpen(false)}
+                  foreman={foreman}
+                  cost={cost}
+                  llm={llm}
+                  initialCategory={settingsCategory}
+                  layout={layout}
+                  onLayoutChange={setLayout}
+                />
+              )}
+            </>
+          )}
+        />
       </div>
     </OverlayHost>
   );

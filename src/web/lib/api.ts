@@ -46,6 +46,7 @@ import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
+import type { PersonaDefaultsView } from "@shared/workflow.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -112,6 +113,7 @@ export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");
  * browser cannot see - has had its say.
  */
 export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
+export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/personas/defaults");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 /**

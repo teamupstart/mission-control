@@ -118,7 +118,9 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           can't be reached, you get a rougher title or a terser digest, never an error. Leave a
           field empty to accept the value shown in it.
         </p>
-        <ModelSuggestions runner={modelRunner} />
+        <ModelSuggestions
+          providerLabel={runners.find((provider) => provider.id === modelRunner)?.label ?? modelRunner}
+        />
         {LLM_JOB_IDS.map((job) => (
           <ModelField
             key={job}

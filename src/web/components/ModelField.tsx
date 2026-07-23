@@ -1,7 +1,6 @@
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { modelChoicesFor } from "@shared/model.ts";
-import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 // The one input in this app for "which model does this call spawn with?".
 //
@@ -102,13 +101,11 @@ export function ModelField({
  * `modelChoicesFor(runner, …)` now, so the ids are IN the picker and repeating them here
  * would be the same list twice - what is left to say is which provider's list it is.
  *
- * Named through `AGENT_IDENTITY` rather than a ternary over the runner id: a third
- * provider must not silently read as "Claude Code" here.
  */
-export function ModelSuggestions({ runner = "claude" }: { runner?: LlmRunnerId }): React.JSX.Element {
+export function ModelSuggestions({ providerLabel }: { providerLabel: string }): React.JSX.Element {
   return (
     <p className="settings-hint foreman-models-hint">
-      Choose from the models supported by the selected {AGENT_IDENTITY[runner].label} provider.
+      Choose from the models supported by the selected {providerLabel} provider.
     </p>
   );
 }

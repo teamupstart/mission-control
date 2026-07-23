@@ -62,6 +62,7 @@ function render(over: Partial<LlmState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
     status: status(),
+    personaDefaults: null,
     update: async () => {},
     error: null,
     ...over,
@@ -75,6 +76,13 @@ test("every background job gets a field, labelled and explained", () => {
     assert.ok(html.includes(LLM_JOB_SPECS[job].label), `no field for ${job}`);
     assert.ok(html.includes(LLM_JOB_SPECS[job].blurb), `${job} is unexplained`);
   }
+});
+
+test("workflow context compaction is a visible configurable background job", () => {
+  const html = decoded(render());
+  assert.ok(html.includes("Workflow context"));
+  assert.ok(html.includes("Compacts user goals, decisions, and rationale for Persona review."));
+  assert.ok(html.includes('id="llm-model-workflow-context"'));
 });
 
 test("an empty box advertises the model the daemon RESOLVED, not the shipped fallback", () => {

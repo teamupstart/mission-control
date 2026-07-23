@@ -7,6 +7,7 @@ import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
+import type { LlmState } from "../src/web/useLlm.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
@@ -23,6 +24,13 @@ const FOREMAN: ForemanState = { config: null, status: null, backlogPlan: null, u
 // reads the same view setting. A null status is the pre-poll state, which renders the
 // panel's shipped defaults with its controls disabled.
 const COST: CostState = { status: null, update: async () => {}, error: null };
+const LLM: LlmState = {
+  config: null,
+  status: null,
+  personaDefaults: null,
+  update: async () => {},
+  error: null,
+};
 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
 // modal renders it, so the panel only edits what it's handed.
@@ -35,6 +43,7 @@ function render(initialCategory?: SettingsCategoryId): string {
         onClose: () => {},
         foreman: FOREMAN,
         cost: COST,
+        llm: LLM,
         layout: "grid",
         onLayoutChange: () => {},
         initialCategory,

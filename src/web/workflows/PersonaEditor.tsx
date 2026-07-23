@@ -1,0 +1,429 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isLlmRunnerId } from "@shared/llm.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
+import type { ResolvedModel } from "@shared/model-choice.ts";
+import type { LlmProviderView } from "@shared/types.ts";
+import {
+  WORKFLOW_PERSONA_MODEL_SPEC,
+  normalizePersonaName,
+} from "@shared/workflow.ts";
+import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
+import { FileEditor } from "../components/FileEditor.tsx";
+import { Markdown } from "../components/Markdown.tsx";
+import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
+import { personaMarkdownBlob, personaRequest } from "./personaApi.ts";
+
+export interface PersonaDraftSeed {
+  name: string;
+  description: string;
+  guidanceMarkdown: string;
+  /** May carry a newer build's stored id until the operator deliberately changes it. */
+  runner: string | null;
+  model: string | null;
+}
+
+function fromPersona(persona: PersonaView): PersonaDraftSeed {
+  return {
+    name: persona.name,
+    description: persona.description,
+    guidanceMarkdown: persona.guidanceMarkdown,
+    runner: persona.runner,
+    model: persona.model,
+  };
+}
+
+const PERSONA_DRAFT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model"] as const;
+
+export function reconcilePersonaSave(
+  saved: PersonaView,
+  submitted: PersonaDraftSeed,
+  current: PersonaDraftSeed,
+  submittedGeneration: number,
+  currentGeneration: number,
+): { draft: PersonaDraftSeed; dirty: boolean } {
+  const savedDraft = fromPersona(saved);
+  if (submittedGeneration === currentGeneration) return { draft: savedDraft, dirty: false };
+  const draft: PersonaDraftSeed = {
+    name: current.name !== submitted.name ? current.name : savedDraft.name,
+    description: current.description !== submitted.description
+      ? current.description
+      : savedDraft.description,
+    guidanceMarkdown: current.guidanceMarkdown !== submitted.guidanceMarkdown
+      ? current.guidanceMarkdown
+      : savedDraft.guidanceMarkdown,
+    runner: current.runner !== submitted.runner ? current.runner : savedDraft.runner,
+    model: current.model !== submitted.model ? current.model : savedDraft.model,
+  };
+  return {
+    draft,
+    dirty: PERSONA_DRAFT_FIELDS.some((field) => draft[field] !== savedDraft[field]),
+  };
+}
+
+export function personaUpdatePatch(
+  persona: PersonaView,
+  draft: PersonaDraftSeed,
+  expectedRevision: number,
+): Record<string, unknown> {
+  const original = fromPersona(persona);
+  const patch: Record<string, unknown> = { expectedRevision };
+  for (const field of PERSONA_DRAFT_FIELDS) {
+    if (draft[field] !== original[field]) patch[field] = draft[field];
+  }
+  return patch;
+}
+
+function markdownPath(name: string): string {
+  const slug = normalizePersonaName(name)
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}._-]/gu, "");
+  return `${slug || "persona"}.md`;
+}
+
+export function isPersonaSaveShortcut(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "key">,
+  overlayOpen: boolean,
+): boolean {
+  return !overlayOpen && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s";
+}
+
+export function personaLineSeparator(markdown: string): "\r\n" | "\r" | "\n" {
+  return (markdown.match(/\r\n|\r|\n/)?.[0] ?? "\n") as "\r\n" | "\r" | "\n";
+}
+
+function knownRunner(value: string | null): LlmRunnerId | null {
+  return value !== null && isLlmRunnerId(value) ? value : null;
+}
+
+function providerLabel(providers: readonly LlmProviderView[], id: LlmRunnerId): string {
+  return providers.find((provider) => provider.id === id)?.label ?? id;
+}
+
+export function projectPersonaDraftExecution(
+  persona: PersonaView | null,
+  draft: PersonaDraftSeed,
+  defaults: PersonaDefaultsView | null,
+): { runner: LlmRunnerId | null; model: ResolvedModel | undefined } {
+  const selectedRunner = knownRunner(draft.runner);
+  const unchanged = persona !== null && draft.runner === persona.runner && draft.model === persona.model;
+  if (unchanged) {
+    return { runner: persona.execution.runner.id, model: persona.execution.model };
+  }
+  const retainedUnknownRunner = persona !== null &&
+      draft.runner === persona.runner &&
+      persona.execution.runner.unknown !== null
+    ? persona.execution.runner.id
+    : null;
+  const runner = selectedRunner ?? retainedUnknownRunner ?? defaults?.runner.id ??
+    persona?.execution.runner.id ?? null;
+  const model = draft.model !== null
+    ? { id: draft.model, source: "config" as const }
+    : runner === null
+      ? undefined
+      : defaults?.models[runner];
+  return { runner, model };
+}
+
+export function PersonaEditorStatus({
+  dirty,
+  conflict,
+  archived,
+  onReload,
+  onDuplicate,
+}: {
+  dirty: boolean;
+  conflict: PersonaView | null;
+  archived: boolean;
+  onReload: () => void;
+  onDuplicate: () => void;
+}): React.JSX.Element | null {
+  if (archived) return <p className="persona-state archived">Archived - this Persona is read-only.</p>;
+  if (conflict) {
+    return (
+      <div className="persona-state conflict" role="alert">
+        <span>A newer revision exists. Your local Markdown has not been changed.</span>
+        <button className="btn" onClick={onReload}>Reload latest</button>
+        <button className="btn" onClick={onDuplicate}>Save as duplicate</button>
+      </div>
+    );
+  }
+  return dirty ? <p className="persona-state dirty">Unsaved changes</p> : null;
+}
+
+export function PersonaEditor({
+  persona,
+  seed,
+  providers,
+  defaults,
+  isOverlayOpen,
+  onDirtyChange,
+  onDraftEdit,
+  onSaved,
+  onDuplicate,
+  onArchive,
+}: {
+  persona: PersonaView | null;
+  seed?: PersonaDraftSeed;
+  providers: readonly LlmProviderView[];
+  defaults: PersonaDefaultsView | null;
+  isOverlayOpen: () => boolean;
+  onDirtyChange: (dirty: boolean) => void;
+  onDraftEdit: () => void;
+  onSaved: (persona: PersonaView) => void;
+  onDuplicate: (seed: PersonaDraftSeed) => void;
+  onArchive: (persona: PersonaView) => void | Promise<void>;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState<PersonaDraftSeed>(() => persona ? fromPersona(persona) : seed ?? {
+    name: "",
+    description: "",
+    guidanceMarkdown: "",
+    runner: null,
+    model: null,
+  });
+  const draftRef = useRef(draft);
+  const editGeneration = useRef(0);
+  const [loadedRevision, setLoadedRevision] = useState(persona?.revision ?? null);
+  const [dirty, setDirty] = useState(false);
+  const [conflict, setConflict] = useState<PersonaView | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [narrowPane, setNarrowPane] = useState<"edit" | "preview">("edit");
+  const archived = persona?.archivedAt != null;
+
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+
+  // An SSE update for this Persona may arrive while the editor owns typed text. Clean drafts
+  // follow it; dirty drafts freeze and surface an explicit conflict without replacing one byte.
+  useEffect(() => {
+    if (!persona || persona.revision === loadedRevision) return;
+    if (dirty) {
+      setConflict(persona);
+      return;
+    }
+    const nextDraft = fromPersona(persona);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setLoadedRevision(persona.revision);
+    setConflict(null);
+  }, [dirty, loadedRevision, persona]);
+
+  const selectedRunner = knownRunner(draft.runner);
+  const draftExecution = projectPersonaDraftExecution(persona, draft, defaults);
+  const effectiveRunner = draftExecution.runner;
+  const runnerForControls = selectedRunner ?? effectiveRunner ?? "claude";
+  const effectiveModel = draftExecution.model;
+  const exactBytes = useMemo(() => new TextEncoder().encode(draft.guidanceMarkdown).byteLength, [draft.guidanceMarkdown]);
+  const lineSeparator = useMemo(
+    () => personaLineSeparator(draft.guidanceMarkdown),
+    [draft.guidanceMarkdown],
+  );
+
+  function edit(patch: Partial<PersonaDraftSeed>): void {
+    const nextDraft = { ...draftRef.current, ...patch };
+    editGeneration.current += 1;
+    onDraftEdit();
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setDirty(true);
+    setConflict(null);
+    setError(null);
+  }
+
+  async function save(asDuplicate = false): Promise<void> {
+    if (archived || saving || (persona !== null && !dirty && !asDuplicate)) return;
+    const submittedDraft = draftRef.current;
+    const submittedGeneration = editGeneration.current;
+    const updateBody = persona ? personaUpdatePatch(persona, submittedDraft, loadedRevision!) : null;
+    if (!asDuplicate && updateBody && Object.keys(updateBody).length === 1) {
+      setDirty(false);
+      setConflict(null);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const create = persona === null || asDuplicate;
+      const name = asDuplicate ? `${submittedDraft.name || "Persona"} copy` : submittedDraft.name;
+      const body = create
+        ? { ...submittedDraft, name, runner: knownRunner(submittedDraft.runner) }
+        : updateBody!;
+      const saved = await personaRequest<PersonaView>(
+        create ? "/api/personas" : `/api/personas/${persona.id}`,
+        {
+          method: create ? "POST" : "PATCH",
+          body: JSON.stringify(body),
+        },
+      );
+      const reconciled = reconcilePersonaSave(
+        saved,
+        submittedDraft,
+        draftRef.current,
+        submittedGeneration,
+        editGeneration.current,
+      );
+      draftRef.current = reconciled.draft;
+      setDraft(reconciled.draft);
+      setLoadedRevision(saved.revision);
+      setDirty(reconciled.dirty);
+      setConflict(null);
+      onSaved(saved);
+    } catch (cause) {
+      const known = cause as Error & {
+        status?: number;
+        body?: { code?: string; current?: PersonaView | null };
+      };
+      if (
+        known.status === 409 &&
+        known.body?.code === "persona_revision_conflict" &&
+        known.body.current
+      ) {
+        setConflict(known.body.current);
+      }
+      setError(known.message || "Could not save Persona");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (isPersonaSaveShortcut(event, isOverlayOpen())) {
+        event.preventDefault();
+        void save();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  async function copyMarkdown(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(draft.guidanceMarkdown);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError("Clipboard access was blocked. The Markdown remains in the editor.");
+    }
+  }
+
+  function downloadMarkdown(): void {
+    const url = URL.createObjectURL(personaMarkdownBlob(draft.guidanceMarkdown));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = markdownPath(draft.name);
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function reload(): void {
+    if (!conflict) return;
+    const nextDraft = fromPersona(conflict);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setLoadedRevision(conflict.revision);
+    setDirty(false);
+    setConflict(null);
+    setError(null);
+  }
+
+  const readOnly = archived;
+  return (
+    <article className={`persona-editor${archived ? " is-archived" : ""}`}>
+      <header className="persona-editor-head">
+        <div>
+          <p className="workflow-eyebrow">{persona ? `Revision ${loadedRevision}` : "New Persona"}</p>
+          <h3>{draft.name || "Untitled Persona"}</h3>
+        </div>
+        <div className="persona-actions">
+          <button className="btn" disabled={readOnly || saving || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+          <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>{copied ? "Copied ✓" : "Copy Markdown"}</button>
+          <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>
+          {persona && <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>}
+          {persona && !archived && <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>}
+        </div>
+      </header>
+
+      <PersonaEditorStatus
+        dirty={dirty}
+        conflict={conflict}
+        archived={archived}
+        onReload={reload}
+        onDuplicate={() => void save(true)}
+      />
+      {error && <p className="persona-error" role="alert">{error}</p>}
+
+      <section className="persona-fields">
+        <label>
+          <span>Name</span>
+          <input value={draft.name} readOnly={readOnly} maxLength={100} onChange={(event) => edit({ name: event.target.value })} />
+        </label>
+        <label>
+          <span>Description</span>
+          <input value={draft.description} readOnly={readOnly} maxLength={500} onChange={(event) => edit({ description: event.target.value })} />
+        </label>
+        <label>
+          <span>Provider override</span>
+          <select
+            value={draft.runner ?? ""}
+            disabled={readOnly}
+            onChange={(event) => edit({ runner: event.target.value || null, model: null })}
+          >
+            <option value="">App default</option>
+            {draft.runner !== null && selectedRunner === null && (
+              <option value={draft.runner} disabled>Unavailable: {draft.runner}</option>
+            )}
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>{provider.label}</option>
+            ))}
+          </select>
+        </label>
+        <div className="persona-effective" aria-label="Effective Persona model">
+          <span>Effective</span>
+          <strong>{effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}</strong>
+          <code>{effectiveModel?.id ?? "resolves after save"}</code>
+          {persona?.execution.runner.unknown && <small>Unknown stored provider “{persona.execution.runner.unknown}” fell back.</small>}
+        </div>
+        <div className="persona-model-field">
+          <ModelSuggestions providerLabel={providerLabel(providers, runnerForControls)} />
+          <ModelField
+            id={`persona-model-${persona?.id ?? "new"}`}
+            spec={WORKFLOW_PERSONA_MODEL_SPEC}
+            value={draft.model ?? ""}
+            resolved={effectiveModel}
+            runner={runnerForControls}
+            disabled={readOnly}
+            onCommit={(model) => edit({ model: model || null })}
+          />
+        </div>
+      </section>
+
+      <div className="persona-narrow-toggle" role="group" aria-label="Persona guidance view">
+        <button className={narrowPane === "edit" ? "active" : ""} onClick={() => setNarrowPane("edit")}>Edit</button>
+        <button className={narrowPane === "preview" ? "active" : ""} onClick={() => setNarrowPane("preview")}>Preview</button>
+      </div>
+      <section className="persona-split">
+        <div className="persona-pane persona-edit-pane" data-mobile-active={narrowPane === "edit"}>
+          <header><span>Markdown</span><small>{exactBytes.toLocaleString()} bytes</small></header>
+          <div aria-label={`Editor for ${markdownPath(draft.name)}`}>
+            <FileEditor
+              path={markdownPath(draft.name)}
+              value={draft.guidanceMarkdown}
+              readOnly={readOnly}
+              lineSeparator={lineSeparator}
+              onChange={(guidanceMarkdown) => edit({ guidanceMarkdown })}
+              onBlur={() => {}}
+            />
+          </div>
+        </div>
+        <div className="persona-pane persona-preview-pane" data-mobile-active={narrowPane === "preview"}>
+          <header><span>Preview</span></header>
+          <article className="persona-markdown markdown">
+            {draft.guidanceMarkdown ? <Markdown>{draft.guidanceMarkdown}</Markdown> : <p>Markdown preview appears here.</p>}
+          </article>
+        </div>
+      </section>
+    </article>
+  );
+}

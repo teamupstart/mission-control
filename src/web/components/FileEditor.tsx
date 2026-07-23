@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState } from "@codemirror/state";
+import type { ChangeSet } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { HighlightStyle, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
@@ -26,22 +27,65 @@ const missionHighlight = HighlightStyle.define([
   { tag: [tags.invalid], color: "var(--danger)", textDecoration: "underline wavy" },
 ]);
 
+function exactLineStarts(value: string): number[] {
+  const starts = [0];
+  const breaks = /\r\n|\r|\n/g;
+  for (let match = breaks.exec(value); match; match = breaks.exec(value)) {
+    starts.push(match.index + match[0].length);
+  }
+  return starts;
+}
+
+function exactOffset(lineStarts: readonly number[], state: EditorState, position: number): number {
+  const line = state.doc.lineAt(position);
+  const start = lineStarts[line.number - 1];
+  if (start === undefined) throw new Error("editor source and document line counts diverged");
+  return start + position - line.from;
+}
+
+/** Apply abstract CodeMirror positions without rewriting untouched source line endings. */
+export function applyExactEditorChanges(
+  value: string,
+  state: EditorState,
+  changes: ChangeSet,
+  insertedLineSeparator = "\n",
+): string {
+  const lineStarts = exactLineStarts(value);
+  const chunks: string[] = [];
+  let cursor = 0;
+  changes.iterChanges((from, to, _fromNew, _toNew, inserted) => {
+    const exactFrom = exactOffset(lineStarts, state, from);
+    const exactTo = exactOffset(lineStarts, state, to);
+    chunks.push(
+      value.slice(cursor, exactFrom),
+      inserted.sliceString(0, undefined, insertedLineSeparator),
+    );
+    cursor = exactTo;
+  });
+  chunks.push(value.slice(cursor));
+  return chunks.join("");
+}
+
 export function FileEditor({
   path,
   value,
   readOnly,
+  lineSeparator,
   onChange,
   onBlur,
 }: {
   path: string;
   value: string;
   readOnly: boolean;
+  /** Preserve a caller's exact newline convention when CodeMirror serializes an edit. */
+  lineSeparator?: "\n" | "\r\n" | "\r";
   onChange: (text: string) => void;
   onBlur: () => void;
 }): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const syncing = useRef(false);
+  const exactValue = useRef(value);
   const changeRef = useRef(onChange);
   const blurRef = useRef(onBlur);
   changeRef.current = onChange;
@@ -63,7 +107,15 @@ export function FileEditor({
           editable.of(EditorView.editable.of(!readOnly)),
           EditorView.contentAttributes.of({ spellcheck: "false", "aria-label": `Editor for ${path}` }),
           EditorView.updateListener.of((update) => {
-            if (update.docChanged && !syncing.current) changeRef.current(update.state.doc.toString());
+            if (update.docChanged && !syncing.current) {
+              exactValue.current = applyExactEditorChanges(
+                exactValue.current,
+                update.startState,
+                update.changes,
+                lineSeparator,
+              );
+              changeRef.current(exactValue.current);
+            }
             if (update.focusChanged && !update.view.hasFocus) blurRef.current();
           }),
           EditorView.theme({
@@ -84,6 +136,7 @@ export function FileEditor({
         ],
       }),
     });
+    exactValue.current = value;
     view.current = editor;
     let alive = true;
     const description = LanguageDescription.matchFilename(languages, path);
@@ -97,12 +150,13 @@ export function FileEditor({
       editor.destroy();
       view.current = null;
     };
-  }, [path, readOnly]);
+  }, [lineSeparator, path, readOnly]);
 
   useEffect(() => {
     const editor = view.current;
-    if (!editor || editor.state.doc.toString() === value) return;
+    if (!editor || exactValue.current === value) return;
     syncing.current = true;
+    exactValue.current = value;
     editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
     syncing.current = false;
   }, [value]);

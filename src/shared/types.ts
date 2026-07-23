@@ -10,6 +10,7 @@ import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
+import type { PersonaId, PersonaView } from "./workflow.ts";
 
 /**
  * Every agent harness Mission Control can drive. THE source of the union - the
@@ -1651,6 +1652,11 @@ export interface InspectorStatus {
   model: ResolvedModel;
 }
 
+export interface LlmProviderView {
+  id: LlmRunnerId;
+  label: string;
+}
+
 /**
  * What the app's offline work will actually spawn as - the runner and every background
  * job's model, each with the layer that chose it.
@@ -1667,7 +1673,7 @@ export interface LlmStatus {
   runner: ResolvedLlmRunner;
   models: Record<LlmJobId, ResolvedLlmJobModel>;
   /** Every provider this build has, in declaration order. */
-  runners: Array<{ id: LlmRunnerId; label: string }>;
+  runners: LlmProviderView[];
 }
 
 // ---- SSE events (daemon -> UI) ----
@@ -1678,6 +1684,7 @@ export type ServerEvent =
       sessions: Session[];
       reviews: ReviewItem[];
       tasks: Task[];
+      personas: PersonaView[];
       /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
@@ -1691,6 +1698,8 @@ export type ServerEvent =
   | { type: "review_remove"; id: string }
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
+  | { type: "persona_upsert"; persona: PersonaView }
+  | { type: "persona_remove"; id: PersonaId }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

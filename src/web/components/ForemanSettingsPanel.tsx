@@ -160,7 +160,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
           use the provider-compatible value shown. Review and Verify are the expensive
           calls; Triage and Backlog are deliberately cheaper.
         </p>
-        <ModelSuggestions runner={runner} />
+        <ModelSuggestions providerLabel={AGENT_IDENTITY[runner].label} />
         {FOREMAN_MODEL_ROLES.map((role) => (
           <ModelField
             key={role}

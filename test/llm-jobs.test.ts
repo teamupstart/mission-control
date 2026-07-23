@@ -19,7 +19,8 @@ import {
 // constants out of `task-title.ts`, `goal/refiner.ts` and `away/digest.ts` and put them
 // behind a config. The promise made when it landed was that an operator who never opens the
 // new panel gets EXACTLY what they had - same model ids, same env var names, same "an empty
-// box means the ladder decides" reading of a cleared field.
+// box means the ladder decides" reading of a cleared field. Workflow context was appended
+// before its first caller and is pinned here under the same persisted-key contract.
 //
 // Every one of those is silent when it breaks. A changed fallback spends a different tier
 // on every dispatch and nothing says so; a changed env var name leaves a `MISSION_GOAL_MODEL`
@@ -33,20 +34,22 @@ import {
 // fall back rather than be handed on - and must SAY it fell back, or a panel presents the
 // default as the operator's own choice.
 
-test("the shipped model for each background job is byte-identical to the constant it replaced", () => {
+test("the shipped model for each background job is pinned", () => {
   // The literals as they stood in task-title.ts:20, goal/refiner.ts:39 and away/digest.ts:17
   // before this migration. Pinned, not derived.
   assert.equal(LLM_JOB_SPECS["task-title"].fallback, "claude-haiku-4-5");
   assert.equal(LLM_JOB_SPECS.goal.fallback, "claude-haiku-4-5");
   assert.equal(LLM_JOB_SPECS["away-digest"].fallback, "claude-haiku-4-5");
+  assert.equal(LLM_JOB_SPECS["workflow-context"].fallback, "claude-haiku-4-5");
 });
 
 test("each job reads the same env var it always did", () => {
-  // The `envVar()` suffixes the three call sites passed. An operator's environment outlives
-  // this refactor; renaming one of these would silently stop honouring a setting still set.
+  // The `envVar()` suffixes the original call sites passed, plus the workflow foundation's
+  // append-only spelling. An operator's environment outlives any one build.
   assert.equal(LLM_JOB_SPECS["task-title"].envKey, "TASK_TITLE_MODEL");
   assert.equal(LLM_JOB_SPECS.goal.envKey, "GOAL_MODEL");
   assert.equal(LLM_JOB_SPECS["away-digest"].envKey, "AWAY_DIGEST_MODEL");
+  assert.equal(LLM_JOB_SPECS["workflow-context"].envKey, "WORKFLOW_CONTEXT_MODEL");
 });
 
 test("the env name the panel PRINTS is the one the daemon looks up", () => {
@@ -108,6 +111,7 @@ test("resolveLlmJobModels resolves each job against its OWN env value", () => {
   assert.equal(all.goal.id, "from-config");
   assert.equal(all["task-title"].id, "from-env");
   assert.equal(all["away-digest"].id, LLM_JOB_SPECS["away-digest"].fallback);
+  assert.equal(all["workflow-context"].id, LLM_JOB_SPECS["workflow-context"].fallback);
 });
 
 test("the runner ladder ranks config over env over the shipped default", () => {

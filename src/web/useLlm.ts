@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
 import type { LlmStatus } from "@shared/types.ts";
-import { api, fetchLlmConfig, fetchLlmStatus } from "./lib/api.ts";
+import type { PersonaDefaultsView } from "@shared/workflow.ts";
+import { api, fetchLlmConfig, fetchLlmStatus, fetchPersonaDefaults } from "./lib/api.ts";
 
 // The LLM config plus what the daemon resolved from it. Polled rather than streamed for
 // the same reason the Inspector's and Foreman's are: coarse, low-frequency control-panel
@@ -28,6 +29,7 @@ export interface LlmState {
    * unreachable daemon does to every other control in Settings.
    */
   status: LlmStatus | null;
+  personaDefaults: PersonaDefaultsView | null;
   update: (patch: LlmConfigPatch) => Promise<void>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
@@ -36,6 +38,7 @@ export interface LlmState {
 export function useLlm(): LlmState {
   const [config, setConfigState] = useState<LlmConfig | null>(null);
   const [status, setStatus] = useState<LlmStatus | null>(null);
+  const [personaDefaults, setPersonaDefaults] = useState<PersonaDefaultsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<LlmConfig | null>(null);
   /**
@@ -55,12 +58,17 @@ export function useLlm(): LlmState {
     let alive = true;
     const tick = async (): Promise<void> => {
       const at = writes.current;
-      const [c, s] = await Promise.all([fetchLlmConfig(), fetchLlmStatus()]);
+      const [c, s, defaults] = await Promise.all([
+        fetchLlmConfig(),
+        fetchLlmStatus(),
+        fetchPersonaDefaults(),
+      ]);
       if (!alive || writes.current !== at) return;
       // The status is raced by a write exactly as the config is - it is DERIVED from the
       // config a `PUT` may have just changed - so it takes the same guard rather than being
       // applied unconditionally like a read-only list would be.
       if (s) setStatus(s);
+      if (defaults) setPersonaDefaults(defaults);
       if (c) setConfig(c);
     };
     void tick();
@@ -95,13 +103,18 @@ export function useLlm(): LlmState {
       // Re-read NOW rather than on the next poll: a committed model has to re-resolve, or
       // the source line under the box goes on saying "Shipped default" for up to `POLL_MS`
       // after you typed an override into it.
-      const [c, s] = await Promise.all([fetchLlmConfig(), fetchLlmStatus()]);
+      const [c, s, defaults] = await Promise.all([
+        fetchLlmConfig(),
+        fetchLlmStatus(),
+        fetchPersonaDefaults(),
+      ]);
       if (writes.current !== at) return;
       if (s) setStatus(s);
+      if (defaults) setPersonaDefaults(defaults);
       if (c) setConfig(c);
     },
     [setConfig],
   );
 
-  return { config, status, update, error };
+  return { config, status, personaDefaults, update, error };
 }

@@ -85,6 +85,26 @@ test("daemon recovery converts sending to uncertain and blocks its run, preservi
   assert.equal(preparedStore.getDelivery(prepared.id)?.state, "prepared");
 });
 
+test("resolving an uncertain delivery preserves an orphaned run block", () => {
+  const store = seededStore("orphaned-resolution");
+  const delivery = prepare(store, "orphaned-resolution");
+  store.claimDeliverySend(delivery.id);
+  store.recoverSendingDeliveries(10);
+  store.orphanBinding("binding-orphaned-resolution", "session_disappeared", 11);
+
+  const blocked = store.getRun("run-orphaned-resolution");
+  const resolved = store.resolveUncertainDelivery(
+    delivery.id,
+    "mark_delivered",
+    "inspected-after-orphan",
+    12,
+  );
+
+  assert.equal(resolved?.delivery.state, "delivered");
+  assert.equal(resolved?.rearmedDrain, false);
+  assert.deepEqual(store.getRun("run-orphaned-resolution"), blocked);
+});
+
 test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and recovery is explicit", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");

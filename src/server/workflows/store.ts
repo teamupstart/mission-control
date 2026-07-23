@@ -2263,16 +2263,19 @@ export class WorkflowStore {
       }, now);
       let rearmedDrain = false;
       if (resolution === "mark_delivered") {
-        this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
-          deliveryId: delivery.id,
-          resolvedByOperator: true,
-        }, now);
-        rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
-        if (rearmedDrain) {
-          this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
+        const binding = this.getBinding(run.bindingId);
+        if (binding?.state === "active") {
+          this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
             deliveryId: delivery.id,
-            completionKind: "drain",
+            resolvedByOperator: true,
           }, now);
+          rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
+          if (rearmedDrain) {
+            this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
+              deliveryId: delivery.id,
+              completionKind: "drain",
+            }, now);
+          }
         }
       }
       return { delivery: this.mustDelivery(id), idempotent: false, rearmedDrain };

@@ -224,6 +224,7 @@ async function delayedTaskMergeSetup(suffix: string) {
     branch,
     url,
     agentSessionId,
+    prerequisiteId,
     originalEpisode,
     promptAt,
     dependent,
@@ -245,6 +246,24 @@ function failDependencyRewrite(taskId: string, run: () => void): void {
     run();
   } finally {
     db.exec(`DROP TRIGGER fail_dependency_rewrite`);
+  }
+}
+
+function failEpisodeMutation(sessionId: string, run: () => void): void {
+  const db = openDb();
+  const escapedSessionId = sessionId.replaceAll("'", "''");
+  db.exec(
+    `CREATE TEMP TRIGGER fail_episode_mutation
+     BEFORE UPDATE ON session_work_episodes
+     WHEN OLD.session_id = '${escapedSessionId}'
+     BEGIN
+       SELECT RAISE(ABORT, 'injected episode mutation failure');
+     END`,
+  );
+  try {
+    run();
+  } finally {
+    db.exec(`DROP TRIGGER fail_episode_mutation`);
   }
 }
 
@@ -1080,8 +1099,9 @@ test("pending reset identity resolution rebinds task edge provenance", async () 
 });
 
 for (const [suffix, failureIndex, boundary] of [
-  ["96", 0, "episode mutation"],
-  ["97", 1, "first edge mutation"],
+  ["96", -1, "ownership mutation"],
+  ["97", 0, "episode mutation"],
+  ["100", 1, "first edge mutation"],
 ] as const) {
   test(`reset rebind crash point after ${boundary} rolls back`, async () => {
     const setup = await delayedTaskMergeSetup(suffix);
@@ -1091,7 +1111,7 @@ for (const [suffix, failureIndex, boundary] of [
       backlog: true,
       dependencies: [{
         type: "task",
-        taskId: `delayed-task-prerequisite-${suffix}`,
+        taskId: setup.prerequisiteId,
       }],
     });
     setup.registry.reconcilePrs(
@@ -1109,15 +1129,37 @@ for (const [suffix, failureIndex, boundary] of [
     );
     const rolledOver = setup.registry.workEpisodeForSession(setup.id)!;
     const dependents = [setup.dependent, second];
-
-    assert.throws(() =>
-      failDependencyRewrite(dependents[failureIndex].id, () => {
-        setup.registry.resetWorkEpisode(setup.id);
-      }),
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(
+      setup.registry.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
+      rolledOver.episodeId,
     );
+
+    assert.throws(() => {
+      const reset = () => {
+        setup.registry.resetWorkEpisode(setup.id);
+      };
+      if (failureIndex === -1) failEpisodeMutation(setup.id, reset);
+      else failDependencyRewrite(dependents[failureIndex].id, reset);
+    });
+
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(
+      setup.registry.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
+      rolledOver.episodeId,
+    );
+    for (const dependent of dependents) {
+      const edge = setup.registry.getTask(dependent.id)?.dependencies[0];
+      assert.equal(edge?.type === "task" ? edge.episodeId : null, rolledOver.episodeId);
+    }
 
     const restarted = new Registry();
     assert.equal(restarted.workEpisodeForSession(setup.id)?.episodeId, rolledOver.episodeId);
+    assert.equal(restarted.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(
+      restarted.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
+      rolledOver.episodeId,
+    );
     for (const dependent of dependents) {
       const edge = restarted.getTask(dependent.id)?.dependencies[0];
       assert.equal(edge?.type === "task" ? edge.episodeId : null, rolledOver.episodeId);
@@ -1128,8 +1170,9 @@ for (const [suffix, failureIndex, boundary] of [
 }
 
 for (const [suffix, failureIndex, boundary] of [
-  ["98", 0, "episode mutation"],
-  ["99", 1, "first edge mutation"],
+  ["98", -1, "ownership mutation"],
+  ["99", 0, "episode mutation"],
+  ["101", 1, "first edge mutation"],
 ] as const) {
   test(`identity rebind crash point after ${boundary} rolls back`, async () => {
     const setup = await delayedTaskMergeSetup(suffix);
@@ -1139,7 +1182,7 @@ for (const [suffix, failureIndex, boundary] of [
       backlog: true,
       dependencies: [{
         type: "task",
-        taskId: `delayed-task-prerequisite-${suffix}`,
+        taskId: setup.prerequisiteId,
       }],
     });
     const pending = setup.registry.resetWorkEpisode(setup.id, {
@@ -1156,9 +1199,11 @@ for (const [suffix, failureIndex, boundary] of [
     );
     const dependents = [setup.dependent, second];
     const reboundAgentSessionId = `delayed-task-episode-${suffix}-after-reset`;
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, null);
+    assert.equal(setup.registry.workEpisodeForTask(setup.prerequisiteId), null);
 
-    assert.throws(() =>
-      failDependencyRewrite(dependents[failureIndex].id, () => {
+    assert.throws(() => {
+      const rebind = () => {
         setup.registry.applyHook({
           agent: "claude",
           event: "SessionStart",
@@ -1168,14 +1213,22 @@ for (const [suffix, failureIndex, boundary] of [
           env: {},
           source: "clear",
         });
-      }),
-    );
+      };
+      if (failureIndex === -1) failEpisodeMutation(setup.id, rebind);
+      else failDependencyRewrite(dependents[failureIndex].id, rebind);
+    });
+
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, null);
+    assert.equal(setup.registry.workEpisodeForTask(setup.prerequisiteId), null);
+    assert.equal(setup.registry.workEpisodeForSession(setup.id)?.agentSessionId, setup.agentSessionId);
 
     const restarted = new Registry();
     const persisted = restarted.workEpisodeForSession(setup.id)!;
     assert.equal(persisted.episodeId, pending.episodeId);
     assert.equal(persisted.agentSessionId, setup.agentSessionId);
     assert.equal(persisted.awaitingAgentRebind, true);
+    assert.equal(restarted.getTask(setup.prerequisiteId)?.sessionId, null);
+    assert.equal(restarted.workEpisodeForTask(setup.prerequisiteId), null);
     for (const dependent of dependents) {
       const edge = restarted.getTask(dependent.id)?.dependencies[0];
       assert.equal(edge?.type === "task" ? edge.episodeId : null, pending.episodeId);

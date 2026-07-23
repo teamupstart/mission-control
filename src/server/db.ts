@@ -1907,17 +1907,37 @@ function writeTaskDependencyRewrites(
   }
 }
 
+function invalidateTaskOwnershipInTransaction(
+  d: DatabaseSync,
+  sessionId: string,
+): string[] {
+  const rows = d
+    .prepare(
+      `SELECT task_id FROM task_work_episode_bindings WHERE session_id = ?
+       UNION SELECT id AS task_id FROM tasks WHERE session_id = ?`,
+    )
+    .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
+  d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
+  d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ?`).run(sessionId);
+  return rows.map((row) => row.task_id);
+}
+
 export function replaceSessionWorkEpisodeWithDependencies(
   episode: SessionWorkEpisode,
   rewrites: TaskDependencyRewrite[],
-): void {
+  invalidateOwnershipSessionId: string | null = null,
+): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
+    const invalidatedTaskIds = invalidateOwnershipSessionId === null
+      ? []
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId);
     writeSessionWorkEpisode(d, episode);
     writeTaskDependencyRewrites(d, rewrites);
     if (ownsTransaction) d.exec("COMMIT");
+    return invalidatedTaskIds;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
@@ -1928,17 +1948,51 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   replaceSessionWorkEpisodeWithDependencies(episode, []);
 }
 
+export function deleteSessionWorkEpisodeWithOwnership(sessionId: string): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const invalidatedTaskIds = invalidateTaskOwnershipInTransaction(d, sessionId);
+    d.prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+    if (ownsTransaction) d.exec("COMMIT");
+    return invalidatedTaskIds;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export interface PendingSessionWorkEpisodeRebindResult {
+  rebound: boolean;
+  invalidatedTaskIds: string[];
+}
+
 export function rebindPendingSessionWorkEpisodeWithDependencies(
   sessionId: string,
   episodeId: string,
   agentSessionId: string,
   now: number,
   rewrites: TaskDependencyRewrite[],
-): boolean {
+  invalidateOwnershipSessionId: string | null = null,
+): PendingSessionWorkEpisodeRebindResult {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
+    const pending = d
+      .prepare(
+        `SELECT 1 FROM session_work_episodes
+         WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
+      )
+      .get(sessionId, episodeId);
+    if (!pending) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return { rebound: false, invalidatedTaskIds: [] };
+    }
+    const invalidatedTaskIds = invalidateOwnershipSessionId === null
+      ? []
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId);
     const result = d
       .prepare(
         `UPDATE session_work_episodes
@@ -1947,16 +2001,19 @@ export function rebindPendingSessionWorkEpisodeWithDependencies(
          WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
       )
       .run(agentSessionId, now, sessionId, episodeId);
-    if (Number(result.changes) > 0) {
+    if (Number(result.changes) !== 1) {
+      throw new Error(`pending work episode disappeared during rebind: ${sessionId}`);
+    }
+    if (invalidateOwnershipSessionId === null) {
       d.prepare(
         `UPDATE task_work_episode_bindings
          SET agent_session_id = ?, updated_at = ?
         WHERE session_id = ? AND episode_id = ?`,
       ).run(agentSessionId, now, sessionId, episodeId);
-      writeTaskDependencyRewrites(d, rewrites);
     }
+    writeTaskDependencyRewrites(d, rewrites);
     if (ownsTransaction) d.exec("COMMIT");
-    return Number(result.changes) > 0;
+    return { rebound: true, invalidatedTaskIds };
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
@@ -1975,7 +2032,7 @@ export function rebindPendingSessionWorkEpisode(
     agentSessionId,
     now,
     [],
-  );
+  ).rebound;
 }
 
 export function deleteSessionWorkEpisode(sessionId: string): void {
@@ -2200,16 +2257,9 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
-    const rows = d
-      .prepare(
-        `SELECT task_id FROM task_work_episode_bindings WHERE session_id = ?
-         UNION SELECT id AS task_id FROM tasks WHERE session_id = ?`,
-      )
-      .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
-    d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
-    d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ?`).run(sessionId);
+    const taskIds = invalidateTaskOwnershipInTransaction(d, sessionId);
     if (ownsTransaction) d.exec("COMMIT");
-    return rows.map((row) => row.task_id);
+    return taskIds;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;

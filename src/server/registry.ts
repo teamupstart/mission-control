@@ -102,9 +102,9 @@ import {
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
   deleteHistoricalTaskWorkEpisodeBinding,
   deleteSessionWorkEpisode,
+  deleteSessionWorkEpisodeWithOwnership,
   deleteWorkEpisodePrompts,
   historicalTaskWorkEpisodeBindings,
-  invalidateTaskWorkEpisodeBindings,
   rebindPendingSessionWorkEpisodeWithDependencies,
   replaceSessionWorkEpisode,
   replaceSessionWorkEpisodeWithDependencies,
@@ -1376,19 +1376,6 @@ export class Registry extends EventEmitter {
     return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
   }
 
-  private invalidateTaskOwnership(sessionId: string): void {
-    const invalidated = invalidateTaskWorkEpisodeBindings(sessionId);
-    for (const taskId of invalidated) {
-      const task = this.tasks.get(taskId);
-      if (!task || task.sessionId !== sessionId) continue;
-      const next = { ...task, sessionId: null };
-      this.tasks.set(taskId, next);
-      this.emitEvent({ type: "task_upsert", task: next });
-    }
-    this.resyncSessionTask(sessionId);
-    this.cleanupDependencyProvenance();
-  }
-
   private startWorkEpisode(
     sessionId: string,
     agentSessionId: string | null,
@@ -1401,10 +1388,15 @@ export class Registry extends EventEmitter {
     dependencyRebind: "none" | "all" | "prless" = "none",
   ): SessionWorkEpisode | null {
     const previous = sessionWorkEpisodeFor(sessionId);
-    if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
-    this.prObservations.delete(sessionId);
     if (!agentSessionId) {
-      deleteSessionWorkEpisode(sessionId);
+      let invalidatedTaskIds: string[] = [];
+      if (invalidateOwnership) {
+        invalidatedTaskIds = deleteSessionWorkEpisodeWithOwnership(sessionId);
+      } else {
+        deleteSessionWorkEpisode(sessionId);
+      }
+      this.prObservations.delete(sessionId);
+      this.publishEpisodeTaskChanges([], invalidatedTaskIds, sessionId);
       this.cleanupDependencyProvenance();
       return null;
     }
@@ -1428,11 +1420,13 @@ export class Registry extends EventEmitter {
         (dependencyRebind === "prless" && previous.prUrl === null))
         ? this.pendingDependencyRebinds(previous, episode, startedAt)
         : [];
-    replaceSessionWorkEpisodeWithDependencies(
+    const invalidatedTaskIds = replaceSessionWorkEpisodeWithDependencies(
       episode,
       rebinds.map(this.taskDependencyRewrite),
+      invalidateOwnership ? sessionId : null,
     );
-    this.publishDependencyRebinds(rebinds);
+    this.prObservations.delete(sessionId);
+    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, sessionId);
     if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
   }
@@ -1581,13 +1575,23 @@ export class Registry extends EventEmitter {
     updatedAt: task.updatedAt,
   });
 
-  private publishDependencyRebinds(rebinds: Task[]): void {
-    for (const task of rebinds) {
+  private publishEpisodeTaskChanges(
+    rebinds: Task[],
+    invalidatedTaskIds: string[],
+    sessionId: string,
+  ): void {
+    const updates = new Map(rebinds.map((task) => [task.id, task]));
+    for (const taskId of invalidatedTaskIds) {
+      const task = updates.get(taskId) ?? this.tasks.get(taskId);
+      if (task?.sessionId === sessionId) updates.set(taskId, { ...task, sessionId: null });
+    }
+    for (const task of updates.values()) {
       this.tasks.set(task.id, task);
       this.emitEvent({ type: "task_upsert", task });
       this.syncSessionsForWorktree(task.worktreePath);
       if (task.sessionId) this.resyncSessionTask(task.sessionId);
     }
+    this.resyncSessionTask(sessionId);
   }
 
   private rebindPendingDependencies(
@@ -1784,24 +1788,29 @@ export class Registry extends EventEmitter {
       updatedAt: now,
     };
     const rebinds = this.pendingDependencyRebinds(episode, next, now);
+    let invalidatedTaskIds: string[];
     if (episode.agentSessionId !== agentSessionId) {
-      if (!rebindPendingSessionWorkEpisodeWithDependencies(
+      const result = rebindPendingSessionWorkEpisodeWithDependencies(
         episode.sessionId,
         episode.episodeId,
         agentSessionId,
         now,
         rebinds.map(this.taskDependencyRewrite),
-      )) {
+        episode.sessionId,
+      );
+      if (!result.rebound) {
         return null;
       }
+      invalidatedTaskIds = result.invalidatedTaskIds;
     } else {
-      replaceSessionWorkEpisodeWithDependencies(
+      invalidatedTaskIds = replaceSessionWorkEpisodeWithDependencies(
         next,
         rebinds.map(this.taskDependencyRewrite),
+        episode.sessionId,
       );
     }
-    this.publishDependencyRebinds(rebinds);
-    this.invalidateTaskOwnership(episode.sessionId);
+    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId);
+    this.cleanupDependencyProvenance();
     return next;
   }
 

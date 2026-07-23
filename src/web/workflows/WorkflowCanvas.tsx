@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  ControlButton,
   Controls,
   ReactFlow,
   applyEdgeChanges,
@@ -10,6 +11,7 @@ import {
   type EdgeChange,
   type NodeChange,
   type ReactFlowInstance,
+  useReactFlow,
 } from "@xyflow/react";
 import type {
   PersonaView,
@@ -22,11 +24,35 @@ import type {
   WorkflowTargetPort,
 } from "@shared/workflow.ts";
 import { connectionAllowed } from "@shared/workflow-graph.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
 
 export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
 
 const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
+
+function WorkflowControls(): React.JSX.Element {
+  const { fitView, zoomIn, zoomOut } = useReactFlow();
+  return (
+    <Controls showZoom={false} showFitView={false} showInteractive={false}>
+      <Tooltip label="Zoom in">
+        <ControlButton aria-label="Zoom in" onClick={() => void zoomIn()}>
+          <span aria-hidden>＋</span>
+        </ControlButton>
+      </Tooltip>
+      <Tooltip label="Zoom out">
+        <ControlButton aria-label="Zoom out" onClick={() => void zoomOut()}>
+          <span aria-hidden>−</span>
+        </ControlButton>
+      </Tooltip>
+      <Tooltip label="Fit the graph to view">
+        <ControlButton aria-label="Fit the graph to view" onClick={() => void fitView()}>
+          <span aria-hidden>□</span>
+        </ControlButton>
+      </Tooltip>
+    </Controls>
+  );
+}
 
 function isPublishedPersona(node: WorkflowDraftNode | PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
   return node.kind === "persona" && "persona" in node;
@@ -218,8 +244,9 @@ export function WorkflowCanvas({
           } catch {}
         }}
       >
+        {/* React Flow's free-tier license requires its generated attribution link. */}
         <Background gap={18} size={1} />
-        <Controls showInteractive={false} />
+        <WorkflowControls />
       </ReactFlow>
     </div>
   );

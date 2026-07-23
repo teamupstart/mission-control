@@ -91,11 +91,16 @@ export const Markdown = memo(function Markdown({
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
       rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
       urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
-      components={onLinkClick ? {
-        a: ({ node: _node, href, onClick: _onClick, ...props }) => (
-          <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
-        ),
-      } : undefined}
+      components={{
+        a: ({ node: _node, href, onClick: _onClick, ...props }) =>
+          onLinkClick ? (
+            <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
+          ) : (
+            <Tooltip label={href ?? "link"}>
+              <a {...props} href={href} />
+            </Tooltip>
+          ),
+      }}
     >
       {children}
     </ReactMarkdown>

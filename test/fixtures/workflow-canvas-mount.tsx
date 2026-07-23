@@ -4,7 +4,13 @@ import { WorkflowCanvas } from "../../src/web/workflows/WorkflowCanvas.tsx";
 
 declare global {
   interface Window {
-    __workflowCanvasResult?: { mounted: boolean; errors: string[] };
+    __workflowCanvasResult?: {
+      mounted: boolean;
+      errors: string[];
+      controls: string[];
+      nativeTitles: number;
+      attribution: boolean;
+    };
   }
 }
 
@@ -31,5 +37,9 @@ window.setTimeout(() => {
   window.__workflowCanvasResult = {
     mounted: document.querySelector('[aria-label="Workflow graph editor"]') !== null,
     errors,
+    controls: [...document.querySelectorAll<HTMLButtonElement>(".react-flow__controls button")]
+      .map((button) => button.getAttribute("aria-label") ?? ""),
+    nativeTitles: document.querySelectorAll(".react-flow__controls [title]").length,
+    attribution: document.querySelector(".react-flow__attribution a") !== null,
   };
 }, 250);

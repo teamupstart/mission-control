@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "../src/web/components/Markdown.tsx";
+import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
 
 // Rendered rather than driven through a browser, for the same reason as the other render
 // tests here: the dashboard's SSE stream holds the connection open, which hangs headless
@@ -89,9 +90,12 @@ test("external protocol links keep their browser href", () => {
   assert.match(html, /href="tel:456"/);
   assert.match(html, /href="geo:1,2"/);
   assert.match(html, /href="ftp:\/\/example\.com\/a"/);
+  assert.ok(hasTooltip(html, "webcal:123"));
+  assert.ok(hasTooltip(html, "ftp://example.com/a"));
 });
 
 test("active-content protocol links receive an inert href", () => {
   const html = render("[bad](javascript:alert(1)) [data](data:text/html,x)");
-  assert.equal(html, '<p><a href="">bad</a> <a href="">data</a></p>');
+  assert.equal(html.match(/href=""/g)?.length, 2);
+  assert.deepEqual(tooltipLabels(html), ["", ""]);
 });

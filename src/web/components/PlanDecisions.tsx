@@ -130,13 +130,15 @@ export function DecisionForm({
           {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
           {d.options.map((o) => (
             <label key={o.id} className="decision-option">
-              <input
-                type={d.multiSelect ? "checkbox" : "radio"}
-                name={`${namePrefix}-${d.id}`}
-                checked={get(d.id).selected.includes(o.id)}
-                onChange={(e) => choose(d, o.id, e.target.checked)}
-                disabled={busy}
-              />
+              <Tooltip label={o.detail ?? o.label}>
+                <input
+                  type={d.multiSelect ? "checkbox" : "radio"}
+                  name={`${namePrefix}-${d.id}`}
+                  checked={get(d.id).selected.includes(o.id)}
+                  onChange={(e) => choose(d, o.id, e.target.checked)}
+                  disabled={busy}
+                />
+              </Tooltip>
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}

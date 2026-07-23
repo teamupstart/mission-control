@@ -93,16 +93,51 @@ function tagName(node: ts.JsxOpeningLikeElement): string {
   return node.tagName.getText();
 }
 
-function hasTooltipAncestor(node: ts.Node): boolean {
+function tooltipAncestors(node: ts.Node): ts.JsxElement[] {
+  const ancestors: ts.JsxElement[] = [];
   for (let parent = node.parent; parent; parent = parent.parent) {
-    if (ts.isJsxElement(parent) && tagName(parent.openingElement) === "Tooltip") return true;
+    if (ts.isJsxElement(parent) && tagName(parent.openingElement) === "Tooltip") {
+      ancestors.push(parent);
+    }
   }
-  return false;
+  return ancestors;
+}
+
+function descendants(
+  node: ts.Node,
+  predicate: (candidate: ts.JsxOpeningLikeElement) => boolean,
+): ts.JsxOpeningLikeElement[] {
+  const found: ts.JsxOpeningLikeElement[] = [];
+  function visit(candidate: ts.Node): void {
+    if (ts.isJsxElement(candidate)) {
+      if (predicate(candidate.openingElement)) found.push(candidate.openingElement);
+    } else if (ts.isJsxSelfClosingElement(candidate) && predicate(candidate)) {
+      found.push(candidate);
+    }
+    ts.forEachChild(candidate, visit);
+  }
+  ts.forEachChild(node, visit);
+  return found;
 }
 
 function hasDisjointTooltipChild(node: ts.JsxElement): boolean {
-  return node.children.some(
+  const tooltipChildren = node.children.filter(
     (child) => ts.isJsxElement(child) && tagName(child.openingElement) === "Tooltip",
+  );
+  return (
+    tooltipChildren.length === 1 &&
+    descendants(node, isInteractive).length === 0 &&
+    descendants(tooltipChildren[0]!, isInteractive).length === 0
+  );
+}
+
+function hasValidTooltipOwner(node: ts.Node): boolean {
+  const owners = tooltipAncestors(node);
+  if (owners.length !== 1) return false;
+  const owner = owners[0]!;
+  return (
+    descendants(owner, isInteractive).length === 1 &&
+    descendants(owner, (candidate) => tagName(candidate) === "Tooltip").length === 0
   );
 }
 
@@ -111,8 +146,10 @@ function isInteractive(node: ts.JsxOpeningLikeElement): boolean {
   if (name === "button" || name === "select" || name === "summary") return true;
   if (name === "a") return Boolean(attribute(node, "href"));
   if (name === "input") {
+    const typeAttribute = attribute(node, "type");
+    if (!typeAttribute) return false;
     const type = stringAttribute(node, "type");
-    return Boolean(type && !FREE_TEXT.test(type));
+    return type === undefined || !FREE_TEXT.test(type);
   }
   const role = stringAttribute(node, "role");
   return Boolean(
@@ -127,12 +164,12 @@ function unwrappedInSource(raw: string, file: string): string[] {
   const misses: string[] = [];
   function visit(node: ts.Node): void {
     if (ts.isJsxElement(node) && isInteractive(node.openingElement)) {
-      if (!hasTooltipAncestor(node) && !hasDisjointTooltipChild(node)) {
+      if (!hasValidTooltipOwner(node) && !hasDisjointTooltipChild(node)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
         misses.push(`${file}:${line} <${tagName(node.openingElement)}>`);
       }
     } else if (ts.isJsxSelfClosingElement(node) && isInteractive(node)) {
-      if (!hasTooltipAncestor(node)) {
+      if (!hasValidTooltipOwner(node)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
         misses.push(`${file}:${line} <${tagName(node)}>`);
       }
@@ -215,4 +252,16 @@ test("the scan can actually see a missing tooltip", () => {
   const disjoint =
     `const F = () => <button><Tooltip label="open"><span>Name</span></Tooltip></button>;`;
   assert.deepEqual(unwrappedInSource(disjoint, "disjoint.tsx"), []);
+
+  const expressionType = `const G = () => <input type={kind} />;`;
+  assert.deepEqual(unwrappedInSource(expressionType, "expression.tsx"), [
+    "expression.tsx:1 <input>",
+  ]);
+
+  const nestedControls =
+    `const H = () => <Tooltip label="wrong"><div><button>One</button><button>Two</button></div></Tooltip>;`;
+  assert.deepEqual(unwrappedInSource(nestedControls, "nested.tsx"), [
+    "nested.tsx:1 <button>",
+    "nested.tsx:1 <button>",
+  ]);
 });

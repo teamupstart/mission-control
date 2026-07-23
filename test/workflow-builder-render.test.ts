@@ -140,9 +140,18 @@ test("editable workflow canvas remains mounted with default node statuses", () =
     rmSync(userData, { force: true, recursive: true });
   }
 
-  const result = JSON.parse(output.trim()) as { mounted: boolean; errors: string[] };
+  const result = JSON.parse(output.trim()) as {
+    mounted: boolean;
+    errors: string[];
+    controls: string[];
+    nativeTitles: number;
+    attribution: boolean;
+  };
   assert.deepEqual(result.errors, []);
   assert.equal(result.mounted, true);
+  assert.deepEqual(result.controls, ["Zoom in", "Zoom out", "Fit the graph to view"]);
+  assert.equal(result.nativeTitles, 0);
+  assert.equal(result.attribution, true);
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {

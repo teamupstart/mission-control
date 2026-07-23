@@ -185,6 +185,23 @@ test("the rail's inspector mark is the shared InspectorRailMark", () => {
   }
 });
 
+test("the rail row keeps a keyboard-focus description outside its nested marks", () => {
+  const rail = renderToStaticMarkup(
+    createElement(RailRow, {
+      session: mkSession({ name: "focus-target" }),
+      selected: false,
+      gateNeedsYou: false,
+      onSelect: () => {},
+    }),
+  );
+  const describedBy = rail.match(/<button[^>]*class="rail-row[^"]*"[^>]*aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(describedBy);
+  assert.match(
+    rail,
+    new RegExp(`<span id="${describedBy}" class="tt-desc">focus-target - [^<]+</span>`),
+  );
+});
+
 // The board tile draws the Inspector as a `.tile-flag`, but that link has to come from
 // `InspectorTileFlag` rather than a private copy - including the queued and clean states
 // the rail suppresses, since the tile shows every state the card does.

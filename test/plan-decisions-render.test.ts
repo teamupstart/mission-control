@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
 import type { PlanDecision } from "../src/shared/types.ts";
+import { hasTooltip } from "./helpers/markup.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation. Static markup is enough to prove the
@@ -61,6 +62,8 @@ test("a recommended option shows the hint and details render", () => {
   const html = render();
   assert.match(html, /recommended/);
   assert.match(html, /one more service to run/);
+  assert.ok(hasTooltip(html, "one more service to run"));
+  assert.ok(hasTooltip(html, "Postgres table"));
 });
 
 test("allowOther adds a free-text field only where asked", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
@@ -53,43 +53,49 @@ export function RailRow({
   // surfaces carry the figure itself (`CostChip`); `costIsNotable` is shared so all four
   // agree on where the line sits.
   if (costIsNotable(session.cost)) marks.push("≈$");
+  const description = `${session.name || "(unnamed)"} - ${st.label}`;
+  const descriptionId = useId();
 
   return (
-    <button
-      ref={ref}
-      className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
-      aria-current={selected}
-      onClick={onSelect}
-    >
-      <AgentDot agent={session.agent} />
-      <Tooltip label={`${session.name || "(unnamed)"} - ${st.label}`}>
-        <span className="rail-name">{session.name || "(unnamed)"}</span>
-      </Tooltip>
-      <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
-      {/* Two lines, never four: the state, then everything else on one line. Given a
-          line each, the marks and the PR chip made a row as tall as three, and a rail
-          you can only fit six sessions in has stopped being a rail. */}
-      <span className="rail-right">
-        <span className="rail-state">{st.label}</span>
-        <span className="rail-meta">
-          {marks.length > 0 && <span className="rail-marks">{marks.join(" ")}</span>}
-          {session.prNumber && (
-            <span className={`rail-pr pr-${session.prState ?? "open"}`}>#{session.prNumber}</span>
-          )}
-          {/* The rail is glyph-and-count only - it has one line of room and a name to fit
-              in it - so the Inspector shows as ⌕ plus its count, and nothing when there
-              is nothing outstanding. The DECISION and the tooltip are the shared ones;
-              only the rendering is this terse. */}
-          <InspectorRailMark session={session} />
-          <WorkflowRailMark
-            run={workflowRun}
-            onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
-          />
-          <span className="rail-seen">
-            {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+    <>
+      <button
+        ref={ref}
+        className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
+        aria-current={selected}
+        aria-describedby={descriptionId}
+        onClick={onSelect}
+      >
+        <AgentDot agent={session.agent} />
+        <Tooltip label={description}>
+          <span className="rail-name">{session.name || "(unnamed)"}</span>
+        </Tooltip>
+        <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
+        {/* Two lines, never four: the state, then everything else on one line. Given a
+            line each, the marks and the PR chip made a row as tall as three, and a rail
+            you can only fit six sessions in has stopped being a rail. */}
+        <span className="rail-right">
+          <span className="rail-state">{st.label}</span>
+          <span className="rail-meta">
+            {marks.length > 0 && <span className="rail-marks">{marks.join(" ")}</span>}
+            {session.prNumber && (
+              <span className={`rail-pr pr-${session.prState ?? "open"}`}>#{session.prNumber}</span>
+            )}
+            {/* The rail is glyph-and-count only - it has one line of room and a name to fit
+                in it - so the Inspector shows as ⌕ plus its count, and nothing when there
+                is nothing outstanding. The DECISION and the tooltip are the shared ones;
+                only the rendering is this terse. */}
+            <InspectorRailMark session={session} />
+            <WorkflowRailMark
+              run={workflowRun}
+              onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
+            />
+            <span className="rail-seen">
+              {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+            </span>
           </span>
         </span>
-      </span>
-    </button>
+      </button>
+      <span id={descriptionId} className="tt-desc">{description}</span>
+    </>
   );
 }

@@ -165,9 +165,9 @@ export function workflowReviewDecision(review: ReviewItem): WorkflowHumanDecisio
   const response = review.response?.trim() || null;
   const answered = review.kind === "input" || review.kind === "plan-decisions";
   const decision = [
+    `${answered ? "Answer" : "Decision"}: ${answered ? response ?? review.status : review.status}`,
     review.title,
     review.body,
-    `${answered ? "Answer" : "Decision"}: ${answered ? response ?? review.status : review.status}`,
   ].filter(Boolean).join("\n");
   return {
     decision: clip(decision, MAX_DECISION_TEXT),

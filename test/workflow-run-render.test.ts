@@ -218,4 +218,28 @@ test("binding selection reuses only the requested immutable version", () => {
   const mismatch = workflowBindingSelection([binding], session, "version-two");
   assert.equal(mismatch.existing, undefined);
   assert.equal(mismatch.conflict?.id, "binding");
+
+  const pausedOther = {
+    ...binding,
+    id: "paused-other",
+    workflowVersionId: "version-two",
+    state: "paused",
+    sessionId: null,
+    sessionAgent: "claude",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+  } as WorkflowBinding;
+  const pausedExact = {
+    ...pausedOther,
+    id: "paused-exact",
+    workflowVersionId: "version-one",
+  } as WorkflowBinding;
+  assert.equal(
+    workflowBindingSelection([pausedOther, pausedExact], session, "version-one").existing?.id,
+    "paused-exact",
+  );
+  assert.equal(
+    workflowBindingSelection([pausedExact, binding], session, "version-two").conflict?.id,
+    "binding",
+  );
 });

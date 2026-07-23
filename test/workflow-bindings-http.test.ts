@@ -268,7 +268,7 @@ test("the first completed discovery orphans bindings whose sessions disappeared 
   const registry = new Registry();
   const personas = new PersonaManager(registry);
   const workflows = new WorkflowManager(registry, personas.store);
-  workflows.store.insertBinding({
+  const binding = workflows.store.insertBinding({
     id: "binding-missing-at-startup",
     workflowVersionId: "v",
     noteKey: "missing-conversation",
@@ -282,13 +282,38 @@ test("the first completed discovery orphans bindings whose sessions disappeared 
     maxRepairRounds: 7,
     now: 1,
   });
+  workflows.store.createInitialSubmission(
+    { id: "run-missing-at-startup", binding, triggerKey: "startup:missing", now: 2 },
+    {
+      id: "submission-missing-at-startup",
+      triggerKey: "startup:missing",
+      context: {},
+      evidence: {},
+      now: 2,
+    },
+  );
+  workflows.store.updateSubmissionCapture("submission-missing-at-startup", {
+    context: {},
+    evidence: {},
+    fingerprint: "startup-fingerprint",
+    status: "running",
+  }, 3);
+  workflows.store.setRunState(
+    "run-missing-at-startup",
+    "running",
+    "persona_review",
+    null,
+    3,
+  );
   workflows.start();
   assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.state, "active");
+  assert.equal(workflows.store.getRun("run-missing-at-startup")?.status, "running");
 
   registry.applyDiscovery([]);
 
   assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.state, "orphaned");
   assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.sessionId, null);
+  assert.equal(workflows.store.getRun("run-missing-at-startup")?.status, "blocked");
   await workflows.stop();
 });
 

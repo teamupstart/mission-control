@@ -267,7 +267,7 @@ export function WorkflowRuns({
   const loadGeneration = useRef(0);
   const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
-  const selectedUpdatedAt = ordered.find((run) => run.id === selected)?.updatedAt ?? null;
+  const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const load = (clear = false): void => {
     const generation = ++loadGeneration.current;
     if (clear) setDetail(null);
@@ -289,7 +289,7 @@ export function WorkflowRuns({
   useEffect(() => {
     load(true);
     return () => { loadGeneration.current++; };
-  }, [selected, selectedUpdatedAt]);
+  }, [selected, selectedSummary]);
 
   const mutate = async (path: string, body: object): Promise<boolean> => {
     setError(null);

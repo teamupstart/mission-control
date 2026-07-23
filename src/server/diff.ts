@@ -265,16 +265,43 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   // CLAUDE.md never loaded.
   const untrackedCwd = repoRoot ?? cwd;
   const untrackedRes = await git(untrackedCwd, ["ls-files", "--others", "--exclude-standard"]);
+  if (untrackedRes.code !== 0) {
+    return {
+      ...base0,
+      branch,
+      headSha,
+      repoRoot,
+      base: base ?? null,
+      baseSha,
+      error: "could not enumerate untracked files",
+    };
+  }
   const untracked = untrackedRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
   for (const path of untracked.slice(0, MAX_UNTRACKED)) {
     const d = await git(untrackedCwd, ["diff", "--no-index", "--", "/dev/null", path]);
+    if (
+      d.outcomeUnknown
+      || d.overflowed
+      || (d.code !== 0 && d.code !== 1)
+      || (d.code === 1 && !d.stdout)
+    ) {
+      return {
+        ...base0,
+        branch,
+        headSha,
+        repoRoot,
+        base: base ?? null,
+        baseSha,
+        error: `could not read untracked file ${path}`,
+      };
+    }
     if (!d.stdout) continue;
     patch += d.stdout;
     filesChanged++;
     insertions += countAdded(d.stdout);
   }
 
-  let truncated = false;
+  let truncated = untracked.length > MAX_UNTRACKED;
   if (patch.length > MAX_PATCH_BYTES) {
     patch = patch.slice(0, MAX_PATCH_BYTES);
     truncated = true;

@@ -115,6 +115,20 @@ test("resolved plan decisions preserve the reviewed plan and response", () => {
   assert.match(decision.decision, /Keep the stable API/);
   assert.match(decision.decision, /Decision: approved/);
   assert.equal(decision.rationale, "Proceed without changing the wire format");
+
+  const longPlan = workflowReviewDecision({
+    id: "long-plan-review",
+    sessionId: "session",
+    kind: "plan",
+    title: "Large implementation plan",
+    body: "x".repeat(20_000),
+    status: "rejected",
+    response: null,
+    createdAt: 1,
+    resolvedAt: 2,
+  });
+  assert.match(longPlan.decision, /^Decision: rejected/);
+  assert.equal(longPlan.decision.length, 16_000);
 });
 
 test("stable capture retries one changed boundary and blocks a second change", async () => {

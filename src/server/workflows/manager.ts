@@ -164,13 +164,16 @@ export class WorkflowManager {
         }
       });
     }
-    if (!this.discoveryUnsubscribe) {
+    if (this.registry.sessionsObserved()) {
+      this.reconcileBindingsAfterDiscovery();
+      this.engine.start();
+    } else if (!this.discoveryUnsubscribe) {
       this.discoveryUnsubscribe = this.registry.onSessionsObserved(() => {
         this.discoveryUnsubscribe = null;
         this.reconcileBindingsAfterDiscovery();
+        this.engine.start();
       });
     }
-    this.engine.start();
   }
 
   async stop(): Promise<void> {

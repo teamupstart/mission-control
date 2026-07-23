@@ -194,7 +194,7 @@ export class WorkflowEngine {
         if (!target) continue;
         if (target.kind === "persona") {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
-          if (!latest || latest.state === "cancelled") {
+          if (!latest || latest.state === "cancelled" || latest.state === "error") {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: submission.id,
@@ -484,6 +484,7 @@ export class WorkflowEngine {
         output: jsonValue(packet),
         error: "Audit-only result after the submission stopped",
       }, this.now());
+      this.onRunChanged(run.id);
       return;
     }
     const receiptPayload = jsonValue({
@@ -520,6 +521,7 @@ export class WorkflowEngine {
         state: "cancelled",
         error: `Audit-only infrastructure result after the submission stopped: ${reason}`,
       }, this.now());
+      this.onRunChanged(runId);
       return;
     }
     this.store.finishAttempt(attempt.id, {

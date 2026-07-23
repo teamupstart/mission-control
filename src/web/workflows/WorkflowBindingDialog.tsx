@@ -24,7 +24,7 @@ export function workflowBindingSelection(
   versionId: string,
 ): { existing: WorkflowBinding | undefined; conflict: WorkflowBinding | undefined } {
   if (!session) return { existing: undefined, conflict: undefined };
-  const candidate = bindings.find((binding) =>
+  const compatible = bindings.filter((binding) =>
     binding.state !== "archived"
     && (
       binding.sessionId === session.id
@@ -35,10 +35,15 @@ export function workflowBindingSelection(
         && binding.sessionRepoRoot === session.repoRoot
       )
     ));
-  if (!candidate) return { existing: undefined, conflict: undefined };
-  return candidate.workflowVersionId === versionId
-    ? { existing: candidate, conflict: undefined }
-    : { existing: undefined, conflict: candidate };
+  const active = compatible.find((binding) => binding.state === "active");
+  if (active) {
+    return active.workflowVersionId === versionId
+      ? { existing: active, conflict: undefined }
+      : { existing: undefined, conflict: active };
+  }
+  const exact = compatible.find((binding) => binding.workflowVersionId === versionId);
+  if (exact) return { existing: exact, conflict: undefined };
+  return { existing: undefined, conflict: compatible[0] };
 }
 
 export function WorkflowBindingDialog({

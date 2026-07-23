@@ -386,24 +386,29 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
     store.addReceipt("submission-infra", "p-pass", "manual-retry-attempt", { outcome: "pass" }, 23),
     false,
   );
+  store.cancelRun("run-infra", "test_cleanup", 24);
 });
 
-test("manual infrastructure retry reactivates concurrent audit-only Personas", async () => {
+test("manual infrastructure retry reactivates concurrent stranded Personas", async () => {
   const retryGraph: PublishedWorkflowGraph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
       { id: "failing", kind: "persona", persona: persona("failing", "Failing", "claude", "FAIL_THREE"), position: { x: 100, y: 0 } },
       { id: "slow", kind: "persona", persona: persona("slow", "Slow", "codex", "SLOW_ONCE"), position: { x: 100, y: 100 } },
+      { id: "cancelled", kind: "persona", persona: persona("cancelled", "Cancelled", "codex", "CANCELLED"), position: { x: 100, y: 200 } },
       { id: "join", kind: "all_pass", position: { x: 200, y: 50 } },
       { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 50 } },
     ],
     edges: [
       { id: "s-failing", source: "session", sourcePort: "submitted", target: "failing", targetPort: "activate" },
       { id: "s-slow", source: "session", sourcePort: "submitted", target: "slow", targetPort: "activate" },
+      { id: "s-cancelled", source: "session", sourcePort: "submitted", target: "cancelled", targetPort: "activate" },
       { id: "failing-pass", source: "failing", sourcePort: "pass", target: "join", targetPort: "result" },
       { id: "failing-fail", source: "failing", sourcePort: "fail", target: "join", targetPort: "result" },
       { id: "slow-pass", source: "slow", sourcePort: "pass", target: "join", targetPort: "result" },
       { id: "slow-fail", source: "slow", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "cancelled-pass", source: "cancelled", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "cancelled-fail", source: "cancelled", sourcePort: "fail", target: "join", targetPort: "result" },
       { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
       { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
     ],
@@ -437,16 +442,21 @@ test("manual infrastructure retry reactivates concurrent audit-only Personas", a
   });
   const slow = store.latestAttemptForNode("submission-concurrent-retry", "slow")!;
   store.finishAttempt(slow.id, {
+    state: "error",
+    error: "Interrupted final attempt",
+  }, 13);
+  const cancelled = store.latestAttemptForNode("submission-concurrent-retry", "cancelled")!;
+  store.finishAttempt(cancelled.id, {
     state: "cancelled",
     error: "Audit-only result after the submission stopped",
-  }, 13);
-  store.setSubmissionState("submission-concurrent-retry", "failed", 14);
+  }, 14);
+  store.setSubmissionState("submission-concurrent-retry", "failed", 15);
   store.setRunState(
     "run-concurrent-retry",
     "blocked",
     "infrastructure_error",
     { nodeId: "failing" },
-    14,
+    15,
   );
   store.manualInfrastructureRetry(
     "run-concurrent-retry",
@@ -463,12 +473,20 @@ test("manual infrastructure retry reactivates concurrent audit-only Personas", a
       .filter((attempt) => attempt.nodeId === "slow")
       .sort((a, b) => a.attempt - b.attempt)
       .map((attempt) => [attempt.attempt, attempt.state]),
+    [[1, "error"], [2, "queued"]],
+  );
+  assert.deepEqual(
+    store.listAttempts("submission-concurrent-retry")
+      .filter((attempt) => attempt.nodeId === "cancelled")
+      .sort((a, b) => a.attempt - b.attempt)
+      .map((attempt) => [attempt.attempt, attempt.state]),
     [[1, "cancelled"], [2, "queued"]],
   );
   assert.equal(
     store.latestAttemptForNode("submission-concurrent-retry", "failing")?.attempt,
     4,
   );
+  store.cancelRun("run-concurrent-retry", "test_cleanup", 21);
 });
 
 test("cancelling a running Persona makes its later verdict audit-only", async () => {
@@ -488,6 +506,7 @@ test("cancelling a running Persona makes its later verdict audit-only", async ()
   let release!: (value: string) => void;
   const response = new Promise<string>((resolve) => { release = resolve; });
   let started = false;
+  let auditedAttemptId: string | null = null;
   const fake: LlmRunner = {
     id: "codex",
     label: "deferred",
@@ -496,11 +515,14 @@ test("cancelling a running Persona makes its later verdict audit-only", async ()
     litter: null,
     killLiveRuns() {},
     async run() {
+      auditedAttemptId = store.listAttempts("submission-cancel")
+        .find((attempt) => attempt.nodeId === "p" && attempt.state === "running")?.id ?? null;
       started = true;
       return response;
     },
   };
-  const engine = new WorkflowEngine(store, () => {}, {
+  let runUpdates = 0;
+  const engine = new WorkflowEngine(store, () => { runUpdates++; }, {
     runnerFor: () => fake,
     resolveExecution: () => ({
       runner: { id: "codex", source: "config", unknown: null },
@@ -510,16 +532,23 @@ test("cancelling a running Persona makes its later verdict audit-only", async ()
   engine.start();
   engine.activateSubmission("submission-cancel");
   await waitFor(() => started);
+  assert.ok(auditedAttemptId);
   store.cancelRun("run-cancel", "cancelled:test", 10);
+  const updatesBeforeAudit = runUpdates;
   release(JSON.stringify({
     verdict: "pass",
     summary: "late approval",
-    approvalDetails: { reason: "late", evidence: [] },
+    approvalDetails: {
+      reason: "late",
+      evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
+    },
     confidence: 1,
   }));
+  await waitFor(() => store.getAttempt(auditedAttemptId!)?.verdict !== null);
   await engine.stop();
 
-  const attempt = store.latestAttemptForNode("submission-cancel", "p");
+  assert.ok(runUpdates > updatesBeforeAudit);
+  const attempt = store.getAttempt(auditedAttemptId);
   assert.equal(attempt?.state, "cancelled");
   assert.equal((attempt?.verdict as { verdict?: string } | null)?.verdict, "pass");
   assert.equal(store.listReceipts("submission-cancel").some((receipt) => receipt.edgeId === "p-pass"), false);
@@ -558,7 +587,8 @@ test("cancelling during an invalid Persona reply prevents a fresh parse-retry ca
       return response;
     },
   };
-  const engine = new WorkflowEngine(store, () => {}, {
+  let runUpdates = 0;
+  const engine = new WorkflowEngine(store, () => { runUpdates++; }, {
     runnerFor: () => fake,
     resolveExecution: () => ({
       runner: { id: "codex", source: "config", unknown: null },
@@ -569,9 +599,11 @@ test("cancelling during an invalid Persona reply prevents a fresh parse-retry ca
   engine.activateSubmission("submission-cancel-retry");
   await waitFor(() => calls === 1);
   store.cancelRun("run-cancel-retry", "cancelled:test", 10);
+  const updatesBeforeAudit = runUpdates;
   release("not json");
   await engine.stop();
 
+  assert.ok(runUpdates > updatesBeforeAudit);
   assert.equal(calls, 1);
   assert.equal(store.latestAttemptForNode("submission-cancel-retry", "p")?.state, "cancelled");
   const llmCalls = openDb().prepare(

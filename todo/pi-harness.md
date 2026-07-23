@@ -77,7 +77,8 @@ pi writes one JSON record per line to
   only because its file is not a turn log.)
 - `locate` reruns the project-directory scan on every read so `/new` is discovered. It caches
   only per-session bindings; `retain` prunes dead bindings and confirms sole ownership only
-  when the same session owns its cwd across two consecutive tick-boundary snapshots.
+  when the same session owns its cwd across two consecutive tick-boundary snapshots, then
+  snapshots the exact newest candidate that `locate` may bind until the next snapshot.
 
 ### control - REQUIRED, non-null
 

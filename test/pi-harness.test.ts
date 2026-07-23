@@ -116,6 +116,9 @@ test("locate rebinds to a newer file after pi starts a new session", () => {
     piTranscript.retain?.(new Set([session.id]));
     assert.equal(locatePiTranscript(session, root), oldPath);
     writeSession(newPath, "new", 2_000);
+    assert.equal(locatePiTranscript(session, root), null);
+    assert.equal(locatePiTranscript(session, root), null);
+    piTranscript.retain?.(new Set([session.id]));
     assert.equal(locatePiTranscript(session, root), newPath);
   } finally {
     piTranscript.retain?.(new Set());
@@ -196,6 +199,8 @@ test("an existing sole occupant never adopts a new sibling's file", () => {
 
     writeSession(siblingPath, "sibling-agent", 2_000);
     const sibling = locateSession("pi-sibling-new", cwd);
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(owner, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
     piTranscript.retain?.(new Set([owner.id, sibling.id]));

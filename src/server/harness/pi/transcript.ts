@@ -56,14 +56,6 @@ function sessionFiles(dir: string): SessionFile[] {
   return files.sort((a, b) => b.mtime - a.mtime || b.path.localeCompare(a.path));
 }
 
-function fileMtime(path: string): number | null {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
 function sessionIdFromHeader(path: string): string | null {
   try {
     const size = statSync(path).size;
@@ -80,9 +72,10 @@ function sessionIdFromHeader(path: string): string | null {
 /** A cached lookup for one session (path null = looked, none yet). */
 interface Binding {
   cwd: string;
-  agentSessionId: string | null;
+  sessionsDir: string;
   path: string | null;
   confirmedSoleOccupant: boolean;
+  candidatePath: string | null;
 }
 
 /**
@@ -93,18 +86,18 @@ interface Binding {
 const bindings = new Map<string, Binding>();
 let soleOccupants = new Map<string, string | null>();
 
-function recordBinding(s: Session, path: string | null): void {
+function recordBinding(s: Session, sessionsDir: string, path: string | null): void {
   const current = bindings.get(s.id);
-  if (current?.cwd === s.cwd) {
-    current.agentSessionId = s.agentSessionId;
+  if (current?.cwd === s.cwd && current.sessionsDir === sessionsDir) {
     current.path = path;
     return;
   }
   bindings.set(s.id, {
     cwd: s.cwd!,
-    agentSessionId: s.agentSessionId,
+    sessionsDir,
     path,
     confirmedSoleOccupant: false,
+    candidatePath: null,
   });
 }
 
@@ -114,37 +107,36 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
     return null;
   }
 
-  const transcriptMtime = s.transcriptPath ? fileMtime(s.transcriptPath) : null;
-  if (s.transcriptPath && transcriptMtime !== null) {
-    const sourceId = sessionIdFromHeader(s.transcriptPath);
-    const exact = !!s.agentSessionId && sourceId === s.agentSessionId;
-    const contradicted = !!s.agentSessionId && !!sourceId && sourceId !== s.agentSessionId;
-    const path =
-      exact || (!contradicted && bindings.get(s.id)?.confirmedSoleOccupant)
-        ? s.transcriptPath
-        : null;
-    recordBinding(s, path);
-    return path;
-  }
-
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const newest = files[0] ?? null;
 
   let path: string | null = null;
-  if (newest) {
-    if (s.agentSessionId) {
-      for (const file of files) {
-        if (sessionIdFromHeader(file.path) !== s.agentSessionId) continue;
-        path = file.path;
-        break;
-      }
-    }
-    if (!path && bindings.get(s.id)?.confirmedSoleOccupant) {
-      path = newest.path;
+  if (
+    s.agentSessionId &&
+    s.transcriptPath &&
+    sessionIdFromHeader(s.transcriptPath) === s.agentSessionId
+  ) {
+    path = s.transcriptPath;
+  }
+  if (!path && s.agentSessionId) {
+    for (const file of files) {
+      if (sessionIdFromHeader(file.path) !== s.agentSessionId) continue;
+      path = file.path;
+      break;
     }
   }
+  const binding = bindings.get(s.id);
+  if (
+    !path &&
+    newest &&
+    binding?.cwd === s.cwd &&
+    binding.confirmedSoleOccupant &&
+    binding.candidatePath === newest.path
+  ) {
+    path = binding.candidatePath;
+  }
 
-  recordBinding(s, path);
+  recordBinding(s, sessionsDir, path);
   return path;
 }
 
@@ -225,8 +217,12 @@ export const piTranscript: TranscriptSpec = {
       next.set(binding.cwd, next.has(binding.cwd) ? null : id);
     }
     for (const [id, binding] of bindings) {
-      binding.confirmedSoleOccupant =
+      const confirmed =
         next.get(binding.cwd) === id && soleOccupants.get(binding.cwd) === id;
+      binding.confirmedSoleOccupant = confirmed;
+      binding.candidatePath = confirmed
+        ? (sessionFiles(piProjectDir(binding.cwd, binding.sessionsDir))[0]?.path ?? null)
+        : null;
     }
     soleOccupants = next;
   },

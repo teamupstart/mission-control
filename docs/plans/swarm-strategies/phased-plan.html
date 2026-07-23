@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Phased plan - ensemble strategies after best_of_n v1</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #5d6775;
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --pr-merged: #a371f7;
+        --claude: #d97757;
+        --radius: 13px;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: var(--sans);
+        color: var(--fg);
+        background:
+          radial-gradient(1200px 600px at 82% -8%, #12202f 0%, transparent 55%),
+          radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+          var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 1020px; margin: 0 auto; padding: 40px 24px 90px; }
+      .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 26px; flex-wrap: wrap; }
+      .brand-mark {
+        width: 26px; height: 26px; border-radius: 8px; flex: none;
+        background: conic-gradient(from 210deg, var(--working), var(--claude), var(--idle), var(--working));
+        filter: drop-shadow(0 0 7px rgba(74, 158, 255, 0.35));
+      }
+      .brand-txt { font-size: 13px; font-weight: 600; color: var(--muted); }
+      .brand-txt b { color: var(--fg); }
+      .status-pill {
+        margin-left: auto; font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.5px; color: var(--idle); padding: 4px 11px; border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--idle) 45%, var(--border));
+        background: color-mix(in oklab, var(--idle) 12%, transparent);
+      }
+      h1 { margin: 0 0 12px; font-size: 30px; font-weight: 690; letter-spacing: -0.5px; line-height: 1.12; }
+      h2 { margin: 46px 0 12px; padding-bottom: 8px; font-size: 20px; font-weight: 660; border-bottom: 1px solid var(--border-soft); }
+      p, li { font-size: 14px; line-height: 1.65; color: var(--muted); }
+      p b, li b { color: var(--fg); font-weight: 600; }
+      code { font-family: var(--mono); font-size: 0.92em; color: var(--idle); }
+      ol, ul { padding-left: 22px; }
+      .tbl-scroll { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--bg-2); }
+      table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12.5px; }
+      th {
+        text-align: left; padding: 9px 12px; font-size: 10.5px; text-transform: uppercase;
+        letter-spacing: 0.5px; color: var(--dim); border-bottom: 1px solid var(--border); white-space: nowrap;
+      }
+      td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; line-height: 1.5; color: var(--muted); }
+      tr:last-child td { border-bottom: none; }
+      td.name { font-weight: 640; color: var(--fg); white-space: nowrap; }
+      figure {
+        margin: 14px 0 0; padding: 10px; border: 1px solid var(--border-soft);
+        border-radius: 11px; background: var(--bg-2); overflow-x: auto;
+      }
+      figure svg { display: block; min-width: 640px; width: 100%; height: auto; }
+      figcaption { color: var(--dim); font-size: 12px; margin-top: 8px; }
+      .dg-box { fill: var(--panel); stroke: var(--border); }
+      .dg-box-ext { fill: color-mix(in oklab, var(--pr-merged) 10%, var(--panel)); stroke: color-mix(in oklab, var(--pr-merged) 45%, var(--border)); }
+      .dg-box-hot { fill: color-mix(in oklab, var(--idle) 10%, var(--panel)); stroke: color-mix(in oklab, var(--idle) 45%, var(--border)); }
+      .dg-title { fill: var(--fg); font: 600 12.5px var(--sans); }
+      .dg-sub { fill: var(--dim); font: 10px var(--mono); }
+      .dg-flow { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+      .dg-arrow { fill: var(--muted); }
+      .foot {
+        margin-top: 44px; padding: 15px 18px; border: 1px solid var(--border-soft);
+        border-radius: var(--radius); background: var(--bg-2); font-size: 12.5px; line-height: 1.6; color: var(--muted);
+      }
+      .foot b { color: var(--fg); }
+      @media (max-width: 720px) { h1 { font-size: 25px; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span class="brand-txt"><b>Mission Control</b> · phased implementation plan</span>
+        <span class="status-pill">Scheduled</span>
+      </div>
+
+      <h1>Ensemble strategies after <code>best_of_n</code> v1</h1>
+      <p>
+        Source plan: <code>docs/plans/swarm-strategies/plan.md</code>. Engine plan:
+        <code>docs/plans/best-of-n-swarm-dispatch/plan.md</code> (committed <code>c8ccf4a</code>).
+        The phase files beside this page are the detailed, authoritative implementation plans.
+      </p>
+
+      <h2>Incorporated decisions (2026-07-23 dashboard review)</h2>
+      <ol>
+        <li>Priorities after <code>best_of_n</code> v1: <b>Persona panel vote, divergence mining,
+          design-off (plan ArtifactAdapter), top-K synthesis</b>. Spec-first guidance was folded into
+          the engine plan's follow-ups but not selected - it is a non-goal here.</li>
+        <li>The extensions are folded into the engine plan's "Likely follow-ups" (done in the same change).</li>
+        <li>This phased plan and its dependency-linked tasks are the selected next step.</li>
+      </ol>
+
+      <h2>Investigated findings</h2>
+      <ul>
+        <li>The engine plan is already scheduled as <b>eight dependency-linked tasks</b>
+          ("Implement Multi-Agent Ensembles - Phase 1..8"), chained P1 → P3 → P4 → P5 → P6 → P7 → P8
+          with P2 feeding P4. Its Phase 8 (task <code>915fea1a-0479-4d47-a4bd-d5ee3eebbfd5</code>) is
+          the kernel's release gate and proves test-only panel, pairwise, adaptive-wave, and
+          synthesis fixtures compose. Every phase below takes it as its direct external prerequisite.</li>
+        <li>Current code (main at <code>57ea5bc</code>): Workflow Phases 1-3 implemented
+          (<code>src/server/workflows/*</code>), <code>runJobStructured</code> exists; no ensemble
+          code exists yet - the phase files cite the engine plan's contracts, and each implementing
+          agent re-verifies names against the merged kernel before coding.</li>
+        <li>Every phase is held to the engine plan's "what adding a strategy should cost": append an
+          id, compose policies in one compiler, fixtures and scenario tests, README and a preset
+          card - <b>no new migration, route family, ServerEvent variant, useEventStream branch,
+          session prop, or layout mark</b>. Genuinely new primitives are named and owned by exactly
+          one phase.</li>
+      </ul>
+
+      <h2>Phases</h2>
+      <div class="tbl-scroll">
+        <table>
+          <thead>
+            <tr><th>Phase</th><th>File</th><th>Strategy / primitive</th><th>Direct prerequisites</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="name">1</td><td><code>phase-1-panel-vote.md</code></td><td><code>panel_vote</code>; evaluator panel + vote aggregation</td><td>Engine P8, planning session</td></tr>
+            <tr><td class="name">2</td><td><code>phase-2-divergence-mining.md</code></td><td><code>consensus</code>; evaluator-derived decision options</td><td>Engine P8, planning session</td></tr>
+            <tr><td class="name">3</td><td><code>phase-3-design-off-plan-adapter.md</code></td><td><code>plan</code> ArtifactAdapter + <code>design_off</code></td><td>Engine P8, planning session</td></tr>
+            <tr><td class="name">4</td><td><code>phase-4-top-k-synthesis.md</code></td><td><code>top_k_synthesis</code>; synthesize stage in product</td><td>Engine P8, planning session</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Dependency graph and concurrency</h2>
+      <figure>
+        <svg viewBox="0 0 900 240" role="img" aria-label="Dependency graph: engine chain and planning session feed four concurrent strategy phases">
+          <defs>
+            <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+              <path d="M0,0 L9,4.5 L0,9 Z" class="dg-arrow" />
+            </marker>
+          </defs>
+          <rect class="dg-box-ext" x="14" y="36" width="200" height="56" rx="10" />
+          <text class="dg-title" x="114" y="59" text-anchor="middle">Engine tasks P1..P8</text>
+          <text class="dg-sub" x="114" y="76" text-anchor="middle">release gate: P8 · 915fea1a</text>
+
+          <rect class="dg-box-ext" x="14" y="140" width="200" height="56" rx="10" />
+          <text class="dg-title" x="114" y="163" text-anchor="middle">Planning session PR</text>
+          <text class="dg-sub" x="114" y="180" text-anchor="middle">these phase artifacts</text>
+
+          <rect class="dg-box-hot" x="380" y="12" width="230" height="44" rx="10" />
+          <text class="dg-title" x="495" y="39" text-anchor="middle">Phase 1 · panel_vote</text>
+          <rect class="dg-box-hot" x="380" y="68" width="230" height="44" rx="10" />
+          <text class="dg-title" x="495" y="95" text-anchor="middle">Phase 2 · consensus mining</text>
+          <rect class="dg-box-hot" x="380" y="124" width="230" height="44" rx="10" />
+          <text class="dg-title" x="495" y="151" text-anchor="middle">Phase 3 · design_off + adapter</text>
+          <rect class="dg-box-hot" x="380" y="180" width="230" height="44" rx="10" />
+          <text class="dg-title" x="495" y="207" text-anchor="middle">Phase 4 · top_k_synthesis</text>
+
+          <path class="dg-flow" d="M214,58 C300,44 320,38 374,34" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,64 C300,72 320,84 374,88" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,72 C300,104 320,134 374,144" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,80 C300,140 320,186 374,200" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,158 C300,120 320,48 374,40" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,164 C300,140 320,96 374,92" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,170 C300,162 320,150 374,148" marker-end="url(#ar)" />
+          <path class="dg-flow" d="M214,176 C300,188 320,198 374,202" marker-end="url(#ar)" />
+
+          <text class="dg-sub" x="720" y="60">all four phases are</text>
+          <text class="dg-sub" x="720" y="76">mutually independent:</text>
+          <text class="dg-sub" x="720" y="92">one concurrency group,</text>
+          <text class="dg-sub" x="720" y="108">merge in any order</text>
+        </svg>
+        <figcaption>
+          Both prerequisites feed every phase; no edges exist between the four strategy phases. Each
+          appends its own strategy id and owns disjoint primitives - the only overlap is adjacent
+          lines in append-only registries.
+        </figcaption>
+      </figure>
+
+      <h2>Cross-phase contracts</h2>
+      <ul>
+        <li>Append-only ids, one owner each: <code>panel_vote</code> (1), <code>consensus</code> (2),
+          <code>design_off</code> (3), <code>top_k_synthesis</code> (4); artifact kind
+          <code>plan</code> (3).</li>
+        <li>Kernel invariants preserved verbatim: evaluators recommend and never promote; destructive
+          finalization requires human confirmation; artifacts are immutable and survive until
+          explicit delete; evaluator calls are tool-less, anonymized, fenced, validated, and
+          scheduled through the daemon review scheduler; hard budgets bind every launch.</li>
+        <li>Scores, ranks, votes, and divergences live on evaluation rows, never on members.</li>
+        <li>No phase adds a table, route family, ServerEvent variant, or layout mark; the two generic
+          touchpoints (Phase 2's decision rendering, Phase 3's artifact locator union) extend
+          discriminated unions the kernel declares extensible.</li>
+        <li>README: the first phase to merge creates the "additional strategies" subsection; the
+          others append.</li>
+      </ul>
+
+      <h2>Merge order and final verification</h2>
+      <p>
+        Merge order among Phases 1-4 is free. Final state: four selectable strategy preset cards
+        beside Best-of-N in Dispatch, each executing on the unchanged kernel. After the last merge:
+        full suite (<code>npm run typecheck &amp;&amp; npm test &amp;&amp; npm run build</code>) plus
+        each phase's scenario tests, and one run of each strategy in the app reaching its terminal
+        outcome with layout parity marks intact.
+      </p>
+
+      <p class="foot">
+        <b>Index page.</b> The four <code>phase-*.md</code> files beside this page are the detailed
+        implementation plans embedded in the scheduled Mission Control tasks. Source of truth:
+        <code>phased-plan.md</code>.
+      </p>
+    </div>
+  </body>
+</html>

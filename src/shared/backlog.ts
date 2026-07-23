@@ -71,13 +71,12 @@ export const PLANNABLE_LIMIT = 400;
 /**
  * The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`.
  *
- * Coverage is over the whole backlog head regardless of the enable toggle. A parked
- * item therefore consumes a plan entry it cannot use, which keeps the dependency graph
- * complete: inferred edges pointing at it survive replanning and continue to block
- * their dependents until the item is enabled or manually launched.
+ * Disabled items are excluded before the limit is applied. Parking work must not spend
+ * a model call or consume the finite planning budget, while re-enabling it must make
+ * the stored plan stale so the task can be considered again.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).filter((task) => task.enabled).slice(0, PLANNABLE_LIMIT);
 }
 
 /**

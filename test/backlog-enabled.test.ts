@@ -23,9 +23,9 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
  * of them is how a parked task gets typed into somebody's pane anyway, with the board
  * still showing it held.
  *
- * A parked item remains in the planner input so inferred edges pointing at it survive a
- * replan. The one scheduling gate is still `readyBacklog`, and the daemon revalidates
- * Foreman actions against the toggle before carrying them out.
+ * Parked items also stay out of planner input. Otherwise disabling work would spend a
+ * model call and consume the finite plan budget, while re-enabling it would not make
+ * the plan stale.
  */
 
 const NOW = 1_000_000;
@@ -95,29 +95,13 @@ test("re-enabling puts it back in line, in the order the plan already gave", () 
   );
 });
 
-// ---- what a park must preserve -------------------------------------------------------
+// ---- what a park costs the planner ---------------------------------------------------
 
-test("an inferred edge to a parked prerequisite survives replanning", () => {
+test("disabled items do not consume planner input or its budget", () => {
   const parked = mkTask({ enabled: false });
   const dependent = mkTask();
   const input = plannableBacklog([parked, dependent]);
-  const replanned = sanitizePlan(
-    {
-      tasks: [
-        { id: parked.id, dependsOn: [] },
-        { id: dependent.id, dependsOn: [parked.id] },
-      ],
-    },
-    input,
-  );
-  const plan: BacklogPlan = { ...replanned, generatedAt: NOW };
-
-  assert.deepEqual(input.map((task) => task.id), [parked.id, dependent.id]);
-  assert.deepEqual(
-    plan.entries.find((entry) => entry.taskId === dependent.id)?.dependsOn,
-    [parked.id],
-  );
-  assert.deepEqual(readyBacklog([parked, dependent], plan), []);
+  assert.deepEqual(input.map((task) => task.id), [dependent.id]);
 });
 
 // ---- a disabled item still blocks what depends on it ---------------------------------

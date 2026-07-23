@@ -147,37 +147,28 @@ test("a parked task carries no dependency blocker of its own", () => {
   assert.deepEqual(tasks.dependencyBlockers(tasks.get("t1")!), []);
 });
 
-test("a stale worker cannot dispatch or assign a parked task without an override", async () => {
-  const { registry, tasks, app } = setup({ enabled: false });
+test("manual dispatch and assignment are not gated by the enable toggle", async () => {
+  const { tasks, app } = setup({ enabled: false });
   let dispatched = 0;
   const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
   inner.dispatcher.dispatch = async () => {
     dispatched++;
   };
-  const post = (body: unknown): Promise<Response> =>
-    app.request("/api/tasks/t1/dispatch", {
-      method: "POST",
-      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-  const legacyDispatch = await post({});
-  assert.equal(legacyDispatch.status, 409);
-  assert.match((await legacyDispatch.json() as { error: string }).error, /toggle.*off.*override/);
-  assert.equal(dispatched, 0);
-  assert.equal(registry.getTask("t1")!.status, "backlog");
-
-  const legacyAssign = await app.request("/api/tasks/t1/assign", {
+  const dispatch = await app.request("/api/tasks/t1/dispatch", {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
-    body: JSON.stringify({ sessionId: "legacy-worker-session" }),
+    body: JSON.stringify({}),
   });
-  assert.equal(legacyAssign.status, 409);
-  assert.match((await legacyAssign.json() as { error: string }).error, /toggle.*off.*override/);
-
-  const manual = await post({ overrideDisabled: true });
-  assert.equal(manual.status, 200);
+  assert.equal(dispatch.status, 200);
   assert.equal(dispatched, 1);
+
+  const assign = await app.request("/api/tasks/t1/assign", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "missing-session" }),
+  });
+  assert.equal(assign.status, 409);
+  assert.equal((await assign.json() as { error: string }).error, "no such session");
 });
 
 test("an enabled backlog task needs no disabled-toggle override", async () => {

@@ -483,13 +483,6 @@ export class TaskManager {
       return { ok: false, error: "task is being assigned", task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (t.status === "backlog" && !t.enabled && !options.overrideDisabled) {
-        return {
-          ok: false,
-          error: "task's enable toggle is off; pass overrideDisabled to launch it anyway",
-          task: t,
-        };
-      }
       const blockers = this.dependencyBlockers(t);
       if (blockers.length > 0) {
         return {
@@ -629,13 +622,6 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
-    }
-    if (!t.enabled && !opts.overrideDisabled) {
-      return {
-        ok: false,
-        error: "task's enable toggle is off; pass overrideDisabled to assign it anyway",
-        scope: "task",
-      };
     }
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {

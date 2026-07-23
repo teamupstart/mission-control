@@ -380,7 +380,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // THINKING_LEVELS (`low..max`) are a subset it accepts verbatim.
     effort: {
       levels: THINKING_LEVELS,
+      levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--thinking", level],
+      // Pi's Shift+Tab walks one direction through seven values, including `off` and
+      // `minimal`, so neither existing live-picker shape can drive it faithfully.
+      sessionPicker: null,
     },
   },
 };

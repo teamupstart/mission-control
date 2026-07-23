@@ -100,7 +100,8 @@ function locateSession(
 }
 
 function writeSession(dir: string, id: string, createdAt: number, headerId = id): string {
-  const path = join(dir, `${new Date(createdAt).toISOString()}_${id}.jsonl`);
+  const filenameTimestamp = new Date(createdAt).toISOString().replace(/[:.]/g, "-");
+  const path = join(dir, `${filenameTimestamp}_${id}.jsonl`);
   writeFileSync(
     path,
     `${JSON.stringify({
@@ -187,7 +188,7 @@ test("a launch-identified session binds its transcript and reads runtime state",
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
   const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  const path = join(dir, `2026-07-20T10:00:00.000Z_${sessionId}.jsonl`);
+  const path = join(dir, `2026-07-20T10-00-00-000Z_${sessionId}.jsonl`);
   writeFileSync(path, PI_SESSION_JSONL);
   try {
     const located = locatePiTranscript(locateSession("pi-dispatched", cwd, sessionId), root);

@@ -10,12 +10,12 @@ import { piPassiveRead } from "./meta.ts";
 // Pi's session transcript: where it lives, and what one of its records means.
 //
 // pi writes one JSON record per line to
-// ~/.pi/agent/sessions/--<cwd>--/<ISO-ts>_<uuid>.jsonl - project-keyed like Claude, and read
-// as turns the same way (a per-line `parse`, not Codex's batch). The byte windowing over the
-// file is format-agnostic and lives in `transcript.ts`; this module supplies the two things
-// only pi can answer - which file, and what a line says - and assembles them into the
-// `transcript` capability. Because that capability is non-null with `messages`,
-// `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`).
+// ~/.pi/agent/sessions/--<cwd>--/<filename-safe-ISO-ts>_<uuid>.jsonl - project-keyed like
+// Claude, and read as turns the same way (a per-line `parse`, not Codex's batch). The byte
+// windowing over the file is format-agnostic and lives in `transcript.ts`; this module
+// supplies the two things only pi can answer - which file, and what a line says - and
+// assembles them into the `transcript` capability. Because that capability is non-null with
+// `messages`, `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`).
 
 /** Root of pi's per-project session store. */
 const SESSIONS_DIR = join(homedir(), ".pi", "agent", "sessions");
@@ -36,6 +36,16 @@ interface SessionFile {
   createdAt: number;
 }
 
+function sessionFileTimestamp(value: string): number {
+  const sanitized =
+    /^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3}Z)$/.exec(value);
+  return Date.parse(
+    sanitized
+      ? `${sanitized[1]}:${sanitized[2]}:${sanitized[3]}.${sanitized[4]}`
+      : value,
+  );
+}
+
 function sessionFiles(dir: string): SessionFile[] {
   let entries: string[];
   try {
@@ -48,7 +58,7 @@ function sessionFiles(dir: string): SessionFile[] {
     const match =
       /^(.+)_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
     if (!match) continue;
-    const createdAt = Date.parse(match[1]!);
+    const createdAt = sessionFileTimestamp(match[1]!);
     if (Number.isNaN(createdAt)) continue;
     files.push({ path: join(dir, name), id: match[2]!, createdAt });
   }

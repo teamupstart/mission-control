@@ -20,9 +20,9 @@ import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
 /**
- * Fallback settle time for an agent that never reports a hook. Only reached when
- * `DISPATCH_HOOK_READY_MS` elapses with no signal - see `awaitReady`. This is a guess
- * about boot time, which is exactly why it is no longer the primary path.
+ * Fallback settle time for a live agent that cannot prove readiness. Reached when the
+ * hook wait times out or this launch cannot report hooks; an observed exit fails instead.
+ * This is a guess about boot time, which is exactly why it is no longer the primary path.
  */
 const SETTLE_MS = Number(envVar("DISPATCH_SETTLE_MS") ?? 2000);
 /**

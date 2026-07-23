@@ -63,9 +63,9 @@ pi writes one JSON record per line to
 
 - **`messages` is non-null.** user content is `[{type:"text",text}]`; assistant content is
   `[{type:"thinking"},{type:"text"},...]` and tool calls arrive as `tool_call` content parts.
-  So `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`). This makes pi the
-  MIRROR IMAGE of Codex in the capability matrix: Codex has hooks non-null + messages null; pi
-  has hooks null + messages non-null.
+  So `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`). Pi validates the
+  two capability slots independently: it has readable turns like Codex, but unlike Codex it
+  declares `hooks: null`.
 - **`passiveRead` gives both meta AND activity** (unlike Codex, whose rollout has no turns to
   read activity off). model from `message.model` / `model_change`; context tokens from
   `usage.input + cacheRead + cacheWrite`; thinking from `thinking_level_change`. Activity:
@@ -303,7 +303,7 @@ that assert `agent: "pi"` is REJECTED (the authors anticipated this - the probe 
 
 ## Pointers
 
-- Adapter: `src/server/harness/pi/{detect,bin,control,transcript,meta,tui,launch}.ts`, registered in
+- Adapter: `src/server/harness/pi/{detect,bin,control,transcript,meta,launch}.ts`, registered in
   `src/server/harness/index.ts`.
 - Forced maps: `AGENT_TYPES` (types.ts), `AGENT_IDENTITY` (agent.ts), `HARNESS_CAPABILITIES`
   (harness-capabilities.ts), `HARNESSES` (harness/index.ts), `COST_UNSUPPORTED` (cost.ts),

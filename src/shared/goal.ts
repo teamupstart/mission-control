@@ -8,10 +8,10 @@ import type { AgentType } from "./types.ts";
  * summarise. An entry and its harness's `transcript.messages` capability are one fact in two
  * files - `harness-transcript.test.ts` fails until they agree.
  *
- * Both shipped harnesses now read messages, so both are null. Codex's entry was a sentence
- * for as long as its rollout parsed only model / effort / token metadata; it reads turns
- * now (`server/harness/codex/transcript.ts`) and reports the prompt itself over a hook, so
- * there is nothing left for that sentence to be true about.
+ * All three shipped harnesses now read messages, so all three entries are null. Codex's
+ * entry was a sentence for as long as its rollout parsed only model / effort / token
+ * metadata; it reads turns now (`server/harness/codex/transcript.ts`) and reports the
+ * prompt itself over a hook, so there is nothing left for that sentence to be true about.
  */
 export const GOAL_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,

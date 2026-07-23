@@ -107,9 +107,10 @@ export interface SkillsSpec {
  *
  * Two things have to be true to queue work: the agent must report when it picks an item
  * up and finishes it (hooks), and its transcript must be readable back to check that it
- * did. Both shipped harnesses can do both now, and both use the harness-neutral pane
- * delivery path. Codex hooks are attached only to Mission Control launches, so a
- * discovery-only session still takes the per-session refusal until one reports a hook.
+ * did. Claude and Codex can do both and use the harness-neutral pane delivery path. Codex
+ * hooks are attached only to Mission Control launches, so a discovery-only session still
+ * takes the per-session refusal until one reports a hook. Pi has readable turns but no
+ * pickup/completion signal, so it declares this capability null.
  *
  * Whatever the reason, the consequence of a null is the same and is why it is not a
  * detail: a queue on a session the worker skips is a one-way trip to nowhere. Because the

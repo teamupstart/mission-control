@@ -1,18 +1,19 @@
 # Pluggable integrations: harnesses, multiplexers, terminals
 
-Mission Control hardcodes three vendors: Claude Code, tmux, and WezTerm. Adding a fourth
-agent (`pi`), a different multiplexer (`cmux`, `zellij`), or a different terminal (Ghostty,
-iTerm2) currently means editing dozens of unrelated files and hoping you found them all.
+Mission Control began with three hardcoded vendors: Claude Code, tmux, and WezTerm. Adding
+another agent (`pi`), a different multiplexer (`cmux`, `zellij`), or a different terminal
+(Ghostty, iTerm2) meant editing dozens of unrelated files and hoping you found them all.
 
-This plan defines the interfaces those integrations should sit behind, and sequences the
-migration of the existing code onto them.
+This plan defined the interfaces those integrations should sit behind and sequenced the
+migration of the existing code onto them. The evidence below is the historical baseline;
+the "as landed" sections and sequence table record the current migration state.
 
 ## The finding, in one sentence
 
-There is no abstraction today - `src/server/harnesses.ts` is a 24-line settings blob, not a
-harness registry - and the ~35 `if (agent !== "claude")` guards plus ~20 open-coded
-`if (session.tmux) … else if (session.wezterm) …` branches mean **a new integration degrades
-silently rather than failing to compile**.
+At the outset there was no abstraction - `src/server/harnesses.ts` was a 24-line settings
+blob, not a harness registry - and the ~35 `if (agent !== "claude")` guards plus ~20 open-coded
+`if (session.tmux) … else if (session.wezterm) …` branches meant **a new integration
+degraded silently rather than failing to compile**.
 
 ## Evidence
 
@@ -699,8 +700,9 @@ assumption. An injected env var is unreadable, because `ps -E` is SIP-restricted
 process the operator owns. A surface spawned with a raw `command` reports an **empty**
 working directory, because shell integration never runs to emit OSC 7 - so cwd alone fails
 for precisely the surfaces this app creates. Declaring `list: null` would have recorded a
-false REASON ("cannot enumerate") for a true OUTCOME ("cannot correlate"), which is the
-conflation `HARNESSES.codex.transcript.messages` is null rather than `[]` to avoid.
+false REASON ("cannot enumerate") for a true OUTCOME ("cannot correlate"), the same
+conflation the nullable `TranscriptSpec.messages` slot avoids: unreadable is not an empty
+conversation.
 
 Six deltas, each forced by something real:
 
@@ -983,11 +985,11 @@ specs. Four deltas from the sketch, each forced by something real:
   with their phases rather than landing as `null` placeholders nobody has designed - and
   `accent` duly landed there, not here, with the UI item.
 - **The capability splits in two: `TranscriptSpec` and its `messages`.** "There is a file
-  we can read runtime facts out of" and "that file contains the turns" are separate claims,
-  and Codex is the proof - its rollout carries model / effort / tokens and no conversation.
-  `messages: null` is that stated once, where every reader sees it; the alternative was a
-  window read answering `[]`, which says "this session has said nothing" and is a wrong
-  answer no caller can distinguish from a right one.
+  we can read runtime facts out of" and "that file contains readable turns" are separate
+  claims. Codex originally proved the split while its rollout reader exposed only model /
+  effort / token metadata; it now parses `user_message` / `agent_message` turns too. The
+  nullable slot remains the honest answer for a harness with no message reader, instead of a
+  window read answering `[]` and falsely saying "this session has said nothing".
 - **One `passiveRead` per tick, not one call per axis.** Claude's runtime metadata and its
   hook-free idle/working signal come out of the same tail read, and the poller would
   otherwise double the I/O of its own hot loop.
@@ -1308,7 +1310,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; focus/spawn/rename/kill **(landed)** |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` -> `Task.homeName` migration **(landed)**; de-tmux user-visible strings **(landed)** |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)**, and the **`pi` harness (landed)** - and none was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have, and pi exposed the missing skills-loading distinction plus two Claude assumptions the interface still bakes in (`PermissionMode`, the model-id shape). iTerm2 still queued |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)**, and the **`pi` harness (landed)** - and none was written *only* against the interface, which is the finding rather than the failure. See each adapter's landed section; iTerm2 is still queued |
 
 ### Decisions taken
 
@@ -1339,7 +1341,7 @@ be added without touching shared code. Phase 5 is the test:
   Spike first, as `todo/codex-instrumentation.md` did for Codex.~~ **Landed.** pi
   (`@earendil-works/pi-coding-agent`) does all four. Its session format reads back as
   conversation (`transcript.messages` non-null). A dispatched pi receives an exact native
-  `--session-id`, so transcript, metadata, activity, goal, and idle reload are launch-scoped;
+  `--session-id`, so transcript, metadata, activity, and idle reload are launch-scoped;
   its matching file also proves launch readiness before the initial prompt is sent. An
   operator-started pi supplies no identity and takes the visible no-transcript degradation.
   The spike is `todo/pi-harness.md`; the interface findings are below.
@@ -1477,124 +1479,18 @@ the act.
 
 #### pi, as landed - the harness axis's acceptance test
 
-`src/server/harness/pi/{detect,bin,control,transcript,meta,launch}.ts`, registered by appending `pi`
-to `AGENT_TYPES` and filling the records that then fail to compile. pi
-(`@earendil-works/pi-coding-agent` 0.80.10) was the harness-axis counterpart to cmux and
-Ghostty: a near neighbour of Claude - a project-keyed per-line JSONL session store, `--print`,
-`--session-id`, an interactive TUI - picked because it fails only where the interface mistook a
-Claude fact for a universal one. The core held: pi discovers, names, focuses, takes typed input
-with no transcript or polling special case for pi. Launch is the one deliberate dispatcher
-footprint: `preparePiLaunch()` injects pi's native `--session-id`, parallel to Codex's
-launch-scoped hook preparation, and records it on the discovered session. Its transcript format
-then binds by exact UUID only, while the matching file's appearance gates initial prompt
-delivery. The spike is `todo/pi-harness.md`; what it found:
+Pi (`@earendil-works/pi-coding-agent`) now discovers, names, focuses and accepts typed input
+through the harness registry. Its adapter lives in `src/server/harness/pi/`; dispatch composes
+the adapter's launch preparation so a native session id can bind the transcript exactly and
+prove readiness before the first prompt is sent.
 
-- **pi is the MIRROR of Codex, which is the strongest evidence the capability matrix is
-  orthogonal.** Codex declares `hooks` non-null and `transcript.messages` null; pi declares the
-  opposite. pi pushes nothing (its extensions are in-process TS modules, not a shell-out hook
-  or a launch-scoped override), so `hooks: null`. Its JSONL parser reads turns
-  (`transcript.messages` non-null, so `GOAL_UNSUPPORTED.pi` is null) and a known file carries
-  clean `stopReason` idle/working evidence. A dispatched session attributes that file through
-  its injected native id; an operator-started session has no identity and degrades safely.
-  `workQueue` and `mcp` went null for real on this harness - the first because no hooks means
-  Foreman cannot verify pickup, the second because pi has no MCP client - so both moved OUT of
-  `harness-capabilities.test.ts`'s fixture-only list.
-
-- **`process.title = "pi"` makes detection trivial and management commands invisible.** pi's
-  `cli.js` sets its process title before dispatching, so a live session is literally `pi` on
-  the process table and matches `commands: ["pi"]` directly, like a native binary. The same
-  fact means its management subcommands (`config`, `update`) are also just `pi` in `ps`, so
-  `BackgroundSpec` cannot exclude them - `background: {[],[]}` is honest (pi has no daemon or
-  MCP-server role to exclude), and the quirk is low-risk (short-lived, rare) and stated rather
-  than hidden.
-
-- **The `PermissionMode` closed union is the harness axis's remaining Claude assumption -
-  Ghostty's `HostProcessSpec` for this axis, but NOT fixed.** pi has real approval modes
-  (`manual`/`auto`/`readonly`, a `cycleMode`), but the app's `PermissionMode` is a closed union
-  of Claude's own mode strings, and pi's do not map onto it, nor is it a Shift+Tab footer cycle
-  (Shift+Tab on pi cycles thinking). Widening a shared union with pi's vocabulary is a change
-  the acceptance criterion forbids quietly, so `permissionModes: null` (visibly disabled: no
-  chip, routes 400) and the coupling is recorded rather than papered over. Unlike Ghostty,
-  where the missing field was load-bearing for the core (correlation), this one degrades
-  cleanly, so the honest move was to name it and leave it.
-
-- **`ModelIdSchema` rejects `/`, so pi's provider-scoped ids can't be expressed.** pi is
-  multi-provider and its real ids are `openai/gpt-5.5`; the schema's `^[a-zA-Z0-9][...]$`
-  assumes the single-token form Claude and Codex have because each IS a provider. Launch is
-  integrated, but provider-qualified model selection is outside this acceptance test, so
-  `MODEL_CATALOG.pi` uses bare frontier ids that pass the schema and the coupling is recorded.
-
-- **Reload readiness assumed hooks plus a readable mode line.** pi has neither, but dispatched
-  sessions have an exactly attributed passive transcript. `SkillsSpec.reloadIdleSource`
-  declares which source proves idle: Claude keeps its byte-identical hook and mode-line path;
-  pi requires a current transcript binding, waits for settled idle, and skips the nonexistent
-  TUI read before typing its verified `/reload`. `skillsAgents()` therefore returns
-  `AgentType[]` and includes pi. Likewise `ModelField.runner: LlmRunnerId` was widened to
-  `AgentType`: the backlog-task model field passes the task's harness, which can be pi, a
-  harness that is not a runner. The inverse coupling existed in
-  `providerModelDefault(AgentType)`: every caller is an offline `LlmRunnerId`, so its parameter
-  is now narrowed accordingly.
-
-- **Pi reload is launch-scoped, like Codex instrumentation.** A `/reload` command existing in
-  the product does not authorize Mission Control to type it autonomously. A dispatched pi has
-  the exact current transcript needed to prove settled idle; an operator-started pi has no
-  binding and is neither counted nor typed into. If a `/new`, resume, or sibling creates a
-  newer session file, the launch binding declines before stale idle state can authorize a
-  reload. Claude's hooks and mode-line safety gates remain unchanged, and Codex still watches
-  its directory.
-
-- **Hookless transcript identity is exact or absent.** pi filenames carry a session UUID, and
-  `locate` binds only when that UUID equals a known `agentSessionId`; it keeps that exact file
-  only while no strictly newer session file exists. The freshness check can decline the known
-  file but never substitute another. No timestamp correlation, occupancy, or persistence
-  heuristic can prove ownership under short-lived sibling, delayed-file, resume, and `/new`
-  races. `preparePiLaunch` supplies exact identity for dispatched pi; operator-started and
-  post-context-change cards show no transcript, meta, activity, goal, or live reload. This
-  launch-scoped capability and honest degradation are the acceptance test's most valuable
-  finding.
-
-- **Harness launch preparation is a documented dispatcher integration, not an attribution
-  workaround.** Identity must be chosen before pi starts, so the adapter owns
-  `harness/pi/launch.ts` and the dispatcher composes its returned argv and session id just as it
-  composes Codex's launch preparation. Dispatch waits for the exact session file to appear and
-  treats silence as an unverified launch instead of typing after a fixed delay. File appearance
-  proves readiness, not prompt ingestion: dispatch captures that file's byte size before typing
-  and accepts only a user turn appended beyond it. Metadata-only growth and generic `working`
-  upserts do not count. Nothing in transcript discovery guesses ownership.
-
-- **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
-  captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no
-  permission-mode footer, and its tool-approval dialog could not be captured (login-blocked,
-  the same blocker Codex's spike hit). `harness-tui.test.ts` forbids a spec with both
-  sub-capabilities null - `annotatePaneState` would capture the pane per tick to run no parses
-  - so both-null must be `tui: null`, which pi is. The `→` cursor is recorded so the follow-up,
-  once pi is logged in, is the one-token confirmation Codex's dialog turned out to be. This is
-  NOT the assumed-not-measured mistake the interface warns against - the screen was measured;
-  it is that there is nothing to parse off it today.
-
-- **Terminal multiplexers were wrongly in the detection `WRAPPERS` list, and only the live E2E
-  found it.** Running `discover()` against a real pi session produced a PHANTOM pi card from
-  `tmux attach -t "P5 pi harness adapter"`: the tmux session name (this task's own name) carries
-  `pi` as a space-delimited word, and `tmux` being a wrapper made the bare-token scan over the
-  whole command line match it. Symmetric for every agent (`tmux attach -t "fix claude bug"`),
-  but pi's short common name makes it routine rather than rare - the same "a short token in text
-  nobody controls" hazard `BackgroundSpec` documents, one layer up. Fixed by removing
-  `tmux`/`screen` from `WRAPPERS` (`discovery/processes.ts`): an agent inside a multiplexer
-  ALWAYS also appears as its own native process on the pane's tty, so the wrapped match over the
-  multiplexer's command line buys no real detection and is pure false-positive surface. No
-  fixture would have caught this - it took pointing `discover()` at a real machine whose tmux
-  session was named after the task.
-
-**Verified against the real tool, not the diff.** Detection was run against live `ps` output
-of a real pi process (`process.title` confirmed); the transcript parser and passive read are
-pinned against `test/fixtures/pi-sessions.ts`, a verbatim capture of a real pi session (a
-text-only one - pi was not logged in to a provider to drive a tool call, so `tool_call` parsing
-is documented best-effort); `/new`, the skills directory read, the missing skills watcher, the
-paste-no-placeholder behaviour and the Shift+Tab-cycles-thinking finding were each observed by
-driving a live pi in a tmux pane. Tests: `pi-harness.test.ts`, plus `detection.test.ts`,
-`harness-capabilities.test.ts`, `harness-hooks.test.ts` (the refusal path now driven off pi's
-real `hooks: null` rather than a fixture), `harness-transcript.test.ts` and
-`session-contracts.test.ts`, all table-driven off the registry so pi inherited their coverage.
+The proof also found shared seams that were not yet honest: skills reload readiness needed a
+declared source, a model picker prop conflated the harness and LLM-runner axes, and terminal
+multiplexers in the process-wrapper list admitted false positives from arbitrary session names.
+Two couplings remain as explicit degradations: `PermissionMode` is still Claude's closed
+vocabulary, and `ModelIdSchema` cannot express Pi's provider-qualified ids. The spike,
+capability measurements, justified shared edits, remaining findings and regression-test
+pointers have one detailed owner: [`todo/pi-harness.md`](../../../todo/pi-harness.md).
 
 ## Fixes found along the way
 
@@ -1647,6 +1543,6 @@ agent-agnostic and reusable - is confirmed by this investigation, and `HookSpec`
 on it rather than around it: the pipeline is untouched, and what landed is the vocabulary
 above it plus a payload mapper below it. Its "follow-on work once the path is chosen" list
 now has homes rather than open questions - a Codex live-state mapping is
-`HARNESSES.codex.hooks`, no longer null; the rollout parser is
-`HARNESSES.codex.transcript.messages`, still null. The spike itself is unchanged: it decides
+`HARNESSES.codex.hooks`, no longer null; the rollout's `event_msg` records are parsed by
+`HARNESSES.codex.transcript.messages`, also no longer null. The spike itself is unchanged: it decides
 hook-vs-wrapper, and it is still blocked on a Codex login.

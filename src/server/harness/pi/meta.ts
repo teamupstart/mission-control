@@ -140,7 +140,8 @@ const TURN_DONE = new Set(["stop"]);
  *
  * The hook-free source of state. pi pushes no hooks, so this is the primary signal, not a
  * fallback: it is re-derived every poll tick off the transcript on disk, which is why a
- * quiet or post-restart pi session is still seen as idle and has its queue delivered.
+ * quiet or post-restart pi session can still be seen as idle and safely receive a
+ * transcript-gated skills reload.
  */
 export function computePiSessionActivity(lines: string[]): SessionActivityRead | null {
   for (let i = lines.length - 1; i >= 0; i--) {

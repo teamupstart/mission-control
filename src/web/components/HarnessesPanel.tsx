@@ -28,10 +28,10 @@ const MODEL_ROWS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent
  * `permissionModes.onDispatch` capability rather than off the word "claude".
  *
  * Every sentence on that row named an agent, and each was its own literal ("claude
- * only", "Every Claude session…", "Codex support comes later"). A third harness would
- * have left all three describing a grid that no longer matches, with nothing failing to
- * compile to say so - and "Codex support comes later" is a promise this panel is in no
- * position to make on the harness's behalf.
+ * only", "Every Claude session…", "Codex support comes later"). Pi would have left all
+ * three describing a grid that no longer matched, with nothing failing to compile to say
+ * so - and "Codex support comes later" is a promise this panel is in no position to make
+ * on the harness's behalf.
  */
 const AUTO_AGENTS = autoModeAgents();
 const AUTO_LABEL = agentList(AUTO_AGENTS, "and");

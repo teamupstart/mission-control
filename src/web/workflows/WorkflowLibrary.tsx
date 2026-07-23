@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { normalizeWorkflowName, type PersonaView, type WorkflowDraftNode, type WorkflowSummary } from "@shared/workflow.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { WorkflowCanvas, type WorkflowSelection } from "./WorkflowCanvas.tsx";
@@ -17,6 +17,34 @@ export function nextWorkflowName(base: string, summaries: WorkflowSummary[]): st
   return n === 1 ? base : `${base} ${n}`;
 }
 
+export function workflowSelectionRestore(
+  initialized: boolean,
+  selectedId: string | null,
+  active: WorkflowSummary[],
+  rememberedId: string | null,
+): string | undefined {
+  if (initialized || selectedId !== null || active.length === 0) return undefined;
+  return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]!.id;
+}
+
+export function WorkflowLoadError({
+  error,
+  canRetry,
+  onRetry,
+}: {
+  error: string | null;
+  canRetry: boolean;
+  onRetry: () => void;
+}): React.JSX.Element | null {
+  if (!error) return null;
+  return (
+    <p className="persona-error" role="alert">
+      {error}
+      {canRetry && <button className="btn btn-ghost" onClick={onRetry}>Retry</button>}
+    </p>
+  );
+}
+
 export function WorkflowLibrary({
   summaries,
   personas,
@@ -31,6 +59,7 @@ export function WorkflowLibrary({
   const [showArchived, setShowArchived] = useState(false);
   const listed = showArchived ? ordered : active;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectionInitialized = useRef(false);
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
   const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
@@ -40,9 +69,14 @@ export function WorkflowLibrary({
   const activePersonas = personas.filter((persona) => persona.archivedAt === null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   useEffect(() => {
-    if (selectedId !== null || active.length === 0) return;
-    const remembered = readLastWorkflowId();
-    const next = active.find((workflow) => workflow.id === remembered)?.id ?? active[0]!.id;
+    const next = workflowSelectionRestore(
+      selectionInitialized.current,
+      selectedId,
+      active,
+      readLastWorkflowId(),
+    );
+    if (next === undefined) return;
+    selectionInitialized.current = true;
     rememberWorkflowId(next);
     setSelectedId(next);
   }, [active, selectedId]);
@@ -51,6 +85,7 @@ export function WorkflowLibrary({
   }, [activePersonas, palettePersona]);
 
   const openWorkflow = (id: string | null): void => {
+    selectionInitialized.current = true;
     rememberWorkflowId(id);
     setSelection(null);
     setSelectedId(id);
@@ -125,6 +160,7 @@ export function WorkflowLibrary({
           <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><button className="btn" onClick={() => void create()}>New workflow</button></section>
         )}
         {draft.loading && <section className="workflow-empty"><p>Loading workflow…</p></section>}
+        <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
         {workflow && (
           <>
             <header className="workflow-builder-toolbar">
@@ -144,7 +180,6 @@ export function WorkflowLibrary({
             {draft.conflict && (
               <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><button onClick={() => void draft.reload()}>Reload latest</button><button onClick={() => void duplicate()}>Duplicate my draft</button></div>
             )}
-            {draft.error && <p className="persona-error" role="alert">{draft.error}</p>}
             <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />
           </>
         )}

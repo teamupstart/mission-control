@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
 import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
-import { nextWorkflowName } from "../src/web/workflows/WorkflowLibrary.tsx";
+import {
+  nextWorkflowName,
+  WorkflowLoadError,
+  workflowSelectionRestore,
+} from "../src/web/workflows/WorkflowLibrary.tsx";
 import type { LlmState } from "../src/web/useLlm.ts";
 import type { WorkflowDefinition, WorkflowVersion } from "../src/shared/workflow.ts";
 
@@ -85,4 +89,25 @@ test("generated create and duplicate names honor normalized durable uniqueness",
 test("top-bar workflow navigation opens the builder tab", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
   assert.match(source, /route\.page === "fleet"[\s\S]*\{ page: "workflows", tab: "workflows" \}/);
+});
+
+test("workflow detail load failures remain visible without a loaded workflow", () => {
+  const html = renderToStaticMarkup(createElement(WorkflowLoadError, {
+    error: "Could not load workflow",
+    canRetry: true,
+    onRetry: () => {},
+  }));
+  assert.match(html, /role="alert"/);
+  assert.match(html, /Could not load workflow/);
+  assert.match(html, /Retry/);
+});
+
+test("last workflow restoration runs once and cannot reopen an archived selection", () => {
+  const active = [{
+    id: "workflow-1", name: "Review", description: "", draftRevision: 1,
+    currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
+    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+  }];
+  assert.equal(workflowSelectionRestore(false, null, active, "workflow-1"), "workflow-1");
+  assert.equal(workflowSelectionRestore(true, null, active, "workflow-1"), undefined);
 });

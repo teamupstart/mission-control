@@ -158,3 +158,50 @@ test("submitted and dismissed decision sets both leave Needs you when none remai
   ).json()) as ReviewItem;
   assert.equal(waited.status, "dismissed", "the blocked MCP call is released as dismissed");
 });
+
+test("dismissal is limited to option-bearing reviews and discards supplied responses", async () => {
+  async function create(
+    kind: "diff" | "input",
+    title: string,
+    reviewDecisions?: typeof decisions,
+  ): Promise<string> {
+    const response = await app.request("/mcp/reviews", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({
+        env: { tmuxPane: "%3" },
+        cwd: "/repo/app",
+        kind,
+        title,
+        body: title,
+        decisions: reviewDecisions,
+      }),
+    });
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { id: string }).id;
+  }
+
+  for (const [kind, id] of [
+    ["diff", await create("diff", "Diff review")],
+    ["free-text input", await create("input", "Explain the failure")],
+  ] as const) {
+    const response = await app.request(`/api/reviews/${id}/resolve`, {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({ action: "dismiss" }),
+    });
+    assert.equal(response.status, 400, `${kind} cannot be dismissed`);
+    assert.equal(registry.getReview(id)?.status, "pending", `${kind} remains unresolved`);
+  }
+
+  const selectableInputId = await create("input", "Choose a database", decisions);
+  const dismissed = await app.request(`/api/reviews/${selectableInputId}/resolve`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ action: "dismiss", response: "Postgres" }),
+  });
+  assert.equal(dismissed.status, 200);
+  const review = (await dismissed.json()) as ReviewItem;
+  assert.equal(review.status, "dismissed");
+  assert.equal(review.response, null, "dismissal never persists a supplied selection");
+});

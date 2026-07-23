@@ -320,7 +320,10 @@ export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
-});
+}).transform((resolution) => ({
+  ...resolution,
+  response: resolution.action === "dismiss" ? null : resolution.response,
+}));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
 
 /** A decision on a no-mistakes gate, from the dashboard. */

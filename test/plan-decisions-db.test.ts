@@ -136,8 +136,11 @@ test("CreateReviewSchema rejects a decision with no options", () => {
   assert.equal(parsed.success, false, "an empty option list is not a decision");
 });
 
-test("ResolveReviewSchema accepts dismiss without a synthetic answer", () => {
-  const parsed = ResolveReviewSchema.safeParse({ action: "dismiss" });
+test("ResolveReviewSchema normalizes every dismissed response to null", () => {
+  const parsed = ResolveReviewSchema.safeParse({
+    action: "dismiss",
+    response: "fabricated selection",
+  });
   assert.ok(parsed.success);
   assert.equal(parsed.data.response, null);
 });

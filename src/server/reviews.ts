@@ -8,6 +8,8 @@ export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
 type Waiter = (r: ReviewItem) => void;
 
+export class ReviewResolutionError extends Error {}
+
 /**
  * Owns the review lifecycle and the long-poll waiters that let an agent block on
  * a human decision. The agent (via MCP) creates a review and calls `wait`; the
@@ -76,6 +78,13 @@ export class ReviewManager {
   resolve(id: string, action: ReviewAction, response: string | null): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
+    if (
+      action === "dismiss" &&
+      cur.kind !== "plan-decisions" &&
+      (cur.kind !== "input" || !cur.decisions?.some((decision) => decision.options.length > 0))
+    ) {
+      throw new ReviewResolutionError("only reviews with selectable decisions can be dismissed");
+    }
     if (cur.status !== "pending") return cur;
 
     const status: ReviewStatus =
@@ -86,9 +95,10 @@ export class ReviewManager {
           : action === "dismiss"
             ? "dismissed"
             : "answered";
+    const storedResponse = action === "dismiss" ? null : response;
     const resolvedAt = Date.now();
-    updateReviewStatus(id, status, response, resolvedAt);
-    const updated: ReviewItem = { ...cur, status, response, resolvedAt };
+    updateReviewStatus(id, status, storedResponse, resolvedAt);
+    const updated: ReviewItem = { ...cur, status, response: storedResponse, resolvedAt };
     this.registry.upsertReview(updated);
 
     const set = this.waiters.get(id);

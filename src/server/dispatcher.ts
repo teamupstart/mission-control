@@ -295,17 +295,25 @@ export class Dispatcher {
       const session = this.requireLiveSession(sessionId);
 
       // Listen BEFORE typing - the hook can land before the next line runs.
+      const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
         : null;
 
-      const sent = await (this.deps.inject ?? injectPrompt)(
-        session,
-        intent,
-        undefined,
-        () => this.registry.promptResourceBlockerForSession(session.id),
-      );
+      let sent: Awaited<ReturnType<typeof injectPrompt>>;
+      try {
+        sent = await (this.deps.inject ?? injectPrompt)(
+          session,
+          intent,
+          undefined,
+          () => this.registry.promptResourceBlockerForSession(session.id),
+        );
+      } catch (err) {
+        acceptanceAbort?.abort();
+        throw err;
+      }
       if (!sent.ok) {
+        acceptanceAbort?.abort();
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
       }
       if (!accepted) return;

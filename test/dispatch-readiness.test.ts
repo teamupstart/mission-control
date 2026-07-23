@@ -224,6 +224,41 @@ test("the dispatcher creates no acknowledgement listener for an already-exited s
   assert.equal(sends, 0);
 });
 
+test("the dispatcher cancels acknowledgement listeners when injection does not complete", async (t) => {
+  for (const name of ["failed result", "thrown error"] as const) {
+    await t.test(name, async () => {
+      const registry = new Registry();
+      registry.applyDiscovery([mkDiscovered({ syntheticId: `inject-${name}` })]);
+      const listenersBefore = registry.listenerCount("event");
+      const dispatcher = new Dispatcher(
+        registry,
+        undefined,
+        {
+          inject: async () => {
+            await Promise.resolve();
+            registry.applyDiscovery([]);
+            if (name === "thrown error") throw new Error("terminal write crashed");
+            return {
+              ok: false,
+              error: "pane disappeared",
+              pasted: false,
+              submitVerified: false,
+            };
+          },
+        },
+      );
+      const deliverIntent = (
+        dispatcher as unknown as {
+          deliverIntent(id: string, intent: string, cwd: string, instrumented: boolean): Promise<void>;
+        }
+      ).deliverIntent.bind(dispatcher);
+
+      await assert.rejects(deliverIntent(`inject-${name}`, "do the work", CWD, true));
+      assert.equal(registry.listenerCount("event"), listenersBefore);
+    });
+  }
+});
+
 test("waitForPromptAcceptedAtCwd resolves true on the working transition", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "accept-1" })]);

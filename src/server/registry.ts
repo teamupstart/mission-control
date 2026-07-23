@@ -3208,21 +3208,34 @@ export class Registry extends EventEmitter {
    * Subscribe BEFORE typing, then await this after: the hook can beat the caller's next
    * line, and a check-after-the-fact would miss it and re-type over a live prompt.
    */
-  waitForPromptAcceptedAtCwd(cwd: string, timeoutMs: number): Promise<boolean> {
+  waitForPromptAcceptedAtCwd(
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (signal?.aborted) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
-      const timer = unref(
-        setTimeout(() => {
-          unsub();
-          resolve(false);
-        }, timeoutMs),
-      );
-      const unsub = this.subscribe((e) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let unsub = (): void => {};
+      const finish = (accepted: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        unsub();
+        signal?.removeEventListener("abort", onAbort);
+        resolve(accepted);
+      };
+      const onAbort = (): void => finish(false);
+
+      timer = unref(setTimeout(() => finish(false), timeoutMs));
+      unsub = this.subscribe((e) => {
         if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working") {
-          clearTimeout(timer);
-          unsub();
-          resolve(true);
+          finish(true);
         }
       });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) finish(false);
     });
   }
 

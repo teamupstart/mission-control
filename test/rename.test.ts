@@ -138,9 +138,11 @@ test("validateSessionName rejects a session with no renameable handle", () => {
 const staleTask = { homeName: "fix-login", worktreePath: "/wt/old" };
 
 test("validateSessionNameAgainstTasks refuses a name a worktree-holding task still records", () => {
+  // The refusal names the backend that owns the home (mux wins the label), not a generic
+  // "terminal" - a cmux collision then reads true rather than approximately.
   assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "fix-login", [staleTask]), {
     ok: false,
-    error: "another task still holds the terminal session name 'fix-login'",
+    error: "another task still holds the tmux session name 'fix-login'",
   });
 });
 
@@ -168,12 +170,14 @@ test("validateSessionNameAgainstTasks allows a name no task records", () => {
   });
 });
 
-test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only session", () => {
-  // Renaming a wezterm tab sets a free-form title and moves no tmux name, so no
-  // task's teardown can be re-aimed by it.
+test("validateSessionNameAgainstTasks refuses an emulator rename that collides too", () => {
+  // A task dispatched into a pure-emulator home records that tab's title as its homeName,
+  // and renameSession re-points it - so an emulator rename can re-aim a stale task's
+  // teardown exactly as a multiplexer one can, and the guard must refuse it (naming the
+  // emulator backend). The old code returned ok:true here and left that rename unchecked.
   assert.deepEqual(
     validateSessionNameAgainstTasks({ ...onEmu, cwd: "/wt/live" }, "fix-login", [staleTask]),
-    { ok: true },
+    { ok: false, error: "another task still holds the WezTerm session name 'fix-login'" },
   );
 });
 

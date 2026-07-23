@@ -236,7 +236,8 @@ export const CompleteTaskSchema = z.object({
   outcomeUrl: z.string().url().optional(),
 });
 ```
-Server validates `repoRoot` is an existing git repo before provisioning.
+Server validates `repoRoot` through `resolveTaskRepoRoot`, the shared task-root resolver,
+before provisioning.
 
 ### `src/server/index.ts`
 Instantiate `TaskManager` + `Dispatcher`, pass into `buildApp`.

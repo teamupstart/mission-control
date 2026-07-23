@@ -605,7 +605,7 @@ Every mutating route has a zod schema in `src/shared/protocol.ts` and uses `pars
 Even bodyless-looking actions accept a schema such as `{}` or `{ enabled: boolean }`;
 handlers do not hand-parse JSON.
 
-Create/update resolves `repoRoot` through the same `resolveRepoRoot` used by dispatch.
+Create/update resolves `repoRoot` through the same `resolveTaskRepoRoot` used by dispatch.
 The scheduler rechecks the repository immediately before task creation because it can be
 renamed or removed after configuration. Failure records an occurrence; it does not create
 a doomed task.

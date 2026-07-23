@@ -5,10 +5,9 @@ it - GitHub issues first, but nothing in the interface should know that.
 
 ## The problem
 
-Every task in Mission Control is typed by a human into the dispatch form. That is the only
-door. Meanwhile the work already exists somewhere: open issues, a triage board, an on-call
-queue, a spreadsheet of flaky tests. Re-typing it is the friction, and the re-typing is why
-the backlog is usually emptier than the real backlog.
+Work often already exists somewhere: open issues, a triage board, an on-call queue, a
+spreadsheet of flaky tests. Before task sources, importing it meant re-typing it into
+Mission Control, which is why the backlog was usually emptier than the real backlog.
 
 The obvious fix - "add a GitHub integration" - is the wrong shape. It puts `gh issue list`
 in the middle of the dispatcher, and the second source (Linear, Jira, a cron that files a
@@ -81,7 +80,7 @@ export interface TaskCandidate {
   title: string;
   /** The prompt the agent will actually receive as its first message. */
   intent: string;
-  /** Absolute path of the repo to base the task on. Validated as a git root on ingest. */
+  /** Absolute path of the repo to base the task on. Validated as a task root on ingest. */
   repoRoot: string;
   kind?: TaskKind;
   agent?: AgentType;
@@ -167,8 +166,8 @@ is consent, and they should be two separate acts.
 
 1. **Drop anything already seen.** Keyed `(sourceId, externalId)` against a
    `task_source_seen` table.
-2. **Resolve and validate `repoRoot`** through the same `resolveRepoRoot` the dispatch
-   route uses. A source cannot file a task against a path that is not a git repo.
+2. **Resolve and validate `repoRoot`** through the same `resolveTaskRepoRoot` the dispatch
+   route uses.
 3. **Normalize** through `DispatchSchema` - so `normalizeLabels` and the priority enum
    apply to a machine-authored task exactly as to a typed one.
 4. **Cap** at `maxPerSweep`, and `log()` what was dropped. A silent truncation reads as

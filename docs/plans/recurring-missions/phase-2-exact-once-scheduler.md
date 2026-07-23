@@ -169,7 +169,7 @@ Create `src/server/schedules/manager.ts`.
 For definition mutations:
 
 1. Validate recurrence through Phase 1's evaluator.
-2. Canonicalize and validate `repoRoot` through the existing `resolveRepoRoot`.
+2. Canonicalize and validate `repoRoot` through the existing `resolveTaskRepoRoot`.
 3. Enforce V1 `executionMode = local-catchup` and `runnerId = null`.
 4. Create/update immutable revisions through the Phase 1 store.
 5. For enabled schedules, calculate `nextRunAt` strictly after the selected anchor.
@@ -324,7 +324,7 @@ Inject:
 - timer scheduling/clearing;
 - UUID allocation;
 - recurrence/store functions where a true DB integration is not the target;
-- `resolveRepoRoot`;
+- `resolveTaskRepoRoot`;
 - `TaskManager`; and
 - notifier/log sinks.
 

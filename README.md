@@ -910,8 +910,9 @@ so it is passed over on every tick, silently and forever, while the popover's re
 and handed to the next agent, so the row would outlive the directory it named.
 
 A root that **cannot** be walked back to a main checkout - a `.git` that points somewhere
-with no owning repo, like a submodule or a relocated git dir - is refused with `400 not a
-repo's main checkout` naming the path, rather than written and never scheduled.
+with no owning repo, like a submodule or a relocated git dir - is refused rather than
+written and never scheduled. HTTP task creation and edits return `400 not a repo's main
+checkout` naming the path; task-source sweeps report the same refusal in their result.
 
 ### Hand a shelved task to an agent that's already running
 
@@ -975,7 +976,7 @@ title alone, leaving the priority where the card put it. And a kept edit is only
 the task itself stands still - if the row changed while the form was closed, reopening it
 shows the task as it now reads rather than a picture of how it used to. A task whose **repo
 has since gone** - a reclaimed worktree, a project moved - stays editable too; only a repo
-you actually change is checked for being a git root.
+you actually change is checked against the [task-root rules above](#a-tasks-repo-is-the-repo-not-the-worktree).
 
 Only *shelved* work can be rewritten. Once a task is dispatched its title has already
 supplied the name of a git branch and terminal home, so the daemon refuses the edit rather
@@ -1106,9 +1107,9 @@ own effort in the dispatch form.
 
 ## Task sources (pulling work into the backlog)
 
-Every task in Mission Control is typed by a human into the dispatch form. Meanwhile the
-work already exists somewhere: open issues, a triage board, an on-call queue. A **task
-source** reads one of those on a schedule and files what it finds into the
+Tasks can be typed into the dispatch form or created through the MCP `create_task` tool.
+Meanwhile work already exists somewhere: open issues, a triage board, an on-call queue. A
+**task source** reads one of those on a schedule and files what it finds into the
 [backlog](#dispatch-an-agent).
 
 **A source files backlog rows and nothing else.** It never dispatches an agent, never cuts

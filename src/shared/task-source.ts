@@ -60,7 +60,7 @@ export interface TaskCandidate {
   title: string;
   /** The prompt the agent will actually receive as its first message. */
   intent: string;
-  /** Absolute path of the repo to base the task on. Validated as a git root on ingest. */
+  /** Absolute path of the repo to base the task on. Validated as a task root on ingest. */
   repoRoot: string;
   kind?: TaskKind;
   agent?: AgentType;

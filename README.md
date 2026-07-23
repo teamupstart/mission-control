@@ -1,6 +1,6 @@
 # Mission Control
 
-A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
+A local, auto-refreshing dashboard for the Claude Code / Codex / Pi sessions running
 across your **terminal panes**. See every agent at a glance,
 act on any of them, and let an agent push a **diff or plan** to you for review -
 and get your decision back.
@@ -9,7 +9,7 @@ and get your decision back.
 
 ## What it does
 
-- **Discovers** every running `claude` / `codex` session by walking process →
+- **Discovers** every running `claude` / `codex` / `pi` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
@@ -311,7 +311,15 @@ computed from the capability, never typed out.
 
 Adding a third agent means filling that declaration in. The types make it impossible to
 add one and quietly inherit Claude's answers, and nothing about it needs a component or a
-stylesheet edited to show up.
+stylesheet edited to show up. **Pi** (`@earendil-works/pi-coding-agent`) is that third
+agent, added as the migration's acceptance test: it discovers, names, focuses and takes
+typed input, and renders a rich transcript, all from declaration alone. It is the mirror
+image of Codex - it pushes no hooks (its extensions are in-process, not a shell-out), yet
+its session file reads back as conversation - and it disables what it lacks in the open: no
+MCP client, no work queue without hooks, and no permission-mode chip, because its
+`manual`/`auto`/`readonly` approval modes are its own vocabulary rather than the ones the
+chip is built for. The spike and the interface couplings it surfaced are written up in
+`todo/pi-harness.md`.
 
 ### Precise status (Claude hooks)
 
@@ -2529,6 +2537,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |
+| `PI_SKILLS_DIR` | `~/.pi/agent/skills` | the same override for Pi's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/pi-skills`. Pi loads SKILL.md skills from the same standard as Claude and Codex, so the reconciler links the catalog into this dir too and nudges a live Pi session with `/reload` |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
@@ -2538,6 +2547,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | Codex CLI path override - both for dispatched agents and for every headless `codex exec` the app runs when Codex is the selected [provider](#models-what-the-apps-own-model-work-runs-on) |
 | `MISSION_CODEX_TIMEOUT_MS` | `120000` | hard cap on a single headless `codex exec`, the mirror of `MISSION_CLAUDE_TIMEOUT_MS`. A caller that sets its own budget (the Inspector, the Goal refiner, the dispatch titler) passes it instead |
+| `MISSION_PI_BIN` | `pi` | Pi (`@earendil-works/pi-coding-agent`) CLI path override for dispatched agents. Pi is a discovered/dispatched harness, not one of the app's own headless model providers |
 | `MISSION_CODEX_HOOK` | app's `dist/satellites/codex-hook.mjs` | path to the bundled [Codex hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) the dispatcher points a Codex launch at. If the path doesn't exist the hook overrides are dropped entirely and the session runs uninstrumented rather than failing to launch |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |

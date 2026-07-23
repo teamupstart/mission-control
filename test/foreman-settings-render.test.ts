@@ -26,7 +26,7 @@ const BASE: ForemanConfig = {
   wrapup: "ask",
   autoBacklog: false,
   backlogRespectOpenPrs: true,
-  backlogDefaultModel: { claude: null, codex: null },
+  backlogDefaultModel: { claude: null, codex: null, pi: null },
   maxSessions: 3,
 };
 

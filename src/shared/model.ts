@@ -116,6 +116,17 @@ export const MODEL_CATALOG: Record<AgentType, readonly ModelChoice[]> = {
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest" },
     { id: "gpt-5.5", label: "GPT-5.5", hint: "previous generation" },
   ],
+  // pi is multi-provider; its true ids are `provider/id` (e.g. `openai/gpt-5.5`), but
+  // `ModelIdSchema` rejects the slash (Claude and Codex ids are single tokens because each
+  // harness IS a provider). Dispatch is not in Phase 5's acceptance scope, so these are the
+  // bare frontier ids that pass the schema - real, from pi's own model store; `gpt-5.5` is
+  // 272k, matching what its footer shows. See `todo/pi-harness.md` for the id-shape finding.
+  pi: [
+    { id: "gpt-5.5-pro", label: "GPT-5.5 Pro", hint: "most capable, 1M context" },
+    { id: "gpt-5.5", label: "GPT-5.5", hint: "strong all-rounder" },
+    { id: "gpt-5-codex", label: "GPT-5 Codex", hint: "coding-tuned" },
+    { id: "gpt-5-mini", label: "GPT-5 Mini", hint: "fastest, cheaper" },
+  ],
 };
 
 /**

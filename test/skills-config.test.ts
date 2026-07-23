@@ -15,11 +15,13 @@ const claudeSkills = join(home, "claude-skills");
 // state dir and survive `beforeEach` - stale links there make the NEXT apply unlink them,
 // which reads as a spurious generation bump with nothing on screen to explain it.
 const codexSkills = join(home, "codex-skills");
+const piSkills = join(home, "pi-skills");
 const catalogDir = join(home, "catalog");
 // Set before importing anything that resolves the state dir / catalog dir.
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SKILLS_DIR = claudeSkills;
 process.env.CODEX_SKILLS_DIR = codexSkills;
+process.env.PI_SKILLS_DIR = piSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
@@ -45,6 +47,7 @@ beforeEach(() => {
   openDb().exec("DELETE FROM app_config");
   rmSync(claudeSkills, { recursive: true, force: true });
   rmSync(codexSkills, { recursive: true, force: true });
+  rmSync(piSkills, { recursive: true, force: true });
   rmSync(catalogDir, { recursive: true, force: true });
   writeSkill("alpha");
   writeSkill("beta");
@@ -310,20 +313,26 @@ test("an unwritable skills dir is reported, never thrown", () => {
   // harness is never reconciled, which is the bug this fold exists to fix.
   const locked = join(home, "locked");
   const lockedCodex = join(home, "locked-codex");
-  for (const dir of [locked, lockedCodex]) {
+  const lockedPi = join(home, "locked-pi");
+  for (const dir of [locked, lockedCodex, lockedPi]) {
     mkdirSync(dir, { recursive: true });
     chmodSync(dir, 0o500);
     after(() => chmodSync(dir, 0o700));
   }
   process.env.CLAUDE_SKILLS_DIR = locked;
   process.env.CODEX_SKILLS_DIR = lockedCodex;
+  process.env.PI_SKILLS_DIR = lockedPi;
   try {
     const r = applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-    assert.equal(r.problems.length, 2, "one sentence per directory - each is its own thing to fix");
+    // One sentence per directory - each is its own thing to fix. THREE harnesses declare a
+    // skills dir now (pi joined), and locking one and asserting nothing moved would be
+    // asserting the others are never reconciled, which is the bug this fold exists to fix.
+    assert.equal(r.problems.length, 3, "one sentence per directory - each is its own thing to fix");
     for (const p of r.problems) assert.match(p, /couldn't enable alpha/);
     assert.equal(getSkillsConfig().generation, 0);
   } finally {
     process.env.CLAUDE_SKILLS_DIR = claudeSkills;
     process.env.CODEX_SKILLS_DIR = codexSkills;
+    process.env.PI_SKILLS_DIR = piSkills;
   }
 });

@@ -1,5 +1,5 @@
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
+import type { AgentType } from "@shared/types.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 
 // The one input in this app for "which model does this call spawn with?".
@@ -62,7 +62,12 @@ export function ModelField({
   spec: ModelChoiceSpec;
   value: string;
   resolved: ResolvedModel | undefined;
-  runner: LlmRunnerId;
+  // `AgentType`, not `LlmRunnerId`: this drives `modelChoicesFor` and `AGENT_IDENTITY`, both
+  // AgentType questions. Foreman's own model fields pass an LlmRunnerId (claude|codex, a subset)
+  // and the backlog-task field passes the task's harness - which can be pi, a harness that is
+  // not a runner. Typing it as the runner axis conflated "which provider does Foreman's work"
+  // with "which harness's model catalog"; pi surfaced it. See `todo/pi-harness.md`.
+  runner: AgentType;
   disabled: boolean;
   onCommit: (next: string) => void;
 }): React.JSX.Element {

@@ -36,6 +36,12 @@ const BACKLOG_TASK_MODEL_SPECS: Record<(typeof AGENT_TYPES)[number], ModelChoice
     fallback: "the Harnesses default",
     blurb: "Used when Foreman launches an unpinned Codex task from the backlog.",
   },
+  pi: {
+    label: "Pi backlog tasks",
+    envVar: "",
+    fallback: "the Harnesses default",
+    blurb: "Used when Foreman launches an unpinned Pi task from the backlog.",
+  },
 };
 
 /** Repos worth offering in the picker: known repos, minus the ones already trusted. */

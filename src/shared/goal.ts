@@ -16,6 +16,10 @@ import type { AgentType } from "./types.ts";
 export const GOAL_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,
   codex: null,
+  // pi's transcript reads back as turns (`harness/pi/transcript.ts`), so its
+  // `transcript.messages` capability is non-null and the refiner has a conversation to
+  // summarise - null, paired with that capability by `harness-transcript.test.ts`.
+  pi: null,
 };
 
 /**

@@ -39,13 +39,13 @@ test("ships with no default model, so installing this changes nothing about how 
   const cfg = getHarnessesConfig();
   assert.equal(cfg.defaultModel.claude, null);
   assert.equal(cfg.defaultModel.codex, null);
-  assert.deepEqual(cfg.defaultEffort, { claude: null, codex: null });
+  assert.deepEqual(cfg.defaultEffort, { claude: null, codex: null, pi: null });
 });
 
 test("effort defaults merge per harness and resolve behind a task override", () => {
   setHarnessesConfig({ defaultEffort: { codex: "high" } });
   const cfg = setHarnessesConfig({ defaultEffort: { claude: "medium" } });
-  assert.deepEqual(cfg.defaultEffort, { claude: "medium", codex: "high" });
+  assert.deepEqual(cfg.defaultEffort, { claude: "medium", codex: "high", pi: null });
   assert.equal(resolveDispatchEffort("claude", null), "medium");
   assert.equal(resolveDispatchEffort("codex", "xhigh"), "xhigh");
 });
@@ -96,7 +96,7 @@ test("a config stored before default models existed reads as no default, not a c
     .run("harnesses", JSON.stringify({ autoModeOnDispatch: true }));
   const cfg = getHarnessesConfig();
   assert.equal(cfg.autoModeOnDispatch, true);
-  assert.deepEqual(cfg.defaultModel, { claude: null, codex: null });
+  assert.deepEqual(cfg.defaultModel, { claude: null, codex: null, pi: null });
 });
 
 // ---- resolution at dispatch time ----

@@ -339,6 +339,50 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       },
     },
   },
+  pi: {
+    id: "pi",
+    // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
+    // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
+    // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does
+    // not map onto it, nor is it a Shift+Tab footer cycle (Shift+Tab on pi cycles the THINKING
+    // level). Supporting it would mean widening a shared union with pi's words - a change the
+    // acceptance criterion forbids quietly - so this is null: no chip, routes 400, dispatcher
+    // arms nothing. The one place the harness axis still bakes in a Claude assumption.
+    permissionModes: null,
+    // Verified: pi loads SKILL.md skills (agentskills.io standard) from its own
+    // `~/.pi/agent/skills` (probed live) as well as the shared `~/.agents/skills`. Declared
+    // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
+    // Codex. `reloadCommand: "/reload"` because pi has that command AND no skills-dir watcher
+    // (measured - no `fs.watch`/`chokidar` on its resource dirs), so a skill symlinked in
+    // mid-session is picked up only on `/reload`. That non-null reloadCommand is what makes pi
+    // the third harness `skillsAgents()`'s return type had to widen for.
+    skills: {
+      reloadCommand: "/reload",
+      dirEnvVar: "PI_SKILLS_DIR",
+      homeDir: [".pi", "agent", "skills"],
+      isolatedDirName: "pi-skills",
+    },
+    // Null: pi pushes no hooks (`HARNESSES.pi.hooks` is null), so Foreman has no signal for
+    // when a pi session picks work up or finishes it and cannot verify a queue. Its rich
+    // transcript proves the work was done, but authorship of the pickup is exactly the hook
+    // signal it lacks - so `foremanAutomationAuthorized` refuses regardless, and null is the
+    // honest permanent incapacity rather than the fixable-install `uninstrumentedWhy`.
+    workQueue: null,
+    // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
+    // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
+    // summarises rather than clears). After `/new` pi mints a new session file, which the
+    // passive locate re-binds by cwd next tick - the same shape as a Claude `/clear`.
+    clearContext: { command: "/new" },
+    // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
+    // the installer says so rather than shelling out to a registration CLI that does not exist.
+    mcp: null,
+    // pi's `--thinking` accepts `off|minimal|low|medium|high|xhigh|max`; the app's
+    // THINKING_LEVELS (`low..max`) are a subset it accepts verbatim.
+    effort: {
+      levels: THINKING_LEVELS,
+      launchArgs: (level) => ["--thinking", level],
+    },
+  },
 };
 
 /**
@@ -427,9 +471,15 @@ export function skillLoadingAgents(): AgentType[] {
  * no keystroke. Using this list to answer "who does this switch affect" understates the
  * panel by a whole harness; using the other to answer "who do we type at" invents a slash
  * command for a session that would render it as a prompt.
+ *
+ * Returns `AgentType[]`, not `"claude"[]`: the narrow type hardcoded "only Claude has a reload
+ * command", which was true until pi - a third harness with a `/reload` command and no skills
+ * watcher - joined the list. That over-narrowing was never a compile error (the predicate was
+ * asserted, callers only map the ids to labels), which is exactly why it needed widening by
+ * hand. See the Phase 5 finding in `todo/pi-harness.md`.
  */
-export function skillsAgents(): "claude"[] {
-  return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
+export function skillsAgents(): AgentType[] {
+  return AGENT_TYPES.filter((a) => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
 /**

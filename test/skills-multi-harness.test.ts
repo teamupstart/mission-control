@@ -26,9 +26,14 @@ import type { SkillsConfig } from "../src/shared/protocol.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-skills-multi-"));
 const claudeSkills = join(home, "claude-skills");
 const codexSkills = join(home, "codex-skills");
+// pi declares a skills dir too, so it MUST be pinned here as well - the reconcile folds over
+// `skillsDirs()`, so an unpinned `PI_SKILLS_DIR` would write into the operator's real
+// `~/.pi/agent/skills` (the same trap this file's comment already warns about for Codex).
+const piSkills = join(home, "pi-skills");
 const catalogDir = join(home, "catalog");
 process.env.CLAUDE_SKILLS_DIR = claudeSkills;
 process.env.CODEX_SKILLS_DIR = codexSkills;
+process.env.PI_SKILLS_DIR = piSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
 
 const { reconcileSkillLinks, uninstallSkillLinks, skillsDirs, skillDrift, skillBlockers } =
@@ -53,7 +58,7 @@ function mkCfg(over: Partial<SkillsConfig> = {}): SkillsConfig {
 }
 
 beforeEach(() => {
-  for (const dir of [claudeSkills, codexSkills, catalogDir]) {
+  for (const dir of [claudeSkills, codexSkills, piSkills, catalogDir]) {
     rmSync(dir, { recursive: true, force: true });
   }
   for (const s of SKILLS) {
@@ -139,6 +144,7 @@ test("an isolated home keeps EVERY harness's directory inside itself", () => {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
   delete env.CLAUDE_SKILLS_DIR;
   delete env.CODEX_SKILLS_DIR;
+  delete env.PI_SKILLS_DIR;
 
   const out = execFileSync(
     process.execPath,
@@ -154,7 +160,14 @@ test("an isolated home keeps EVERY harness's directory inside itself", () => {
   );
 
   const dirs = JSON.parse(out.trim().split("\n").filter(Boolean).at(-1) ?? "[]") as string[];
-  assert.deepEqual(dirs.sort(), [join(isolated, "claude-skills"), join(isolated, "codex-skills")].sort());
+  assert.deepEqual(
+    dirs.sort(),
+    [
+      join(isolated, "claude-skills"),
+      join(isolated, "codex-skills"),
+      join(isolated, "pi-skills"),
+    ].sort(),
+  );
   for (const dir of dirs) {
     assert.ok(dir.startsWith(isolated), `${dir} escaped the isolated home`);
   }

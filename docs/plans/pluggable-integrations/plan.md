@@ -1308,7 +1308,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; focus/spawn/rename/kill **(landed)** |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` -> `Task.homeName` migration **(landed)**; de-tmux user-visible strings **(landed)** |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)** - and neither was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have. iTerm2 and `pi` still queued |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)**, and the **`pi` harness (landed)** - and none was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have, and pi needed a shared return type widened and surfaced two Claude assumptions the interface still bakes in (`PermissionMode`, the model-id shape). iTerm2 still queued |
 
 ### Decisions taken
 
@@ -1334,9 +1334,13 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 The migration is not done when the interfaces exist. It is done when a new implementation can
 be added without touching shared code. Phase 5 is the test:
 
-- A **`pi` harness** that discovers, names, focuses, and accepts typed input - and whose
+- ~~A **`pi` harness** that discovers, names, focuses, and accepts typed input - and whose
   unsupported capabilities are visibly disabled in the UI rather than silently absent.
-  Spike first, as `todo/codex-instrumentation.md` did for Codex.
+  Spike first, as `todo/codex-instrumentation.md` did for Codex.~~ **Landed.** pi
+  (`@earendil-works/pi-coding-agent`) does all four, and more - its session file reads back as
+  conversation, so it renders a full transcript too. It is the mirror of Codex on the harness
+  axis (`hooks: null`, `transcript.messages` non-null). The spike is `todo/pi-harness.md`; the
+  interface findings are below.
 - ~~A **Ghostty** emulator adapter, which supports spawn and focus but **not** enumeration or
   capture - proving the capability-null path is real and not decorative.~~ **Landed, and it
   proved something better.** The clause was written from release notes and three of its four
@@ -1468,6 +1472,96 @@ address did not), every name rule cross-checked against what the live app accept
 - workspace gone, process gone. Tests: `cmux-adapter.test.ts` against
 `test/fixtures/cmux-panes.ts`, which is a verbatim capture holding the mis-attributed tty in
 the act.
+
+#### pi, as landed - the harness axis's acceptance test
+
+`src/server/harness/pi/{detect,bin,control,transcript,meta}.ts`, registered by appending `pi`
+to `AGENT_TYPES` and filling the records that then fail to compile. pi
+(`@earendil-works/pi-coding-agent` 0.80.10) was the harness-axis counterpart to cmux and
+Ghostty: a near neighbour of Claude - a project-keyed per-line JSONL session store, `--print`,
+`--session-id`, an interactive TUI - picked because it fails only where the interface mistook a
+Claude fact for a universal one. The core held: pi discovers, names, focuses, takes typed input
+AND renders a full transcript, with no `if (agent === "pi")` anywhere and every existing
+`agent === "claude"/"codex"` branch (the codex launch prep, `codex-rollouts`, `agents-shadow`)
+letting pi fall through correctly. The spike is `todo/pi-harness.md`; what it found:
+
+- **pi is the MIRROR of Codex, which is the strongest evidence the capability matrix is
+  orthogonal.** Codex declares `hooks` non-null and `transcript.messages` null; pi declares the
+  opposite. pi pushes nothing (its extensions are in-process TS modules, not a shell-out hook
+  or a launch-scoped override), so `hooks: null` - and it rides the passive path FULLY rather
+  than degrading to the pane, because its JSONL reads back as turns (`transcript.messages`
+  non-null, so `GOAL_UNSUPPORTED.pi` is null) AND carries a clean `stopReason` idle/working
+  signal (unlike Codex's rollout, which has neither). `workQueue` and `mcp` went null for real
+  on this harness - the first because no hooks means Foreman cannot verify pickup, the second
+  because pi has no MCP client - so both moved OUT of `harness-capabilities.test.ts`'s
+  fixture-only list.
+
+- **`process.title = "pi"` makes detection trivial and management commands invisible.** pi's
+  `cli.js` sets its process title before dispatching, so a live session is literally `pi` on
+  the process table and matches `commands: ["pi"]` directly, like a native binary. The same
+  fact means its management subcommands (`config`, `update`) are also just `pi` in `ps`, so
+  `BackgroundSpec` cannot exclude them - `background: {[],[]}` is honest (pi has no daemon or
+  MCP-server role to exclude), and the quirk is low-risk (short-lived, rare) and stated rather
+  than hidden.
+
+- **The `PermissionMode` closed union is the harness axis's remaining Claude assumption -
+  Ghostty's `HostProcessSpec` for this axis, but NOT fixed.** pi has real approval modes
+  (`manual`/`auto`/`readonly`, a `cycleMode`), but the app's `PermissionMode` is a closed union
+  of Claude's own mode strings, and pi's do not map onto it, nor is it a Shift+Tab footer cycle
+  (Shift+Tab on pi cycles thinking). Widening a shared union with pi's vocabulary is a change
+  the acceptance criterion forbids quietly, so `permissionModes: null` (visibly disabled: no
+  chip, routes 400) and the coupling is recorded rather than papered over. Unlike Ghostty,
+  where the missing field was load-bearing for the core (correlation), this one degrades
+  cleanly, so the honest move was to name it and leave it.
+
+- **`ModelIdSchema` rejects `/`, so pi's provider-scoped ids can't be expressed.** pi is
+  multi-provider and its real ids are `openai/gpt-5.5`; the schema's `^[a-zA-Z0-9][...]$`
+  assumes the single-token form Claude and Codex have because each IS a provider. Dispatch is
+  out of the acceptance scope, so `MODEL_CATALOG.pi` uses bare frontier ids that pass the
+  schema and the coupling is recorded.
+
+- **`skillsAgents(): "claude"[]` was the one genuine shared-logic edit.** pi loads SKILL.md
+  skills from its own `~/.pi/agent/skills` (verified live) and needs a `/reload` nudge (no
+  watcher, measured), so it declared a `reloadCommand` - which made that return type, hardcoded
+  to "only Claude reloads", a lie. Not a compile error (the predicate was asserted, callers
+  only map to labels), which is exactly why it needed widening to `AgentType[]` by hand.
+  Likewise `ModelField.runner: LlmRunnerId` was widened to `AgentType`: the backlog-task model
+  field passes the task's harness, which can be pi, a harness that is not a runner - the runner
+  axis and the harness axis had been conflated in one prop type.
+
+- **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
+  captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no
+  permission-mode footer, and its tool-approval dialog could not be captured (login-blocked,
+  the same blocker Codex's spike hit). `harness-tui.test.ts` forbids a spec with both
+  sub-capabilities null - `annotatePaneState` would capture the pane per tick to run no parses
+  - so both-null must be `tui: null`, which pi is. The `→` cursor is recorded so the follow-up,
+  once pi is logged in, is the one-token confirmation Codex's dialog turned out to be. This is
+  NOT the assumed-not-measured mistake the interface warns against - the screen was measured;
+  it is that there is nothing to parse off it today.
+
+- **Terminal multiplexers were wrongly in the detection `WRAPPERS` list, and only the live E2E
+  found it.** Running `discover()` against a real pi session produced a PHANTOM pi card from
+  `tmux attach -t "P5 pi harness adapter"`: the tmux session name (this task's own name) carries
+  `pi` as a space-delimited word, and `tmux` being a wrapper made the bare-token scan over the
+  whole command line match it. Symmetric for every agent (`tmux attach -t "fix claude bug"`),
+  but pi's short common name makes it routine rather than rare - the same "a short token in text
+  nobody controls" hazard `BackgroundSpec` documents, one layer up. Fixed by removing
+  `tmux`/`screen` from `WRAPPERS` (`discovery/processes.ts`): an agent inside a multiplexer
+  ALWAYS also appears as its own native process on the pane's tty, so the wrapped match over the
+  multiplexer's command line buys no real detection and is pure false-positive surface. No
+  fixture would have caught this - it took pointing `discover()` at a real machine whose tmux
+  session was named after the task.
+
+**Verified against the real tool, not the diff.** Detection was run against live `ps` output
+of a real pi process (`process.title` confirmed); the transcript parser and passive read are
+pinned against `test/fixtures/pi-sessions.ts`, a verbatim capture of a real pi session (a
+text-only one - pi was not logged in to a provider to drive a tool call, so `tool_call` parsing
+is documented best-effort); `/new`, the skills directory read, the missing skills watcher, the
+paste-no-placeholder behaviour and the Shift+Tab-cycles-thinking finding were each observed by
+driving a live pi in a tmux pane. Tests: `pi-harness.test.ts`, plus `detection.test.ts`,
+`harness-capabilities.test.ts`, `harness-hooks.test.ts` (the refusal path now driven off pi's
+real `hooks: null` rather than a fixture), `harness-transcript.test.ts` and
+`session-contracts.test.ts`, all table-driven off the registry so pi inherited their coverage.
 
 ## Fixes found along the way
 

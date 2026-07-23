@@ -47,6 +47,18 @@ const SAMPLES: Record<AgentType, DetectionSamples> = {
     ],
     wrapped: ["sh -c codex", "make codex"],
   },
+  pi: {
+    // pi sets `process.title = "pi"`, so a live session shows as literally `pi` and matches
+    // `commands` directly; the node form (before the title lands, or a raw launch) matches
+    // the `pi-coding-agent/dist/cli.js` argv signature.
+    native: [
+      "pi",
+      "pi --print hi",
+      "/opt/homebrew/bin/pi",
+      "node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+    ],
+    wrapped: ["sh -c pi", "make pi"],
+  },
 };
 
 /** Every harness paired with its samples, which is what every table below walks. */
@@ -145,6 +157,12 @@ test("a bare command name counts only under a known wrapper", () => {
       assert.equal(classifyAgent(`git commit -m "fix ${name} bug"`), null, name);
       assert.equal(classifyAgent(`vim ${name}.md`), null, name);
       assert.equal(classifyAgent(`rg ${name} src`), null, name);
+      // A terminal MULTIPLEXER is deliberately NOT a wrapper: an agent inside it appears as
+      // its own native process, so a multiplexer command carrying an agent token in a session
+      // NAME is not a session. This carded a phantom pi from `tmux attach -t "P5 pi harness
+      // adapter"`; the risk is symmetric, so it is pinned for every declared command.
+      assert.equal(classifyAgent(`tmux attach -t "review ${name} adapter"`), null, `tmux ${name}`);
+      assert.equal(classifyAgent(`screen -r ${name} session`), null, `screen ${name}`);
     }
   }
 });

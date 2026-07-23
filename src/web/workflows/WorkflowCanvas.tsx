@@ -34,6 +34,7 @@ function canvasNodes(
   graph: WorkflowDraftGraph | PublishedWorkflowGraph,
   personas: readonly PersonaView[],
   readOnly: boolean,
+  nodeStatuses: Readonly<Record<string, string>>,
 ): WorkflowCanvasNode[] {
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
   const incoming = new Map<string, Set<string>>();
@@ -66,7 +67,8 @@ function canvasNodes(
       deletable: !readOnly && node.kind !== "session",
       draggable: !readOnly,
       selectable: true,
-      data: { kind: node.kind, label, subtitle, readOnly },
+      className: nodeStatuses[node.id] ? `workflow-runtime-${nodeStatuses[node.id]}` : undefined,
+      data: { kind: node.kind, label, subtitle, readOnly, runtimeStatus: nodeStatuses[node.id] ?? null },
     };
   });
 }
@@ -106,6 +108,7 @@ export function WorkflowCanvas({
   onChange,
   onSelection,
   onDropNode,
+  nodeStatuses = {},
 }: {
   graph: WorkflowDraftGraph | PublishedWorkflowGraph;
   personas: PersonaView[];
@@ -113,8 +116,12 @@ export function WorkflowCanvas({
   onChange?: (graph: WorkflowDraftGraph) => void;
   onSelection?: (selection: WorkflowSelection) => void;
   onDropNode?: (kind: "persona" | "all_pass" | "end", personaId: string | null, position: { x: number; y: number }) => void;
+  nodeStatuses?: Readonly<Record<string, string>>;
 }): React.JSX.Element {
-  const projectedNodes = useMemo(() => canvasNodes(graph, personas, readOnly), [graph, personas, readOnly]);
+  const projectedNodes = useMemo(
+    () => canvasNodes(graph, personas, readOnly, nodeStatuses),
+    [graph, personas, readOnly, nodeStatuses],
+  );
   const [nodes, setNodes] = useState(projectedNodes);
   const edges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);
   const draft = graph as WorkflowDraftGraph;

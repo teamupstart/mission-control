@@ -305,7 +305,7 @@ test("import replaces editor identity only when no concurrent workspace edit occ
   assert.match(library, /setEditorKey\(\(key\) => key \+ 1\)/);
 });
 
-test("Workflows is active in Phase 2 while Runs remains an honest Phase 3 shell", () => {
+test("Workflows and the Phase 3 Runs surface are both active", () => {
   const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "workflows",
     personas: [],
@@ -326,7 +326,8 @@ test("Workflows is active in Phase 2 while Runs remains an honest Phase 3 shell"
     onDirtyChange: () => {},
   }));
   assert.match(runs, /No workflow runs yet/);
-  assert.match(runs, /arrive in Phase 3/);
+  assert.match(runs, /Bind an immutable published version/);
+  assert.match(runs, /manual Preview/);
 });
 
 test("Markdown import derives a name without changing the body", () => {

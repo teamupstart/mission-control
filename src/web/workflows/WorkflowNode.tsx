@@ -5,6 +5,7 @@ export type WorkflowCanvasNodeData = {
   label: string;
   subtitle: string;
   readOnly: boolean;
+  runtimeStatus?: string | null;
 } & Record<string, unknown>;
 
 export type WorkflowCanvasNode = Node<WorkflowCanvasNodeData>;
@@ -20,6 +21,11 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
       <span className="workflow-node-kind">{data.kind === "all_pass" ? "All-pass Join" : data.kind}</span>
       <strong>{data.label}</strong>
       <small>{data.subtitle}</small>
+      {data.runtimeStatus && (
+        <span className={`workflow-node-runtime wnr-${data.runtimeStatus}`}>
+          {data.runtimeStatus.replaceAll("_", " ")}
+        </span>
+      )}
       {data.kind === "session" && <Handle type="source" id="submitted" position={Position.Right} isConnectable={!data.readOnly} />}
       {(data.kind === "persona" || data.kind === "all_pass") && (
         <>

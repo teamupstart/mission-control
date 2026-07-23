@@ -5,6 +5,7 @@ import {
   type PersonaView,
   type WorkflowDraftNode,
   type WorkflowSummary,
+  type WorkflowVersion,
 } from "@shared/workflow.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { WorkflowCanvas, type WorkflowSelection } from "./WorkflowCanvas.tsx";
@@ -64,10 +65,12 @@ export function WorkflowLibrary({
   summaries,
   personas,
   onDirtyChange,
+  onBindVersion = () => {},
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
   onDirtyChange: (dirty: boolean) => void;
+  onBindVersion?: (version: WorkflowVersion) => void;
 }): React.JSX.Element {
   const ordered = useMemo(() => [...summaries].sort((a, b) => a.name.localeCompare(b.name)), [summaries]);
   const active = ordered.filter((workflow) => workflow.archivedAt === null);
@@ -227,7 +230,11 @@ export function WorkflowLibrary({
       {workflow && validation && (
         <div className="workflow-builder-right">
           <WorkflowProperties workflow={workflow} personas={personas} diagnostics={validation.diagnostics} selection={selection} readOnly={transitioning || workflow.archivedAt !== null} onUpdate={draft.update} />
-          <WorkflowVersionHistory versions={draft.versions} personas={personas} />
+          <WorkflowVersionHistory
+            versions={draft.versions}
+            personas={personas}
+            onBindVersion={onBindVersion}
+          />
         </div>
       )}
     </section>

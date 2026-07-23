@@ -65,7 +65,8 @@ and get your decision back.
 - **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
   Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
-  Persona snapshots. Execution starts in Phase 3; Phase 2 never calls a Persona.
+  Persona snapshots. Bind a published version to a session and start a manual **Preview** to
+  run concurrent, read-only Persona reviews against one immutable evidence snapshot.
 - **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
   on in Settings and it is linked into each harness's own skills directory, so it applies
   to **every** Claude Code and Codex session on the machine - including ones this app never
@@ -1145,7 +1146,8 @@ The **Workflows** button in the top bar changes only the dashboard body. The fle
 live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
 **Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
 `#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
-library, `#/workflows/runs` for future run history, and `#/fleet` to return.
+library, `#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
+and timeline, and `#/fleet` to return.
 The top-bar button opens the graph library and restores the last active workflow selected
 in this browser when it is still available.
 
@@ -1163,12 +1165,12 @@ to a local `.md` Blob, and import stores `File.text()` unchanged after deriving 
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
-Each saved Persona shows the provider and model a future review would use. Resolution is:
+Each saved Persona shows the provider and model its reviews use. Resolution is:
 the Persona's provider override or the app-wide provider; then the Persona's model override,
 `MISSION_WORKFLOW_PERSONA_MODEL`, or that provider's balanced default. A stored provider id
 unknown to an older build is reported and falls back through the shared provider ladder.
-Phase 2 does not call the model. `workflow-context` is registered as an append-only Models
-job for later execution phases.
+Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
+on the attempt so history never has to re-resolve them from current settings.
 
 ### Workflow drafts and published versions
 
@@ -1197,11 +1199,50 @@ source as archived. To update a published design, edit the mutable draft and pub
 version. Opening a workflow fetches only bounded version metadata; selecting one history
 entry fetches that immutable graph and its exact Persona Markdown from the version route.
 
-Workflow settings also store defaults for the future binding: Manual or Foreman-complete
-trigger, Preview or Live delivery, and a repair-round limit. The optional Inspector final
-gate and its findings/missing-PR policies live beside these settings, outside the graph.
-Foreman, Live delivery, Inspector gating, session bindings, and Persona execution are
-clearly labeled as later-phase behavior and do nothing in Phase 2.
+Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
+or Live delivery, and a repair-round limit. Phase 3 enables only Manual plus Preview.
+Foreman-complete, Live delivery, and the optional Inspector final gate remain visibly
+unavailable.
+
+### Manual Preview runs
+
+Bind a session to an exact published workflow version from the workflow history or from any
+fleet layout, then choose **Preview**. A binding retains the conversation note key, harness,
+name, working directory, repository root, and immutable version id from bind time. Publishing
+or editing a newer workflow cannot change an existing binding or run.
+
+Each submit and resubmit carries a durable request key. The daemon creates the submission
+before evidence capture, so retrying the same request returns the same durable row and never
+starts duplicate work. One submission captures one shared snapshot for every concurrent
+Persona. It preserves the raw goal, refined goal when present, human decisions and rationale,
+repository HEAD and diff, transcript evidence, repository standards, and prior Persona
+feedback. A cheap provider-neutral compaction call may summarize that context, but its
+45-second attempts cannot replace the raw evidence. Invalid, timed-out, or unavailable
+compaction produces a deterministic visible fallback.
+
+Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
+before repository evidence. Prior Persona feedback is labeled as non-human input and all
+captured evidence is fenced as untrusted data. A strict `pass` verdict requires approval
+details; a strict `fail` verdict requires concrete requested changes and evidence references.
+Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
+fail verdicts.
+
+The durable engine runs up to three Persona calls concurrently, records attempts and edge
+receipts, waits for all inputs at an all-pass Join, retries transient infrastructure failures
+with bounded backoff, and stops at the binding's repair-round limit. A failing path back to
+Session waits for a manual resubmit. Resubmission captures fresh evidence and refuses an
+unchanged snapshot unless the operator explicitly confirms it, so an approval from an older
+round is never reused. Preview performs no terminal write, keystroke injection, Foreman
+action, Inspector action, or message delivery.
+
+Run state survives daemon restarts. Interrupted provider calls become auditable errors and
+are retried without duplicating receipts; missing immutable data fails visibly instead of
+falling back to a mutable draft. A disappearing session orphans its binding. A conversation
+clear pauses it. Reattachment is explicit and validates the harness and repository identity,
+then requires a fresh resubmit. Reset removes bindings, runs, submissions, attempts, receipts,
+captured context, and model-call metadata through the same session reset owner. Compact run
+summaries update over the existing SSE stream, while detailed evidence and timelines are
+loaded only for the selected run. Cards, Console, and Board show the same workflow status.
 
 ## Models (what the app's own model work runs on)
 
@@ -1226,7 +1267,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
 | Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
-| Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts user goals, decisions, and rationale for later Persona review phases |
+| Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
 
 Each resolves the same way [Foreman's four](#which-model-foreman-runs-as) and the
 [Inspector's one](#the-review-model) do: **your setting, then the environment variable, then the
@@ -2350,8 +2391,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt when a still-live session cannot prove readiness. Used after the hook wait below times out, or immediately when that wait is skipped; an observed exit fails instead |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's first hook - the only honest "I can read input" signal - before falling back to the settle above if that session is still live. An observed exit ends the wait immediately. The wait is skipped when this particular launch could never produce a hook: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
-| `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): the future context-compaction model. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
-| `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): the future Persona review model. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
+| `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with a deterministic fallback after invalid output or two 45-second attempts. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
+| `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |

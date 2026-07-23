@@ -18,6 +18,7 @@ import {
   WORKFLOW_DELIVERY_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_DELIVERY_STATES,
+  WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
@@ -34,6 +35,8 @@ import type {
   WorkflowLlmCall,
   WorkflowNodeAttempt,
   WorkflowRun,
+  WorkflowRunDetail,
+  WorkflowRunSummary,
   WorkflowSubmission,
   WorkflowVersion,
   WorkflowVersionMetadata,
@@ -289,6 +292,10 @@ const WorkflowBindingRowSchema = z.object({
   workflow_version_id: nonempty,
   note_key: nonempty,
   session_id: nullableText,
+  session_agent: text.optional().default(""),
+  session_name: text.optional().default(""),
+  session_cwd: nullableText.optional().default(null),
+  session_repo_root: nullableText.optional().default(null),
   trigger_mode: z.enum(WORKFLOW_TRIGGER_MODES),
   delivery_mode: z.enum(WORKFLOW_DELIVERY_MODES),
   state: z.enum(WORKFLOW_BINDING_STATES),
@@ -304,6 +311,10 @@ export function parseWorkflowBindingRow(value: unknown): WorkflowBinding {
     workflowVersionId: row.workflow_version_id,
     noteKey: row.note_key,
     sessionId: row.session_id,
+    sessionAgent: row.session_agent ?? "",
+    sessionName: row.session_name ?? "",
+    sessionCwd: row.session_cwd ?? null,
+    sessionRepoRoot: row.session_repo_root ?? null,
     triggerMode: row.trigger_mode,
     deliveryMode: row.delivery_mode,
     state: row.state,
@@ -349,7 +360,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       "gate_state_json",
       row.gate_state_json,
       WorkflowJsonSchema,
-      WORKFLOW_LIMITS.eventPayloadBytes,
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
     startedAt: row.started_at,
     updatedAt: row.updated_at,
@@ -384,8 +395,22 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
     triggerSource: row.trigger_source,
     triggerKey: row.trigger_key,
     evidenceFingerprint: row.evidence_fingerprint,
-    context: parseJson("workflow_submissions", row.id, "context_json", row.context_json, WorkflowJsonSchema),
-    evidence: parseJson("workflow_submissions", row.id, "evidence_json", row.evidence_json, WorkflowJsonSchema),
+    context: parseJson(
+      "workflow_submissions",
+      row.id,
+      "context_json",
+      row.context_json,
+      WorkflowJsonSchema,
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+    ),
+    evidence: parseJson(
+      "workflow_submissions",
+      row.id,
+      "evidence_json",
+      row.evidence_json,
+      WorkflowJsonSchema,
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+    ),
     prHeadSha: row.pr_head_sha,
     status: row.status,
     createdAt: row.created_at,
@@ -401,6 +426,8 @@ const WorkflowNodeAttemptRowSchema = z.object({
   attempt: positive,
   state: WorkflowNodeAttemptStateSchema,
   persona_snapshot_json: nullableText,
+  runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
+  model_id: nullableText.optional().default(null),
   verdict_json: nullableText,
   output_json: nullableText,
   retry_at: nullableInteger,
@@ -427,6 +454,8 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       row.persona_snapshot_json,
       PersonaSnapshotSchema,
     ),
+    runner: row.runner_id ?? null,
+    model: row.model_id ?? null,
     verdict: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -441,7 +470,7 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "output_json",
       row.output_json,
       WorkflowJsonSchema,
-      WORKFLOW_LIMITS.eventPayloadBytes,
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
     retryAt: row.retry_at,
     inputFingerprint: row.input_fingerprint,
@@ -475,7 +504,7 @@ export function parseWorkflowEdgeReceiptRow(value: unknown): WorkflowEdgeReceipt
       "payload_json",
       row.payload_json,
       WorkflowJsonSchema,
-      WORKFLOW_LIMITS.eventPayloadBytes,
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
     createdAt: row.created_at,
   };
@@ -652,6 +681,51 @@ export type WorkflowPublishWrite =
       current: WorkflowDefinition | null;
       diagnostics?: WorkflowDiagnostic[];
     };
+
+export interface WorkflowBindingInsert {
+  id: string;
+  workflowVersionId: string;
+  noteKey: string;
+  sessionId: string;
+  sessionAgent: string;
+  sessionName: string;
+  sessionCwd: string | null;
+  sessionRepoRoot: string | null;
+  triggerMode: WorkflowBinding["triggerMode"];
+  deliveryMode: WorkflowBinding["deliveryMode"];
+  maxRepairRounds: number;
+  now: number;
+}
+
+export interface WorkflowRunInsert {
+  id: string;
+  binding: WorkflowBinding;
+  triggerKey: string;
+  now: number;
+}
+
+export interface WorkflowSubmissionInsert {
+  id: string;
+  runId: string;
+  round: number;
+  triggerKey: string;
+  context: WorkflowJson;
+  evidence: WorkflowJson;
+  now: number;
+}
+
+export interface WorkflowAttemptInsert {
+  id: string;
+  submissionId: string;
+  nodeId: string;
+  attempt: number;
+  state: WorkflowNodeAttempt["state"];
+  persona: WorkflowNodeAttempt["persona"];
+  inputFingerprint: string;
+  retryAt?: number | null;
+  error?: string | null;
+  now: number;
+}
 
 export class WorkflowStore {
   constructor(private readonly db: DatabaseSync = openDb()) {}
@@ -1071,6 +1145,839 @@ export class WorkflowStore {
       nodeCount: workflow.draft.nodes.length,
       personaCount: workflow.draft.nodes.filter((node) => node.kind === "persona").length,
     };
+  }
+
+  getWorkflowVersionById(id: string): WorkflowVersion | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(id);
+    if (!row) return null;
+    try { return parseWorkflowVersionRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  listBindings(includeArchived = false): WorkflowBinding[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_bindings
+        ${includeArchived ? "" : "WHERE state <> 'archived'"}
+        ORDER BY updated_at DESC, id ASC`,
+    ).all() as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowBindingRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
+  getBinding(id: string): WorkflowBinding | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_bindings WHERE id = ?`).get(id);
+    if (!row) return null;
+    try { return parseWorkflowBindingRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  activeBindingForNote(noteKey: string): WorkflowBinding | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_bindings WHERE note_key = ? AND state = 'active'`,
+    ).get(noteKey);
+    return row ? parseWorkflowBindingRow(row) : null;
+  }
+
+  insertBinding(input: WorkflowBindingInsert): WorkflowBinding {
+    this.db.prepare(
+      `INSERT INTO workflow_bindings (
+         id, workflow_version_id, note_key, session_id, session_agent, session_name,
+         session_cwd, session_repo_root, trigger_mode, delivery_mode, state,
+         max_repair_rounds, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+    ).run(
+      input.id,
+      input.workflowVersionId,
+      input.noteKey,
+      input.sessionId,
+      input.sessionAgent,
+      input.sessionName,
+      input.sessionCwd,
+      input.sessionRepoRoot,
+      input.triggerMode,
+      input.deliveryMode,
+      input.maxRepairRounds,
+      input.now,
+      input.now,
+    );
+    const binding = this.getBinding(input.id);
+    if (!binding) throw new Error(`Workflow binding ${input.id} disappeared after insert`);
+    return binding;
+  }
+
+  updateBinding(
+    id: string,
+    patch: Partial<Pick<WorkflowBinding, "triggerMode" | "deliveryMode" | "state" | "maxRepairRounds">>,
+    now = Date.now(),
+  ): WorkflowBinding | null {
+    const assignments: string[] = [];
+    const values: Array<string | number> = [];
+    if (patch.triggerMode !== undefined) { assignments.push("trigger_mode = ?"); values.push(patch.triggerMode); }
+    if (patch.deliveryMode !== undefined) { assignments.push("delivery_mode = ?"); values.push(patch.deliveryMode); }
+    if (patch.state !== undefined) { assignments.push("state = ?"); values.push(patch.state); }
+    if (patch.maxRepairRounds !== undefined) {
+      assignments.push("max_repair_rounds = ?");
+      values.push(patch.maxRepairRounds);
+    }
+    if (assignments.length === 0) return this.getBinding(id);
+    assignments.push("updated_at = ?");
+    values.push(now, id);
+    this.db.prepare(`UPDATE workflow_bindings SET ${assignments.join(", ")} WHERE id = ?`).run(...values);
+    return this.getBinding(id);
+  }
+
+  reattachBinding(
+    id: string,
+    input: Pick<WorkflowBindingInsert, "noteKey" | "sessionId" | "sessionAgent" | "sessionName" | "sessionCwd" | "sessionRepoRoot">,
+    now = Date.now(),
+  ): WorkflowBinding | null {
+    this.db.prepare(
+      `UPDATE workflow_bindings
+          SET note_key = ?, session_id = ?, session_agent = ?, session_name = ?,
+              session_cwd = ?, session_repo_root = ?, state = 'active', updated_at = ?
+        WHERE id = ? AND state <> 'archived'`,
+    ).run(
+      input.noteKey,
+      input.sessionId,
+      input.sessionAgent,
+      input.sessionName,
+      input.sessionCwd,
+      input.sessionRepoRoot,
+      now,
+      id,
+    );
+    return this.getBinding(id);
+  }
+
+  getRun(id: string): WorkflowRun | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_runs WHERE id = ?`).get(id);
+    if (!row) return null;
+    try { return parseWorkflowRunRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  activeRunForBinding(bindingId: string): WorkflowRun | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_runs
+        WHERE binding_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')
+        ORDER BY started_at DESC LIMIT 1`,
+    ).get(bindingId);
+    return row ? parseWorkflowRunRow(row) : null;
+  }
+
+  listRuns(): WorkflowRun[] {
+    const rows = this.db.prepare(`SELECT * FROM workflow_runs ORDER BY updated_at DESC`).all() as unknown[];
+    return rows.flatMap((row) => {
+      try { return [parseWorkflowRunRow(row)]; } catch (error) { diagnose(error); return []; }
+    });
+  }
+
+  listRunSummaries(): WorkflowRunSummary[] {
+    const rows = this.db.prepare(
+      `SELECT r.*, b.note_key, b.session_id,
+              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
+              COALESCE(MAX(s.round), 0) AS current_round
+         FROM workflow_runs r
+         JOIN workflow_bindings b ON b.id = r.binding_id
+         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
+         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
+         LEFT JOIN workflow_submissions s ON s.run_id = r.id
+        GROUP BY r.id
+        ORDER BY r.updated_at DESC, r.id ASC`,
+    ).all() as unknown as Array<Record<string, unknown>>;
+    return rows.flatMap((row) => {
+      try {
+        const run = parseWorkflowRunRow(row);
+        const submission = this.latestSubmission(run.id);
+        const latestAttempts = new Map<string, WorkflowNodeAttempt>();
+        if (submission) {
+          for (const attempt of this.listAttempts(submission.id)) {
+            latestAttempts.set(attempt.nodeId, attempt);
+          }
+        }
+        const attempts = [...latestAttempts.values()];
+        return [{
+          id: run.id,
+          bindingId: run.bindingId,
+          workflowId: typeof row.workflow_id === "string"
+            ? row.workflow_id
+            : `missing:${run.workflowVersionId}`,
+          workflowName: typeof row.workflow_name === "string"
+            ? row.workflow_name
+            : "Missing workflow version",
+          workflowVersion: Number(row.workflow_version ?? 0),
+          sessionId: typeof row.session_id === "string" ? row.session_id : null,
+          noteKey: String(row.note_key),
+          status: run.status,
+          phase: run.currentPhase,
+          round: Number(row.current_round),
+          maxRepairRounds: run.maxRepairRounds,
+          activePersonaNames: attempts.flatMap((attempt) =>
+            attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
+              ? [attempt.persona.name]
+              : []),
+          failedPersonaCount: attempts.filter((attempt) => {
+            const verdict = attempt.verdict;
+            return Boolean(
+              verdict
+              && !Array.isArray(verdict)
+              && typeof verdict === "object"
+              && verdict.verdict === "fail",
+            );
+          }).length,
+          bypassedPersonaReview: false,
+          updatedAt: run.updatedAt,
+        }];
+      } catch (error) {
+        diagnose(error);
+        return [];
+      }
+    });
+  }
+
+  runSummary(id: string): WorkflowRunSummary | null {
+    return this.listRunSummaries().find((run) => run.id === id) ?? null;
+  }
+
+  getSubmission(id: string): WorkflowSubmission | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_submissions WHERE id = ?`).get(id);
+    return row ? parseWorkflowSubmissionRow(row) : null;
+  }
+
+  submissionByTrigger(triggerKey: string): WorkflowSubmission | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE trigger_key = ?`,
+    ).get(triggerKey);
+    return row ? parseWorkflowSubmissionRow(row) : null;
+  }
+
+  listSubmissions(runId: string): WorkflowSubmission[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowSubmissionRow);
+  }
+
+  latestSubmission(runId: string): WorkflowSubmission | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1`,
+    ).get(runId);
+    return row ? parseWorkflowSubmissionRow(row) : null;
+  }
+
+  createInitialSubmission(
+    run: WorkflowRunInsert,
+    submission: Omit<WorkflowSubmissionInsert, "runId" | "round">,
+  ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
+    return transaction(this.db, () => {
+      const existing = this.submissionByTrigger(submission.triggerKey);
+      if (existing) {
+        const existingRun = this.getRun(existing.runId);
+        if (!existingRun) throw new Error(`Workflow run ${existing.runId} is missing`);
+        return { run: existingRun, submission: existing, idempotent: true };
+      }
+      this.db.prepare(
+        `INSERT INTO workflow_runs (
+           id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
+           trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
+           gate_state_json, started_at, updated_at, completed_at
+         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, 'manual', ?, NULL, NULL, NULL, ?, ?, NULL)`,
+      ).run(
+        run.id,
+        run.binding.id,
+        run.binding.workflowVersionId,
+        run.binding.maxRepairRounds,
+        run.triggerKey,
+        run.now,
+        run.now,
+      );
+      this.insertSubmissionInTransaction({
+        ...submission,
+        runId: run.id,
+        round: 1,
+      });
+      this.appendEvent(run.id, "run_created", {
+        submissionId: submission.id,
+        triggerKey: submission.triggerKey,
+        round: 1,
+      }, run.now);
+      return {
+        run: this.mustRun(run.id),
+        submission: this.mustSubmission(submission.id),
+        idempotent: false,
+      };
+    });
+  }
+
+  createRepairSubmission(
+    input: WorkflowSubmissionInsert,
+  ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
+    return transaction(this.db, () => {
+      const existing = this.submissionByTrigger(input.triggerKey);
+      if (existing) {
+        return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
+      }
+      this.insertSubmissionInTransaction(input);
+      this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
+                updated_at = ?, completed_at = NULL
+          WHERE id = ?`,
+      ).run(input.now, input.runId);
+      this.appendEvent(input.runId, "submission_created", {
+        submissionId: input.id,
+        triggerKey: input.triggerKey,
+        round: input.round,
+      }, input.now);
+      return {
+        run: this.mustRun(input.runId),
+        submission: this.mustSubmission(input.id),
+        idempotent: false,
+      };
+    });
+  }
+
+  updateSubmissionCapture(
+    id: string,
+    input: {
+      context: WorkflowJson;
+      evidence: WorkflowJson;
+      fingerprint?: string;
+      status?: WorkflowSubmission["status"];
+    },
+    now = Date.now(),
+  ): WorkflowSubmission {
+    const current = this.mustSubmission(id);
+    this.db.prepare(
+      `UPDATE workflow_submissions
+          SET context_json = ?, evidence_json = ?, evidence_fingerprint = ?,
+              status = ?, updated_at = ?
+        WHERE id = ?`,
+    ).run(
+      JSON.stringify(input.context),
+      JSON.stringify(input.evidence),
+      input.fingerprint ?? current.evidenceFingerprint,
+      input.status ?? current.status,
+      now,
+      id,
+    );
+    return this.mustSubmission(id);
+  }
+
+  setRunState(
+    id: string,
+    status: WorkflowRun["status"],
+    currentPhase: string,
+    gateState: WorkflowJson | null = null,
+    now = Date.now(),
+  ): WorkflowRun {
+    const terminal = ["completed", "cancelled", "failed"].includes(status);
+    this.db.prepare(
+      `UPDATE workflow_runs
+          SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
+              completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
+        WHERE id = ?`,
+    ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
+    return this.mustRun(id);
+  }
+
+  setSubmissionState(
+    id: string,
+    status: WorkflowSubmission["status"],
+    now = Date.now(),
+  ): WorkflowSubmission {
+    const terminal = ["completed", "cancelled", "failed"].includes(status);
+    this.db.prepare(
+      `UPDATE workflow_submissions SET status = ?, updated_at = ?,
+              completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
+        WHERE id = ?`,
+    ).run(status, now, terminal ? 1 : 0, now, id);
+    return this.mustSubmission(id);
+  }
+
+  insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_node_attempts (
+         id, submission_id, node_id, attempt, state, persona_snapshot_json, runner_id,
+         model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
+         created_at, updated_at, started_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL)`,
+    ).run(
+      input.id,
+      input.submissionId,
+      input.nodeId,
+      input.attempt,
+      input.state,
+      input.persona === null ? null : JSON.stringify(input.persona),
+      input.retryAt ?? null,
+      input.inputFingerprint,
+      input.error ?? null,
+      input.now,
+      input.now,
+    );
+    const attempt = this.attemptForNode(input.submissionId, input.nodeId, input.attempt);
+    if (!attempt) throw new Error(`Workflow attempt ${input.id} disappeared after insert`);
+    return attempt;
+  }
+
+  getAttempt(id: string): WorkflowNodeAttempt | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_node_attempts WHERE id = ?`).get(id);
+    return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
+  attemptForNode(submissionId: string, nodeId: string, attempt: number): WorkflowNodeAttempt | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_node_attempts
+        WHERE submission_id = ? AND node_id = ? AND attempt = ?`,
+    ).get(submissionId, nodeId, attempt);
+    return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
+  latestAttemptForNode(submissionId: string, nodeId: string): WorkflowNodeAttempt | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_node_attempts
+        WHERE submission_id = ? AND node_id = ? ORDER BY attempt DESC LIMIT 1`,
+    ).get(submissionId, nodeId);
+    return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
+  listAttempts(submissionId: string): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_node_attempts
+        WHERE submission_id = ? ORDER BY created_at ASC, node_id ASC, attempt ASC`,
+    ).all(submissionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+         JOIN workflow_runs r ON r.id = s.run_id
+        WHERE a.state IN ('queued', 'retry_wait')
+          AND (a.retry_at IS NULL OR a.retry_at <= ?)
+          AND s.status = 'running' AND r.status = 'running'
+        ORDER BY a.created_at ASC, a.id ASC`,
+    ).all(now) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  listAttemptsDueAfter(now = Date.now()): number | null {
+    const row = this.db.prepare(
+      `SELECT MIN(a.retry_at) AS retry_at FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+         JOIN workflow_runs r ON r.id = s.run_id
+        WHERE a.state = 'retry_wait' AND a.retry_at > ?
+          AND s.status = 'running' AND r.status = 'running'`,
+    ).get(now) as { retry_at: number | null } | undefined;
+    return row?.retry_at ?? null;
+  }
+
+  claimAttempt(
+    id: string,
+    runner: LlmRunnerId,
+    model: string,
+    now = Date.now(),
+  ): WorkflowNodeAttempt | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET state = 'running', runner_id = ?, model_id = ?, started_at = ?,
+              updated_at = ?, retry_at = NULL
+        WHERE id = ? AND state IN ('queued', 'retry_wait')`,
+    ).run(runner, model, now, now, id);
+    return Number(result.changes) === 1 ? this.getAttempt(id) : null;
+  }
+
+  finishAttempt(
+    id: string,
+    input: {
+      state: WorkflowNodeAttempt["state"];
+      verdict?: WorkflowJson | null;
+      output?: WorkflowJson | null;
+      error?: string | null;
+      retryAt?: number | null;
+    },
+    now = Date.now(),
+  ): WorkflowNodeAttempt {
+    this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET state = ?, verdict_json = ?, output_json = ?, error = ?, retry_at = ?,
+              updated_at = ?, finished_at = ?
+        WHERE id = ?`,
+    ).run(
+      input.state,
+      input.verdict === undefined || input.verdict === null ? null : JSON.stringify(input.verdict),
+      input.output === undefined || input.output === null ? null : JSON.stringify(input.output),
+      input.error ?? null,
+      input.retryAt ?? null,
+      now,
+      input.state === "retry_wait" ? null : now,
+      id,
+    );
+    const attempt = this.getAttempt(id);
+    if (!attempt) throw new Error(`Workflow attempt ${id} disappeared after update`);
+    return attempt;
+  }
+
+  finishAttemptWithReceipts(
+    id: string,
+    input: {
+      verdict: WorkflowJson;
+      output: WorkflowJson;
+      receipts: Array<{ edgeId: string; payload: WorkflowJson }>;
+    },
+    now = Date.now(),
+  ): WorkflowNodeAttempt {
+    return transaction(this.db, () => {
+      const attempt = this.finishAttempt(id, {
+        state: "completed",
+        verdict: input.verdict,
+        output: input.output,
+        error: null,
+      }, now);
+      for (const receipt of input.receipts) {
+        this.addReceipt(
+          attempt.submissionId,
+          receipt.edgeId,
+          attempt.id,
+          receipt.payload,
+          now,
+        );
+      }
+      return attempt;
+    });
+  }
+
+  manualInfrastructureRetry(
+    runId: string,
+    submissionId: string,
+    failed: WorkflowNodeAttempt,
+    requestId: string,
+    attemptId: string,
+    now = Date.now(),
+  ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
+    return transaction(this.db, () => {
+      const existing = this.listEvents(runId).find((event) =>
+        event.kind === "manual_infrastructure_retry"
+        && event.payload
+        && !Array.isArray(event.payload)
+        && typeof event.payload === "object"
+        && event.payload.requestId === requestId);
+      if (existing) {
+        return {
+          run: this.mustRun(runId),
+          submission: this.mustSubmission(submissionId),
+          idempotent: true,
+        };
+      }
+      this.insertAttempt({
+        id: attemptId,
+        submissionId,
+        nodeId: failed.nodeId,
+        attempt: failed.attempt + 1,
+        state: "queued",
+        persona: failed.persona,
+        inputFingerprint: failed.inputFingerprint,
+        now,
+      });
+      this.setSubmissionState(submissionId, "running", now);
+      this.setRunState(runId, "running", "persona_review", null, now);
+      this.appendEvent(runId, "manual_infrastructure_retry", {
+        requestId,
+        nodeAttemptId: failed.id,
+      }, now);
+      return {
+        run: this.mustRun(runId),
+        submission: this.mustSubmission(submissionId),
+        idempotent: false,
+      };
+    });
+  }
+
+  addReceipt(
+    submissionId: string,
+    edgeId: string,
+    sourceAttemptId: string,
+    payload: WorkflowJson,
+    now = Date.now(),
+  ): boolean {
+    const result = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_edge_receipts (
+         submission_id, edge_id, source_attempt_id, payload_json, created_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(submissionId, edgeId, sourceAttemptId, JSON.stringify(payload), now);
+    return Number(result.changes) === 1;
+  }
+
+  listReceipts(submissionId: string): WorkflowEdgeReceipt[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_edge_receipts WHERE submission_id = ? ORDER BY id ASC`,
+    ).all(submissionId) as unknown[]).map(parseWorkflowEdgeReceiptRow);
+  }
+
+  appendEvent(
+    runId: string,
+    kind: string,
+    payload: WorkflowJson,
+    now = Date.now(),
+  ): WorkflowEvent {
+    const result = this.db.prepare(
+      `INSERT INTO workflow_events (run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?)`,
+    ).run(runId, now, kind, JSON.stringify(payload));
+    const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
+    return parseWorkflowEventRow(row);
+  }
+
+  listEvents(runId: string): WorkflowEvent[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_events WHERE run_id = ? ORDER BY id ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowEventRow);
+  }
+
+  insertLlmCall(call: WorkflowLlmCall): void {
+    this.db.prepare(
+      `INSERT INTO workflow_llm_calls (
+         id, run_id, submission_id, node_attempt_id, purpose, runner_id, model_id,
+         attempt, state, started_at, finished_at, duration_ms, input_bytes, output_bytes,
+         cost_usd, error_code
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      call.id, call.runId, call.submissionId, call.nodeAttemptId, call.purpose,
+      call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
+      call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
+    );
+  }
+
+  finishLlmCall(
+    id: string,
+    state: WorkflowLlmCall["state"],
+    outputBytes: number,
+    errorCode: string | null,
+    now = Date.now(),
+  ): void {
+    this.db.prepare(
+      `UPDATE workflow_llm_calls
+          SET state = ?, finished_at = ?, duration_ms = ? - started_at,
+              output_bytes = ?, error_code = ?
+        WHERE id = ? AND state = 'running'`,
+    ).run(state, now, now, outputBytes, errorCode, id);
+  }
+
+  interruptRunningLlmCalls(runId: string, now = Date.now()): void {
+    this.db.prepare(
+      `UPDATE workflow_llm_calls
+          SET state = 'interrupted', finished_at = ?, duration_ms = ? - started_at,
+              error_code = 'daemon_restart'
+        WHERE run_id = ? AND state = 'running'`,
+    ).run(now, now, runId);
+  }
+
+  runDetail(id: string): WorkflowRunDetail | null {
+    const summary = this.runSummary(id);
+    const run = this.getRun(id);
+    if (!summary || !run) return null;
+    const binding = this.getBinding(run.bindingId);
+    const version = this.getWorkflowVersionById(run.workflowVersionId);
+    if (!binding) return null;
+    const submissions = this.listSubmissions(id);
+    return {
+      summary,
+      binding,
+      version,
+      run,
+      submissions,
+      attempts: submissions.flatMap((submission) => this.listAttempts(submission.id)),
+      receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
+      events: this.listEvents(id),
+    };
+  }
+
+  cancelRun(id: string, reason: string, now = Date.now()): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const run = this.getRun(id);
+      if (!run) return null;
+      if (["completed", "cancelled", "failed"].includes(run.status)) return run;
+      this.db.prepare(
+        `UPDATE workflow_node_attempts SET state = 'cancelled', error = ?,
+                updated_at = ?, finished_at = COALESCE(finished_at, ?)
+          WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
+            AND state IN ('queued', 'retry_wait', 'running')`,
+      ).run(reason, now, now, id);
+      this.db.prepare(
+        `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
+                completed_at = COALESCE(completed_at, ?)
+          WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(now, now, id);
+      this.db.prepare(
+        `UPDATE workflow_llm_calls
+            SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
+                error_code = ?
+          WHERE run_id = ? AND state = 'running'`,
+      ).run(now, now, reason, id);
+      this.setRunState(id, "cancelled", reason, { reason }, now);
+      this.appendEvent(id, "run_cancelled", { reason }, now);
+      return this.mustRun(id);
+    });
+  }
+
+  orphanBinding(id: string, reason: string, now = Date.now()): WorkflowBinding | null {
+    return transaction(this.db, () => {
+      const binding = this.getBinding(id);
+      if (!binding || binding.state === "archived") return binding;
+      this.db.prepare(
+        `UPDATE workflow_bindings SET state = 'orphaned', session_id = NULL, updated_at = ? WHERE id = ?`,
+      ).run(now, id);
+      const active = this.activeRunForBinding(id);
+      if (active) {
+        this.db.prepare(
+          `UPDATE workflow_node_attempts SET state = 'cancelled', error = ?, updated_at = ?,
+                  finished_at = COALESCE(finished_at, ?)
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
+              AND state IN ('queued', 'retry_wait')`,
+        ).run(reason, now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
+                  completed_at = COALESCE(completed_at, ?)
+            WHERE run_id = ? AND status IN ('capturing', 'running')`,
+        ).run(now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_llm_calls
+              SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
+                  error_code = ?
+            WHERE run_id = ? AND state = 'running'`,
+        ).run(now, now, reason, active.id);
+        this.setRunState(active.id, "blocked", reason, { reason }, now);
+        this.appendEvent(active.id, "binding_orphaned", { reason }, now);
+      }
+      return this.getBinding(id);
+    });
+  }
+
+  pauseBinding(id: string, reason: string, now = Date.now()): WorkflowBinding | null {
+    return transaction(this.db, () => {
+      const binding = this.getBinding(id);
+      if (!binding || binding.state === "archived") return binding;
+      this.db.prepare(
+        `UPDATE workflow_bindings SET state = 'paused', updated_at = ? WHERE id = ?`,
+      ).run(now, id);
+      const active = this.activeRunForBinding(id);
+      if (active) {
+        this.db.prepare(
+          `UPDATE workflow_node_attempts SET state = 'cancelled', error = ?, updated_at = ?,
+                  finished_at = COALESCE(finished_at, ?)
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
+              AND state IN ('queued', 'retry_wait')`,
+        ).run(reason, now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
+                  completed_at = COALESCE(completed_at, ?)
+            WHERE run_id = ? AND status IN ('capturing', 'running')`,
+        ).run(now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_llm_calls
+              SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
+                  error_code = ?
+            WHERE run_id = ? AND state = 'running'`,
+        ).run(now, now, reason, active.id);
+        this.setRunState(active.id, "blocked", reason, { reason }, now);
+        this.appendEvent(active.id, "binding_paused", { reason }, now);
+      }
+      return this.getBinding(id);
+    });
+  }
+
+  archiveBindingAndCancel(
+    id: string,
+    now = Date.now(),
+  ): { binding: WorkflowBinding; cancelledRunId: string | null } | null {
+    return transaction(this.db, () => {
+      const binding = this.getBinding(id);
+      if (!binding) return null;
+      const active = this.activeRunForBinding(id);
+      if (active) {
+        this.db.prepare(
+          `UPDATE workflow_node_attempts SET state = 'cancelled', error = 'binding_archived',
+                  updated_at = ?, finished_at = COALESCE(finished_at, ?)
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
+              AND state IN ('queued', 'retry_wait', 'running')`,
+        ).run(now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
+                  completed_at = COALESCE(completed_at, ?)
+            WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+        ).run(now, now, active.id);
+        this.db.prepare(
+          `UPDATE workflow_llm_calls
+              SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
+                  error_code = 'binding_archived'
+            WHERE run_id = ? AND state = 'running'`,
+        ).run(now, now, active.id);
+        this.setRunState(active.id, "cancelled", "binding_archived", { reason: "binding_archived" }, now);
+        this.appendEvent(active.id, "run_cancelled", { reason: "binding_archived" }, now);
+      }
+      this.db.prepare(
+        `UPDATE workflow_bindings SET state = 'archived', updated_at = ? WHERE id = ?`,
+      ).run(now, id);
+      const archived = this.getBinding(id);
+      if (!archived) throw new Error(`Workflow binding ${id} disappeared during archive`);
+      return { binding: archived, cancelledRunId: active?.id ?? null };
+    });
+  }
+
+  resetForNoteKey(noteKey: string): string[] {
+    return transaction(this.db, () => {
+      const runRows = this.db.prepare(
+        `SELECT r.id FROM workflow_runs r
+          JOIN workflow_bindings b ON b.id = r.binding_id
+         WHERE b.note_key = ?`,
+      ).all(noteKey) as unknown as Array<{ id: string }>;
+      const runIds = runRows.map((row) => row.id);
+      for (const runId of runIds) {
+        this.db.prepare(
+          `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
+        ).run(runId);
+        this.db.prepare(
+          `DELETE FROM workflow_edge_receipts
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+        ).run(runId);
+        this.db.prepare(
+          `DELETE FROM workflow_node_attempts
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+        ).run(runId);
+        this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
+      }
+      this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
+      return runIds;
+    });
+  }
+
+  private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {
+    this.db.prepare(
+      `INSERT INTO workflow_submissions (
+         id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
+         context_json, evidence_json, pr_head_sha, status, created_at, updated_at, completed_at
+       ) VALUES (?, ?, ?, 'full_workflow', 'manual', ?, ?, ?, ?, NULL, 'capturing', ?, ?, NULL)`,
+    ).run(
+      input.id,
+      input.runId,
+      input.round,
+      input.triggerKey,
+      `capturing:${input.id}`,
+      JSON.stringify(input.context),
+      JSON.stringify(input.evidence),
+      input.now,
+      input.now,
+    );
+  }
+
+  private mustRun(id: string): WorkflowRun {
+    const run = this.getRun(id);
+    if (!run) throw new Error(`Workflow run ${id} disappeared during a transaction`);
+    return run;
+  }
+
+  private mustSubmission(id: string): WorkflowSubmission {
+    const submission = this.getSubmission(id);
+    if (!submission) throw new Error(`Workflow submission ${id} disappeared during a transaction`);
+    return submission;
   }
 
   private listPersonasInTransaction(includeArchived: boolean): Persona[] {

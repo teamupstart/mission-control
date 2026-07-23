@@ -1,25 +1,41 @@
-import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  WorkflowRunSummary,
+  WorkflowSummary,
+  WorkflowVersion,
+} from "@shared/workflow.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
+import { WorkflowRuns } from "./WorkflowRuns.tsx";
 
 export function WorkflowPage({
   tab,
   personas,
   workflowSummaries = [],
+  workflowRuns = [],
+  selectedRunId = null,
   llm,
   isOverlayOpen,
   onTab,
   onDirtyChange,
+  onRun = () => {},
+  onBindVersion = () => {},
+  onOpenSession = () => {},
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
   workflowSummaries?: WorkflowSummary[];
+  workflowRuns?: WorkflowRunSummary[];
+  selectedRunId?: string | null;
   llm: LlmState;
   isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
+  onRun?: (id: string) => void;
+  onBindVersion?: (version: WorkflowVersion) => void;
+  onOpenSession?: (id: string) => void;
 }): React.JSX.Element {
   return (
     <main className="workflow-page">
@@ -52,14 +68,20 @@ export function WorkflowPage({
         />
       )}
       {tab === "workflows" && (
-        <WorkflowLibrary summaries={workflowSummaries} personas={personas} onDirtyChange={onDirtyChange} />
+        <WorkflowLibrary
+          summaries={workflowSummaries}
+          personas={personas}
+          onDirtyChange={onDirtyChange}
+          onBindVersion={onBindVersion}
+        />
       )}
       {tab === "runs" && (
-        <section className="workflow-empty">
-          <span className="workflow-empty-mark" aria-hidden>↻</span>
-          <h3>No workflow runs yet</h3>
-          <p>Manual preview execution and durable run history arrive in Phase 3.</p>
-        </section>
+        <WorkflowRuns
+          runs={workflowRuns}
+          selectedRunId={selectedRunId}
+          onSelectRun={onRun}
+          onOpenSession={onOpenSession}
+        />
       )}
     </main>
   );

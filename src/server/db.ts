@@ -378,6 +378,10 @@ export function openDb(): DatabaseSync {
       workflow_version_id TEXT NOT NULL,
       note_key            TEXT NOT NULL,
       session_id          TEXT,
+      session_agent       TEXT NOT NULL DEFAULT '',
+      session_name        TEXT NOT NULL DEFAULT '',
+      session_cwd         TEXT,
+      session_repo_root   TEXT,
       trigger_mode        TEXT NOT NULL,
       delivery_mode       TEXT NOT NULL,
       state               TEXT NOT NULL,
@@ -439,6 +443,8 @@ export function openDb(): DatabaseSync {
       attempt               INTEGER NOT NULL,
       state                 TEXT NOT NULL,
       persona_snapshot_json TEXT,
+      runner_id             TEXT,
+      model_id              TEXT,
       verdict_json          TEXT,
       output_json           TEXT,
       retry_at              INTEGER,
@@ -464,6 +470,8 @@ export function openDb(): DatabaseSync {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_edge_receipts_identity
       ON workflow_edge_receipts(submission_id, edge_id, source_attempt_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_edge_receipts_edge
+      ON workflow_edge_receipts(submission_id, edge_id);
 
     CREATE TABLE IF NOT EXISTS workflow_deliveries (
       id             TEXT PRIMARY KEY,
@@ -737,6 +745,17 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  // Phase 3 pins the compatibility facts used by explicit reattachment and records the
+  // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
+  // databases can contain table shells but no executable bindings, so empty identity
+  // defaults truthfully mean "not captured by an executable build".
+  addColumn(d, "workflow_bindings", "session_agent", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "workflow_bindings", "session_name", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "workflow_bindings", "session_cwd", "TEXT");
+  addColumn(d, "workflow_bindings", "session_repo_root", "TEXT");
+  addColumn(d, "workflow_node_attempts", "runner_id", "TEXT");
+  addColumn(d, "workflow_node_attempts", "model_id", "TEXT");
+
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the
   // rename still say 'queued', and `loadActiveTasks` would silently drop them from
@@ -1056,6 +1075,21 @@ export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
+  return rows.map(rowToReview);
+}
+
+/** Human-resolved plan/input records retained as workflow intent evidence. */
+export function loadResolvedWorkflowReviews(sessionId: string, limit = 100): ReviewItem[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM reviews
+        WHERE session_id = ?
+          AND kind IN ('plan', 'plan-decisions', 'input')
+          AND status IN ('approved', 'rejected', 'answered')
+        ORDER BY resolved_at DESC, created_at DESC
+        LIMIT ?`,
+    )
+    .all(sessionId, limit) as unknown as ReviewRow[];
   return rows.map(rowToReview);
 }
 

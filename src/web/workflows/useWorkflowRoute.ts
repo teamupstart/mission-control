@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type WorkflowTab = "workflows" | "personas" | "runs";
-export type MissionRoute = { page: "fleet" } | { page: "workflows"; tab: WorkflowTab };
+export type MissionRoute =
+  | { page: "fleet" }
+  | { page: "workflows"; tab: WorkflowTab; runId?: string };
 
 export function parseMissionRoute(hash: string): MissionRoute {
   const path = hash.replace(/^#/, "").replace(/\/+$/, "");
@@ -9,12 +11,15 @@ export function parseMissionRoute(hash: string): MissionRoute {
     return { page: "workflows", tab: "workflows" };
   }
   if (path === "/workflows/runs") return { page: "workflows", tab: "runs" };
+  const run = /^\/workflows\/runs\/([^/]+)$/.exec(path);
+  if (run) return { page: "workflows", tab: "runs", runId: decodeURIComponent(run[1]!) };
   if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
   return { page: "fleet" };
 }
 
 export function missionRouteHash(route: MissionRoute): string {
   if (route.page === "fleet") return "#/fleet";
+  if (route.tab === "runs" && route.runId) return `#/workflows/runs/${encodeURIComponent(route.runId)}`;
   return route.tab === "workflows" ? "#/workflows" : `#/workflows/${route.tab}`;
 }
 

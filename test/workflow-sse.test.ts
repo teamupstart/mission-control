@@ -93,3 +93,66 @@ test("workflow summary snapshot, upsert, archive, and reconnect converge without
   new WorkflowManager(reconnect, store);
   assert.deepEqual(reconnect.snapshot().workflowSummaries, registry.snapshot().workflowSummaries);
 });
+
+test("compact workflow run summaries converge through snapshot, incremental SSE, and reconnect", () => {
+  clearWorkflowTables(db);
+  const graph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [],
+  };
+  const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
+  db.prepare(
+    `INSERT INTO workflow_definitions (
+       id, name, normalized_name, description, draft_graph_json, completion_policy_json,
+       binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
+     ) VALUES ('w', 'Review', 'review', '', ?, '{"kind":"none"}', ?, 1, 'v', NULL, 1, 1)`,
+  ).run(JSON.stringify(graph), defaults);
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, workflow_id, version, source_draft_revision, graph_json,
+       completion_policy_json, binding_defaults_json, published_at
+     ) VALUES ('v', 'w', 1, 1, ?, '{"kind":"none"}', ?, 1)`,
+  ).run(JSON.stringify(graph), defaults);
+  const store = new WorkflowStore(db);
+  const binding = store.insertBinding({
+    id: "b",
+    workflowVersionId: "v",
+    noteKey: "note",
+    sessionId: "session",
+    sessionAgent: "claude",
+    sessionName: "work",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission(
+    { id: "run", binding, triggerKey: "manual:b:req", now: 2 },
+    { id: "sub", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
+  );
+  const registry = new Registry();
+  new PersonaManager(registry, store);
+  const manager = new WorkflowManager(registry, store);
+  assert.equal(registry.snapshot().workflowRunSummaries.length, 1);
+  assert.equal("version" in registry.snapshot().workflowRunSummaries[0]!, false);
+  assert.equal("context" in registry.snapshot().workflowRunSummaries[0]!, false);
+  const events: ServerEvent[] = [];
+  const unsubscribe = registry.subscribe((event) => events.push(event));
+  manager.cancel("run", "cancel-request", 3);
+  unsubscribe();
+  assert.equal(events.at(-1)?.type, "workflow_run_upsert");
+  assert.equal(registry.snapshot().workflowRunSummaries[0]?.status, "cancelled");
+
+  const reconnect = new Registry();
+  new PersonaManager(reconnect, store);
+  new WorkflowManager(reconnect, store);
+  assert.deepEqual(
+    reconnect.snapshot().workflowRunSummaries,
+    registry.snapshot().workflowRunSummaries,
+  );
+});

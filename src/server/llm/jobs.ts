@@ -3,7 +3,7 @@ import type { LlmJobId } from "@shared/llm-jobs.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "./config.ts";
 import { llmRunner } from "./index.ts";
 import { runStructured } from "./structured.ts";
-import type { StructuredResult } from "./structured.ts";
+import type { StructuredAttemptObserver, StructuredResult } from "./structured.ts";
 
 // How the daemon's own background work asks a model something.
 //
@@ -32,6 +32,7 @@ export interface JobRunOptions {
    * these.
    */
   timeoutMs?: number;
+  observer?: StructuredAttemptObserver;
 }
 
 /**
@@ -72,5 +73,6 @@ export function runJobStructured<S extends ZodTypeAny>(
     prompt,
     extract,
     label,
+    opts.observer,
   );
 }

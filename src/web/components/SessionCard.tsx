@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canWriteTo } from "@shared/pane.ts";
@@ -25,6 +26,7 @@ import {
   RuntimeMetaRow,
   SessionTitle,
   StateBadge,
+  WorkflowChip,
   subtitle,
 } from "./session-bits.tsx";
 
@@ -100,6 +102,9 @@ export function SessionCard({
   foremanAllowlist,
   inputReviewId = null,
   pendingReviewIds,
+  workflowRun = null,
+  onOpenWorkflowRun,
+  onBindWorkflow,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
@@ -144,6 +149,9 @@ export function SessionCard({
   inputReviewId?: string | null;
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
   pendingReviewIds?: ReadonlySet<string>;
+  workflowRun?: WorkflowRunSummary | null;
+  onOpenWorkflowRun?: (runId: string) => void;
+  onBindWorkflow?: () => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const attention = st.tone === "attention";
@@ -196,6 +204,19 @@ export function SessionCard({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
+        <WorkflowChip run={workflowRun} onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined} />
+        {!workflowRun && onBindWorkflow && (
+          <button
+            className="workflow-bind-chip"
+            title="Bind a published workflow version"
+            onClick={(event) => {
+              event.stopPropagation();
+              onBindWorkflow();
+            }}
+          >
+            ＋ workflow
+          </button>
+        )}
         <StateBadge session={session} gateNeedsYou={gateNeedsYou} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&

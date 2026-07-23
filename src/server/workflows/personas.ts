@@ -52,7 +52,7 @@ function resolvePersonaModel(
  * or process environment. Production callers omit them and get the live values per call.
  */
 export function resolvePersonaExecution(
-  persona: Persona,
+  persona: Pick<Persona, "runner" | "model">,
   appRunner: ResolvedLlmRunner = llmRunnerChoice(),
   envModel: string | null | undefined = envVar(WORKFLOW_PERSONA_MODEL_ENV),
 ): PersonaExecutionView {

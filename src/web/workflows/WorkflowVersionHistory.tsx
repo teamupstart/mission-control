@@ -3,10 +3,21 @@ import type { PersonaView, WorkflowVersion, WorkflowVersionMetadata } from "@sha
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 
-export function WorkflowVersionDetail({ version, personas }: { version: WorkflowVersion; personas: PersonaView[] }): React.JSX.Element {
+export function WorkflowVersionDetail({
+  version,
+  personas,
+  onBindVersion = () => {},
+}: {
+  version: WorkflowVersion;
+  personas: PersonaView[];
+  onBindVersion?: (version: WorkflowVersion) => void;
+}): React.JSX.Element {
   const live = new Map(personas.map((persona) => [persona.id, persona]));
   return (
     <div className="workflow-version-detail">
+      <button className="btn workflow-version-bind" onClick={() => onBindVersion(version)}>
+        Bind this version
+      </button>
       <WorkflowCanvas graph={version.graph} personas={personas} readOnly />
       <dl>
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
@@ -40,7 +51,15 @@ export function WorkflowVersionDetail({ version, personas }: { version: Workflow
   );
 }
 
-export function WorkflowVersionHistory({ versions, personas }: { versions: WorkflowVersionMetadata[]; personas: PersonaView[] }): React.JSX.Element {
+export function WorkflowVersionHistory({
+  versions,
+  personas,
+  onBindVersion = () => {},
+}: {
+  versions: WorkflowVersionMetadata[];
+  personas: PersonaView[];
+  onBindVersion?: (version: WorkflowVersion) => void;
+}): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<WorkflowVersion | null>(null);
   const [loading, setLoading] = useState(false);
@@ -85,7 +104,13 @@ export function WorkflowVersionHistory({ versions, personas }: { versions: Workf
       </div>
       {loading && <p>Loading version…</p>}
       {error && <p className="persona-error" role="alert">{error}</p>}
-      {selected && <WorkflowVersionDetail version={selected} personas={personas} />}
+      {selected && (
+        <WorkflowVersionDetail
+          version={selected}
+          personas={personas}
+          onBindVersion={onBindVersion}
+        />
+      )}
     </section>
   );
 }

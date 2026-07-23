@@ -30,6 +30,17 @@ export const WORKFLOW_LIMITS = {
   repairRoundsMax: 20,
 } as const;
 
+export const WORKFLOW_EXECUTION_LIMITS = {
+  contextJsonBytes: 2_000_000,
+  verdictJsonBytes: 12_000,
+  verdictSummary: 2_000,
+  verdictReason: 4_000,
+  verdictChanges: 20,
+  verdictEvidence: 30,
+  verdictPath: 1_000,
+  verdictLine: 10_000_000,
+} as const;
+
 export const WORKFLOW_PERSONA_MODEL_ENV = "WORKFLOW_PERSONA_MODEL";
 export const WORKFLOW_PERSONA_MODEL_SPEC: ModelChoiceSpec = {
   label: "Workflow Persona",
@@ -242,6 +253,7 @@ export const WORKFLOW_NODE_ATTEMPT_STATES = [
   "queued",
   "running",
   "retry_wait",
+  "completed",
   "error",
   "cancelled",
 ] as const;
@@ -341,6 +353,11 @@ export interface WorkflowBinding {
   workflowVersionId: WorkflowVersionId;
   noteKey: string;
   sessionId: string | null;
+  /** Immutable compatibility facts captured when the binding was created or reattached. */
+  sessionAgent: string;
+  sessionName: string;
+  sessionCwd: string | null;
+  sessionRepoRoot: string | null;
   triggerMode: WorkflowTriggerMode;
   deliveryMode: WorkflowDeliveryMode;
   state: WorkflowBindingState;
@@ -390,6 +407,9 @@ export interface WorkflowNodeAttempt {
   attempt: number;
   state: WorkflowNodeAttemptState;
   persona: PersonaSnapshot | null;
+  /** Actual provider/model resolved at attempt start. */
+  runner: LlmRunnerId | null;
+  model: string | null;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
   retryAt: number | null;
@@ -451,4 +471,130 @@ export interface WorkflowEvent {
   timestamp: number;
   kind: string;
   payload: WorkflowJson;
+}
+
+export interface WorkflowHumanDecision {
+  decision: string;
+  rationale: string | null;
+  source: {
+    kind: "transcript" | "review" | "foreman_episode";
+    id: string;
+  };
+}
+
+export interface PersonaFeedbackSummary {
+  personaName: string;
+  summary: string;
+  requestedChanges: string[];
+}
+
+export interface WorkflowStandardsDocument {
+  path: string;
+  text: string;
+  truncated: boolean;
+  fingerprint: string;
+}
+
+export interface WorkflowTranscriptMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp?: number;
+}
+
+export interface WorkflowContextSnapshot {
+  primaryGoal: {
+    rawPrompt: string;
+    refined: string | null;
+    sourceNoteKey: string;
+  };
+  humanDecisions: WorkflowHumanDecision[];
+  constraints: string[];
+  acceptanceCriteria: string[];
+  priorPersonaFeedback: PersonaFeedbackSummary[];
+  session: {
+    agent: string;
+    name: string;
+    cwd: string | null;
+    branch: string | null;
+  };
+  evidence: {
+    headSha: string | null;
+    diffFingerprint: string;
+    diff: string;
+    diffTruncated: boolean;
+    workingTreeDirty: boolean;
+    workingTreeStatus: string[];
+    transcript: WorkflowTranscriptMessage[];
+    transcriptAnchor: number | null;
+    transcriptTruncated: boolean;
+    standards: WorkflowStandardsDocument[];
+    standardsTruncated: boolean;
+  };
+  compaction: {
+    status: "model" | "fallback";
+    runner: LlmRunnerId | null;
+    model: string | null;
+    error: string | null;
+  };
+}
+
+export interface EvidenceRef {
+  kind: "diff" | "transcript" | "standard" | "goal" | "decision";
+  quote: string;
+  path?: string;
+  line?: number;
+}
+
+export interface RequestedChange {
+  title: string;
+  rationale: string;
+  evidence: EvidenceRef[];
+  path?: string;
+  line?: number;
+}
+
+export type PersonaVerdict =
+  | {
+      verdict: "pass";
+      summary: string;
+      approvalDetails: {
+        reason: string;
+        evidence: EvidenceRef[];
+      };
+      confidence: number;
+    }
+  | {
+      verdict: "fail";
+      summary: string;
+      requestedChanges: RequestedChange[];
+      confidence: number;
+    };
+
+export interface WorkflowRunSummary {
+  id: WorkflowRunId;
+  bindingId: WorkflowBindingId;
+  workflowId: WorkflowId;
+  workflowName: string;
+  workflowVersion: number;
+  sessionId: string | null;
+  noteKey: string;
+  status: WorkflowRunStatus;
+  phase: string;
+  round: number;
+  maxRepairRounds: number;
+  activePersonaNames: string[];
+  failedPersonaCount: number;
+  bypassedPersonaReview: boolean;
+  updatedAt: number;
+}
+
+export interface WorkflowRunDetail {
+  summary: WorkflowRunSummary;
+  binding: WorkflowBinding;
+  version: WorkflowVersion | null;
+  run: WorkflowRun;
+  submissions: WorkflowSubmission[];
+  attempts: WorkflowNodeAttempt[];
+  receipts: WorkflowEdgeReceipt[];
+  events: WorkflowEvent[];
 }

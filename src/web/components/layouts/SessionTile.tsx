@@ -1,7 +1,15 @@
 import { useCallback, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, CostChip, InspectorTileFlag, PrTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
+import {
+  AgentDot,
+  CostChip,
+  InspectorTileFlag,
+  PrTileFlag,
+  RuntimeMetaRow,
+  WorkflowTileFlag,
+} from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
@@ -39,6 +47,8 @@ export function SessionTile({
   onDropped,
   onDropError,
   onDropConfirm,
+  workflowRun = null,
+  onOpenWorkflowRun,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -51,6 +61,8 @@ export function SessionTile({
   onDropError: (message: string) => void;
   /** The drop needs a yes: the handover would take something from this agent. */
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
+  workflowRun?: WorkflowRunSummary | null;
+  onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   // A run always produces a gate line, and the line always carries the run's segments:
@@ -197,6 +209,10 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        <WorkflowTileFlag
+          run={workflowRun}
+          onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
+        />
       </span>
 
       {/* Only rendered while a compatible card is in the air, so it costs the tile

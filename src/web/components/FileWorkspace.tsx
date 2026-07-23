@@ -15,12 +15,12 @@ const PREVIEW_CSP =
 
 export function htmlPreviewSource(source: string): string {
   const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script>`;
-  const head = source.match(/<head(?:\s[^>]*)?>/i);
-  if (head?.index != null) {
-    const at = head.index + head[0].length;
-    return source.slice(0, at) + headContent + source.slice(at);
-  }
-  return `<!doctype html><html><head>${headContent}</head><body>${source}</body></html>`;
+  // This prefix must be parsed before a single checkout-controlled byte. Searching
+  // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
+  // after which `allow-scripts` would run the document's own JavaScript unrestricted.
+  // The HTML parser supplies the implicit html/head elements here; a later doctype or
+  // explicit head in a complete source document is harmless and cannot precede this CSP.
+  return `<!doctype html>${headContent}${source}`;
 }
 
 interface StylesheetLink {

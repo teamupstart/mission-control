@@ -37,6 +37,9 @@ const MARKER_PREFIX = "mission-inspector:v1";
  */
 export const CLEAN_REVIEW_FINGERPRINT = "clean-review";
 
+/** Durable sentinel for findings folded into a top-level review body. */
+export const BODY_ONLY_FINDINGS_MARKER = "<!-- mission-inspector:body-findings:v1 -->";
+
 /**
  * Matches our marker ONLY at the very start of a body.
  *

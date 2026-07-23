@@ -37,12 +37,13 @@ import { maybeMerge } from "../shipping/merge.ts";
 import { InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorVerdict, OurThread } from "./verdict.ts";
 import {
-  allOwnedThreadsResolved,
   authenticatedLogin,
   cleanReviewExists,
+  hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,
   ourThreads,
+  ownedThreadsResolved,
   parsePrUrl,
   postReview,
   renderCleanReview,
@@ -760,11 +761,38 @@ async function reviewRound(
   // A clean verdict is only safe when every earlier finding is resolved too. A model
   // omitting an old finding is not evidence that it was fixed, and a failed GitHub
   // resolve above must not be followed by a contradictory "safe to merge" review.
-  const clean =
-    plan.clean &&
-    [...rows.values()].every((row) => row.status === "resolved") &&
-    allOwnedThreadsResolved(s, login, resolvedThreadIds);
+  let clean = plan.clean && [...rows.values()].every((row) => row.status === "resolved");
+  if (clean) {
+    const threadsResolved = await ownedThreadsResolved({
+      cwd: dir,
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      snapshot: s,
+      login,
+      resolvedThreadIds,
+    });
+    if (!threadsResolved.ok) {
+      return noteFailure(pr, threadsResolved.error ?? "could not inspect all review threads", now, tick);
+    }
+    clean = threadsResolved.value === true;
+  }
   let cleanAlreadyPosted = false;
+  if (post && clean) {
+    const bodyOnly = await hasBodyOnlyFindings({
+      cwd: dir,
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      snapshot: s,
+      login,
+      headSha: s.headSha,
+    });
+    if (!bodyOnly.ok) {
+      return noteFailure(pr, bodyOnly.error ?? "could not inspect prior body-only findings", now, tick);
+    }
+    clean = bodyOnly.value !== true;
+  }
   if (post && clean) {
     const priorClean = await cleanReviewExists({
       cwd: dir,

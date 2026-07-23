@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
 import type { CommentableLines } from "./diff-lines.ts";
-import { fingerprint } from "./marker.ts";
+import { BODY_ONLY_FINDINGS_MARKER, fingerprint } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 
 // What the reviewer is allowed to say, and what we actually do with it.
@@ -269,6 +269,9 @@ function reviewBody(
     for (const d of demoted) {
       parts.push(`- **${d.path}** · \`${d.severity}\` - ${d.title}`, "", `  ${d.body}`, "");
     }
+    // These have no GitHub thread to resolve. Persist that fact on the review itself
+    // so a wiped local ledger cannot later turn an unknown into a merge-safe claim.
+    parts.push(BODY_ONLY_FINDINGS_MARKER);
   }
   if (droppedOverCap > 0) {
     parts.push(

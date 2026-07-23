@@ -1,6 +1,6 @@
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
-import { isCleanReview, isOurs, parseMarker } from "./marker.ts";
+import { BODY_ONLY_FINDINGS_MARKER, isCleanReview, isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
@@ -137,6 +137,8 @@ export interface PrSnapshot {
   body: string;
   isDraft: boolean;
   threads: ThreadSnapshot[];
+  /** Pagination state for the first review-thread page. */
+  threadsPageInfo?: ThreadPageInfo;
   /** Latest top-level reviews, used to recover an interrupted clean-review post. */
   reviews: ReviewSnapshot[];
   reviewsPageInfo: ReviewPageInfo;
@@ -180,9 +182,19 @@ export interface ReviewPageInfo {
   startCursor: string | null;
 }
 
+interface ThreadPageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
 interface ReviewPage {
   reviews: ReviewSnapshot[];
   pageInfo: ReviewPageInfo;
+}
+
+interface ThreadPage {
+  threads: ThreadSnapshot[];
+  pageInfo: ThreadPageInfo;
 }
 
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
@@ -197,6 +209,7 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
             nodes{ databaseId body createdAt author{ login } }
           }
         }
+        pageInfo{ hasNextPage endCursor }
       }
       reviews(last:100){
         nodes{ body author{ login } commit{ oid } }
@@ -212,6 +225,17 @@ const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$befo
       reviews(last:100,before:$before){
         nodes{ body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
+      }
+    }
+  }
+}`;
+
+const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100,after:$after){
+        nodes{ id isResolved path comments(first:1){ nodes{ databaseId body createdAt author{ login } } } }
+        pageInfo{ hasNextPage endCursor }
       }
     }
   }
@@ -340,9 +364,41 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
         }),
       };
     }),
+    threadsPageInfo: threadPageInfo(pr.reviewThreads),
     reviews: reviewPage.reviews,
     reviewsPageInfo: reviewPage.pageInfo,
   };
+}
+
+function threadPageInfo(raw: unknown): ThreadPageInfo {
+  const pageInfo = (raw as { pageInfo?: Record<string, unknown> } | null)?.pageInfo;
+  return {
+    hasNextPage: pageInfo?.hasNextPage === true,
+    endCursor: typeof pageInfo?.endCursor === "string" ? pageInfo.endCursor : null,
+  };
+}
+
+function threadPage(raw: unknown): ThreadPage {
+  const connection = (raw ?? {}) as { nodes?: unknown[] };
+  const threads = (connection.nodes ?? []).filter(Boolean).map((rawThread) => {
+    const thread = rawThread as Record<string, unknown>;
+    const comments = ((thread.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
+    return {
+      id: String(thread.id ?? ""),
+      isResolved: thread.isResolved === true,
+      path: typeof thread.path === "string" ? thread.path : null,
+      comments: comments.filter(Boolean).map((rawComment) => {
+        const comment = rawComment as Record<string, unknown>;
+        return {
+          databaseId: typeof comment.databaseId === "number" ? comment.databaseId : null,
+          body: typeof comment.body === "string" ? comment.body : "",
+          author: String((comment.author as { login?: unknown } | null)?.login ?? "unknown"),
+          createdAt: String(comment.createdAt ?? ""),
+        };
+      }),
+    } satisfies ThreadSnapshot;
+  });
+  return { threads, pageInfo: threadPageInfo(connection) };
 }
 
 function toReviewPage(raw: unknown): ReviewPage {
@@ -411,6 +467,36 @@ async function fetchReviewPage(
   }
 }
 
+async function fetchThreadPage(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  after: string,
+): Promise<GhResult<ThreadPage>> {
+  const res = await run(
+    "gh",
+    [
+      "api", "graphql", "-f", `query=${THREAD_PAGE_QUERY}`, "-F", `owner=${owner}`,
+      "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
+    ],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api graphql (review threads)", res);
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    return { ok: true, value: threadPage(pr.reviewThreads) };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh review-thread output: ${String(err)}` };
+  }
+}
+
 type ReviewPageLoader = (before: string) => Promise<GhResult<ReviewPage>>;
 
 export async function cleanReviewExists(
@@ -454,6 +540,44 @@ export async function cleanReviewExists(
   }
 }
 
+/**
+ * Body-only findings cannot be resolved as GitHub threads. Their durable marker makes
+ * a later clean verdict fail closed, including after the local provenance ledger was
+ * lost. The old rendered separator protects reviews created before the marker existed.
+ */
+export async function hasBodyOnlyFindings(
+  input: Parameters<typeof cleanReviewExists>[0],
+  loadPrevious: ReviewPageLoader = (before) =>
+    fetchReviewPage(input.cwd, input.owner, input.repo, input.number, before),
+): Promise<GhResult<boolean>> {
+  let page: ReviewPage = {
+    reviews: input.snapshot.reviews,
+    pageInfo: input.snapshot.reviewsPageInfo,
+  };
+  const cursors = new Set<string>();
+  while (true) {
+    const found = page.reviews.some(
+      (review) =>
+        (isOurs(review, input.login) && review.body.includes(BODY_ONLY_FINDINGS_MARKER)) ||
+        (review.author === input.login &&
+          review.body.startsWith("**⌕ Inspector** · round") &&
+          review.body.includes("\n---\n")),
+    );
+    if (found) return { ok: true, value: true };
+    if (!page.pageInfo.hasPreviousPage) return { ok: true, value: false };
+    const cursor = page.pageInfo.startCursor;
+    if (!cursor || cursors.has(cursor)) {
+      return { ok: false, error: "could not traverse the complete pull request review history" };
+    }
+    cursors.add(cursor);
+    const previous = await loadPrevious(cursor);
+    if (!previous.ok || !previous.value) {
+      return { ok: false, error: previous.error ?? "could not read an earlier pull request review page" };
+    }
+    page = previous.value;
+  }
+}
+
 export function allOwnedThreadsResolved(
   snapshot: PrSnapshot,
   login: string,
@@ -464,6 +588,44 @@ export function allOwnedThreadsResolved(
     const first = thread.comments[0];
     return !first || !isOurs(first, login);
   });
+}
+
+type ThreadPageLoader = (after: string) => Promise<GhResult<ThreadPage>>;
+
+/** Check every owned thread, not merely GitHub's first page, before claiming safety. */
+export async function ownedThreadsResolved(
+  input: {
+    cwd: string | null;
+    owner: string;
+    repo: string;
+    number: number;
+    snapshot: Pick<PrSnapshot, "threads" | "threadsPageInfo">;
+    login: string;
+    resolvedThreadIds: ReadonlySet<string>;
+  },
+  loadNext: ThreadPageLoader = (after) =>
+    fetchThreadPage(input.cwd, input.owner, input.repo, input.number, after),
+): Promise<GhResult<boolean>> {
+  let threads = input.snapshot.threads;
+  let pageInfo = input.snapshot.threadsPageInfo ?? { hasNextPage: false, endCursor: null };
+  const cursors = new Set<string>();
+  while (true) {
+    if (!allOwnedThreadsResolved({ threads } as PrSnapshot, input.login, input.resolvedThreadIds)) {
+      return { ok: true, value: false };
+    }
+    if (!pageInfo.hasNextPage) return { ok: true, value: true };
+    const cursor = pageInfo.endCursor;
+    if (!cursor || cursors.has(cursor)) {
+      return { ok: false, error: "could not traverse the complete pull request review-thread history" };
+    }
+    cursors.add(cursor);
+    const next = await loadNext(cursor);
+    if (!next.ok || !next.value) {
+      return { ok: false, error: next.error ?? "could not read an additional pull request review-thread page" };
+    }
+    threads = next.value.threads;
+    pageInfo = next.value.pageInfo;
+  }
 }
 
 /**

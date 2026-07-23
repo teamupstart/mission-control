@@ -69,6 +69,12 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(detail, /offer_prepare_pr/);
 });
 
+test("published workflow graphs provide React Flow a definite height", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
+  const rule = css.match(/\.workflow-canvas\.is-readonly\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(rule, /(?:^|;)\s*height:\s*250px\s*;/);
+});
+
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /Autosave is paused/);

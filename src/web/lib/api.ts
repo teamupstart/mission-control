@@ -416,8 +416,8 @@ export const api = {
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   /**
-   * Launch an existing task. Dashboard calls are deliberate operator actions and pass
-   * the disabled-toggle override; Foreman uses its separate client and never does.
+   * Launch an existing task. This is a manual action, so the backlog's autopilot toggle
+   * does not gate it.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),

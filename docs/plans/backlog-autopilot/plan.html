@@ -80,7 +80,7 @@
 </head><body>
 <main>
   <h1>Plan: Backlog autopilot - Foreman schedules the backlog</h1>
-  <p class="muted">Foreman reads the whole backlog, works out what depends on what, and hands
+  <p class="muted">Foreman reads the enabled backlog, works out what depends on what, and hands
     one item at a time to an idle agent or to a fresh worktree - up to a ceiling you set.</p>
   <span class="status">Implemented · live-only · max agents default 3</span>
 
@@ -203,7 +203,7 @@
     <ol class="steps">
       <li>autopilot off → <code>none</code>.</li>
       <li>backlog empty → <code>none</code>.</li>
-      <li>the stored plan does not cover every backlog item → <code>plan</code>, and
+      <li>the stored plan does not cover every enabled planning item → <code>plan</code>, and
         <strong>nothing is scheduled this tick</strong>. Acting on a plan that has never seen
         the newest item is how two conflicting tasks get started together.</li>
       <li>walk ready items in plan order; the first with a genuinely free agent in its repo →
@@ -275,31 +275,36 @@
     at all. Observed exactly that way, with two dozen ready items parked behind a single row
     whose process had exited hours earlier.
   </div>
-  <p>One read is <strong>one model call</strong>, over the first 400 backlog items. Reading a
-    longer backlog in batches was built and then taken back out: the calls run on the Foreman
-    worker's single loop, which also drives queue drain and needs-you triage, so every extra
-    batch is another span in which nothing else in the fleet is attended to - the same failure
-    the planner's one-probe-per-cooldown rule exists to bound, arriving by another door. The
-    limit sits below the route schema's 500-entry cap, since a plan the route refuses is a write
-    that fails every time.</p>
-  <p>Above the limit the tail is unplanned, and the readers already answer for it: unnamed items
-    are unblocked and go last, oldest first. The cost is accepted rather than hidden - staleness
-    is coverage, so while the backlog is that long each dispatch promotes an unplanned item into
-    the head and the next tick spends one dependency read. One call, only above 400, against a
-    bounded worst case on the shared loop.</p>
+  <p>One read is <strong>one model call</strong>, over the first 400 enabled backlog items;
+    disabled items are omitted before the limit is applied. Reading a longer backlog in batches
+    was built and then taken back out: the calls run on the Foreman worker's single loop, which
+    also drives queue drain and needs-you triage, so every extra batch is another span in which
+    nothing else in the fleet is attended to - the same failure the planner's
+    one-probe-per-cooldown rule exists to bound, arriving by another door. The limit sits below
+    the route schema's 500-entry cap, since a plan the route refuses is a write that fails every
+    time.</p>
+  <p>Above the limit the enabled tail is unplanned, and the readers already answer for it:
+    unnamed items are unblocked and go last, oldest first. The cost is accepted rather than
+    hidden - staleness is coverage, so while the enabled backlog is that long each dispatch
+    promotes an unplanned item into the head and the next tick spends one dependency read. One
+    call, only above 400, against a bounded worst case on the shared loop.</p>
 
   <h2>What the board shows</h2>
   <ul>
+    <li>an <strong>on/off</strong> switch that holds an item out of autopilot without blocking
+      manual dispatch;</li>
     <li>a <strong>blocked</strong> chip naming what an item waits on - in the attention tone
       when the dependency was cancelled or failed, since that one will never clear on its own;</li>
+    <li>a distinct <strong>disabled</strong> blocker state when the unmet prerequisite is parked;</li>
     <li>a <strong>next up</strong> mark on the item autopilot would take next;</li>
     <li>launch controls distinguish overridable inferred blockers from authoritative declared
       prerequisites; see the <a href="plan.md#what-the-board-shows">authoritative plan</a>.</li>
   </ul>
-  <p>The Foreman popover carries the live readout - <code>2/3 agents · 4 ready · 1 blocked</code> -
-    so "why is nothing launching?" is answerable without reading a log. All of it is drawn from
-    the shared predicates in <code>@shared/backlog.ts</code>, which the scheduler decides with,
-    so the column cannot mark a card ready that the machine will not touch.</p>
+  <p>The Foreman popover carries the live readout -
+    <code>2/3 agents · 4 ready · 1 blocked · 1 disabled</code> - so "why is nothing launching?"
+    is answerable without reading a log. All of it is drawn from the shared predicates in
+    <code>@shared/backlog.ts</code>, which the scheduler decides with, so the column cannot mark
+    a card ready that the machine will not touch.</p>
 
   <h2>Testing</h2>
   <ul>

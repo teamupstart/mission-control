@@ -128,8 +128,9 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
 
   // The backlog readout. Derived here from the same `activeAgentCount` and
   // `readyBacklog` the scheduler decides with, rather than counted a second way, so the
-  // popover's "3 / 5 agents" IS the ceiling being applied and its ready/blocked split
-  // is the same one that governs what gets launched. `ready` deliberately ignores the
+  // popover's "3 / 5 agents" IS the ceiling being applied and its
+  // ready/blocked/disabled split is the same one that governs what gets launched.
+  // `ready` deliberately ignores the
   // repo allowlist - it answers "is the dependency graph holding this up?", and the
   // allowlist gets its own, separate refusal in the machine's log.
   const backlog = backlogTasks(tasks);

@@ -924,7 +924,7 @@ export interface ForemanStatus {
     active: number;
     /** The configured ceiling (`maxSessions`). */
     max: number;
-    /** Backlog items with every dependency satisfied - what autopilot may take next. */
+    /** Enabled backlog items with every dependency satisfied - what autopilot may take next. */
     ready: number;
     /**
      * ENABLED backlog items waiting on another task.
@@ -1108,14 +1108,15 @@ export interface Task {
    *
    * A SCHEDULING GATE, not a dependency and not annotation. `readyBacklog` drops a
    * disabled item, so the autopilot does not select it for dispatch or assignment.
-   * `plannableBacklog` retains it so inferred dependency edges pointing at parked work
-   * survive replanning and continue to block their dependents.
+   * `plannableBacklog` also drops it before applying the finite planning limit, so held
+   * work costs neither a model call nor an entry in that budget. Re-enabling an item
+   * absent from the stored plan makes the plan stale and brings it into the next read.
    *
-   * It deliberately does NOT stop a human: the launch button and drag-to-assign send
-   * an explicit override, as can `POST /api/tasks/:id/dispatch`. The toggle says "not
-   * without me", not "not at all" - a gate that refused the button the operator just
-   * pressed to protect a background scheduler's ordering is the same surprise
-   * `maxSessions` deliberately avoids.
+   * It deliberately does NOT stop a human: manual launch, drag-to-assign, and their API
+   * routes do not apply this autopilot gate. The toggle says "not without me", not "not
+   * at all" - a gate that refused the button the operator just pressed to protect a
+   * background scheduler's ordering is the same surprise `maxSessions` deliberately
+   * avoids.
    *
    * A disabled item still BLOCKS anything that depends on it, and reports as its own
    * `BlockerState` (@shared/backlog.ts) rather than as "waiting": it will not finish

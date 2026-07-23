@@ -260,8 +260,8 @@ function declaredReachable(
  * all and relies entirely on this ordering being sensible.
  *
  * Disabled items are not here at all. This is the list the autopilot decides from for
- * both ways it can start work (a fresh worktree and an assign to an idle agent); the
- * daemon then revalidates that policy when the selected action arrives.
+ * both ways it can start work (a fresh worktree and an assign to an idle agent), so
+ * neither action path needs a second copy of the scheduling gate.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const backlog = backlogTasks(tasks).filter((t) => t.enabled);

@@ -72,13 +72,11 @@ export class TaskDependencyError extends Error {}
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
   defaultModel?: string | null;
-  /** Deliberately launch a backlog task whose enable toggle is off. */
   overrideDisabled?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
-  /** Deliberately assign a backlog task whose enable toggle is off. */
   overrideDisabled?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -

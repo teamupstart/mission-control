@@ -558,12 +558,6 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
  */
 export const DispatchBacklogTaskSchema = z.object({
   defaultModel: ModelIdSchema.nullable().optional(),
-  /**
-   * A deliberate operator override of the task's disabled toggle. Omission is the
-   * refusing direction because a separately started, older Foreman worker cannot know
-   * to send a field introduced by a newer daemon. The dashboard is bundled with the
-   * daemon and explicitly opts in for its human-triggered launch controls.
-   */
   overrideDisabled: z.boolean().optional().default(false),
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
@@ -571,11 +565,6 @@ export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
-  /**
-   * A deliberate operator override of the task's disabled toggle. Omission is the
-   * refusing direction so a version-skewed Foreman worker cannot assign parked work;
-   * the dashboard's drag gesture sends it explicitly.
-   */
   overrideDisabled: z.boolean().optional().default(false),
   /**
    * The caller has accepted what the handover reset discards beyond git state - the

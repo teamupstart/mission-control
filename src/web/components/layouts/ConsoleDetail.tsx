@@ -367,7 +367,15 @@ export function ConsoleDetail({
 
         {tab === "diff" && (
           session.cwd ? (
-            <InlineDiffViewer session={session} commit={diffCommit} />
+            <InlineDiffViewer
+              session={session}
+              commit={diffCommit}
+              requestNonce={
+                view.diffTabRequest?.sessionId === session.id
+                  ? view.diffTabRequest.nonce
+                  : undefined
+              }
+            />
           ) : (
             <div className="detail-pane">
               <p className="detail-empty">No working directory to diff.</p>

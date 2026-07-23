@@ -46,11 +46,20 @@ export function DiffViewer({
 export function InlineDiffViewer({
   session,
   commit,
+  requestNonce,
 }: {
   session: Session;
   commit?: string | null;
+  requestNonce?: number;
 }): React.JSX.Element {
-  return <DiffViewerContent session={session} commit={commit} inline />;
+  return (
+    <DiffViewerContent
+      session={session}
+      commit={commit}
+      inline
+      requestNonce={requestNonce}
+    />
+  );
 }
 
 function DiffViewerContent({
@@ -59,18 +68,21 @@ function DiffViewerContent({
   onClose,
   inline = false,
   onViewerKeyRef,
+  requestNonce,
 }: {
   session: Session;
   commit?: string | null;
   onClose?: () => void;
   inline?: boolean;
   onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
+  requestNonce?: number;
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(0);
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -84,7 +96,12 @@ function DiffViewerContent({
     return () => {
       alive = false;
     };
-  }, [session.id, commit]);
+  }, [session.id, commit, requestNonce]);
+
+  useEffect(() => {
+    if (!inline || requestNonce === undefined) return;
+    contentRef.current?.focus({ preventScroll: true });
+  }, [inline, requestNonce]);
 
   // Re-parse only when the patch changes, not on every render (selection change).
   const files = useMemo(() => (diff?.ok ? parsePatch(diff.patch) : []), [diff]);
@@ -123,7 +140,11 @@ function DiffViewerContent({
 
   return (
     <div
+      ref={contentRef}
       className={`diff-viewer-content${inline ? " diff-viewer-inline" : ""}`}
+      role={inline ? "region" : undefined}
+      aria-label={inline ? "Session diff" : undefined}
+      tabIndex={inline ? -1 : undefined}
       onKeyDown={inline ? (e) => onViewerKey(e.nativeEvent) : undefined}
     >
       <header className="diff-head">

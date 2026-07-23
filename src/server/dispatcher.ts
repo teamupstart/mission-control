@@ -290,12 +290,15 @@ export class Dispatcher {
     instrumented: boolean,
   ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
+      // Preflight before subscribing. If the process already exited, there will be no
+      // prompt acknowledgement and no reason to retain a listener until its timeout.
+      const session = this.requireLiveSession(sessionId);
+
       // Listen BEFORE typing - the hook can land before the next line runs.
       const accepted = instrumented
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
         : null;
 
-      const session = this.requireLiveSession(sessionId);
       const sent = await (this.deps.inject ?? injectPrompt)(
         session,
         intent,

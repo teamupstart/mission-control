@@ -190,6 +190,40 @@ test("the dispatcher does not retry delivery through an evicted session snapshot
   assert.equal(sends, 1);
 });
 
+test("the dispatcher creates no acknowledgement listener for an already-exited session", async () => {
+  let waits = 0;
+  let sends = 0;
+  const registry = {
+    getSession: () => undefined,
+    waitForPromptAcceptedAtCwd: () => {
+      waits += 1;
+      return Promise.resolve(false);
+    },
+  } as unknown as InstanceType<typeof Registry>;
+  const dispatcher = new Dispatcher(
+    registry,
+    undefined,
+    {
+      inject: async () => {
+        sends += 1;
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    },
+  );
+  const deliverIntent = (
+    dispatcher as unknown as {
+      deliverIntent(id: string, intent: string, cwd: string, instrumented: boolean): Promise<void>;
+    }
+  ).deliverIntent.bind(dispatcher);
+
+  await assert.rejects(
+    deliverIntent("already-exited", "do the work", CWD, true),
+    /agent session exited before the initial prompt could be sent/,
+  );
+  assert.equal(waits, 0, "no listener should survive until the acknowledgement timeout");
+  assert.equal(sends, 0);
+});
+
 test("waitForPromptAcceptedAtCwd resolves true on the working transition", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "accept-1" })]);

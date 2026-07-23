@@ -98,7 +98,7 @@ export function BacklogColumn({
 
 /**
  * One line naming what a card is waiting on. Two by name, then a count, because the
- * chip has to stay a chip - and the full list is in the `title` either way.
+ * chip has to stay a chip - and the full list is in the shared tooltip either way.
  *
  * The two "this will never clear on its own" states lead, and they lead in that order
  * because they ask for different things: a dependency that failed needs looking at,

@@ -122,6 +122,13 @@ export function App(): React.JSX.Element {
     sessionId: string;
     nonce: number;
   } | null>(null);
+  // Console and Board own a session's diff as a detail tab. The nonce makes a new
+  // request observable when the same session/fix is opened again.
+  const [diffTabRequest, setDiffTabRequest] = useState<{
+    sessionId: string;
+    commit: string | null;
+    nonce: number;
+  } | null>(null);
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
@@ -274,6 +281,20 @@ export function App(): React.JSX.Element {
     files.ensure(sessionId);
     setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, [files.ensure]);
+  const openDiff = useCallback((sessionId: string, commit?: string) => {
+    if (layout === "grid") {
+      setDiffCommit(commit ?? null);
+      setDiffSessionId(sessionId);
+      return;
+    }
+    setSelectedId(sessionId);
+    if (layout === "board") setBoardOpen(true);
+    setDiffTabRequest((request) => ({
+      sessionId,
+      commit: commit ?? null,
+      nonce: (request?.nonce ?? 0) + 1,
+    }));
+  }, [layout]);
   const openSessionFile = useCallback((
     sessionId: string,
     href: string,
@@ -413,6 +434,11 @@ export function App(): React.JSX.Element {
       request && request.sessionId !== expandedForView ? null : request,
     );
   }, [expandedForView]);
+  useEffect(() => {
+    setDiffTabRequest((request) =>
+      request && request.sessionId !== expandedForView ? null : request,
+    );
+  }, [expandedForView]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -457,13 +483,11 @@ export function App(): React.JSX.Element {
     expandedId: expandedForView,
     onToggleExpand: toggleExpand,
     onOpenReviews: setReviewSessionId,
-    onOpenDiff: (id, commit) => {
-      setDiffCommit(commit ?? null);
-      setDiffSessionId(id);
-    },
+    onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
     fileTabRequest,
+    diffTabRequest,
     files,
     onReset: setResetSessionId,
     onKilled,
@@ -586,6 +610,9 @@ export function App(): React.JSX.Element {
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
+      // An embedded session surface can own navigation without being a screen-owning
+      // overlay. The inline diff uses this for its file list.
+      if (e.defaultPrevented) return;
 
       // Preserve the native activation of a focused link or button - including the
       // selected tile's own open button, which the arrow keys put the cursor on.
@@ -718,8 +745,7 @@ export function App(): React.JSX.Element {
       if (chord === bindings.diff) {
         if (!selectedId) return;
         e.preventDefault();
-        setDiffCommit(null); // the shortcut means the whole branch, not a stale fix
-        setDiffSessionId(selectedId);
+        openDiff(selectedId); // the shortcut means the whole branch, not a stale fix
         return;
       }
       if (chord === bindings.files) {
@@ -793,7 +819,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, route.page]);
+  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1046,10 +1072,7 @@ export function App(): React.JSX.Element {
             expanded={expandedId === selected.id}
             onToggleExpand={() => toggleExpand(selected.id)}
             onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
-            onDiff={() => {
-              setDiffCommit(null);
-              setDiffSessionId(selected.id);
-            }}
+            onDiff={() => openDiff(selected.id)}
             onFiles={() => {
               files.ensure(selected.id);
               setFilesSessionId(selected.id);

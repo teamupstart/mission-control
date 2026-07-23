@@ -49,7 +49,7 @@ export function ActionBar({
    * reply box and Queue is a tab. The imperative HANDLE is identical either way, so every
    * keyboard shortcut still works in both - only the buttons drawn differ. */
   variant?: "card" | "foot";
-  /** Open the diff viewer. Only drawn by the "foot" variant. */
+  /** Reveal the session detail's Diff tab. Only drawn by the "foot" variant. */
   onDiff?: () => void;
   /** Open the checkout's extracted file workspace. */
   onFiles?: () => void;

@@ -33,6 +33,7 @@ function props(sessions: Session[]): SessionViewProps {
     onOpenFiles: () => {},
     onOpenFile: () => false,
     fileTabRequest: null,
+    diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
     onKilled: () => {},

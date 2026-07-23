@@ -29,8 +29,15 @@ import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
+import { InlineDiffViewer } from "../DiffViewer.tsx";
 
 type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
+
+type DiffSelection = {
+  sessionId: string;
+  commit: string | null;
+  requestNonce: number | undefined;
+};
 
 /**
  * This session's Foreman episodes, refetched whenever its note moves.
@@ -87,6 +94,11 @@ export function ConsoleDetail({
   session: Session;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
+  const [diffSelection, setDiffSelection] = useState<DiffSelection>({
+    sessionId: session.id,
+    commit: null,
+    requestNonce: undefined,
+  });
   const [hasReply, setHasReply] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const transcriptRef = useRef<TranscriptHandle>(null);
@@ -118,6 +130,19 @@ export function ConsoleDetail({
     view.registerDetailScroll(session.id, scroll);
     return () => view.registerDetailScroll(session.id, null);
   }, [session.id, tab, view.registerDetailScroll]);
+
+  // Unlike Cards, Console and Board have a session-owned Diff tab. An action-bar
+  // shortcut or a no-mistakes fix therefore lands here instead of opening a modal.
+  useEffect(() => {
+    const request = view.diffTabRequest;
+    if (request?.sessionId !== session.id) return;
+    setDiffSelection({
+      sessionId: session.id,
+      commit: request.commit,
+      requestNonce: request.nonce,
+    });
+    setTab("diff");
+  }, [view.diffTabRequest, session.id]);
 
   /**
    * The console's one compose box lives in the conversation tab, so "I want to type
@@ -234,7 +259,18 @@ export function ConsoleDetail({
             role="tab"
             aria-selected={tab === t.id}
             className={`detail-tab${tab === t.id ? " on" : ""}`}
-            onClick={() => setTab(t.id)}
+            onClick={() => {
+              setTab(t.id);
+              // The tab itself is the whole-checkout view. A fix-specific diff only
+              // persists while it is the explicit destination of a fix-log action.
+              if (t.id === "diff") {
+                setDiffSelection({
+                  sessionId: session.id,
+                  commit: null,
+                  requestNonce: undefined,
+                });
+              }
+            }}
           >
             {t.label}
             {t.pip > 0 && <span className="detail-pip">{t.pip}</span>}
@@ -350,18 +386,19 @@ export function ConsoleDetail({
         )}
 
         {tab === "diff" && (
-          <div ref={paneRef} className="detail-pane">
-            {session.cwd ? (
-              <div className="detail-diff">
-                <p className="detail-empty">Changes on this checkout versus its source branch.</p>
-                <button className="btn" onClick={() => view.onOpenDiff(session.id)}>
-                  Open the diff viewer
-                </button>
-              </div>
-            ) : (
+          session.cwd ? (
+            <InlineDiffViewer
+              session={session}
+              commit={diffSelection.sessionId === session.id ? diffSelection.commit : null}
+              requestNonce={
+                diffSelection.sessionId === session.id ? diffSelection.requestNonce : undefined
+              }
+            />
+          ) : (
+            <div className="detail-pane">
               <p className="detail-empty">No working directory to diff.</p>
-            )}
-          </div>
+            </div>
+          )
         )}
         {tab === "files" && (
           <div className="detail-files">

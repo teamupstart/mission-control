@@ -42,6 +42,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onOpenFiles: () => {},
     onOpenFile: () => false,
     fileTabRequest: null,
+    diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
     onKilled: () => {},

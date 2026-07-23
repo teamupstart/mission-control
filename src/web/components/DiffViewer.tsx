@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import { parsePatch, type DiffFile } from "../lib/diff.ts";
@@ -23,14 +23,70 @@ export function DiffViewer({
   commit?: string | null;
   onClose: () => void;
 }): React.JSX.Element {
+  const viewerKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  return (
+    <Overlay
+      id={OVERLAY_IDS.diff}
+      onClose={onClose}
+      className="diff-viewer"
+      role="dialog"
+      ariaLabel="Session diff"
+      onKeyDown={(e) => viewerKeyRef.current?.(e)}
+    >
+      <DiffViewerContent session={session} commit={commit} onClose={onClose} onViewerKeyRef={viewerKeyRef} />
+    </Overlay>
+  );
+}
+
+/**
+ * The console and board give a session's diff a real tab, so they reuse the same
+ * reader without creating a screen-owning overlay. Cards do not have that tab and
+ * continue to use the modal wrapper above.
+ */
+export function InlineDiffViewer({
+  session,
+  commit,
+  requestNonce,
+}: {
+  session: Session;
+  commit?: string | null;
+  requestNonce?: number;
+}): React.JSX.Element {
+  return (
+    <DiffViewerContent
+      session={session}
+      commit={commit}
+      inline
+      requestNonce={requestNonce}
+    />
+  );
+}
+
+function DiffViewerContent({
+  session,
+  commit,
+  onClose,
+  inline = false,
+  onViewerKeyRef,
+  requestNonce,
+}: {
+  session: Session;
+  commit?: string | null;
+  onClose?: () => void;
+  inline?: boolean;
+  onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
+  requestNonce?: number;
+}): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(0);
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
+    setDiff(null);
     setLoading(true);
     void fetchSessionDiff(session.id, commit ?? undefined).then((d) => {
       if (alive) {
@@ -41,7 +97,12 @@ export function DiffViewer({
     return () => {
       alive = false;
     };
-  }, [session.id, commit]);
+  }, [session.id, commit, requestNonce]);
+
+  useEffect(() => {
+    if (!inline || requestNonce === undefined) return;
+    contentRef.current?.focus({ preventScroll: true });
+  }, [inline, requestNonce]);
 
   // Re-parse only when the patch changes, not on every render (selection change).
   const files = useMemo(() => (diff?.ok ? parsePatch(diff.patch) : []), [diff]);
@@ -52,24 +113,27 @@ export function DiffViewer({
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;
 
-  // Escape belongs to the Overlay (App suppresses grid keys while one is open, so the
-  // overlay layer closes itself). The file navigation is this viewer's own: ↑/↓ and j/k
-  // walk the list without leaving the keyboard. Handed to Overlay so it only fires while
-  // this viewer is the topmost overlay, and memoised so the listener isn't re-subscribed
-  // on every render.
+  // Escape belongs to the Overlay in Cards (App suppresses grid keys while one is open,
+  // so the overlay layer closes itself). File navigation is this reader's own: ↑/↓
+  // and j/k walk the list without leaving the keyboard. The modal hands it to Overlay;
+  // the inline reader attaches it to its focusable region, keeping those keys scoped to
+  // the embedded reader instead of changing the Console or Board selection.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
+      const next = e.key === "ArrowDown" || e.key === "j";
+      const previous = e.key === "ArrowUp" || e.key === "k";
+      if (!next && !previous) return;
+      e.preventDefault();
       if (files.length === 0) return;
-      if (e.key === "ArrowDown" || e.key === "j") {
-        e.preventDefault();
+      if (next) {
         setSelected((i) => Math.min(files.length - 1, i + 1));
-      } else if (e.key === "ArrowUp" || e.key === "k") {
-        e.preventDefault();
+      } else {
         setSelected((i) => Math.max(0, i - 1));
       }
     },
     [files.length],
   );
+  if (onViewerKeyRef) onViewerKeyRef.current = onViewerKey;
 
   // Keep the picked file visible in the list, and show its diff from the top.
   useEffect(() => {
@@ -78,17 +142,17 @@ export function DiffViewer({
   }, [activeIdx]);
 
   return (
-    <Overlay
-      id={OVERLAY_IDS.diff}
-      onClose={onClose}
-      className="diff-viewer"
-      role="dialog"
-      ariaLabel="Session diff"
-      onKeyDown={onViewerKey}
+    <div
+      ref={contentRef}
+      className={`diff-viewer-content${inline ? " diff-viewer-inline" : ""}`}
+      role={inline ? "region" : undefined}
+      aria-label={inline ? "Session diff" : undefined}
+      tabIndex={inline ? -1 : undefined}
+      onKeyDown={inline ? (e) => onViewerKey(e.nativeEvent) : undefined}
     >
       <header className="diff-head">
         <div className="diff-title">
-          <h2 title={session.name}>{session.name}</h2>
+          {!inline && <h2 title={session.name}>{session.name}</h2>}
           {/* A commit diff is ONE commit, so it must not borrow the range
               wording below: "<branch> vs <base>" would read as everything since
               that parent, which is the larger diff and the wrong one. */}
@@ -117,9 +181,11 @@ export function DiffViewer({
             </span>
           )}
         </div>
-        <button className="icon-btn" aria-label="Close" onClick={onClose}>
-          ✕
-        </button>
+        {onClose && (
+          <button className="icon-btn" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        )}
       </header>
 
       <div className="diff-body">
@@ -160,7 +226,7 @@ export function DiffViewer({
           </>
         )}
       </div>
-    </Overlay>
+    </div>
   );
 }
 

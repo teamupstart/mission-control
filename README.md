@@ -1299,6 +1299,32 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 
+### Seed Personas you can import
+
+Four ready-made review roles ship in this repository under `docs/personas/`, distilled from
+the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. They are
+seeds, not built-ins: nothing imports them for you and nothing keeps your copy in sync with
+the file afterwards. Once imported they are ordinary Personas you own and can edit.
+
+| File | Imports as | What it judges |
+|---|---|---|
+| `docs/personas/intent-conformance-judge.md` | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| `docs/personas/code-risk-reviewer.md` | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
+| `docs/personas/test-evidence-auditor.md` | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
+| `docs/personas/documentation-steward.md` | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+
+**Import .md** in the Personas tab takes the whole file body as the guidance and the file's
+first level-one heading as the name, so each of these arrives named as the table says.
+Description stays empty and the provider and model overrides stay unset, which is the
+app-wide resolution above. Import each file once: a second import of the same file is
+refused, because the first already reserved that name.
+
+The four are written to compose as the example workflow in
+`docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
+gate, then the other three fanned out behind an All-pass Join. None of them restates the
+engine's own review contract or output format, which every Persona prompt already carries, so
+editing your copy changes what that role judges, not how it replies.
+
 ### Workflow drafts and published versions
 
 Every workflow starts with one visible **Session** node and one disconnected **End**. Add
@@ -1306,7 +1332,7 @@ Persona and **All-pass Join** nodes from the left palette, then connect the dire
 handles: Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may
 return to Session for changes. A Join needs both outcomes from at least two distinct
 predecessors, waits for one result from each, and passes only when all passed. Cycles are
-legal only when they include Session—Persona-only cycles are rejected because they could
+legal only when they include Session. Persona-only cycles are rejected because they could
 spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not
 a graph node.
 

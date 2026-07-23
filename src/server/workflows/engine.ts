@@ -106,10 +106,7 @@ export class WorkflowEngine {
   }
 
   /** Activate all structurally ready nodes from durable receipts before any provider call. */
-  activateSubmission(
-    submissionId: string,
-    options: { reactivateErrors?: boolean } = {},
-  ): void {
+  activateSubmission(submissionId: string): void {
     const submission = this.store.getSubmission(submissionId);
     if (!submission) return;
     const run = this.store.getRun(submission.runId);
@@ -125,16 +122,12 @@ export class WorkflowEngine {
     }
     this.store.setSubmissionState(submission.id, "running", this.now());
     this.store.setRunState(run.id, "running", "persona_review", null, this.now());
-    this.advanceStructure(submission, version, options.reactivateErrors ?? false);
+    this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
     this.wake();
   }
 
-  private advanceStructure(
-    submission: WorkflowSubmission,
-    version: WorkflowVersion,
-    reactivateErrors = false,
-  ): void {
+  private advanceStructure(submission: WorkflowSubmission, version: WorkflowVersion): void {
     const graph = version.graph;
     const sessionNode = graph.nodes.find((node) => node.kind === "session");
     if (!sessionNode) {
@@ -201,11 +194,7 @@ export class WorkflowEngine {
         if (!target) continue;
         if (target.kind === "persona") {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
-          if (
-            !latest
-            || latest.state === "cancelled"
-            || (reactivateErrors && latest.state === "error")
-          ) {
+          if (!latest || latest.state === "cancelled") {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: submission.id,

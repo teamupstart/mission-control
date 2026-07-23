@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { CreatePersona, CreateWorkflow, UpdatePersona, UpdateWorkflow } from "@shared/protocol.ts";
@@ -1669,21 +1670,32 @@ export class WorkflowStore {
       if (!latest || latest.state !== "error") {
         throw new Error(`Workflow node ${failed.nodeId} has no latest infrastructure failure`);
       }
-      this.insertAttempt({
-        id: attemptId,
-        submissionId,
-        nodeId: latest.nodeId,
-        attempt: latest.attempt + 1,
-        state: "queued",
-        persona: latest.persona,
-        inputFingerprint: latest.inputFingerprint,
-        now,
-      });
+      const latestByNode = new Map<string, WorkflowNodeAttempt>();
+      for (const attempt of this.listAttempts(submissionId)) {
+        const current = latestByNode.get(attempt.nodeId);
+        if (!current || attempt.attempt > current.attempt) {
+          latestByNode.set(attempt.nodeId, attempt);
+        }
+      }
+      const errored = [...latestByNode.values()].filter((attempt) => attempt.state === "error");
+      for (const attempt of errored) {
+        this.insertAttempt({
+          id: attempt.nodeId === latest.nodeId ? attemptId : randomUUID(),
+          submissionId,
+          nodeId: attempt.nodeId,
+          attempt: attempt.attempt + 1,
+          state: "queued",
+          persona: attempt.persona,
+          inputFingerprint: attempt.inputFingerprint,
+          now,
+        });
+      }
       this.setSubmissionState(submissionId, "running", now);
       this.setRunState(runId, "running", "persona_review", null, now);
       this.appendEvent(runId, "manual_infrastructure_retry", {
         requestId,
         nodeAttemptId: latest.id,
+        reactivatedNodeAttemptIds: errored.map((attempt) => attempt.id),
       }, now);
       return {
         run: this.mustRun(runId),

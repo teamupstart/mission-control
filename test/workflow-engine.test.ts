@@ -389,7 +389,7 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
   store.cancelRun("run-infra", "test_cleanup", 24);
 });
 
-test("manual infrastructure retry reactivates concurrent stranded Personas", async () => {
+test("manual infrastructure retry survives restart before sibling activation", async () => {
   const retryGraph: PublishedWorkflowGraph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -445,18 +445,40 @@ test("manual infrastructure retry reactivates concurrent stranded Personas", asy
     state: "error",
     error: "Interrupted final attempt",
   }, 13);
+  store.insertAttempt({
+    id: "slow-attempt-2",
+    submissionId: "submission-concurrent-retry",
+    nodeId: "slow",
+    attempt: 2,
+    state: "error",
+    persona: slow.persona,
+    inputFingerprint: slow.inputFingerprint,
+    error: "provider unavailable",
+    now: 14,
+  });
+  store.insertAttempt({
+    id: "slow-attempt-3",
+    submissionId: "submission-concurrent-retry",
+    nodeId: "slow",
+    attempt: 3,
+    state: "error",
+    persona: slow.persona,
+    inputFingerprint: slow.inputFingerprint,
+    error: "provider unavailable",
+    now: 15,
+  });
   const cancelled = store.latestAttemptForNode("submission-concurrent-retry", "cancelled")!;
   store.finishAttempt(cancelled.id, {
     state: "cancelled",
     error: "Audit-only result after the submission stopped",
-  }, 14);
-  store.setSubmissionState("submission-concurrent-retry", "failed", 15);
+  }, 16);
+  store.setSubmissionState("submission-concurrent-retry", "failed", 17);
   store.setRunState(
     "run-concurrent-retry",
     "blocked",
     "infrastructure_error",
     { nodeId: "failing" },
-    15,
+    17,
   );
   store.manualInfrastructureRetry(
     "run-concurrent-retry",
@@ -466,14 +488,15 @@ test("manual infrastructure retry reactivates concurrent stranded Personas", asy
     "retry-concurrent-attempt",
     20,
   );
-  engine.activateSubmission("submission-concurrent-retry", { reactivateErrors: true });
+  engine.start();
+  await engine.stop();
 
   assert.deepEqual(
     store.listAttempts("submission-concurrent-retry")
       .filter((attempt) => attempt.nodeId === "slow")
       .sort((a, b) => a.attempt - b.attempt)
       .map((attempt) => [attempt.attempt, attempt.state]),
-    [[1, "error"], [2, "queued"]],
+    [[1, "error"], [2, "error"], [3, "error"], [4, "queued"]],
   );
   assert.deepEqual(
     store.listAttempts("submission-concurrent-retry")
@@ -486,6 +509,7 @@ test("manual infrastructure retry reactivates concurrent stranded Personas", asy
     store.latestAttemptForNode("submission-concurrent-retry", "failing")?.attempt,
     4,
   );
+  assert.equal(store.getRun("run-concurrent-retry")?.status, "running");
   store.cancelRun("run-concurrent-retry", "test_cleanup", 21);
 });
 

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
+import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
@@ -109,11 +110,14 @@ export class Dispatcher {
       if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
+      this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
       if (await this.abortIfSettled(taskId)) return;
 
       // Discovery only proves the process exists. Wait for the agent to prove it can
       // READ before typing at it - see `awaitReady`.
       const { session, instrumented } = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
+      const readyResourceId = innermostTerminalResourceId(session);
+      if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;
 
       // Set the mode BEFORE the first prompt, so the task runs in it from the start -
@@ -333,6 +337,7 @@ export class Dispatcher {
         branch: null,
         provider: null,
         tmuxSession: null,
+        terminalResourceId: null,
       });
       return true;
     } catch (error) {

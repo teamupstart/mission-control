@@ -46,7 +46,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
-import { canWriteTo, muxHandle, paneToken, terminalHomeNames, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import {
@@ -1093,42 +1093,68 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s || s.name === name) return;
     const priorMux = muxHandle(s)?.session ?? null;
+    const priorHomeNames = terminalHomeNames(s);
+    const priorResourceIds = terminalResourceIds(s);
+    const renameHandle = (h: TerminalHandle): TerminalHandle => {
+      if (h.kind === "emulator") return { ...h, tabTitle: name };
+      return {
+        ...h,
+        session: h.session === h.sessionName ? name : h.session,
+        sessionName: name,
+      };
+    };
+    const renamedHandles = s.terminals.map(renameHandle);
+    const resourceRenames = new Map(
+      s.terminals.map((handle, index) => [terminalResourceId(handle), terminalResourceId(renamedHandles[index]!)])
+    );
     const next: Session = {
       ...s,
       name,
-      terminals: s.terminals.map((h) =>
-        h.kind === "multiplexer" ? { ...h, session: name } : { ...h, tabTitle: name },
-      ),
+      terminals: renamedHandles,
     };
     this.sessions.set(sessionId, next);
     this.emitSession(next);
-    if (!priorMux || priorMux === name) return;
 
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
-    for (const [id, other] of [...this.sessions]) {
-      if (id === sessionId) continue;
-      const pane = muxHandle(other);
-      if (!pane || pane.session !== priorMux) continue;
-      if (other.cwd) hostedCwds.add(other.cwd);
-      const renamed: Session = {
-        ...other,
-        // Only a sibling this backend NAMED takes the new display name; one named by its
-        // own tab title keeps it. The tab title itself is left alone here, unlike on the
-        // session that was actually renamed - nothing renamed a sibling's tab.
-        name: other.nameSource === pane.backend ? name : other.name,
-        terminals: other.terminals.map((h) =>
-          h.kind === "multiplexer" ? { ...h, session: name } : h,
-        ),
-      };
-      this.sessions.set(id, renamed);
-      this.emitSession(renamed);
+    if (priorMux) {
+      for (const [id, other] of [...this.sessions]) {
+        if (id === sessionId) continue;
+        const pane = muxHandle(other);
+        if (!pane || pane.session !== priorMux) continue;
+        if (other.cwd) hostedCwds.add(other.cwd);
+        const renamed: Session = {
+          ...other,
+          name: other.nameSource === pane.backend ? name : other.name,
+          terminals: other.terminals.map((h) =>
+            h.kind === "multiplexer" && h.session === priorMux ? renameHandle(h) : h,
+          ),
+        };
+        this.sessions.set(id, renamed);
+        this.emitSession(renamed);
+      }
     }
 
-    for (const t of this.listTasks()) {
-      if (t.tmuxSession !== priorMux) continue;
-      if (!t.worktreePath || !hostedCwds.has(t.worktreePath)) continue;
-      this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
+    const candidates = this.listTasks().filter((t) =>
+      (Boolean(t.worktreePath) || Boolean(t.tmuxSession)) &&
+      ((t.terminalResourceId !== null && priorResourceIds.has(t.terminalResourceId)) ||
+        (t.tmuxSession !== null && priorHomeNames.has(t.tmuxSession)))
+    );
+    const strong = candidates.filter((t) =>
+      (t.terminalResourceId !== null && priorResourceIds.has(t.terminalResourceId)) ||
+      t.sessionId === sessionId ||
+      Boolean(t.worktreePath && hostedCwds.has(t.worktreePath))
+    );
+    const owners = strong.length > 0 ? strong : candidates.length === 1 ? candidates : [];
+    for (const t of owners) {
+      this.upsertTask({
+        ...t,
+        tmuxSession: name,
+        terminalResourceId: t.terminalResourceId
+          ? resourceRenames.get(t.terminalResourceId) ?? t.terminalResourceId
+          : null,
+        updatedAt: Date.now(),
+      });
     }
   }
 
@@ -3057,10 +3083,12 @@ export class Registry extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     const homeNames = terminalHomeNames(session);
+    const resourceIds = terminalResourceIds(session);
     return this.listTasks().find((task) =>
       (status === undefined || task.status === status) &&
       (Boolean(task.worktreePath) || Boolean(task.tmuxSession)) &&
       (task.sessionId === sessionId ||
+        (task.terminalResourceId !== null && resourceIds.has(task.terminalResourceId)) ||
         (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
         (task.tmuxSession !== null && homeNames.has(task.tmuxSession)))
     );
@@ -4404,7 +4432,7 @@ function terminalsEqual(a: readonly TerminalHandle[], b: readonly TerminalHandle
     if (!y || x.kind !== y.kind || x.backend !== y.backend || x.paneId !== y.paneId) return false;
     if (x.kind === "multiplexer") {
       const o = y as MuxHandle;
-      return x.session === o.session && x.windowName === o.windowName;
+      return x.session === o.session && x.sessionName === o.sessionName && x.windowName === o.windowName;
     }
     const o = y as EmulatorHandle;
     return x.tabTitle === o.tabTitle && x.isActive === o.isActive;

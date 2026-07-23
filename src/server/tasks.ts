@@ -382,6 +382,7 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
@@ -945,6 +946,7 @@ export class TaskManager {
       branch: teardownError === null ? null : cur.branch,
       provider: teardownError === null ? null : cur.provider,
       tmuxSession: teardownError === null ? null : cur.tmuxSession,
+      terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
       updatedAt: now,
     });
@@ -998,6 +1000,7 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
     });
@@ -1084,6 +1087,7 @@ export class TaskManager {
       branch: null,
       provider: null,
       tmuxSession: null,
+      terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
     });

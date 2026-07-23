@@ -443,6 +443,7 @@ test("a cmux pane correlates into a handle and binds like any other", async () =
   const handle = muxHandle(session!);
   assert.equal(handle?.backend, "cmux");
   assert.equal(handle?.session, pane.session, "and the handle keeps the address");
+  assert.equal(handle?.sessionName, pane.sessionName);
 
   const rec = recorder();
   const bound = bindPane(session!.terminals, rec.exec)!;

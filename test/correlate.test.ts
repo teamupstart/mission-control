@@ -252,6 +252,7 @@ test("a backend this file has never heard of correlates, names AND keeps its han
     kind: "multiplexer",
     backend: "zellij",
     session: "sprint",
+    sessionName: "sprint",
     windowIndex: 0,
     windowName: "w",
     paneId: "0",

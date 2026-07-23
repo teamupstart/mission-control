@@ -163,6 +163,7 @@ export function openDb(): DatabaseSync {
       branch        TEXT,
       provider      TEXT,
       tmux_session  TEXT,
+      terminal_resource_id TEXT,
       session_id    TEXT,
       status        TEXT NOT NULL,
       outcome       TEXT,
@@ -753,6 +754,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  addColumn(d, "tasks", "terminal_resource_id", "TEXT");
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
@@ -1545,6 +1547,7 @@ interface TaskRow {
   branch: string | null;
   provider: string | null;
   tmux_session: string | null;
+  terminal_resource_id: string | null;
   session_id: string | null;
   status: string;
   outcome: string | null;
@@ -1661,6 +1664,7 @@ function rowToTask(r: TaskRow): Task {
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
     tmuxSession: r.tmux_session,
+    terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
     status: r.status as TaskStatus,
     outcome: r.outcome,
@@ -1693,9 +1697,9 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, tmux_session, session_id, status, outcome, outcome_url, error,
+         provider, tmux_session, terminal_resource_id, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -1703,7 +1707,8 @@ export function upsertTask(t: Task): string[] {
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
+         provider=excluded.provider, tmux_session=excluded.tmux_session,
+         terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
@@ -1718,7 +1723,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
-      t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.tmuxSession, t.terminalResourceId, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
     if (ownsTransaction) d.exec("COMMIT");

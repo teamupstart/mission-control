@@ -127,7 +127,22 @@ export function emulatorHandle(s: PaneHandles): EmulatorHandle | null {
 export function terminalHomeNames(s: PaneHandles): Set<string> {
   return new Set(
     s.terminals
-      .map((handle) => handle.kind === "multiplexer" ? handle.session : handle.tabTitle)
+      .map((handle) => handle.kind === "multiplexer" ? handle.sessionName : handle.tabTitle)
       .filter(Boolean),
   );
+}
+
+export function terminalResourceId(handle: TerminalHandle): string {
+  return handle.kind === "multiplexer"
+    ? `${handle.kind}:${handle.backend}:${handle.session}`
+    : `${handle.kind}:${handle.backend}:${handle.paneId}`;
+}
+
+export function terminalResourceIds(s: PaneHandles): Set<string> {
+  return new Set(s.terminals.map(terminalResourceId));
+}
+
+export function innermostTerminalResourceId(s: PaneHandles): string | null {
+  const handle = innermostPane(s);
+  return handle ? terminalResourceId(handle) : null;
 }

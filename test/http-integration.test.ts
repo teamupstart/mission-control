@@ -438,6 +438,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     branch: null,
     provider: null,
     tmuxSession: "harness-rename-taken-xyzzy",
+    terminalResourceId: null,
     sessionId: null,
     status: "done",
     outcome: null,

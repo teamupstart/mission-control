@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
+import { mkEmuHandle, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { terminalResourceId } from "../src/shared/pane.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { TerminalResult } from "../src/server/terminal/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -21,11 +22,14 @@ function setup(over: {
   cwd?: string | null;
   homeName?: string;
   worktreePath?: string;
+  terminal?: "emulator" | "cmux";
 } = {}) {
   const registry = new Registry();
   const cwd = Object.hasOwn(over, "cwd") ? over.cwd! : "/repo/resource-session";
   const terminals = over.homeName
-    ? [mkEmuHandle({ tabTitle: over.homeName, paneId: "emulator-pane" })]
+    ? over.terminal === "cmux"
+      ? [mkMuxHandle({ backend: "cmux", session: "workspace-uuid", sessionName: over.homeName, paneId: "surface-id" })]
+      : [mkEmuHandle({ tabTitle: over.homeName, paneId: "emulator-pane" })]
     : [];
   const discovered: DiscoveredSession = {
     syntheticId: "resource-session",
@@ -53,6 +57,7 @@ function setup(over: {
     branch: "harness/cancelled-owner",
     provider: "git",
     tmuxSession: over.homeName ?? null,
+    terminalResourceId: terminals[0] ? terminalResourceId(terminals[0]) : null,
   }));
   const writes: string[] = [];
   const pane: BoundPane = {
@@ -150,6 +155,30 @@ test("emulator home ownership blocks prompts after cwd changes", async () => {
     cwd: "/repo/new-cwd",
     homeName: "emulator-home",
     worktreePath: "/repo/old-worktree",
+  });
+  const result = await sendText(session, "replacement work", true, deps, guard);
+  assert.equal(result.ok, false);
+  assert.deepEqual(writes, []);
+});
+
+test("cmux home ownership blocks prompts when cwd is unavailable", async () => {
+  const { session, writes, deps, guard } = setup({
+    cwd: null,
+    homeName: "cmux-home",
+    worktreePath: "/repo/old-worktree",
+    terminal: "cmux",
+  });
+  const result = await injectPrompt(session, "replacement work", deps, guard);
+  assert.equal(result.ok, false);
+  assert.deepEqual(writes, []);
+});
+
+test("cmux home ownership blocks prompts after cwd changes", async () => {
+  const { session, writes, deps, guard } = setup({
+    cwd: "/repo/new-cwd",
+    homeName: "cmux-home",
+    worktreePath: "/repo/old-worktree",
+    terminal: "cmux",
   });
   const result = await sendText(session, "replacement work", true, deps, guard);
   assert.equal(result.ok, false);

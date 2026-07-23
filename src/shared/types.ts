@@ -1117,6 +1117,7 @@ export interface Task {
   provider: WorktreeProvider | null;
   /** The detached tmux session we created for this task. */
   tmuxSession: string | null;
+  terminalResourceId: string | null;
   /** Bound live session's synthetic id, once discovered. */
   sessionId: string | null;
   status: TaskStatus;

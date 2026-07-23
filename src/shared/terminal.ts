@@ -83,6 +83,7 @@ export interface EmulatorTarget {
 export interface MuxHandle extends MuxTarget {
   kind: "multiplexer";
   backend: MultiplexerId;
+  sessionName: string;
   /** The window's own name, as the backend reports it. */
   windowName: string;
 }

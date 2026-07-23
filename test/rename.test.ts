@@ -13,7 +13,7 @@ import {
 } from "./helpers/terminal-fakes.ts";
 import type { TerminalDeps } from "../src/server/terminal/registry.ts";
 import type { EmulatorPane, MuxClient, TerminalResult } from "../src/server/terminal/types.ts";
-import { emulatorHandle, muxHandle } from "../src/shared/pane.ts";
+import { emulatorHandle, muxHandle, terminalResourceId } from "../src/shared/pane.ts";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
@@ -461,7 +461,7 @@ test("a discovery sweep that has caught up doesn't spuriously re-emit after a re
     if (e.type === "session_upsert" && e.session.id === "s1") emitted++;
   });
   // The terminal really was renamed, so the next sweep reports the new name.
-  r.applyDiscovery([disco({ name: "renamed", terminals: [{ ...PANE, session: "renamed" }] })]);
+  r.applyDiscovery([disco({ name: "renamed", terminals: [{ ...PANE, session: "renamed", sessionName: "renamed" }] })]);
   assert.equal(emitted, 0, "the optimistic value already matches - nothing changed");
   assert.equal(sessionOf(r)?.name, "renamed");
 });
@@ -536,16 +536,49 @@ test("renameSession follows the rename for a worktree-holding task that already 
   assert.equal(taskOf(r)?.tmuxSession, "renamed");
 });
 
-test("renameSession touches no task binding when the session has no tmux handle", () => {
+test("renameSession keeps emulator cleanup ownership across a rename", () => {
   const r = new Registry();
+  const handle = mkEmuHandle({ tabTitle: "work" });
   r.applyDiscovery([
-    disco({ cwd: "/wt/work", nameSource: "wezterm", terminals: [mkEmuHandle({ tabTitle: "work" })] }),
+    disco({ cwd: "/wt/new", nameSource: "wezterm", terminals: [handle] }),
   ]);
-  r.upsertTask(mkTask());
+  r.upsertTask(mkTask({
+    status: "cancelled",
+    sessionId: null,
+    worktreePath: "/wt/old",
+    terminalResourceId: terminalResourceId(handle),
+  }));
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(taskOf(r)?.tmuxSession, "work");
+  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.terminalResourceId, terminalResourceId(handle));
+  assert.match(r.promptResourceBlockerForSession("s1") ?? "", /clean up/);
+});
+
+test("renameSession preserves cmux address and cleanup ownership", () => {
+  const r = new Registry();
+  const handle = mkMuxHandle({
+    backend: "cmux",
+    session: "workspace-uuid",
+    sessionName: "work",
+    paneId: "surface-id",
+  });
+  r.applyDiscovery([disco({ cwd: null, nameSource: "cmux", terminals: [handle] })]);
+  r.upsertTask(mkTask({
+    status: "cancelled",
+    sessionId: null,
+    worktreePath: "/wt/old",
+    terminalResourceId: terminalResourceId(handle),
+  }));
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(muxHandle(sessionOf(r)!)?.session, "workspace-uuid");
+  assert.equal(muxHandle(sessionOf(r)!)?.sessionName, "renamed");
+  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.terminalResourceId, terminalResourceId(handle));
+  assert.match(r.promptResourceBlockerForSession("s1") ?? "", /clean up/);
 });
 
 // ---- Registry.renameSession (cards sharing one tmux session) ----
@@ -578,7 +611,7 @@ test("renameSession leaves a card on an unrelated tmux session alone", () => {
   const r = new Registry();
   r.applyDiscovery([
     disco(),
-    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, name: "other", terminals: [{ ...PANE, session: "other" }] }),
+    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, name: "other", terminals: [{ ...PANE, session: "other", sessionName: "other" }] }),
   ]);
 
   r.renameSession("s1", "renamed");

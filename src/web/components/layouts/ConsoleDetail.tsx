@@ -28,7 +28,7 @@ import {
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
-import { FileWorkspace } from "../FileWorkspace.tsx";
+import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 
 type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
@@ -90,6 +90,8 @@ export function ConsoleDetail({
   const [hasReply, setHasReply] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const transcriptRef = useRef<TranscriptHandle>(null);
+  const filesRef = useRef<FileWorkspaceHandle>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
@@ -101,6 +103,21 @@ export function ConsoleDetail({
   useEffect(() => {
     if (view.fileTabRequest?.sessionId === session.id) setTab("files");
   }, [view.fileTabRequest, session.id]);
+
+  useEffect(() => {
+    const scroll = (direction: -1 | 1): void => {
+      if (tab === "conversation") {
+        transcriptRef.current?.scrollByArrow(direction);
+      } else if (tab === "files") {
+        filesRef.current?.scrollByArrow(direction);
+      } else {
+        const el = paneRef.current;
+        if (el) el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
+      }
+    };
+    view.registerDetailScroll(session.id, scroll);
+    return () => view.registerDetailScroll(session.id, null);
+  }, [session.id, tab, view.registerDetailScroll]);
 
   /**
    * The console's one compose box lives in the conversation tab, so "I want to type
@@ -298,7 +315,7 @@ export function ConsoleDetail({
             hint an orphaned (post-`/clear`) queue needs. Hiding the component to say
             "nothing queued" hid the sole way to queue anything. */}
         {tab === "queue" && (
-          <div className="detail-pane">
+          <div ref={paneRef} className="detail-pane">
             <WorkQueue
               session={session}
               foremanMode={view.foremanMode}
@@ -309,7 +326,7 @@ export function ConsoleDetail({
         )}
 
         {tab === "gate" && (
-          <div className="detail-pane">
+          <div ref={paneRef} className="detail-pane">
             {session.nomistakes ? (
               <>
                 <NomistakesStrip
@@ -333,7 +350,7 @@ export function ConsoleDetail({
         )}
 
         {tab === "diff" && (
-          <div className="detail-pane">
+          <div ref={paneRef} className="detail-pane">
             {session.cwd ? (
               <div className="detail-diff">
                 <p className="detail-empty">Changes on this checkout versus its source branch.</p>
@@ -350,6 +367,7 @@ export function ConsoleDetail({
           <div className="detail-files">
             {session.cwd ? (
               <FileWorkspace
+                ref={filesRef}
                 session={session}
                 controller={view.files}
                 onExtract={() => view.onOpenFiles(session.id)}

@@ -456,6 +456,7 @@ test("card and console detail agree on every shared leaf", () => {
         resetNonces: {},
         registerEl: () => {},
         registerActions: () => {},
+        registerDetailScroll: () => {},
         renamingId: null,
         onRenameStart: () => {},
         onRenameClose: () => {},

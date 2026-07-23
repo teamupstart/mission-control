@@ -32,11 +32,10 @@ export function moveSelection(opts: MoveOptions): string | null {
 
   if (mode === "board") return moveOnBoard(opts);
   if (mode === "console") {
-    // A single vertical list. Left/Right have nothing to mean here, so they stay put
-    // rather than quietly acting like Up/Down.
-    if (key === "ArrowLeft" || key === "ArrowRight") return null;
-    const idx = ids.indexOf(currentId);
-    return ids[key === "ArrowDown" ? idx + 1 : idx - 1] ?? null;
+    // Once its detail is open the Console is a reader: vertical arrows scroll that
+    // detail (routed by App), and horizontal arrows have no spatial destination.
+    // Selection therefore stays parked until the rail is clicked.
+    return null;
   }
 
   // grid: walk the flat list, a row at a time for vertical moves.

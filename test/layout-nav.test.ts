@@ -40,12 +40,11 @@ test("grid: the edges stay put rather than wrapping", () => {
   assert.equal(move("grid", "ArrowDown", "e"), null); // e + 2 is past the end
 });
 
-test("console: a single list - up/down step, left/right do nothing", () => {
-  assert.equal(move("console", "ArrowDown", "a"), "b");
-  assert.equal(move("console", "ArrowUp", "b"), "a");
+test("console: arrows leave selection parked while the detail reader scrolls", () => {
+  assert.equal(move("console", "ArrowDown", "a"), null);
+  assert.equal(move("console", "ArrowUp", "b"), null);
   assert.equal(move("console", "ArrowUp", "a"), null);
   assert.equal(move("console", "ArrowDown", "e"), null);
-  // Not silently aliased to up/down: there is no sideways in a rail.
   assert.equal(move("console", "ArrowRight", "a"), null);
   assert.equal(move("console", "ArrowLeft", "a"), null);
 });

@@ -179,6 +179,7 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
+  const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
   // Set to the id a keyboard expand should drop the cursor into once its send box
   // mounts (see the `expand` chord and the effect that consumes it). A ref, not
   // state: it arms a one-shot side effect, and must not itself cause a render.
@@ -201,6 +202,11 @@ export function App(): React.JSX.Element {
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
     if (handle) actionHandles.current.set(id, handle);
     else actionHandles.current.delete(id);
+  }, []);
+
+  const registerDetailScroll = useCallback((id: string, scroll: ((direction: -1 | 1) => void) | null) => {
+    if (scroll) detailScrollers.current.set(id, scroll);
+    else detailScrollers.current.delete(id);
   }, []);
 
   const toggleExpand = useCallback((id: string) => {
@@ -464,6 +470,7 @@ export function App(): React.JSX.Element {
     resetNonces,
     registerEl,
     registerActions,
+    registerDetailScroll,
     renamingId,
     onRenameStart: setRenamingId,
     onRenameClose: () => setRenamingId(null),
@@ -653,6 +660,15 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
+          // An open Console detail is a reader, so vertical arrows move its active
+          // content instead of replacing it with the previous/next session. The
+          // detail owns the actual scroll node because Conversation and Files use
+          // different nested containers. With no selection there is no reader yet,
+          // so the first arrow retains its old job of selecting the first session.
+          if (layout === "console" && selectedId && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            detailScrollers.current.get(selectedId)?.(e.key === "ArrowUp" ? -1 : 1);
+            return;
+          }
           const nextId = moveSelection({
             mode: layout,
             key: e.key as ArrowKey,

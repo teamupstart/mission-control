@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { FileBuffer, SessionFilesController } from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
@@ -109,17 +109,25 @@ function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   return <span className={`file-save-state is-${buffer.saveState}`}>{labels[buffer.saveState]}</span>;
 }
 
+export interface FileWorkspaceHandle {
+  /** Move whichever file reader is visible (editor, preview, comparison, or list). */
+  scrollByArrow: (direction: -1 | 1) => void;
+}
+
 export function FileWorkspace({
   session,
   controller,
   onExtract,
   extracted = false,
+  ref,
 }: {
   session: Session;
   controller: SessionFilesController;
   onExtract?: () => void;
   extracted?: boolean;
+  ref?: React.Ref<FileWorkspaceHandle>;
 }): React.JSX.Element {
+  const workspaceRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
   const [manualPath, setManualPath] = useState("");
@@ -163,13 +171,27 @@ export function FileWorkspace({
     return q ? files.filter((file) => file.path.toLowerCase().includes(q)) : files;
   }, [files, filter]);
 
+  useImperativeHandle(ref, () => ({
+    scrollByArrow: (direction) => {
+      const root = workspaceRef.current;
+      if (!root) return;
+      // Content wins over the file list. CodeMirror owns its scroller; Markdown and
+      // conflict views use ordinary elements. If no document is open, the list is the
+      // useful reader left to move.
+      const el = root.querySelector<HTMLElement>(
+        ".cm-scroller, .file-markdown-preview, .file-compare pre, .file-list",
+      );
+      if (el) el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
+    },
+  }), []);
+
   function choose(path: string): void {
     setComparing(false);
     controller.select(session.id, path);
   }
 
   return (
-    <section className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
+    <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
       <aside className="file-nav">
         <div className="file-nav-tools">
           <input

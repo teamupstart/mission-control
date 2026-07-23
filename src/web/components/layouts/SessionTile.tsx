@@ -217,7 +217,8 @@ export function SessionTile({
         {/* On this row rather than in `.tile-foot` where the card's footer keeps it: a
             tile's foot is branch-and-timestamp, while mode is the same kind of thing as
             the effort chip beside it - what this session is allowed to do right now, and
-            changeable from here. The shared picker the card and console detail mount, so
+            changeable from here. This is the shared picker the card and console detail
+            mount, so
             the three cannot drift on what a mode is called or how it is driven; it draws
             nothing for a harness with no permission modes, and degrades to a read-only
             chip when there is no pane to send Shift+Tab into. */}

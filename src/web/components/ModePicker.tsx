@@ -6,7 +6,7 @@ import { api } from "../lib/api.ts";
 import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
 
 /**
- * The card's permission-mode chip, clickable to pick a different mode instead of
+ * The shared permission-mode chip, clickable to pick a different mode instead of
  * reaching for Shift+Tab in the terminal.
  *
  * Choosing a mode doesn't set it directly - Claude has no such API. The daemon
@@ -19,7 +19,7 @@ import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
  * unconditionally is safe and the layouts do not each carry their own agent check.
  *
  * The popover is a body-level portal with fixed positioning, like Tooltip, because
- * `.card` sets `overflow: hidden` and would otherwise clip it.
+ * layout containers can otherwise clip it.
  */
 
 /** Leave the chip this many px of air. */
@@ -47,8 +47,8 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
     if (!el) return;
     const r = el.getBoundingClientRect();
     const left = Math.max(GAP, Math.min(r.left, window.innerWidth - WIDTH - GAP));
-    // The chip lives in the card footer, so there's usually room above and not
-    // below; flip only when opening upward would run off the top.
+    // Prefer opening above anchors in the viewport's lower half, where there is
+    // usually more room; otherwise open below.
     const above = r.top > window.innerHeight / 2;
     setAnchor(
       above ? { left, bottom: window.innerHeight - r.top + GAP } : { left, top: r.bottom + GAP },

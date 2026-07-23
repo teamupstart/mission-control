@@ -12,7 +12,7 @@ import { noteKeyFor } from "./registry.ts";
  * half and knows nothing of the registry; the other half used to live inline in the
  * `POST /api/sessions/:id/reset` handler, which was fine while the button was the only
  * way to reset. `TaskManager.assign` now resets too, and a second hand-written copy of
- * this cleanup is exactly the drift CLAUDE.md's Reset section is about: the failure mode
+ * this cleanup is exactly the drift AGENTS.md's Reset section is about: the failure mode
  * is not a crash, it is a work queue full of items authored for a branch that no longer
  * exists, on a checkout that has already moved on.
  *

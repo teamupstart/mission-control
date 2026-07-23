@@ -1,6 +1,6 @@
 # Phase 4 plan: live repair delivery and Foreman completion
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 
@@ -199,10 +199,11 @@ Add an explicit retry route for positively refused deliveries:
 POST /api/workflow-deliveries/:id/retry
 ```
 
-It takes a client-generated request id, uses `parseBody`, and is refused for `sending`, `delivered`,
-or `uncertain`. Resolving an uncertain delivery requires either **Mark delivered** after inspecting
-the pane or **Discard and send a new repair round** with a typed confirmation. Both choices append an
-audit event; neither silently reuses the ambiguous row.
+The request body is owned by `RetryWorkflowDeliverySchema` in `src/shared/protocol.ts`. It carries a
+client-generated request id plus the expected session and conversation identities, uses `parseBody`,
+and is refused for `sending`, `delivered`, or `uncertain`. Resolving an uncertain delivery requires
+either **Mark delivered** after inspecting the pane or **Discard and send a new repair round** with a
+typed confirmation. Both choices append an audit event; neither silently reuses the ambiguous row.
 
 ## Transcript origin
 
@@ -223,14 +224,15 @@ Live repair must produce a later completion signal without creating a second com
 Reuse the existing Foreman guards:
 
 - If the session has work-queue items, confirmed workflow delivery clears the drain episode's
-  `wrapupAskedAt` and `wrapupAnswer` together through one `QueueManager` method. Existing terminal
-  items remain terminal. After the agent works and settles, the normal drain decision fires once.
+  `wrapupAskedAt` and `wrapupAnswer` together in the same workflow-store transaction that confirms
+  delivery, then refreshes `QueueManager`'s denormalized projection. Existing terminal items remain
+  terminal. After the agent works and settles, the normal drain decision fires once.
 - If the session has no work-queue items, the workflow prompt becomes the captured goal. Its changed
   text differs from `promptedGoal`, so the existing prompted-wrapup trigger re-arms naturally.
 
 Never clear either guard before confirmed delivery. An uncertain or refused packet must not let
-Foreman judge the old evidence as a new repair. Add one queue-manager method for the paired drain
-reset rather than writing its two fields independently.
+Foreman judge the old evidence as a new repair. The paired drain reset is owned by
+`WorkflowStore.rearmDrainCompletionForDelivery`; do not write its two fields independently.
 
 The Workflows config does not turn on Foreman's `prompted` trigger. If a binding selects
 `foreman_complete` on an itemless session while that trigger is disabled, the binding dialog must
@@ -245,16 +247,9 @@ Add a parsed route owned by `WorkflowManager`:
 POST /api/sessions/:id/workflow-completion
 ```
 
-Body:
-
-```ts
-export interface WorkflowCompletionClaim {
-  completionKind: "drain" | "prompted";
-  marker: string;
-  summary: string;
-  evidenceFingerprint: string;
-}
-```
+The request and response wire contracts are owned by `WorkflowCompletionClaimSchema` and
+`WorkflowCompletionClaimResultSchema` in `src/shared/protocol.ts`, with their browser-safe types in
+`src/shared/workflow.ts`.
 
 Bound all strings. `marker` is a worker-generated SHA-256 of the proof episode, never raw prompt or
 diff text:
@@ -266,19 +261,6 @@ diff text:
 The marker must be stable across a worker retry and change after confirmed workflow repair re-arms
 the completion episode. The daemon combines it with binding id and completion kind into the
 submission `trigger_key`. A repeated request returns the existing run/submission.
-
-Response:
-
-```ts
-export type WorkflowCompletionClaimResult =
-  | { claimed: false; reason: "no_binding" | "manual_trigger" }
-  | {
-      claimed: true;
-      runId: WorkflowRunId;
-      submissionId: WorkflowSubmissionId | null;
-      state: "started" | "resubmitted" | "already_claimed" | "blocked";
-    };
-```
 
 `claimed: false` is reserved for no active binding or a binding whose trigger is Manual. An active
 Foreman binding owns the boundary even when round limits, unchanged evidence, capture failure, or a
@@ -323,8 +305,8 @@ the daemon claimed the completion.
 
 ## Engine integration
 
-Manual and Foreman completion both call one `WorkflowManager.submit` entry point with different
-server-owned authors and trigger keys.
+Manual and Foreman completion use caller-specific durable store transactions, then converge on
+`WorkflowManager.captureAndActivate` with different server-owned authors and trigger keys.
 
 - With no active run, a claimed completion creates a full-workflow run and round 1 submission.
 - With a run at `waiting_for_session`, it captures a new full-workflow submission at the next round.

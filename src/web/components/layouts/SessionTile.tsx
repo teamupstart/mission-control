@@ -3,6 +3,7 @@ import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot, CostChip, InspectorTileFlag, PrTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -213,6 +214,14 @@ export function SessionTile({
       <span className="tile-runtime-line">
         {session.meta && <RuntimeMetaRow meta={session.meta} session={session} showEffort={false} />}
         {session.meta?.thinkingLevel && <EffortPicker session={session} />}
+        {/* On this row rather than in `.tile-foot` where the card's footer keeps it: a
+            tile's foot is branch-and-timestamp, while mode is the same kind of thing as
+            the effort chip beside it - what this session is allowed to do right now, and
+            changeable from here. The shared picker the card and console detail mount, so
+            the three cannot drift on what a mode is called or how it is driven; it draws
+            nothing for a harness with no permission modes, and degrades to a read-only
+            chip when there is no pane to send Shift+Tab into. */}
+        <ModePicker session={session} />
         <CostChip cost={session.cost} />
       </span>
 

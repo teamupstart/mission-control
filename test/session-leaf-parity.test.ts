@@ -21,6 +21,7 @@ import {
 } from "../src/web/components/session-bits.tsx";
 import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { EffortPicker } from "../src/web/components/EffortPicker.tsx";
+import { ModePicker } from "../src/web/components/ModePicker.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -61,6 +62,21 @@ function card(over: Partial<Session> = {}, gateNeedsYou = false): string {
       session: mkSession(over),
       gateNeedsYou,
       onOpenReviews: () => {},
+    }),
+  );
+}
+
+/** The board's overview tile, with the drag-and-drop wiring it never exercises here. */
+function tile(session: Session): string {
+  return renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+      onDropConfirm: () => {},
     }),
   );
 }
@@ -373,45 +389,47 @@ test("the card's cost badge is the shared CostChip", () => {
 test("the board tile's agent dot and context meter are the shared ones", () => {
   const m = meta({ contextPct: 73 });
   const session = mkSession({ meta: m });
-  const tile = renderToStaticMarkup(
-    createElement(SessionTile, {
-      session,
-      gateNeedsYou: false,
-      onOpen: () => {},
-      draggingRepo: null,
-      onDropped: () => {},
-      onDropError: () => {},
-      onDropConfirm: () => {},
-    }),
-  );
+  const html = tile(session);
   assert.ok(
-    tile.includes(bit(AgentDot, { agent: session.agent })),
+    html.includes(bit(AgentDot, { agent: session.agent })),
     "tile should render the shared AgentDot",
   );
   assert.ok(
-    tile.includes(bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
+    html.includes(bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
     "tile should render the shared meter without nesting its effort control",
   );
-  assert.ok(tile.includes(bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
+  assert.ok(html.includes(bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
 });
 
 test("the board tile's cost badge is the shared CostChip", () => {
   const cost: SessionCost = {
     costUsd: 3.5, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
   };
-  const session = mkSession({ cost });
-  const tile = renderToStaticMarkup(
-    createElement(SessionTile, {
-      session,
-      gateNeedsYou: false,
-      onOpen: () => {},
-      draggingRepo: null,
-      onDropped: () => {},
-      onDropError: () => {},
-      onDropConfirm: () => {},
-    }),
-  );
-  assert.ok(tile.includes(bit(CostChip, { cost })), "tile should render the shared CostChip");
+  assert.ok(tile(mkSession({ cost })).includes(bit(CostChip, { cost })), "tile should render the shared CostChip");
+});
+
+test("the board tile's permission mode is the shared ModePicker", () => {
+  // The card grew the picker first, so the board could show a mode it refused to change -
+  // or, worse, grow a second chip that drifts from the card's on what a mode is called.
+  // Both states are pinned: the pickable one, and the degradation a paneless session takes
+  // (no composer to send Shift+Tab into, so the same read-only chip on every surface).
+  const cases: Partial<Session>[] = [
+    { permissionMode: "acceptEdits" },
+    { permissionMode: "plan", terminals: [] },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const fragment = bit(ModePicker, { session });
+    assert.ok(fragment, `ModePicker should draw something for ${over.permissionMode}`);
+    assert.ok(
+      tile(session).includes(fragment),
+      `tile should render the shared ModePicker (${over.permissionMode})`,
+    );
+    assert.ok(
+      card(over).includes(fragment),
+      `card should render the shared ModePicker (${over.permissionMode})`,
+    );
+  }
 });
 
 test("card and console detail agree on every shared leaf", () => {

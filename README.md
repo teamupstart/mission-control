@@ -502,7 +502,10 @@ itself (terracotta for Claude Code, green for Codex).
 A Claude card also carries a **permission mode** chip once a hook reports one - `manual`,
 `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for
 sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
-would in the session's own terminal.
+would in the session's own terminal, and clicking the chip opens a picker that jumps
+straight to the mode you choose. Like the thinking badge, it appears on Cards, in Console
+detail, and on Board tiles, so triaging from the board does not mean opening a session to
+put it back in `plan`. When the pane cannot be written the chip stays read-only.
 
 ### Answer a session's menu from the dashboard
 

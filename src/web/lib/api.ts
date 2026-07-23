@@ -405,7 +405,11 @@ export const api = {
     options: Array<{ number: number; label: string; checked: boolean }>,
   ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { options }),
-  resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
+  resolveReview: (
+    id: string,
+    action: "approve" | "reject" | "answer" | "dismiss",
+    response?: string | null,
+  ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (
     id: string,

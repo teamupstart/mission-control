@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CreateReviewSchema } from "../src/shared/protocol.ts";
+import { CreateReviewSchema, ResolveReviewSchema } from "../src/shared/protocol.ts";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 
 // Throwaway home BEFORE config.ts resolves the state dir at module load, so this
@@ -84,6 +84,17 @@ test("resolving a decisions review drops it from the pending set", () => {
   );
 });
 
+test("dismissing a decisions review persists as resolved and drops it from the pending set", () => {
+  const r = review({ id: "r-dismiss" });
+  insertReview(r);
+  updateReviewStatus("r-dismiss", "dismissed", null, 2000);
+  assert.equal(
+    loadPendingReviews().find((x) => x.id === "r-dismiss"),
+    undefined,
+    "a dismissed review is no longer pending",
+  );
+});
+
 /**
  * The decisions column is free text; a corrupt blob must degrade to "no decisions"
  * (the card renders as a plain plan) rather than throwing and taking every other
@@ -123,4 +134,10 @@ test("CreateReviewSchema rejects a decision with no options", () => {
     decisions: [{ id: "x", question: "q?", options: [] }],
   });
   assert.equal(parsed.success, false, "an empty option list is not a decision");
+});
+
+test("ResolveReviewSchema accepts dismiss without a synthetic answer", () => {
+  const parsed = ResolveReviewSchema.safeParse({ action: "dismiss" });
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.response, null);
 });

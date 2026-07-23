@@ -318,7 +318,7 @@ export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
 /** The human's decision on a review, from the dashboard. */
 export const ResolveReviewSchema = z.object({
-  action: z.enum(["approve", "reject", "answer"]),
+  action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
 });
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;

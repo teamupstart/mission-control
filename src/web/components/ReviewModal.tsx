@@ -62,7 +62,10 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const decisions = reviewDecisions(review);
 
-  async function resolve(action: "approve" | "reject" | "answer", response: string | null) {
+  async function resolve(
+    action: "approve" | "reject" | "answer" | "dismiss",
+    response: string | null,
+  ) {
     setBusy(true);
     setErr(null);
     const r = await api.resolveReview(review.id, action, response);
@@ -122,6 +125,7 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
           // one document - see `namePrefix`, without which two option-carrying `input` reviews
           // share a radio group and answering one silently clears the other.
           namePrefix={review.id}
+          onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response) => void resolve("answer", response)}
         />
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (

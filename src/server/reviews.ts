@@ -4,7 +4,7 @@ import type { Registry } from "./registry.ts";
 import { insertReview, updateReviewStatus } from "./db.ts";
 import { unref } from "./util/timers.ts";
 
-export type ReviewAction = "approve" | "reject" | "answer";
+export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
 type Waiter = (r: ReviewItem) => void;
 
@@ -79,7 +79,13 @@ export class ReviewManager {
     if (cur.status !== "pending") return cur;
 
     const status: ReviewStatus =
-      action === "approve" ? "approved" : action === "reject" ? "rejected" : "answered";
+      action === "approve"
+        ? "approved"
+        : action === "reject"
+          ? "rejected"
+          : action === "dismiss"
+            ? "dismissed"
+            : "answered";
     const resolvedAt = Date.now();
     updateReviewStatus(id, status, response, resolvedAt);
     const updated: ReviewItem = { ...cur, status, response, resolvedAt };

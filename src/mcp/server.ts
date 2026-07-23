@@ -125,6 +125,9 @@ server.registerTool(
     try {
       const id = await createReview("plan-decisions", title, plan, decisions);
       const review = await waitForResolution(id);
+      if (review.status === "dismissed") {
+        return textResult("Decision request dismissed without a response.");
+      }
       return textResult(review.response ?? "(no selections given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
@@ -293,6 +296,9 @@ server.registerTool(
       // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
       const id = await createReview("input", titleLine(question), question, decisions);
       const review = await waitForResolution(id);
+      if (review.status === "dismissed") {
+        return textResult("Input request dismissed without a response.");
+      }
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

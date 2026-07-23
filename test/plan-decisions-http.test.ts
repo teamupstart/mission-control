@@ -16,6 +16,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { reportBucket } = await import("../src/shared/session.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
@@ -103,4 +104,57 @@ test("a plan-decisions review round-trips create -> resolve -> wait over HTTP", 
   ).json()) as ReviewItem;
   assert.equal(waited.status, "answered");
   assert.equal(waited.response, answer, "the agent receives exactly what the human submitted");
+});
+
+test("submitted and dismissed decision sets both leave Needs you when none remain", async () => {
+  async function create(title: string): Promise<string> {
+    const response = await app.request("/mcp/reviews", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({
+        env: { tmuxPane: "%3" },
+        cwd: "/repo/app",
+        kind: "plan-decisions",
+        title,
+        body: `# ${title}`,
+        decisions,
+      }),
+    });
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { id: string }).id;
+  }
+
+  const priorId = await create("Prior plan");
+  const currentId = await create("Current plan");
+  assert.equal(registry.getSession("sess-1")?.pendingReviews, 2);
+  assert.equal(reportBucket(registry.getSession("sess-1")!), "needs-you");
+
+  const submitted = await app.request(`/api/reviews/${currentId}/resolve`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ action: "answer", response: "Plan decisions submitted:\n\n• Current" }),
+  });
+  assert.equal(submitted.status, 200);
+  assert.equal(registry.getSession("sess-1")?.pendingReviews, 1);
+  assert.equal(reportBucket(registry.getSession("sess-1")!), "needs-you");
+
+  const dismissed = await app.request(`/api/reviews/${priorId}/resolve`, {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ action: "dismiss" }),
+  });
+  assert.equal(dismissed.status, 200);
+  const dismissedReview = (await dismissed.json()) as ReviewItem;
+  assert.equal(dismissedReview.status, "dismissed");
+  assert.equal(dismissedReview.response, null, "dismissal does not fabricate a submitted choice");
+
+  const session = registry.getSession("sess-1");
+  assert.ok(session);
+  assert.equal(session.pendingReviews, 0);
+  assert.equal(reportBucket(session), "idle", "the session leaves Needs you once every set is resolved");
+
+  const waited = (await (
+    await app.request(`/mcp/reviews/${priorId}/wait`, { headers: authed })
+  ).json()) as ReviewItem;
+  assert.equal(waited.status, "dismissed", "the blocked MCP call is released as dismissed");
 });

@@ -14,6 +14,8 @@ import type { QueueConfig } from "../src/server/foreman/queue-machine.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { QueueManager } from "../src/server/queue.ts";
+import type { Registry } from "../src/server/registry.ts";
 
 // The I/O half, driven against a fake - mirroring foreman-verdict.test.ts's
 // ForemanActions fake. What matters here is what does and does NOT reach the pane.
@@ -119,6 +121,17 @@ const LIVE_CFG: ForemanConfig = {
 
 /** Foreman on, but drafting. The default mode - and the one Approve exists for. */
 const DRY_CFG: ForemanConfig = { ...LIVE_CFG, mode: "dry-run" };
+
+test("workflow repair re-arms the paired drain guard in one write without touching item state", () => {
+  const writes: unknown[][] = [];
+  const queues = new QueueManager({
+    setQueueWrapup(...args: unknown[]) {
+      writes.push(args);
+    },
+  } as unknown as Registry);
+  queues.rearmWorkflowCompletion("agent-1", NOW);
+  assert.deepEqual(writes, [["agent-1", { wrapupAskedAt: null, wrapupAnswer: null }, NOW]]);
+});
 
 /** A drafted item the human has said yes to. */
 function mkApproved(over: Partial<WorkItem> = {}): WorkItem {

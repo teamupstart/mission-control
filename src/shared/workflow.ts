@@ -28,6 +28,8 @@ export const WORKFLOW_LIMITS = {
   canvasCoordinateAbs: 100_000,
   repairRoundsMin: 1,
   repairRoundsMax: 20,
+  feedbackFieldBytes: 4_000,
+  feedbackPayloadBytes: 8_000,
 } as const;
 
 export const WORKFLOW_EXECUTION_LIMITS = {
@@ -276,6 +278,9 @@ export const WORKFLOW_DELIVERY_STATES = [
 ] as const;
 export type WorkflowDeliveryState = (typeof WORKFLOW_DELIVERY_STATES)[number];
 
+export const WORKFLOW_COMPLETION_KINDS = ["drain", "prompted"] as const;
+export type WorkflowCompletionKind = (typeof WORKFLOW_COMPLETION_KINDS)[number];
+
 export const WORKFLOW_LLM_PURPOSES = ["context_compaction", "persona_review"] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -289,6 +294,40 @@ export const WORKFLOW_LLM_CALL_STATES = [
 export type WorkflowLlmCallState = (typeof WORKFLOW_LLM_CALL_STATES)[number];
 
 export type WorkflowTriggerSource = "manual" | "foreman";
+
+export interface WorkflowConfig {
+  liveEnabled: boolean;
+  repoAllowlist: string[];
+}
+
+export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
+  liveEnabled: false,
+  repoAllowlist: [],
+};
+
+export interface WorkflowCompletionClaim {
+  completionKind: WorkflowCompletionKind;
+  /** SHA-256 of the worker's proof episode, never raw prompt or diff text. */
+  marker: string;
+  summary: string;
+  evidenceFingerprint: string;
+  /**
+   * The prompted episode the verifier judged. Null for drain claims.
+   *
+   * The daemon compares this with its current goal at the same synchronous boundary
+   * that retires the guard, so a newer human prompt cannot inherit an older verdict.
+   */
+  expectedGoal: string | null;
+}
+
+export type WorkflowCompletionClaimResult =
+  | { claimed: false; reason: "no_binding" | "manual_trigger" }
+  | {
+      claimed: true;
+      runId: WorkflowRunId;
+      submissionId: WorkflowSubmissionId | null;
+      state: "started" | "resubmitted" | "already_claimed" | "blocked";
+    };
 
 /** JSON that has crossed a validation boundary. */
 export type WorkflowJson =
@@ -597,5 +636,6 @@ export interface WorkflowRunDetail {
   submissions: WorkflowSubmission[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
+  deliveries: WorkflowDelivery[];
   events: WorkflowEvent[];
 }

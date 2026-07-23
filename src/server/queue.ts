@@ -372,6 +372,23 @@ export class QueueManager {
     this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now);
   }
 
+  /**
+   * One confirmed workflow repair creates one fresh drain episode. Keep every item
+   * terminal; only retire the paired once-only guard from the prior completion proof.
+   */
+  rearmWorkflowCompletion(key: string, now = Date.now()): void {
+    this.registry.setQueueWrapup(
+      key,
+      { wrapupAskedAt: null, wrapupAnswer: null },
+      now,
+    );
+  }
+
+  /** Refresh the denormalized Session projection after an atomic cross-owner DB write. */
+  refresh(key: string): void {
+    this.registry.refreshQueue(key);
+  }
+
   /** Re-key an orphaned queue onto a live session (the explicit re-attach). */
   reattach(fromKey: string, sessionId: string, now = Date.now()): { ok: boolean; error?: string } {
     const done = this.registry.reattachQueue(fromKey, sessionId, now);

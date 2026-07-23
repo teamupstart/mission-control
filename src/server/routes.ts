@@ -68,6 +68,10 @@ import {
   ReattachWorkflowBindingSchema,
   ResubmitWorkflowSchema,
   RetryWorkflowRunSchema,
+  RetryWorkflowDeliverySchema,
+  ResolveWorkflowDeliverySchema,
+  WorkflowCompletionClaimSchema,
+  WorkflowConfigSchema,
   SubmitWorkflowSchema,
   UpdateWorkflowBindingSchema,
   WrapupSchema,
@@ -177,6 +181,7 @@ import type {
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { getWorkflowConfig, setWorkflowConfig } from "./workflows/config.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -437,6 +442,12 @@ export function buildApp(
     }
     return c.json(manager.list(raw === "true"));
   });
+  app.get("/api/workflows/config", (c) => c.json(getWorkflowConfig()));
+  app.put("/api/workflows/config", async (c) => {
+    const parsed = await parseBody(c, WorkflowConfigSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setWorkflowConfig(parsed.data));
+  });
   app.post("/api/workflows", bodyLimit({
     maxSize: WORKFLOW_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "Workflow request is too large" }, 413),
@@ -621,6 +632,40 @@ export function buildApp(
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-deliveries/:id/retry", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, RetryWorkflowDeliverySchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.retryDelivery(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ delivery: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-deliveries/:id/resolve", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ResolveWorkflowDeliverySchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.resolveDelivery(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ value: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/sessions/:id/workflow-completion", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, WorkflowCompletionClaimSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      return c.json(await manager.claimCompletion(c.req.param("id"), parsed.data));
+    } catch (error) {
+      return c.json({
+        error: error instanceof Error ? error.message : String(error),
+        code: "workflow_completion_not_claimed",
+      }, 409);
+    }
   });
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));

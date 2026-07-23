@@ -110,6 +110,10 @@ test("successful reset uses resetSession to clear session workflow rows and pres
      ) VALUES ('delivery', 'run', 'sub', 'persona_feedback', 'session', 'session',
        'preview', 'sha', 'prepared', NULL, 3, 3, NULL)`,
   ).run();
+  workflows.store.appendEvent("run", "workflow_completion_claimed", {
+    triggerKey: "foreman:b:drain:marker",
+    completionKind: "drain",
+  }, 3);
   const session = registry.getSession("session")!;
   await resetSession(registry, session, false, async () => ({
     ok: true,
@@ -159,7 +163,24 @@ test("failed reset clears no workflow state", async () => {
     maxRepairRounds: 5,
     now: 3,
   });
-  assert.ok(binding);
+  workflows.store.createInitialSubmission(
+    { id: "failed-run", binding, triggerKey: "manual:failed-b:req", now: 4 },
+    { id: "failed-sub", triggerKey: "manual:failed-b:req", context: {}, evidence: {}, now: 4 },
+  );
+  workflows.store.prepareDelivery({
+    id: "failed-delivery",
+    runId: "failed-run",
+    submissionId: "failed-sub",
+    kind: "persona_feedback",
+    sessionId: "session",
+    noteKey: "session",
+    payload: "must survive failed reset",
+    payloadSha256: "d".repeat(64),
+  }, 4);
+  workflows.store.appendEvent("failed-run", "workflow_completion_claimed", {
+    triggerKey: "foreman:failed-b:drain:marker",
+    completionKind: "drain",
+  }, 4);
   await resetSession(registry, registry.getSession("session")!, false, async () => ({
     ok: false,
     error: "no",
@@ -169,4 +190,9 @@ test("failed reset clears no workflow state", async () => {
     clean: false,
   }));
   assert.equal(workflows.store.getBinding("failed-b")?.id, "failed-b");
+  assert.equal(workflows.store.getDelivery("failed-delivery")?.state, "prepared");
+  assert.equal(
+    workflows.store.listEvents("failed-run").some((event) => event.kind === "workflow_completion_claimed"),
+    true,
+  );
 });

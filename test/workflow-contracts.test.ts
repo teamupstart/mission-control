@@ -39,6 +39,8 @@ test("workflow limits are finite front-door contracts", () => {
     canvasCoordinateAbs: 100_000,
     repairRoundsMin: 1,
     repairRoundsMax: 20,
+    feedbackFieldBytes: 4_000,
+    feedbackPayloadBytes: 8_000,
   });
 });
 

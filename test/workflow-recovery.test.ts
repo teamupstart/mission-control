@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner } from "../src/shared/llm.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type {
   PublishedWorkflowGraph,
   WorkflowContextSnapshot,
@@ -197,4 +198,71 @@ test("a missing immutable version fails visibly instead of reading the current d
   assert.equal(store.getRun("run")?.status, "failed");
   assert.equal(store.getRun("run")?.currentPhase, "missing_workflow_version");
   assert.equal(store.runDetail("run")?.version, null);
+});
+
+test("manager startup preserves prepared packets and makes every surviving send uncertain before engine recovery", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+  const store = new WorkflowStore();
+  const binding = store.insertBinding({
+    id: "delivery-recovery-binding",
+    workflowVersionId: "v",
+    noteKey: "delivery-recovery-session",
+    sessionId: "delivery-recovery-session",
+    sessionAgent: "claude",
+    sessionName: "work",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 20,
+  });
+  store.createInitialSubmission(
+    { id: "delivery-recovery-run", binding, triggerKey: "manual:delivery-recovery", now: 21 },
+    { id: "delivery-recovery-sub", triggerKey: "manual:delivery-recovery", context: {}, evidence: {}, now: 21 },
+  );
+  const prepared = store.prepareDelivery({
+    id: "delivery-prepared",
+    runId: "delivery-recovery-run",
+    submissionId: "delivery-recovery-sub",
+    kind: "persona_feedback",
+    sessionId: "delivery-recovery-session",
+    noteKey: "delivery-recovery-session",
+    payload: "safe to resume",
+    payloadSha256: "b".repeat(64),
+  }).delivery;
+  const sending = store.prepareDelivery({
+    id: "delivery-sending",
+    runId: "delivery-recovery-run",
+    submissionId: "delivery-recovery-sub",
+    kind: "persona_feedback",
+    sessionId: "delivery-recovery-session",
+    noteKey: "delivery-recovery-session",
+    payload: "outcome unknown",
+    payloadSha256: "c".repeat(64),
+  }).delivery;
+  store.claimDeliverySend(sending.id);
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "delivery-recovery-session",
+    agent: "claude",
+    name: "work",
+    nameSource: "process",
+    cwd: "/repo",
+    gitBranch: "feature",
+    gitRoot: "/repo",
+    repoRoot: "/repo",
+    nomistakesGated: false,
+    pid: 92,
+    tty: "tty-delivery-recovery",
+    terminals: [],
+    startedAt: 1,
+  } as DiscoveredSession]);
+  const manager = new WorkflowManager(registry, store);
+  manager.start();
+  assert.equal(store.getDelivery(prepared.id)?.state, "prepared");
+  assert.equal(store.getDelivery(sending.id)?.state, "uncertain");
+  assert.equal(store.getRun("delivery-recovery-run")?.currentPhase, "delivery_uncertain");
+  await manager.stop();
 });

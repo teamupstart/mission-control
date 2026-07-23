@@ -522,8 +522,8 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   (`@shared/queue.ts`), `costTone` / `costIsNotable` (`@shared/cost.ts`), and the backlog
   autopilot's `plannableBacklog` / `readyBacklog` / `blockersIn` / `nextUpTaskId`
   (`@shared/backlog.ts`) are shared so every surface, and the server, decides identically.
-  Do not copy them into a component. A third consent gate extends `allowlist.ts`; it does
-  not start a matcher.
+  Do not copy them into a component. Any additional consent gate extends `allowlist.ts`; it
+  does not start a matcher.
 - **Which model a headless call spawns with**: one ladder, `resolveModelChoice`
   (`@shared/model-choice.ts`) - config, then env, then a NAMED fallback - and the roles stay
   with their subsystem: `FOREMAN_MODEL_SPECS` (Foreman's four), `INSPECTOR_MODEL_SPEC` (the

@@ -24,6 +24,7 @@ import {
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_TRIGGER_MODES,
+  type WorkflowTriggerSource,
 } from "@shared/workflow.ts";
 import type {
   Persona,
@@ -48,6 +49,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -701,6 +703,7 @@ export interface WorkflowBindingInsert {
 export interface WorkflowRunInsert {
   id: string;
   binding: WorkflowBinding;
+  triggerSource?: WorkflowTriggerSource;
   triggerKey: string;
   now: number;
 }
@@ -709,6 +712,7 @@ export interface WorkflowSubmissionInsert {
   id: string;
   runId: string;
   round: number;
+  triggerSource?: WorkflowTriggerSource;
   triggerKey: string;
   context: WorkflowJson;
   evidence: WorkflowJson;
@@ -726,6 +730,26 @@ export interface WorkflowAttemptInsert {
   retryAt?: number | null;
   error?: string | null;
   now: number;
+}
+
+export interface ForemanCompletionStoreInput {
+  binding: WorkflowBinding;
+  completionKind: "drain" | "prompted";
+  marker: string;
+  summary: string;
+  evidenceFingerprint: string;
+  expectedGoal: string | null;
+  runId: string;
+  submissionId: string;
+  now: number;
+}
+
+export interface ForemanCompletionStoreResult {
+  result: Exclude<import("@shared/workflow.ts").WorkflowCompletionClaimResult, { claimed: false }>;
+  run: WorkflowRun;
+  submission: WorkflowSubmission | null;
+  created: boolean;
+  previousFingerprint: string | undefined;
 }
 
 export class WorkflowStore {
@@ -1264,6 +1288,13 @@ export class WorkflowStore {
     return row ? parseWorkflowRunRow(row) : null;
   }
 
+  latestRunForBinding(bindingId: string): WorkflowRun | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_runs WHERE binding_id = ? ORDER BY started_at DESC, id DESC LIMIT 1`,
+    ).get(bindingId);
+    return row ? parseWorkflowRunRow(row) : null;
+  }
+
   listRuns(): WorkflowRun[] {
     const rows = this.db.prepare(`SELECT * FROM workflow_runs ORDER BY updated_at DESC`).all() as unknown[];
     return rows.flatMap((row) => {
@@ -1373,6 +1404,12 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowSubmissionRow);
   }
 
+  listSubmissionsByState(status: WorkflowSubmission["status"]): WorkflowSubmission[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE status = ? ORDER BY created_at ASC, id ASC`,
+    ).all(status) as unknown[]).map(parseWorkflowSubmissionRow);
+  }
+
   latestSubmission(runId: string): WorkflowSubmission | null {
     const row = this.db.prepare(
       `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1`,
@@ -1396,12 +1433,13 @@ export class WorkflowStore {
            id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
            trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
            gate_state_json, started_at, updated_at, completed_at
-         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, 'manual', ?, NULL, NULL, NULL, ?, ?, NULL)`,
+         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
       ).run(
         run.id,
         run.binding.id,
         run.binding.workflowVersionId,
         run.binding.maxRepairRounds,
+        run.triggerSource ?? "manual",
         run.triggerKey,
         run.now,
         run.now,
@@ -1410,6 +1448,7 @@ export class WorkflowStore {
         ...submission,
         runId: run.id,
         round: 1,
+        triggerSource: run.triggerSource ?? "manual",
       });
       this.appendEvent(run.id, "run_created", {
         submissionId: submission.id,
@@ -1433,12 +1472,15 @@ export class WorkflowStore {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
       this.insertSubmissionInTransaction(input);
-      this.db.prepare(
+      const updated = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
                 updated_at = ?, completed_at = NULL
-          WHERE id = ?`,
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(input.now, input.runId);
+      if (Number(updated.changes) !== 1) {
+        throw new Error(`Workflow run ${input.runId} is terminal`);
+      }
       this.appendEvent(input.runId, "submission_created", {
         submissionId: input.id,
         triggerKey: input.triggerKey,
@@ -1448,6 +1490,161 @@ export class WorkflowStore {
         run: this.mustRun(input.runId),
         submission: this.mustSubmission(input.id),
         idempotent: false,
+      };
+    });
+  }
+
+  /**
+   * Claim one Foreman proof and retire its matching once-only guard atomically.
+   * The worker never supplies durable workflow identity; the manager resolves the binding first.
+   */
+  claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
+    return transaction(this.db, () => {
+      const triggerKey =
+        `foreman:${input.binding.id}:${input.completionKind}:${input.marker}`;
+      const duplicateEvent = this.db.prepare(
+        `SELECT run_id, payload_json FROM workflow_events
+          WHERE event_kind = 'workflow_completion_claimed'
+            AND json_extract(payload_json, '$.triggerKey') = ?
+          ORDER BY id ASC LIMIT 1`,
+      ).get(triggerKey) as { run_id: string; payload_json: string } | undefined;
+      if (duplicateEvent) {
+        const run = this.mustRun(duplicateEvent.run_id);
+        const submission = this.submissionByTrigger(triggerKey);
+        return {
+          result: {
+            claimed: true,
+            runId: run.id,
+            submissionId: submission?.id ?? null,
+            state: "already_claimed",
+          },
+          run,
+          submission,
+          created: false,
+          previousFingerprint: undefined,
+        };
+      }
+
+      const expectedGoal = input.expectedGoal?.trim() || null;
+      const currentGoal = input.completionKind === "prompted"
+        ? (
+            this.db.prepare(
+              `SELECT prompt FROM session_goals WHERE note_key = ?`,
+            ).get(input.binding.noteKey) as { prompt: string | null } | undefined
+          )?.prompt?.trim() || null
+        : null;
+      if (
+        input.completionKind === "prompted"
+        && (!expectedGoal || currentGoal !== expectedGoal)
+      ) {
+        throw new Error("Foreman prompted completion goal is no longer current");
+      }
+
+      let run = this.activeRunForBinding(input.binding.id);
+      let submission: WorkflowSubmission | null = null;
+      let state: ForemanCompletionStoreResult["result"]["state"] = "blocked";
+      let created = false;
+      let previousFingerprint: string | undefined;
+
+      if (!run) {
+        this.db.prepare(
+          `INSERT INTO workflow_runs (
+             id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
+             trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
+             gate_state_json, started_at, updated_at, completed_at
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, 'foreman', ?, NULL, NULL, NULL, ?, ?, NULL)`,
+        ).run(
+          input.runId,
+          input.binding.id,
+          input.binding.workflowVersionId,
+          input.binding.maxRepairRounds,
+          triggerKey,
+          input.now,
+          input.now,
+        );
+        this.insertSubmissionInTransaction({
+          id: input.submissionId,
+          runId: input.runId,
+          round: 1,
+          triggerSource: "foreman",
+          triggerKey,
+          context: {},
+          evidence: {},
+          now: input.now,
+        });
+        run = this.mustRun(input.runId);
+        submission = this.mustSubmission(input.submissionId);
+        state = "started";
+        created = true;
+      } else if (run.status === "waiting_for_session") {
+        const latest = this.latestSubmission(run.id);
+        if (latest && latest.round <= run.maxRepairRounds) {
+          previousFingerprint = latest.evidenceFingerprint;
+          this.insertSubmissionInTransaction({
+            id: input.submissionId,
+            runId: run.id,
+            round: latest.round + 1,
+            triggerSource: "foreman",
+            triggerKey,
+            context: {},
+            evidence: {},
+            now: input.now,
+          });
+          this.db.prepare(
+            `UPDATE workflow_runs
+                SET status = 'capturing', current_phase = 'capturing',
+                    gate_state_json = NULL, updated_at = ?, completed_at = NULL
+              WHERE id = ?`,
+          ).run(input.now, run.id);
+          run = this.mustRun(run.id);
+          submission = this.mustSubmission(input.submissionId);
+          state = "resubmitted";
+          created = true;
+        } else {
+          this.setRunState(run.id, "blocked", "round_limit", {
+            maxRepairRounds: run.maxRepairRounds,
+          }, input.now);
+          run = this.mustRun(run.id);
+        }
+      } else if (run.status === "capturing" || run.status === "running") {
+        submission = this.latestSubmission(run.id);
+        state = "already_claimed";
+      } else {
+        this.appendEvent(run.id, "workflow_completion_blocked", {
+          triggerKey,
+          completionKind: input.completionKind,
+          marker: input.marker,
+          runStatus: run.status,
+          phase: run.currentPhase,
+        }, input.now);
+      }
+
+      const retired = input.completionKind === "drain"
+        ? this.retireDrainGuard(input.binding.noteKey, `workflow:${run.id}`, input.now)
+        : this.retirePromptedGuard(input.binding, currentGoal, input.now);
+      if (!retired) {
+        throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+      }
+      this.appendEvent(run.id, "workflow_completion_claimed", {
+        triggerKey,
+        completionKind: input.completionKind,
+        marker: input.marker,
+        summary: input.summary,
+        evidenceFingerprint: input.evidenceFingerprint,
+        state,
+        submissionId: submission?.id ?? null,
+      }, input.now);
+      return {
+        result: {
+          claimed: true,
+          runId: run.id,
+          submissionId: submission?.id ?? null,
+          state,
+        },
+        run,
+        submission,
+        created,
+        previousFingerprint,
       };
     });
   }
@@ -1491,7 +1688,7 @@ export class WorkflowStore {
       `UPDATE workflow_runs
           SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
-        WHERE id = ?`,
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
   }
@@ -1505,9 +1702,28 @@ export class WorkflowStore {
     this.db.prepare(
       `UPDATE workflow_submissions SET status = ?, updated_at = ?,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
-        WHERE id = ?`,
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, now, terminal ? 1 : 0, now, id);
     return this.mustSubmission(id);
+  }
+
+  reviveFailedSubmission(
+    id: string,
+    runId: string,
+    expectedPhase: string,
+    now = Date.now(),
+  ): WorkflowSubmission | null {
+    const changed = this.db.prepare(
+      `UPDATE workflow_submissions
+          SET status = 'running', updated_at = ?, completed_at = NULL
+        WHERE id = ? AND run_id = ? AND status = 'failed'
+          AND EXISTS (
+            SELECT 1 FROM workflow_runs
+             WHERE id = ? AND current_phase = ?
+               AND status IN ('waiting_for_session', 'blocked')
+          )`,
+    ).run(now, id, runId, runId, expectedPhase);
+    return Number(changed.changes) === 1 ? this.mustSubmission(id) : null;
   }
 
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
@@ -1707,7 +1923,14 @@ export class WorkflowStore {
           now,
         });
       }
-      this.setSubmissionState(submissionId, "running", now);
+      if (!this.reviveFailedSubmission(
+        submissionId,
+        runId,
+        "infrastructure_error",
+        now,
+      )) {
+        throw new Error(`Workflow submission ${submissionId} cannot be revived`);
+      }
       this.setRunState(runId, "running", "persona_review", null, now);
       this.appendEvent(runId, "manual_infrastructure_retry", {
         requestId,
@@ -1741,6 +1964,419 @@ export class WorkflowStore {
     return (this.db.prepare(
       `SELECT * FROM workflow_edge_receipts WHERE submission_id = ? ORDER BY id ASC`,
     ).all(submissionId) as unknown[]).map(parseWorkflowEdgeReceiptRow);
+  }
+
+  getDelivery(id: string): WorkflowDelivery | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_deliveries WHERE id = ?`).get(id);
+    return row ? parseWorkflowDeliveryRow(row) : null;
+  }
+
+  deliveryForPacket(
+    submissionId: string,
+    kind: WorkflowDelivery["kind"],
+    payloadSha256: string,
+  ): WorkflowDelivery | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_deliveries
+        WHERE submission_id = ? AND kind = ? AND payload_sha256 = ?`,
+    ).get(submissionId, kind, payloadSha256);
+    return row ? parseWorkflowDeliveryRow(row) : null;
+  }
+
+  listDeliveries(runId: string): WorkflowDelivery[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_deliveries WHERE run_id = ? ORDER BY created_at ASC, id ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowDeliveryRow);
+  }
+
+  listDeliveriesByState(state: WorkflowDelivery["state"]): WorkflowDelivery[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_deliveries WHERE state = ? ORDER BY created_at ASC, id ASC`,
+    ).all(state) as unknown[]).map(parseWorkflowDeliveryRow);
+  }
+
+  prepareDelivery(
+    input: Pick<
+      WorkflowDelivery,
+      "id" | "runId" | "submissionId" | "kind" | "sessionId" | "noteKey" | "payload" | "payloadSha256"
+    >,
+    now = Date.now(),
+  ): { delivery: WorkflowDelivery; idempotent: boolean } {
+    return transaction(this.db, () => {
+      const existing = this.deliveryForPacket(input.submissionId, input.kind, input.payloadSha256);
+      if (existing) return { delivery: existing, idempotent: true };
+      this.db.prepare(
+        `INSERT INTO workflow_deliveries (
+           id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256,
+           state, error, created_at, updated_at, delivered_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
+      ).run(
+        input.id,
+        input.runId,
+        input.submissionId,
+        input.kind,
+        input.sessionId,
+        input.noteKey,
+        input.payload,
+        input.payloadSha256,
+        now,
+        now,
+      );
+      return { delivery: this.mustDelivery(input.id), idempotent: false };
+    });
+  }
+
+  /**
+   * Own the only automatic transition across the terminal-write boundary.
+   * Refused packets may be explicitly reclaimed; uncertain/delivered packets never can.
+   */
+  claimDeliverySend(id: string, allowRefused = false, now = Date.now()): WorkflowDelivery | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(id);
+      if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const eligible = delivery.state === "prepared" || (allowRefused && delivery.state === "refused");
+      if (!eligible) return null;
+      const sibling = this.db.prepare(
+        `SELECT id FROM workflow_deliveries
+          WHERE submission_id = ? AND kind = ? AND id <> ?
+            AND state IN ('sending', 'delivered')
+          LIMIT 1`,
+      ).get(delivery.submissionId, delivery.kind, delivery.id);
+      if (sibling) return null;
+      const result = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'sending', error = NULL, updated_at = ?
+          WHERE id = ? AND state = ?`,
+      ).run(now, id, delivery.state);
+      return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
+    });
+  }
+
+  setDeliveryState(
+    id: string,
+    state: WorkflowDelivery["state"],
+    error: string | null,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = ?, error = ?, updated_at = ?,
+              delivered_at = CASE WHEN ? = 'delivered'
+                                  THEN COALESCE(delivered_at, ?) ELSE delivered_at END
+        WHERE id = ?`,
+    ).run(state, error, now, state, now, id);
+    return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+  }
+
+  refuseDeliveryBeforeSend(
+    id: string,
+    error: string,
+    allowRefused: boolean,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'refused', error = ?, updated_at = ?
+        WHERE id = ? AND (state = 'prepared' OR (? = 1 AND state = 'refused'))`,
+    ).run(error, now, id, allowRefused ? 1 : 0);
+    return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
+  }
+
+  finishDeliverySend(
+    id: string,
+    state: Extract<WorkflowDelivery["state"], "refused" | "uncertain">,
+    error: string | null,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = ?, error = ?, updated_at = ?
+        WHERE id = ? AND state = 'sending'`,
+    ).run(state, error, now, id);
+    return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+  }
+
+  confirmDeliverySend(
+    id: string,
+    transcriptAnchor: number | null,
+    submitVerified: boolean,
+    now = Date.now(),
+  ): { delivery: WorkflowDelivery; rearmedDrain: boolean } | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(id);
+      if (!delivery || delivery.state !== "sending") return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const changed = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'delivered', error = NULL, updated_at = ?, delivered_at = ?
+          WHERE id = ? AND state = 'sending'`,
+      ).run(now, now, id);
+      if (Number(changed.changes) !== 1) return null;
+      this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
+        deliveryId: delivery.id,
+        transcriptAnchor,
+      }, now);
+      this.appendEvent(delivery.runId, "delivery_delivered", {
+        deliveryId: delivery.id,
+        transcriptAnchor,
+        submitVerified,
+      }, now);
+      const rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
+      if (rearmedDrain) {
+        this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
+          deliveryId: delivery.id,
+          completionKind: "drain",
+        }, now);
+      }
+      return { delivery: this.mustDelivery(id), rearmedDrain };
+    });
+  }
+
+  /**
+   * A daemon that stopped with a row in `sending` cannot know whether the paste landed.
+   * Convert all of them before any ready graph work is recovered.
+   */
+  recoverSendingDeliveries(now = Date.now()): WorkflowDelivery[] {
+    return transaction(this.db, () => {
+      const sending = this.listDeliveriesByState("sending");
+      for (const delivery of sending) {
+        this.db.prepare(
+          `UPDATE workflow_deliveries
+              SET state = 'uncertain', error = 'daemon_restart_after_send_claim', updated_at = ?
+            WHERE id = ? AND state = 'sending'`,
+        ).run(now, delivery.id);
+        this.db.prepare(
+          `UPDATE workflow_runs
+              SET status = 'blocked', current_phase = 'delivery_uncertain',
+                  gate_state_json = ?, updated_at = ?
+            WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+        ).run(JSON.stringify({ deliveryId: delivery.id }), now, delivery.runId);
+        this.appendEvent(delivery.runId, "delivery_uncertain", {
+          deliveryId: delivery.id,
+          reason: "daemon_restart_after_send_claim",
+        }, now);
+      }
+      return sending.map((delivery) => this.mustDelivery(delivery.id));
+    });
+  }
+
+  markSendingUncertainForSession(
+    sessionId: string,
+    reason: string,
+    now = Date.now(),
+  ): WorkflowDelivery[] {
+    return transaction(this.db, () => {
+      const rows = this.db.prepare(
+        `SELECT * FROM workflow_deliveries WHERE session_id = ? AND state = 'sending'`,
+      ).all(sessionId) as unknown[];
+      const sending = rows.map(parseWorkflowDeliveryRow);
+      for (const delivery of sending) {
+        this.db.prepare(
+          `UPDATE workflow_deliveries
+              SET state = 'uncertain', error = ?, updated_at = ?
+            WHERE id = ? AND state = 'sending'`,
+        ).run(reason, now, delivery.id);
+        this.db.prepare(
+          `UPDATE workflow_runs
+              SET status = 'blocked', current_phase = 'delivery_uncertain',
+                  gate_state_json = ?, updated_at = ?
+            WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+        ).run(JSON.stringify({ deliveryId: delivery.id, reason }), now, delivery.runId);
+        this.appendEvent(delivery.runId, "delivery_uncertain", {
+          deliveryId: delivery.id,
+          reason,
+        }, now);
+      }
+      return sending.map((delivery) => this.mustDelivery(delivery.id));
+    });
+  }
+
+  requireDeliveryRetryConfirmation(
+    id: string,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'refused', error = 'reattach_confirmation_required', updated_at = ?
+        WHERE id = ? AND state IN ('prepared', 'refused')`,
+    ).run(now, id);
+    return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+  }
+
+  confirmDeliveryRetryTarget(
+    id: string,
+    expectedSessionId: string,
+    expectedNoteKey: string,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(id);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const binding = run ? this.getBinding(run.bindingId) : null;
+      if (
+        !delivery
+        || delivery.state !== "refused"
+        || !run
+        || ["completed", "cancelled", "failed"].includes(run.status)
+        || !binding
+        || binding.state !== "active"
+        || binding.sessionId !== expectedSessionId
+        || binding.noteKey !== expectedNoteKey
+      ) {
+        return null;
+      }
+      const changed = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET session_id = ?, note_key = ?, updated_at = ?
+          WHERE id = ? AND state = 'refused'`,
+      ).run(expectedSessionId, expectedNoteKey, now, id);
+      return Number(changed.changes) === 1 ? this.mustDelivery(id) : null;
+    });
+  }
+
+  resolveUncertainDelivery(
+    id: string,
+    resolution: "mark_delivered" | "discard_and_new_round",
+    requestId: string,
+    now = Date.now(),
+  ): { delivery: WorkflowDelivery; idempotent: boolean; rearmedDrain: boolean } | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(id);
+      if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run) return null;
+      const runTerminal = ["completed", "cancelled", "failed"].includes(run.status);
+      const prior = this.db.prepare(
+        `SELECT json_extract(payload_json, '$.resolution') AS resolution
+           FROM workflow_events
+          WHERE run_id = ? AND event_kind = 'delivery_uncertain_resolved'
+            AND json_extract(payload_json, '$.deliveryId') = ?
+            AND json_extract(payload_json, '$.requestId') = ?
+          LIMIT 1`,
+      ).get(delivery.runId, id, requestId) as { resolution: string } | undefined;
+      if (prior) {
+        return prior.resolution === resolution
+          ? { delivery, idempotent: true, rearmedDrain: false }
+          : null;
+      }
+      if (delivery.state !== "uncertain") return null;
+      const state = resolution === "mark_delivered" ? "delivered" : "cancelled";
+      const error = resolution === "mark_delivered" ? null : "discarded_by_operator";
+      const changed = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = ?, error = ?, updated_at = ?,
+                delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
+          WHERE id = ? AND state = 'uncertain'`,
+      ).run(state, error, now, state, now, id);
+      if (Number(changed.changes) !== 1) return null;
+      this.appendEvent(delivery.runId, "delivery_uncertain_resolved", {
+        deliveryId: id,
+        requestId,
+        resolution,
+      }, now);
+      let rearmedDrain = false;
+      if (resolution === "mark_delivered" && !runTerminal) {
+        const binding = this.getBinding(run.bindingId);
+        if (
+          binding?.state === "active"
+          && binding.sessionId === delivery.sessionId
+          && binding.noteKey === delivery.noteKey
+        ) {
+          this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
+            deliveryId: delivery.id,
+            resolvedByOperator: true,
+          }, now);
+          rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
+          if (rearmedDrain) {
+            this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
+              deliveryId: delivery.id,
+              completionKind: "drain",
+            }, now);
+          }
+        }
+      }
+      return { delivery: this.mustDelivery(id), idempotent: false, rearmedDrain };
+    });
+  }
+
+  replaceUncertainDeliveryWithRepair(
+    deliveryId: string,
+    requestId: string,
+    input: WorkflowSubmissionInsert,
+  ): {
+    delivery: WorkflowDelivery;
+    run: WorkflowRun;
+    submission: WorkflowSubmission;
+    idempotent: boolean;
+  } | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const prior = this.db.prepare(
+        `SELECT json_extract(payload_json, '$.submissionId') AS submission_id
+           FROM workflow_events
+          WHERE run_id = ? AND event_kind = 'delivery_uncertain_resolved'
+            AND json_extract(payload_json, '$.deliveryId') = ?
+            AND json_extract(payload_json, '$.requestId') = ?
+            AND json_extract(payload_json, '$.resolution') = 'discard_and_new_round'
+          LIMIT 1`,
+      ).get(delivery.runId, deliveryId, requestId) as { submission_id: string | null } | undefined;
+      if (prior?.submission_id) {
+        const submission = this.getSubmission(prior.submission_id);
+        return submission
+          ? { delivery, run, submission, idempotent: true }
+          : null;
+      }
+      if (
+        delivery.state !== "uncertain"
+        || input.runId !== run.id
+        || !["waiting_for_session", "blocked"].includes(run.status)
+      ) {
+        return null;
+      }
+      const latest = this.latestSubmission(run.id);
+      if (!latest || input.round !== latest.round + 1) return null;
+      this.insertSubmissionInTransaction(input);
+      const runChanged = this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
+                updated_at = ?, completed_at = NULL
+          WHERE id = ? AND status IN ('waiting_for_session', 'blocked')`,
+      ).run(input.now, run.id);
+      if (Number(runChanged.changes) !== 1) {
+        throw new Error(`Workflow run ${run.id} cannot start a replacement round`);
+      }
+      const deliveryChanged = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'cancelled', error = 'discarded_by_operator', updated_at = ?
+          WHERE id = ? AND state = 'uncertain'`,
+      ).run(input.now, delivery.id);
+      if (Number(deliveryChanged.changes) !== 1) {
+        throw new Error(`Workflow delivery ${delivery.id} cannot be discarded`);
+      }
+      this.appendEvent(run.id, "submission_created", {
+        submissionId: input.id,
+        triggerKey: input.triggerKey,
+        round: input.round,
+      }, input.now);
+      this.appendEvent(run.id, "delivery_uncertain_resolved", {
+        deliveryId: delivery.id,
+        requestId,
+        resolution: "discard_and_new_round",
+        submissionId: input.id,
+      }, input.now);
+      return {
+        delivery: this.mustDelivery(delivery.id),
+        run: this.mustRun(run.id),
+        submission: this.mustSubmission(input.id),
+        idempotent: false,
+      };
+    });
   }
 
   appendEvent(
@@ -1816,6 +2452,7 @@ export class WorkflowStore {
       submissions,
       attempts: submissions.flatMap((submission) => this.listAttempts(submission.id)),
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
+      deliveries: this.listDeliveries(id),
       events: this.listEvents(id),
     };
   }
@@ -1836,6 +2473,7 @@ export class WorkflowStore {
                 completed_at = COALESCE(completed_at, ?)
           WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(now, now, id);
+      this.cancelRunDeliveries(id, reason, "run_cancelled_during_send", now);
       this.db.prepare(
         `UPDATE workflow_llm_calls
             SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
@@ -1934,6 +2572,12 @@ export class WorkflowStore {
                   completed_at = COALESCE(completed_at, ?)
             WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
         ).run(now, now, active.id);
+        this.cancelRunDeliveries(
+          active.id,
+          "binding_archived",
+          "binding_archived_during_send",
+          now,
+        );
         this.db.prepare(
           `UPDATE workflow_llm_calls
               SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
@@ -1950,6 +2594,33 @@ export class WorkflowStore {
       if (!archived) throw new Error(`Workflow binding ${id} disappeared during archive`);
       return { binding: archived, cancelledRunId: active?.id ?? null };
     });
+  }
+
+  private cancelRunDeliveries(
+    runId: string,
+    reason: string,
+    uncertainReason: string,
+    now: number,
+  ): void {
+    const sending = this.db.prepare(
+      `SELECT id FROM workflow_deliveries WHERE run_id = ? AND state = 'sending'`,
+    ).all(runId) as { id: string }[];
+    this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'cancelled', error = ?, updated_at = ?
+        WHERE run_id = ? AND state IN ('prepared', 'refused')`,
+    ).run(reason, now, runId);
+    this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'uncertain', error = ?, updated_at = ?
+        WHERE run_id = ? AND state = 'sending'`,
+    ).run(uncertainReason, now, runId);
+    for (const delivery of sending) {
+      this.appendEvent(runId, "delivery_uncertain", {
+        deliveryId: delivery.id,
+        reason: uncertainReason,
+      }, now);
+    }
   }
 
   resetForNoteKey(noteKey: string): string[] {
@@ -1982,16 +2653,77 @@ export class WorkflowStore {
     });
   }
 
+  private retireDrainGuard(noteKey: string, answer: string, now: number): boolean {
+    const terminal = TERMINAL_ITEM_STATES.map((state) => `'${state}'`).join(",");
+    const result = this.db.prepare(
+      `UPDATE foreman_queues
+          SET wrapup_asked_at = ?, wrapup_answer = ?, updated_at = ?
+        WHERE note_key = ?
+          AND wrapup_asked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM foreman_queue_items WHERE note_key = foreman_queues.note_key
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM foreman_queue_items
+             WHERE note_key = foreman_queues.note_key AND state NOT IN (${terminal})
+          )`,
+    ).run(now, answer, now, noteKey);
+    return Number(result.changes) === 1;
+  }
+
+  private rearmDrainCompletionForDelivery(
+    delivery: WorkflowDelivery,
+    now: number,
+  ): boolean {
+    const result = this.db.prepare(
+      `UPDATE foreman_queues
+          SET wrapup_asked_at = NULL, wrapup_answer = NULL, updated_at = ?
+        WHERE note_key = ?
+          AND EXISTS (
+            SELECT 1 FROM foreman_queue_items WHERE note_key = foreman_queues.note_key
+          )`,
+    ).run(now, delivery.noteKey);
+    return Number(result.changes) === 1;
+  }
+
+  private retirePromptedGuard(
+    binding: WorkflowBinding,
+    currentGoal: string | null,
+    now: number,
+  ): boolean {
+    const goal = currentGoal?.trim();
+    if (!goal) return false;
+    const existing = this.db.prepare(
+      `SELECT prompted_goal FROM foreman_queues WHERE note_key = ?`,
+    ).get(binding.noteKey) as { prompted_goal: string | null } | undefined;
+    if (existing?.prompted_goal === goal) return false;
+    if (existing) {
+      const result = this.db.prepare(
+        `UPDATE foreman_queues SET prompted_goal = ?, updated_at = ?
+          WHERE note_key = ?
+            AND (prompted_goal IS NULL OR prompted_goal <> ?)`,
+      ).run(goal, now, binding.noteKey, goal);
+      return Number(result.changes) === 1;
+    }
+    const result = this.db.prepare(
+      `INSERT INTO foreman_queues (
+         note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
+       ) VALUES (?, ?, NULL, NULL, NULL, ?, ?)`,
+    ).run(binding.noteKey, binding.sessionCwd, goal, now);
+    return Number(result.changes) === 1;
+  }
+
   private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {
     this.db.prepare(
       `INSERT INTO workflow_submissions (
          id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
          context_json, evidence_json, pr_head_sha, status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, 'full_workflow', 'manual', ?, ?, ?, ?, NULL, 'capturing', ?, ?, NULL)`,
+       ) VALUES (?, ?, ?, 'full_workflow', ?, ?, ?, ?, ?, NULL, 'capturing', ?, ?, NULL)`,
     ).run(
       input.id,
       input.runId,
       input.round,
+      input.triggerSource ?? "manual",
       input.triggerKey,
       `capturing:${input.id}`,
       JSON.stringify(input.context),
@@ -2011,6 +2743,12 @@ export class WorkflowStore {
     const submission = this.getSubmission(id);
     if (!submission) throw new Error(`Workflow submission ${id} disappeared during a transaction`);
     return submission;
+  }
+
+  private mustDelivery(id: string): WorkflowDelivery {
+    const delivery = this.getDelivery(id);
+    if (!delivery) throw new Error(`Workflow delivery ${id} disappeared during a transaction`);
+    return delivery;
   }
 
   private listPersonasInTransaction(includeArchived: boolean): Persona[] {

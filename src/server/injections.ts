@@ -4,8 +4,8 @@ import type { TurnOrigin } from "@shared/types.ts";
 /**
  * Who typed a given user turn - the one fact the transcript file cannot carry.
  *
- * Two things drive a session by typing into its pane: Foreman, delivering work items,
- * and this daemon itself, broadcasting `/reload-skills`. Both land in the JSONL as
+ * Three non-human paths drive a session by typing into its pane: Foreman delivering work
+ * items, workflow repair delivery, and this daemon broadcasting `/reload-skills`. They land in the JSONL as
  * ordinary user turns, byte-identical in shape to the ones a person types, so a reader
  * is told they asked for work they never asked for. Round 0 of a work item is the
  * human's intent delivered VERBATIM (see `payloadFor`), so there is nothing to

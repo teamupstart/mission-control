@@ -171,6 +171,7 @@ const detail: WorkflowRunDetail = {
     finishedAt: 2,
   }],
   receipts: [],
+  deliveries: [],
   events: [{ id: 1, runId: "run", timestamp: 1, kind: "persona_verdict", payload: { verdict: "fail" } }],
 };
 
@@ -230,6 +231,55 @@ test("run canvas statuses come only from the latest repair submission", () => {
   }), {
     persona: "running",
   });
+});
+
+test("run detail renders exact delivery audit and only explicit recovery controls", () => {
+  const delivery = {
+    id: "delivery",
+    runId: "run",
+    submissionId: "submission",
+    kind: "persona_feedback" as const,
+    sessionId: "session",
+    noteKey: "note",
+    payload: "EXACT REPAIR PACKET",
+    payloadSha256: "a".repeat(64),
+    state: "uncertain" as const,
+    error: "outcome_unknown",
+    createdAt: 2,
+    updatedAt: 3,
+    deliveredAt: null,
+  };
+  const html = renderToStaticMarkup(createElement(WorkflowRunView, {
+    detail: {
+      ...detail,
+      binding: { ...detail.binding, deliveryMode: "live" },
+      deliveries: [delivery],
+      events: [{
+        id: 2,
+        runId: "run",
+        timestamp: 2,
+        kind: "workflow_completion_claimed",
+        payload: {
+          completionKind: "drain",
+          marker: "1234567890abcdef",
+          summary: "Foreman proved the queue complete.",
+          state: "resubmitted",
+        },
+      }],
+    },
+    onResubmit: async () => {},
+    onRetry: async () => {},
+    onCancel: async () => {},
+  }));
+  assert.match(html, /Live · version 2/);
+  assert.match(html, /EXACT REPAIR PACKET/);
+  assert.match(html, new RegExp("a".repeat(64)));
+  assert.match(html, /Mark delivered/);
+  assert.match(html, /Discard and send new round/);
+  assert.match(html, /drain · resubmitted/);
+  assert.match(html, /1234567890ab/);
+  assert.match(html, /Foreman proved the queue complete/);
+  assert.doesNotMatch(html, /Retry refused delivery/);
 });
 
 test("binding selection reuses only the requested immutable version", () => {

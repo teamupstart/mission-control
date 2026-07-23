@@ -459,6 +459,7 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
   assert.equal(confirmed.status, 200);
   assert.equal((await confirmed.json() as { submission: { id: string } }).submission.id, refused?.id);
   await waitFor("waiting_for_session");
+  assert.equal(workflows.store.getSubmission(refused!.id)?.status, "waiting_for_session");
   assert.equal(workflows.store.listSubmissions(runId).length, 2);
   assert.equal(workflows.store.listAttempts(refused!.id).filter((attempt) => attempt.nodeId === "persona").length, 1);
 

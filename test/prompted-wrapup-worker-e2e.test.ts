@@ -596,6 +596,9 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
         },
       };
     }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+    }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
       queue = { ...queue, promptedGoal: (JSON.parse(raw) as { goal: string }).goal };
@@ -611,6 +614,8 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
 
   const injects = stub.calls.filter((c) => c.path.endsWith("/inject"));
   const retires = stub.calls.filter((c) => c.path.endsWith("/wrapup/prompted"));
+  const claims = stub.calls.filter((c) => c.path.endsWith("/workflow-completion"));
+  assert.equal(claims.length, 1, `expected exactly one workflow claim\n${out}`);
   assert.equal(injects.length, 1, `expected exactly one fire\n${out}`);
   assert.equal(retires.length, 1, `expected exactly one retire\n${out}`);
   assert.deepEqual(injects[0]?.body, { text: "/no-mistakes", origin: "foreman" }, out);

@@ -1278,9 +1278,8 @@ version. Opening a workflow fetches only bounded version metadata; selecting one
 entry fetches that immutable graph and its exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Phase 3 enables only Manual plus Preview.
-Foreman-complete, Live delivery, and the optional Inspector final gate remain visibly
-unavailable.
+or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
+optional Inspector final gate remains unavailable until its later workflow phase.
 
 ### Manual Preview runs
 
@@ -1322,6 +1321,34 @@ then requires a fresh resubmit. Reset removes bindings, runs, submissions, attem
 captured context, and model-call metadata through the same session reset owner. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded only for the selected run. Cards, Console, and Board show the same workflow status.
+
+### Live repair delivery and Foreman completion
+
+Live workflow delivery is separately off by default. Open **Workflows → Workflow settings**,
+enable Live after its explicit warning, and add canonical repository roots to the Workflow
+allowlist. A Live binding can be saved only while its current session is in an allowlisted
+checkout. Removing consent keeps the binding choice visible but refuses the next delivery;
+it is never silently changed to Preview.
+
+When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
+packet in published graph order. The packet preserves the original raw goal, identifies the
+immutable workflow version and evidence fingerprint, and includes only failed Persona findings.
+Preview stores the exact packet and hash without touching the terminal. Live records
+**Prepared**, claims **Sending**, and uses the same pane-locked prompt injection as dispatch and
+the work queue. Confirmed delivery is credited to `workflow` in the transcript. A positive
+pre-write refusal can be retried explicitly; a lost or possibly-landed write becomes
+**Delivery uncertain** and is never sent again automatically. Inspect the pane, then either
+mark it delivered or type the required confirmation to discard it and create a new repair
+round.
+
+**Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
+completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
+SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
+once-only guard in one transaction. A missing or failed claim endpoint fails closed—Foreman
+does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
+the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
+session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered
+repair becomes the new captured goal.
 
 ## Models (what the app's own model work runs on)
 

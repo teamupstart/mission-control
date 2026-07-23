@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { repoAllowlisted } from "@shared/allowlist.ts";
+import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   type WorkflowBinding,
   type WorkflowBindingDefaults,
   type WorkflowDetail,
   type WorkflowSummary,
+  type WorkflowConfig,
 } from "@shared/workflow.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -53,12 +56,16 @@ export function WorkflowBindingDialog({
   workflows,
   onClose,
   onRun,
+  foremanEnabled = false,
+  promptedWrapupEnabled = false,
 }: {
   target: WorkflowBindingTarget;
   sessions: Session[];
   workflows: WorkflowSummary[];
   onClose: () => void;
   onRun: (id: string) => void;
+  foremanEnabled?: boolean;
+  promptedWrapupEnabled?: boolean;
 }): React.JSX.Element {
   const live = useMemo(
     () => sessions.filter((session) => session.state !== "exited"),
@@ -75,17 +82,23 @@ export function WorkflowBindingDialog({
   );
   const [versionNumber, setVersionNumber] = useState<number | null>(target.workflowVersion ?? null);
   const [maxRepairRounds, setMaxRepairRounds] = useState(defaults.maxRepairRounds);
+  const [triggerMode, setTriggerMode] = useState(defaults.triggerMode);
+  const [deliveryMode, setDeliveryMode] = useState(defaults.deliveryMode);
+  const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   const [bindings, setBindings] = useState<WorkflowBinding[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     void workflowRequest<WorkflowBinding[]>("/api/workflow-bindings").then(setBindings).catch(() => {});
+    void workflowRequest<WorkflowConfig>("/api/workflows/config").then(setWorkflowConfig).catch(() => {});
   }, []);
   useEffect(() => {
     if (!versionId) return;
     if (versionId === target.workflowVersionId && target.bindingDefaults) {
       setDefaults(target.bindingDefaults);
       setMaxRepairRounds(target.bindingDefaults.maxRepairRounds);
+      setTriggerMode(target.bindingDefaults.triggerMode);
+      setDeliveryMode(target.bindingDefaults.deliveryMode);
       setVersionNumber(target.workflowVersion ?? null);
       return;
     }
@@ -98,6 +111,8 @@ export function WorkflowBindingDialog({
       if (!version) return;
       setDefaults(version.bindingDefaults);
       setMaxRepairRounds(version.bindingDefaults.maxRepairRounds);
+      setTriggerMode(version.bindingDefaults.triggerMode);
+      setDeliveryMode(version.bindingDefaults.deliveryMode);
       setVersionNumber(version.version);
     }).catch(() => {});
     return () => { current = false; };
@@ -113,26 +128,62 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  useEffect(() => {
+    if (!existing) return;
+    setTriggerMode(existing.triggerMode);
+    setDeliveryMode(existing.deliveryMode);
+    setMaxRepairRounds(existing.maxRepairRounds);
+  }, [existing?.id]);
+  const liveAllowed = Boolean(
+    session
+    && workflowConfig?.liveEnabled
+    && repoAllowlisted(session.cwd, session.repoRoot, workflowConfig.repoAllowlist),
+  );
+  const harness = session ? HARNESS_CAPABILITIES[session.agent] : null;
+  const foremanAllowed = Boolean(
+    session
+    && foremanEnabled
+    && harness?.workQueue,
+  );
   const canSubmit = Boolean(
     sessionId
     && (versionId || existing)
     && !conflict
     && Number.isInteger(maxRepairRounds)
     && maxRepairRounds >= 1
-    && maxRepairRounds <= 20,
+    && maxRepairRounds <= 20
+    && (deliveryMode !== "live" || liveAllowed)
+    && (triggerMode !== "foreman_complete" || foremanAllowed),
   );
 
   const create = async (): Promise<WorkflowBinding | null> => {
     if (conflict) throw new Error("This conversation is bound to a different immutable workflow version");
-    if (existing?.state === "active") return existing;
+    let bound = existing ?? null;
     if (existing) {
-      const reattached = await workflowRequest<WorkflowBinding>(`/api/workflow-bindings/${existing.id}/reattach`, {
-        method: "POST",
-        body: JSON.stringify({ sessionId }),
-      });
-      setBindings((current) => current.map((binding) =>
-        binding.id === reattached.id ? reattached : binding));
-      return reattached;
+      if (existing.state !== "active") {
+        bound = await workflowRequest<WorkflowBinding>(`/api/workflow-bindings/${existing.id}/reattach`, {
+          method: "POST",
+          body: JSON.stringify({ sessionId }),
+        });
+      }
+      if (
+        bound
+        && (
+          bound.triggerMode !== triggerMode
+          || bound.deliveryMode !== deliveryMode
+          || bound.maxRepairRounds !== maxRepairRounds
+        )
+      ) {
+        bound = await workflowRequest<WorkflowBinding>(`/api/workflow-bindings/${bound.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ triggerMode, deliveryMode, maxRepairRounds }),
+        });
+      }
+      if (bound) {
+        setBindings((current) => current.map((binding) =>
+          binding.id === bound!.id ? bound! : binding));
+      }
+      return bound;
     }
     if (!sessionId || !versionId) return null;
     const binding = await workflowRequest<WorkflowBinding>("/api/workflow-bindings", {
@@ -140,8 +191,8 @@ export function WorkflowBindingDialog({
       body: JSON.stringify({
         workflowVersionId: versionId,
         sessionId,
-        triggerMode: "manual",
-        deliveryMode: "preview",
+        triggerMode,
+        deliveryMode,
         maxRepairRounds,
       }),
     });
@@ -191,7 +242,10 @@ export function WorkflowBindingDialog({
           <button className="icon-btn" onClick={onClose} disabled={busy} aria-label="Close">×</button>
         </Tooltip>
       </header>
-      <p>Preview reviews one immutable evidence snapshot and never writes to the terminal.</p>
+      <p>
+        Preview reviews one immutable evidence snapshot without terminal writes. Live can send
+        one deterministic repair packet after a failed review.
+      </p>
       <label>
         Session
         <Tooltip label="Which live session this workflow will review">
@@ -223,19 +277,27 @@ export function WorkflowBindingDialog({
       <div className="workflow-binding-modes">
         <label>
           Trigger
-          <Tooltip label="Runs start manually - automatic triggers are not available yet">
-            <select value="manual" disabled>
+          <Tooltip label="Choose whether runs start manually or when Foreman proves completion">
+            <select
+              value={triggerMode}
+              disabled={busy}
+              onChange={(event) => setTriggerMode(event.target.value as WorkflowBindingDefaults["triggerMode"])}
+            >
               <option value="manual">Manual</option>
-              <option value="foreman_complete">Foreman complete (Phase 4)</option>
+              <option value="foreman_complete" disabled={!foremanAllowed}>Foreman complete</option>
             </select>
           </Tooltip>
         </label>
         <label>
           Delivery
-          <Tooltip label="Preview only reports its verdict and never writes to the terminal">
-            <select value="preview" disabled>
+          <Tooltip label="Preview reports a verdict; Live can send a deterministic repair packet">
+            <select
+              value={deliveryMode}
+              disabled={busy}
+              onChange={(event) => setDeliveryMode(event.target.value as WorkflowBindingDefaults["deliveryMode"])}
+            >
               <option value="preview">Preview</option>
-              <option value="live">Live (Phase 4)</option>
+              <option value="live" disabled={!liveAllowed}>Live</option>
             </select>
           </Tooltip>
         </label>
@@ -246,15 +308,29 @@ export function WorkflowBindingDialog({
             min={1}
             max={20}
             value={maxRepairRounds}
-            disabled={busy || Boolean(existing)}
+            disabled={busy}
             onChange={(event) => setMaxRepairRounds(Number(event.target.value))}
           />
         </label>
       </div>
       {(defaults.triggerMode !== "manual" || defaults.deliveryMode !== "preview") && (
         <p className="workflow-binding-existing">
-          This version defaults to {defaults.triggerMode} and {defaults.deliveryMode}.
-          Phase 3 binds it as Manual Preview; the other modes begin in Phase 4.
+          This version defaults to {defaults.triggerMode.replaceAll("_", " ")} and {defaults.deliveryMode}.
+        </p>
+      )}
+      {deliveryMode === "live" && !liveAllowed && (
+        <p className="persona-error" role="alert">
+          Live delivery requires Workflow Live mode and this session's repository in the Workflow allowlist.
+        </p>
+      )}
+      {triggerMode === "foreman_complete" && !foremanAllowed && (
+        <p className="persona-error" role="alert">
+          Foreman Complete requires Foreman and a session harness with measured work-queue support.
+        </p>
+      )}
+      {triggerMode === "foreman_complete" && session?.queue === null && !promptedWrapupEnabled && (
+        <p className="workflow-binding-existing">
+          Foreman's prompted trigger is off. Itemless first and later completions require Manual Submit.
         </p>
       )}
       {existing && (
@@ -283,7 +359,7 @@ export function WorkflowBindingDialog({
       <footer className="modal-actions">
         <Tooltip label="Attach the workflow to this session without starting a run">
           <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>
-            {existing?.state === "active" ? "Keep binding" : existing ? "Reattach only" : "Bind only"}
+            {existing?.state === "active" ? "Update binding" : existing ? "Reattach only" : "Bind only"}
           </button>
         </Tooltip>
         <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
@@ -295,8 +371,8 @@ export function WorkflowBindingDialog({
           {busy
             ? "Capturing…"
             : existing
-              ? existing.state === "active" ? "Preview bound version" : "Reattach and Preview"
-              : "Bind and Preview"}
+              ? existing.state === "active" ? "Submit bound version" : "Reattach and submit"
+              : "Bind and submit"}
           </button>
         </Tooltip>
       </footer>

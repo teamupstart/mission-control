@@ -67,8 +67,16 @@ const NO_HANDLE = "session has no terminal pane to send to";
 /** Shared error when another write already owns this pane. */
 const PANE_BUSY = "another write is already in flight for this session's pane";
 
+export type PaneLockToken = symbol;
+
+interface PaneLockState {
+  active: PaneLockToken | null;
+  tail: Promise<void>;
+  waiters: number;
+}
+
 /** Panes with a write in flight, so two writers can't interleave keystrokes. */
-const driving = new Set<string>();
+const driving = new Map<string, PaneLockState>();
 
 /**
  * Serialize writes to one pane. Every public write below goes through this.
@@ -85,9 +93,11 @@ const driving = new Set<string>();
  * the same pane at the same moment with nobody involved. Widening the guard is
  * cheaper than reasoning about which pairs can collide.
  *
- * A refusal is a REFUSAL, not a wait: the loser reports busy and its caller decides.
- * Queueing would hold a keystroke behind a walk that reads the pane between every
- * step, and deliver it into a session that has moved on since.
+ * An ordinary write refuses rather than waits: the loser reports busy and its caller
+ * decides. Queueing a keystroke behind a walk that reads the pane between every step
+ * could deliver it into a session that has moved on since. The sibling
+ * `withPaneLockWait` is reserved for a compound reset, which must serialize its git,
+ * cleanup, and nested context-clear write as one operation.
  *
  * Sessions with no pane skip the lock entirely - the write itself answers with
  * NO_HANDLE, which is the honest error, and a null key must not collide with
@@ -108,15 +118,55 @@ export async function withPaneLock<T>(
   session: PaneHandles,
   busy: () => T,
   write: () => Promise<T>,
+  owner?: PaneLockToken,
 ): Promise<T> {
   const key = paneToken(session);
   if (key === null) return write();
-  if (driving.has(key)) return busy();
-  driving.add(key);
+  const current = driving.get(key);
+  if (current) {
+    return owner !== undefined && current.active === owner ? write() : busy();
+  }
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const token = Symbol(key);
+  const state: PaneLockState = { active: token, tail: held, waiters: 1 };
+  driving.set(key, state);
   try {
     return await write();
   } finally {
-    driving.delete(key);
+    state.active = null;
+    state.waiters -= 1;
+    release();
+    if (state.waiters === 0 && driving.get(key) === state) driving.delete(key);
+  }
+}
+
+export async function withPaneLockWait<T>(
+  session: PaneHandles,
+  write: (owner: PaneLockToken | undefined) => Promise<T>,
+): Promise<T> {
+  const key = paneToken(session);
+  if (key === null) return write(undefined);
+  let state = driving.get(key);
+  if (!state) {
+    state = { active: null, tail: Promise.resolve(), waiters: 0 };
+    driving.set(key, state);
+  }
+  const before = state.tail;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  state.tail = held;
+  state.waiters += 1;
+  await before;
+  const owner = Symbol(key);
+  state.active = owner;
+  try {
+    return await write(owner);
+  } finally {
+    state.active = null;
+    state.waiters -= 1;
+    release();
+    if (state.waiters === 0 && driving.get(key) === state) driving.delete(key);
   }
 }
 
@@ -313,8 +363,14 @@ export async function sendText(
   submit: boolean,
   deps: PaneDeps = defaultPaneDeps,
   beforeWrite?: PromptWriteGuard,
+  lockOwner?: PaneLockToken,
 ): Promise<ActionResult> {
-  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit, deps, beforeWrite));
+  return withPaneLock<ActionResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY }),
+    () => sendTextLocked(session, text, submit, deps, beforeWrite),
+    lockOwner,
+  );
 }
 
 /**
@@ -650,7 +706,8 @@ export interface InjectResult extends ActionResult {
    * optional flag defaults the decision to whoever forgot it, and this is exactly the
    * decision that was being defaulted - before this existed a verified submit and an
    * unverified one were byte-identical at the call site, and the unverified one was being
-   * read as confirmed. No caller acts on it yet; the point is that one now can.
+   * read as confirmed. Callers record it separately from delivery success; false must
+   * never trigger a second paste.
    */
   submitVerified: boolean;
 }
@@ -863,7 +920,8 @@ export async function paneAcceptsPrompt(
  * submission. Unlike `sendText`, newlines here must NOT each submit - so we send
  * the body via the backend's bracketed paste (`PaneWrite.paste`), which agent TUIs treat
  * as one pasted block, then submit it with Enter. Used by dispatch to seed an agent's
- * first task, and by the work queue to deliver an item.
+ * first task, by the work queue to deliver an item, and by workflows to deliver repair
+ * feedback.
  *
  * The Enter is NOT sent on the paste's heels, and that is load-bearing: an agent that
  * coalesces input for a window afterwards absorbs an Enter that arrives inside it, which
@@ -2129,6 +2187,7 @@ export async function resetToOrigin(
   session: Session,
   clear: boolean,
   deps: InjectDeps = defaultInjectDeps,
+  lockOwner?: PaneLockToken,
 ): Promise<ResetResult> {
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
@@ -2181,7 +2240,7 @@ export async function resetToOrigin(
   // can recognise rather than one we mistake for a clear that already landed.
   const before = await deps.capture(session);
   const clearIssuedAt = Date.now();
-  const sent = await sendText(session, clearing.command, true, deps);
+  const sent = await sendText(session, clearing.command, true, deps, undefined, lockOwner);
   const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
   return { ok: true, error: null, root, cleared, detached, clearIssuedAt };
 }

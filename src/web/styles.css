@@ -470,6 +470,7 @@ body {
 .is-desktop .combobox-list,
 .is-desktop .cmdbar,
 .is-desktop .file-window,
+.is-desktop .workflow-config-panel,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
@@ -5170,6 +5171,68 @@ kbd {
 .workflow-page {
   min-width: 0;
   padding: 4px 0 40px;
+}
+
+.workflow-config-drawer {
+  position: relative;
+}
+
+.workflow-config-panel {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(520px, 80vw);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 28%);
+}
+
+.workflow-config-panel li,
+.workflow-config-panel > div,
+.workflow-delivery header,
+.workflow-delivery-recovery {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workflow-config-panel li {
+  justify-content: space-between;
+}
+
+.workflow-config-panel li code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-config-panel li button {
+  flex: none;
+}
+
+.workflow-deliveries {
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-delivery {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.workflow-delivery header {
+  justify-content: space-between;
+}
+
+.workflow-delivery pre {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 .app-console > .workflow-page,
 .app-board > .workflow-page {

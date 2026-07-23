@@ -48,6 +48,11 @@ import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, killLiveLlmRuns, llmRunner } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import {
+  drainCompletionClaim,
+  promptedCompletionClaim,
+  tryWorkflowCompletionClaim,
+} from "./workflow-claim.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -768,6 +773,26 @@ async function processTarget(
     return true;
   }
 
+  if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
+    const [diff, transcriptAnchor] = await Promise.all([
+      client.diff(fresh.id).catch(() => null),
+      client.transcriptSize(fresh.id).catch(() => null),
+    ]);
+    const claim = await tryWorkflowCompletionClaim(
+      client,
+      fresh.id,
+      drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
+    );
+    if (claim.kind === "failed") {
+      log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
+      return false;
+    }
+    if (claim.kind === "claimed") {
+      log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
+      return true;
+    }
+  }
+
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
     fresh,
@@ -941,6 +966,41 @@ async function processPromptedWrapup(
     // deliberately not stamped - turning a broken verifier into a hot loop of model
     // calls separated only by BETWEEN_MS.
     return false;
+  }
+
+  const currentSessions = await client.sessions().catch(() => null);
+  const currentSession = currentSessions
+    ? resolveLiveSession(currentSessions, noteKeyOf(session))
+    : null;
+  const currentGoal = currentSession && currentSession.id === session.id
+    ? await client.goal(currentSession.id).catch(() => null)
+    : null;
+  if (currentGoal?.prompt?.trim() !== candidate.goal) return false;
+
+  if (
+    result.verdict.complete
+    && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
+  ) {
+    const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
+    const claim = await tryWorkflowCompletionClaim(
+      client,
+      session.id,
+      promptedCompletionClaim({
+        noteKey: noteKeyOf(session),
+        goal: candidate.goal,
+        headSha: diff.headSha,
+        transcriptAnchor,
+        summary: result.verdict.summary,
+      }),
+    );
+    if (claim.kind === "failed") {
+      log(`${session.name}: workflow completion claim failed closed (${claim.error})`);
+      return false;
+    }
+    if (claim.kind === "claimed") {
+      log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
+      return true;
+    }
   }
   const plan = planPromptedWrapup(
     candidate.goal,

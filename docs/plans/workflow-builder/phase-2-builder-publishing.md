@@ -1,6 +1,6 @@
 # Phase 2 plan: workflow builder, validation, and publishing
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 

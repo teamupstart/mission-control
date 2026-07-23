@@ -9,8 +9,10 @@ import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+  DEFAULT_WORKFLOW_CONFIG,
   INSPECTOR_FINDINGS_POLICIES,
   WORKFLOW_BINDING_STATES,
+  WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
   WORKFLOW_EXECUTION_LIMITS,
@@ -1771,7 +1773,7 @@ export const InjectPromptSchema = z.object({
    * indistinguishable from one a person typed. Round 0 of a work item is the human's
    * intent delivered VERBATIM, so no marker can be added to the text itself.
    */
-  origin: z.enum(["human", "foreman"]).default("human"),
+  origin: z.enum(["human", "foreman", "workflow"]).default("human"),
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
 
@@ -2167,6 +2169,45 @@ export type RetryWorkflowRun = z.infer<typeof RetryWorkflowRunSchema>;
 export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
 });
+
+export const WorkflowConfigSchema = z.object({
+  liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
+  repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
+});
+export type WorkflowConfigInput = z.infer<typeof WorkflowConfigSchema>;
+
+export const WorkflowCompletionClaimSchema = z.object({
+  completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
+  marker: z.string().regex(/^[a-f0-9]{64}$/),
+  summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  evidenceFingerprint: z.string().min(1).max(200),
+});
+export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
+
+export const WorkflowCompletionClaimResultSchema = z.discriminatedUnion("claimed", [
+  z.object({
+    claimed: z.literal(false),
+    reason: z.enum(["no_binding", "manual_trigger"]),
+  }),
+  z.object({
+    claimed: z.literal(true),
+    runId: z.string().min(1),
+    submissionId: z.string().min(1).nullable(),
+    state: z.enum(["started", "resubmitted", "already_claimed", "blocked"]),
+  }),
+]);
+
+export const RetryWorkflowDeliverySchema = z.object({
+  requestId: z.string().min(1).max(200),
+});
+export type RetryWorkflowDelivery = z.infer<typeof RetryWorkflowDeliverySchema>;
+
+export const ResolveWorkflowDeliverySchema = z.object({
+  requestId: z.string().min(1).max(200),
+  resolution: z.enum(["mark_delivered", "discard_and_new_round"]),
+  confirmation: z.string().max(200).optional(),
+});
+export type ResolveWorkflowDelivery = z.infer<typeof ResolveWorkflowDeliverySchema>;
 
 // Exported closed schemas make durable row parsers reject unknown values before constructing
 // typed runtime records.

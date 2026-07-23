@@ -7,8 +7,10 @@ beforeEach(() => forgetInjections());
 test("a delivery is credited to whoever made it, in that session only", () => {
   recordInjection("s1", "fix the arrow keys", "foreman");
   recordInjection("s1", "/reload-skills", "harness");
+  recordInjection("s1", "deterministic repair packet", "workflow");
   assert.equal(originOf("s1", "fix the arrow keys"), "foreman");
   assert.equal(originOf("s1", "/reload-skills"), "harness");
+  assert.equal(originOf("s1", "deterministic repair packet"), "workflow");
   // Two sessions can be working the same item text; only the one we typed into is ours.
   assert.equal(originOf("s2", "fix the arrow keys"), undefined);
 });

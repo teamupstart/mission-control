@@ -62,7 +62,7 @@ const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
-const workflows = new WorkflowManager(registry, personas.store);
+const workflows = new WorkflowManager(registry, personas.store, { queueManager: queues });
 workflows.start();
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.

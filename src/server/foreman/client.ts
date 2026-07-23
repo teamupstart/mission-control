@@ -28,6 +28,7 @@ import type { StandardsBundle } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
 import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
+import type { WorkflowCompletionClaim, WorkflowCompletionClaimResult } from "@shared/workflow.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
 // loopback-gated (not token-gated), and the worker runs on the same host, so a
@@ -337,6 +338,23 @@ export class ForemanClient implements ForemanActions {
    */
   queue(id: string): Promise<SessionQueue | null> {
     return get<SessionQueue | null>(`/api/sessions/${enc(id)}/queue`);
+  }
+
+  /**
+   * Offer an already-proven completion boundary to the daemon. Any non-2xx or lost
+   * response throws so the worker fails closed and never falls through to shipping.
+   */
+  async claimWorkflowCompletion(
+    sessionId: string,
+    claim: WorkflowCompletionClaim,
+  ): Promise<WorkflowCompletionClaimResult> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/workflow-completion`,
+      claim,
+    );
+    if (!res.ok) throw new Error(`claimWorkflowCompletion ${sessionId} -> ${res.status}`);
+    return (await res.json()) as WorkflowCompletionClaimResult;
   }
 
   /** Queues with no live session at all - the orphan sweep's input. */

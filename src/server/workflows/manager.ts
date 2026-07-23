@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { repoAllowlisted } from "@shared/allowlist.ts";
+import { paneToken } from "@shared/pane.ts";
+import type { Session } from "@shared/types.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
@@ -25,12 +28,20 @@ import type {
   WorkflowValidationResult,
   WorkflowVersion,
   WorkflowVersionMetadata,
+  WorkflowDelivery,
+  WorkflowCompletionClaim,
+  WorkflowCompletionClaimResult,
 } from "@shared/workflow.ts";
 import { normalizeWorkflowName } from "@shared/workflow.ts";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
+import { injectPrompt, type InjectResult } from "../actions.ts";
+import { recordInjection } from "../injections.ts";
+import { QueueManager } from "../queue.ts";
+import { getForemanConfig } from "../foreman/config.ts";
+import { harnessFor, sessionMessages } from "../harness/index.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import {
@@ -47,6 +58,8 @@ import {
   type WorkflowStoreWrite,
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
+import { getWorkflowConfig } from "./config.ts";
+import { renderWorkflowFeedback } from "./feedback.ts";
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -86,7 +99,9 @@ export type WorkflowRuntimeMutation<T> =
         | "unchanged_evidence"
         | "round_limit"
         | "not_infrastructure_failure"
-        | "stale_capture";
+        | "stale_capture"
+        | "invalid_delivery_state"
+        | "confirmation_required";
       message: string;
       current?: unknown;
     };
@@ -101,6 +116,9 @@ export interface WorkflowManagerOptions {
   readContextRaw?: typeof readWorkflowContextRaw;
   boundaryChanged?: typeof captureBoundaryChanged;
   compactContext?: typeof compactWorkflowContext;
+  queueManager?: QueueManager;
+  inject?: typeof injectPrompt;
+  recordInjection?: typeof recordInjection;
 }
 
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
@@ -109,17 +127,44 @@ export class WorkflowManager {
   private unsubscribe: (() => void) | null = null;
   private discoveryUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
+  private readonly deliveryTasks = new Set<Promise<void>>();
+  private readonly queues: QueueManager;
+  private readonly inject: typeof injectPrompt;
+  private readonly rememberInjection: typeof recordInjection;
 
   constructor(
     private readonly registry: Registry,
     readonly store = new WorkflowStore(),
     private readonly options: WorkflowManagerOptions = {},
   ) {
+    this.queues = options.queueManager ?? new QueueManager(registry);
+    this.inject = options.inject ?? injectPrompt;
+    this.rememberInjection = options.recordInjection ?? recordInjection;
     this.registry.initializeWorkflows(this.list(true));
+    const configuredWaiting = options.engine?.onSubmissionWaiting;
     this.engine = new WorkflowEngine(
       this.store,
       (runId) => this.publishRun(runId),
-      options.engine,
+      {
+        ...options.engine,
+        onSubmissionWaiting: (submissionId) => {
+          this.trackDeliveryTask(this.prepareAndMaybeDeliver(submissionId).catch((error) => {
+            const submission = this.store.getSubmission(submissionId);
+            if (!submission) return;
+            const message = error instanceof Error ? error.message : String(error);
+            this.store.setRunState(submission.runId, "blocked", "delivery_prepare_error", {
+              submissionId,
+              error: message,
+            });
+            this.store.appendEvent(submission.runId, "delivery_prepare_error", {
+              submissionId,
+              error: message,
+            });
+            this.publishRun(submission.runId);
+          }));
+          configuredWaiting?.(submissionId);
+        },
+      },
     );
     this.registry.initializeWorkflowRuns(this.runs());
     this.registry.registerWorkflowReset((noteKey) => {
@@ -129,19 +174,15 @@ export class WorkflowManager {
   }
 
   start(): void {
-    for (const binding of this.store.listBindings()) {
-      if (
-        binding.state === "active"
-        && (binding.triggerMode !== "manual" || binding.deliveryMode !== "preview")
-      ) {
-        const paused = this.store.pauseBinding(binding.id, "unsupported_binding_mode");
-        const run = paused ? this.store.activeRunForBinding(paused.id) : null;
-        if (run) this.publishRun(run.id);
-      }
+    for (const delivery of this.store.recoverSendingDeliveries()) {
+      this.publishRun(delivery.runId);
     }
     if (!this.unsubscribe) {
       this.unsubscribe = this.registry.subscribe((event) => {
         if (event.type === "session_remove") {
+          for (const delivery of this.store.markSendingUncertainForSession(event.id, "session_disappeared")) {
+            this.publishRun(delivery.runId);
+          }
           for (const binding of this.store.listBindings()) {
             if (binding.sessionId !== event.id || binding.state === "archived") continue;
             const active = this.store.orphanBinding(binding.id, "session_disappeared");
@@ -156,6 +197,12 @@ export class WorkflowManager {
         for (const binding of this.store.listBindings()) {
           if (binding.sessionId !== event.session.id || binding.state !== "active") continue;
           if (binding.noteKey === noteKeyFor(event.session)) continue;
+          for (const delivery of this.store.markSendingUncertainForSession(
+            event.session.id,
+            "conversation_changed",
+          )) {
+            this.publishRun(delivery.runId);
+          }
           const paused = this.store.pauseBinding(binding.id, "conversation_changed");
           if (paused) {
             const run = this.store.activeRunForBinding(paused.id);
@@ -166,11 +213,13 @@ export class WorkflowManager {
     }
     if (this.registry.sessionsObserved()) {
       this.reconcileBindingsAfterDiscovery();
+      this.resumePreparedDeliveries();
       this.engine.start();
     } else if (!this.discoveryUnsubscribe) {
       this.discoveryUnsubscribe = this.registry.onSessionsObserved(() => {
         this.discoveryUnsubscribe = null;
         this.reconcileBindingsAfterDiscovery();
+        this.resumePreparedDeliveries();
         this.engine.start();
       });
     }
@@ -182,6 +231,7 @@ export class WorkflowManager {
     this.discoveryUnsubscribe?.();
     this.discoveryUnsubscribe = null;
     await this.engine.stop();
+    await Promise.allSettled([...this.deliveryTasks]);
   }
 
   list(includeArchived = false): WorkflowSummary[] {
@@ -282,17 +332,12 @@ export class WorkflowManager {
     const triggerMode = input.triggerMode ?? version.bindingDefaults.triggerMode;
     const deliveryMode = input.deliveryMode ?? version.bindingDefaults.deliveryMode;
     const maxRepairRounds = input.maxRepairRounds ?? version.bindingDefaults.maxRepairRounds;
-    if (triggerMode !== "manual" || deliveryMode !== "preview") {
-      return {
-        ok: false,
-        reason: "unsupported_mode",
-        message: "Phase 3 supports active manual Preview bindings only",
-      };
-    }
     const session = this.registry.getSession(input.sessionId);
     if (!session || session.state === "exited") {
       return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
     }
+    const prerequisite = this.bindingModeBlock(session, triggerMode, deliveryMode);
+    if (prerequisite) return prerequisite;
     const noteKey = noteKeyFor(session);
     const current = this.store.activeBindingForNote(noteKey);
     if (current) {
@@ -360,12 +405,13 @@ export class WorkflowManager {
         current: binding,
       };
     }
-    if (state === "active" && (triggerMode !== "manual" || deliveryMode !== "preview")) {
-      return {
-        ok: false,
-        reason: "unsupported_mode",
-        message: "Phase 3 supports active manual Preview bindings only",
-      };
+    if (state === "active") {
+      const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+      if (!session || session.state === "exited") {
+        return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
+      }
+      const prerequisite = this.bindingModeBlock(session, triggerMode, deliveryMode);
+      if (prerequisite) return prerequisite;
     }
     const updated = this.store.updateBinding(id, input, now);
     return updated
@@ -391,13 +437,6 @@ export class WorkflowManager {
     if (binding.state !== "active") {
       return { ok: false, reason: "inactive_binding", message: "The workflow binding is not active" };
     }
-    if (binding.triggerMode !== "manual" || binding.deliveryMode !== "preview") {
-      return {
-        ok: false,
-        reason: "unsupported_mode",
-        message: "Phase 3 supports manual Preview runs only",
-      };
-    }
     const key = `manual:${binding.id}:${input.requestId}`;
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
@@ -411,8 +450,8 @@ export class WorkflowManager {
       return { ok: false, reason: "run_active", message: "This binding already has an active run", current: active };
     }
     const created = this.store.createInitialSubmission(
-      { id: randomUUID(), binding, triggerKey: key, now },
-      { id: randomUUID(), triggerKey: key, context: {}, evidence: {}, now },
+      { id: randomUUID(), binding, triggerSource: "manual", triggerKey: key, now },
+      { id: randomUUID(), triggerSource: "manual", triggerKey: key, context: {}, evidence: {}, now },
     );
     if (created.idempotent) {
       return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
@@ -495,6 +534,7 @@ export class WorkflowManager {
       id: randomUUID(),
       runId: run.id,
       round: latest.round + 1,
+      triggerSource: "manual",
       triggerKey: key,
       context: {},
       evidence: {},
@@ -520,14 +560,6 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowBinding> {
     const binding = this.store.getBinding(bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
-    if (binding.triggerMode !== "manual" || binding.deliveryMode !== "preview") {
-      return {
-        ok: false,
-        reason: "unsupported_mode",
-        message: "This binding uses a workflow mode that is not executable in Phase 3",
-        current: binding,
-      };
-    }
     const session = this.registry.getSession(sessionId);
     if (!session || session.state === "exited") {
       return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
@@ -564,6 +596,19 @@ export class WorkflowManager {
     if (!updated) return { ok: false, reason: "not_found", message: "No such workflow binding" };
     const active = this.store.activeRunForBinding(binding.id);
     if (active) {
+      for (const delivery of this.store.listDeliveries(active.id)) {
+        if (delivery.state !== "prepared" && delivery.state !== "refused") continue;
+        const retargeted = this.store.retargetDelivery(delivery.id, session.id, noteKey, now);
+        if (retargeted) {
+          this.store.appendEvent(active.id, "delivery_retargeted_for_retry", {
+            deliveryId: delivery.id,
+            priorSessionId: delivery.sessionId,
+            sessionId: session.id,
+            priorNoteKey: delivery.noteKey,
+            noteKey,
+          }, now);
+        }
+      }
       this.store.setRunState(active.id, "waiting_for_session", "reattached_resubmit_required", {
         priorNoteKey: binding.noteKey,
         noteKey,
@@ -645,6 +690,364 @@ export class WorkflowManager {
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
     this.publishRun(run.id);
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
+  }
+
+  async retryDelivery(
+    deliveryId: string,
+    requestId: string,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowDelivery>> {
+    const delivery = this.store.getDelivery(deliveryId);
+    if (!delivery) return { ok: false, reason: "not_found", message: "No such workflow delivery" };
+    const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_requested", requestId);
+    if (prior) {
+      return {
+        ok: true,
+        value: this.store.getDelivery(delivery.id) ?? delivery,
+        idempotent: true,
+      };
+    }
+    if (delivery.state !== "refused") {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "Only a positively refused delivery can be retried",
+        current: delivery,
+      };
+    }
+    this.store.appendEvent(delivery.runId, "delivery_retry_requested", {
+      deliveryId,
+      requestId,
+    }, now);
+    await this.deliverPrepared(delivery.id, true);
+    const updated = this.store.getDelivery(delivery.id) ?? delivery;
+    return { ok: true, value: updated };
+  }
+
+  async resolveDelivery(
+    deliveryId: string,
+    input: {
+      requestId: string;
+      resolution: "mark_delivered" | "discard_and_new_round";
+      confirmation?: string;
+    },
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowDelivery | WorkflowSubmitResult>> {
+    const delivery = this.store.getDelivery(deliveryId);
+    if (!delivery) return { ok: false, reason: "not_found", message: "No such workflow delivery" };
+    if (
+      input.resolution === "discard_and_new_round"
+      && input.confirmation !== "DISCARD AND SEND A NEW REPAIR ROUND"
+    ) {
+      return {
+        ok: false,
+        reason: "confirmation_required",
+        message: "Type the exact discard confirmation before creating a new repair round",
+      };
+    }
+    const resolved = this.store.resolveUncertainDelivery(
+      delivery.id,
+      input.resolution,
+      input.requestId,
+      now,
+    );
+    if (!resolved) {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "Only an uncertain delivery needs explicit resolution",
+        current: this.store.getDelivery(delivery.id) ?? delivery,
+      };
+    }
+    if (input.resolution === "mark_delivered") {
+      if (!resolved.idempotent) {
+        const session = this.registry.getSession(delivery.sessionId);
+        if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
+        if (resolved.rearmedDrain) this.queues.refresh(delivery.noteKey);
+        this.publishRun(delivery.runId);
+      }
+      return {
+        ok: true,
+        value: resolved.delivery,
+        idempotent: resolved.idempotent,
+      };
+    }
+
+    const resubmitted = await this.resubmit(delivery.runId, {
+      requestId: `delivery-resolution:${input.requestId}`,
+      resubmitUnchanged: true,
+    }, now);
+    return resubmitted.ok
+      ? { ok: true, value: resubmitted.value, idempotent: resubmitted.idempotent }
+      : resubmitted;
+  }
+
+  async claimCompletion(
+    sessionId: string,
+    claim: WorkflowCompletionClaim,
+    now = Date.now(),
+  ): Promise<WorkflowCompletionClaimResult> {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      throw new Error("The completion target session is not live");
+    }
+    const binding = this.store.activeBindingForNote(noteKeyFor(session));
+    if (!binding) return { claimed: false, reason: "no_binding" };
+    if (binding.triggerMode !== "foreman_complete") {
+      return { claimed: false, reason: "manual_trigger" };
+    }
+    const stored = this.store.claimForemanCompletion({
+      binding,
+      completionKind: claim.completionKind,
+      marker: claim.marker,
+      summary: claim.summary,
+      evidenceFingerprint: claim.evidenceFingerprint,
+      currentGoal: this.registry.getGoal(session.id)?.prompt ?? null,
+      runId: randomUUID(),
+      submissionId: randomUUID(),
+      now,
+    });
+    this.queues.refresh(binding.noteKey);
+    this.publishRun(stored.run.id);
+    if (!stored.created || !stored.submission) return stored.result;
+    const activated = await this.captureAndActivate(
+      binding,
+      stored.run,
+      stored.submission,
+      stored.previousFingerprint,
+      false,
+    );
+    if (!activated.ok) {
+      return {
+        claimed: true,
+        runId: stored.run.id,
+        submissionId: stored.submission.id,
+        state: "blocked",
+      };
+    }
+    return stored.result;
+  }
+
+  private bindingModeBlock(
+    session: Session,
+    triggerMode: WorkflowBinding["triggerMode"],
+    deliveryMode: WorkflowBinding["deliveryMode"],
+  ): WorkflowRuntimeMutation<never> | null {
+    if (deliveryMode === "live") {
+      const config = getWorkflowConfig();
+      if (!config.liveEnabled || !repoAllowlisted(session.cwd, session.repoRoot, config.repoAllowlist)) {
+        return {
+          ok: false,
+          reason: "unsupported_mode",
+          message: "Live delivery requires Workflows Live mode and an allowlisted repository",
+        };
+      }
+    }
+    if (triggerMode === "foreman_complete") {
+      const harness = harnessFor(session.agent);
+      if (!getForemanConfig().enabled || !harness.hooks || !harness.workQueue) {
+        return {
+          ok: false,
+          reason: "unsupported_mode",
+          message: "Foreman Complete requires Foreman plus measured hook and work-queue capabilities",
+        };
+      }
+    }
+    return null;
+  }
+
+  private async prepareAndMaybeDeliver(submissionId: string): Promise<void> {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const summary = run ? this.store.runSummary(run.id) : null;
+    if (!submission || !run || !binding || !version || !summary || !binding.sessionId) return;
+    const rendered = renderWorkflowFeedback({
+      workflowName: summary.workflowName,
+      version,
+      run,
+      submission,
+      attempts: this.store.listAttempts(submission.id),
+    });
+    if (rendered.failedPersonaCount === 0) return;
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId: run.id,
+      submissionId: submission.id,
+      kind: "persona_feedback",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    });
+    if (!prepared.idempotent) {
+      this.store.appendEvent(run.id, "delivery_prepared", {
+        deliveryId: prepared.delivery.id,
+        payloadSha256: rendered.payloadSha256,
+        truncated: rendered.truncated,
+      });
+    }
+    this.publishRun(run.id);
+    if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
+  }
+
+  private resumePreparedDeliveries(): void {
+    for (const delivery of this.store.listDeliveriesByState("prepared")) {
+      const run = this.store.getRun(delivery.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      if (binding?.deliveryMode === "live") {
+        this.trackDeliveryTask(this.deliverPrepared(delivery.id, false).catch((error) => {
+          const current = this.store.getDelivery(delivery.id);
+          if (!current) return;
+          const message = error instanceof Error ? error.message : String(error);
+          if (current.state === "sending") {
+            this.markDeliveryUncertain(current, message);
+            return;
+          }
+          this.store.setRunState(current.runId, "blocked", "delivery_resume_error", {
+            deliveryId: current.id,
+            error: message,
+          });
+          this.store.appendEvent(current.runId, "delivery_resume_error", {
+            deliveryId: current.id,
+            error: message,
+          });
+          this.publishRun(current.runId);
+        }));
+      }
+    }
+  }
+
+  private trackDeliveryTask(task: Promise<void>): void {
+    this.deliveryTasks.add(task);
+    void task.then(
+      () => this.deliveryTasks.delete(task),
+      () => this.deliveryTasks.delete(task),
+    );
+  }
+
+  private deliveryBlock(delivery: WorkflowDelivery, expectedPane?: string | null): string | null {
+    const run = this.store.getRun(delivery.runId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (!binding || binding.state !== "active") return "binding_not_active";
+    if (binding.noteKey !== delivery.noteKey) return "conversation_changed";
+    if (binding.sessionId !== delivery.sessionId) return "session_retargeted";
+    const session = this.registry.getSession(delivery.sessionId);
+    if (!session || session.state === "exited") return "session_unavailable";
+    if (noteKeyFor(session) !== delivery.noteKey) return "conversation_changed";
+    if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";
+    if (this.registry.sessionResetInProgress(session.id)) return "reset_in_progress";
+    const config = getWorkflowConfig();
+    if (!config.liveEnabled || !repoAllowlisted(session.cwd, session.repoRoot, config.repoAllowlist)) {
+      return "live_not_authorized";
+    }
+    return this.registry.promptResourceBlockerForSession(session.id);
+  }
+
+  private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
+    const delivery = this.store.getDelivery(deliveryId);
+    if (!delivery) return;
+    const initialBlock = this.deliveryBlock(delivery);
+    if (initialBlock) {
+      const retainPrepared = [
+        "binding_not_active",
+        "conversation_changed",
+        "session_retargeted",
+        "session_unavailable",
+        "reset_in_progress",
+      ].includes(initialBlock);
+      if (!retainPrepared) {
+        this.store.setDeliveryState(delivery.id, "refused", initialBlock);
+      }
+      this.store.setRunState(delivery.runId, "blocked", "delivery_blocked", {
+        deliveryId: delivery.id,
+        reason: initialBlock,
+      });
+      this.store.appendEvent(delivery.runId, "delivery_refused", {
+        deliveryId: delivery.id,
+        reason: initialBlock,
+        writeAttempted: false,
+      });
+      this.publishRun(delivery.runId);
+      return;
+    }
+    const sending = this.store.claimDeliverySend(delivery.id, explicitRetry);
+    if (!sending) return;
+    const session = this.registry.getSession(sending.sessionId);
+    if (!session) {
+      this.store.finishDeliverySend(sending.id, "refused", "session_unavailable");
+      return;
+    }
+    const expectedPane = paneToken(session);
+    this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
+    let result: InjectResult;
+    try {
+      result = await this.inject(
+        session,
+        sending.payload,
+        undefined,
+        () => this.deliveryBlock(sending, expectedPane),
+      );
+    } catch (error) {
+      this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!result.ok) {
+      if (result.pasted === false) {
+        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
+        const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
+        if (!refused) return;
+        this.store.setRunState(sending.runId, "blocked", "delivery_refused", {
+          deliveryId: sending.id,
+          reason,
+        });
+        this.store.appendEvent(sending.runId, "delivery_refused", {
+          deliveryId: sending.id,
+          reason,
+          paneBlocked: Boolean(result.paneBlocked),
+          writeAttempted: true,
+        });
+        this.publishRun(sending.runId);
+        return;
+      }
+      this.markDeliveryUncertain(sending, result.error ?? "delivery_outcome_unknown");
+      return;
+    }
+    const transcript = sessionMessages(session);
+    const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
+    const confirmed = this.store.confirmDeliverySend(
+      sending.id,
+      transcriptAnchor,
+      result.submitVerified,
+    );
+    if (!confirmed) return;
+    this.rememberInjection(session.id, sending.payload, "workflow");
+    if (confirmed.rearmedDrain) this.queues.refresh(sending.noteKey);
+    this.publishRun(sending.runId);
+  }
+
+  private markDeliveryUncertain(delivery: WorkflowDelivery, reason: string): void {
+    const uncertain = this.store.finishDeliverySend(delivery.id, "uncertain", reason);
+    if (!uncertain) return;
+    this.store.setRunState(delivery.runId, "blocked", "delivery_uncertain", {
+      deliveryId: delivery.id,
+      reason,
+    });
+    this.store.appendEvent(delivery.runId, "delivery_uncertain", {
+      deliveryId: delivery.id,
+      reason,
+    });
+    this.publishRun(delivery.runId);
+  }
+
+  private deliveryActionEvent(runId: string, kind: string, requestId: string): boolean {
+    return this.store.listEvents(runId).some((event) =>
+      event.kind === kind
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === requestId);
   }
 
   private async captureAndActivate(

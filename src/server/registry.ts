@@ -320,6 +320,8 @@ export class Registry extends EventEmitter {
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
   private workflowRuns = new Map<string, WorkflowRunSummary>();
   private workflowReset: ((noteKey: string) => void) | null = null;
+  /** A terminal side effect must not cross the asynchronous reset boundary. */
+  private resettingSessionIds = new Set<string>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -457,6 +459,18 @@ export class Registry extends EventEmitter {
 
   getSession(id: string): Session | undefined {
     return this.sessions.get(id);
+  }
+
+  beginSessionReset(id: string): void {
+    this.resettingSessionIds.add(id);
+  }
+
+  endSessionReset(id: string): void {
+    this.resettingSessionIds.delete(id);
+  }
+
+  sessionResetInProgress(id: string): boolean {
+    return this.resettingSessionIds.has(id);
   }
 
   subscribe(fn: (e: ServerEvent) => void): () => void {
@@ -3970,6 +3984,11 @@ export class Registry extends EventEmitter {
       promptedGoal: patch.promptedGoal !== undefined ? patch.promptedGoal : prev.promptedGoal,
       updatedAt: now,
     });
+    this.syncSessionsForQueue(key);
+  }
+
+  /** Re-read a queue after another daemon-owned transaction updated its guard columns. */
+  refreshQueue(key: string): void {
     this.syncSessionsForQueue(key);
   }
 

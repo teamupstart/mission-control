@@ -10,6 +10,7 @@ import { PersonaLibrary } from "./PersonaLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { WorkflowConfigPanel } from "./WorkflowConfigPanel.tsx";
 
 export function WorkflowPage({
   tab,
@@ -64,6 +65,7 @@ export function WorkflowPage({
             </Tooltip>
           ))}
         </nav>
+        <WorkflowConfigPanel />
       </header>
 
       {tab === "personas" && (

@@ -1228,6 +1228,8 @@ export function App(): React.JSX.Element {
                   target={workflowBindingTarget}
                   sessions={sessions}
                   workflows={workflowSummaries}
+                  foremanEnabled={foreman.config?.enabled ?? false}
+                  promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
                   onClose={() => setWorkflowBindingTarget(null)}
                   onRun={(runId) => navigate({ page: "workflows", tab: "runs", runId })}
                 />

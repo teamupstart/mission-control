@@ -54,6 +54,7 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
     { id: "human", role: "user", text: "Keep the public API stable", tools: [], ts: 1 },
     { id: "foreman", role: "user", text: "automated", tools: [], ts: 2, origin: "foreman" },
     { id: "harness", role: "user", text: "automated", tools: [], ts: 3, origin: "harness" },
+    { id: "workflow", role: "user", text: "repair packet", tools: [], ts: 3, origin: "workflow" },
     { id: "answer", role: "assistant", text: "done", tools: [], ts: 4 },
   ]);
   assert.deepEqual(decisions, [{

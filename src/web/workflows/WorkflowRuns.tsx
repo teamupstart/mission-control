@@ -95,6 +95,8 @@ export function WorkflowRunView({
   onCancel,
   onCopyFeedback = async () => {},
   onOpenSession = () => {},
+  onRetryDelivery = async () => {},
+  onResolveDelivery = async () => {},
 }: {
   detail: WorkflowRunDetail;
   onResubmit: (unchanged: boolean) => Promise<void>;
@@ -102,16 +104,40 @@ export function WorkflowRunView({
   onCancel: () => Promise<void>;
   onCopyFeedback?: () => Promise<void>;
   onOpenSession?: () => void;
+  onRetryDelivery?: (deliveryId: string) => Promise<void>;
+  onResolveDelivery?: (
+    deliveryId: string,
+    resolution: "mark_delivered" | "discard_and_new_round",
+    confirmation?: string,
+  ) => Promise<void>;
 }): React.JSX.Element {
   const latest = detail.submissions.at(-1) ?? null;
   const context = latest?.context as unknown as WorkflowContextSnapshot | null;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const version = detail.version;
+  const completionClaims = detail.events.flatMap((event) => {
+    if (
+      event.kind !== "workflow_completion_claimed"
+      || !event.payload
+      || Array.isArray(event.payload)
+      || typeof event.payload !== "object"
+    ) return [];
+    const { completionKind, marker, summary, state } = event.payload;
+    if (
+      typeof completionKind !== "string"
+      || typeof marker !== "string"
+      || typeof summary !== "string"
+      || typeof state !== "string"
+    ) return [];
+    return [{ id: event.id, completionKind, marker, summary, state }];
+  });
   return (
     <section className="workflow-run-detail">
       <header className="workflow-run-detail-head">
         <div>
-          <p className="workflow-eyebrow">Preview · version {detail.summary.workflowVersion}</p>
+          <p className="workflow-eyebrow">
+            {detail.binding.deliveryMode === "live" ? "Live" : "Preview"} · version {detail.summary.workflowVersion}
+          </p>
           <h3>{detail.summary.workflowName}</h3>
           <p>{detail.binding.sessionName} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}</p>
           <small>Started {when(detail.run.startedAt)} · updated {when(detail.run.updatedAt)}</small>
@@ -120,7 +146,7 @@ export function WorkflowRunView({
         <Tooltip label="Jump to the session this run is reviewing">
           <button className="btn btn-ghost" onClick={onOpenSession}>Open session</button>
         </Tooltip>
-        {detail.attempts.some((attempt) => attempt.verdict) && (
+        {(detail.deliveries.length > 0 || detail.attempts.some((attempt) => attempt.verdict)) && (
           <Tooltip label="Copy every reviewer verdict to the clipboard">
             <button className="btn btn-ghost" onClick={() => void onCopyFeedback()}>Copy feedback</button>
           </Tooltip>
@@ -128,18 +154,24 @@ export function WorkflowRunView({
         {detail.run.status === "waiting_for_session" && (
           <>
             <Tooltip label="Re-read the session's current diff and run the review again">
-              <button className="btn" onClick={() => void onResubmit(false)}>Preview fresh evidence</button>
+              <button className="btn" onClick={() => void onResubmit(false)}>
+                {detail.binding.deliveryMode === "live" ? "Submit fresh evidence" : "Preview fresh evidence"}
+              </button>
             </Tooltip>
             <Tooltip label="Run the review again against the evidence snapshot already taken">
               <button
                 className="btn btn-ghost"
                 onClick={() => {
-                  if (window.confirm("Run another Preview against the unchanged evidence snapshot?")) {
+                  if (window.confirm(
+                    detail.binding.deliveryMode === "live"
+                      ? "Run another review against the unchanged evidence snapshot?"
+                      : "Run another Preview against the unchanged evidence snapshot?",
+                  )) {
                     void onResubmit(true);
                   }
                 }}
               >
-                Preview unchanged
+                {detail.binding.deliveryMode === "live" ? "Submit unchanged" : "Preview unchanged"}
               </button>
             </Tooltip>
           </>
@@ -155,6 +187,74 @@ export function WorkflowRunView({
           </Tooltip>
         )}
       </header>
+
+      {completionClaims.length > 0 && (
+        <section className="workflow-completion-claims">
+          <h4>Foreman completion claim</h4>
+          {completionClaims.map((claim) => (
+            <article key={claim.id}>
+              <strong>{claim.completionKind} · {claim.state.replaceAll("_", " ")}</strong>
+              <code>{claim.marker.slice(0, 12)}</code>
+              <p>{claim.summary}</p>
+            </article>
+          ))}
+        </section>
+      )}
+
+      {detail.deliveries.length > 0 && (
+        <section className="workflow-deliveries">
+          <h4>Repair delivery</h4>
+          {detail.deliveries.map((delivery) => (
+            <article key={delivery.id} className={`workflow-delivery workflow-delivery-${delivery.state}`}>
+              <header>
+                <strong>{delivery.state.replaceAll("_", " ")}</strong>
+                <code>{delivery.payloadSha256}</code>
+              </header>
+              <dl>
+                <div><dt>Target session</dt><dd>{delivery.sessionId}</dd></div>
+                <div><dt>Conversation</dt><dd>{delivery.noteKey}</dd></div>
+                <div><dt>Prepared</dt><dd>{when(delivery.createdAt)}</dd></div>
+                <div><dt>Last transition</dt><dd>{when(delivery.updatedAt)}</dd></div>
+                <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
+              </dl>
+              {delivery.error && <p className="persona-error">{delivery.error.replaceAll("_", " ")}</p>}
+              <pre>{delivery.payload}</pre>
+              {delivery.state === "refused" && (
+                <button className="btn" onClick={() => void onRetryDelivery(delivery.id)}>
+                  Retry refused delivery
+                </button>
+              )}
+              {delivery.state === "uncertain" && (
+                <div className="workflow-delivery-recovery">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      if (window.confirm("Confirm that you inspected the pane and the repair prompt landed?")) {
+                        void onResolveDelivery(delivery.id, "mark_delivered");
+                      }
+                    }}
+                  >
+                    Mark delivered
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => {
+                      const confirmation = window.prompt(
+                        "Type DISCARD AND SEND A NEW REPAIR ROUND to discard this ambiguous packet.",
+                      );
+                      if (confirmation !== null) {
+                        void onResolveDelivery(delivery.id, "discard_and_new_round", confirmation);
+                      }
+                    }}
+                  >
+                    Discard and send new round
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+        </section>
+      )}
 
       {version ? (
         <WorkflowCanvas
@@ -366,7 +466,8 @@ export function WorkflowRuns({
 
   const copyFeedback = async (): Promise<void> => {
     if (!detail) return;
-    const text = detail.attempts.flatMap((attempt) => {
+    const delivery = detail.deliveries.at(-1);
+    const text = delivery?.payload ?? detail.attempts.flatMap((attempt) => {
       const verdict = attempt.verdict as unknown as PersonaVerdict | null;
       if (!verdict || !attempt.persona) return [];
       if (verdict.verdict === "pass") {
@@ -430,6 +531,18 @@ export function WorkflowRuns({
               });
             }}
             onCopyFeedback={copyFeedback}
+            onRetryDelivery={async (deliveryId) => {
+              await mutate(`/api/workflow-deliveries/${deliveryId}/retry`, {
+                requestId: crypto.randomUUID(),
+              });
+            }}
+            onResolveDelivery={async (deliveryId, resolution, confirmation) => {
+              await mutate(`/api/workflow-deliveries/${deliveryId}/resolve`, {
+                requestId: crypto.randomUUID(),
+                resolution,
+                ...(confirmation ? { confirmation } : {}),
+              });
+            }}
             onOpenSession={() => {
               if (detail.summary.sessionId) onOpenSession(detail.summary.sessionId);
             }}

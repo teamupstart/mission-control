@@ -29,7 +29,11 @@ import { Tooltip } from "./Tooltip.tsx";
 
 /** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
  *  because that's the name on the window the reader is looking at. */
-const ORIGIN_LABEL: Record<TurnOrigin, string> = { foreman: "foreman", harness: "mission control" };
+const ORIGIN_LABEL: Record<TurnOrigin, string> = {
+  foreman: "foreman",
+  harness: "mission control",
+  workflow: "workflow",
+};
 
 /**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's

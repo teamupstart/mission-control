@@ -32,6 +32,8 @@ export interface WorkflowEngineOptions {
   retryBaseMs?: number;
   runnerFor?: (id: LlmRunner["id"]) => LlmRunner;
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
+  /** Called after the wait boundary is durable and before any later graph work can advance. */
+  onSubmissionWaiting?: (submissionId: string) => void;
 }
 
 function isPersona(node: PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
@@ -68,6 +70,7 @@ export class WorkflowEngine {
   private readonly retryBaseMs: number;
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
+  private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
   private stopped = true;
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -84,6 +87,7 @@ export class WorkflowEngine {
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
+    this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
   }
 
   start(): void {
@@ -229,6 +233,7 @@ export class WorkflowEngine {
             edgeId: edge.id,
             receiptId: receipt.id,
           }, this.now());
+          this.onSubmissionWaiting(submission.id);
           this.onRunChanged(submission.runId);
           return;
         }

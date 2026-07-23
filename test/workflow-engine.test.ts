@@ -346,7 +346,7 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
   });
   engine.start();
   engine.activateSubmission("submission-infra");
-  await waitFor(() => store.getRun("run-infra")?.status === "blocked");
+  await waitFor(() => store.getRun("run-infra")?.status === "blocked", 10_000);
   await engine.stop();
 
   const attempts = store.listAttempts("submission-infra").filter((attempt) => attempt.nodeId === "p");

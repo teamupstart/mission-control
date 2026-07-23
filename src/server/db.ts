@@ -1841,49 +1841,82 @@ export function sessionWorkEpisodeFor(sessionId: string): SessionWorkEpisode | n
   return row ? sessionWorkEpisodeFromRow(row) : null;
 }
 
-export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
+export interface TaskDependencyRewrite {
+  taskId: string;
+  dependencies: Task["dependencies"];
+  updatedAt: number;
+}
+
+function writeSessionWorkEpisode(d: DatabaseSync, episode: SessionWorkEpisode): void {
+  d.prepare(
+    `INSERT INTO session_work_episodes
+       (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, prompted_at,
+        awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET
+       episode_id       = excluded.episode_id,
+       agent_session_id = excluded.agent_session_id,
+       branch           = excluded.branch,
+       pr_url            = excluded.pr_url,
+       pr_head_sha       = excluded.pr_head_sha,
+       merged_at         = excluded.merged_at,
+       prompted_at       = excluded.prompted_at,
+       awaiting_agent_rebind = excluded.awaiting_agent_rebind,
+       rebind_from_transcript_path = excluded.rebind_from_transcript_path,
+       started_at       = excluded.started_at,
+       updated_at       = excluded.updated_at`,
+  ).run(
+    episode.sessionId,
+    episode.episodeId,
+    episode.agentSessionId,
+    episode.branch,
+    episode.prUrl,
+    episode.prHeadSha,
+    episode.mergedAt,
+    episode.promptedAt,
+    episode.awaitingAgentRebind ? 1 : 0,
+    episode.rebindFromTranscriptPath,
+    episode.startedAt,
+    episode.updatedAt,
+  );
+  if (episode.promptedAt !== null) {
+    d.prepare(
+      `INSERT OR IGNORE INTO session_work_episode_prompts
+         (session_id, episode_id, prompted_at)
+       VALUES (?, ?, ?)`,
+    ).run(episode.sessionId, episode.episodeId, episode.promptedAt);
+  }
+}
+
+function writeTaskDependencyRewrites(
+  d: DatabaseSync,
+  rewrites: TaskDependencyRewrite[],
+): void {
+  const update = d.prepare(
+    `UPDATE tasks SET dependencies = ?, updated_at = ? WHERE id = ?`,
+  );
+  for (const rewrite of rewrites) {
+    const result = update.run(
+      rewrite.dependencies.length > 0 ? JSON.stringify(rewrite.dependencies) : null,
+      rewrite.updatedAt,
+      rewrite.taskId,
+    );
+    if (Number(result.changes) !== 1) {
+      throw new Error(`task disappeared during dependency rebind: ${rewrite.taskId}`);
+    }
+  }
+}
+
+export function replaceSessionWorkEpisodeWithDependencies(
+  episode: SessionWorkEpisode,
+  rewrites: TaskDependencyRewrite[],
+): void {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
-    d.prepare(
-      `INSERT INTO session_work_episodes
-         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, prompted_at,
-          awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(session_id) DO UPDATE SET
-         episode_id       = excluded.episode_id,
-         agent_session_id = excluded.agent_session_id,
-         branch           = excluded.branch,
-         pr_url           = excluded.pr_url,
-         pr_head_sha      = excluded.pr_head_sha,
-         merged_at        = excluded.merged_at,
-         prompted_at      = excluded.prompted_at,
-         awaiting_agent_rebind = excluded.awaiting_agent_rebind,
-         rebind_from_transcript_path = excluded.rebind_from_transcript_path,
-         started_at       = excluded.started_at,
-         updated_at       = excluded.updated_at`,
-    ).run(
-      episode.sessionId,
-      episode.episodeId,
-      episode.agentSessionId,
-      episode.branch,
-      episode.prUrl,
-      episode.prHeadSha,
-      episode.mergedAt,
-      episode.promptedAt,
-      episode.awaitingAgentRebind ? 1 : 0,
-      episode.rebindFromTranscriptPath,
-      episode.startedAt,
-      episode.updatedAt,
-    );
-    if (episode.promptedAt !== null) {
-      d.prepare(
-        `INSERT OR IGNORE INTO session_work_episode_prompts
-           (session_id, episode_id, prompted_at)
-         VALUES (?, ?, ?)`,
-      ).run(episode.sessionId, episode.episodeId, episode.promptedAt);
-    }
+    writeSessionWorkEpisode(d, episode);
+    writeTaskDependencyRewrites(d, rewrites);
     if (ownsTransaction) d.exec("COMMIT");
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
@@ -1891,11 +1924,16 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   }
 }
 
-export function rebindPendingSessionWorkEpisode(
+export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
+  replaceSessionWorkEpisodeWithDependencies(episode, []);
+}
+
+export function rebindPendingSessionWorkEpisodeWithDependencies(
   sessionId: string,
   episodeId: string,
   agentSessionId: string,
   now: number,
+  rewrites: TaskDependencyRewrite[],
 ): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
@@ -1913,8 +1951,9 @@ export function rebindPendingSessionWorkEpisode(
       d.prepare(
         `UPDATE task_work_episode_bindings
          SET agent_session_id = ?, updated_at = ?
-         WHERE session_id = ? AND episode_id = ?`,
+        WHERE session_id = ? AND episode_id = ?`,
       ).run(agentSessionId, now, sessionId, episodeId);
+      writeTaskDependencyRewrites(d, rewrites);
     }
     if (ownsTransaction) d.exec("COMMIT");
     return Number(result.changes) > 0;
@@ -1922,6 +1961,21 @@ export function rebindPendingSessionWorkEpisode(
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function rebindPendingSessionWorkEpisode(
+  sessionId: string,
+  episodeId: string,
+  agentSessionId: string,
+  now: number,
+): boolean {
+  return rebindPendingSessionWorkEpisodeWithDependencies(
+    sessionId,
+    episodeId,
+    agentSessionId,
+    now,
+    [],
+  );
 }
 
 export function deleteSessionWorkEpisode(sessionId: string): void {

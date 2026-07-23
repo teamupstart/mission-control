@@ -105,8 +105,9 @@ import {
   deleteWorkEpisodePrompts,
   historicalTaskWorkEpisodeBindings,
   invalidateTaskWorkEpisodeBindings,
-  rebindPendingSessionWorkEpisode,
+  rebindPendingSessionWorkEpisodeWithDependencies,
   replaceSessionWorkEpisode,
+  replaceSessionWorkEpisodeWithDependencies,
   sessionWorkEpisodeFor,
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
@@ -119,6 +120,7 @@ import {
   upsertUsageCell,
   loadInspectorInspections,
   markWorkEpisodeMerged,
+  type TaskDependencyRewrite,
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
@@ -1396,7 +1398,7 @@ export class Registry extends EventEmitter {
     awaitingAgentRebind = false,
     rebindFromTranscriptPath: string | null = null,
     promptedAt: number | null = null,
-    rebindPendingPrlessDependencies = false,
+    dependencyRebind: "none" | "all" | "prless" = "none",
   ): SessionWorkEpisode | null {
     const previous = sessionWorkEpisodeFor(sessionId);
     if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
@@ -1420,14 +1422,17 @@ export class Registry extends EventEmitter {
       startedAt,
       updatedAt: startedAt,
     };
-    replaceSessionWorkEpisode(episode);
-    if (
-      rebindPendingPrlessDependencies &&
+    const rebinds =
       previous !== null &&
-      previous.prUrl === null
-    ) {
-      this.rebindPendingDependencies(previous, episode, startedAt);
-    }
+      (dependencyRebind === "all" ||
+        (dependencyRebind === "prless" && previous.prUrl === null))
+        ? this.pendingDependencyRebinds(previous, episode, startedAt)
+        : [];
+    replaceSessionWorkEpisodeWithDependencies(
+      episode,
+      rebinds.map(this.taskDependencyRewrite),
+    );
+    this.publishDependencyRebinds(rebinds);
     if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
   }
@@ -1533,14 +1538,15 @@ export class Registry extends EventEmitter {
     }
   }
 
-  private rebindPendingDependencies(
+  private pendingDependencyRebinds(
     previous: Pick<
       SessionWorkEpisode,
       "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
     >,
     next: SessionWorkEpisode,
     at: number,
-  ): void {
+  ): Task[] {
+    const rebinds: Task[] = [];
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -1564,7 +1570,36 @@ export class Registry extends EventEmitter {
           prUrl: next.prUrl,
         };
       });
-      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at }, true);
+      if (changed) rebinds.push({ ...task, dependencies, updatedAt: at });
+    }
+    return rebinds;
+  }
+
+  private readonly taskDependencyRewrite = (task: Task): TaskDependencyRewrite => ({
+    taskId: task.id,
+    dependencies: task.dependencies,
+    updatedAt: task.updatedAt,
+  });
+
+  private publishDependencyRebinds(rebinds: Task[]): void {
+    for (const task of rebinds) {
+      this.tasks.set(task.id, task);
+      this.emitEvent({ type: "task_upsert", task });
+      this.syncSessionsForWorktree(task.worktreePath);
+      if (task.sessionId) this.resyncSessionTask(task.sessionId);
+    }
+  }
+
+  private rebindPendingDependencies(
+    previous: Pick<
+      SessionWorkEpisode,
+      "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+    >,
+    next: SessionWorkEpisode,
+    at: number,
+  ): void {
+    for (const task of this.pendingDependencyRebinds(previous, next, at)) {
+      this.upsertTask(task, true);
     }
   }
 
@@ -1643,10 +1678,10 @@ export class Registry extends EventEmitter {
       false,
       null,
       startedAt,
+      "all",
     );
     if (!next) return null;
     if (taskId) this.bindTaskToWorkEpisode(taskId, previous.sessionId, next, startedAt);
-    this.rebindPendingDependencies(previous, next, startedAt);
     return next;
   }
 
@@ -1741,17 +1776,6 @@ export class Registry extends EventEmitter {
     now: number,
   ): SessionWorkEpisode | null {
     if (!episode.awaitingAgentRebind) return episode;
-    if (
-      episode.agentSessionId !== agentSessionId &&
-      !rebindPendingSessionWorkEpisode(
-        episode.sessionId,
-        episode.episodeId,
-        agentSessionId,
-        now,
-      )
-    ) {
-      return null;
-    }
     const next = {
       ...episode,
       agentSessionId,
@@ -1759,8 +1783,24 @@ export class Registry extends EventEmitter {
       rebindFromTranscriptPath: null,
       updatedAt: now,
     };
-    if (episode.agentSessionId === agentSessionId) replaceSessionWorkEpisode(next);
-    this.rebindPendingDependencies(episode, next, now);
+    const rebinds = this.pendingDependencyRebinds(episode, next, now);
+    if (episode.agentSessionId !== agentSessionId) {
+      if (!rebindPendingSessionWorkEpisodeWithDependencies(
+        episode.sessionId,
+        episode.episodeId,
+        agentSessionId,
+        now,
+        rebinds.map(this.taskDependencyRewrite),
+      )) {
+        return null;
+      }
+    } else {
+      replaceSessionWorkEpisodeWithDependencies(
+        next,
+        rebinds.map(this.taskDependencyRewrite),
+      );
+    }
+    this.publishDependencyRebinds(rebinds);
     this.invalidateTaskOwnership(episode.sessionId);
     return next;
   }
@@ -1910,7 +1950,7 @@ export class Registry extends EventEmitter {
       awaitingAgentRebind,
       session?.transcriptPath ?? null,
       null,
-      true,
+      "prless",
     );
   }
 

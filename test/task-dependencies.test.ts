@@ -14,6 +14,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const {
   firstWorkEpisodePromptAfter,
+  openDb,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -227,6 +228,24 @@ async function delayedTaskMergeSetup(suffix: string) {
     promptAt,
     dependent,
   };
+}
+
+function failDependencyRewrite(taskId: string, run: () => void): void {
+  const db = openDb();
+  const escapedTaskId = taskId.replaceAll("'", "''");
+  db.exec(
+    `CREATE TEMP TRIGGER fail_dependency_rewrite
+     BEFORE UPDATE OF dependencies ON tasks
+     WHEN OLD.id = '${escapedTaskId}'
+     BEGIN
+       SELECT RAISE(ABORT, 'injected dependency rewrite failure');
+     END`,
+  );
+  try {
+    run();
+  } finally {
+    db.exec(`DROP TRIGGER fail_dependency_rewrite`);
+  }
 }
 
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
@@ -1059,6 +1078,115 @@ test("pending reset identity resolution rebinds task edge provenance", async () 
     [],
   );
 });
+
+for (const [suffix, failureIndex, boundary] of [
+  ["96", 0, "episode mutation"],
+  ["97", 1, "first edge mutation"],
+] as const) {
+  test(`reset rebind crash point after ${boundary} rolls back`, async () => {
+    const setup = await delayedTaskMergeSetup(suffix);
+    const second = setup.tasks.create({
+      ...createInput,
+      title: `Second reset crash dependent ${suffix}`,
+      backlog: true,
+      dependencies: [{
+        type: "task",
+        taskId: `delayed-task-prerequisite-${suffix}`,
+      }],
+    });
+    setup.registry.reconcilePrs(
+      new Map([[setup.id, prMatch({
+        url: setup.url,
+        number: Number(suffix),
+        state: "merged",
+        branch: setup.branch,
+        agentSessionId: setup.agentSessionId,
+        episodeId: setup.originalEpisode.episodeId,
+        createdAt: setup.originalEpisode.startedAt,
+        mergedAt: setup.promptAt - 1,
+      })]]),
+      new Set(),
+    );
+    const rolledOver = setup.registry.workEpisodeForSession(setup.id)!;
+    const dependents = [setup.dependent, second];
+
+    assert.throws(() =>
+      failDependencyRewrite(dependents[failureIndex].id, () => {
+        setup.registry.resetWorkEpisode(setup.id);
+      }),
+    );
+
+    const restarted = new Registry();
+    assert.equal(restarted.workEpisodeForSession(setup.id)?.episodeId, rolledOver.episodeId);
+    for (const dependent of dependents) {
+      const edge = restarted.getTask(dependent.id)?.dependencies[0];
+      assert.equal(edge?.type === "task" ? edge.episodeId : null, rolledOver.episodeId);
+      assert.equal(edge?.type === "task" ? edge.agentSessionId : null, rolledOver.agentSessionId);
+      assert.equal(edge?.type === "task" ? edge.prUrl : null, null);
+    }
+  });
+}
+
+for (const [suffix, failureIndex, boundary] of [
+  ["98", 0, "episode mutation"],
+  ["99", 1, "first edge mutation"],
+] as const) {
+  test(`identity rebind crash point after ${boundary} rolls back`, async () => {
+    const setup = await delayedTaskMergeSetup(suffix);
+    const second = setup.tasks.create({
+      ...createInput,
+      title: `Second identity crash dependent ${suffix}`,
+      backlog: true,
+      dependencies: [{
+        type: "task",
+        taskId: `delayed-task-prerequisite-${suffix}`,
+      }],
+    });
+    const pending = setup.registry.resetWorkEpisode(setup.id, {
+      awaitingAgentRebind: true,
+      previousAgentSessionId: setup.agentSessionId,
+    })!;
+    await pollAndReconcilePrs(
+      setup.registry,
+      async () => null,
+      async (candidate) =>
+        candidate === setup.url
+          ? { state: "merged", mergedAt: setup.promptAt - 1 }
+          : null,
+    );
+    const dependents = [setup.dependent, second];
+    const reboundAgentSessionId = `delayed-task-episode-${suffix}-after-reset`;
+
+    assert.throws(() =>
+      failDependencyRewrite(dependents[failureIndex].id, () => {
+        setup.registry.applyHook({
+          agent: "claude",
+          event: "SessionStart",
+          sessionId: reboundAgentSessionId,
+          cwd: setup.cwd,
+          transcriptPath: null,
+          env: {},
+          source: "clear",
+        });
+      }),
+    );
+
+    const restarted = new Registry();
+    const persisted = restarted.workEpisodeForSession(setup.id)!;
+    assert.equal(persisted.episodeId, pending.episodeId);
+    assert.equal(persisted.agentSessionId, setup.agentSessionId);
+    assert.equal(persisted.awaitingAgentRebind, true);
+    for (const dependent of dependents) {
+      const edge = restarted.getTask(dependent.id)?.dependencies[0];
+      assert.equal(edge?.type === "task" ? edge.episodeId : null, pending.episodeId);
+      assert.equal(
+        edge?.type === "task" ? edge.agentSessionId : null,
+        setup.agentSessionId,
+      );
+      assert.equal(edge?.type === "task" ? edge.prUrl : null, null);
+    }
+  });
+}
 
 test("post-merge episode rollover preserves running task ownership", () => {
   const registry = new Registry();

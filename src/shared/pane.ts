@@ -123,3 +123,11 @@ export function muxHandle(s: PaneHandles): MuxHandle | null {
 export function emulatorHandle(s: PaneHandles): EmulatorHandle | null {
   return s.terminals.find((h) => h.kind === "emulator") ?? null;
 }
+
+export function terminalHomeNames(s: PaneHandles): Set<string> {
+  return new Set(
+    s.terminals
+      .map((handle) => handle.kind === "multiplexer" ? handle.session : handle.tabTitle)
+      .filter(Boolean),
+  );
+}

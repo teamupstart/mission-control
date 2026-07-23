@@ -46,7 +46,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
-import { canWriteTo, muxHandle, paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, muxHandle, paneToken, terminalHomeNames, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import {
@@ -3056,13 +3056,13 @@ export class Registry extends EventEmitter {
   ): Task | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
-    const tmuxSession = muxHandle(session)?.session ?? null;
+    const homeNames = terminalHomeNames(session);
     return this.listTasks().find((task) =>
       (status === undefined || task.status === status) &&
       (Boolean(task.worktreePath) || Boolean(task.tmuxSession)) &&
       (task.sessionId === sessionId ||
         (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
-        (Boolean(tmuxSession) && task.tmuxSession === tmuxSession))
+        (task.tmuxSession !== null && homeNames.has(task.tmuxSession)))
     );
   }
 

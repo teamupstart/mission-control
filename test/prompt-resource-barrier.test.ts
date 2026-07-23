@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkTask } from "./helpers/session-fixture.ts";
+import { mkEmuHandle, mkTask } from "./helpers/session-fixture.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { TerminalResult } from "../src/server/terminal/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -17,21 +17,29 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 
-function setup() {
+function setup(over: {
+  cwd?: string | null;
+  homeName?: string;
+  worktreePath?: string;
+} = {}) {
   const registry = new Registry();
+  const cwd = Object.hasOwn(over, "cwd") ? over.cwd! : "/repo/resource-session";
+  const terminals = over.homeName
+    ? [mkEmuHandle({ tabTitle: over.homeName, paneId: "emulator-pane" })]
+    : [];
   const discovered: DiscoveredSession = {
     syntheticId: "resource-session",
     agent: "claude",
     name: "resource-session",
-    nameSource: "process",
-    cwd: "/repo/resource-session",
+    nameSource: over.homeName ? "wezterm" : "process",
+    cwd,
     gitBranch: "harness/cancelled-owner",
     gitRoot: "/repo",
     repoRoot: "/repo",
     nomistakesGated: false,
     pid: 1,
     tty: null,
-    terminals: [],
+    terminals,
     startedAt: 0,
   };
   registry.applyDiscovery([discovered]);
@@ -41,9 +49,10 @@ function setup() {
     title: "Cancelled owner",
     status: "cancelled",
     repoRoot: "/repo",
-    worktreePath: session.cwd,
+    worktreePath: over.worktreePath ?? session.cwd,
     branch: "harness/cancelled-owner",
     provider: "git",
+    tmuxSession: over.homeName ?? null,
   }));
   const writes: string[] = [];
   const pane: BoundPane = {
@@ -121,5 +130,28 @@ test("prompt delivery rechecks ownership immediately before the pane write", asy
   const result = await injectPrompt(session, "racing work", deps, guard);
   assert.equal(result.ok, false);
   assert.equal(result.pasted, false);
+  assert.deepEqual(writes, []);
+});
+
+test("emulator home ownership blocks prompts when cwd is unavailable", async () => {
+  const { session, writes, deps, guard } = setup({
+    cwd: null,
+    homeName: "emulator-home",
+    worktreePath: "/repo/old-worktree",
+  });
+  const result = await injectPrompt(session, "replacement work", deps, guard);
+  assert.equal(result.ok, false);
+  assert.equal(result.pasted, false);
+  assert.deepEqual(writes, []);
+});
+
+test("emulator home ownership blocks prompts after cwd changes", async () => {
+  const { session, writes, deps, guard } = setup({
+    cwd: "/repo/new-cwd",
+    homeName: "emulator-home",
+    worktreePath: "/repo/old-worktree",
+  });
+  const result = await sendText(session, "replacement work", true, deps, guard);
+  assert.equal(result.ok, false);
   assert.deepEqual(writes, []);
 });

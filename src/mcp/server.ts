@@ -163,8 +163,9 @@ server.registerTool(
     description:
       "Create one ship task in the Mission Control backlog for the current repository. " +
       "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
-      "task ids to create durable dependency edges; unfinished prerequisites keep the new task " +
-      "backlogged until their pull requests merge. Returns the new task id for later calls.",
+      "task ids or depend on the calling session to create durable dependency edges; unfinished " +
+      "prerequisites keep the new task backlogged until their pull requests merge. Returns the " +
+      "new task id for later calls.",
     inputSchema: {
       title: z.string().min(1).max(200).describe("Specific task title shown on the backlog card"),
       intent: z
@@ -176,17 +177,23 @@ server.registerTool(
         .max(50)
         .default([])
         .describe("Ids of direct prerequisite tasks returned by earlier create_task calls"),
+      dependsOnCurrentSession: z
+        .boolean()
+        .default(false)
+        .describe("Make the session calling this tool a direct prerequisite of the new task"),
     },
   },
-  async ({ title, intent, dependsOnTaskIds }) => {
+  async ({ title, intent, dependsOnTaskIds, dependsOnCurrentSession }) => {
     try {
-      const res = await http("/api/tasks", "POST", {
+      const res = await http("/mcp/tasks", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
         repoRoot: process.cwd(),
         title,
         intent,
-        kind: "ship",
-        backlog: true,
-        dependencies: dependsOnTaskIds.map((taskId) => ({ type: "task", taskId })),
+        dependsOnTaskIds,
+        dependsOnCurrentSession,
       });
       if (!res.ok) return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
 
@@ -198,6 +205,7 @@ server.registerTool(
             title: task.title,
             status: task.status,
             dependsOnTaskIds,
+            dependsOnCurrentSession,
           },
           null,
           2,

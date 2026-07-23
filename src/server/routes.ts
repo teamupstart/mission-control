@@ -23,6 +23,7 @@ import {
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
+  McpCreateTaskSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -57,7 +58,7 @@ import {
   ArchivePersonaSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { NomistakesRespond } from "@shared/protocol.ts";
+import type { NomistakesRespond, TaskDependencyInput } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -630,6 +631,48 @@ export function buildApp(
     if (!session) return c.json({ error: "no matching session" }, 404);
     const review = reviews.create(session.id, kind, title, body, decisions ?? null);
     return c.json({ id: review.id, sessionId: session.id });
+  });
+
+  app.post("/mcp/tasks", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpCreateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const {
+      env,
+      sessionId,
+      cwd,
+      repoRoot: requestedRoot,
+      dependsOnTaskIds,
+      dependsOnCurrentSession,
+    } = parsed.data;
+    const repoRoot = await resolveRepoRoot(requestedRoot);
+    if (!repoRoot) return c.json({ error: `not a git repository: ${requestedRoot}` }, 400);
+
+    const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
+      type: "task",
+      taskId,
+    }));
+    if (dependsOnCurrentSession) {
+      const session = registry.findSessionByEnv(env, sessionId, cwd);
+      if (!session) return c.json({ error: "no matching active session" }, 404);
+      dependencies.push({ type: "session", sessionId: session.id });
+    }
+
+    try {
+      const task = tasks.create({
+        repoRoot,
+        title: parsed.data.title,
+        intent: parsed.data.intent,
+        kind: "ship",
+        agent: "claude",
+        backlog: true,
+        dependencies,
+      });
+      return c.json(task);
+    } catch (error) {
+      if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
   });
 
   app.get("/mcp/reviews/:id/wait", async (c) => {

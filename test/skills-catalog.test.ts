@@ -267,6 +267,7 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(text, /Edit any earlier phase/);
   assert.match(text, /create_task/);
   assert.match(text, /dependsOnTaskIds/);
+  assert.match(text, /dependsOnCurrentSession` to `true` on every call/);
   assert.match(text, /Do not flatten\s+the graph into a serial chain/);
   assert.match(text, /embed the complete phase Markdown/);
 
@@ -275,9 +276,8 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   const end = mcp.indexOf("// This is the replacement", start);
   assert.ok(start >= 0 && end > start, "create_task should be registered before request_input");
   const tool = mcp.slice(start, end);
-  assert.match(tool, /backlog: true/);
-  assert.match(tool, /kind: "ship"/);
-  assert.match(tool, /dependsOnTaskIds\.map/);
+  assert.match(tool, /dependsOnCurrentSession/);
+  assert.match(tool, /http\("\/mcp\/tasks"/);
   assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
   assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
 });

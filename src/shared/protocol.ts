@@ -291,6 +291,30 @@ export const CreateReviewSchema = z
   });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
 
+/**
+ * MCP `create_task`: create a backlogged implementation task and optionally bind it
+ * to the session making the call. The daemon resolves that session from the same
+ * pane/session/cwd evidence as the review channel; the MCP child never guesses a
+ * Mission Control session id.
+ */
+export const McpCreateTaskSchema = z
+  .object({
+    env: EnvSchema,
+    sessionId: z.string().nullable().optional().default(null),
+    cwd: z.string().min(1),
+    repoRoot: z.string().min(1),
+    title: z.string().min(1).max(200),
+    intent: z.string().min(1),
+    dependsOnTaskIds: z.array(z.string().min(1)).max(50).optional().default([]),
+    dependsOnCurrentSession: z.boolean().optional().default(false),
+  })
+  .refine(
+    ({ dependsOnTaskIds, dependsOnCurrentSession }) =>
+      dependsOnTaskIds.length + (dependsOnCurrentSession ? 1 : 0) <= 50,
+    { path: ["dependsOnTaskIds"], message: "at most 50 task dependencies are allowed" },
+  );
+export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
+
 /** The human's decision on a review, from the dashboard. */
 export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer"]),

@@ -110,11 +110,17 @@ For each call:
 - Set `dependsOnTaskIds` to the returned task ids of that phase's direct prerequisites. Do not flatten
   the graph into a serial chain. Parallel phases should share prerequisites and not depend on one
   another.
+- Set `dependsOnCurrentSession` to `true` on every call. The planning session owns the phase
+  artifacts until its pull request merges; making it a direct prerequisite prevents implementation
+  agents from starting before they can pull those artifacts from the default branch. Mission Control
+  resolves the calling session and normalizes it to its task when it has one, so do not guess or copy
+  a session id into `dependsOnTaskIds`.
 - Save the returned task id before creating any dependent task.
 
 If task creation fails, stop creating tasks that depend on it. Report the failure and every task id
 already created; never recreate successful tasks speculatively, because duplicate implementation
 tasks are worse than an incomplete graph.
 
-Finish by reporting the artifact paths, the phase-to-task-id map, the direct dependency edges, and
-which tasks may execute concurrently.
+Finish by reporting the artifact paths, the phase-to-task-id map, the direct dependency edges
+(including the active planning-session edge on every task), and which tasks may execute
+concurrently.

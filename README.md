@@ -1968,7 +1968,9 @@ navigation and Console reading, and can't be reassigned.
 The Inspector reviews the pull requests **Mission Control opened** - and only those -
 against a repo-root `INSPECTOR.md`, leaves inline review comments for what it finds,
 answers replies in its own threads, re-reviews on every push, and resolves its own
-threads once a push fixes what they were about.
+threads once a push fixes what they were about. When a live review finds nothing further
+and every earlier Inspector finding is resolved, it leaves one top-level comment for that
+head saying the pull request is safe to merge.
 
 It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
 separate acts in Settings → Inspector, and the first two are reversible without anyone

@@ -26,18 +26,27 @@ import { getInspectorConfig, inspectorModel } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
-import { formatMarker, isOurs, parseMarker } from "./marker.ts";
+import {
+  CLEAN_REVIEW_FINGERPRINT,
+  formatMarker,
+  isOurs,
+  parseMarker,
+} from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
+  cleanReviewExists,
+  hasBodyOnlyFindings,
   fetchDiff,
   fetchPr,
   ourThreads,
+  ownedThreadsResolved,
   parsePrUrl,
   postReview,
+  renderCleanReview,
   renderComment,
   replyToComment,
   resolveThread,
@@ -736,16 +745,74 @@ async function reviewRound(
 
   // Resolve BEFORE posting: the other order raises a fresh comment about an issue and
   // only then closes the old thread for the same issue, which reads as churn.
+  const resolvedThreadIds = new Set<string>();
   for (const r of plan.resolve) {
     if (post) {
       const res = await resolveThread(dir, r.threadId);
       if (!res.ok) continue; // leave the row open; we'll try again next round
     }
+    resolvedThreadIds.add(r.threadId);
     closeRow(rows, r.fingerprint, now);
   }
   // Findings with no thread to close - everything drafted in dry run, and anything
   // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
   for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
+
+  // A clean verdict is only safe when every earlier finding is resolved too. A model
+  // omitting an old finding is not evidence that it was fixed, and a failed GitHub
+  // resolve above must not be followed by a contradictory "safe to merge" review.
+  let clean = plan.clean && [...rows.values()].every((row) => row.status === "resolved");
+  if (clean) {
+    const threadsResolved = await ownedThreadsResolved({
+      cwd: dir,
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      snapshot: s,
+      login,
+      resolvedThreadIds,
+    });
+    if (!threadsResolved.ok) {
+      return noteFailure(pr, threadsResolved.error ?? "could not inspect all review threads", now, tick);
+    }
+    clean = threadsResolved.value === true;
+  }
+  let cleanAlreadyPosted = false;
+  if (post && clean) {
+    const bodyOnly = await hasBodyOnlyFindings({
+      cwd: dir,
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      snapshot: s,
+      login,
+      headSha: s.headSha,
+    });
+    if (!bodyOnly.ok) {
+      return noteFailure(pr, bodyOnly.error ?? "could not inspect prior body-only findings", now, tick);
+    }
+    clean = bodyOnly.value !== true;
+  }
+  if (post && clean) {
+    const priorClean = await cleanReviewExists({
+      cwd: dir,
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      snapshot: s,
+      login,
+      headSha: s.headSha,
+    });
+    if (!priorClean.ok) {
+      return noteFailure(
+        pr,
+        priorClean.error ?? "could not inspect earlier pull request reviews",
+        now,
+        tick,
+      );
+    }
+    cleanAlreadyPosted = priorClean.value === true;
+  }
 
   const inline = plan.inline.map((c) => ({
     path: c.path,
@@ -791,13 +858,19 @@ async function reviewRound(
   });
   for (const row of planned) upsertInspectorComment(row);
 
-  if (post && (inline.length > 0 || plan.demoted.length > 0)) {
+  if (post && (inline.length > 0 || plan.demoted.length > 0 || (clean && !cleanAlreadyPosted))) {
+    const body = clean
+      ? renderCleanReview(
+          formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round }),
+          round,
+        )
+      : plan.body;
     const res = await postReview(
       dir,
       pr.owner,
       pr.repo,
       pr.number,
-      plan.body,
+      body,
       inline,
       s.headSha,
     );

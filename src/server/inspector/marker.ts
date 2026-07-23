@@ -29,6 +29,18 @@ import { createHash } from "node:crypto";
 const MARKER_PREFIX = "mission-inspector:v1";
 
 /**
+ * A reserved marker fingerprint for a top-level review that records a clean head.
+ *
+ * This is not an issue fingerprint: it never appears in the finding ledger or in a
+ * review thread. It lets a retry recognise that GitHub accepted the one generic
+ * "safe to merge" review for a reviewed head even when the response was lost.
+ */
+export const CLEAN_REVIEW_FINGERPRINT = "clean-review";
+
+/** Durable sentinel for findings folded into a top-level review body. */
+export const BODY_ONLY_FINDINGS_MARKER = "<!-- mission-inspector:body-findings:v1 -->";
+
+/**
  * Matches our marker ONLY at the very start of a body.
  *
  * The anchor is the point, not decoration. GitHub's quote-reply prefixes every line
@@ -96,6 +108,17 @@ export function isOurs(comment: AuthoredComment, login: string | null): boolean 
   if (!login) return false;
   if (comment.author !== login) return false;
   return parseMarker(comment.body) !== null;
+}
+
+/** Whether this is our clean top-level review for one particular reviewed head. */
+export function isCleanReview(
+  comment: AuthoredComment & { headSha: string },
+  login: string | null,
+  headSha: string,
+): boolean {
+  if (!isOurs(comment, login)) return false;
+  const marker = parseMarker(comment.body);
+  return marker?.fingerprint === CLEAN_REVIEW_FINGERPRINT && comment.headSha === headSha;
 }
 
 /**

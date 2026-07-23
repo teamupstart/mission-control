@@ -23,11 +23,11 @@ const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 
 function driven(
   start = NORMAL,
-  options: { failCommit?: boolean; missCloseCaptures?: number } = {},
+  options: { failCommit?: boolean; delayCloseCaptureMs?: number } = {},
 ): { deps: PaneDeps; did: string[]; screen: () => string } {
   let screen = start;
   let selected = "high";
-  let closeCapturesLeft = 0;
+  let closeCaptureDelayMs = 0;
   const did: string[] = [];
   const pane: BoundPane = {
     kind: "multiplexer",
@@ -42,7 +42,7 @@ function driven(
         if (text === "/model") screen = pending(text);
         if (text === "s") {
           screen = NORMAL;
-          closeCapturesLeft = options.missCloseCaptures ?? 0;
+          closeCaptureDelayMs = options.delayCloseCaptureMs ?? 0;
         }
         if (text === "s" && options.failCommit) {
           return { ok: false, error: "commit delivery failed", outcomeUnknown: false };
@@ -68,8 +68,10 @@ function driven(
     deps: {
       pane: () => pane,
       capture: async () => {
-        if (closeCapturesLeft > 0) {
-          closeCapturesLeft--;
+        if (closeCaptureDelayMs > 0) {
+          const delayMs = closeCaptureDelayMs;
+          closeCaptureDelayMs = 0;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
           return null;
         }
         return screen;
@@ -107,7 +109,7 @@ test("session effort fails when the commit key is not delivered, even if the pic
 });
 
 test("session effort confirms a delivered commit after its close repaint is missed", async () => {
-  const h = driven(NORMAL, { missCloseCaptures: 19 });
+  const h = driven(NORMAL, { delayCloseCaptureMs: 950 });
   const result = await setSessionEffort(session(), "max", h.deps);
 
   assert.deepEqual(result, { ok: true, effort: "max" });

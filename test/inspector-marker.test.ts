@@ -1,7 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fingerprint, formatMarker, isOurs, parseMarker } from "../src/server/inspector/marker.ts";
-import { ourThreads } from "../src/server/inspector/github.ts";
+import {
+  CLEAN_REVIEW_FINGERPRINT,
+  fingerprint,
+  formatMarker,
+  isCleanReview,
+  isOurs,
+  parseMarker,
+} from "../src/server/inspector/marker.ts";
+import {
+  allOwnedThreadsResolved,
+  cleanReviewExists,
+  ourThreads,
+  renderCleanReview,
+} from "../src/server/inspector/github.ts";
 import type { PrSnapshot, ThreadSnapshot } from "../src/server/inspector/github.ts";
 
 // The Inspector pushes to GitHub as the OPERATOR. On the wire its comments are
@@ -31,6 +43,71 @@ test("a marker we wrote is recognised, with its fields intact", () => {
     fingerprint: "deadbeef0000",
     round: 3,
   });
+});
+
+test("a clean review marker is recognised only for its own head and author", () => {
+  const clean = {
+    body: formatMarker({ id: "clean-1", fingerprint: CLEAN_REVIEW_FINGERPRINT, round: 3 }),
+    author: US,
+    headSha: "head-3",
+  };
+  assert.equal(isCleanReview(clean, US, "head-3"), true);
+  assert.equal(isCleanReview(clean, US, "new-head"), false);
+  assert.equal(isCleanReview({ ...clean, author: "someone-else" }, US, "head-3"), false);
+});
+
+test("a clean review says no further issues were found and declares the PR merge-safe", () => {
+  const body = renderCleanReview(
+    formatMarker({ id: "clean-1", fingerprint: CLEAN_REVIEW_FINGERPRINT, round: 3 }),
+    3,
+  );
+  assert.match(body, /No further issues found\./);
+  assert.match(body, /safe to merge/i);
+  assert.ok(isCleanReview({ body, author: US, headSha: "head-3" }, US, "head-3"));
+});
+
+test("clean review recovery traverses older pages until the matching head is found", async () => {
+  const marker = formatMarker({
+    id: "clean-old",
+    fingerprint: CLEAN_REVIEW_FINGERPRINT,
+    round: 2,
+  });
+  const visited: string[] = [];
+  const result = await cleanReviewExists(
+    {
+      cwd: null,
+      owner: "mission",
+      repo: "control",
+      number: 7,
+      snapshot: {
+        reviews: [{ body: marker, author: US, headSha: "older-head" }],
+        reviewsPageInfo: { hasPreviousPage: true, startCursor: "page-2" },
+      },
+      login: US,
+      headSha: "target-head",
+    },
+    async (cursor) => {
+      visited.push(cursor);
+      if (cursor === "page-2") {
+        return {
+          ok: true,
+          value: {
+            reviews: [{ body: "ordinary review", author: US, headSha: "target-head" }],
+            pageInfo: { hasPreviousPage: true, startCursor: "page-3" },
+          },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          reviews: [{ body: marker, author: US, headSha: "target-head" }],
+          pageInfo: { hasPreviousPage: false, startCursor: null },
+        },
+      };
+    },
+  );
+  assert.deepEqual(result, { ok: true, value: true });
+  assert.deepEqual(visited, ["page-2", "page-3"]);
 });
 
 // The marker prefix is a fixed public string and every fingerprint is visible in the
@@ -178,6 +255,8 @@ function snapshot(threads: ThreadSnapshot[]): PrSnapshot {
     reviewDecision: null,
     checks: "none",
     threads,
+    reviews: [],
+    reviewsPageInfo: { hasPreviousPage: false, startCursor: null },
   };
 }
 
@@ -185,6 +264,14 @@ test("a thread we opened is ours to resolve", () => {
   const got = ourThreads(snapshot([thread("T_1", [ours("fp1")])]), US);
   assert.deepEqual([...got.keys()], ["fp1"]);
   assert.equal(got.get("fp1")?.threadId, "T_1");
+});
+
+test("a clean outcome is blocked by an owned thread missing from the local ledger", () => {
+  const unresolved = snapshot([thread("T_1", [ours("lost-fingerprint")])]);
+  assert.equal(allOwnedThreadsResolved(unresolved, US), false);
+  assert.equal(allOwnedThreadsResolved(unresolved, US, new Set(["T_1"])), true);
+  unresolved.threads[0]!.isResolved = true;
+  assert.equal(allOwnedThreadsResolved(unresolved, US), true);
 });
 
 test("a thread opened by someone who copied our marker is NOT ours to resolve", () => {

@@ -23,9 +23,12 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
  * of them is how a parked task gets typed into somebody's pane anyway, with the board
  * still showing it held.
  *
- * Parked items also stay out of planner input. Otherwise disabling work would spend a
- * model call and consume the finite plan budget, while re-enabling it would not make
- * the plan stale.
+ * Parked items DO stay in planner input, and the test below is the reason. Filtering
+ * them out looks like a saving and is a silent correctness bug: `sanitizePlan` drops
+ * any edge whose target it was not shown, so a parked prerequisite's inferred edges
+ * vanish on the next replan and its dependents go ready. That filter was written twice
+ * during this feature's review and reverted twice; the test is what makes the third
+ * attempt fail loudly instead of quietly.
  */
 
 const NOW = 1_000_000;
@@ -97,11 +100,41 @@ test("re-enabling puts it back in line, in the order the plan already gave", () 
 
 // ---- what a park costs the planner ---------------------------------------------------
 
-test("disabled items do not consume planner input or its budget", () => {
+test("an inferred edge onto a parked prerequisite SURVIVES a replan", () => {
+  // The whole reason `plannableBacklog` does not read the toggle. Withhold the parked
+  // task from the planner's input and `sanitizePlan`'s `if (!known.has(dep)) continue`
+  // deletes the edge - so `dependent` becomes ready and launches on a base nobody laid.
+  // Declared edges survive that; Foreman's inferred graph is what silently loses.
   const parked = mkTask({ enabled: false });
   const dependent = mkTask();
-  const input = plannableBacklog([parked, dependent]);
-  assert.deepEqual(input.map((task) => task.id), [dependent.id]);
+  const tasks = [parked, dependent];
+
+  const input = plannableBacklog(tasks);
+  assert.ok(
+    input.some((task) => task.id === parked.id),
+    "a parked task stays in planner input, or its inferred edges cannot survive",
+  );
+
+  const plan = sanitizePlan(
+    {
+      tasks: [
+        { id: parked.id, dependsOn: [] },
+        { id: dependent.id, dependsOn: [parked.id] },
+      ],
+    },
+    input,
+  );
+  const entry = plan.entries.find((e) => e.taskId === dependent.id);
+  assert.deepEqual(entry?.dependsOn, [parked.id], "the edge must still name the parked task");
+
+  // And the point of keeping it: the dependent stays blocked rather than going ready.
+  const stored: BacklogPlan = {
+    entries: plan.entries.map((e) => ({ ...e, reason: e.reason ?? null })),
+    note: plan.note ?? null,
+    generatedAt: NOW,
+  };
+  assert.deepEqual(readyBacklog(tasks, stored), []);
+  assert.deepEqual(blockersFor(dependent, stored, tasks).map((b) => b.state), ["disabled"]);
 });
 
 // ---- a disabled item still blocks what depends on it ---------------------------------

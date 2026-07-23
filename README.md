@@ -947,13 +947,24 @@ item - not into a fresh worktree, not onto an idle agent. It's on the board's ba
 next to the priority picker, and on the same row in [Sitrep](#roundup); both draw the same
 control, so you can park an item from wherever you happen to be reading the list.
 
-**It's a hold on the machine, not on you.** **launch new agent**, dragging the card onto
-an idle agent, and the corresponding manual API calls still send a parked item; the button
-reads **launch anyway**, the way it does on an item Foreman thinks is waiting its turn.
-The switch is enforced in the one ready list both of Foreman's scheduling paths use, not
-as a task blocker that would also refuse an operator's dispatch. Blocking a button you
-pressed yourself to protect a background scheduler is the worse surprise, and it's the
-same call `Max agents` makes.
+**It's a hold on the machine, not on you.** **launch new agent** and dragging the card
+onto an idle agent both still start a parked item; the button reads **launch anyway**, the
+way it does on an item Foreman thinks is waiting its turn. Blocking a button you pressed
+yourself to protect a background scheduler is the worse surprise, and it's the same call
+`Max agents` makes.
+
+That works because the switch is enforced in **two** places, and only one of them can be
+opted out of. Foreman never reaches a parked item at all: it schedules from the one ready
+list both its paths share, so neither the fresh-worktree launch nor the assign-onto-an-idle
+-agent shortcut can see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and
+`/assign` for a parked item **unless the request explicitly claims an override** - which
+the dashboard's own buttons do, and Foreman never does.
+
+The refusing default is the point. The Foreman worker is a separate process you start by
+hand, so it can outlive a daemon restart; one that predates this feature sends no override
+and is stopped, without the daemon having to work out who it is talking to. An external
+script or `curl` is refused the same way until it opts in, which is the right default for a
+flag whose whole job is to stop unattended launches.
 
 A parked card dims, says `autopilot will skip this`, and drops out of the
 autopilot's `ready` count into its own `disabled` one in the Foreman popover - so an
@@ -965,12 +976,15 @@ The Sitrep digest marks the row too (`- "On hold" (ship, disabled) - /repo`).
 distinction a cancelled or failed dependency gets, with a one-click fix instead of an
 investigation.
 
-A parked item is omitted from Foreman's next dependency read and from its 400-item budget,
-so a long held tail costs neither planning calls nor capacity. Re-enabling an item that is
-missing from the current plan makes that plan stale and brings it back into the next read.
-Existing dependency edges still block while they name a parked prerequisite. Like the rest
-of the launch configuration, the switch can only be changed while the task is *in* the
-backlog; there's nothing left to schedule once it has started.
+**A parked item still takes part in the dependency read**, and keeps its place in the
+400-item budget. Leaving it out looks like a saving and quietly breaks the paragraph
+above: the planner drops any edge whose target it wasn't shown, so a parked
+prerequisite's inferred dependencies would vanish on the next read and everything behind
+it would go ready. Holding an item costs one plan entry it won't use, which is much the
+cheaper of the two.
+
+Like the rest of the launch configuration, the switch can only be changed while the task
+is *in* the backlog; there's nothing left to schedule once it has started.
 
 ### Priority and labels
 
@@ -1741,11 +1755,12 @@ one fresh read is tried, so an API blip heals itself instead of waiting for a re
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
 
-One read, one model call, over the **first 400 enabled backlog items**; items
-[held back](#hold-a-backlog-item-back) are omitted before that limit is applied. Reading a
+One read, one model call, over the **first 400 backlog items**, including any
+[held back](#hold-a-backlog-item-back) - they stay in the read so the edges pointing at
+them survive it. Reading a
 longer backlog in several calls was tried and taken back out: they run on the Foreman
 worker's single loop, which also drives queue drain and needs-you triage, so each extra call
-is another span in which nothing else in the fleet is attended to. Past 400 the enabled
+is another span in which nothing else in the fleet is attended to. Past 400 the
 tail is scheduled **oldest first with no dependency information** - and, since staleness
 is coverage, a dispatch while the enabled backlog is that long promotes an unplanned item
 into the head and costs one replan.

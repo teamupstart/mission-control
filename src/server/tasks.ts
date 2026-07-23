@@ -69,14 +69,43 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+/**
+ * Why the disabled toggle refuses by DEFAULT rather than trusting callers to identify
+ * themselves, spelled out once for both options objects below.
+ *
+ * The first design had the autopilot declare itself and be refused on that basis. It
+ * cannot work: the Foreman worker is a separate process started by hand
+ * (`npm run foreman`), so it can outlive a daemon restart, and a worker that predates
+ * this field sends nothing - which an "are you the autopilot?" flag reads as a human
+ * override. That stale worker also has no `readyBacklog` filter of its own, so it would
+ * cheerfully launch a task somebody had just parked.
+ *
+ * Inverting it removes the question. Nothing has to be identified: a request that does
+ * not CLAIM an override does not get one, so the stale worker is refused by
+ * construction. The dashboard ships in the same bundle as the daemon and can never be
+ * skewed against it, so it can always claim the override behind the operator's own
+ * "launch anyway" button - which is the one path that must keep working.
+ */
+const DISABLED_REFUSAL =
+  "task is disabled - Foreman will not schedule it (launch it yourself to override)";
+
+/** True when this call must be refused because the task is parked and nobody claimed an override. */
+function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): boolean {
+  // Scoped to `backlog`: `enabled` gates SCHEDULING, and the retry path for a cleanly
+  // failed task is not scheduling - that task already ran.
+  return task.status === "backlog" && !task.enabled && overrideDisabled !== true;
+}
+
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
   defaultModel?: string | null;
+  /** The caller is deliberately starting a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
+  /** The caller is deliberately handing over a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
@@ -481,6 +510,11 @@ export class TaskManager {
       return { ok: false, error: "task is being assigned", task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
+      // the coarser fact and the one the operator can act on immediately.
+      if (refusedAsDisabled(t, options.overrideDisabled)) {
+        return { ok: false, error: DISABLED_REFUSAL, task: t };
+      }
       const blockers = this.dependencyBlockers(t);
       if (blockers.length > 0) {
         return {
@@ -620,6 +654,12 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // The same refusal `dispatch` applies, and it has to be here too: assigning onto a
+    // running agent is the autopilot's OTHER way of starting a parked task, and a guard
+    // on one path only is the drift this whole feature is built to avoid.
+    if (refusedAsDisabled(t, opts.overrideDisabled)) {
+      return { ok: false, error: DISABLED_REFUSAL, scope: "task" };
     }
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {

@@ -1,6 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -147,28 +148,74 @@ test("a parked task carries no dependency blocker of its own", () => {
   assert.deepEqual(tasks.dependencyBlockers(tasks.get("t1")!), []);
 });
 
-test("manual dispatch and assignment are not gated by the enable toggle", async () => {
-  const { tasks, app } = setup({ enabled: false });
-  let dispatched = 0;
+/** Swap the real dispatcher for a counter, so a launch is observable without spawning one. */
+function countDispatches(tasks: InstanceType<typeof TaskManager>): () => number {
+  let n = 0;
   const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
   inner.dispatcher.dispatch = async () => {
-    dispatched++;
+    n++;
   };
+  return () => n;
+}
+
+test("a caller that claims no override cannot start a parked task - the stale-worker case", async () => {
+  // THE case this refusal exists for. A Foreman worker predating the toggle is a
+  // separate long-lived process that sends the legacy body and has no `readyBacklog`
+  // filter of its own, so it would launch a task somebody just parked. Refusing by
+  // default means it is stopped without the daemon having to identify it.
+  const { tasks, app, registry } = setup({ enabled: false });
+  const dispatched = countDispatches(tasks);
+
   const dispatch = await app.request("/api/tasks/t1/dispatch", {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
     body: JSON.stringify({}),
   });
-  assert.equal(dispatch.status, 200);
-  assert.equal(dispatched, 1);
+  assert.equal(dispatch.status, 409);
+  assert.match((await dispatch.json() as { error: string }).error, /disabled/);
+  assert.equal(dispatched(), 0, "nothing may launch");
 
+  // The assign path is the autopilot's OTHER way of starting work and takes the same
+  // refusal. It is answered BEFORE the session lookup, so a real agent id would not
+  // have got any further either - proven by the error naming the toggle, not the session.
   const assign = await app.request("/api/tasks/t1/assign", {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
     body: JSON.stringify({ sessionId: "missing-session" }),
   });
   assert.equal(assign.status, 409);
-  assert.equal((await assign.json() as { error: string }).error, "no such session");
+  assert.match((await assign.json() as { error: string }).error, /disabled/);
+  assert.equal(registry.getTask("t1")!.status, "backlog");
+});
+
+test("an explicit override starts a parked task - the operator's own button", async () => {
+  // The other half, and it is the half that makes this a hold rather than a freeze.
+  // The dashboard's "launch anyway" sends this; drop it and the toggle silently becomes
+  // something the user did not ask for.
+  const { tasks, app } = setup({ enabled: false });
+  const dispatched = countDispatches(tasks);
+
+  const response = await app.request("/api/tasks/t1/dispatch", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ overrideDisabled: true }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(dispatched(), 1);
+});
+
+test("Foreman's own client never claims the override", async () => {
+  // The refusal is only worth anything if the autopilot cannot opt out of it. Read off
+  // the client source rather than mocked, because the guarantee is that nobody ever
+  // added the flag there - which a stub for this test would hide.
+  const source = await readFile(
+    new URL("../src/server/foreman/client.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    !source.includes("overrideDisabled"),
+    "the backlog autopilot must never override the toggle it is gated by",
+  );
 });
 
 test("an enabled backlog task needs no disabled-toggle override", async () => {

@@ -71,12 +71,26 @@ export const PLANNABLE_LIMIT = 400;
 /**
  * The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`.
  *
- * Disabled items are excluded before the limit is applied. Parking work must not spend
- * a model call or consume the finite planning budget, while re-enabling it must make
- * the stored plan stale so the task can be considered again.
+ * The enable/disable toggle is deliberately NOT read here, and that is load-bearing
+ * rather than an omission. `sanitizePlan` drops any inferred edge whose target is not
+ * in the list it was given (`if (!known.has(dep)) continue`), so filtering parked items
+ * out of the planner's input silently deletes every inferred dependency POINTING AT a
+ * parked task on the next replan - which then makes its dependents ready and launches
+ * them on a base that was never laid. Operator-declared edges survive that, because
+ * they live on the task; Foreman's inferred graph does not.
+ *
+ * The tempting version of this filter came with a story - "parking is free, un-parking
+ * is what replans" - and the story was not true either. A stored entry survives a park,
+ * so re-enabling a task the plan already covered stays covered and replans nothing; and
+ * above `PLANNABLE_LIMIT` parking SHIFTS the slice, promoting an unplanned item into the
+ * head, so it costs a replan rather than saving one.
+ *
+ * So a parked item keeps its plan entry and its share of the budget. That is the price
+ * of a dependency graph that stays complete, and it is the cheaper of the two mistakes:
+ * `readyBacklog` is the single gate that decides what actually runs.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).filter((task) => task.enabled).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
 }
 
 /**

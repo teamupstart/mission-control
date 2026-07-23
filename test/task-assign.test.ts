@@ -287,17 +287,43 @@ const cleanReset = async (): Promise<ResetResult> => ({
   detached: true,
 });
 
-test("a parked task can still be assigned manually", async () => {
+test("a parked task can still be assigned manually, when the caller says so", async () => {
+  // The drag-onto-an-idle-agent gesture, which claims the override the same way the
+  // launch button does. The hold is on the autopilot; a human dropping a card on a pane
+  // has said everything that needs saying.
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-disabled-");
   r.upsertTask(mkTask({ repoRoot: clone, enabled: false }));
 
   const manual = await tasks.assign("t1", sessionId, {
+    overrideDisabled: true,
     paneReady,
     reset: cleanReset,
     inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
   });
   assert.equal(manual.ok, true);
   assert.equal(r.getTask("t1")?.status, "running");
+});
+
+test("a parked task is NOT assigned to a caller that claims nothing", async () => {
+  // The same call with the flag left off - which is what a Foreman worker predating the
+  // toggle sends. It is refused before the session is even looked at, and critically
+  // before `assignReserved` types anything into that agent's pane.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-disabled-off-");
+  r.upsertTask(mkTask({ repoRoot: clone, enabled: false }));
+
+  let typed = false;
+  const refused = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => {
+      typed = true;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? "", /disabled/);
+  assert.equal(typed, false, "nothing may be typed into the agent");
+  assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
 test("a pane that cannot take a prompt is refused BEFORE the agent is touched", async () => {

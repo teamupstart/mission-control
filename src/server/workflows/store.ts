@@ -1525,7 +1525,7 @@ export class WorkflowStore {
         };
       }
 
-      let run = this.latestRunForBinding(input.binding.id);
+      let run = this.activeRunForBinding(input.binding.id);
       let submission: WorkflowSubmission | null = null;
       let state: ForemanCompletionStoreResult["result"]["state"] = "blocked";
       let created = false;
@@ -1690,6 +1690,25 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, now, terminal ? 1 : 0, now, id);
     return this.mustSubmission(id);
+  }
+
+  reviveFailedSubmission(
+    id: string,
+    runId: string,
+    expectedPhase: string,
+    now = Date.now(),
+  ): WorkflowSubmission | null {
+    const changed = this.db.prepare(
+      `UPDATE workflow_submissions
+          SET status = 'running', updated_at = ?, completed_at = NULL
+        WHERE id = ? AND run_id = ? AND status = 'failed'
+          AND EXISTS (
+            SELECT 1 FROM workflow_runs
+             WHERE id = ? AND current_phase = ?
+               AND status IN ('waiting_for_session', 'blocked')
+          )`,
+    ).run(now, id, runId, runId, expectedPhase);
+    return Number(changed.changes) === 1 ? this.mustSubmission(id) : null;
   }
 
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
@@ -1889,7 +1908,14 @@ export class WorkflowStore {
           now,
         });
       }
-      this.setSubmissionState(submissionId, "running", now);
+      if (!this.reviveFailedSubmission(
+        submissionId,
+        runId,
+        "infrastructure_error",
+        now,
+      )) {
+        throw new Error(`Workflow submission ${submissionId} cannot be revived`);
+      }
       this.setRunState(runId, "running", "persona_review", null, now);
       this.appendEvent(runId, "manual_infrastructure_retry", {
         requestId,
@@ -2027,6 +2053,20 @@ export class WorkflowStore {
         WHERE id = ?`,
     ).run(state, error, now, state, now, id);
     return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+  }
+
+  refuseDeliveryBeforeSend(
+    id: string,
+    error: string,
+    allowRefused: boolean,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    const result = this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'refused', error = ?, updated_at = ?
+        WHERE id = ? AND (state = 'prepared' OR (? = 1 AND state = 'refused'))`,
+    ).run(error, now, id, allowRefused ? 1 : 0);
+    return Number(result.changes) === 1 ? this.mustDelivery(id) : null;
   }
 
   finishDeliverySend(
@@ -2410,25 +2450,7 @@ export class WorkflowStore {
                 completed_at = COALESCE(completed_at, ?)
           WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(now, now, id);
-      const sending = this.db.prepare(
-        `SELECT id FROM workflow_deliveries WHERE run_id = ? AND state = 'sending'`,
-      ).all(id) as { id: string }[];
-      this.db.prepare(
-        `UPDATE workflow_deliveries
-            SET state = 'cancelled', error = ?, updated_at = ?
-          WHERE run_id = ? AND state IN ('prepared', 'refused')`,
-      ).run(reason, now, id);
-      this.db.prepare(
-        `UPDATE workflow_deliveries
-            SET state = 'uncertain', error = 'run_cancelled_during_send', updated_at = ?
-          WHERE run_id = ? AND state = 'sending'`,
-      ).run(now, id);
-      for (const delivery of sending) {
-        this.appendEvent(id, "delivery_uncertain", {
-          deliveryId: delivery.id,
-          reason: "run_cancelled_during_send",
-        }, now);
-      }
+      this.cancelRunDeliveries(id, reason, "run_cancelled_during_send", now);
       this.db.prepare(
         `UPDATE workflow_llm_calls
             SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
@@ -2527,11 +2549,12 @@ export class WorkflowStore {
                   completed_at = COALESCE(completed_at, ?)
             WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
         ).run(now, now, active.id);
-        this.db.prepare(
-          `UPDATE workflow_deliveries
-              SET state = 'cancelled', error = 'binding_archived', updated_at = ?
-            WHERE run_id = ? AND state = 'prepared'`,
-        ).run(now, active.id);
+        this.cancelRunDeliveries(
+          active.id,
+          "binding_archived",
+          "binding_archived_during_send",
+          now,
+        );
         this.db.prepare(
           `UPDATE workflow_llm_calls
               SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,
@@ -2548,6 +2571,33 @@ export class WorkflowStore {
       if (!archived) throw new Error(`Workflow binding ${id} disappeared during archive`);
       return { binding: archived, cancelledRunId: active?.id ?? null };
     });
+  }
+
+  private cancelRunDeliveries(
+    runId: string,
+    reason: string,
+    uncertainReason: string,
+    now: number,
+  ): void {
+    const sending = this.db.prepare(
+      `SELECT id FROM workflow_deliveries WHERE run_id = ? AND state = 'sending'`,
+    ).all(runId) as { id: string }[];
+    this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'cancelled', error = ?, updated_at = ?
+        WHERE run_id = ? AND state IN ('prepared', 'refused')`,
+    ).run(reason, now, runId);
+    this.db.prepare(
+      `UPDATE workflow_deliveries
+          SET state = 'uncertain', error = ?, updated_at = ?
+        WHERE run_id = ? AND state = 'sending'`,
+    ).run(uncertainReason, now, runId);
+    for (const delivery of sending) {
+      this.appendEvent(runId, "delivery_uncertain", {
+        deliveryId: delivery.id,
+        reason: uncertainReason,
+      }, now);
+    }
   }
 
   resetForNoteKey(noteKey: string): string[] {

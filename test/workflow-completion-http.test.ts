@@ -337,6 +337,25 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(duplicateBody.submissionId, firstBody.submissionId);
   assert.equal(workflows.store.listSubmissions(firstBody.runId).length, 1);
 
+  assert.equal(workflows.store.getRun(firstBody.runId)?.status, "completed");
+  db.prepare(
+    `UPDATE foreman_queues
+        SET wrapup_asked_at = NULL, wrapup_answer = NULL
+      WHERE note_key = 'claimed'`,
+  ).run();
+  const nextEpisode = await request(app, "claimed", "5".repeat(64));
+  assert.equal(nextEpisode.status, 200);
+  const nextEpisodeBody = await nextEpisode.json() as {
+    claimed: boolean;
+    runId: string;
+    submissionId: string;
+    state: string;
+  };
+  assert.equal(nextEpisodeBody.claimed, true);
+  assert.equal(nextEpisodeBody.state, "started");
+  assert.notEqual(nextEpisodeBody.runId, firstBody.runId);
+  assert.equal(workflows.store.getRun(nextEpisodeBody.runId)?.bindingId, claimedBinding.id);
+
   const repairContext = fallbackWorkflowContext({
     primaryGoal: { rawPrompt: "Original goal", refined: null, sourceNoteKey: "repair" },
     humanDecisions: [],

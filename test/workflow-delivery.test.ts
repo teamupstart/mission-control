@@ -144,14 +144,37 @@ test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and r
     }) as never,
   });
 
-  const refused = await manager.retryDelivery(delivery.id, "copy-mode");
+  store.appendEvent(delivery.runId, "delivery_retry_requested", {
+    deliveryId: delivery.id,
+    requestId: "copy-mode",
+  });
+  const refused = await manager.retryDelivery(delivery.id, {
+    requestId: "copy-mode",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
+  });
   assert.equal(refused.ok && refused.value.state, "refused");
   assert.equal(store.getDelivery(delivery.id)?.error, "pane_blocked");
+  const repeatedRefusal = await manager.retryDelivery(delivery.id, {
+    requestId: "copy-mode",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
+  });
+  assert.equal(repeatedRefusal.ok && repeatedRefusal.idempotent, true);
+  assert.equal(attempts.length, 1);
 
-  const ambiguous = await manager.retryDelivery(delivery.id, "ambiguous");
+  const ambiguous = await manager.retryDelivery(delivery.id, {
+    requestId: "ambiguous",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
+  });
   assert.equal(ambiguous.ok && ambiguous.value.state, "uncertain");
   assert.equal(attempts.length, 2);
-  const automaticRetry = await manager.retryDelivery(delivery.id, "must-not-repeat");
+  const automaticRetry = await manager.retryDelivery(delivery.id, {
+    requestId: "must-not-repeat",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
+  });
   assert.equal(automaticRetry.ok, false);
   assert.equal(attempts.length, 2, "an uncertain packet must never cross the write boundary again");
 
@@ -159,6 +182,8 @@ test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and r
     requestId: "bad-discard",
     resolution: "discard_and_new_round",
     confirmation: "discard",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
   });
   assert.equal(badDiscard.ok, false);
   assert.equal(store.getDelivery(delivery.id)?.state, "uncertain");
@@ -180,6 +205,8 @@ test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and r
     requestId: "mark-after-inspection",
     resolution: "discard_and_new_round",
     confirmation: "DISCARD AND SEND A NEW REPAIR ROUND",
+    expectedSessionId: "session-policy",
+    expectedNoteKey: "note-policy",
   });
   assert.equal(conflictingReuse.ok, false);
 });
@@ -367,7 +394,12 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
   assert.equal(queue.wrapupAskedAt, null);
   assert.equal(queue.wrapupAnswer, null);
   assert.equal(queue.items[0]?.state, "verified");
+  await manager.stop();
   setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  manager.start();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(manager.store.getDelivery(delivery.id)?.state, "delivered");
+  assert.equal(injected.length, 1);
   const second = await manager.resubmit(runId, {
     requestId: "live-consent-removed",
     resubmitUnchanged: true,
@@ -384,4 +416,35 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
   assert.equal(manager.store.getBinding(binding.ok ? binding.value.id : "")?.deliveryMode, "live");
   assert.equal(injected.length, 1, "consent removal must block before a second terminal write");
   await manager.stop();
+});
+
+test("archiving cancels retryable packets and makes an in-flight send uncertain", () => {
+  const store = seededStore("archive");
+  const sending = prepare(store, "archive");
+  const refused = store.prepareDelivery({
+    id: "delivery-archive-refused",
+    runId: "run-archive",
+    submissionId: "submission-archive",
+    kind: "persona_feedback",
+    sessionId: "session-archive",
+    noteKey: "note-archive",
+    payload: "second repair",
+    payloadSha256: "b".repeat(64),
+  }).delivery;
+  store.claimDeliverySend(sending.id);
+  store.setDeliveryState(refused.id, "refused", "pane_blocked");
+
+  const archived = store.archiveBindingAndCancel("binding-archive", 20);
+
+  assert.equal(archived?.cancelledRunId, "run-archive");
+  assert.equal(store.getDelivery(sending.id)?.state, "uncertain");
+  assert.equal(store.getDelivery(sending.id)?.error, "binding_archived_during_send");
+  assert.equal(store.getDelivery(refused.id)?.state, "cancelled");
+  assert.equal(store.getRun("run-archive")?.status, "cancelled");
+  assert.equal(
+    store.listEvents("run-archive").some((event) =>
+      event.kind === "delivery_uncertain"
+      && (event.payload as { deliveryId?: string }).deliveryId === sending.id),
+    true,
+  );
 });

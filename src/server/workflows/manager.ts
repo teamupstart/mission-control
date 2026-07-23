@@ -475,7 +475,20 @@ export class WorkflowManager {
           && binding.state === "active"
           && existingRun.status === "waiting_for_session"
         ) {
-          this.store.setSubmissionState(existing.id, "running", now);
+          const revived = this.store.reviveFailedSubmission(
+            existing.id,
+            existingRun.id,
+            "unchanged_evidence",
+            now,
+          );
+          if (!revived) {
+            return {
+              ok: false,
+              reason: "conflict",
+              message: "The failed submission changed before it could be revived",
+              current: this.store.getSubmission(existing.id),
+            };
+          }
           this.store.appendEvent(existingRun.id, "resubmit_unchanged_confirmed", {
             submissionId: existing.id,
             triggerKey: existing.triggerKey,
@@ -701,7 +714,7 @@ export class WorkflowManager {
         current: run,
       };
     }
-    const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_requested", input.requestId);
+    const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_completed", input.requestId);
     if (prior) {
       return {
         ok: true,
@@ -731,14 +744,15 @@ export class WorkflowManager {
         current: this.store.getBinding(run.bindingId),
       };
     }
-    this.store.appendEvent(delivery.runId, "delivery_retry_requested", {
+    await this.deliverPrepared(delivery.id, true);
+    const updated = this.store.getDelivery(delivery.id) ?? targeted;
+    this.store.appendEvent(delivery.runId, "delivery_retry_completed", {
       deliveryId,
       requestId: input.requestId,
       sessionId: input.expectedSessionId,
       noteKey: input.expectedNoteKey,
-    }, now);
-    await this.deliverPrepared(delivery.id, true);
-    const updated = this.store.getDelivery(delivery.id) ?? delivery;
+      state: updated.state,
+    }, Date.now());
     return { ok: true, value: updated };
   }
 
@@ -1038,6 +1052,7 @@ export class WorkflowManager {
   private async deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery) return;
+    if (delivery.state !== "prepared" && !(explicitRetry && delivery.state === "refused")) return;
     const initialBlock = this.deliveryBlock(delivery);
     if (initialBlock) {
       const retainPrepared = [
@@ -1047,7 +1062,12 @@ export class WorkflowManager {
         "session_unavailable",
       ].includes(initialBlock);
       if (!retainPrepared) {
-        this.store.setDeliveryState(delivery.id, "refused", initialBlock);
+        const refused = this.store.refuseDeliveryBeforeSend(
+          delivery.id,
+          initialBlock,
+          explicitRetry,
+        );
+        if (!refused) return;
       }
       this.store.setRunState(delivery.runId, "blocked", "delivery_blocked", {
         deliveryId: delivery.id,

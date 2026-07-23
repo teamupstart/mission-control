@@ -375,6 +375,7 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
   );
   assert.equal(first.idempotent, false);
   assert.equal(repeated.idempotent, true);
+  assert.equal(store.getSubmission("submission-infra")?.status, "running");
   assert.deepEqual(
     store.listAttempts("submission-infra")
       .filter((attempt) => attempt.nodeId === "p")

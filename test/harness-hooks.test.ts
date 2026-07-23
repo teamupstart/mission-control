@@ -512,3 +512,25 @@ test("the dispatcher skips the readiness wait when no hooks were prepared for th
     "Claude's hooks are installed once, so its dispatch never passes the flag and always waits",
   );
 });
+
+test("the dispatcher refuses an exited session instead of targeting its lingered pane", async () => {
+  // Discovery snapshots deliberately linger after exit. The failed dispatch this pins
+  // observed the process, waited for readiness, then recovered that exited snapshot and
+  // sent its initial prompt to a pane tmux had already removed.
+  const registry = new Registry();
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "exited-dispatch", agent: "codex", cwd: "/wt/exited" }),
+  ]);
+  const discovered = registry.getSession("exited-dispatch") as Session;
+  const dispatcher = new Dispatcher(registry);
+  const awaitReady = (
+    dispatcher as unknown as {
+      awaitReady(c: string, s: Session, p?: boolean): Promise<{ instrumented: boolean }>;
+    }
+  ).awaitReady.bind(dispatcher);
+
+  const ready = awaitReady("/wt/exited", discovered, true);
+  registry.applyDiscovery([]);
+
+  await assert.rejects(ready, /agent session exited before the initial prompt could be sent/);
+});

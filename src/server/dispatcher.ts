@@ -20,9 +20,9 @@ import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
 /**
- * Fallback settle time for an agent that never reports a hook. Only reached when
- * `DISPATCH_HOOK_READY_MS` elapses with no signal - see `awaitReady`. This is a guess
- * about boot time, which is exactly why it is no longer the primary path.
+ * Fallback settle time for a live agent that cannot prove readiness. Reached when the
+ * hook wait times out or this launch cannot report hooks; an observed exit fails instead.
+ * This is a guess about boot time, which is exactly why it is no longer the primary path.
  */
 const SETTLE_MS = Number(envVar("DISPATCH_SETTLE_MS") ?? 2000);
 /**
@@ -36,8 +36,8 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached tmux session there, wait for passive discovery to bind the
- * session (by worktree cwd), then inject the task as its first prompt.
+ * agent in a detached tmux session there, wait for passive discovery and readiness to
+ * bind that exact live session, then inject the task as its first prompt.
  *
  * Every step patches the task through the registry so progress streams to the UI
  * over SSE. `dispatch` never throws - a failure lands the task in `failed` with a
@@ -47,6 +47,7 @@ export class Dispatcher {
   constructor(
     private registry: Registry,
     private teardown: typeof teardownWorktree = teardownWorktree,
+    private deps: { inject?: typeof injectPrompt } = {},
   ) {}
 
   async dispatch(taskId: string): Promise<void> {
@@ -122,14 +123,17 @@ export class Dispatcher {
 
       // Set the mode BEFORE the first prompt, so the task runs in it from the start -
       // see `applyAutoMode`.
-      await this.applyAutoMode(session, task.agent);
+      await this.applyAutoMode(this.requireLiveSession(session.id), task.agent);
       if (await this.abortIfSettled(taskId)) return;
 
-      await this.deliverIntent(session, task.intent, wt.path, instrumented);
+      // Mode selection takes terminal I/O and can race the process exiting. Re-read at
+      // the actual send boundary so a lingered session cannot type into its dead pane.
+      const deliverySession = this.requireLiveSession(session.id);
+      await this.deliverIntent(deliverySession.id, task.intent, wt.path, instrumented);
 
       if (await this.abortIfSettled(taskId)) return;
-      this.patch(taskId, { status: "running", sessionId: session.id });
-      this.registry.bindTaskToWorkEpisode(taskId, session.id);
+      this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
     } catch (err) {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
@@ -144,10 +148,11 @@ export class Dispatcher {
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      // If the agent actually launched and is still running (e.g. discovery was
-      // merely slow, or only the prompt send failed), do NOT destroy its work:
-      // keep the session + worktree and fail the task with guidance. Only when no
-      // live agent remains do we tear the (empty) tree down for a clean retry.
+      // If the terminal home still exists (e.g. discovery was merely slow, or only
+      // the prompt send failed), do NOT destroy its work: keep the home + worktree
+      // and fail the task with guidance. Only when no home remains do we tear the
+      // (empty) tree down for a clean retry. A retained home does not prove that the
+      // agent process itself survived.
       //
       // Three answers, not two. `null` is "no installed backend could tell us", and it must
       // land on the KEEP side with the `true` case rather than on the reclaim side with
@@ -159,7 +164,7 @@ export class Dispatcher {
           status: "failed",
           error:
             alive === true
-              ? `${message} - the agent is still running; Focus or Cancel it`
+              ? `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
@@ -198,16 +203,33 @@ export class Dispatcher {
     hooksPrepared = true,
   ): Promise<{ session: Session; instrumented: boolean }> {
     if (hooksPrepared && hooksFor(discovered.agent)) {
-      const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
+      const ready = await this.registry.waitForReadySessionAtCwd(
+        cwd,
+        discovered.id,
+        HOOK_READY_MS,
+      );
       if (ready) return { session: ready, instrumented: true };
     }
+    // A null readiness result means either hook silence or an observed exit. Preserve
+    // the fallback settle only for a live-but-silent session; an exited one has no TUI
+    // left to settle and must fail immediately.
+    this.requireLiveSession(discovered.id);
     await sleep(SETTLE_MS);
     // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
     // been filled in since. Typing needs the freshest pane we have.
     return {
-      session: this.registry.getSession(discovered.id) ?? discovered,
+      session: this.requireLiveSession(discovered.id),
       instrumented: false,
     };
+  }
+
+  /** Reject a discovery snapshot that the registry is retaining only for exit visibility. */
+  private requireLiveSession(sessionId: string): Session {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      throw new Error("agent session exited before the initial prompt could be sent");
+    }
+    return session;
   }
 
   /**
@@ -244,6 +266,8 @@ export class Dispatcher {
 
   /**
    * Type the intent and - when we can - confirm the agent actually took it.
+   * Each attempt resolves the session id again at the send boundary, so a retained
+   * exited snapshot can never lend its old pane to an initial send or retry.
    *
    * `injectPrompt` succeeding means tmux accepted the write, NOT that the agent read
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
@@ -265,24 +289,36 @@ export class Dispatcher {
    * and absence of evidence is not evidence.
    */
   private async deliverIntent(
-    session: Session,
+    sessionId: string,
     intent: string,
     cwd: string,
     instrumented: boolean,
   ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
+      // Preflight before subscribing. If the process already exited, there will be no
+      // prompt acknowledgement and no reason to retain a listener until its timeout.
+      const session = this.requireLiveSession(sessionId);
+
       // Listen BEFORE typing - the hook can land before the next line runs.
+      const acceptanceAbort = instrumented ? new AbortController() : null;
       const accepted = instrumented
-        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
         : null;
 
-      const sent = await injectPrompt(
-        session,
-        intent,
-        undefined,
-        () => this.registry.promptResourceBlockerForSession(session.id),
-      );
+      let sent: Awaited<ReturnType<typeof injectPrompt>>;
+      try {
+        sent = await (this.deps.inject ?? injectPrompt)(
+          session,
+          intent,
+          undefined,
+          () => this.registry.promptResourceBlockerForSession(session.id),
+        );
+      } catch (err) {
+        acceptanceAbort?.abort();
+        throw err;
+      }
       if (!sent.ok) {
+        acceptanceAbort?.abort();
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
       }
       if (!accepted) return;
@@ -290,8 +326,8 @@ export class Dispatcher {
 
       // Still idle after typing at it. Positive evidence the paste went nowhere - but
       // only if it's STILL idle now; a `working` we merely raced past means it landed.
-      const now = this.registry.getSession(session.id);
-      if (now && now.state !== "idle") return;
+      const now = this.requireLiveSession(sessionId);
+      if (now.state !== "idle") return;
       if (attempt >= 2) {
         throw new Error(
           "the agent never acknowledged the initial prompt (it was typed but not ingested)",

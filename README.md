@@ -739,9 +739,9 @@ exposes six tools:
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
-- `create_task(title, intent, dependsOnTaskIds?)` - add a ship task for the current repo to
-  the backlog with the default agent/model/effort, returning its id so later tasks can carry
-  durable dependency edges
+- `create_task(title, intent, dependsOnTaskIds?, dependsOnCurrentSession?)` - add a ship task
+  for the current repo to the backlog with the default agent/model/effort, returning its id so
+  later tasks can carry durable dependency edges
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box

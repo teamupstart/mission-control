@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { CreatePersona, UpdatePersona } from "@shared/protocol.ts";
+import type { CreatePersona, CreateWorkflow, UpdatePersona, UpdateWorkflow } from "@shared/protocol.ts";
 import {
   PersonaSnapshotSchema,
   PublishedWorkflowGraphSchema,
@@ -36,10 +36,14 @@ import type {
   WorkflowRun,
   WorkflowSubmission,
   WorkflowVersion,
+  WorkflowVersionMetadata,
+  WorkflowSummary,
+  WorkflowDiagnostic,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
+import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -235,6 +239,33 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
     version: row.version,
     sourceDraftRevision: row.source_draft_revision,
     graph: parseJson("workflow_versions", row.id, "graph_json", row.graph_json, PublishedWorkflowGraphSchema),
+    completionPolicy: parseJson(
+      "workflow_versions",
+      row.id,
+      "completion_policy_json",
+      row.completion_policy_json,
+      WorkflowCompletionPolicySchema,
+    ),
+    bindingDefaults: parseJson(
+      "workflow_versions",
+      row.id,
+      "binding_defaults_json",
+      row.binding_defaults_json,
+      WorkflowBindingDefaultsSchema,
+    ),
+    publishedAt: row.published_at,
+  };
+}
+
+const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true });
+
+export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersionMetadata {
+  const row = parseShape("workflow_versions", WorkflowVersionMetadataRowSchema, value);
+  return {
+    id: row.id,
+    workflowId: row.workflow_id,
+    version: row.version,
+    sourceDraftRevision: row.source_draft_revision,
     completionPolicy: parseJson(
       "workflow_versions",
       row.id,
@@ -593,6 +624,35 @@ export type PersonaStoreWrite =
       current: Persona | null;
     };
 
+export interface WorkflowInsert extends CreateWorkflow {
+  id: string;
+  normalizedName: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type WorkflowPatch = Omit<UpdateWorkflow, "expectedDraftRevision" | "name"> & {
+  name?: string;
+  normalizedName?: string;
+};
+
+export type WorkflowStoreWrite =
+  | { ok: true; workflow: WorkflowDefinition }
+  | {
+      ok: false;
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "active_binding";
+      current: WorkflowDefinition | null;
+    };
+
+export type WorkflowPublishWrite =
+  | { ok: true; workflow: WorkflowDefinition; version: WorkflowVersion; idempotent: boolean }
+  | {
+      ok: false;
+      reason: "not_found" | "revision_conflict" | "archived" | "validation";
+      current: WorkflowDefinition | null;
+      diagnostics?: WorkflowDiagnostic[];
+    };
+
 export class WorkflowStore {
   constructor(private readonly db: DatabaseSync = openDb()) {}
 
@@ -742,6 +802,301 @@ export class WorkflowStore {
     const persona = this.getPersonaInTransaction(id);
     if (!persona) throw new Error(`Persona ${id} disappeared during a workflow transaction`);
     return persona;
+  }
+
+  listWorkflows(includeArchived = false): WorkflowDefinition[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM workflow_definitions
+          ${includeArchived ? "" : "WHERE archived_at IS NULL"}
+         ORDER BY normalized_name ASC, id ASC`,
+      )
+      .all() as unknown[];
+    const out: WorkflowDefinition[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseWorkflowDefinitionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return out;
+  }
+
+  getWorkflow(id: string): WorkflowDefinition | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_definitions WHERE id = ?`).get(id);
+    if (!row) return null;
+    try {
+      return parseWorkflowDefinitionRow(row);
+    } catch (error) {
+      diagnose(error);
+      return null;
+    }
+  }
+
+  insertWorkflow(input: WorkflowInsert): WorkflowStoreWrite {
+    return transaction(this.db, () => {
+      const conflict = this.db
+        .prepare(`SELECT * FROM workflow_definitions WHERE normalized_name = ?`)
+        .get(input.normalizedName);
+      if (conflict) {
+        let current: WorkflowDefinition | null = null;
+        try { current = parseWorkflowDefinitionRow(conflict); } catch (error) { diagnose(error); }
+        return { ok: false, reason: "name_conflict", current };
+      }
+      this.db.prepare(
+        `INSERT INTO workflow_definitions (
+           id, name, normalized_name, description, draft_graph_json,
+           completion_policy_json, binding_defaults_json, draft_revision,
+           current_version_id, archived_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
+      ).run(
+        input.id,
+        input.name,
+        input.normalizedName,
+        input.description,
+        JSON.stringify(input.draft),
+        JSON.stringify(input.completionPolicy),
+        JSON.stringify(input.bindingDefaults),
+        input.createdAt,
+        input.updatedAt,
+      );
+      return { ok: true, workflow: this.mustWorkflow(input.id) };
+    });
+  }
+
+  updateWorkflowCas(
+    id: string,
+    expectedDraftRevision: number,
+    patch: WorkflowPatch,
+    updatedAt = Date.now(),
+  ): WorkflowStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.getWorkflowInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.draftRevision !== expectedDraftRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      if (patch.normalizedName !== undefined) {
+        const conflict = this.db
+          .prepare(`SELECT id FROM workflow_definitions WHERE normalized_name = ? AND id <> ?`)
+          .get(patch.normalizedName, id);
+        if (conflict) return { ok: false, reason: "name_conflict", current };
+      }
+      const assignments: string[] = [];
+      const values: Array<string | number | null> = [];
+      const add = (column: string, value: string | number | null): void => {
+        assignments.push(`${column} = ?`);
+        values.push(value);
+      };
+      if (patch.name !== undefined) add("name", patch.name);
+      if (patch.normalizedName !== undefined) add("normalized_name", patch.normalizedName);
+      if (patch.description !== undefined) add("description", patch.description);
+      if (patch.draft !== undefined) add("draft_graph_json", JSON.stringify(patch.draft));
+      if (patch.completionPolicy !== undefined) add("completion_policy_json", JSON.stringify(patch.completionPolicy));
+      if (patch.bindingDefaults !== undefined) add("binding_defaults_json", JSON.stringify(patch.bindingDefaults));
+      assignments.push("draft_revision = draft_revision + 1", "updated_at = ?");
+      values.push(updatedAt, id, expectedDraftRevision);
+      const result = this.db.prepare(
+        `UPDATE workflow_definitions SET ${assignments.join(", ")}
+          WHERE id = ? AND draft_revision = ? AND archived_at IS NULL`,
+      ).run(...values);
+      if (Number(result.changes) !== 1) {
+        return { ok: false, reason: "revision_conflict", current: this.getWorkflowInTransaction(id) };
+      }
+      return { ok: true, workflow: this.mustWorkflow(id) };
+    });
+  }
+
+  archiveWorkflowCas(id: string, expectedDraftRevision: number, archivedAt = Date.now()): WorkflowStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.getWorkflowInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.draftRevision !== expectedDraftRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const active = this.db.prepare(
+        `SELECT 1 FROM workflow_bindings b
+           JOIN workflow_versions v ON v.id = b.workflow_version_id
+          WHERE v.workflow_id = ? AND b.state = 'active' LIMIT 1`,
+      ).get(id);
+      if (active) return { ok: false, reason: "active_binding", current };
+      this.db.prepare(
+        `UPDATE workflow_definitions
+            SET archived_at = ?, updated_at = ?, draft_revision = draft_revision + 1
+          WHERE id = ? AND draft_revision = ? AND archived_at IS NULL`,
+      ).run(archivedAt, archivedAt, id, expectedDraftRevision);
+      return { ok: true, workflow: this.mustWorkflow(id) };
+    });
+  }
+
+  listWorkflowVersions(workflowId: string): WorkflowVersion[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
+    ).all(workflowId) as unknown[];
+    const out: WorkflowVersion[] = [];
+    for (const row of rows) {
+      try { out.push(parseWorkflowVersionRow(row)); } catch (error) { diagnose(error); }
+    }
+    return out;
+  }
+
+  listWorkflowVersionMetadata(workflowId: string): WorkflowVersionMetadata[] {
+    const rows = this.db.prepare(
+      `SELECT id, workflow_id, version, source_draft_revision,
+              completion_policy_json, binding_defaults_json, published_at
+         FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
+    ).all(workflowId) as unknown[];
+    const out: WorkflowVersionMetadata[] = [];
+    for (const row of rows) {
+      try { out.push(parseWorkflowVersionMetadataRow(row)); } catch (error) { diagnose(error); }
+    }
+    return out;
+  }
+
+  getWorkflowVersion(workflowId: string, version: number): WorkflowVersion | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
+    ).get(workflowId, version);
+    if (!row) return null;
+    try { return parseWorkflowVersionRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  publishWorkflow(
+    id: string,
+    expectedDraftRevision: number,
+    versionId: string,
+    publishedAt = Date.now(),
+  ): WorkflowPublishWrite {
+    return transaction(this.db, () => {
+      const existing = this.db.prepare(
+        `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
+      ).get(id, expectedDraftRevision);
+      if (existing) {
+        const version = parseWorkflowVersionRow(existing);
+        return { ok: true, workflow: this.mustWorkflow(id), version, idempotent: true };
+      }
+      const workflow = this.getWorkflowInTransaction(id);
+      if (!workflow) return { ok: false, reason: "not_found", current: null };
+      if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
+      if (workflow.draftRevision !== expectedDraftRevision) {
+        return { ok: false, reason: "revision_conflict", current: workflow };
+      }
+      const personas = this.listPersonasInTransaction(true);
+      const validation = validateWorkflowGraph({
+        graph: workflow.draft,
+        personas,
+        completionPolicy: workflow.completionPolicy,
+      });
+      if (!validation.valid) {
+        return { ok: false, reason: "validation", current: workflow, diagnostics: validation.diagnostics };
+      }
+      const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
+      const graph = {
+        nodes: workflow.draft.nodes.map((node) => {
+          if (node.kind !== "persona") return node;
+          const persona = personaMap.get(node.personaId);
+          if (!persona || persona.archivedAt !== null) {
+            throw new Error(`validated Persona ${node.personaId} disappeared during Publish`);
+          }
+          return {
+            id: node.id,
+            kind: "persona" as const,
+            position: node.position,
+            persona: {
+              sourcePersonaId: persona.id,
+              sourceRevision: persona.revision,
+              name: persona.name,
+              description: persona.description,
+              guidanceMarkdown: persona.guidanceMarkdown,
+              runner: persona.runner,
+              model: persona.model,
+            },
+          };
+        }),
+        edges: workflow.draft.edges,
+      };
+      const next = Number((this.db.prepare(
+        `SELECT COALESCE(MAX(version), 0) AS value FROM workflow_versions WHERE workflow_id = ?`,
+      ).get(id) as { value: number }).value) + 1;
+      this.db.prepare(
+        `INSERT INTO workflow_versions (
+           id, workflow_id, version, source_draft_revision, graph_json,
+           completion_policy_json, binding_defaults_json, published_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        versionId,
+        id,
+        next,
+        expectedDraftRevision,
+        JSON.stringify(graph),
+        JSON.stringify(workflow.completionPolicy),
+        JSON.stringify(workflow.bindingDefaults),
+        publishedAt,
+      );
+      this.db.prepare(
+        `UPDATE workflow_definitions SET current_version_id = ?, updated_at = ? WHERE id = ?`,
+      ).run(versionId, publishedAt, id);
+      return {
+        ok: true,
+        workflow: this.mustWorkflow(id),
+        version: this.mustWorkflowVersion(id, next),
+        idempotent: false,
+      };
+    });
+  }
+
+  summary(workflow: WorkflowDefinition): WorkflowSummary {
+    const validation = validateWorkflowGraph({
+      graph: workflow.draft,
+      personas: this.listPersonas(true),
+      completionPolicy: workflow.completionPolicy,
+    });
+    const current = workflow.currentVersionId === null
+      ? null
+      : this.db.prepare(`SELECT version FROM workflow_versions WHERE id = ?`).get(workflow.currentVersionId) as { version: number } | undefined;
+    return {
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      draftRevision: workflow.draftRevision,
+      currentVersionId: workflow.currentVersionId,
+      publishedVersion: current?.version ?? null,
+      archivedAt: workflow.archivedAt,
+      updatedAt: workflow.updatedAt,
+      errorCount: validation.diagnostics.filter((item) => item.severity === "error").length,
+      warningCount: validation.diagnostics.filter((item) => item.severity === "warning").length,
+      nodeCount: workflow.draft.nodes.length,
+      personaCount: workflow.draft.nodes.filter((node) => node.kind === "persona").length,
+    };
+  }
+
+  private listPersonasInTransaction(includeArchived: boolean): Persona[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM personas ${includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY normalized_name ASC`,
+    ).all() as unknown[];
+    return rows.map((row) => parsePersonaRow(row));
+  }
+
+  private getWorkflowInTransaction(id: string): WorkflowDefinition | null {
+    const row = this.db.prepare(`SELECT * FROM workflow_definitions WHERE id = ?`).get(id);
+    return row ? parseWorkflowDefinitionRow(row) : null;
+  }
+
+  private mustWorkflow(id: string): WorkflowDefinition {
+    const workflow = this.getWorkflowInTransaction(id);
+    if (!workflow) throw new Error(`Workflow ${id} disappeared during a workflow transaction`);
+    return workflow;
+  }
+
+  private mustWorkflowVersion(workflowId: string, version: number): WorkflowVersion {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
+    ).get(workflowId, version);
+    if (!row) throw new Error(`Workflow ${workflowId} version ${version} disappeared during Publish`);
+    return parseWorkflowVersionRow(row);
   }
 }
 

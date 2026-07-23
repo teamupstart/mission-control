@@ -62,10 +62,10 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
-- **Keeps reusable review Personas**: open **Workflows** in the top bar to author exact
-  Markdown roles, preview them, choose an optional provider and model, and import, copy,
-  download, duplicate, or archive them. Phase 1 is the Persona foundation; workflow graphs
-  and execution are intentionally not active yet.
+- **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
+  Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
+  validated canvas. Drafts autosave with conflict protection and Publish captures immutable
+  Persona snapshots. Execution starts in Phase 3; Phase 2 never calls a Persona.
 - **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
   on in Settings and it is linked into each harness's own skills directory, so it applies
   to **every** Claude Code and Codex session on the machine - including ones this app never
@@ -1144,8 +1144,10 @@ rollup carries the summary on its own. Which model writes it is
 The **Workflows** button in the top bar changes only the dashboard body. The fleet header,
 live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
 **Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
-`#/workflows` for the future graph list, `#/workflows/personas` for the Phase 1 Persona
+`#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
 library, `#/workflows/runs` for future run history, and `#/fleet` to return.
+The top-bar button opens the graph library and restores the last active workflow selected
+in this browser when it is still available.
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
@@ -1165,8 +1167,41 @@ Each saved Persona shows the provider and model a future review would use. Resol
 the Persona's provider override or the app-wide provider; then the Persona's model override,
 `MISSION_WORKFLOW_PERSONA_MODEL`, or that provider's balanced default. A stored provider id
 unknown to an older build is reported and falls back through the shared provider ladder.
-This phase does not call the model. `workflow-context` is registered now as an append-only
-Models job for later execution phases.
+Phase 2 does not call the model. `workflow-context` is registered as an append-only Models
+job for later execution phases.
+
+### Workflow drafts and published versions
+
+Every workflow starts with one visible **Session** node and one disconnected **End**. Add
+Persona and **All-pass Join** nodes from the left palette, then connect the directional
+handles: Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may
+return to Session for changes. A Join needs both outcomes from at least two distinct
+predecessors, waits for one result from each, and passes only when all passed. Cycles are
+legal only when they include Session—Persona-only cycles are rejected because they could
+spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not
+a graph node.
+
+Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
+so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
+**Duplicate my draft**. A conflicted draft cannot be replaced by selecting or creating
+another workflow; Duplicate is the explicit path that preserves it under a unique name.
+Validation runs from the same browser-safe implementation in the
+canvas and at the daemon boundary. It checks ports, routes, Join pairs, reachability,
+Session-centered cycles, active Personas, graph limits, and finite bounded coordinates.
+
+**Publish** is enabled only for a saved, conflict-free, valid revision. It is idempotent for
+that revision and creates an immutable version containing the exact name, description,
+Markdown, provider/model overrides, and revision of every Persona. Editing or archiving a
+Persona later never changes old versions; history marks its snapshot as outdated or its
+source as archived. To update a published design, edit the mutable draft and publish a new
+version. Opening a workflow fetches only bounded version metadata; selecting one history
+entry fetches that immutable graph and its exact Persona Markdown from the version route.
+
+Workflow settings also store defaults for the future binding: Manual or Foreman-complete
+trigger, Preview or Live delivery, and a repair-round limit. The optional Inspector final
+gate and its findings/missing-PR policies live beside these settings, outside the graph.
+Foreman, Live delivery, Inspector gating, session bindings, and Persona execution are
+clearly labeled as later-phase behavior and do nothing in Phase 2.
 
 ## Models (what the app's own model work runs on)
 

@@ -305,7 +305,7 @@ test("import replaces editor identity only when no concurrent workspace edit occ
   assert.match(library, /setEditorKey\(\(key\) => key \+ 1\)/);
 });
 
-test("Workflows and Runs tabs are honest Phase 1 shells", () => {
+test("Workflows is active in Phase 2 while Runs remains an honest Phase 3 shell", () => {
   const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "workflows",
     personas: [],
@@ -314,8 +314,8 @@ test("Workflows and Runs tabs are honest Phase 1 shells", () => {
     onTab: () => {},
     onDirtyChange: () => {},
   }));
-  assert.match(workflows, /arrives in Phase 2/);
-  assert.match(workflows, /not active yet/);
+  assert.match(workflows, /Build a review workflow/);
+  assert.match(workflows, /New workflow/);
 
   const runs = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "runs",

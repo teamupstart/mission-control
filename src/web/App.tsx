@@ -64,7 +64,7 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
 ];
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, personas, fleetCost, connected, hasSnapshot } = useEventStream();
+  const { sessions, reviews, tasks, personas, workflowSummaries, fleetCost, connected, hasSnapshot } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
   const { route, navigate } = useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
@@ -904,7 +904,7 @@ export function App(): React.JSX.Element {
               onClick={() =>
                 navigate(
                   route.page === "fleet"
-                    ? { page: "workflows", tab: "personas" }
+                    ? { page: "workflows", tab: "workflows" }
                     : { page: "fleet" },
                 )
               }
@@ -967,6 +967,7 @@ export function App(): React.JSX.Element {
             <WorkflowPage
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
+              workflowSummaries={workflowSummaries}
               llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}

@@ -56,6 +56,11 @@ import {
   UpdateTaskSchema,
   UpdatePersonaSchema,
   ArchivePersonaSchema,
+  CreateWorkflowSchema,
+  UpdateWorkflowSchema,
+  ValidateWorkflowSchema,
+  PublishWorkflowSchema,
+  ArchiveWorkflowSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond, TaskDependencyInput } from "@shared/protocol.ts";
@@ -153,6 +158,12 @@ import {
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
+import type {
+  WorkflowManager,
+  WorkflowMutation,
+  WorkflowPublishMutation,
+  WorkflowValidationMutation,
+} from "./workflows/manager.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
@@ -161,6 +172,7 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -298,6 +310,8 @@ export function buildApp(
   away?: AwayWatcher,
   /** Optional for existing route-unit stubs; the daemon always supplies it. */
   personas?: PersonaManager,
+  /** Optional for existing route-unit stubs; the daemon always supplies it. */
+  workflows?: WorkflowManager,
 ): Hono {
   const app = new Hono();
 
@@ -321,6 +335,7 @@ export function buildApp(
 
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
+  const workflowManager = (): WorkflowManager | null => workflows ?? null;
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
@@ -356,6 +371,7 @@ export function buildApp(
     const parsed = await parseBody(c, CreatePersonaSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.create(parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
   });
   app.patch("/api/personas/:id", bodyLimit({
@@ -367,6 +383,7 @@ export function buildApp(
     const parsed = await parseBody(c, UpdatePersonaSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.update(c.req.param("id"), parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
   });
   app.delete("/api/personas/:id", async (c) => {
@@ -375,7 +392,114 @@ export function buildApp(
     const parsed = await parseBody(c, ArchivePersonaSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
+    if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+
+  // --- Workflow definitions: CAS drafts and immutable published versions ---
+  const workflowFailure = (
+    c: Context,
+    result: Exclude<WorkflowMutation | WorkflowPublishMutation | WorkflowValidationMutation, { ok: true }>,
+    expectedRevision?: number,
+  ) => {
+    if (result.reason === "not_found") {
+      return c.json({ error: "no such workflow", code: "workflow_not_found" }, 404);
+    }
+    const current = result.current;
+    const currentSummary = current && workflows ? workflows.store.summary(current) : null;
+    return c.json({
+      error: result.reason.replaceAll("_", " "),
+      code: `workflow_${result.reason}`,
+      expectedRevision: expectedRevision ?? null,
+      currentRevision: current?.draftRevision ?? null,
+      current: currentSummary,
+    }, 409);
+  };
+
+  app.get("/api/workflows", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const raw = c.req.query("includeArchived");
+    if (raw !== undefined && raw !== "true" && raw !== "false") {
+      return c.json({ error: "includeArchived must be true or false" }, 400);
+    }
+    return c.json(manager.list(raw === "true"));
+  });
+  app.post("/api/workflows", bodyLimit({
+    maxSize: WORKFLOW_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Workflow request is too large" }, 413),
+  }), async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, CreateWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.create(parsed.data);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }, 201) : workflowFailure(c, result);
+  });
+  app.get("/api/workflows/:id/versions", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const versions = manager.versions(c.req.param("id"));
+    return versions ? c.json(versions) : c.json({ error: "no such workflow" }, 404);
+  });
+  app.get("/api/workflows/:id/versions/:version", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const versionNumber = Number(c.req.param("version"));
+    if (!Number.isSafeInteger(versionNumber) || versionNumber < 1) {
+      return c.json({ error: "version must be a positive integer" }, 400);
+    }
+    const version = manager.version(c.req.param("id"), versionNumber);
+    return version ? c.json(version) : c.json({ error: "no such workflow version" }, 404);
+  });
+  app.get("/api/workflows/:id", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const detail = manager.get(c.req.param("id"));
+    return detail ? c.json(detail) : c.json({ error: "no such workflow" }, 404);
+  });
+  app.patch("/api/workflows/:id", bodyLimit({
+    maxSize: WORKFLOW_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Workflow request is too large" }, 413),
+  }), async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.update(c.req.param("id"), parsed.data);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  app.delete("/api/workflows/:id", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.archive(c.req.param("id"), parsed.data.expectedDraftRevision);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  app.post("/api/workflows/:id/validate", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ValidateWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.validate(c.req.param("id"), parsed.data.expectedDraftRevision);
+    if (!result.ok) return workflowFailure(c, result, parsed.data.expectedDraftRevision);
+    return result.valid
+      ? c.json({ valid: true, diagnostics: result.diagnostics })
+      : c.json({ valid: false, diagnostics: result.diagnostics }, 422);
+  });
+  app.post("/api/workflows/:id/publish", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, PublishWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.publish(c.req.param("id"), parsed.data.expectedDraftRevision);
+    if (!result.ok && result.reason === "validation") {
+      return c.json({ error: "workflow validation failed", code: "workflow_validation", diagnostics: result.diagnostics ?? [] }, 422);
+    }
+    return result.ok
+      ? c.json({ workflow: result.workflow, summary: result.summary, version: result.version, idempotent: result.idempotent })
+      : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));

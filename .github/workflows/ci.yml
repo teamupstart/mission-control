@@ -57,7 +57,7 @@ jobs:
       # `npm test` runs two isolated test files at a time. Keeping the remaining gates
       # sequential avoids competing with those workers for the runner's CPU and memory.
       - name: Test
-        run: npm test
+        run: xvfb-run -a npm test
 
       - name: Build
         run: npm run build

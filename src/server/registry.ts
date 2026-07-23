@@ -48,7 +48,7 @@ import { goalLine } from "@shared/goal.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
-import type { PersonaView } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -315,6 +315,8 @@ export class Registry extends EventEmitter {
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
+  /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
+  private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -432,6 +434,7 @@ export class Registry extends EventEmitter {
     reviews: ReviewItem[];
     tasks: Task[];
     personas: PersonaView[];
+    workflowSummaries: WorkflowSummary[];
     fleetCost: FleetCost | null;
   } {
     return {
@@ -439,6 +442,7 @@ export class Registry extends EventEmitter {
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
+      workflowSummaries: [...this.workflowSummaries.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -493,6 +497,21 @@ export class Registry extends EventEmitter {
 
   removePersona(id: string): void {
     if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
+  }
+
+  // ---- workflow definition catalog ----
+
+  initializeWorkflows(workflows: WorkflowSummary[]): void {
+    this.workflowSummaries = new Map(workflows.map((workflow) => [workflow.id, workflow]));
+  }
+
+  upsertWorkflow(workflow: WorkflowSummary): void {
+    this.workflowSummaries.set(workflow.id, workflow);
+    this.emitEvent({ type: "workflow_upsert", workflow });
+  }
+
+  removeWorkflow(id: string): void {
+    if (this.workflowSummaries.delete(id)) this.emitEvent({ type: "workflow_remove", id });
   }
 
   // ---- passive discovery ----

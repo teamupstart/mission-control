@@ -33,7 +33,7 @@ export function useWorkflowRoute(dirty: boolean): {
   const navigate = useCallback((next: MissionRoute): boolean => {
     const hash = missionRouteHash(next);
     if (hash === missionRouteHash(accepted.current)) return true;
-    if (dirtyRef.current && !window.confirm("Discard unsaved Persona changes?")) return false;
+    if (dirtyRef.current && !window.confirm("Discard unsaved workflow or Persona changes?")) return false;
     allowHash.current = hash;
     window.location.hash = hash;
     return true;
@@ -48,7 +48,7 @@ export function useWorkflowRoute(dirty: boolean): {
       } else if (
         dirtyRef.current &&
         missionRouteHash(next) !== missionRouteHash(accepted.current) &&
-        !window.confirm("Discard unsaved Persona changes?")
+        !window.confirm("Discard unsaved workflow or Persona changes?")
       ) {
         history.replaceState(null, "", missionRouteHash(accepted.current));
         return;

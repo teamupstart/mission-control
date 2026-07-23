@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -82,6 +82,23 @@ const canvasEdges = (edges: readonly WorkflowEdge[], readOnly: boolean): Edge[] 
   className: edge.sourcePort === "fail" ? "workflow-edge-fail" : "workflow-edge-pass",
 }));
 
+export function reconcileCanvasNodes(
+  current: readonly WorkflowCanvasNode[],
+  projected: readonly WorkflowCanvasNode[],
+): WorkflowCanvasNode[] {
+  const currentById = new Map(current.map((node) => [node.id, node]));
+  return projected.map((node) => {
+    const previous = currentById.get(node.id);
+    return previous ? {
+      ...node,
+      measured: previous.measured,
+      selected: previous.selected,
+      dragging: previous.dragging,
+      resizing: previous.resizing,
+    } : node;
+  });
+}
+
 export function WorkflowCanvas({
   graph,
   personas,
@@ -97,10 +114,15 @@ export function WorkflowCanvas({
   onSelection?: (selection: WorkflowSelection) => void;
   onDropNode?: (kind: "persona" | "all_pass" | "end", personaId: string | null, position: { x: number; y: number }) => void;
 }): React.JSX.Element {
-  const nodes = useMemo(() => canvasNodes(graph, personas, readOnly), [graph, personas, readOnly]);
+  const projectedNodes = useMemo(() => canvasNodes(graph, personas, readOnly), [graph, personas, readOnly]);
+  const [nodes, setNodes] = useState(projectedNodes);
   const edges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);
   const draft = graph as WorkflowDraftGraph;
   const instance = useRef<ReactFlowInstance<WorkflowCanvasNode, Edge> | null>(null);
+
+  useEffect(() => {
+    setNodes((current) => reconcileCanvasNodes(current, projectedNodes));
+  }, [projectedNodes]);
 
   const validConnection = useCallback((connection: Edge | Connection): boolean => {
     const source = draft.nodes.find((node) => node.id === connection.source);
@@ -114,8 +136,9 @@ export function WorkflowCanvas({
   }, [draft.nodes]);
 
   const changeNodes = (changes: NodeChange<WorkflowCanvasNode>[]): void => {
-    if (readOnly || !onChange) return;
     const next = applyNodeChanges(changes, nodes);
+    setNodes(next);
+    if (readOnly || !onChange) return;
     const byId = new Map(next.map((node) => [node.id, node]));
     const kept = draft.nodes
       .filter((node) => byId.has(node.id) || node.kind === "session")

@@ -111,10 +111,11 @@ test("locate rebinds to a newer file after pi starts a new session", () => {
     const session = locateSession("pi-rebind", cwd);
     assert.equal(locatePiTranscript(session, root), null);
     piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), oldPath);
-    writeSession(newPath, "new", 2_000);
+    assert.equal(locatePiTranscript(session, root), null);
     assert.equal(locatePiTranscript(session, root), null);
     piTranscript.retain?.(new Set([session.id]));
+    assert.equal(locatePiTranscript(session, root), oldPath);
+    writeSession(newPath, "new", 2_000);
     assert.equal(locatePiTranscript(session, root), newPath);
   } finally {
     piTranscript.retain?.(new Set());
@@ -163,6 +164,11 @@ test("two hookless sessions sharing a cwd decline from the first claim", () => {
     const sibling = locateSession("pi-sibling", cwd);
     assert.equal(locatePiTranscript(owner, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
+    piTranscript.retain?.(new Set([owner.id, sibling.id]));
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
     piTranscript.retain?.(new Set([owner.id, sibling.id]));
     assert.equal(locatePiTranscript(owner, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
@@ -184,11 +190,13 @@ test("an existing sole occupant never adopts a new sibling's file", () => {
     const owner = locateSession("pi-owner-existing", cwd);
     assert.equal(locatePiTranscript(owner, root), null);
     piTranscript.retain?.(new Set([owner.id]));
+    assert.equal(locatePiTranscript(owner, root), null);
+    piTranscript.retain?.(new Set([owner.id]));
     assert.equal(locatePiTranscript(owner, root), ownerPath);
 
     writeSession(siblingPath, "sibling-agent", 2_000);
     const sibling = locateSession("pi-sibling-new", cwd);
-    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
     piTranscript.retain?.(new Set([owner.id, sibling.id]));
     assert.equal(locatePiTranscript(owner, root), null);

@@ -76,8 +76,8 @@ pi writes one JSON record per line to
   JSONL", which is exactly what pi's is. No shared edit. (Codex has its own `codex-rollout`
   only because its file is not a turn log.)
 - `locate` reruns the project-directory scan on every read so `/new` is discovered. It caches
-  only per-session bindings; `retain` prunes dead bindings and rebuilds the tick-boundary cwd
-  occupancy snapshot used to refuse ambiguous same-directory attribution.
+  only per-session bindings; `retain` prunes dead bindings and confirms sole ownership only
+  when the same session owns its cwd across two consecutive tick-boundary snapshots.
 
 ### control - REQUIRED, non-null
 

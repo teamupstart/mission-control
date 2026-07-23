@@ -13,6 +13,7 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { resetSession } = await import("../src/server/reset.ts");
 const {
   firstWorkEpisodePromptAfter,
   openDb,
@@ -1555,6 +1556,65 @@ test("a standalone dependency follows an expected reset identity rebind", () => 
   );
   assert.ok(edge?.satisfiedAt);
   assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
+test("an unconfirmed clear preserves the active episode until its PR merges", async () => {
+  const setup = await delayedTaskMergeSetup("102");
+  const session = setup.registry.getSession(setup.id)!;
+  const episodeBefore = setup.registry.workEpisodeForSession(setup.id)!;
+  const bindingBefore = setup.registry.workEpisodeForTask(setup.prerequisiteId)!;
+
+  const result = await resetSession(
+    setup.registry,
+    session,
+    true,
+    async () => ({
+      ok: true,
+      error: null,
+      root: setup.cwd,
+      cleared: false,
+      detached: true,
+      clearIssuedAt: Date.now(),
+    }),
+  );
+
+  assert.equal(result.ok, true, "the git half can land independently");
+  assert.equal(result.cleared, false, "the command is still unconfirmed");
+  assert.equal(result.workIdentityReady, false);
+  assert.equal(
+    setup.registry.workEpisodeForSession(setup.id)?.episodeId,
+    episodeBefore.episodeId,
+  );
+  assert.equal(
+    setup.registry.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
+    bindingBefore.episodeId,
+  );
+  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "running");
+  assert.equal(
+    setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.episodeId,
+    episodeBefore.episodeId,
+  );
+
+  setup.registry.reconcilePrs(
+    new Map([[setup.id, prMatch({
+      url: setup.url,
+      number: 102,
+      state: "merged",
+      branch: setup.branch,
+      agentSessionId: setup.agentSessionId,
+      episodeId: episodeBefore.episodeId,
+      createdAt: episodeBefore.startedAt,
+      mergedAt: Date.now(),
+    })]]),
+    new Set(),
+  );
+
+  assert.ok(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(
+    setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!),
+    [],
+  );
 });
 
 test("old-identity work disarms a pending reset rebind", () => {

@@ -499,10 +499,13 @@ board, and it used to report as grey running forever. The small colored dot
 next to each title is *not* a status - it's the brand color the agent declares for
 itself (terracotta for Claude Code, green for Codex).
 
-A Claude card also carries a **permission mode** chip once a hook reports one - `manual`,
-`accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for
-sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
-would in the session's own terminal.
+A Claude session also carries a **permission mode** chip once Mission Control observes one -
+`manual`, `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't
+ask` for sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the
+keystroke would in the session's own terminal, and clicking the chip opens a picker that
+jumps straight to the mode you choose. Like the thinking badge, it appears on Cards, in
+Console detail, and on Board tiles, so triaging from the board does not mean opening a
+session to put it back in `plan`. When the pane cannot be written the chip stays read-only.
 
 ### Answer a session's menu from the dashboard
 
@@ -1849,10 +1852,11 @@ switches between them live, and the choice persists per machine:
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 | **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Nothing is lost by switching. Every layout draws from the *same* leaf pieces - the
-transcript, the work queue, the gate strip, the action bar, the goal and runtime pills -
-so no chip, strip or control goes missing. What changes is how they're arranged - and the
-console's permanent conversation earns two surfaces a card has nowhere to put:
+Switching layouts does not change the underlying sessions. Controls repeated across
+surfaces come from the *same* leaf pieces so their behavior stays aligned. What changes is
+how they're arranged - dense overview surfaces select a subset, while Console and the
+Board's drill-in expose the complete detail - and the console's permanent conversation
+earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /

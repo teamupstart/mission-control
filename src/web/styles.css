@@ -1815,6 +1815,25 @@ body {
 .mode-btn.open .mode-caret {
   transform: translateY(-1px) rotate(180deg);
 }
+/* The board tile puts the chip in a row of `.rt-pill`s rather than in a footer of text,
+   so it takes their metrics and their tinted border there: at the footer's 10.5px, with
+   no border until hover, it read as an undersized flat chip wedged between the effort and
+   cost pills. Scoped to that row rather than lifted onto `.mode`, because the card and
+   console footers ARE rows of text, where the quieter scale is the right one. The border
+   goes on `.mode` so the read-only span a paneless session draws measures the same as the
+   button, and the hover/open lift is restated here (like `.rt-think-btn`'s) so it wins by
+   being equally specific rather than by where this block happens to sit in the file. */
+.tile-runtime-line .mode {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in oklab, currentcolor 32%, var(--border-soft));
+  border-radius: 6px;
+}
+.tile-runtime-line .mode-btn:hover,
+.tile-runtime-line .mode-btn.open {
+  border-color: color-mix(in oklab, currentcolor 48%, var(--border-soft));
+}
 
 /* ---- mode picker popover ---- */
 /* `.alert-pop` is written to hang off a positioned parent: `position: absolute;

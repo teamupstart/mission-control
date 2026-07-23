@@ -430,6 +430,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     priority: null,
     labels: [],
     dependencies: [],
+    enabled: true,
     model: null,
     effort: null,
     source: null,

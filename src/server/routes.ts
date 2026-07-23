@@ -1879,13 +1879,11 @@ export function buildApp(
   app.post("/api/tasks/:id/dispatch", async (c) => {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const t = await tasks.dispatch(c.req.param("id"), parsed.data);
-    if (!t) return c.json({ error: "no such task" }, 404);
-    const blockers = tasks.dependencyBlockers(t);
-    if (t.status === "backlog" && blockers.length > 0) {
-      return c.json({ error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}` }, 409);
+    const r = await tasks.dispatch(c.req.param("id"), parsed.data);
+    if (!r.ok) {
+      return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
-    return c.json(t);
+    return c.json(r.task!);
   });
 
   // Assign a backlog task to an already-running agent. A refusal here is a 409, not a
@@ -1901,6 +1899,7 @@ export function buildApp(
     const parsed = await parseBody(c, AssignTaskSchema);
     if (!parsed.ok) return parsed.res;
     const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId, {
+      overrideDisabled: parsed.data.overrideDisabled,
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

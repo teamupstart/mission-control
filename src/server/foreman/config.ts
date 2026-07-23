@@ -128,12 +128,17 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
 
   // The backlog readout. Derived here from the same `activeAgentCount` and
   // `readyBacklog` the scheduler decides with, rather than counted a second way, so the
-  // popover's "3 / 5 agents" IS the ceiling being applied and its ready/blocked split
-  // is the same one that governs what gets launched. `ready` deliberately ignores the
+  // popover's "3 / 5 agents" IS the ceiling being applied and its
+  // ready/blocked/disabled split is the same one that governs what gets launched.
+  // `ready` deliberately ignores the
   // repo allowlist - it answers "is the dependency graph holding this up?", and the
   // allowlist gets its own, separate refusal in the machine's log.
   const backlog = backlogTasks(tasks);
   const ready = readyBacklog(tasks, getBacklogPlan()).length;
+  // Split off before `blocked` is derived, so the three numbers partition the backlog:
+  // a parked item is neither ready nor held up by a dependency, and folding it into
+  // "blocked" would have the popover report a graph problem nobody can find.
+  const disabled = backlog.filter((t) => !t.enabled).length;
 
   // The same ladder the worker applies (`worker.ts`), resolved once here so the panel and
   // the process that spawns the calls cannot print different providers. An unset
@@ -155,7 +160,8 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
       active: activeAgentCount(sessions, tasks),
       max: cfg.maxSessions,
       ready,
-      blocked: backlog.length - ready,
+      blocked: backlog.length - disabled - ready,
+      disabled,
     },
     // Resolved here, from the daemon's own env, because the browser has no `process`
     // and so cannot see the env layer at all - see `ForemanStatus.models`.

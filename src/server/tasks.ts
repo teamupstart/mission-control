@@ -69,13 +69,44 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+/**
+ * Why the disabled toggle refuses by DEFAULT rather than trusting callers to identify
+ * themselves, spelled out once for both options objects below.
+ *
+ * The first design had the autopilot declare itself and be refused on that basis. It
+ * cannot work: the Foreman worker is a separate process started by hand
+ * (`npm run foreman`), so it can outlive a daemon restart, and a worker that predates
+ * this field sends nothing - which an "are you the autopilot?" flag reads as a human
+ * override. That stale worker also has no `readyBacklog` filter of its own, so it would
+ * cheerfully launch a task somebody had just parked.
+ *
+ * Inverting it removes the question. Nothing has to be identified: a request that does
+ * not CLAIM an override does not get one, so the stale worker is refused by
+ * construction. The dashboard ships in the same bundle as the daemon and can never be
+ * skewed against it, so it can always claim the override behind the operator's own
+ * "launch anyway" button - which is the one path that must keep working.
+ */
+const DISABLED_REFUSAL =
+  "task is disabled - Foreman will not schedule it (launch it yourself to override)";
+
+/** True when this call must be refused because the task is parked and nobody claimed an override. */
+function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): boolean {
+  // Scoped to `backlog`: `enabled` gates SCHEDULING, and the retry path for a cleanly
+  // failed task is not scheduling - that task already ran.
+  return task.status === "backlog" && !task.enabled && overrideDisabled !== true;
+}
+
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
   defaultModel?: string | null;
+  /** The caller is deliberately starting a parked task. See `DISABLED_REFUSAL`. */
+  overrideDisabled?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
+  /** The caller is deliberately handing over a parked task. See `DISABLED_REFUSAL`. */
+  overrideDisabled?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
    * the default, and what an omitted flag gets - means a reset with anything to lose is
@@ -100,6 +131,10 @@ export interface AssignOutcome extends Ok {
   scope?: AssignRefusalScope;
   resetConfirm?: AssignResetConfirm;
 }
+
+export type DispatchOutcome =
+  | { ok: true; task: Task }
+  | { ok: false; error: string; task?: Task };
 
 /** Whether the handover would take anything the caller has not already agreed to. */
 function needsResetConfirm(c: AssignResetConfirm): boolean {
@@ -370,6 +405,11 @@ export class TaskManager {
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
+      // Always schedulable to begin with, on every path - the form, an MCP call, a task
+      // source sweep. Parking is a decision taken about an item you can already see on
+      // the board, so nothing gets to file work that is invisible to the autopilot
+      // without anyone having said so.
+      enabled: true,
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
       // defaults it happened to see (see `resolveDispatchModel` and
@@ -461,14 +501,28 @@ export class TaskManager {
    * from `task.title`, and later title edits do not propagate to them. Dispatching
    * mid-titling would name them after the heuristic title and leave the card disagreeing.
    */
-  async dispatch(id: string, options: DispatchOptions = {}): Promise<Task | null> {
+  async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
-    if (!t) return null;
-    if (this.assigningTasks.has(id)) return t;
+    if (!t) return { ok: false, error: "no such task" };
+    if (this.assigningTasks.has(id)) {
+      return { ok: false, error: "task is being assigned", task: t };
+    }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (this.dependencyBlockers(t).length > 0) return t;
+      // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
+      // the coarser fact and the one the operator can act on immediately.
+      if (refusedAsDisabled(t, options.overrideDisabled)) {
+        return { ok: false, error: DISABLED_REFUSAL, task: t };
+      }
+      const blockers = this.dependencyBlockers(t);
+      if (blockers.length > 0) {
+        return {
+          ok: false,
+          error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`,
+          task: t,
+        };
+      }
       // A task-specific model is an explicit operator choice and must always win. Foreman
       // supplies this only for a fresh backlog launch; persisting it before the async
       // dispatcher starts makes the task card's model match the command line it will use.
@@ -478,12 +532,12 @@ export class TaskManager {
       }
       void this.dispatcher.dispatch(id);
     }
-    return this.registry.getTask(id) ?? t;
+    return { ok: true, task: this.registry.getTask(id) ?? t };
   }
 
   /**
    * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker.
+   * priority picker and enable/disable toggle.
    *
    * The status guard applies to the PROVISIONING fields only, and that split is the
    * whole rule. The moment a task dispatches, its title has supplied a git branch and an
@@ -493,7 +547,10 @@ export class TaskManager {
    * other status is a conflict the caller shows, not retries.
    *
    * Dependencies share that guard because changing them can change whether launch is
-   * allowed. `priority` and `labels` are exempt because nothing is provisioned from them. They
+   * allowed, and `enabled` shares it because it is the same kind of statement: it
+   * decides whether the autopilot may start this item, and a task that already started
+   * has no such question left to answer.
+   * `priority` and `labels` are exempt because nothing is provisioned from them. They
    * are annotation, so re-marking a RUNNING task `blocker` is safe, and re-marking a
    * finished one keeps the record honest - the two things the guard above is protecting
    * simply are not at stake. Refusing them would make the board's priority picker dead
@@ -548,6 +605,10 @@ export class TaskManager {
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
       dependencies,
+      // Guarded by the status check above, like the provisioning fields and unlike
+      // priority/labels: it is a statement about scheduling, and there is nothing left
+      // to schedule once the task has left the backlog.
+      enabled: patch.enabled ?? t.enabled,
       // `undefined` leaves an override as it stands unless the agent changed; `null` is
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
@@ -593,6 +654,12 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    // The same refusal `dispatch` applies, and it has to be here too: assigning onto a
+    // running agent is the autopilot's OTHER way of starting a parked task, and a guard
+    // on one path only is the drift this whole feature is built to avoid.
+    if (refusedAsDisabled(t, opts.overrideDisabled)) {
+      return { ok: false, error: DISABLED_REFUSAL, scope: "task" };
     }
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {

@@ -38,7 +38,8 @@ and get your decision back.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + terminal home (or shelves it in a
   backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
-  edit or send).
+  edit or send, and a switch on the row [holds it back](#hold-a-backlog-item-back)
+  from the autopilot without taking it off the list).
 - **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
   sweeps GitHub issues on a schedule and files them into the backlog, so the work you
   already wrote down somewhere doesn't have to be re-typed. It files backlog rows and
@@ -938,6 +939,53 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
+### Hold a backlog item back
+
+Every backlog row carries an **on/off switch**: turn it off and the
+[backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) will not schedule that
+item - not into a fresh worktree, not onto an idle agent. It's on the board's backlog card
+next to the priority picker, and on the same row in [Sitrep](#roundup); both draw the same
+control, so you can park an item from wherever you happen to be reading the list.
+
+**It's a hold on the machine, not on you.** **launch new agent** and dragging the card
+onto an idle agent both still start a parked item; the button reads **launch anyway**, the
+way it does on an item Foreman thinks is waiting its turn. Blocking a button you pressed
+yourself to protect a background scheduler is the worse surprise, and it's the same call
+`Max agents` makes.
+
+That works because the switch is enforced in **two** places, and only one of them can be
+opted out of. Foreman's scheduling paths never reach a parked item: both use the same ready
+list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent shortcut can
+see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
+item **unless the request explicitly claims an override** - which the dashboard's own
+buttons do, and Foreman never does.
+
+The refusing default is the point. The Foreman worker is a separate process you start by
+hand, so it can outlive a daemon restart; one that predates this feature sends no override
+and is stopped, without the daemon having to work out who it is talking to. An external
+script or `curl` is refused the same way until it opts in, which is the right default for a
+flag whose whole job is to stop unattended launches.
+
+A parked card dims, says `autopilot will skip this`, and drops out of the
+autopilot's `ready` count into its own `disabled` one in the Foreman popover - so an
+autopilot with nothing to do can say *why* it has nothing to do rather than looking broken.
+The Sitrep digest marks the row too (`- "On hold" (ship, disabled) - /repo`).
+
+**Anything that depends on a parked item says so.** A disabled prerequisite reads as
+`X is disabled` rather than `after X`, because it will never clear on its own - the same
+distinction a cancelled or failed dependency gets, with a one-click fix instead of an
+investigation.
+
+**A parked item still takes part in the dependency read**, and keeps its place in the
+400-item budget. Leaving it out looks like a saving and quietly breaks the paragraph
+above: the planner drops any edge whose target it wasn't shown, so a parked
+prerequisite's inferred dependencies would vanish on the next read and everything behind
+it would go ready. Holding an item costs one plan entry it won't use, which is much the
+cheaper of the two.
+
+Like the rest of the launch configuration, the switch can only be changed while the task
+is *in* the backlog; there's nothing left to schedule once it has started.
+
 ### Priority and labels
 
 A task can carry a **priority** and any number of **labels**. Both are optional, both
@@ -1648,9 +1696,9 @@ says so rather than letting you queue work that can't run.
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*
 [backlog](#dispatch-an-agent) - the items you've queued but not started. Foreman reads the
-whole backlog, works out which items depend on which, and then schedules one at a time:
-onto an agent that's already idle when there is one, or into a fresh worktree when there
-isn't - never past a ceiling you set.
+planning head - up to 400 items, including held ones - to preserve its dependency graph,
+then schedules enabled, ready items one at a time: onto an agent that's already idle when
+there is one, or into a fresh worktree when there isn't - never past a ceiling you set.
 
 Three knobs, in the Foreman popover under **Backlog**:
 
@@ -1664,7 +1712,9 @@ Three knobs, in the Foreman popover under **Backlog**:
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
 **you** clicked, because blocking a button you pressed to protect a background scheduler's
-budget is the worse surprise. An unmet dependency is different: it is a task-level ordering
+budget is the worse surprise. A backlog item's
+[on/off switch](#hold-a-backlog-item-back) is scoped the same way - it holds the machine
+back, not you. An unmet dependency is different: it is a task-level ordering
 constraint and blocks every scheduling path, manual ones included.
 
 **It only ever launches in Live mode, on an allowlisted repo** - the same gate the
@@ -1674,29 +1724,30 @@ sitting in front of; both are more consequential than answering a prompt. In **d
 and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
-**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
-(Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every backlog item's title and intent
-and returns an order plus, for each item, what it must wait for. The reply isn't trusted as
-written: ids that aren't in the backlog are dropped, self-references are dropped, **only the
-edges that close a cycle** are cut, and any item the model forgot is appended unblocked. A
-cycle would deadlock two cards forever and look exactly like two cards waiting their turn;
+**Foreman's inferred dependencies come from a model, and are treated as one.** A fresh
+tool-less `claude -p` (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every planning
+item's title and intent and returns an order plus, for each item, what it must
+wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
+self-references are dropped, **only the edges that close a cycle** are cut, and any item
+the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
+exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
 the items in, and the plan is stored in dependency order. The read re-runs only when the
-backlog **gains** an item, so a steady backlog costs nothing.
+planning head **gains an uncovered item**, so a steady backlog costs nothing.
 
 Operator-selected dependencies from the dispatch form are separate, persisted facts. The
 planner sees them, cannot reverse or remove them, and its inferred graph is sanitized
 against them so an inferred reverse edge cannot deadlock the backlog. Those facts remain
 enforced when autopilot is off or its model plan is missing.
 
-**The read's time budget scales with the backlog** (`60s + 20s` an item, capped at 10 min;
-`FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the model writes one entry
-per task, so a two-dozen-item backlog is minutes of wall clock where a handful of items is
-seconds. A fixed cap worked on a short backlog and then stopped working for good once one
-grew past it - every read timed out, so no plan was ever stored, so the autopilot re-read
-the same backlog every tick and scheduled nothing while the board showed ready items and an
-idle fleet. Three failures in a row and
+**The read's time budget scales with the planning backlog** (`60s + 20s` an item,
+capped at 10 min; `FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the
+model writes one entry per item, so two dozen items take minutes of wall clock where
+a handful takes seconds. A fixed cap worked on a short backlog and then stopped working for
+good once one grew past it - every read timed out, so no plan was ever stored, so the
+autopilot re-read the same backlog every tick and scheduled nothing while the board showed
+ready items and an idle fleet. Three failures in a row and
 Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
 satisfies any dependency order by construction, so a broken planner degrades to slow rather
 than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
@@ -1704,12 +1755,15 @@ one fresh read is tried, so an API blip heals itself instead of waiting for a re
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
 
-One read, one model call, over the **first 400 backlog items**. Reading a longer backlog in
-several calls was tried and taken back out: they run on the Foreman worker's single loop,
-which also drives queue drain and needs-you triage, so each extra call is another span in
-which nothing else in the fleet is attended to. Past 400 the tail is scheduled **oldest
-first with no dependency information** - and, since staleness is coverage, a dispatch while
-the backlog is that long promotes an unplanned item into the head and costs one replan.
+One read, one model call, over the **first 400 backlog items**, including any
+[held back](#hold-a-backlog-item-back) - they stay in the read so the edges pointing at
+them survive it. Reading a
+longer backlog in several calls was tried and taken back out: they run on the Foreman
+worker's single loop, which also drives queue drain and needs-you triage, so each extra call
+is another span in which nothing else in the fleet is attended to. Past 400 the
+tail is scheduled **oldest first with no dependency information** - and, since staleness
+is coverage, a dispatch while the backlog is that long promotes an unplanned item
+into the head and costs one replan.
 That is the accepted trade: one call, only above 400, in exchange for a bounded worst case
 on the shared loop.
 
@@ -1745,14 +1799,15 @@ Autopilot **confirms the rest of that reset unattended**, and it has already rul
 what the confirmation protects: an agent is only "free" here with an empty work queue,
 and clearing the context is how a handover works at all.
 
-On the **board**, the Backlog column shows a **blocked** chip naming what an item waits on,
-a **next up** mark on the one Foreman would take next, and - for a dependency that was
-cancelled or failed, which will never clear on its own - the attention tone. A card blocked
-only by Foreman's inferred dependencies stays draggable and launchable (**launch anyway**),
-because the model's read is an opinion. An operator-selected dependency is authoritative:
-its card reads **waiting for dependencies** and cannot be launched or assigned early. The
-Foreman popover carries the live readout - `2/3 agents · 4 ready · 1 blocked` - so "why is
-nothing launching?" is answerable without reading a log.
+On the **board**, the Backlog column shows the
+[hold switch and its disabled state](#hold-a-backlog-item-back), a **blocked** chip naming
+what an item waits on, and a **next up** mark on the one Foreman would take next. A card
+blocked only by Foreman's inferred dependencies stays draggable and launchable
+(**launch anyway**), because the model's read is an opinion. An operator-selected
+dependency is authoritative: its card reads **waiting for dependencies** and cannot be
+launched or assigned early. The Foreman popover carries the live readout -
+`2/3 agents · 4 ready · 1 blocked · 1 disabled` - so "why is nothing launching?" is
+answerable without reading a log.
 
 ## Half-written text is kept
 

@@ -295,6 +295,10 @@ export function ForemanPopover({
             {status.autopilot.active}/{status.autopilot.max} agents ·{" "}
             {status.autopilot.ready} ready
             {status.autopilot.blocked > 0 && ` · ${status.autopilot.blocked} blocked`}
+            {/* Reported separately from `blocked`, and only when there are some: an
+                autopilot with nothing to do reads as broken unless the line can say
+                that the items it can see were switched off deliberately. */}
+            {status.autopilot.disabled > 0 && ` · ${status.autopilot.disabled} disabled`}
           </p>
         )}
         {enabled && config.autoBacklog && mode !== "live" && (

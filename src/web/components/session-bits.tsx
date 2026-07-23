@@ -764,6 +764,65 @@ export function PriorityChip({ priority }: { priority: TaskPriority | null }): R
 }
 
 /**
+ * Whether Foreman's backlog autopilot may schedule this task, as a switch.
+ *
+ * Shared rather than inlined because the backlog is drawn twice - the board's column
+ * and the Sitrep panel's Backlog section - and a switch that existed on one of them
+ * would be a hold you could set from the board and then not find again in the list you
+ * were reading. Same markup, same words, same gesture, both places.
+ *
+ * `role="switch"` and not a checkbox: this is one card's own on/off, not membership of
+ * a set, and a switch announces "on"/"off". The visible word is the STATE, never the
+ * action - "disable" and "disabled" are a glance apart and mean opposite things.
+ *
+ * Never drawn as anything but the stored value: no optimistic flip. The patch is
+ * status-guarded server-side, so the honest sequence is press, wait a beat, see it
+ * move - a control that flipped instantly and sprang back on a 409 would read as
+ * broken rather than refused.
+ *
+ * Both pointer handlers stop propagation, and that belongs HERE rather than at each
+ * host: the board's card is `draggable` and click-to-edit, so without them a press
+ * starts a drag and the click opens the dispatch modal on its way past. A host that
+ * needs neither loses nothing by getting both.
+ */
+export function ScheduleSwitch({
+  enabled,
+  taskTitle,
+  busy = false,
+  onChange,
+}: {
+  enabled: boolean;
+  /** Named in the accessible label, so a screen reader hears which card this is. */
+  taskTitle: string;
+  /** A request is in flight; the control is inert until it lands. */
+  busy?: boolean;
+  onChange: (enabled: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <button
+      className={`task-switch${enabled ? "" : " is-off"}`}
+      role="switch"
+      aria-checked={enabled}
+      aria-label={`Foreman may schedule ${taskTitle}`}
+      disabled={busy}
+      title={
+        enabled
+          ? "Enabled - Foreman's autopilot may schedule this. Click to hold it back."
+          : "Disabled - Foreman's autopilot will skip this. You can still launch it yourself."
+      }
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange(!enabled);
+      }}
+    >
+      <span className="task-switch-track" aria-hidden />
+      {enabled ? "on" : "off"}
+    </button>
+  );
+}
+
+/**
  * A task's labels, as chips. Also silent when empty, for the same reason as above.
  *
  * `max` exists because the same list is drawn in a roomy roundup row and in a narrow

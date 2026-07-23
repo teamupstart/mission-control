@@ -5,7 +5,7 @@ import { backlogIndex, blockersIn, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
-import { LabelChips } from "../session-bits.tsx";
+import { LabelChips, ScheduleSwitch } from "../session-bits.tsx";
 
 /**
  * The backlog as a board column you dispatch OUT of by dragging.
@@ -37,6 +37,11 @@ import { LabelChips } from "../session-bits.tsx";
  * waiting on another task, and which one it would take next. Drawn from the shared
  * predicates the scheduler decides with, never from a second reading of the plan, so
  * the column cannot mark a card ready that the machine will not touch.
+ *
+ * Each card also carries the one control that changes that view: an on/off switch
+ * saying whether the autopilot may schedule this item at all. It is a hold, not a
+ * cancel - the launch button and the drag gesture keep working on a parked card,
+ * because they are you, and the switch only ever speaks for the machine.
  */
 export function BacklogColumn({
   tasks,
@@ -93,14 +98,26 @@ export function BacklogColumn({
 /**
  * One line naming what a card is waiting on. Two by name, then a count, because the
  * chip has to stay a chip - and the full list is in the `title` either way.
+ *
+ * The two "this will never clear on its own" states lead, and they lead in that order
+ * because they ask for different things: a dependency that failed needs looking at,
+ * while a disabled one needs one click on a toggle somebody already knows they turned
+ * off. Both beat "after X", which promises a queue that is not moving.
  */
 function blockedLabel(blockers: BacklogBlocker[]): string {
   const stopped = blockers.filter((b) => b.state === "stopped");
   // A dependency that was cancelled or failed will never clear on its own, so it is a
   // different message from "wait your turn" - it is the one that needs you.
   if (stopped.length > 0) return `needs you - ${stopped[0]!.title} didn't finish`;
+  const off = blockers.filter((b) => b.state === "disabled");
+  if (off.length > 0) return `${off[0]!.title} is disabled`;
   if (blockers.length === 1) return `after ${blockers[0]!.title}`;
   return `after ${blockers[0]!.title} +${blockers.length - 1}`;
+}
+
+/** True while a blocker means "nothing will move this until you act". */
+function needsYou(blockers: BacklogBlocker[]): boolean {
+  return blockers.some((b) => b.state === "stopped" || b.state === "disabled");
 }
 
 function BacklogCard({
@@ -125,8 +142,24 @@ function BacklogCard({
 
   async function launch(): Promise<void> {
     setBusy(true);
-    const r = await api.dispatchBacklog(task.id);
+    const r = await api.dispatchBacklog(task.id, true);
     if (!r.ok) onAssignError(r.error ?? "could not dispatch");
+    setBusy(false);
+  }
+
+  /**
+   * Flip the autopilot toggle.
+   *
+   * Nothing is held locally and nothing is drawn optimistically: the card re-renders
+   * off the next snapshot, the same way the priority picker beside it does. What IS
+   * different is that a refusal is surfaced - this patch is status-guarded, so a task
+   * that dispatched between the render and the click comes back 409, and a control
+   * that silently sprang back would look broken rather than late.
+   */
+  async function setEnabled(next: boolean): Promise<void> {
+    setBusy(true);
+    const r = await api.updateTask(task.id, { enabled: next });
+    if (!r.ok) onAssignError(r.error ?? "could not change that");
     setBusy(false);
   }
 
@@ -134,7 +167,7 @@ function BacklogCard({
     <article
       className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
         nextUp ? " is-next" : ""
-      }`}
+      }${task.enabled ? "" : " is-disabled"}`}
       // Foreman's inferred edge remains overridable. An operator-declared dependency is
       // policy, so both drag-to-assign and launch are disabled until it completes.
       draggable={!busy && !declaredBlocked}
@@ -159,6 +192,16 @@ function BacklogCard({
         {task.title}
       </button>
       <span className="bl-marks">
+        {/* The enable/disable switch sits with the priority picker rather than with the
+            launch button because it is triage, not execution: both say how this item
+            should be treated when Foreman gets to it, and both are things you do to a
+            row while reading down the column. */}
+        <ScheduleSwitch
+          enabled={task.enabled}
+          taskTitle={task.title}
+          busy={busy}
+          onChange={(next) => void setEnabled(next)}
+        />
         {/* The priority control IS the chip here, rather than a read-only chip with an
             editor under it - two of those meant the card said "BLOCKER" and "Blocker"
             inches apart, the same fact twice. The backlog is the surface where triage
@@ -211,12 +254,25 @@ function BacklogCard({
       </span>
       {blocked && (
         <span
-          className={`bl-blocked${blockers.some((b) => b.state === "stopped") ? " is-stopped" : ""}`}
+          className={`bl-blocked${needsYou(blockers) ? " is-stopped" : ""}`}
           title={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}
         >
           {blockedLabel(blockers)}
         </span>
       )}
+      {/* The CONSEQUENCE, not the setting - the switch above already says which way it
+          is set, and repeating "disabled" here would be the card saying one fact twice,
+          the way a read-only priority chip over a priority picker did. What a two-letter
+          pill cannot carry is what being off costs, and that sentence is what stops a
+          quiet autopilot from looking like a broken one. Drawn alongside a blocked chip
+          rather than instead of it: different facts, neither implying the other. */}
+      {!task.enabled && (
+        <span className="bl-off" title="Turn the switch back on to let Foreman schedule it">
+          autopilot will skip this
+        </span>
+      )}
+      {/* `nextUp` comes from `readyBacklog`, which drops disabled items, so this is
+          already unreachable on a parked card - no second guard here to drift. */}
       {nextUp && !blocked && (
         <span className="bl-next" title="Foreman's autopilot would pick this up next">
           next up
@@ -234,12 +290,20 @@ function BacklogCard({
         title={
           declaredBlocked
             ? `Waiting for: ${blockers.filter((blocker) => blocker.source === "declared").map((blocker) => blocker.title).join(", ")}`
+            : !task.enabled
+            ? "Disabled for the autopilot - this launches it yourself, right now"
             : blocked
             ? "Launch it anyway, ahead of what Foreman thinks it's waiting on"
             : "Dispatch into a fresh worktree"
         }
       >
-        {busy ? "dispatching…" : declaredBlocked ? "waiting for dependencies" : blocked ? "launch anyway" : "launch new agent"}
+        {busy
+          ? "dispatching…"
+          : declaredBlocked
+          ? "waiting for dependencies"
+          : blocked || !task.enabled
+          ? "launch anyway"
+          : "launch new agent"}
       </button>
     </article>
   );
@@ -285,7 +349,7 @@ export async function dropTaskOnSession(
 ): Promise<void> {
   const id = e.dataTransfer.getData("application/x-mission-task");
   if (!id) return;
-  const r = await api.assignTask(id, session.id);
+  const r = await api.assignTask(id, session.id, true);
   if (r.ok) return;
   if (r.resetConfirm) {
     onConfirm({ taskId: id, confirm: r.resetConfirm });

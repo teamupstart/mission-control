@@ -924,10 +924,19 @@ export interface ForemanStatus {
     active: number;
     /** The configured ceiling (`maxSessions`). */
     max: number;
-    /** Backlog items with every dependency satisfied - what autopilot may take next. */
+    /** Enabled backlog items with every dependency satisfied - what autopilot may take next. */
     ready: number;
-    /** Backlog items waiting on another task. */
+    /**
+     * ENABLED backlog items waiting on another task.
+     *
+     * Counted over the enabled ones only, so `ready + blocked + disabled` is the whole
+     * backlog. Folding the disabled items in here would report work somebody
+     * deliberately parked as work the dependency graph is holding up - a number that
+     * sends the operator looking for a prerequisite that does not exist.
+     */
     blocked: number;
+    /** Backlog items switched off, which autopilot will not schedule at all. */
+    disabled: number;
   };
   /**
    * What each of Foreman's four `claude -p` calls will actually spawn with, and why -
@@ -1092,6 +1101,31 @@ export interface Task {
   labels: string[];
   /** Operator-declared prerequisites. Unmet entries force this task to stay backlogged. */
   dependencies: TaskDependency[];
+  /**
+   * Whether Foreman's backlog autopilot may schedule this item. True on every task
+   * that has not been deliberately switched off - including every task filed before
+   * the toggle existed.
+   *
+   * A SCHEDULING GATE, not a dependency and not annotation. `readyBacklog` drops a
+   * disabled item, so the autopilot does not select it for dispatch or assignment.
+   * `plannableBacklog` deliberately KEEPS it in the finite planning budget: `sanitizePlan`
+   * drops inferred edges whose target was not in its input, so hiding a parked prerequisite
+   * would delete dependencies pointing at it and make its dependents ready on the next
+   * replan. Re-enabling an item already covered by the stored plan does not make it stale.
+   *
+   * It deliberately does NOT stop a human, but the daemon still enforces the gate by
+   * default: dispatch and assign refuse a parked backlog task unless the request claims
+   * `overrideDisabled`. The dashboard's manual launch and drag-to-assign paths claim it;
+   * Foreman's client never does. The toggle says "not without me", not "not at all" - a
+   * gate that refused the button the operator just pressed to protect a background
+   * scheduler's ordering is the same surprise `maxSessions` deliberately avoids.
+   *
+   * A disabled item still BLOCKS anything that depends on it, and reports as its own
+   * `BlockerState` (@shared/backlog.ts) rather than as "waiting": it will not finish
+   * on its own, and the dependent card has to say which of the two kinds of "needs
+   * you" this is.
+   */
+  enabled: boolean;
   /**
    * Model override for this task, or null to follow the harness default configured
    * in Settings. Null is NOT "the default as it stood when this was shelved" - the

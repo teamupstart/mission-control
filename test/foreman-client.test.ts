@@ -83,6 +83,30 @@ test("submitted Foreman replies use settled prompt injection; unsubmitted drafts
   assert.deepEqual(calls[1]!.body, { text: "Draft only.", submit: false });
 });
 
+test("Foreman backlog actions never override a disabled task", async () => {
+  const real = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+  }) as typeof fetch;
+  try {
+    await client.dispatchTask("task/1", "model-a");
+    await client.assignTask("task/1", "session/1");
+  } finally {
+    globalThis.fetch = real;
+  }
+
+  assert.deepEqual(calls[0]!.body, { defaultModel: "model-a" });
+  assert.deepEqual(calls[1]!.body, {
+    sessionId: "session/1",
+    confirmReset: true,
+  });
+});
+
 // ---- transcript: the other read whose bytes carry a safety property ----
 
 test("transcript coerces an old daemon's string tools back into named calls", async () => {

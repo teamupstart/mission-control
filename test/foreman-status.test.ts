@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { NmRunSummary, SessionNote } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-fstatus-"));
@@ -132,4 +132,44 @@ test("foremanStatus counts a hookless Codex no-mistakes gate but not its ordinar
     0,
     "the exception does not authorize arbitrary operator-started Codex menus",
   );
+});
+
+test("the autopilot readout partitions the backlog: ready + blocked + disabled", () => {
+  // The three numbers are read as a whole - "5 ready · 2 blocked" is how an operator
+  // decides whether a quiet autopilot is stuck or simply out of work - so they have to
+  // add up to the backlog. Counting a parked item as blocked was the tempting shortcut
+  // (`blocked = backlog - ready` already existed) and it reports a dependency problem
+  // nobody can find, on an item whose fix is the switch the operator themselves set.
+  openDb();
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "auto-dep", title: "Lay the base" }));
+  r.upsertTask(mkTask({ id: "auto-ready", title: "Free" }));
+  r.upsertTask(
+    mkTask({
+      id: "auto-blocked",
+      title: "Waits",
+      dependencies: [
+        {
+          type: "task",
+          taskId: "auto-dep",
+          title: "Lay the base",
+          sessionId: null,
+          episodeId: null,
+          agentSessionId: null,
+          branch: null,
+          prUrl: null,
+          selectedAt: 1,
+          satisfiedAt: null,
+        },
+      ],
+    }),
+  );
+  r.upsertTask(mkTask({ id: "auto-off", title: "Parked", enabled: false }));
+
+  const { autopilot } = foremanStatus(r);
+  const backlog = r.listTasks().filter((t) => t.status === "backlog").length;
+  assert.equal(autopilot.disabled, 1);
+  assert.equal(autopilot.blocked, 1, "only the item an unmet dependency holds up");
+  assert.equal(autopilot.ready, 2, "the free item and the one it waits on");
+  assert.equal(autopilot.ready + autopilot.blocked + autopilot.disabled, backlog);
 });

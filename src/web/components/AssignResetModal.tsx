@@ -42,7 +42,7 @@ export function AssignResetModal({
     if (busy) return;
     setBusy(true);
     setError(null);
-    const r = await api.assignTask(taskId, session.id, true);
+    const r = await api.assignTask(taskId, session.id, true, true);
     setBusy(false);
     // Nothing to retire on the way out: the task moves to running over SSE, which is the
     // same route every other board update arrives by.

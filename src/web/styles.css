@@ -3938,6 +3938,85 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- schedule switch (may the backlog autopilot take this item?) ----
+   Drawn by `ScheduleSwitch` in session-bits.tsx, on the board's backlog card and on
+   the Sitrep panel's backlog rows.
+
+   ON is the quiet state and it HAS to be, because it is the state of every task there
+   has ever been: a backlog nobody has parked anything in must not read as a column of
+   lit pills. So the two states are styled exactly the way `.bl-prio` styles set against
+   unset, and for the same reason - on is lowercase, dim and unfilled and nearly
+   disappears next to the title; off is the uppercase, coloured, outlined chip. Measured
+   against a real column before it was written this way round: a bordered "ON" on every
+   card out-shouted the priority beside it, which is the mark that is actually supposed
+   to be doing the sorting.
+
+   Off speaks up but is not an alert - nothing is wrong, you did this on purpose - it is
+   just loud enough that a card the autopilot is skipping cannot be mistaken for one it
+   is about to take. */
+.task-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px 2px 5px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.6;
+  cursor: pointer;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+/* The track is a dot, not a sliding thumb. At 10px the travel of a real thumb is two
+   pixels and reads as a rendering artefact; a filled/hollow dot beside a word is
+   legible at a glance and stays legible next to the priority chip it sits with. */
+.task-switch-track {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.task-switch:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+.task-switch:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.task-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.task-switch.is-off {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 640;
+  color: color-mix(in oklab, var(--attention) 75%, var(--fg));
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+  background: color-mix(in oklab, var(--attention) 12%, transparent);
+}
+/* Hollow, so on/off is legible from the dot alone at a glance and does not rely on
+   reading two two-letter words apart. */
+.task-switch.is-off .task-switch-track {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attention) 75%, var(--fg));
+}
+.task-switch.is-off:hover:not(:disabled) {
+  color: color-mix(in oklab, var(--attention) 75%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 20%, transparent);
+  border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
+}
+
 /* ---- PR chip (open pull request for the session's branch) ---- */
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
@@ -4493,6 +4572,18 @@ kbd {
 .report-row:last-child {
   border-bottom: none;
 }
+/* A backlog row whose autopilot switch is off. Recedes by the same amount the board's
+   parked card does, so the two surfaces agree about how loud a hold is - and stops
+   short of hiding it, because a held item is still work you queued and still has to be
+   findable in the list you queued it in.
+   Scoped to `.report-row-main` rather than the row, so Dispatch and Delete keep full
+   contrast: the hold is on the autopilot, and the two buttons that are still YOURS to
+   press must not look half-disabled with it. The switch inside does recede with the
+   description - `opacity` composites the whole subtree, so a child cannot opt back out -
+   and at 0.72 against its own outline it stays comfortably legible. */
+.report-row.is-disabled .report-row-main {
+  opacity: 0.72;
+}
 .report-row-main {
   display: flex;
   align-items: center;
@@ -4517,6 +4608,10 @@ kbd {
 }
 .report-line-sub {
   gap: 6px;
+}
+.report-task-error {
+  color: var(--danger);
+  white-space: normal;
 }
 /* The path is the flexible one on this line, so it absorbs the remainder and ellipsises
    rather than squeezing the label chips. */
@@ -8404,7 +8499,17 @@ kbd {
   opacity: 1;
   box-shadow: 0 0 8px color-mix(in oklab, var(--pr-merged) 55%, transparent);
 }
+/* A parked card. Same recession as `is-blocked` and deliberately the same amount of
+   it - "the autopilot will not take this" is one fact with two causes, and a card that
+   dimmed twice as hard for one of them would rank a decision you made below a
+   dependency you did not. The spine keeps its colour, unlike a blocked card's: this
+   item is not stuck behind anything, it is being held, and the colour is what says the
+   difference at the distance the column is read from. */
+.bl-card.is-disabled {
+  opacity: 0.72;
+}
 .bl-blocked,
+.bl-off,
 .bl-next {
   align-self: flex-start;
   padding: 0 6px;
@@ -8426,6 +8531,12 @@ kbd {
 .bl-blocked.is-stopped {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+}
+/* Wears the switch's own off-colour rather than the blocked chip's, so the mark under
+   the card and the control that set it are visibly the same statement. */
+.bl-off {
+  color: color-mix(in oklab, var(--attention) 70%, var(--fg));
+  border-color: color-mix(in oklab, var(--attention) 35%, var(--border));
 }
 .bl-next {
   color: color-mix(in oklab, var(--pr-merged) 70%, var(--fg));

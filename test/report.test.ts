@@ -332,6 +332,25 @@ test("renderReportMarkdown reflects sections, counts, and outcomes", () => {
   assert.match(md, /Ship it.*opened PR #7/);
 });
 
+test("the digest says which backlog rows the autopilot is skipping", () => {
+  // A sitrep is pasted into a channel and read as a list of what is queued. A parked
+  // item that looked identical to a live one is the one line in it that is not true -
+  // and the reader has no switch in front of them to check it against.
+  const r = buildReport(
+    {
+      sessions: [],
+      tasks: [
+        mkTask({ id: "q1", title: "Going ahead", status: "backlog", createdAt: 1 }),
+        mkTask({ id: "q2", title: "On hold", status: "backlog", enabled: false, createdAt: 2 }),
+      ],
+    },
+    1_700_000_000_000,
+  );
+  const md = renderReportMarkdown(r);
+  assert.match(md, /"On hold" \(ship, disabled\)/);
+  assert.match(md, /"Going ahead" \(ship\)/, "an ordinary row reads exactly as it always did");
+});
+
 test("recent outcomes are capped and the cap is disclosed", () => {
   const tasks = Array.from({ length: 25 }, (_, i) =>
     mkTask({ id: `d${i}`, title: `t${i}`, status: "done", updatedAt: i }),

@@ -101,7 +101,11 @@ export function renderReportMarkdown(r: MissionReport): string {
   for (const t of r.backlog) {
     const prio = t.priority ? `[${t.priority}] ` : "";
     const labels = t.labels.length > 0 ? ` {${t.labels.join(", ")}}` : "";
-    lines.push(`- ${prio}"${t.title}" (${t.kind})${labels} - ${t.repoRoot}`);
+    // Rides in the kind group rather than as a mark of its own: a digest pasted
+    // elsewhere is read as a list of what is queued, and a parked item that looks
+    // identical to a live one is the one line in it that is not true.
+    const kind = t.enabled ? t.kind : `${t.kind}, disabled`;
+    lines.push(`- ${prio}"${t.title}" (${kind})${labels} - ${t.repoRoot}`);
   }
 
   lines.push("", `Recent outcomes (${r.recent.length}${r.recentTruncated ? "+" : ""})`);

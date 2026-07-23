@@ -521,7 +521,8 @@ function DispatchModal({
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
     // the modal open over a task whose text is already stored - nothing to lose, and
     // the same button to press again.
-    const launched = r.ok && editing && dispatchNow ? await api.dispatchBacklog(editing.id) : null;
+    const launched =
+      r.ok && editing && dispatchNow ? await api.dispatchBacklog(editing.id, true) : null;
     setPending(null);
     // Seed the next dispatch with this repo, once the daemon has accepted it - a repo
     // that was rejected is not one to hand the next task. Shelving counts as much as

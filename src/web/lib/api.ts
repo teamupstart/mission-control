@@ -415,12 +415,16 @@ export const api = {
 
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
-  // `{}` is intentional: the daemon validates every mutating route body. Foreman adds
-  // its launch-time default here; a human dispatch leaves the task's model untouched.
-  dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
   /**
-   * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker. Rewriting repo/intent/title/kind/agent/model/effort/dependencies is refused (409)
+   * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
+   * action; without that claim the daemon refuses a parked task.
+   */
+  dispatchBacklog: (id: string, overrideDisabled: boolean) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+  /**
+   * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
+   * picker, or its enable/disable toggle.
+   * Rewriting repo/intent/title/kind/agent/model/effort/dependencies/enabled is refused (409)
    * once the task has been dispatched, when its launch configuration is already in use;
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
@@ -429,13 +433,24 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Hand a backlog task to an agent that is already running, rather than launching one.
+   * Dashboard callers claim `overrideDisabled` for the manual handoff; without it the
+   * daemon refuses a parked task.
    *
    * The agent is reset first, so an agent holding anything the reset would take - a work
    * queue, a branch - refuses with a `resetConfirm` breakdown instead. Re-POST with
    * `confirmReset` once the operator has seen it; a clean agent never gets that far.
    */
-  assignTask: (id: string, sessionId: string, confirmReset = false) =>
-    post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId, confirmReset }),
+  assignTask: (
+    id: string,
+    sessionId: string,
+    overrideDisabled: boolean,
+    confirmReset = false,
+  ) =>
+    post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, {
+      sessionId,
+      overrideDisabled,
+      confirmReset,
+    }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>

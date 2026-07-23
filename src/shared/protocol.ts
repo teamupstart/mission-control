@@ -499,12 +499,12 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort` and `dependencies` are
- * PROVISIONING fields -
- * repo, intent and title are cut into a branch name and a tmux session at dispatch and
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `dependencies` and
+ * `enabled` are PROVISIONING fields -
+ * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
- * command line, while dependencies decide whether a launch is allowed - so a patch touching
- * any of them is refused once the task has left the backlog.
+ * command line, while dependencies and enabled decide whether a launch is allowed - so a
+ * patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
  *
@@ -515,6 +515,12 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
+ *
+ * `enabled` is the backlog's enable/disable toggle, and it is deliberately NOT
+ * annotation: it only means anything while the task is in the backlog, so it falls
+ * under the same status guard as the provisioning fields. Exempting it would let a
+ * patch "disable" a task whose agent is already running, and answer 200 to a caller
+ * who would reasonably read that as having paused something.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -523,6 +529,7 @@ export const UpdateTaskSchema = z
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).optional(),
     agent: z.enum(AGENT_TYPES).optional(),
+    enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
@@ -551,12 +558,14 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
  */
 export const DispatchBacklogTaskSchema = z.object({
   defaultModel: ModelIdSchema.nullable().optional(),
+  overrideDisabled: z.boolean().optional().default(false),
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
+  overrideDisabled: z.boolean().optional().default(false),
   /**
    * The caller has accepted what the handover reset discards beyond git state - the
    * agent's work queue, its context, the branch it stands on.

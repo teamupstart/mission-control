@@ -12,10 +12,10 @@ The backlog is a list of things you want done and a board that shows you idle ag
 next to it - and nothing closes that gap but your hand. Foreman already drains a
 *session's* work queue; this drains the *fleet's* backlog.
 
-Foreman reads the enabled backlog, works out which items depend on which, and then
-schedules one at a time: onto an agent that is already idle when there is one, or into
-a fresh worktree when there is not - and never past a ceiling you set on how many
-agents may be running at once.
+Foreman reads the whole backlog to preserve its dependency graph, then schedules enabled,
+ready items one at a time: onto an agent that is already idle when there is one, or into
+a fresh worktree when there is not - and never past a ceiling you set on how many agents
+may be running at once.
 
 ## What the human sets
 
@@ -65,8 +65,11 @@ the authoritative subset to every manual scheduling route. Shared for the reason
 `foremanAllowlisted` is: the scheduler decides with these and the Backlog column
 *explains* that decision with them, so a copy that drifted would have the board promise
 a launch that never comes - or mark a card ready that the machine will not touch.
-`readyBacklog` omits disabled items once for both autopilot action paths, and
-`plannableBacklog` omits them before applying the 400-item read limit.
+`readyBacklog` omits disabled items once for both autopilot action paths.
+`plannableBacklog` deliberately retains them in the 400-item read limit: `sanitizePlan`
+drops inferred edges whose target was not in its input, so hiding a parked prerequisite
+would delete dependencies pointing at it and make its dependents ready on the next replan.
+A parked item therefore keeps a plan entry it will not use.
 
 ### `src/server/foreman/backlog-machine.ts` - `decideBacklogTick` (pure, no I/O)
 
@@ -75,7 +78,7 @@ reason. Precedence, in order:
 
 1. autopilot off → `none`.
 2. backlog empty → `none`.
-3. the stored plan does not cover every enabled planning item → `plan` (unless planning has
+3. the stored plan does not cover every planning item → `plan` (unless planning has
    already failed its cap, see below).
 4. walk ready items in plan order; the first one with a genuinely free agent in its
    repo → `assign`.
@@ -103,7 +106,7 @@ would destroy work (see the README's autopilot section and `agentIsFree`).
 ### `src/server/foreman/backlog-plan.ts` + `backlog-prompt.ts` - the dependency read
 
 A fresh tool-less `claude -p` (Sonnet by default, `FOREMAN_BACKLOG_MODEL` to override)
-is shown every enabled planning item's title, intent, and unresolved operator
+is shown every planning item's title, intent, and unresolved operator
 dependencies. It returns an order plus an inferred `dependsOn` list per item. Tool-less
 for the reason the reviewer is: the prompt embeds task text a human typed, and the model
 only needs to emit JSON.
@@ -145,18 +148,20 @@ backoff (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`, doubling), since a refused write is
 broken planner - but at the same cap it causes the same DEGRADATION, so a permanently
 broken route schedules serially instead of switching the autopilot off.
 
-One read is ONE model call, over `PLANNABLE_LIMIT` (400) enabled items of the backlog's
-head; disabled items are omitted before the limit is applied. Reading a longer backlog in
-batches was built and then removed: the calls run on the Foreman worker's single loop,
+One read is ONE model call, over `PLANNABLE_LIMIT` (400) items of the backlog's head,
+including parked items. They must stay in the read because `sanitizePlan` drops inferred
+edges whose target it was not shown; omitting a parked prerequisite would erase those
+dependencies and make its dependents ready. Reading a longer backlog in batches was built
+and then removed: the calls run on the Foreman worker's single loop,
 which also drives queue drain and needs-you triage, so N batches is N times the span in
 which nothing else in the fleet is attended to - the same failure the planner's
 one-probe-per-cooldown rule exists to bound, arriving by another door. The limit is held
 below `BacklogPlanSchema`'s `.max(500)`, since a plan the route refuses is a write that
 fails every time.
 
-Above the limit the enabled tail is unplanned, and `readyBacklog` already answers for it:
+Above the limit the tail is unplanned, and `readyBacklog` already answers for it:
 unnamed items are unblocked and go last, oldest first. The accepted cost, stated rather
-than implied - staleness is coverage, so while the enabled backlog is that long every
+than implied - staleness is coverage, so while the backlog is that long every
 dispatch promotes an unplanned item into the head and the next tick spends one dependency
 read. One call, only above the limit, against a bounded worst case on the shared loop.
 
@@ -179,11 +184,18 @@ so a laggy read cannot double-launch a task, and a change-only logger so a stead
 machine as an input rather than checked against its answer, so a task we have not seen
 land skips itself instead of parking the whole backlog behind it.
 
+The daemon is the backstop for the worker-side ready filter. Dispatch and assign both
+refuse a parked backlog task unless the request claims `overrideDisabled`; the schemas
+default an omitted flag to false. Dashboard launch and drag-to-assign calls claim the
+override because they are explicit operator actions. Foreman's client never claims it,
+so an older worker that sends a legacy body is refused after a daemon upgrade too.
+
 ## What the board shows
 
 `BacklogColumn` gains, from the same shared predicates:
 
-- an **on/off** switch that holds an item out of autopilot without blocking manual dispatch,
+- an **on/off** switch that holds an item out of autopilot while dashboard manual actions
+  claim `overrideDisabled`,
 - a **blocked** chip on cards with unmet dependencies, titled with what they wait on,
 - a distinct **disabled** blocker state when the unmet prerequisite is parked,
 - a **next up** marker on the item autopilot would take next,

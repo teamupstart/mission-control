@@ -1108,15 +1108,17 @@ export interface Task {
    *
    * A SCHEDULING GATE, not a dependency and not annotation. `readyBacklog` drops a
    * disabled item, so the autopilot does not select it for dispatch or assignment.
-   * `plannableBacklog` also drops it before applying the finite planning limit, so held
-   * work costs neither a model call nor an entry in that budget. Re-enabling an item
-   * absent from the stored plan makes the plan stale and brings it into the next read.
+   * `plannableBacklog` deliberately KEEPS it in the finite planning budget: `sanitizePlan`
+   * drops inferred edges whose target was not in its input, so hiding a parked prerequisite
+   * would delete dependencies pointing at it and make its dependents ready on the next
+   * replan. Re-enabling an item already covered by the stored plan does not make it stale.
    *
-   * It deliberately does NOT stop a human: manual launch, drag-to-assign, and their API
-   * routes do not apply this autopilot gate. The toggle says "not without me", not "not
-   * at all" - a gate that refused the button the operator just pressed to protect a
-   * background scheduler's ordering is the same surprise `maxSessions` deliberately
-   * avoids.
+   * It deliberately does NOT stop a human, but the daemon still enforces the gate by
+   * default: dispatch and assign refuse a parked backlog task unless the request claims
+   * `overrideDisabled`. The dashboard's manual launch and drag-to-assign paths claim it;
+   * Foreman's client never does. The toggle says "not without me", not "not at all" - a
+   * gate that refused the button the operator just pressed to protect a background
+   * scheduler's ordering is the same surprise `maxSessions` deliberately avoids.
    *
    * A disabled item still BLOCKS anything that depends on it, and reports as its own
    * `BlockerState` (@shared/backlog.ts) rather than as "waiting": it will not finish

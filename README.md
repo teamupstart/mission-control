@@ -1696,9 +1696,9 @@ says so rather than letting you queue work that can't run.
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*
 [backlog](#dispatch-an-agent) - the items you've queued but not started. Foreman reads the
-enabled backlog, works out which items depend on which, and then schedules one at a time:
-onto an agent that's already idle when there is one, or into a fresh worktree when there
-isn't - never past a ceiling you set.
+whole backlog to preserve its dependency graph, then schedules enabled, ready items one at
+a time: onto an agent that's already idle when there is one, or into a fresh worktree when
+there isn't - never past a ceiling you set.
 
 Three knobs, in the Foreman popover under **Backlog**:
 
@@ -1725,8 +1725,8 @@ and **semi-auto** it still *plans*, so you see the ordering and the dependency r
 board and can click **launch new agent** yourself. Dry-run means dry-run.
 
 **Foreman's inferred dependencies come from a model, and are treated as one.** A fresh
-tool-less `claude -p` (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every enabled
-planning item's title and intent and returns an order plus, for each item, what it must
+tool-less `claude -p` (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every planning
+item's title and intent and returns an order plus, for each item, what it must
 wait for. The reply isn't trusted as written: ids that aren't in the backlog are dropped,
 self-references are dropped, **only the edges that close a cycle** are cut, and any item
 the model forgot is appended unblocked. A cycle would deadlock two cards forever and look
@@ -1734,16 +1734,16 @@ exactly like two cards waiting their turn;
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
 the items in, and the plan is stored in dependency order. The read re-runs only when the
-enabled planning head **gains an uncovered item**, so a steady backlog costs nothing.
+planning head **gains an uncovered item**, so a steady backlog costs nothing.
 
 Operator-selected dependencies from the dispatch form are separate, persisted facts. The
 planner sees them, cannot reverse or remove them, and its inferred graph is sanitized
 against them so an inferred reverse edge cannot deadlock the backlog. Those facts remain
 enforced when autopilot is off or its model plan is missing.
 
-**The read's time budget scales with the enabled planning backlog** (`60s + 20s` an item,
+**The read's time budget scales with the planning backlog** (`60s + 20s` an item,
 capped at 10 min; `FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the
-model writes one entry per item, so two dozen enabled items take minutes of wall clock where
+model writes one entry per item, so two dozen items take minutes of wall clock where
 a handful takes seconds. A fixed cap worked on a short backlog and then stopped working for
 good once one grew past it - every read timed out, so no plan was ever stored, so the
 autopilot re-read the same backlog every tick and scheduled nothing while the board showed
@@ -1762,7 +1762,7 @@ longer backlog in several calls was tried and taken back out: they run on the Fo
 worker's single loop, which also drives queue drain and needs-you triage, so each extra call
 is another span in which nothing else in the fleet is attended to. Past 400 the
 tail is scheduled **oldest first with no dependency information** - and, since staleness
-is coverage, a dispatch while the enabled backlog is that long promotes an unplanned item
+is coverage, a dispatch while the backlog is that long promotes an unplanned item
 into the head and costs one replan.
 That is the accepted trade: one call, only above 400, in exchange for a bounded worst case
 on the shared loop.

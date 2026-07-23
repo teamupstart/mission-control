@@ -80,8 +80,9 @@
 </head><body>
 <main>
   <h1>Plan: Backlog autopilot - Foreman schedules the backlog</h1>
-  <p class="muted">Foreman reads the enabled backlog, works out what depends on what, and hands
-    one item at a time to an idle agent or to a fresh worktree - up to a ceiling you set.</p>
+  <p class="muted">Foreman reads the whole backlog to preserve its dependency graph, then hands
+    enabled, ready items one at a time to an idle agent or to a fresh worktree - up to a
+    ceiling you set.</p>
   <span class="status">Implemented · live-only · max agents default 3</span>
 
   <h2>Why</h2>
@@ -127,6 +128,11 @@
       with the shared <code>foremanAllowlisted</code> so the board explains the decision with
       the same predicate the server gates on.</li>
   </ul>
+  <p>The daemon is the backstop for the worker-side ready filter. Dispatch and assign both
+    refuse a parked backlog task unless the request claims <code>overrideDisabled</code>;
+    omitting the flag defaults to refusal. Dashboard launch and drag-to-assign calls claim
+    it because they are explicit operator actions. Foreman's client never does, so a worker
+    that predates the flag is still stopped after a daemon upgrade.</p>
 
   <h2>Architecture</h2>
   <figure>
@@ -203,7 +209,7 @@
     <ol class="steps">
       <li>autopilot off → <code>none</code>.</li>
       <li>backlog empty → <code>none</code>.</li>
-      <li>the stored plan does not cover every enabled planning item → <code>plan</code>, and
+      <li>the stored plan does not cover every planning item → <code>plan</code>, and
         <strong>nothing is scheduled this tick</strong>. Acting on a plan that has never seen
         the newest item is how two conflicting tasks get started together.</li>
       <li>walk ready items in plan order; the first with a genuinely free agent in its repo →
@@ -275,24 +281,25 @@
     at all. Observed exactly that way, with two dozen ready items parked behind a single row
     whose process had exited hours earlier.
   </div>
-  <p>One read is <strong>one model call</strong>, over the first 400 enabled backlog items;
-    disabled items are omitted before the limit is applied. Reading a longer backlog in batches
-    was built and then taken back out: the calls run on the Foreman worker's single loop, which
-    also drives queue drain and needs-you triage, so every extra batch is another span in which
-    nothing else in the fleet is attended to - the same failure the planner's
-    one-probe-per-cooldown rule exists to bound, arriving by another door. The limit sits below
-    the route schema's 500-entry cap, since a plan the route refuses is a write that fails every
-    time.</p>
-  <p>Above the limit the enabled tail is unplanned, and the readers already answer for it:
+  <p>One read is <strong>one model call</strong>, over the first 400 backlog items, including
+    parked ones. They stay in the read because <code>sanitizePlan</code> drops inferred edges
+    whose target it was not shown; omitting a parked prerequisite would erase those dependencies
+    and make its dependents ready. Reading a longer backlog in batches was built and then taken
+    back out: the calls run on the Foreman worker's single loop, which also drives queue drain
+    and needs-you triage, so every extra batch is another span in which nothing else in the
+    fleet is attended to - the same failure the planner's one-probe-per-cooldown rule exists to
+    bound, arriving by another door. The limit sits below the route schema's 500-entry cap,
+    since a plan the route refuses is a write that fails every time.</p>
+  <p>Above the limit the tail is unplanned, and the readers already answer for it:
     unnamed items are unblocked and go last, oldest first. The cost is accepted rather than
-    hidden - staleness is coverage, so while the enabled backlog is that long each dispatch
+    hidden - staleness is coverage, so while the backlog is that long each dispatch
     promotes an unplanned item into the head and the next tick spends one dependency read. One
     call, only above 400, against a bounded worst case on the shared loop.</p>
 
   <h2>What the board shows</h2>
   <ul>
-    <li>an <strong>on/off</strong> switch that holds an item out of autopilot without blocking
-      manual dispatch;</li>
+    <li>an <strong>on/off</strong> switch that holds an item out of autopilot while dashboard
+      manual actions claim <code>overrideDisabled</code>;</li>
     <li>a <strong>blocked</strong> chip naming what an item waits on - in the attention tone
       when the dependency was cancelled or failed, since that one will never clear on its own;</li>
     <li>a distinct <strong>disabled</strong> blocker state when the unmet prerequisite is parked;</li>

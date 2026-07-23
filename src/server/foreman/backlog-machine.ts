@@ -251,11 +251,12 @@ function freeAgentFor(
  *  5. the first allowlisted ready item, if the fleet is under `maxSessions` -> dispatch.
  *  6. otherwise nothing, saying which of those it was.
  *
- * "Ready" throughout is `readyBacklog`, which already drops items whose enable toggle
- * is off - so a parked item is invisible to steps 3, 4 and 5 alike rather than each of
- * them having to remember to ask. The only place this file names `enabled` itself is
- * the refusal message, because "nothing is ready" and "you switched everything off" are
- * the same silence with very different fixes.
+ * "Ready" in steps 4 and 5 is `readyBacklog`, which already drops items whose enable
+ * toggle is off rather than making both action paths remember to ask. Step 3 deliberately
+ * still sees parked items through `plannableBacklog`: hiding one from `sanitizePlan` would
+ * delete inferred dependencies pointing at it and make its dependents ready. The only
+ * action-path use of `enabled` in this file is the refusal message, because "nothing is
+ * ready" and "you switched everything off" are the same silence with very different fixes.
  *
  * The mode gate sits at the END rather than the top, so a dry run reports the decision
  * it would have taken instead of a flat "off". That is the whole value of dry-run here:

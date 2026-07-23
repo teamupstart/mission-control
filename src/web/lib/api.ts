@@ -416,8 +416,8 @@ export const api = {
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   /**
-   * Launch an existing task. This is a manual action, so the backlog's autopilot toggle
-   * does not gate it.
+   * Launch an existing task. Dashboard callers claim `overrideDisabled` for this manual
+   * action; without that claim the daemon refuses a parked task.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
     post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
@@ -433,6 +433,8 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
    * Hand a backlog task to an agent that is already running, rather than launching one.
+   * Dashboard callers claim `overrideDisabled` for the manual handoff; without it the
+   * daemon refuses a parked task.
    *
    * The agent is reset first, so an agent holding anything the reset would take - a work
    * queue, a branch - refuses with a `resetConfirm` breakdown instead. Re-POST with

@@ -148,10 +148,11 @@ export class Dispatcher {
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      // If the agent actually launched and is still running (e.g. discovery was
-      // merely slow, or only the prompt send failed), do NOT destroy its work:
-      // keep the session + worktree and fail the task with guidance. Only when no
-      // live agent remains do we tear the (empty) tree down for a clean retry.
+      // If the terminal home still exists (e.g. discovery was merely slow, or only
+      // the prompt send failed), do NOT destroy its work: keep the home + worktree
+      // and fail the task with guidance. Only when no home remains do we tear the
+      // (empty) tree down for a clean retry. A retained home does not prove that the
+      // agent process itself survived.
       //
       // Three answers, not two. `null` is "no installed backend could tell us", and it must
       // land on the KEEP side with the `true` case rather than on the reclaim side with
@@ -163,7 +164,7 @@ export class Dispatcher {
           status: "failed",
           error:
             alive === true
-              ? `${message} - the agent is still running; Focus or Cancel it`
+              ? `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
@@ -209,6 +210,10 @@ export class Dispatcher {
       );
       if (ready) return { session: ready, instrumented: true };
     }
+    // A null readiness result means either hook silence or an observed exit. Preserve
+    // the fallback settle only for a live-but-silent session; an exited one has no TUI
+    // left to settle and must fail immediately.
+    this.requireLiveSession(discovered.id);
     await sleep(SETTLE_MS);
     // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
     // been filled in since. Typing needs the freshest pane we have.

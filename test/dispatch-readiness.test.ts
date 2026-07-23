@@ -145,6 +145,28 @@ test("waitForReadySessionAtCwd observes an exit that happened before subscriptio
   assert.ok(Date.now() - startedAt < 1000, "an earlier exit should not spend the readiness timeout");
 });
 
+test("the dispatcher skips its fallback settle after readiness observes an exit", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "settle-exited" })]);
+  const discovered = registry.getSession("settle-exited") as Session;
+  const dispatcher = new Dispatcher(registry);
+  const awaitReady = (
+    dispatcher as unknown as {
+      awaitReady(cwd: string, session: Session): Promise<{ session: Session }>;
+    }
+  ).awaitReady.bind(dispatcher);
+
+  const startedAt = Date.now();
+  const ready = awaitReady(CWD, discovered);
+  registry.applyDiscovery([]);
+
+  await assert.rejects(ready, /agent session exited before the initial prompt could be sent/);
+  assert.ok(
+    Date.now() - startedAt < 1000,
+    "an observed exit should not spend the fallback settle interval",
+  );
+});
+
 test("waitForSessionAtCwd does not accept an exited upsert", async () => {
   const source = new Registry();
   source.applyDiscovery([mkDiscovered({ syntheticId: "retained-exit" })]);

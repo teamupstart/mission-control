@@ -43,7 +43,7 @@ export function workflowBindingSelection(
   }
   const exact = compatible.find((binding) => binding.workflowVersionId === versionId);
   if (exact) return { existing: exact, conflict: undefined };
-  return { existing: undefined, conflict: compatible[0] };
+  return { existing: undefined, conflict: undefined };
 }
 
 export function WorkflowBindingDialog({

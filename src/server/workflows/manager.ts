@@ -631,7 +631,7 @@ export class WorkflowManager {
       now,
     );
     this.publishRun(run.id);
-    this.engine.activateSubmission(submission.id);
+    this.engine.activateSubmission(submission.id, { reactivateErrors: true });
     return {
       ok: true,
       value: { run: retried.run, submission: retried.submission },

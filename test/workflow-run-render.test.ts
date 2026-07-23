@@ -242,4 +242,8 @@ test("binding selection reuses only the requested immutable version", () => {
     workflowBindingSelection([pausedExact, binding], session, "version-two").conflict?.id,
     "binding",
   );
+  assert.deepEqual(
+    workflowBindingSelection([pausedOther], session, "version-one"),
+    { existing: undefined, conflict: undefined },
+  );
 });

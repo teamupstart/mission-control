@@ -466,7 +466,7 @@ test("manual infrastructure retry reactivates concurrent stranded Personas", asy
     "retry-concurrent-attempt",
     20,
   );
-  engine.activateSubmission("submission-concurrent-retry");
+  engine.activateSubmission("submission-concurrent-retry", { reactivateErrors: true });
 
   assert.deepEqual(
     store.listAttempts("submission-concurrent-retry")
@@ -487,6 +487,62 @@ test("manual infrastructure retry reactivates concurrent stranded Personas", asy
     4,
   );
   store.cancelRun("run-concurrent-retry", "test_cleanup", 21);
+});
+
+test("recovery blocks a persisted exhausted infrastructure attempt", async () => {
+  const recoveryGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("recover", "Recover", "claude", "REVIEW"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("exhausted-recovery", recoveryGraph);
+  const inactiveEngine = new WorkflowEngine(store);
+  inactiveEngine.activateSubmission("submission-exhausted-recovery");
+  const first = store.latestAttemptForNode("submission-exhausted-recovery", "p")!;
+  store.finishAttempt(first.id, { state: "error", error: "provider unavailable" }, 10);
+  store.insertAttempt({
+    id: "exhausted-recovery-attempt-2",
+    submissionId: "submission-exhausted-recovery",
+    nodeId: "p",
+    attempt: 2,
+    state: "error",
+    persona: first.persona,
+    inputFingerprint: first.inputFingerprint,
+    error: "provider unavailable",
+    now: 11,
+  });
+  store.insertAttempt({
+    id: "exhausted-recovery-attempt-3",
+    submissionId: "submission-exhausted-recovery",
+    nodeId: "p",
+    attempt: 3,
+    state: "error",
+    persona: first.persona,
+    inputFingerprint: first.inputFingerprint,
+    error: "provider unavailable",
+    now: 12,
+  });
+
+  const recoveryEngine = new WorkflowEngine(store);
+  recoveryEngine.start();
+  await recoveryEngine.stop();
+
+  const run = store.getRun("run-exhausted-recovery");
+  assert.equal(run?.status, "blocked");
+  assert.equal(run?.currentPhase, "infrastructure_error");
+  assert.equal(
+    store.listAttempts("submission-exhausted-recovery")
+      .filter((attempt) => attempt.nodeId === "p").length,
+    3,
+  );
+  store.cancelRun("run-exhausted-recovery", "test_cleanup", 13);
 });
 
 test("cancelling a running Persona makes its later verdict audit-only", async () => {

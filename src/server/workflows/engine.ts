@@ -106,7 +106,10 @@ export class WorkflowEngine {
   }
 
   /** Activate all structurally ready nodes from durable receipts before any provider call. */
-  activateSubmission(submissionId: string): void {
+  activateSubmission(
+    submissionId: string,
+    options: { reactivateErrors?: boolean } = {},
+  ): void {
     const submission = this.store.getSubmission(submissionId);
     if (!submission) return;
     const run = this.store.getRun(submission.runId);
@@ -122,12 +125,16 @@ export class WorkflowEngine {
     }
     this.store.setSubmissionState(submission.id, "running", this.now());
     this.store.setRunState(run.id, "running", "persona_review", null, this.now());
-    this.advanceStructure(submission, version);
+    this.advanceStructure(submission, version, options.reactivateErrors ?? false);
     this.onRunChanged(run.id);
     this.wake();
   }
 
-  private advanceStructure(submission: WorkflowSubmission, version: WorkflowVersion): void {
+  private advanceStructure(
+    submission: WorkflowSubmission,
+    version: WorkflowVersion,
+    reactivateErrors = false,
+  ): void {
     const graph = version.graph;
     const sessionNode = graph.nodes.find((node) => node.kind === "session");
     if (!sessionNode) {
@@ -194,7 +201,11 @@ export class WorkflowEngine {
         if (!target) continue;
         if (target.kind === "persona") {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
-          if (!latest || latest.state === "cancelled" || latest.state === "error") {
+          if (
+            !latest
+            || latest.state === "cancelled"
+            || (reactivateErrors && latest.state === "error")
+          ) {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: submission.id,
@@ -628,7 +639,54 @@ export class WorkflowEngine {
             }, this.now());
           }
         }
-        if (submission.status === "running" && this.store.getRun(run.id)?.status === "running") {
+        const currentSubmission = this.store.getSubmission(submission.id);
+        const currentRun = this.store.getRun(run.id);
+        if (currentSubmission?.status !== "running" || currentRun?.status !== "running") {
+          continue;
+        }
+        const errored = version.graph.nodes.filter(isPersona).flatMap((node) => {
+          const attempt = this.store.latestAttemptForNode(submission.id, node.id);
+          return attempt?.state === "error" ? [attempt] : [];
+        });
+        const exhausted = errored.find((attempt) => attempt.attempt >= MAX_INFRA_ATTEMPTS);
+        if (exhausted) {
+          const error = exhausted.error ?? "Infrastructure failure exhausted its retry budget";
+          const now = this.now();
+          this.store.setSubmissionState(submission.id, "failed", now);
+          this.store.setRunState(run.id, "blocked", "infrastructure_error", {
+            nodeId: exhausted.nodeId,
+            attempts: exhausted.attempt,
+            error,
+          }, now);
+          this.store.appendEvent(run.id, "persona_infrastructure_exhausted", {
+            nodeId: exhausted.nodeId,
+            attempts: exhausted.attempt,
+            error,
+          }, now);
+          continue;
+        }
+        for (const attempt of errored) {
+          const now = this.now();
+          this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: attempt.submissionId,
+            nodeId: attempt.nodeId,
+            attempt: attempt.attempt + 1,
+            state: "retry_wait",
+            persona: attempt.persona,
+            inputFingerprint: attempt.inputFingerprint,
+            retryAt: now,
+            error: "Retrying recovered infrastructure failure",
+            now,
+          });
+          this.store.appendEvent(run.id, "persona_retry_scheduled", {
+            nodeId: attempt.nodeId,
+            attempt: attempt.attempt + 1,
+            retryAt: now,
+            error: attempt.error ?? "Recovered infrastructure failure",
+          }, now);
+        }
+        if (this.store.getRun(run.id)?.status === "running") {
           this.advanceStructure(submission, version);
         }
       }

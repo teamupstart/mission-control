@@ -88,17 +88,15 @@ interface Binding {
 }
 
 /**
- * The cache lives HERE, on the spec, not in the generic poller - the rule the harness axis
- * settled: a harness whose lookup is a filesystem walk caches it itself, so the poller never
- * grows a per-vendor map.
+ * The state lives HERE, on the spec, not in the generic poller - the rule the harness axis
+ * settled: per-session bindings and occupancy stay with the harness that understands them,
+ * so the poller never grows a per-vendor map.
  */
 const bindings = new Map<string, Binding>();
+let soleOccupants = new Map<string, string | null>();
 
-function hasCwdOccupant(sessionId: string, cwd: string): boolean {
-  for (const [id, binding] of bindings) {
-    if (id !== sessionId && binding.cwd === cwd) return true;
-  }
-  return false;
+function isSoleOccupant(sessionId: string, cwd: string): boolean {
+  return soleOccupants.get(cwd) === sessionId;
 }
 
 export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
@@ -111,11 +109,17 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
   if (s.transcriptPath && transcriptMtime !== null) {
     const sourceId = sessionIdFromHeader(s.transcriptPath);
     const exact = !!s.agentSessionId && sourceId === s.agentSessionId;
+    const contradicted = !!s.agentSessionId && !!sourceId && sourceId !== s.agentSessionId;
+    const hit = bindings.get(s.id);
+    const stable =
+      hit?.cwd === s.cwd &&
+      hit.agentSessionId === s.agentSessionId &&
+      hit.newestPath === s.transcriptPath &&
+      hit.newestMtime === transcriptMtime;
     const path =
-      (s.agentSessionId && sourceId && sourceId !== s.agentSessionId) ||
-      (!exact && hasCwdOccupant(s.id, s.cwd))
-        ? null
-        : s.transcriptPath;
+      exact || (!contradicted && isSoleOccupant(s.id, s.cwd) && stable)
+        ? s.transcriptPath
+        : null;
     bindings.set(s.id, {
       cwd: s.cwd,
       agentSessionId: s.agentSessionId,
@@ -129,16 +133,18 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
 
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const newest = files[0] ?? null;
-  const occupied = hasCwdOccupant(s.id, s.cwd);
+  const sole = isSoleOccupant(s.id, s.cwd);
   const hit = bindings.get(s.id);
-  if (
-    hit?.path &&
-    hit.cwd === s.cwd &&
+  const stable =
+    hit?.cwd === s.cwd &&
     hit.agentSessionId === s.agentSessionId &&
     hit.newestPath === (newest?.path ?? null) &&
-    hit.newestMtime === (newest?.mtime ?? 0) &&
+    hit.newestMtime === (newest?.mtime ?? 0);
+  if (
+    hit?.path &&
+    stable &&
     files.some((file) => file.path === hit.path) &&
-    (hit.exact || (s.agentSessionId === null && !occupied))
+    (hit.exact || sole)
   ) {
     return hit.path;
   }
@@ -154,7 +160,7 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
         break;
       }
     }
-    if (!path && !occupied) {
+    if (!path && sole && stable) {
       path = newest.path;
     }
   }
@@ -242,5 +248,10 @@ export const piTranscript: TranscriptSpec = {
   messages: jsonlMessages({ parse: piToMessage, narration: () => null }),
   retain: (live) => {
     for (const id of bindings.keys()) if (!live.has(id)) bindings.delete(id);
+    const next = new Map<string, string | null>();
+    for (const [id, binding] of bindings) {
+      next.set(binding.cwd, next.has(binding.cwd) ? null : id);
+    }
+    soleOccupants = next;
   },
 };

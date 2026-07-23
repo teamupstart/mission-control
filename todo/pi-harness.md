@@ -75,7 +75,9 @@ pi writes one JSON record per line to
   authority-ranked value is `"statusline"`; `"transcript"` means "our passive read of the
   JSONL", which is exactly what pi's is. No shared edit. (Codex has its own `codex-rollout`
   only because its file is not a turn log.)
-- `locate` caches its directory walk (`retain`), like Codex's rollout binding.
+- `locate` reruns the project-directory scan on every read so `/new` is discovered. It caches
+  only per-session bindings; `retain` prunes dead bindings and rebuilds the tick-boundary cwd
+  occupancy snapshot used to refuse ambiguous same-directory attribution.
 
 ### control - REQUIRED, non-null
 

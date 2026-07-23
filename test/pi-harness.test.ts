@@ -109,8 +109,12 @@ test("locate rebinds to a newer file after pi starts a new session", () => {
   try {
     writeSession(oldPath, "old", 1_000);
     const session = locateSession("pi-rebind", cwd);
+    assert.equal(locatePiTranscript(session, root), null);
+    piTranscript.retain?.(new Set([session.id]));
     assert.equal(locatePiTranscript(session, root), oldPath);
     writeSession(newPath, "new", 2_000);
+    assert.equal(locatePiTranscript(session, root), null);
+    piTranscript.retain?.(new Set([session.id]));
     assert.equal(locatePiTranscript(session, root), newPath);
   } finally {
     piTranscript.retain?.(new Set());
@@ -128,6 +132,11 @@ test("locate prefers an exact header id when multiple pi sessions share a cwd", 
   try {
     writeSession(firstPath, "first-agent", 1_000);
     writeSession(secondPath, "second-agent", 2_000);
+    const firstUnknown = locateSession("pi-first", cwd);
+    const secondUnknown = locateSession("pi-second", cwd);
+    assert.equal(locatePiTranscript(firstUnknown, root), null);
+    assert.equal(locatePiTranscript(secondUnknown, root), null);
+    piTranscript.retain?.(new Set([firstUnknown.id, secondUnknown.id]));
     assert.equal(
       locatePiTranscript(locateSession("pi-first", cwd, "first-agent"), root),
       firstPath,
@@ -142,7 +151,7 @@ test("locate prefers an exact header id when multiple pi sessions share a cwd", 
   }
 });
 
-test("two hookless sessions sharing a cwd both decline after occupancy is known", () => {
+test("two hookless sessions sharing a cwd decline from the first claim", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
@@ -152,9 +161,37 @@ test("two hookless sessions sharing a cwd both decline after occupancy is known"
     writeSession(path, "unknown-agent", 2_000);
     const owner = locateSession("pi-owner", cwd);
     const sibling = locateSession("pi-sibling", cwd);
-    assert.equal(locatePiTranscript(owner, root), path, "the first poll sees a sole occupant");
-    assert.equal(locatePiTranscript(sibling, root), null, "the sibling registers occupancy");
-    assert.equal(locatePiTranscript(owner, root), null, "the first claim self-corrects");
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
+    piTranscript.retain?.(new Set([owner.id, sibling.id]));
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an existing sole occupant never adopts a new sibling's file", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const ownerPath = join(dir, "owner.jsonl");
+  const siblingPath = join(dir, "sibling.jsonl");
+  try {
+    writeSession(ownerPath, "owner-agent", 1_000);
+    const owner = locateSession("pi-owner-existing", cwd);
+    assert.equal(locatePiTranscript(owner, root), null);
+    piTranscript.retain?.(new Set([owner.id]));
+    assert.equal(locatePiTranscript(owner, root), ownerPath);
+
+    writeSession(siblingPath, "sibling-agent", 2_000);
+    const sibling = locateSession("pi-sibling-new", cwd);
+    assert.equal(locatePiTranscript(owner, root), null);
+    assert.equal(locatePiTranscript(sibling, root), null);
+    piTranscript.retain?.(new Set([owner.id, sibling.id]));
+    assert.equal(locatePiTranscript(owner, root), null);
     assert.equal(locatePiTranscript(sibling, root), null);
   } finally {
     piTranscript.retain?.(new Set());

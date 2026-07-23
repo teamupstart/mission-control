@@ -12,8 +12,9 @@ import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shippi
 // ask for, store, or leak. The cost is that every call is a subprocess.
 //
 // Reads use GraphQL because one query answers everything a tick needs - PR state, head
-// sha, and every review thread with its comments - where REST would be three or four
-// calls. Writes use REST except for resolving a thread, which only GraphQL can do.
+// sha, every review thread with its comments, and recent top-level reviews - where REST
+// would be three or four calls. Writes use REST except for resolving a thread, which
+// only GraphQL can do.
 
 /** Generous next to `pr.ts`'s 8s: these carry a whole PR's thread history or a review body. */
 const GH_TIMEOUT_MS = 20_000;
@@ -136,6 +137,8 @@ export interface PrSnapshot {
   body: string;
   isDraft: boolean;
   threads: ThreadSnapshot[];
+  /** Recent top-level reviews, used to recover an interrupted clean-review post. */
+  reviews?: ReviewSnapshot[];
   /**
    * When the PR was opened, epoch ms, or null when GitHub's timestamp did not parse.
    *
@@ -165,6 +168,11 @@ export interface ThreadSnapshot {
   }[];
 }
 
+export interface ReviewSnapshot {
+  body: string;
+  author: string;
+}
+
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
@@ -178,6 +186,7 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
           }
         }
       }
+      reviews(last:100){ nodes{ body author{ login } } }
     }
   }
 }`;
@@ -304,6 +313,15 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
         }),
       };
     }),
+    reviews: (((pr.reviews as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[])
+      .filter(Boolean)
+      .map((raw) => {
+        const review = raw as Record<string, unknown>;
+        return {
+          body: typeof review.body === "string" ? review.body : "",
+          author: String((review.author as { login?: unknown } | null)?.login ?? "unknown"),
+        };
+      }),
   };
 }
 
@@ -533,5 +551,15 @@ export function renderComment(marker: string, c: PlannedComment): string {
     c.body,
     "",
     "<sub>Automated review from Mission Control against `INSPECTOR.md`. Reply here to ask a follow-up.</sub>",
+  ].join("\n");
+}
+
+/** Render the generic top-level review for a round with no remaining findings. */
+export function renderCleanReview(marker: string, round: number): string {
+  return [
+    marker,
+    `**⌕ Inspector** · round ${round}`,
+    "",
+    "No further issues found. This pull request is safe to merge.",
   ].join("\n");
 }

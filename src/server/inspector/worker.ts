@@ -26,7 +26,13 @@ import { getInspectorConfig, inspectorModel } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
-import { formatMarker, isOurs, parseMarker } from "./marker.ts";
+import {
+  CLEAN_REVIEW_FINGERPRINT,
+  formatMarker,
+  isCleanReview,
+  isOurs,
+  parseMarker,
+} from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { InspectorVerdictSchema, planReview } from "./verdict.ts";
@@ -38,6 +44,7 @@ import {
   ourThreads,
   parsePrUrl,
   postReview,
+  renderCleanReview,
   renderComment,
   replyToComment,
   resolveThread,
@@ -747,6 +754,12 @@ async function reviewRound(
   // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
   for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
 
+  // A clean verdict is only safe when every earlier finding is resolved too. A model
+  // omitting an old finding is not evidence that it was fixed, and a failed GitHub
+  // resolve above must not be followed by a contradictory "safe to merge" review.
+  const clean = plan.clean && [...rows.values()].every((row) => row.status === "resolved");
+  const cleanAlreadyPosted = (s.reviews ?? []).some((review) => isCleanReview(review, login, round));
+
   const inline = plan.inline.map((c) => ({
     path: c.path,
     line: c.line!,
@@ -791,13 +804,19 @@ async function reviewRound(
   });
   for (const row of planned) upsertInspectorComment(row);
 
-  if (post && (inline.length > 0 || plan.demoted.length > 0)) {
+  if (post && (inline.length > 0 || plan.demoted.length > 0 || (clean && !cleanAlreadyPosted))) {
+    const body = clean
+      ? renderCleanReview(
+          formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round }),
+          round,
+        )
+      : plan.body;
     const res = await postReview(
       dir,
       pr.owner,
       pr.repo,
       pr.number,
-      plan.body,
+      body,
       inline,
       s.headSha,
     );

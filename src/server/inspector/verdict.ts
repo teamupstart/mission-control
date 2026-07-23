@@ -92,6 +92,8 @@ export interface ReviewPlan {
   droppedOffDiff: number;
   /** Findings discarded by the per-round cap. */
   droppedOverCap: number;
+  /** The model explicitly reported no findings; prior findings are checked by the caller. */
+  clean: boolean;
 }
 
 export interface PlanInput {
@@ -243,6 +245,7 @@ export function planReview(input: PlanInput): ReviewPlan {
     resolveLocal,
     droppedOffDiff,
     droppedOverCap,
+    clean: verdict.findings.length === 0,
   };
 }
 

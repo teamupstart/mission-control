@@ -278,7 +278,15 @@ test("a clean review says nothing about caps or held-back findings", () => {
   const plan = planReview(base({ verdict: { summary: "Nothing to flag.", findings: [], resolved: [] } }));
   assert.equal(plan.inline.length, 0);
   assert.equal(plan.droppedOverCap, 0);
+  assert.equal(plan.clean, true, "only an explicit empty finding list may produce the clean review");
   assert.ok(!/held back/i.test(plan.body));
+});
+
+test("a review with any finding is not clean, even when that finding is dropped", () => {
+  const plan = planReview(
+    base({ verdict: { summary: "", findings: [finding({ path: "not-in-the-pr.ts" })], resolved: [] } }),
+  );
+  assert.equal(plan.clean, false, "an unreviewable finding must not turn into a merge-safe claim");
 });
 
 // ---- layer 5 reaches every outbound string ----

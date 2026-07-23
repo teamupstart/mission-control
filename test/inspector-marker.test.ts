@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fingerprint, formatMarker, isOurs, parseMarker } from "../src/server/inspector/marker.ts";
-import { ourThreads } from "../src/server/inspector/github.ts";
+import {
+  CLEAN_REVIEW_FINGERPRINT,
+  fingerprint,
+  formatMarker,
+  isCleanReview,
+  isOurs,
+  parseMarker,
+} from "../src/server/inspector/marker.ts";
+import { ourThreads, renderCleanReview } from "../src/server/inspector/github.ts";
 import type { PrSnapshot, ThreadSnapshot } from "../src/server/inspector/github.ts";
 
 // The Inspector pushes to GitHub as the OPERATOR. On the wire its comments are
@@ -31,6 +38,26 @@ test("a marker we wrote is recognised, with its fields intact", () => {
     fingerprint: "deadbeef0000",
     round: 3,
   });
+});
+
+test("a clean review marker is recognised only for its own round and author", () => {
+  const clean = {
+    body: formatMarker({ id: "clean-1", fingerprint: CLEAN_REVIEW_FINGERPRINT, round: 3 }),
+    author: US,
+  };
+  assert.equal(isCleanReview(clean, US, 3), true);
+  assert.equal(isCleanReview(clean, US, 2), false);
+  assert.equal(isCleanReview({ ...clean, author: "someone-else" }, US, 3), false);
+});
+
+test("a clean review says no further issues were found and declares the PR merge-safe", () => {
+  const body = renderCleanReview(
+    formatMarker({ id: "clean-1", fingerprint: CLEAN_REVIEW_FINGERPRINT, round: 3 }),
+    3,
+  );
+  assert.match(body, /No further issues found\./);
+  assert.match(body, /safe to merge/i);
+  assert.ok(isCleanReview({ body, author: US }, US, 3));
 });
 
 // The marker prefix is a fixed public string and every fingerprint is visible in the

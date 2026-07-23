@@ -173,13 +173,13 @@ that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in 
 Discovery names no terminal. It asks each registered backend what panes it can see and
 joins them to agent processes by controlling tty, so a session is named by the
 **innermost** backend holding its pane: a multiplexer session name (tmux, cmux) if there
-is one, else a terminal tab title (WezTerm), else `<agent> <pid>`. A session can hold a
-handle from each - a tmux pane lives *inside* a WezTerm pane - and both are kept, because
-writes go to the innermost while raising a window is the outer one's job.
+is one, else a terminal tab title (WezTerm, Ghostty), else `<agent> <pid>`. A session can
+hold a handle from each - a tmux pane lives *inside* a WezTerm pane - and both are kept,
+because writes go to the innermost while raising a window is the outer one's job.
 
-**Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, WezTerm on
-the emulator axis. cmux needs one setting before the daemon can see it - it ships refusing
-socket connections from processes it did not start itself, so set
+**Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, WezTerm and
+Ghostty on the emulator axis. cmux needs one setting before the daemon can see it - it ships
+refusing socket connections from processes it did not start itself, so set
 `"automation": { "socketControlMode": "allowAll" }` in `~/.config/cmux/cmux.json` and
 restart cmux. Without it your cmux sessions still appear, named `<agent> <pid>` like any
 other unrecognised terminal.
@@ -794,10 +794,10 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`) in a **terminal home** rooted there - a detached
-   tmux session with a second **shell pane split beside it** in the same worktree, so a
-   terminal for ad-hoc git/build/inspection is one attach away; on a machine with no
-   multiplexer it opens a terminal tab in that worktree instead, and
+2. launches the agent (`claude`/`codex`) in a **terminal home** rooted there - a named
+   multiplexer home when one is installed (tmux adds a second **shell pane split beside
+   it** for ad-hoc git/build/inspection), or a terminal tab in that worktree when no
+   multiplexer is available, and
 3. waits for that exact discovered session to become ready (falling back to a brief settle
    when hooks cannot report readiness), verifies it is still live, and injects your task as
    its first prompt. If the agent exits during startup, dispatch fails instead of sending
@@ -832,10 +832,11 @@ that repo becomes the seed instead.
 Leave **Title** blank and the daemon names the task for you: a headless `claude -p` on
 Haiku summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
 not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
-it, because the title is also the git branch and the tmux session name, and neither can be
-renamed afterwards. The card appears immediately under a title taken from your first line
-and updates to the model's a beat later. If `claude` is missing, logged out, or slow, that
-first-line title just stands - nothing breaks, and the dispatch still goes.
+it, because the title supplies both the git branch and the initial terminal home name, and
+later task-title edits do not propagate to either. The card appears immediately under a
+title taken from your first line and updates to the model's a beat later. If `claude` is
+missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
+dispatch still goes.
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
 what it's working on. It's headless until you want it - click **Focus** on the card to open
@@ -924,10 +925,10 @@ shows the task as it now reads rather than a picture of how it used to. A task w
 has since gone** - a reclaimed worktree, a project moved - stays editable too; only a repo
 you actually change is checked for being a git root.
 
-Only *shelved* work can be rewritten. Once a task is dispatched its title is already the
-name of a git branch and a tmux session, so the daemon refuses the edit rather than let the
-card drift from the terminal it describes - and a task that starts while you have it open
-takes the form with it.
+Only *shelved* work can be rewritten. Once a task is dispatched its title has already
+supplied the name of a git branch and terminal home, so the daemon refuses the edit rather
+than let the card drift from the terminal it describes - and a task that starts while you
+have it open takes the form with it.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.

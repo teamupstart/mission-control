@@ -34,8 +34,10 @@ import type { BinSpec, NameRules, TerminalBackendId, TerminalResult } from "./ty
  * `reconcileOnStartup` reclaims a worktree: `false` tears the tree down and `null` leaves it
  * standing, and the two failure modes are not symmetric. A wrong `false` deletes a live
  * agent's checkout; a wrong `null` leaves a tree the operator reclaims with one click. So an
- * adapter lookup that misses must never arrive at `false` by omission - which is exactly
- * what `t.tmuxSession ? probe : false` did.
+ * adapter lookup that misses must never arrive at `false` by omission. `reconcileOnStartup`
+ * carries the same discipline one step further, defaulting a MISSING `homeName` to `null`
+ * too: across the `tmux_session` -> `home_name` migration an unmigrated name reads as absent,
+ * and reclaiming on that absence is how a rename would destroy a live agent's tree.
  */
 
 /**

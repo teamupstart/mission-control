@@ -454,8 +454,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   holds the home. `homeAlive` returns `boolean | null` and **null is not `false`**: null
   means no installed backend could tell us, and only `false` may reclaim a worktree -
   `reconcileOnStartup` runs `git worktree remove --force` on that branch, so an adapter
-  lookup that misses must never arrive there by omission (`t.tmuxSession ? probe : false`
-  did). `killHome` reports `asked` beside `ok` for the same reason. **Name rules belong to
+  lookup that misses must never arrive there by omission. A missing `Task.homeName` also
+  maps to null during startup reconciliation; the dispatcher's live failure path keeps
+  false because that process knows whether it spawned a home. `killHome` reports `asked`
+  beside `ok` for the same reason. **Name rules belong to
   the adapter** (`NameRules`, both directions): tmux's target grammar was written out
   twice, as rejections in `validateSessionName` and as coercion in `sessionLabel`, and the
   two had already drifted by one character class - `terminal-name-rules.test.ts` pins that
@@ -467,9 +469,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   backend addressed by UUID. **Migration complete for this axis** - discovery, pane I/O, the
   `Session` model and the lifecycle operations all go through the registries, and nothing
   outside `src/server/terminal/` names a backend. `tmuxOnly` / `weztermOnly` and their
-  `noDriver(backend: never)` default are gone with the shelling-out they guarded. What is
-  left is `Task.tmuxSession`, a persisted column; see
-  `docs/plans/pluggable-integrations/plan.md` phase 3.
+  `noDriver(backend: never)` default are gone with the shelling-out they guarded. Persisted
+  task ownership is `Task.homeName` / `home_name`; the former `tmux_session` column is an
+  inert migration source. See `docs/plans/pluggable-integrations/plan.md` phase 3.
 - **Task sources (what pulls work INTO the backlog)**: the same purity split as the
   harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
   panel can answer in the browser - the name, the blurb, the config schema - and

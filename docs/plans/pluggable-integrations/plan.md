@@ -565,9 +565,10 @@ left the slot to this one; it is still absent, because the machine this was writ
 cmux to point a capability at, and the rule that kept the adapter from inventing one governs
 this file too. A `Multiplexer.raise` belongs on the phase 5 item that can verify it.
 
-`Task.tmuxSession` keeps its name and its column, as phase 3 requires - what changed is that
-nothing reads a vendor OUT of it. `registry.ts`'s optimistic rename fan-out is untouched and
-still passes; it is the other half of the same phase 3 item.
+`Task.tmuxSession` kept its name and its column through THIS item - what changed here is that
+nothing reads a vendor OUT of it. The rename of the field and column, with its schema
+migration, is phase 3's own item and has since landed - see "The `Task.homeName` migration, as
+landed". `registry.ts`'s optimistic rename fan-out moved with it.
 
 Verified on live backends rather than from the diff, the way the pane-I/O item was: a real
 tmux server and a real WezTerm GUI. A detached home spawned (agent in pane 0, shell split
@@ -815,6 +816,53 @@ that survived a real install, and the AppleScript the adapter emits - each scrip
 once against the live app by recording pty bytes, so what the assertions protect is that
 nobody edits them into something that was never measured), `terminal-enumerate.test.ts`
 (the launch-by-asking guard), `terminal-registry.test.ts`, `correlate.test.ts`.
+#### The `Task.homeName` migration, as landed
+
+Structural blocker #3, and the only place this whole migration touches PERSISTED state and
+destructive teardown at once. `Task.tmuxSession` / the `tmux_session` column is
+`Task.homeName` / `home_name` - the last field that spelled a vendor, renamed to the noun the
+`terminal/home.ts` module already uses. The lifecycle item had already taken the vendor out
+of what READS the value (`killHome` / `homeAlive` resolve the name against the registry); what
+was left was the column and its name, and moving those is a schema migration rather than a
+rename. Four deltas, each forced by something real:
+
+- **It is an `addColumn` plus a ONE-TIME backfill, not a column swap.** A real user's upgraded
+  db carries live agents' home names in `tmux_session`, and `reconcileOnStartup` runs
+  `git worktree remove --force` on a task whose home does not resolve - so an `addColumn` that
+  left `home_name` NULL would read every running task as home-less and reclaim its checkout
+  out from under the agent. `migrate()` copies `tmux_session` across on the one start after
+  upgrade. `db.ts`'s migration house pattern applies: the old column is left in place
+  (SQLite drops are the expensive migration) and simply stops being named by any write.
+- **The backfill is gated on `addColumn` having just added the column, and runs EXACTLY
+  once.** After the rename `tmux_session` is a frozen fossil - no write path names it - so a
+  copy that re-ran on every open would RESURRECT a dead name onto a task since reclaimed to
+  NULL and re-aim its `killHome` at whatever took the name. `addColumn` now returns whether it
+  added, and the `UPDATE` hangs off that boolean. `test/task-home-migration-idempotent.test.ts`
+  seeds an already-migrated db and pins that a second open leaves a reclaimed row's `homeName`
+  null.
+- **A missing home name fails SAFE in `reconcileOnStartup`, `: null` not `: false`.** This is
+  the destructive-by-omission trap `homeAlive` was written against, one level up: across the
+  rename an unmigrated or unreadable value reads as absent, and a restart cannot tell that
+  apart from a task that never had a home - so absence is grouped with "could not tell",
+  keeping the tree and surfacing the task rather than reclaiming it. The dispatcher's own catch
+  keeps `: false`, because there the absence is the running process's own knowledge that no
+  home was ever spawned, not a value that might have been lost. `test/task-reconcile-failsafe.test.ts`
+  pins both directions.
+- **The optimistic rename fan-out moved with the field, not the mechanism.**
+  `registry.renameSession` still re-points a dispatched task's recorded home name onto the new
+  name so a restart's reconcile probes the live name - it now reads and writes `homeName`, and
+  the `worktreePath` guard that keeps a since-reused name from re-pointing onto a live session
+  is unchanged. The user-visible collision refusal in `validateSessionNameAgainstTasks`
+  de-tmuxed to "terminal session name".
+
+Verified against a database written by the previous version, not from the diff:
+`test/task-home-migration.test.ts` seeds a pre-rename schema holding a live running task with
+a real `tmux_session` name, lets `openDb()` migrate it on the production path, and asserts the
+name survived onto `homeName` (the property that stops the spurious reclaim), a backlog task
+stays null, the fossil column is left intact but never read back, and a post-upgrade write
+round-trips. Tests: `task-home-migration.test.ts`, `task-home-migration-idempotent.test.ts`,
+`task-reconcile-failsafe.test.ts`, plus `rename.test.ts` and `http-integration.test.ts`
+rewritten onto `homeName`.
 
 ### How the call graph changes
 
@@ -1241,12 +1289,12 @@ cleanly until they become lists:
    with per-field SSE comparators at `registry.ts:2237-2238` and ~20 call sites doing
    `Boolean(s.tmux || s.wezterm)` as a stand-in for "can we type here?".~~ **Closed** -
    `Session.terminals`, a list. See "The `Session` handle list, as landed".
-3. `Task.tmuxSession` (`shared/types.ts:830`) - persisted as `tmux_session`
+3. ~~`Task.tmuxSession` (`shared/types.ts:830`) - persisted as `tmux_session`
    (`db.ts:109`) and driving **destructive teardown** (`dispatcher.ts`). Generalizing
-   it is a schema migration, not a rename, and needs an `addColumn` call in `migrate()`.
-   The lifecycle item left the field spelled as it is and took the vendor out of what READS
-   it: the name is resolved against the registry (`killHome` / `homeAlive`), so what remains
-   is the column and its name.
+   it is a schema migration, not a rename, and needs an `addColumn` call in `migrate()`.~~
+   **Closed** - `Task.homeName` / `home_name`, added by `migrate()` with a one-time backfill
+   from the old column and a fail-safe reconcile so a lost value keeps a worktree rather than
+   reclaiming it. See "The `Task.homeName` migration, as landed".
 
 ## Sequence
 
@@ -1258,7 +1306,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; focus/spawn/rename/kill **(landed)** |
-| 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` migration; de-tmux user-visible strings |
+| 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` -> `Task.homeName` migration **(landed)**; de-tmux user-visible strings **(landed)** |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)** - and neither was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have. iTerm2 and `pi` still queued |
 

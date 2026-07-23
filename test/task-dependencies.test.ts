@@ -2163,7 +2163,7 @@ test("manual session reuse cannot complete the task from the discarded episode",
       worktreePath: cwd,
       branch: "feat/task-work",
       provider: "git",
-      tmuxSession: "manual-reuse-task",
+      homeName: "manual-reuse-task",
     }),
   );
   registry.bindTaskToWorkEpisode("manually-assigned", id);
@@ -2210,7 +2210,7 @@ test("manual session reuse cannot complete the task from the discarded episode",
   assert.equal(discarded?.worktreePath, cwd);
   assert.equal(discarded?.branch, "feat/task-work");
   assert.equal(discarded?.provider, "git");
-  assert.equal(discarded?.tmuxSession, "manual-reuse-task");
+  assert.equal(discarded?.homeName, "manual-reuse-task");
   assert.ok(discarded?.completedAt);
   assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
@@ -2222,7 +2222,7 @@ test("manual session reuse cannot complete the task from the discarded episode",
   assert.equal(persisted?.worktreePath, cwd);
   assert.equal(persisted?.branch, "feat/task-work");
   assert.equal(persisted?.provider, "git");
-  assert.equal(persisted?.tmuxSession, "manual-reuse-task");
+  assert.equal(persisted?.homeName, "manual-reuse-task");
   restarted.removeTask("manually-assigned");
 });
 
@@ -2715,7 +2715,7 @@ test("running and dispatching tasks require a non-exited live session", () => {
     worktreePath: cwd,
     branch: "harness/exited-resource-task",
     provider: "git",
-    tmuxSession: "exited-resource-home",
+    homeName: "exited-resource-home",
   }));
   registry.applyDiscovery([discovered(sessionId, cwd)]);
   registry.applyHook({
@@ -2751,7 +2751,7 @@ test("running and dispatching tasks require a non-exited live session", () => {
   assert.equal(stale?.worktreePath, cwd);
   assert.equal(stale?.branch, "harness/exited-resource-task");
   assert.equal(stale?.provider, "git");
-  assert.equal(stale?.tmuxSession, "exited-resource-home");
+  assert.equal(stale?.homeName, "exited-resource-home");
   registry.removeTask(liveDependent.id);
   registry.removeTask(taskId);
   registry.removeTask("stale-running-dependency");

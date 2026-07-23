@@ -56,7 +56,7 @@ function setup(over: {
     worktreePath: over.worktreePath ?? session.cwd,
     branch: "harness/cancelled-owner",
     provider: "git",
-    tmuxSession: over.homeName ?? null,
+    homeName: over.homeName ?? null,
     terminalResourceId: terminals[0] ? terminalResourceId(terminals[0]) : null,
   }));
   const writes: string[] = [];

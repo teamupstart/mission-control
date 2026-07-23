@@ -418,7 +418,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   assert.equal((await sessions()).find((s) => s.id === "ren-1")!.name, "harness-rename-src-xyzzy");
 
   // A name a worktree-holding task still records is refused before any shell runs.
-  // That task's Reclaim kills by name (`tmux kill-session -t tmuxSession`), so
+  // That task's Reclaim kills by name (`killHome(homeName)`), so
   // taking the name would aim it at this live agent. The rule needs task state, so
   // only the route can enforce it - hence the wiring check here.
   registry.upsertTask({
@@ -437,7 +437,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     worktreePath: "/wt/stale-xyzzy",
     branch: null,
     provider: null,
-    tmuxSession: "harness-rename-taken-xyzzy",
+    homeName: "harness-rename-taken-xyzzy",
     terminalResourceId: null,
     sessionId: null,
     status: "done",

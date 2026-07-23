@@ -1088,21 +1088,21 @@ export class Registry extends EventEmitter {
    * started before the rename can briefly show the old name, then self-heals.
    *
    * Renaming a multiplexer session renames it for every card hosted on it:
-   * `correlate` groups agents by tty, so two agents in two windows of one tmux
-   * session are two cards sharing that handle's `session`. All of them are
+   * `correlate` groups agents by tty, so two agents in two panes of one multiplexer
+   * home are two cards sharing that handle's `session`. All of them are
    * re-pointed, or a sibling's Focus would attach by a name that no longer resolves
    * until the next sweep. A sibling named by that same backend (`nameSource`) takes
    * the new display name too - its title just IS the session name.
    *
-   * A dispatched task holds its own persisted copy of the tmux name, and that copy
-   * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
+   * A dispatched task holds its own persisted copy of the home name, and that copy
+   * drives destructive teardown: `reconcileOnStartup` reads `homeName` back after
    * a restart and reclaims the worktree when the name no longer resolves. Left
    * stale, a renamed agent's tree would be force-removed out from under it, so the
    * binding moves with the rename here, persisted through `upsertTask` to reach
    * SQLite. The old name alone is too weak a key: it is unique only among LIVE
-   * sessions, while `tmuxSession` is a historical record and tmux frees a dead
+   * sessions, while `homeName` is a historical record and a multiplexer frees a dead
    * session's name for immediate reuse. So the task must also hold the worktree of
-   * a session actually on this tmux session (the `cwd` join `activeTaskForCwd`
+   * a session actually on this terminal home (the `cwd` join `activeTaskForCwd`
    * uses) - otherwise a long-dead task that merely recorded a since-reused name
    * would be re-pointed onto a live session and later kill it. `sessionId` can't be
    * the key: the dispatcher only sets it on the success path, so a failed-but-alive
@@ -1155,9 +1155,9 @@ export class Registry extends EventEmitter {
     }
 
     const candidates = this.listTasks().filter((t) =>
-      (Boolean(t.worktreePath) || Boolean(t.tmuxSession)) &&
+      (Boolean(t.worktreePath) || Boolean(t.homeName)) &&
       ((t.terminalResourceId !== null && priorResourceIds.has(t.terminalResourceId)) ||
-        (t.tmuxSession !== null && priorHomeNames.has(t.tmuxSession)))
+        (t.homeName !== null && priorHomeNames.has(t.homeName)))
     );
     const strong = candidates.filter((t) =>
       (t.terminalResourceId !== null && priorResourceIds.has(t.terminalResourceId)) ||
@@ -1168,7 +1168,7 @@ export class Registry extends EventEmitter {
     for (const t of owners) {
       this.upsertTask({
         ...t,
-        tmuxSession: name,
+        homeName: name,
         terminalResourceId: t.terminalResourceId
           ? resourceRenames.get(t.terminalResourceId) ?? t.terminalResourceId
           : null,
@@ -3105,11 +3105,11 @@ export class Registry extends EventEmitter {
     const resourceIds = terminalResourceIds(session);
     return this.listTasks().find((task) =>
       (status === undefined || task.status === status) &&
-      (Boolean(task.worktreePath) || Boolean(task.tmuxSession)) &&
+      (Boolean(task.worktreePath) || Boolean(task.homeName)) &&
       (task.sessionId === sessionId ||
         (task.terminalResourceId !== null && resourceIds.has(task.terminalResourceId)) ||
         (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
-        (task.tmuxSession !== null && homeNames.has(task.tmuxSession)))
+        (task.homeName !== null && homeNames.has(task.homeName)))
     );
   }
 
@@ -3152,10 +3152,10 @@ export class Registry extends EventEmitter {
    */
   private pruneTerminalTasks(): void {
     // Only evict fully-cleaned terminal tasks. A failed-but-alive task still holds
-    // a worktree + tmux session and decorates its live card, so it must never be
+    // a worktree + terminal home and decorates its live card, so it must never be
     // evicted (that would orphan its resources and drop the card's chip).
     const evictable = [...this.tasks.values()].filter(
-      (t) => isTerminalTask(t.status) && !t.worktreePath && !t.tmuxSession,
+      (t) => isTerminalTask(t.status) && !t.worktreePath && !t.homeName,
     );
     if (evictable.length <= RECENT_TERMINAL_TASKS) return;
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);

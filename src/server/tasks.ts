@@ -121,7 +121,7 @@ function describeResetLoss(c: AssignResetConfirm): string {
 
 /**
  * Owns the task lifecycle: create/queue, kick off dispatch, cancel (tearing down
- * the live session + tmux + optional worktree), complete with an outcome, and
+ * the live session + terminal home + optional worktree), complete with an outcome, and
  * remove from the list. The registry is the single store; this class is the
  * policy layer routes call into - the task analog of ReviewManager.
  */
@@ -132,7 +132,7 @@ export class TaskManager {
    *
    * A backlogged untitled task is on the board - and dispatchable - the instant `create`
    * returns, while its title is still being decided. Dispatching in that window would cut
-   * the branch and the tmux session from the heuristic title and then rename only the card,
+   * the branch and terminal home name from the heuristic title and then rename only the card,
    * which is the exact mismatch the awaited-titling ordering exists to prevent. `dispatch`
    * awaits this first, so an early click waits a beat and gets the model's title instead.
    * Held here rather than checked at the route so the invariant holds on every path.
@@ -143,16 +143,16 @@ export class TaskManager {
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
-    // A restart severs the in-flight dispatch promises but leaves worktrees + tmux
-    // sessions on disk. Reconcile every task that still holds resources by checking
-    // whether its agent's tmux session survived.
+    // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
+    // homes on disk. Reconcile every task that still holds resources by checking
+    // whether its agent's terminal home survived (any backend, resolved by name).
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
       // terminal tasks only when they still hold resources to check/reclaim.
       const needsReconcile =
         t.status === "dispatching" ||
-        ((Boolean(t.worktreePath) || Boolean(t.tmuxSession)) &&
+        ((Boolean(t.worktreePath) || Boolean(t.homeName)) &&
           (t.status === "running" ||
             t.status === "failed" ||
             t.status === "done" ||
@@ -381,7 +381,7 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
-      tmuxSession: null,
+      homeName: null,
       terminalResourceId: null,
       sessionId: null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
@@ -446,7 +446,7 @@ export class TaskManager {
     }
     if (backlog) return;
     // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
-    // now would strand a worktree and a tmux session behind a card that says "cancelled".
+    // now would strand a worktree and a terminal home behind a card that says "cancelled".
     if ((this.registry.getTask(id) ?? cur).status !== "dispatching") return;
     void this.dispatcher.dispatch(id);
   }
@@ -457,9 +457,9 @@ export class TaskManager {
    * worktree means its agent may still be running; the user should Cancel it first
    * (which reclaims the tree) rather than dispatch a second agent onto it.
    *
-   * Waits out any in-flight titling first: the branch and the tmux session are cut from
-   * `task.title` and can never be renamed afterwards, so dispatching mid-titling would
-   * name them after the heuristic title and leave the card disagreeing with both.
+   * Waits out any in-flight titling first: the branch and initial terminal home name are cut
+   * from `task.title`, and later title edits do not propagate to them. Dispatching
+   * mid-titling would name them after the heuristic title and leave the card disagreeing.
    */
   async dispatch(id: string, options: DispatchOptions = {}): Promise<Task | null> {
     await this.titling.get(id);
@@ -486,10 +486,10 @@ export class TaskManager {
    * priority picker.
    *
    * The status guard applies to the PROVISIONING fields only, and that split is the
-   * whole rule. The moment a task dispatches, its title is baked into a git branch and a
-   * tmux session name that nothing downstream can rename (see `autoTitleThenDispatch`),
-   * and its intent has already been typed at an agent - so an edit to those after that
-   * point would change the card and nothing else, which is worse than a refusal. Every
+   * whole rule. The moment a task dispatches, its title has supplied a git branch and an
+   * initial terminal home name (see `autoTitleThenDispatch`), and its intent has already
+   * been typed at an agent. A title edit after that point would change the card without
+   * propagating to those resources, which is worse than a refusal. Every
    * other status is a conflict the caller shows, not retries.
    *
    * Dependencies share that guard because changing them can change whether launch is
@@ -827,7 +827,7 @@ export class TaskManager {
     // whether the task is running, so it must not sit in front of anything that does.
     await this.renameForTask(
       // Re-read for the same reason the task is: the reset detached the checkout and the
-      // injection took a round trip, and `rename` targets the tmux session BY NAME.
+      // injection took a round trip, and `rename` targets the terminal home BY NAME.
       this.registry.getSession(s.id) ?? s,
       this.registry.getTask(t.id) ?? cur,
       doRename,
@@ -852,11 +852,11 @@ export class TaskManager {
    * task that an agent is already working on back to the backlog, to be handed to a second
    * agent. So every refusal below is a silent no-op that leaves the old name standing.
    *
-   * The fallback name exists for one reason: tmux session names are unique, so a rename
-   * onto a name a live session already holds fails, and `validateSessionNameAgainstTasks`
-   * refuses a name a task's teardown still aims at (taking it would point that task's
-   * `tmux kill-session` at this agent). Both are answered the same way `spawnUniquely`
-   * answers them - retry once under a name the task id makes unique.
+   * The fallback name exists for one reason: a rename onto a name a live terminal home
+   * already holds fails, and `validateSessionNameAgainstTasks` refuses a name a task's
+   * teardown still aims at (taking it would point that task's `killHome` at this agent).
+   * Both are answered the same way `spawnUniquely` answers them - retry once under a name
+   * the task id makes unique.
    */
   private async renameForTask(
     s: Session,
@@ -864,7 +864,7 @@ export class TaskManager {
     doRename: NonNullable<AssignOptions["rename"]>,
   ): Promise<void> {
     // This session's OWN backend spells the name, not the one a fresh dispatch would land
-    // on: the two can differ (an operator's tmux session on a machine where a dispatch
+    // on: the two can differ (an operator's multiplexer session on a machine where a dispatch
     // would open a tab), and sanitizing for the wrong one strips characters this rename
     // could have kept - or keeps ones it cannot.
     const label = nameRulesFor(s).sanitize(t.title);
@@ -912,7 +912,7 @@ export class TaskManager {
    * an in-flight dispatch could race).
    *
    * Cancel only kills agents we LAUNCHED. An assigned task (dropped onto an agent
-   * that was already running) never had a tmux session of ours, and killing it would
+   * that was already running) never had a terminal home of ours, and killing it would
    * take down the operator's own session - along with whatever else it was doing
    * before we handed it this task. For those, cancel means "stop tracking it", and
    * the human stops the agent themselves if they want it stopped.
@@ -921,12 +921,12 @@ export class TaskManager {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
 
-    if (t.sessionId && t.tmuxSession) {
+    if (t.sessionId && t.homeName) {
       const s = this.registry.getSession(t.sessionId);
       if (s) await kill(s);
     }
     // Re-read before tearing down so we don't miss resources a concurrent dispatch
-    // created during the kill above. teardownWorktree also kills the tmux session.
+    // created during the kill above. teardownWorktree also kills the terminal home.
     const teardownTarget = this.registry.getTask(id) ?? t;
     let teardownError: string | null = null;
     try {
@@ -945,7 +945,7 @@ export class TaskManager {
       worktreePath: teardownError === null ? null : cur.worktreePath,
       branch: teardownError === null ? null : cur.branch,
       provider: teardownError === null ? null : cur.provider,
-      tmuxSession: teardownError === null ? null : cur.tmuxSession,
+      homeName: teardownError === null ? null : cur.homeName,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
       updatedAt: now,
@@ -999,7 +999,7 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
-      tmuxSession: null,
+      homeName: null,
       terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
@@ -1015,7 +1015,7 @@ export class TaskManager {
     }
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
-    if (t.worktreePath || t.tmuxSession) {
+    if (t.worktreePath || t.homeName) {
       try {
         await teardownWorktree(t);
       } catch (error) {
@@ -1041,11 +1041,19 @@ export class TaskManager {
    * grouped with "survived", because this is the most destructive branch in the product:
    * the reclaim path runs `git worktree remove --force` and hands a pooled lease back. A
    * wrong "gone" deletes work an agent is still doing; a wrong "survived" leaves a tree the
-   * operator frees with one Reclaim. The `t.tmuxSession ? probe : false` this replaced
-   * turned an adapter lookup that found nothing into the destructive answer by omission.
+   * operator frees with one Reclaim.
+   *
+   * A MISSING home name defaults to `null` here, not `false`, and that is a deliberate
+   * departure from the live dispatch path. On the first start after the `tmux_session` ->
+   * `home_name` migration, a name that failed to carry across would read as absent - and an
+   * absent name reclaiming by omission (`? probe : false`) is exactly how a rename destroys
+   * a live agent's worktree. This is a restart, where an absent name cannot be told apart
+   * from an unmigrated one, so it fails safe: keep the tree, surface the task. (The
+   * dispatcher's own catch keeps `: false` - there the absence is this process's own
+   * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
-    const alive = t.tmuxSession ? await homeAlive(t.tmuxSession) : false;
+    const alive = t.homeName ? await homeAlive(t.homeName) : null;
     if (alive !== false) {
       if (t.status === "dispatching") {
         this.registry.upsertTask({
@@ -1086,7 +1094,7 @@ export class TaskManager {
       worktreePath: null,
       branch: null,
       provider: null,
-      tmuxSession: null,
+      homeName: null,
       terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),

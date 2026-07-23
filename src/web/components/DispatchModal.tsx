@@ -533,7 +533,7 @@ function DispatchModal({
     // next, and letting it move the seed would strand the next task in that repo.
     if (r.ok && !editing) rememberDispatchRepo(submitted.repoRoot.trim());
     // Clear the draft and close only once the task row exists - the worktree and
-    // tmux session are provisioned in the background after this reply, and any
+    // terminal home are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
     // keeps the modal open with the fields intact so you can retry.
     if (!r.ok) setError(r.error ?? (editing ? "could not save the task" : "dispatch failed"));

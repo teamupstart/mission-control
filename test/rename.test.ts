@@ -132,12 +132,14 @@ test("validateSessionName rejects a session with no renameable handle", () => {
 
 // ---- validateSessionNameAgainstTasks (pure) ----
 
-// A `done` task keeps its worktree and tmux name until an explicit reclaim, and tmux
-// frees a dead session's name at once - so this name is free in tmux while still
-// aiming the task's teardown (`tmux kill-session -t tmuxSession`) at whoever takes it.
-const staleTask = { tmuxSession: "fix-login", worktreePath: "/wt/old" };
+// A `done` task keeps its worktree and home name until an explicit reclaim, and a
+// multiplexer frees a dead session's name at once - so this name is free on the backend
+// while still aiming the task's teardown (`killHome(homeName)`) at whoever takes it.
+const staleTask = { homeName: "fix-login", worktreePath: "/wt/old" };
 
 test("validateSessionNameAgainstTasks refuses a name a worktree-holding task still records", () => {
+  // The refusal names the backend that owns the home (mux wins the label), not a generic
+  // "terminal" - a cmux collision then reads true rather than approximately.
   assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "fix-login", [staleTask]), {
     ok: false,
     error: "another task still holds the tmux session name 'fix-login'",
@@ -145,9 +147,9 @@ test("validateSessionNameAgainstTasks refuses a name a worktree-holding task sti
 });
 
 test("validateSessionNameAgainstTasks allows a name whose task was reclaimed", () => {
-  // Reclaim clears worktreePath and tmuxSession together: the task can no longer
+  // Reclaim clears worktreePath and homeName together: the task can no longer
   // tear anything down, so it no longer speaks for the name.
-  const evicted = { tmuxSession: null, worktreePath: null };
+  const evicted = { homeName: null, worktreePath: null };
   assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "fix-login", [evicted]), {
     ok: true,
   });
@@ -168,12 +170,14 @@ test("validateSessionNameAgainstTasks allows a name no task records", () => {
   });
 });
 
-test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only session", () => {
-  // Renaming a wezterm tab sets a free-form title and moves no tmux name, so no
-  // task's teardown can be re-aimed by it.
+test("validateSessionNameAgainstTasks refuses an emulator rename that collides too", () => {
+  // A task dispatched into a pure-emulator home records that tab's title as its homeName,
+  // and renameSession re-points it - so an emulator rename can re-aim a stale task's
+  // teardown exactly as a multiplexer one can, and the guard must refuse it (naming the
+  // emulator backend). The old code returned ok:true here and left that rename unchecked.
   assert.deepEqual(
     validateSessionNameAgainstTasks({ ...onEmu, cwd: "/wt/live" }, "fix-login", [staleTask]),
-    { ok: true },
+    { ok: false, error: "another task still holds the WezTerm session name 'fix-login'" },
   );
 });
 
@@ -476,7 +480,7 @@ test("renameSession on an unknown session id is a safe no-op", () => {
 
 /** The shared task fixture with this file's defaults on top. */
 const mkTask = (over: Partial<Task> = {}): Task =>
-  baseTask({ worktreePath: "/wt/work", tmuxSession: "work", sessionId: "s1", status: "running", createdAt: 0, updatedAt: 0, ...over });
+  baseTask({ worktreePath: "/wt/work", homeName: "work", sessionId: "s1", status: "running", createdAt: 0, updatedAt: 0, ...over });
 
 function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
   return r.snapshot().tasks.find((t) => t.id === id);
@@ -486,7 +490,7 @@ function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
 // task's worktreePath - the join that binds the two.
 const dispatched = disco({ cwd: "/wt/work" });
 
-test("renameSession moves a dispatched task's tmuxSession binding with the name", () => {
+test("renameSession moves a dispatched task's homeName binding with the name", () => {
   const r = new Registry();
   r.applyDiscovery([dispatched]);
   r.upsertTask(mkTask());
@@ -495,17 +499,17 @@ test("renameSession moves a dispatched task's tmuxSession binding with the name"
 
   // reconcileOnStartup probes this name after a restart and force-removes the
   // worktree when it doesn't resolve - a stale binding would destroy live work.
-  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.homeName, "renamed");
 });
 
 test("renameSession leaves a task bound to a different tmux session untouched", () => {
   const r = new Registry();
   r.applyDiscovery([dispatched]);
-  r.upsertTask(mkTask({ id: "other", tmuxSession: "unrelated", worktreePath: "/wt/other" }));
+  r.upsertTask(mkTask({ id: "other", homeName: "unrelated", worktreePath: "/wt/other" }));
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(taskOf(r, "other")?.tmuxSession, "unrelated");
+  assert.equal(taskOf(r, "other")?.homeName, "unrelated");
 });
 
 test("renameSession ignores a dead task that recorded a since-reused tmux name", () => {
@@ -520,8 +524,8 @@ test("renameSession ignores a dead task that recorded a since-reused tmux name",
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(taskOf(r, "stale")?.tmuxSession, "work");
-  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r, "stale")?.homeName, "work");
+  assert.equal(taskOf(r)?.homeName, "renamed");
 });
 
 test("renameSession follows the rename for a worktree-holding task that already failed", () => {
@@ -533,7 +537,7 @@ test("renameSession follows the rename for a worktree-holding task that already 
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.homeName, "renamed");
 });
 
 test("renameSession keeps emulator cleanup ownership across a rename", () => {
@@ -551,7 +555,7 @@ test("renameSession keeps emulator cleanup ownership across a rename", () => {
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.homeName, "renamed");
   assert.equal(taskOf(r)?.terminalResourceId, terminalResourceId(handle));
   assert.match(r.promptResourceBlockerForSession("s1") ?? "", /clean up/);
 });
@@ -576,7 +580,7 @@ test("renameSession preserves cmux address and cleanup ownership", () => {
 
   assert.equal(muxHandle(sessionOf(r)!)?.session, "workspace-uuid");
   assert.equal(muxHandle(sessionOf(r)!)?.sessionName, "renamed");
-  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+  assert.equal(taskOf(r)?.homeName, "renamed");
   assert.equal(taskOf(r)?.terminalResourceId, terminalResourceId(handle));
   assert.match(r.promptResourceBlockerForSession("s1") ?? "", /clean up/);
 });

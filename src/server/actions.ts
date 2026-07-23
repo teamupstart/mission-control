@@ -1566,18 +1566,26 @@ export function validateSessionName(
 }
 
 /**
- * Refuse a rename that would move this tmux session ONTO a name a task still
- * records. Pairs with `validateSessionName` on the route's 400 path: the name rules
- * there are pure characters, this one needs task state, so the two stay separate and
- * the route (which holds the task list) runs both.
+ * Refuse a rename that would move this session ONTO a name a task still records. Pairs
+ * with `validateSessionName` on the route's 400 path: the name rules there are pure
+ * characters, this one needs task state, so the two stay separate and the route (which
+ * holds the task list) runs both.
  *
- * `Task.tmuxSession` is a second copy of the name, and it aims destructive teardown:
- * `teardownWorktree` runs `tmux kill-session -t tmuxSession`, and `reconcileOnStartup`
+ * `Task.homeName` is a second copy of the name, and it aims destructive teardown:
+ * `teardownWorktree` kills the home by name (`killHome`), and `reconcileOnStartup`
  * probes it to decide whether to reclaim the worktree. That copy outlives its session
- * - a `done` task keeps it until an explicit reclaim, while tmux frees a dead
+ * - a `done` task keeps it until an explicit reclaim, while a backend frees a dead
  * session's name for immediate reuse - so a name no LIVE session holds can still be
  * spoken for. Taking it would re-aim that task's Reclaim at this live agent, or
  * convince the reconciler the dead task's agent survived and leak its tree.
+ *
+ * Both axes, not just the multiplexer. `Registry.renameSession` re-points every task
+ * whose recorded home name matches one THIS session holds, and it reads those names off
+ * every handle (`terminalHomeNames`) - so a task dispatched into a pure-emulator home
+ * records that tab's title as its `homeName`, and an emulator rename can collide with it
+ * exactly as a multiplexer one can. The old "an emulator tab is free-form and no task
+ * binds to it" is false once a home can be an emulator tab; guarding only `muxHandle`
+ * left that rename unchecked.
  *
  * Scoped to tasks still holding a worktree, since those are the ones teardown can
  * still fire for; reclaim/cancel clear the worktree and the name together, so a
@@ -1588,21 +1596,23 @@ export function validateSessionName(
 export function validateSessionNameAgainstTasks(
   session: PaneHandles & Pick<Session, "cwd">,
   name: string,
-  tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
+  tasks: readonly Pick<Task, "homeName" | "worktreePath">[],
   deps: TerminalDeps = defaultTerminalDeps,
 ): { ok: true } | { ok: false; error: string } {
-  // Only a multiplexer rename moves a name teardown targets - an emulator tab title is
-  // free-form and no task binds to it.
-  if (!muxHandle(session)) return { ok: true };
+  // Innermost handle wins the label the same way writes do (multiplexer over emulator):
+  // for a mux-hosted session the home name IS the mux session name, so the refusal should
+  // name the backend that owns it.
+  const handle = muxHandle(session) ?? emulatorHandle(session);
+  if (!handle) return { ok: true };
   const collides = tasks.some(
-    (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
+    (t) => t.worktreePath !== null && t.homeName === name && t.worktreePath !== session.cwd,
   );
   if (!collides) return { ok: true };
-  const handle = muxHandle(session)!;
-  return {
-    ok: false,
-    error: `another task still holds the ${deps.multiplexers[handle.backend].label} session name '${name}'`,
-  };
+  const label =
+    handle.kind === "multiplexer"
+      ? deps.multiplexers[handle.backend].label
+      : deps.emulators[handle.backend].label;
+  return { ok: false, error: `another task still holds the ${label} session name '${name}'` };
 }
 
 /** One emulator tab that hosts a multiplexer client, with the backend that can act on it. */

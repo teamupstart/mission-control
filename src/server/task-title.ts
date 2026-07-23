@@ -6,7 +6,7 @@ import { createLimiter, parseModelJson } from "./llm/structured.ts";
 
 // Names an untitled dispatch, with one headless model call on the cheap tier.
 //
-// The board's cards, the git branch and the tmux session name all come from a task's title,
+// The board's cards, the git branch and the terminal home name all come from a task's title,
 // and a dispatch left untitled used to take the intent's first line verbatim - so a card
 // could read "Hey can you take a look at the thing where the" and its branch could be
 // `hey-can-you-take-a-look-at-the`. That is not a name; it is the top of a paragraph.

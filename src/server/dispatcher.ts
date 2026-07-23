@@ -36,7 +36,7 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached tmux session there, wait for passive discovery and readiness to
+ * agent in a detached terminal home there, wait for passive discovery and readiness to
  * bind that exact live session, then inject the task as its first prompt.
  *
  * Every step patches the task through the registry so progress streams to the UI
@@ -65,7 +65,7 @@ export class Dispatcher {
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
-      // The branch and worktree take the git-safe slug; the tmux session (which is what
+      // The branch and worktree take the git-safe slug; the terminal home (which is what
       // the card is named after) takes the human-readable label, so an untitled dispatch
       // reads like a heading instead of `add-a-dark-mode-toggle`.
       const slug = slugify(task.title);
@@ -103,8 +103,8 @@ export class Dispatcher {
         ...codexLaunch.args,
       ];
 
-      const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
-      this.patch(taskId, { tmuxSession });
+      const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
+      this.patch(taskId, { homeName });
       if (await this.abortIfSettled(taskId)) return;
 
       const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
@@ -158,7 +158,7 @@ export class Dispatcher {
       // land on the KEEP side with the `true` case rather than on the reclaim side with
       // `false`: erring towards keeping costs one Reclaim click, erring the other way runs
       // `git worktree remove --force` over a checkout an agent is working in.
-      const alive = cur.tmuxSession ? await homeAlive(cur.tmuxSession) : false;
+      const alive = cur.homeName ? await homeAlive(cur.homeName) : false;
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
@@ -269,7 +269,7 @@ export class Dispatcher {
    * Each attempt resolves the session id again at the send boundary, so a retained
    * exited snapshot can never lend its old pane to an initial send or retry.
    *
-   * `injectPrompt` succeeding means tmux accepted the write, NOT that the agent read
+   * `injectPrompt` succeeding means the terminal accepted the write, NOT that the agent read
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
    * it is what let a task sit `running` for 13 minutes against a session whose first
    * prompt was pasted 647ms before its TUI existed. So on an instrumented session we
@@ -372,7 +372,7 @@ export class Dispatcher {
         worktreePath: null,
         branch: null,
         provider: null,
-        tmuxSession: null,
+        homeName: null,
         terminalResourceId: null,
       });
       return true;
@@ -530,20 +530,18 @@ async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
  * treehouse lease is handed back to the pool rather than leaked by a bare
  * `git worktree remove`.
  *
- * `tmuxSession` still spells one backend, and deliberately so for now - it is a persisted
- * column, and generalizing it is phase 3's schema migration. What it holds is the NAME of
- * the home, and which backend that name lives on is resolved through the registry
- * (`killHome`) rather than assumed here.
+ * `homeName` names the home vendor-neutrally: which backend holds that name is resolved
+ * through the registry (`killHome`) rather than assumed here.
  */
 export async function teardownWorktree(task: {
   repoRoot: string;
   worktreePath: string | null;
   branch: string | null;
   provider: WorktreeProvider | null;
-  tmuxSession: string | null;
+  homeName: string | null;
 }): Promise<void> {
-  if (task.tmuxSession) {
-    const killed = await killHome(task.tmuxSession);
+  if (task.homeName) {
+    const killed = await killHome(task.homeName);
     // An adapter lookup that found nothing must not read as "there was nothing to kill".
     // This is the one path where the difference is destructive: we are about to hand the
     // worktree back to the pool, so an agent still running in it loses its checkout with no
@@ -552,7 +550,7 @@ export async function teardownWorktree(task: {
     // name what the operator has to do by hand.
     if (!killed.asked) {
       console.warn(
-        `[mission-control] no terminal backend can close the session '${task.tmuxSession}' - ` +
+        `[mission-control] no terminal backend can close the session '${task.homeName}' - ` +
           "if an agent is still running there, stop it yourself; its worktree is being reclaimed now",
       );
     }

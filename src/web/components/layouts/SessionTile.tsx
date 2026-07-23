@@ -13,6 +13,7 @@ import {
 import { EffortPicker } from "../EffortPicker.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 
 /**
  * Whether a click only marks the end of a drag-select rather than a click on the thing
@@ -116,7 +117,7 @@ export function SessionTile({
 
           So the open action is split. The pointer half lives on the tile root above:
           clicks land on whatever content you aimed at and bubble up, which keeps the
-          `title` tooltips on the model, effort, context meter and gate diamonds
+          shared tooltips on the model, effort, context meter and gate diamonds
           hoverable. This stretched button is the keyboard half - focusable, labelled,
           Enter/Space-activatable, which a bare div with onClick would not be. It takes
           no pointer events, so it can never swallow a click meant for the content. The
@@ -127,24 +128,30 @@ export function SessionTile({
           because the root declines clicks that merely end a text selection. Reaching a
           session by keyboard must not depend on whether something happens to be selected
           somewhere on the page. */}
-      <button
-        type="button"
-        className="tile-open"
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpen();
-        }}
-        aria-label={`Open ${session.name || "unnamed session"}`}
-        aria-current={selected}
-      />
+      <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+        <button
+          type="button"
+          className="tile-open"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          aria-label={`Open ${session.name || "unnamed session"}`}
+          aria-current={selected}
+        />
+      </Tooltip>
 
       <span className="tile-head">
         <AgentDot agent={session.agent} />
-        <span className="tile-name">{session.name || "(unnamed)"}</span>
+        <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+          <span className="tile-name">{session.name || "(unnamed)"}</span>
+        </Tooltip>
         {session.nomistakesGated && !session.nomistakes && (
-          <span className="gated" title="Gated by no-mistakes" aria-hidden>
-            ◇
-          </span>
+          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+            <span className="gated" aria-hidden>
+              ◇
+            </span>
+          </Tooltip>
         )}
       </span>
 
@@ -173,9 +180,11 @@ export function SessionTile({
       {gate && (
         <span className="tile-gate">
           <span className="tile-gate-row">
-            <span className="gate-brand" title="Gated by no-mistakes" aria-hidden>
-              ◇
-            </span>
+            <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+              <span className="gate-brand" aria-hidden>
+                ◇
+              </span>
+            </Tooltip>
             <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
             {!gate.done && gate.pos != null && (
               <span className="gate-pos">

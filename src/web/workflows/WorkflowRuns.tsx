@@ -8,6 +8,7 @@ import type {
 } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
@@ -116,30 +117,42 @@ export function WorkflowRunView({
           <small>Started {when(detail.run.startedAt)} · updated {when(detail.run.updatedAt)}</small>
         </div>
         <span className={`workflow-run-state wrs-${detail.run.status}`}>{detail.run.status.replaceAll("_", " ")}</span>
-        <button className="btn btn-ghost" onClick={onOpenSession}>Open session</button>
+        <Tooltip label="Jump to the session this run is reviewing">
+          <button className="btn btn-ghost" onClick={onOpenSession}>Open session</button>
+        </Tooltip>
         {detail.attempts.some((attempt) => attempt.verdict) && (
-          <button className="btn btn-ghost" onClick={() => void onCopyFeedback()}>Copy feedback</button>
+          <Tooltip label="Copy every reviewer verdict to the clipboard">
+            <button className="btn btn-ghost" onClick={() => void onCopyFeedback()}>Copy feedback</button>
+          </Tooltip>
         )}
         {detail.run.status === "waiting_for_session" && (
           <>
-            <button className="btn" onClick={() => void onResubmit(false)}>Preview fresh evidence</button>
-            <button
-              className="btn btn-ghost"
-              onClick={() => {
-                if (window.confirm("Run another Preview against the unchanged evidence snapshot?")) {
-                  void onResubmit(true);
-                }
-              }}
-            >
-              Preview unchanged
-            </button>
+            <Tooltip label="Re-read the session's current diff and run the review again">
+              <button className="btn" onClick={() => void onResubmit(false)}>Preview fresh evidence</button>
+            </Tooltip>
+            <Tooltip label="Run the review again against the evidence snapshot already taken">
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  if (window.confirm("Run another Preview against the unchanged evidence snapshot?")) {
+                    void onResubmit(true);
+                  }
+                }}
+              >
+                Preview unchanged
+              </button>
+            </Tooltip>
           </>
         )}
         {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
-          <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
+          <Tooltip label="The provider call failed rather than the review - try it again">
+            <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
+          </Tooltip>
         )}
         {!["completed", "cancelled", "failed"].includes(detail.run.status) && (
-          <button className="btn btn-danger" onClick={() => void onCancel()}>Cancel</button>
+          <Tooltip label="Stop this run - it will not resume">
+            <button className="btn btn-danger" onClick={() => void onCancel()}>Cancel</button>
+          </Tooltip>
         )}
       </header>
 
@@ -189,7 +202,9 @@ export function WorkflowRunView({
             <p className="workflow-context-warning">Compaction fallback: {context.compaction.error}</p>
           )}
           <details>
-            <summary>Evidence snapshot</summary>
+            <Tooltip label="Show the exact repository state this review was given">
+              <summary>Evidence snapshot</summary>
+            </Tooltip>
             <dl>
               <div><dt>HEAD</dt><dd>{context.evidence.headSha ?? "unavailable"}</dd></div>
               <div>
@@ -236,14 +251,18 @@ export function WorkflowRunView({
             incoming.some((edge) => edge.id === receipt.edgeId));
           return (
             <details className="workflow-join-packet" key={join.id}>
-              <summary>All-pass Join · {received.length}/{new Set(incoming.map((edge) => edge.source)).size} predecessors</summary>
+              <Tooltip label="Show the payloads each predecessor branch handed this join">
+                <summary>All-pass Join · {received.length}/{new Set(incoming.map((edge) => edge.source)).size} predecessors</summary>
+              </Tooltip>
               <pre>{JSON.stringify(received.map((receipt) => receipt.payload), null, 2)}</pre>
             </details>
           );
         }) ?? null}
         {detail.run.gateState && (
           <details className="workflow-join-packet">
-            <summary>Join and gate packet</summary>
+            <Tooltip label="Show the raw join and final-gate state for this run">
+              <summary>Join and gate packet</summary>
+            </Tooltip>
             <pre>{JSON.stringify(detail.run.gateState, null, 2)}</pre>
           </details>
         )}
@@ -380,15 +399,16 @@ export function WorkflowRuns({
     <section className="workflow-runs">
       <aside className="workflow-run-list">
         {ordered.map((run) => (
-          <button
-            key={run.id}
-            className={selected === run.id ? "active" : ""}
-            onClick={() => onSelectRun(run.id)}
-          >
-            <strong>{run.workflowName} · v{run.workflowVersion}</strong>
-            <span>{run.noteKey} · {run.status.replaceAll("_", " ")}</span>
-            <small>{when(run.updatedAt)}</small>
-          </button>
+          <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${run.status.replaceAll("_", " ")}`}>
+            <button
+              className={selected === run.id ? "active" : ""}
+              onClick={() => onSelectRun(run.id)}
+            >
+              <strong>{run.workflowName} · v{run.workflowVersion}</strong>
+              <span>{run.noteKey} · {run.status.replaceAll("_", " ")}</span>
+              <small>{when(run.updatedAt)}</small>
+            </button>
+          </Tooltip>
         ))}
       </aside>
       <div className="workflow-run-reader">

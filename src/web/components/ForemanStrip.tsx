@@ -4,6 +4,7 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The pinned half of a Foreman note: the decision you owe, and nothing else.
 //
@@ -71,30 +72,36 @@ export function ForemanStrip({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="fs-row">
-        <button
-          type="button"
-          className="fs-toggle"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
+        <Tooltip label={open ? "Fold this note away" : "Show what Foreman is proposing"}>
+          <button
+            type="button"
+            className="fs-toggle"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
           <span className="fn-badge">Foreman</span>
           <span className="fs-disp">{DISPOSITION_LABEL[note.disposition]}</span>
           {/* One line, ellipsised. The full text is in the transcript entry; this is
               a pointer to a decision, not the decision itself. */}
           <span className="fs-summary">{summary}</span>
-          <span className="fs-caret" aria-hidden="true">
-            ▾
-          </span>
-        </button>
-        {sendable && (
-          <button className="btn btn-primary fs-go" disabled={busy} onClick={() => void approve()}>
-            Approve &amp; send
+            <span className="fs-caret" aria-hidden="true">
+              ▾
+            </span>
           </button>
+        </Tooltip>
+        {sendable && (
+          <Tooltip label="Type Foreman's drafted reply into this session's prompt">
+            <button className="btn btn-primary fs-go" disabled={busy} onClick={() => void approve()}>
+              Approve &amp; send
+            </button>
+          </Tooltip>
         )}
         {blocked && (
-          <button className="btn fs-go" disabled={busy} onClick={() => void dismiss()}>
-            Dismiss
-          </button>
+          <Tooltip label="Drop this note - nothing is sent to the session">
+            <button className="btn fs-go" disabled={busy} onClick={() => void dismiss()}>
+              Dismiss
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -114,17 +121,23 @@ export function ForemanStrip({
           {blocked && <p className="fn-hint dim">{blocked}</p>}
           <div className="fs-actions">
             {sendable && (
-              <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
-                Approve &amp; send
-              </button>
+              <Tooltip label="Type Foreman's drafted reply into this session's prompt">
+                <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
+                  Approve &amp; send
+                </button>
+              </Tooltip>
             )}
-            <button className="btn" disabled={busy} onClick={() => void dismiss()}>
-              Dismiss
-            </button>
-            {onJump && (
-              <button className="fs-jump" onClick={onJump}>
-                Jump to note in chat ↑
+            <Tooltip label="Drop this note - nothing is sent to the session">
+              <button className="btn" disabled={busy} onClick={() => void dismiss()}>
+                Dismiss
               </button>
+            </Tooltip>
+            {onJump && (
+              <Tooltip label="Scroll the transcript to where this note was raised">
+                <button className="fs-jump" onClick={onJump}>
+                  Jump to note in chat ↑
+                </button>
+              </Tooltip>
             )}
           </div>
           {pending && sendable && (

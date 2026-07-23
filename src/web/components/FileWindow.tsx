@@ -3,6 +3,7 @@ import type { Session } from "@shared/types.ts";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { FileWorkspace } from "./FileWorkspace.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 interface Rect { x: number; y: number; width: number; height: number }
 
@@ -65,8 +66,8 @@ export function FileWindow({
         <header className="file-window-head" onPointerDown={drag} onDoubleClick={toggleMaximize}>
           <div><strong>{session.name}</strong><span>Files</span></div>
           <div className="file-window-actions">
-            <button className="icon-btn" onClick={toggleMaximize} title={maximized ? "Restore" : "Maximize"} aria-label={maximized ? "Restore files window" : "Maximize files window"}>{maximized ? "❐" : "□"}</button>
-            <button className="icon-btn" onClick={onClose} aria-label="Close files window">✕</button>
+            <Tooltip label={maximized ? "Restore this window to its previous size" : "Maximize this window"}><button className="icon-btn" onClick={toggleMaximize} aria-label={maximized ? "Restore files window" : "Maximize files window"}>{maximized ? "❐" : "□"}</button></Tooltip>
+            <Tooltip label="Close the files window"><button className="icon-btn" onClick={onClose} aria-label="Close files window">✕</button></Tooltip>
           </div>
         </header>
         <FileWorkspace session={session} controller={controller} extracted />

@@ -2118,6 +2118,35 @@ Markdown open in Preview by default, while ordinary text opens in the editor. HT
 remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
 file reader, without granting the sandbox scripts or network access.
 
+## Tooltips
+
+Every control in the dashboard says what it does on hover. Buttons, links, selects,
+checkboxes, radios, disclosure rows, and the status chips whose text is clipped all carry a
+tooltip; the ones bound to a shortcut name the key too, so the chord is learnable from the
+control rather than only from the Keyboard panel.
+
+They are one component (`src/web/components/Tooltip.tsx`) rather than the browser's `title`
+attribute, which this replaced everywhere. `title` renders in OS chrome, so it was the one
+surface in the app the theme could not reach; its delay is the platform's and not tunable;
+and it never appears on keyboard focus, so half the fleet's controls described themselves
+only to a mouse. The shared bubble matches the app's surface, border and shadow tokens,
+opens on focus as well as hover, flips below the trigger near the top of the window, and
+slides sideways to stay on screen at the edges - with its caret still pointing at the
+control it belongs to.
+
+Two details worth knowing:
+
+- **Disabled controls keep their tooltip**, which is where it matters most - a dead Send
+  says "No pane to send to" rather than leaving you to guess. Directly disabled triggers
+  get a hover anchor; controls disabled by a fieldset put the hover target on their row.
+- **Every label is also a real accessible description**, wired to its control with
+  `aria-describedby`, so a screen reader reaches the same sentence a pointer does.
+
+Free-text fields are deliberately left alone: they carry a visible label or placeholder
+that is on screen the whole time, and repeating it on hover is noise. Anything you *act*
+on has one, and `tooltip-coverage.test.ts` fails the build if a new control arrives
+without one, or if a native `title` attribute creeps back in.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, or to

@@ -1,5 +1,6 @@
 import type { AwayDigest } from "@shared/away-buffer.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /** "12 minutes" / "1 hour 5 minutes" - how long you were away. */
 function span(ms: number): string {
@@ -42,9 +43,11 @@ export function AwayDigestCard({
       <header className="away-digest-head">
         <h2>While you were away</h2>
         <span className="away-digest-span">{span(digest.awayMs)}</span>
-        <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
-          ✕
-        </button>
+        <Tooltip label="Dismiss this digest">
+          <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="away-digest-body">
@@ -64,12 +67,16 @@ export function AwayDigestCard({
       </div>
 
       <footer className="away-digest-foot">
-        <button className="btn" onClick={onOpenReport}>
-          Open sitrep
-        </button>
-        <button className="btn btn-primary" onClick={onDismiss}>
-          Got it
-        </button>
+        <Tooltip label="Open the full sitrep - every session and the backlog">
+          <button className="btn" onClick={onOpenReport}>
+            Open sitrep
+          </button>
+        </Tooltip>
+        <Tooltip label="Dismiss this digest">
+          <button className="btn btn-primary" onClick={onDismiss}>
+            Got it
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

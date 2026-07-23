@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * A themed combobox for a repo path. Replaces the native <datalist>, whose
@@ -151,20 +152,21 @@ export function RepoCombobox({
             style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
           >
             {matches.map((r, i) => (
-              <li
-                key={r}
-                role="option"
-                aria-selected={i === active}
-                className={`combobox-option${i === active ? " is-active" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onMouseDown={(e) => {
-                  // Pick before the input's blur fires, so the click registers.
-                  e.preventDefault();
-                  choose(r);
-                }}
-              >
-                {r}
-              </li>
+              <Tooltip key={r} label={r}>
+                <li
+                  role="option"
+                  aria-selected={i === active}
+                  className={`combobox-option${i === active ? " is-active" : ""}`}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    // Pick before the input's blur fires, so the click registers.
+                    e.preventDefault();
+                    choose(r);
+                  }}
+                >
+                  {r}
+                </li>
+              </Tooltip>
             ))}
           </ul>,
           document.body,

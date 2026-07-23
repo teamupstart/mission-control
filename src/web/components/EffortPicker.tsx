@@ -4,6 +4,7 @@ import type { Session, ThinkingLevel } from "@shared/types.ts";
 import { sessionEffortLevels } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const GAP = 8;
 const WIDTH = 224;
@@ -108,10 +109,10 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
 
   return (
     <>
+      <Tooltip label={`Reasoning effort: ${level} - click to change it for this session`}>
       <button
         ref={chipRef}
         className={`rt-pill rt-think rt-think-${level} rt-think-btn${open ? " open" : ""}`}
-        title={`Reasoning effort: ${level}\nClick to change for this session`}
         aria-label={`Reasoning effort: ${level}. Change effort for this session`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -129,6 +130,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
           ⌄
         </span>
       </button>
+      </Tooltip>
 
       {open &&
         anchor &&
@@ -144,8 +146,8 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
             {levels.map((option) => {
               const active = option === level;
               return (
+                <Tooltip key={option} label={`Set this session's reasoning effort to ${option}`}>
                 <button
-                  key={option}
                   role="menuitemradio"
                   aria-checked={active}
                   className={`mode-opt${active ? " active" : ""}`}
@@ -160,6 +162,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
                   {busy === option && <span className="mode-opt-spin" aria-label="changing" />}
                   {active && busy === null && <span className="mode-opt-check" aria-hidden>✓</span>}
                 </button>
+                </Tooltip>
               );
             })}
             {error && <p className="mode-pop-err">{error}</p>}
@@ -172,9 +175,11 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
 
 function EffortChip({ level }: { level: ThinkingLevel }): React.JSX.Element {
   return (
-    <span className={`rt-pill rt-think rt-think-${level}`} title={`Reasoning effort: ${level}`}>
-      <span className="rt-think-glyph" aria-hidden>✦</span>
-      {level}
-    </span>
+    <Tooltip label={`Reasoning effort: ${level}`}>
+      <span className={`rt-pill rt-think rt-think-${level}`}>
+        <span className="rt-think-glyph" aria-hidden>✦</span>
+        {level}
+      </span>
+    </Tooltip>
   );
 }

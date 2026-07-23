@@ -20,6 +20,7 @@ import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The settings categories, in rail order. Each is a peer destination in the left nav,
@@ -27,18 +28,21 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
  * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
  * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
+/* `blurb` is what the rail's tooltip says. It sits on the registry rather than at the
+   nav's render site so a new panel cannot be added without saying what it is for - the
+   same reason `label` and `icon` live here. */
 export const SETTINGS_CATEGORIES = [
-  { id: "layout", label: "Layout", icon: "▦" },
-  { id: "appearance", label: "Appearance", icon: "◐" },
-  { id: "keyboard", label: "Keyboard", icon: "⌨" },
-  { id: "skills", label: "Skills", icon: "✦" },
-  { id: "harnesses", label: "Harnesses", icon: "⚙" },
-  { id: "task-sources", label: "Task sources", icon: "⇊" },
-  { id: "models", label: "Models", icon: "◈" },
-  { id: "foreman", label: "Foreman", icon: "●" },
-  { id: "cost", label: "Cost", icon: "$" },
-  { id: "inspector", label: "Inspector", icon: "⌕" },
-  { id: "shipping", label: "Shipping", icon: "⚑" },
+  { id: "layout", label: "Layout", icon: "▦", blurb: "How the dashboard arranges sessions" },
+  { id: "appearance", label: "Appearance", icon: "◐", blurb: "How transcripts are rendered" },
+  { id: "keyboard", label: "Keyboard", icon: "⌨", blurb: "Rebind any shortcut" },
+  { id: "skills", label: "Skills", icon: "✦", blurb: "Which skills every session gets" },
+  { id: "harnesses", label: "Harnesses", icon: "⚙", blurb: "Defaults each agent is dispatched with" },
+  { id: "task-sources", label: "Task sources", icon: "⇊", blurb: "Upstreams that pull work into the backlog" },
+  { id: "models", label: "Models", icon: "◈", blurb: "The provider and models behind the app's own calls" },
+  { id: "foreman", label: "Foreman", icon: "●", blurb: "The auto-responder's posture and trusted repos" },
+  { id: "cost", label: "Cost", icon: "$", blurb: "Usage telemetry and what the topbar reports" },
+  { id: "inspector", label: "Inspector", icon: "⌕", blurb: "Review of the pull requests we open" },
+  { id: "shipping", label: "Shipping", icon: "⚑", blurb: "Whether clean pull requests merge themselves" },
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -203,9 +207,11 @@ export function SettingsModal({
     >
       <header className="modal-head">
         <h2>Settings</h2>
-        <button className="icon-btn" aria-label="Close" onClick={onClose}>
-          ✕
-        </button>
+        <Tooltip label="Close settings (Escape)">
+          <button className="icon-btn" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="settings-layout">
@@ -217,26 +223,27 @@ export function SettingsModal({
           onKeyDown={onTablistKey}
         >
           {SETTINGS_CATEGORIES.map((c) => (
-            <button
-              key={c.id}
-              id={tabDomId(c.id)}
-              type="button"
-              className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
-              role="tab"
-              aria-selected={active === c.id}
-              // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
-              tabIndex={active === c.id ? 0 : -1}
-              ref={(el) => {
-                if (el) tabRefs.current.set(c.id, el);
-                else tabRefs.current.delete(c.id);
-              }}
-              onClick={() => setActive(c.id)}
-            >
-              <span className="settings-nav-icon" aria-hidden>
-                {c.icon}
-              </span>
-              {c.label}
-            </button>
+            <Tooltip key={c.id} label={c.blurb}>
+              <button
+                id={tabDomId(c.id)}
+                type="button"
+                className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
+                role="tab"
+                aria-selected={active === c.id}
+                // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
+                tabIndex={active === c.id ? 0 : -1}
+                ref={(el) => {
+                  if (el) tabRefs.current.set(c.id, el);
+                  else tabRefs.current.delete(c.id);
+                }}
+                onClick={() => setActive(c.id)}
+              >
+                <span className="settings-nav-icon" aria-hidden>
+                  {c.icon}
+                </span>
+                {c.label}
+              </button>
+            </Tooltip>
           ))}
         </div>
 

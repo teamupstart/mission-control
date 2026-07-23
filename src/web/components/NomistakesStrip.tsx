@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { NmActiveStep, NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { duration } from "../lib/format.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const STEP_TONE: Record<string, string> = {
   completed: "nm-done",
@@ -89,31 +90,28 @@ export function NomistakesStrip({
           step says it outright: "all CI checks passed - still monitoring until
           merged or closed". A dot can't say that; this line can. */}
       {active?.lastActivity && (
-        <div
-          className="nm-lastact"
-          title={`${active.step} · active ${active.activeFor} · ${active.lastActivity}`}
-        >
-          ↳ {active.lastActivity}
-        </div>
+        <Tooltip label={`${active.step} · active ${active.activeFor} · ${active.lastActivity}`}>
+          <div className="nm-lastact">↳ {active.lastActivity}</div>
+        </Tooltip>
       )}
 
       {nm.steps.length > 0 && (
         <div className="nm-pipe" role="list">
           {nm.steps.map((s, i) => (
-            <span
+            <Tooltip
               key={i}
-              role="listitem"
-              className={`nm-dot ${STEP_TONE[s.status] ?? "nm-pending"}`}
-              title={`${s.step}: ${s.status}${s.findings ? ` · ${s.findings} finding${s.findings > 1 ? "s" : ""}` : ""}${s.step === active?.step ? ` · ${active.lastActivity}` : ""}`}
-            />
+              label={`${s.step}: ${s.status}${s.findings ? ` · ${s.findings} finding${s.findings > 1 ? "s" : ""}` : ""}${s.step === active?.step ? ` · ${active.lastActivity}` : ""}`}
+            >
+              <span role="listitem" className={`nm-dot ${STEP_TONE[s.status] ?? "nm-pending"}`} />
+            </Tooltip>
           ))}
         </div>
       )}
 
       {narration && !nm.gateStep && !nm.outcome && (
-        <div className="nm-narration" title={narration}>
-          ↳ {narration}
-        </div>
+        <Tooltip label={narration}>
+          <div className="nm-narration">↳ {narration}</div>
+        </Tooltip>
       )}
 
       {nm.gateStep && (
@@ -174,31 +172,34 @@ function NmDuration({ nm }: { nm: NmRunSummary }): React.JSX.Element | null {
   if (end == null) return null;
   const text = duration(end - nm.startedAt);
   return (
-    <div
-      className={`nm-elapsed${live ? " nm-elapsed-live" : ""}`}
-      title={
+    <Tooltip
+      label={
         live
           ? `This no-mistakes run has been going ${text} (started ${new Date(nm.startedAt).toLocaleTimeString()})`
           : `This no-mistakes run took ${text}`
       }
     >
-      <span className="nm-elapsed-glyph" aria-hidden>
-        ◷
-      </span>
-      <span className="nm-elapsed-label">{live ? "running for" : "took"}</span>
-      <span className="nm-elapsed-time mono">{text}</span>
-    </div>
+      <div className={`nm-elapsed${live ? " nm-elapsed-live" : ""}`}>
+        <span className="nm-elapsed-glyph" aria-hidden>
+          ◷
+        </span>
+        <span className="nm-elapsed-label">{live ? "running for" : "took"}</span>
+        <span className="nm-elapsed-time mono">{text}</span>
+      </div>
+    </Tooltip>
   );
 }
 
 function FindingRow({ f }: { f: NmFinding }): React.JSX.Element {
   return (
-    <li title={f.description}>
+    <Tooltip label={f.description}>
+    <li>
       <span className={`nm-sev nm-sev-${f.severity}`}>{f.severity}</span>
       <span className="mono nm-file">{f.file}</span>
       <span className={`nm-actiontag nm-action-${f.action}`}>{f.action}</span>
       <span className="nm-desc">{f.description}</span>
     </li>
+    </Tooltip>
   );
 }
 
@@ -312,7 +313,9 @@ function GateActions({
           <div className="nm-fixsel">
             {findings.map((f) => (
               <label key={f.id} className="nm-check">
-                <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggle(f.id)} />
+                <Tooltip label={`Include finding ${f.id} in the fix request`}>
+                  <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggle(f.id)} />
+                </Tooltip>
                 <span className="mono">{f.id}</span>
               </label>
             ))}
@@ -325,16 +328,26 @@ function GateActions({
           onChange={(e) => setInstructions(e.target.value)}
         />
         <div className="nm-actrow">
-          <button
-            className="btn btn-send"
-            disabled={busy || selected.size === 0}
-            onClick={() => void send("fix")}
+          <Tooltip
+            label={
+              selected.size === 0
+                ? "Tick at least one finding to send a fix request"
+                : "Ask the agent to fix the ticked findings"
+            }
           >
-            Fix {selected.size} finding{selected.size === 1 ? "" : "s"}
-          </button>
-          <button className="btn btn-ghost" onClick={() => setMode("idle")}>
-            Cancel
-          </button>
+            <button
+              className="btn btn-send"
+              disabled={busy || selected.size === 0}
+              onClick={() => void send("fix")}
+            >
+              Fix {selected.size} finding{selected.size === 1 ? "" : "s"}
+            </button>
+          </Tooltip>
+          <Tooltip label="Leave the gate where it is">
+            <button className="btn btn-ghost" onClick={() => setMode("idle")}>
+              Cancel
+            </button>
+          </Tooltip>
         </div>
         {err && <span className="nm-err">{err}</span>}
         {nm.response?.status === "failed" && (
@@ -355,12 +368,22 @@ function GateActions({
               ? "Advance the pipeline (may push & open a PR)?"
               : "Skip this check?"}
           </span>
-          <button className="btn btn-approve" disabled={busy} onClick={() => void send(action)}>
-            Confirm {action}
-          </button>
-          <button className="btn btn-ghost" onClick={() => setMode("idle")}>
-            Cancel
-          </button>
+          <Tooltip
+            label={
+              action === "approve"
+                ? "Advance the pipeline - this may push and open a pull request"
+                : "Skip this check and move on"
+            }
+          >
+            <button className="btn btn-approve" disabled={busy} onClick={() => void send(action)}>
+              Confirm {action}
+            </button>
+          </Tooltip>
+          <Tooltip label="Leave the gate where it is">
+            <button className="btn btn-ghost" onClick={() => setMode("idle")}>
+              Cancel
+            </button>
+          </Tooltip>
           {err && <span className="nm-err">{err}</span>}
         </div>
       </div>
@@ -376,15 +399,21 @@ function GateActions({
         </div>
       )}
       <div className="nm-actrow">
-        <button className="btn btn-approve" onClick={() => setMode("confirm-approve")}>
-          Approve
-        </button>
-        <button className="btn btn-send" onClick={() => setMode("fix")}>
-          Fix
-        </button>
-        <button className="btn" onClick={() => setMode("confirm-skip")}>
-          Skip
-        </button>
+        <Tooltip label="Let this gate step pass and advance the pipeline">
+          <button className="btn btn-approve" onClick={() => setMode("confirm-approve")}>
+            Approve
+          </button>
+        </Tooltip>
+        <Tooltip label="Send the findings back to the agent to fix">
+          <button className="btn btn-send" onClick={() => setMode("fix")}>
+            Fix
+          </button>
+        </Tooltip>
+        <Tooltip label="Skip this check without fixing it">
+          <button className="btn" onClick={() => setMode("confirm-skip")}>
+            Skip
+          </button>
+        </Tooltip>
         {err && <span className="nm-err">{err}</span>}
       </div>
     </div>

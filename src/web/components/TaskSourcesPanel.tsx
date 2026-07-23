@@ -17,6 +17,7 @@ import type { TaskSourcesState } from "../useTaskSources.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The Task sources settings category: what pulls work INTO the backlog from systems that
 // already hold it.
@@ -98,21 +99,25 @@ function PriorityRow({
           if (next && next !== label) onChange(next, priority);
         }}
       />
-      <select
-        className="harnesses-select"
-        value={priority}
-        aria-label={`Priority for the ${label} label`}
-        onChange={(e) => onChange(label, e.target.value as TaskPriority)}
-      >
-        {TASK_PRIORITIES.map((p) => (
-          <option key={p} value={p}>
-            {PRIORITY_LABELS[p]}
-          </option>
-        ))}
-      </select>
-      <button className="foreman-repo-remove" onClick={onRemove} aria-label={`Stop mapping ${label}`}>
-        ✕
-      </button>
+      <Tooltip label={`Priority given to an issue carrying the "${label}" label`}>
+        <select
+          className="harnesses-select"
+          value={priority}
+          aria-label={`Priority for the ${label} label`}
+          onChange={(e) => onChange(label, e.target.value as TaskPriority)}
+        >
+          {TASK_PRIORITIES.map((p) => (
+            <option key={p} value={p}>
+              {PRIORITY_LABELS[p]}
+            </option>
+          ))}
+        </select>
+      </Tooltip>
+      <Tooltip label={`Stop mapping the "${label}" label to a priority`}>
+        <button className="foreman-repo-remove" onClick={onRemove} aria-label={`Stop mapping ${label}`}>
+          ✕
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -207,29 +212,33 @@ function GithubFields({
           ] as const
         ).map(([value, text]) => (
           <label className="alert-row" key={value}>
-            <input
-              type="radio"
-              name="ts-assignee"
-              checked={assignee === value}
-              onChange={() =>
-                onChange({
-                  ...cfg,
-                  assignedToMe: value === "me",
-                  unassignedOnly: value === "nobody",
-                })
-              }
-            />
+            <Tooltip label={`Sweep issues: ${text}`}>
+              <input
+                type="radio"
+                name="ts-assignee"
+                checked={assignee === value}
+                onChange={() =>
+                  onChange({
+                    ...cfg,
+                    assignedToMe: value === "me",
+                    unassignedOnly: value === "nobody",
+                  })
+                }
+              />
+            </Tooltip>
             <span>{text}</span>
           </label>
         ))}
       </fieldset>
 
       <label className="alert-row ts-check">
-        <input
-          type="checkbox"
-          checked={cfg.copyLabels}
-          onChange={(e) => onChange({ ...cfg, copyLabels: e.target.checked })}
-        />
+        <Tooltip label="Carry each issue's GitHub labels across onto the task this files">
+          <input
+            type="checkbox"
+            checked={cfg.copyLabels}
+            onChange={(e) => onChange({ ...cfg, copyLabels: e.target.checked })}
+          />
+        </Tooltip>
         <span>Copy the issue's GitHub labels onto the task</span>
       </label>
 
@@ -326,12 +335,20 @@ function SourceCard({
     <div className="ts-card ts-editor">
       <div className="ts-head">
         <label className="skill-switch">
-          <input
-            type="checkbox"
-            checked={src.enabled}
-            aria-label={`Sweep ${nameOf(src, kindLabel)} on a schedule`}
-            onChange={(e) => onChange({ ...src, enabled: e.target.checked })}
-          />
+          <Tooltip
+            label={
+              src.enabled
+                ? "Enabled - this source sweeps on its schedule. Click to pause it."
+                : "Paused - this source never sweeps. Click to enable it."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={src.enabled}
+              aria-label={`Sweep ${nameOf(src, kindLabel)} on a schedule`}
+              onChange={(e) => onChange({ ...src, enabled: e.target.checked })}
+            />
+          </Tooltip>
         </label>
         <input
           className="field-input ts-name"
@@ -342,14 +359,15 @@ function SourceCard({
           onBlur={() => commit("label", (v) => onChange({ ...src, label: v.trim().slice(0, 80) }))}
         />
         <span className="skill-badge">{kindLabel}</span>
-        <button
-          className="foreman-repo-remove"
-          onClick={onRemove}
-          title="Remove this source"
-          aria-label={`Remove ${nameOf(src, kindLabel)}`}
-        >
-          ✕
-        </button>
+        <Tooltip label="Remove this source">
+          <button
+            className="foreman-repo-remove"
+            onClick={onRemove}
+            aria-label={`Remove ${nameOf(src, kindLabel)}`}
+          >
+            ✕
+          </button>
+        </Tooltip>
       </div>
 
       <p className={`ts-status${status?.lastError ? " ts-status-failed" : ""}`}>
@@ -373,13 +391,15 @@ function SourceCard({
               value={val("repoRoot", src.repoRoot)}
               onChange={(v) => edit("repoRoot", v)}
             />
-            <button
-              className="btn"
-              disabled={!text.repoRoot?.trim() || text.repoRoot.trim() === src.repoRoot}
-              onClick={() => commit("repoRoot", (v) => onChange({ ...src, repoRoot: v.trim() }))}
-            >
-              Set repo
-            </button>
+            <Tooltip label="Commit this checkout as the repo swept tasks are filed against">
+              <button
+                className="btn"
+                disabled={!text.repoRoot?.trim() || text.repoRoot.trim() === src.repoRoot}
+                onClick={() => commit("repoRoot", (v) => onChange({ ...src, repoRoot: v.trim() }))}
+              >
+                Set repo
+              </button>
+            </Tooltip>
           </div>
         </div>
 
@@ -426,63 +446,69 @@ function SourceCard({
         <div className="ts-fields">
           <label className="ts-field">
             <span className="ts-field-label">Agent</span>
-            <select
-              className="harnesses-select"
-              value={src.defaults.agent}
-              onChange={(e) =>
-                onChange({
-                  ...src,
-                  defaults: { ...src.defaults, agent: e.target.value as AgentType },
-                })
-              }
-            >
-              {AGENT_TYPES.map((a) => (
-                <option key={a} value={a}>
-                  {AGENT_IDENTITY[a].label}
-                </option>
-              ))}
-            </select>
+            <Tooltip label="Which harness a task swept by this source is dispatched to">
+              <select
+                className="harnesses-select"
+                value={src.defaults.agent}
+                onChange={(e) =>
+                  onChange({
+                    ...src,
+                    defaults: { ...src.defaults, agent: e.target.value as AgentType },
+                  })
+                }
+              >
+                {AGENT_TYPES.map((a) => (
+                  <option key={a} value={a}>
+                    {AGENT_IDENTITY[a].label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </label>
 
           <label className="ts-field">
             <span className="ts-field-label">Kind</span>
-            <select
-              className="harnesses-select"
-              value={src.defaults.kind}
-              onChange={(e) =>
-                onChange({
-                  ...src,
-                  defaults: { ...src.defaults, kind: e.target.value as TaskKind },
-                })
-              }
-            >
-              <option value="ship">Ship - deliver a change</option>
-              <option value="scout">Scout - investigate and report</option>
-            </select>
+            <Tooltip label="Whether a swept task asks for a delivered change or an investigation">
+              <select
+                className="harnesses-select"
+                value={src.defaults.kind}
+                onChange={(e) =>
+                  onChange({
+                    ...src,
+                    defaults: { ...src.defaults, kind: e.target.value as TaskKind },
+                  })
+                }
+              >
+                <option value="ship">Ship - deliver a change</option>
+                <option value="scout">Scout - investigate and report</option>
+              </select>
+            </Tooltip>
           </label>
 
           <label className="ts-field">
             <span className="ts-field-label">Priority</span>
-            <select
-              className="harnesses-select"
-              value={src.defaults.priority ?? ""}
-              onChange={(e) =>
-                onChange({
-                  ...src,
-                  defaults: {
-                    ...src.defaults,
-                    priority: (e.target.value || null) as TaskPriority | null,
-                  },
-                })
-              }
-            >
-              <option value="">Unset</option>
-              {TASK_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-            </select>
+            <Tooltip label="Priority given to a swept task that no label above matched">
+              <select
+                className="harnesses-select"
+                value={src.defaults.priority ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    ...src,
+                    defaults: {
+                      ...src.defaults,
+                      priority: (e.target.value || null) as TaskPriority | null,
+                    },
+                  })
+                }
+              >
+                <option value="">Unset</option>
+                {TASK_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {PRIORITY_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </label>
 
           <label className="ts-field ts-field-wide">
@@ -503,48 +529,53 @@ function SourceCard({
       </div>
 
       <div className="ts-actions">
-        <button
-          className="btn"
-          disabled={busy !== null || status?.sweeping}
-          onClick={() =>
-            void run("sweep", async () => {
-              const r = await state.sweep(src.id);
-              if (!r) return "The sweep could not run.";
-              if (r.error) return r.error;
-              const bits = [`filed ${r.filed}`, `${r.alreadySeen} already filed`];
-              if (r.overCap > 0) bits.push(`${r.overCap} left for the next sweep`);
-              if (r.refused.length > 0) bits.push(`${r.refused.length} refused`);
-              return `Swept: ${bits.join(", ")}.`;
-            })
-          }
-        >
-          {busy === "sweep" ? "Sweeping…" : "Sweep now"}
-        </button>
-        <button
-          className="btn"
-          disabled={busy !== null}
-          onClick={() =>
-            void run("preflight", async () => {
-              const problem = await state.preflight(src.id);
-              return problem ?? "Looks good - gh is reachable and this repo lists issues.";
-            })
-          }
-        >
-          {busy === "preflight" ? "Checking…" : "Check it works"}
-        </button>
-        <button
-          className="btn"
-          disabled={busy !== null || (status?.seenCount ?? 0) === 0}
-          title="Everything this source has filed becomes fileable again"
-          onClick={() =>
-            void run("forget", async () => {
-              await state.forget(src.id);
-              return "Forgotten - the next sweep will file these items again.";
-            })
-          }
-        >
-          {busy === "forget" ? "Forgetting…" : "Forget seen items"}
-        </button>
+        <Tooltip label="Run this source's sweep right now, without waiting for its schedule">
+          <button
+            className="btn"
+            disabled={busy !== null || status?.sweeping}
+            onClick={() =>
+              void run("sweep", async () => {
+                const r = await state.sweep(src.id);
+                if (!r) return "The sweep could not run.";
+                if (r.error) return r.error;
+                const bits = [`filed ${r.filed}`, `${r.alreadySeen} already filed`];
+                if (r.overCap > 0) bits.push(`${r.overCap} left for the next sweep`);
+                if (r.refused.length > 0) bits.push(`${r.refused.length} refused`);
+                return `Swept: ${bits.join(", ")}.`;
+              })
+            }
+          >
+            {busy === "sweep" ? "Sweeping…" : "Sweep now"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Check this source's upstream is reachable and its filters return something">
+          <button
+            className="btn"
+            disabled={busy !== null}
+            onClick={() =>
+              void run("preflight", async () => {
+                const problem = await state.preflight(src.id);
+                return problem ?? "Looks good - gh is reachable and this repo lists issues.";
+              })
+            }
+          >
+            {busy === "preflight" ? "Checking…" : "Check it works"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Everything this source has filed becomes fileable again">
+          <button
+            className="btn"
+            disabled={busy !== null || (status?.seenCount ?? 0) === 0}
+            onClick={() =>
+              void run("forget", async () => {
+                await state.forget(src.id);
+                return "Forgotten - the next sweep will file these items again.";
+              })
+            }
+          >
+            {busy === "forget" ? "Forgetting…" : "Forget seen items"}
+          </button>
+        </Tooltip>
       </div>
     </div>
   );
@@ -620,7 +651,9 @@ function SourceDirectory({
     <>
       <div className="settings-section-head">
         <h3>Task sources <span className="ts-count">· {sources.length} configured</span></h3>
-        <button className="btn" onClick={onAdd}>+ Add source</button>
+        <Tooltip label="Configure a new upstream to pull work from into the backlog">
+          <button className="btn" onClick={onAdd}>+ Add source</button>
+        </Tooltip>
       </div>
 
       <div className="ts-overview" aria-label="Task source overview">
@@ -643,27 +676,30 @@ function SourceDirectory({
           aria-label="Search task sources"
           onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
         />
-        <select className="harnesses-select" value={filters.kind} aria-label="Filter task sources by type" onChange={(e) => onFiltersChange({ ...filters, kind: e.target.value as TaskSourceKind | "all" })}>
-          <option value="all">All types</option>
-          {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
-        </select>
+        <Tooltip label="Show only sources of one type">
+          <select className="harnesses-select" value={filters.kind} aria-label="Filter task sources by type" onChange={(e) => onFiltersChange({ ...filters, kind: e.target.value as TaskSourceKind | "all" })}>
+            <option value="all">All types</option>
+            {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
+          </select>
+        </Tooltip>
       </div>
       <div className="ts-filters" aria-label="Filter task sources by health">
         {([
-          ["all", `All ${sources.length}`],
-          ["healthy", `Healthy ${counts.healthy}`],
-          ["attention", `Attention ${counts.attention}`],
-          ["pending", `Pending ${counts.pending}`],
-          ["paused", `Paused ${counts.paused}`],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            className={filters.health === id ? "is-active" : ""}
-            aria-pressed={filters.health === id}
-            onClick={() => onFiltersChange({ ...filters, health: id })}
-          >
-            {label}
-          </button>
+          ["all", `All ${sources.length}`, "Show every configured source"],
+          ["healthy", `Healthy ${counts.healthy}`, "Show only sources whose last sweep succeeded"],
+          ["attention", `Attention ${counts.attention}`, "Show only sources whose last sweep failed"],
+          ["pending", `Pending ${counts.pending}`, "Show only sources that have never swept"],
+          ["paused", `Paused ${counts.paused}`, "Show only sources that are switched off"],
+        ] as const).map(([id, label, hint]) => (
+          <Tooltip key={id} label={hint}>
+            <button
+              className={filters.health === id ? "is-active" : ""}
+              aria-pressed={filters.health === id}
+              onClick={() => onFiltersChange({ ...filters, health: id })}
+            >
+              {label}
+            </button>
+          </Tooltip>
         ))}
       </div>
 
@@ -675,18 +711,20 @@ function SourceDirectory({
           const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : health === "pending" ? status ? "Never swept" : "No status" : "Healthy";
           return (
             <div className="ts-directory-item" role="listitem" key={src.id}>
-              <button
-                ref={(node) => {
-                  if (node) rowRefs.current.set(src.id, node);
-                  else rowRefs.current.delete(src.id);
-                }}
-                className="ts-directory-row"
-                onClick={() => onSelect(src.id)}
-              >
-                <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
-                <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
-                <span className="ts-directory-chevron" aria-hidden>›</span>
-              </button>
+              <Tooltip label={`Open ${nameOf(src, kindLabel)} - ${healthText.toLowerCase()}`}>
+                <button
+                  ref={(node) => {
+                    if (node) rowRefs.current.set(src.id, node);
+                    else rowRefs.current.delete(src.id);
+                  }}
+                  className="ts-directory-row"
+                  onClick={() => onSelect(src.id)}
+                >
+                  <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
+                  <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
+                  <span className="ts-directory-chevron" aria-hidden>›</span>
+                </button>
+              </Tooltip>
             </div>
           );
         })}
@@ -806,7 +844,9 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
 
       {view && selected && !showAdd && (
         <div className="ts-editor-view">
-          <button ref={editorRef} className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
+          <Tooltip label="Back to the list of configured sources">
+            <button ref={editorRef} className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
+          </Tooltip>
           <SourceCard
             src={selected}
             kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
@@ -842,26 +882,30 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       )}
 
       {view && showAdd && <div className="ts-add ts-add-panel">
-        <button className="ts-back" onClick={() => setShowAdd(false)}>← All task sources</button>
+        <Tooltip label="Back to the list of configured sources">
+          <button className="ts-back" onClick={() => setShowAdd(false)}>← All task sources</button>
+        </Tooltip>
         <div className="settings-section-head"><h3>Add a task source</h3></div>
         <p className="settings-group-label">Add a source</p>
         {kinds.length > 0 && (
           <p className="settings-hint">{kinds.find((k) => k.kind === kind)?.blurb}</p>
         )}
         <div className="foreman-repo-add">
-          <select
-            className="harnesses-select"
-            value={kind ?? ""}
-            disabled={!view}
-            aria-label="What kind of source to add"
-            onChange={(e) => setDraftKind(e.target.value as TaskSourceKind)}
-          >
-            {kinds.map((k) => (
-              <option key={k.kind} value={k.kind}>
-                {k.label}
-              </option>
-            ))}
-          </select>
+          <Tooltip label="Which upstream this new source pulls work from">
+            <select
+              className="harnesses-select"
+              value={kind ?? ""}
+              disabled={!view}
+              aria-label="What kind of source to add"
+              onChange={(e) => setDraftKind(e.target.value as TaskSourceKind)}
+            >
+              {kinds.map((k) => (
+                <option key={k.kind} value={k.kind}>
+                  {k.label}
+                </option>
+              ))}
+            </select>
+          </Tooltip>
           <RepoCombobox
             repos={repos}
             value={draftRepo}
@@ -870,15 +914,25 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
               setAddError(null);
             }}
           />
-          <button className="btn" disabled={!view || !draftRepo.trim() || adding} onClick={() => void add()}>
-            {adding ? "Adding…" : "Add"}
-          </button>
+          <Tooltip
+            label={
+              !draftRepo.trim()
+                ? "Pick the checkout this source files tasks against"
+                : "Add this source - it starts switched off"
+            }
+          >
+            <button className="btn" disabled={!view || !draftRepo.trim() || adding} onClick={() => void add()}>
+              {adding ? "Adding…" : "Add"}
+            </button>
+          </Tooltip>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
       </div>}
 
       {view && sources.length === 0 && !showAdd && (
-        <button className="btn ts-empty-add" onClick={() => setShowAdd(true)}>+ Add source</button>
+        <Tooltip label="Configure a new upstream to pull work from into the backlog">
+          <button className="btn ts-empty-add" onClick={() => setShowAdd(true)}>+ Add source</button>
+        </Tooltip>
       )}
     </section>
   );

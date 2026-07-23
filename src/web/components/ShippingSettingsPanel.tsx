@@ -7,6 +7,7 @@ import type { InspectorConfig } from "@shared/protocol.ts";
 import type { ShippingState } from "../useShipping.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { candidateRepos } from "./ForemanSettingsPanel.tsx";
 import { NumberSetting } from "./ForemanBar.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
@@ -144,15 +145,17 @@ export function ShippingSettingsPanel({
         </p>
       )}
 
-      <label className="alert-row ship-toggle">
-        <input
-          type="checkbox"
-          checked={autoMerge}
-          disabled={!config}
-          onChange={(e) => void update({ autoMerge: e.target.checked })}
-        />
-        <span>YOLO mode - merge our pull requests when they come out clean</span>
-      </label>
+      <Tooltip label="Merge our pull requests automatically once CI is green and review is clean">
+        <label className="alert-row ship-toggle">
+          <input
+            type="checkbox"
+            checked={autoMerge}
+            disabled={!config}
+            onChange={(e) => void update({ autoMerge: e.target.checked })}
+          />
+          <span>YOLO mode - merge our pull requests when they come out clean</span>
+        </label>
+      </Tooltip>
 
       {/* Shown whenever it is armed, not only on the click that arms it: the risk is
           ongoing rather than momentary, and a merge is the one action here that no
@@ -214,16 +217,18 @@ export function ShippingSettingsPanel({
       <fieldset className="ship-methods">
         <legend>How to merge</legend>
         {(["squash", "merge", "rebase"] as const).map((m) => (
-          <label className="alert-row" key={m}>
-            <input
-              type="radio"
-              name="shipping-method"
-              checked={method === m}
-              disabled={!config}
-              onChange={() => void update({ method: m })}
-            />
-            <span>{METHOD_LABEL[m]}</span>
-          </label>
+          <Tooltip label={METHOD_LABEL[m]} key={m}>
+            <label className="alert-row">
+              <input
+                type="radio"
+                name="shipping-method"
+                checked={method === m}
+                disabled={!config}
+                onChange={() => void update({ method: m })}
+              />
+              <span>{METHOD_LABEL[m]}</span>
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 
@@ -244,17 +249,18 @@ export function ShippingSettingsPanel({
           <ul className="foreman-repo-list">
             {allowlist.map((path) => (
               <li className="foreman-repo-row" key={path}>
-                <span className="foreman-repo-path" title={path}>
-                  {path}
-                </span>
-                <button
-                  className="foreman-repo-remove"
-                  onClick={() => remove(path)}
-                  title="Stop auto-merging in this repo"
-                  aria-label={`Stop auto-merging in ${path}`}
-                >
-                  ✕
-                </button>
+                <Tooltip label={path}>
+                  <span className="foreman-repo-path">{path}</span>
+                </Tooltip>
+                <Tooltip label="Stop auto-merging in this repo">
+                  <button
+                    className="foreman-repo-remove"
+                    onClick={() => remove(path)}
+                    aria-label={`Stop auto-merging in ${path}`}
+                  >
+                    ✕
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -269,13 +275,15 @@ export function ShippingSettingsPanel({
               setAddError(null);
             }}
           />
-          <button
-            className="btn"
-            disabled={!config || !draft.trim() || adding}
-            onClick={() => void add()}
-          >
-            {adding ? "Adding…" : "Add"}
-          </button>
+          <Tooltip label="Let clean pull requests merge themselves in this repo">
+            <button
+              className="btn"
+              disabled={!config || !draft.trim() || adding}
+              onClick={() => void add()}
+            >
+              {adding ? "Adding…" : "Add"}
+            </button>
+          </Tooltip>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
       </div>
@@ -292,9 +300,11 @@ export function ShippingSettingsPanel({
           <ul className="ship-log-list">
             {inspections.map((row) => (
               <li className="ship-log-row" key={row.key}>
-                <a className="ship-log-pr" href={row.url} target="_blank" rel="noreferrer">
-                  {row.repo}#{row.number}
-                </a>
+                <Tooltip label={`Open ${row.repo}#${row.number} on GitHub`}>
+                  <a className="ship-log-pr" href={row.url} target="_blank" rel="noreferrer">
+                    {row.repo}#{row.number}
+                  </a>
+                </Tooltip>
                 <span
                   className={`ship-log-state${row.mergedAt !== null ? " ship-log-merged" : ""}`}
                 >

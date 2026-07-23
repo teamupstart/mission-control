@@ -3,6 +3,7 @@ import type { InspectorInspection } from "@shared/types.ts";
 import type { InspectorState } from "../useInspector.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { candidateRepos } from "./ForemanSettingsPanel.tsx";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
@@ -125,29 +126,40 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         </p>
       )}
 
-      <label className="alert-row inspector-toggle">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={!config}
-          onChange={(e) => void update({ enabled: e.target.checked })}
-        />
-        <span>Run the Inspector</span>
-      </label>
+      <Tooltip label="Review the pull requests Mission Control opened, and comment on them">
+        <label className="alert-row inspector-toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!config}
+            onChange={(e) => void update({ enabled: e.target.checked })}
+          />
+          <span>Run the Inspector</span>
+        </label>
+      </Tooltip>
 
       <fieldset className="inspector-modes">
         <legend>Mode</legend>
         {(["dry-run", "live"] as const).map((m) => (
-          <label className="alert-row" key={m}>
-            <input
-              type="radio"
-              name="inspector-mode"
-              checked={mode === m}
-              disabled={!config}
-              onChange={() => void update({ mode: m })}
-            />
-            <span>{MODE_LABEL[m]}</span>
-          </label>
+          <Tooltip
+            key={m}
+            label={
+              m === "live"
+                ? "Post the Inspector's findings to GitHub as review comments"
+                : "Compute findings and show them here, but post nothing to GitHub"
+            }
+          >
+            <label className="alert-row">
+              <input
+                type="radio"
+                name="inspector-mode"
+                checked={mode === m}
+                disabled={!config}
+                onChange={() => void update({ mode: m })}
+              />
+              <span>{MODE_LABEL[m]}</span>
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 
@@ -168,6 +180,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         <p className="settings-group-label">Model</p>
         <label className="foreman-model-row" htmlFor="inspector-provider">
           <span className="foreman-model-label">Provider</span>
+          <Tooltip label="Which model provider the Inspector's review call is spawned with">
           <select
             id="inspector-provider"
             className="field-input foreman-model-input"
@@ -184,6 +197,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
               <option key={runner} value={runner}>{AGENT_IDENTITY[runner].label}</option>
             ))}
           </select>
+          </Tooltip>
           <span className="settings-hint foreman-model-blurb">Runs reviews and follow-up replies through this provider.</span>
         </label>
         <p className="settings-hint foreman-models-hint">
@@ -224,17 +238,18 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
           <ul className="foreman-repo-list">
             {allowlist.map((path) => (
               <li className="foreman-repo-row" key={path}>
-                <span className="foreman-repo-path" title={path}>
-                  {path}
-                </span>
-                <button
-                  className="foreman-repo-remove"
-                  onClick={() => remove(path)}
-                  title="Stop reviewing this repo"
-                  aria-label={`Stop reviewing ${path}`}
-                >
-                  ✕
-                </button>
+                <Tooltip label={path}>
+                  <span className="foreman-repo-path">{path}</span>
+                </Tooltip>
+                <Tooltip label="Stop reviewing this repo">
+                  <button
+                    className="foreman-repo-remove"
+                    onClick={() => remove(path)}
+                    aria-label={`Stop reviewing ${path}`}
+                  >
+                    ✕
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -249,13 +264,15 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
               setAddError(null);
             }}
           />
-          <button
-            className="btn"
-            disabled={!config || !draft.trim() || adding}
-            onClick={() => void add()}
-          >
-            {adding ? "Adding…" : "Add"}
-          </button>
+          <Tooltip label="Review pull requests Mission Control opens in this repo">
+            <button
+              className="btn"
+              disabled={!config || !draft.trim() || adding}
+              onClick={() => void add()}
+            >
+              {adding ? "Adding…" : "Add"}
+            </button>
+          </Tooltip>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
       </div>
@@ -276,15 +293,16 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
                 className={`inspector-log-row${row.state === "closed" ? " is-retired" : ""}`}
                 key={row.key}
               >
-                <a
-                  className="inspector-log-pr"
-                  href={row.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={row.lastError ?? row.url}
-                >
-                  {row.repo}#{row.number}
-                </a>
+                <Tooltip label={row.lastError ?? `Open ${row.repo}#${row.number} on GitHub`}>
+                  <a
+                    className="inspector-log-pr"
+                    href={row.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {row.repo}#{row.number}
+                  </a>
+                </Tooltip>
                 <span
                   className={`inspector-log-state${row.lastError ? " inspector-log-failed" : ""}`}
                 >

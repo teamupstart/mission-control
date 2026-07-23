@@ -4,6 +4,7 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { relativeTime } from "../lib/format.ts";
 
 // The Foreman panel inside an expanded card: the session's Purpose, plus - when
@@ -88,21 +89,27 @@ export function ForemanNote({
         <>
           <p className="fn-hint dim">{blocked}</p>
           <div className="fn-actions">
-            <button className="btn" disabled={busy} onClick={() => void dismiss()}>
-              Dismiss
-            </button>
+            <Tooltip label="Drop this note - nothing is sent to the session">
+              <button className="btn" disabled={busy} onClick={() => void dismiss()}>
+                Dismiss
+              </button>
+            </Tooltip>
           </div>
         </>
       )}
 
       {pending && !done && sendable && (
         <div className="fn-actions">
-          <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
-            Approve &amp; send
-          </button>
-          <button className="btn" disabled={busy} onClick={() => void dismiss()}>
-            Dismiss
-          </button>
+          <Tooltip label="Type Foreman's drafted reply into this session's prompt">
+            <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
+              Approve &amp; send
+            </button>
+          </Tooltip>
+          <Tooltip label="Drop this note - nothing is sent to the session">
+            <button className="btn" disabled={busy} onClick={() => void dismiss()}>
+              Dismiss
+            </button>
+          </Tooltip>
         </div>
       )}
 

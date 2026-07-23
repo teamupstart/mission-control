@@ -14,6 +14,7 @@ import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { readLastWorkflowId, rememberWorkflowId } from "./workflowSelection.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 interface CreateResponse { summary: WorkflowSummary }
 
@@ -56,7 +57,11 @@ export function WorkflowLoadError({
   return (
     <p className="persona-error" role="alert">
       {error}
-      {canRetry && <button className="btn btn-ghost" onClick={onRetry}>Retry</button>}
+      {canRetry && (
+        <Tooltip label="Try loading this workflow again">
+          <button className="btn btn-ghost" onClick={onRetry}>Retry</button>
+        </Tooltip>
+      )}
     </p>
   );
 }
@@ -168,28 +173,38 @@ export function WorkflowLibrary({
   return (
     <section className="workflow-builder">
       <aside className="workflow-library-sidebar" aria-label="Workflow library and node palette">
-        <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></header>
+        <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></Tooltip></header>
         <div className="workflow-library-list">
           {listed.length === 0 && <p>No workflow drafts yet.</p>}
           {listed.map((summary) => (
-            <button key={summary.id} disabled={transitioning} className={selectedId === summary.id ? "active" : ""} onClick={() => void select(summary.id)}>
-              <strong>{summary.name}</strong>
-              <span>{summary.archivedAt !== null ? "Archived" : summary.errorCount ? `${summary.errorCount} errors` : "Draft valid"}{summary.publishedVersion ? ` · v${summary.publishedVersion}` : ""}</span>
-            </button>
+            <Tooltip key={summary.id} label={`Open ${summary.name} in the builder`}>
+              <button disabled={transitioning} className={selectedId === summary.id ? "active" : ""} onClick={() => void select(summary.id)}>
+                <strong>{summary.name}</strong>
+                <span>{summary.archivedAt !== null ? "Archived" : summary.errorCount ? `${summary.errorCount} errors` : "Draft valid"}{summary.publishedVersion ? ` · v${summary.publishedVersion}` : ""}</span>
+              </button>
+            </Tooltip>
           ))}
-          {ordered.some((summary) => summary.archivedAt !== null) && <label className="workflow-show-archived"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Show archived</label>}
+          {ordered.some((summary) => summary.archivedAt !== null) && <label className="workflow-show-archived"><Tooltip label="Include archived workflows in this list"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /></Tooltip> Show archived</label>}
         </div>
         {workflow && workflow.archivedAt === null && (
           <section className="workflow-palette">
             <h4>Node palette</h4>
             <p>Session is fixed. Add review and terminal nodes.</p>
-            <select aria-label="Persona for new node" disabled={transitioning} value={palettePersona} onChange={(event) => setPalettePersona(event.target.value)}>
-              <option value="">Choose a Persona</option>
-              {activePersonas.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
-            </select>
-            <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
-            <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
-            <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
+            <Tooltip label="Which Persona a new review node runs">
+              <select aria-label="Persona for new node" disabled={transitioning} value={palettePersona} onChange={(event) => setPalettePersona(event.target.value)}>
+                <option value="">Choose a Persona</option>
+                {activePersonas.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+              </select>
+            </Tooltip>
+            <Tooltip label={palettePersona ? "Add a review node running the chosen Persona - or drag it onto the canvas" : "Choose a Persona above first"}>
+              <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
+            </Tooltip>
+            <Tooltip label="Add a join that waits for every incoming branch to pass - or drag it onto the canvas">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
+            </Tooltip>
+            <Tooltip label="Add a terminal outcome node - or drag it onto the canvas">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
+            </Tooltip>
             <small>No checkpoint node · Inspector is a final-gate setting.</small>
           </section>
         )}
@@ -197,7 +212,7 @@ export function WorkflowLibrary({
 
       <div className="workflow-builder-main">
         {!selectedId && (
-          <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><button className="btn" disabled={transitioning} onClick={() => void create()}>New workflow</button></section>
+          <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New workflow</button></Tooltip></section>
         )}
         {draft.loading && <section className="workflow-empty"><p>Loading workflow…</p></section>}
         <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
@@ -206,8 +221,11 @@ export function WorkflowLibrary({
             <header className="workflow-builder-toolbar">
               <div><p className="workflow-eyebrow">Draft revision {workflow.draftRevision}</p><h3>{workflow.name}</h3></div>
               <span className={draft.saving || transitioning ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{transitioning ? "Working…" : draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
-              <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
-              <button className="btn btn-danger" disabled={transitioning || workflow.archivedAt !== null} onClick={() => {
+              <Tooltip label="Copy this workflow into a new draft">
+                <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
+              </Tooltip>
+              <Tooltip label="Archive this workflow - published versions stay readable">
+                <button className="btn btn-danger" disabled={transitioning || workflow.archivedAt !== null} onClick={() => {
                 if (!window.confirm(`Archive ${workflow.name}? Published versions remain readable.`)) return;
                 void runTransition(async () => {
                   if (!(await draft.saveNow())) return;
@@ -217,10 +235,13 @@ export function WorkflowLibrary({
                   openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
                 });
               }}>Archive</button>
-              <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
+              </Tooltip>
+              <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
+              </Tooltip>
             </header>
             {draft.conflict && (
-              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><button onClick={() => void draft.reload()}>Reload latest</button><button onClick={() => void duplicate()}>Duplicate my draft</button></div>
+              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><Tooltip label="Discard your unsaved edits and load the newer revision"><button onClick={() => void draft.reload()}>Reload latest</button></Tooltip><Tooltip label="Keep your edits by copying them into a new workflow"><button onClick={() => void duplicate()}>Duplicate my draft</button></Tooltip></div>
             )}
             <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={transitioning || workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />
           </>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { NmFixDetail, NmFixSummary } from "@shared/types.ts";
 import { fetchNomistakesFix } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * What no-mistakes changed on this session's branch, and why.
@@ -57,6 +58,7 @@ export function NomistakesFixLog({
 
   return (
     <div className={`nm-log${open ? " nm-log-open" : ""}`}>
+      <Tooltip label={open ? "Fold the fix log away" : "Show every fix no-mistakes made in this session"}>
       <button
         className="nm-rollup"
         type="button"
@@ -70,6 +72,7 @@ export function NomistakesFixLog({
           ▾
         </span>
       </button>
+      </Tooltip>
 
       {open && (
         <>
@@ -183,6 +186,15 @@ function FixRow({
 
   return (
     <li className={`nm-fixrow${open ? " nm-fixrow-open" : ""}`}>
+      {/* The foreman byline used to carry its own `title`. It sits INSIDE this button, so
+          giving it a Tooltip of its own would put two bubbles on one hover - the row's
+          handlers fire for the child too. The fact belongs in one sentence instead. */}
+      <Tooltip
+        label={
+          (open ? "Fold this fix away" : "Show what this fix changed and why") +
+          (fix.repliedBy === "foreman" ? " · the foreman nudged this gate" : "")
+        }
+      >
       <button className="nm-fixbtn" type="button" aria-expanded={open} onClick={onToggle}>
         <span className={`nm-steptag nm-step-${fix.step}`}>{fix.step}</span>
         <span className="nm-fixsum">{fix.summary}</span>
@@ -192,12 +204,11 @@ function FixRow({
             to catch the fix an autonomous actor caused while you were away, so
             that is the only one worth a mark from here. */}
         {fix.repliedBy === "foreman" && (
-          <span className="nm-byline nm-byline-foreman" title="the foreman nudged this gate">
-            foreman
-          </span>
+          <span className="nm-byline nm-byline-foreman">foreman</span>
         )}
         <span className="nm-fixwhen">{relativeTime(fix.committedAt)}</span>
       </button>
+      </Tooltip>
 
       {open && (
         <div className="nm-fixdetail">
@@ -260,15 +271,17 @@ export function FixContext({
                 </span>
               </div>
               {/* Descriptions really do run ~900 chars; clamped in CSS, full on hover. */}
-              <p className="nm-find-why" title={f.description}>
-                {f.description}
-              </p>
+              <Tooltip label={f.description}>
+                <p className="nm-find-why">{f.description}</p>
+              </Tooltip>
             </div>
           ))}
           {hidden > 0 && (
-            <button className="nm-more" type="button" onClick={() => setAllFindings(true)}>
-              + {hidden} more finding{hidden === 1 ? "" : "s"}
-            </button>
+            <Tooltip label="Show the findings this row is hiding">
+              <button className="nm-more" type="button" onClick={() => setAllFindings(true)}>
+                + {hidden} more finding{hidden === 1 ? "" : "s"}
+              </button>
+            </Tooltip>
           )}
           {allFindings && capped > 0 && (
             <p className="nm-capped">
@@ -313,9 +326,11 @@ export function FixContext({
             <>
               <p className={`nm-reply${fullReply ? " nm-reply-full" : ""}`}>{detail.reply}</p>
               {!fullReply && detail.reply.length > 180 && (
-                <button className="nm-more" type="button" onClick={() => setFullReply(true)}>
-                  Show full reply
-                </button>
+                <Tooltip label="Show the reply in full rather than its first lines">
+                  <button className="nm-more" type="button" onClick={() => setFullReply(true)}>
+                    Show full reply
+                  </button>
+                </Tooltip>
               )}
             </>
           ) : detail.decision === "auto" ? (
@@ -339,9 +354,9 @@ export function FixContext({
               {/* Clamped in CSS and full on hover, like the findings above rather
                   than like the reply, which earns its own expander by being the
                   thing you came to read. This is context for it. */}
-              <p className="nm-reply nm-reply-foreman" title={said}>
-                {said}
-              </p>
+              <Tooltip label={said}>
+                <p className="nm-reply nm-reply-foreman">{said}</p>
+              </Tooltip>
             </div>
           )}
         </section>
@@ -364,9 +379,9 @@ export function FixContext({
         <ul className="nm-fixfiles">
           {detail.files.slice(0, 4).map((f) => (
             <li key={f.path}>
-              <span className="nm-fname mono" title={f.path}>
-                {f.path}
-              </span>
+              <Tooltip label={f.path}>
+                <span className="nm-fname mono">{f.path}</span>
+              </Tooltip>
               <span className="nm-fstat mono">
                 +{f.added} -{f.removed}
               </span>
@@ -378,9 +393,11 @@ export function FixContext({
             </li>
           )}
         </ul>
-        <button className="btn nm-viewdiff" type="button" onClick={() => onOpenDiff(detail.sha)}>
-          View diff
-        </button>
+        <Tooltip label="Open the diff for this fix's commit">
+          <button className="btn nm-viewdiff" type="button" onClick={() => onOpenDiff(detail.sha)}>
+            View diff
+          </button>
+        </Tooltip>
       </section>
     </>
   );

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ActionBar } from "../src/web/components/ActionBar.tsx";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { hasTooltip, hasTooltipStarting } from "./helpers/markup.ts";
 
 // Which controls a card offers, and when.
 //
@@ -69,10 +70,20 @@ test("the queue button is a disclosure that reports whether the drawer is open",
   // The panel is hidden by default now, so this button is the only thing on a collapsed
   // card saying the queue exists - and it has to read as pressed while it's showing, or
   // it's a button that does nothing visible on a card scrolled past the panel.
+  // The pressed state is the attribute; what the two states MEAN is the tooltip, which
+  // is where that sentence moved when `title` did.
   const shut = render({ queueOpen: false });
-  assert.match(shut, /class="btn btn-queue" aria-expanded="false" title="Show the work/, shut);
+  assert.match(shut, /class="btn btn-queue" aria-expanded="false"/, shut);
+  assert.ok(
+    hasTooltipStarting(shut, "Show the work queued for this session"),
+    "a shut drawer must offer to show it",
+  );
   const open = render({ queueOpen: true });
-  assert.match(open, /class="btn btn-queue on" aria-expanded="true" title="Hide the work/, open);
+  assert.match(open, /class="btn btn-queue on" aria-expanded="true"/, open);
+  assert.ok(
+    hasTooltipStarting(open, "Hide the work queued for this session"),
+    "an open drawer must offer to hide it",
+  );
 });
 
 test("the queue button carries the open count, so a waiting batch is visible unopened", () => {
@@ -88,6 +99,10 @@ test("a session with no pane can't send, but can still be queued for", () => {
   // Send needs a pty to type into; the queue is stored server-side and delivered later,
   // so a pane-less session is exactly the kind you'd want to load up in advance.
   const html = render({ session: mkSession({ terminals: [] }) });
-  assert.match(html, /disabled="" title="No pane to send to">Send/, html);
+  assert.match(html, /disabled=""[^>]*>Send/, html);
+  // A disabled control dispatches no mouse events, so this tooltip only reaches a human
+  // because Tooltip anchors the hover beside it - see components/Tooltip.tsx.
+  assert.ok(hasTooltip(html, "No pane to send to"), "the dead Send must say why it is dead");
+  assert.match(html, /class="tt-anchor"/, "a disabled trigger needs its hover anchor");
   assert.match(html, /class="btn btn-queue"(?![^>]*disabled)/, html);
 });

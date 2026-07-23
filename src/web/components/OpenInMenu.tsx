@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import { useOpenTargets } from "../lib/openTargets.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * "Open in ▾" - handing the file on screen to an application outside Mission Control.
@@ -37,23 +38,27 @@ export function OpenInList({
   return (
     <>
       {targets.map((target) => (
-        <button
+        <Tooltip
           key={target.id}
-          type="button"
-          role="menuitem"
-          className="open-in-row"
-          disabled={Boolean(target.unavailable)}
-          onClick={() => onChoose(target)}
+          label={target.unavailable ?? `Open this file in ${target.detail ?? target.label}`}
         >
-          <span className="open-in-glyph" aria-hidden>{target.glyph}</span>
-          <span className="open-in-text">
-            <span className="open-in-label">
-              {target.label}
-              {target.detail && <em>{target.detail}</em>}
+          <button
+            type="button"
+            role="menuitem"
+            className="open-in-row"
+            disabled={Boolean(target.unavailable)}
+            onClick={() => onChoose(target)}
+          >
+            <span className="open-in-glyph" aria-hidden>{target.glyph}</span>
+            <span className="open-in-text">
+              <span className="open-in-label">
+                {target.label}
+                {target.detail && <em>{target.detail}</em>}
+              </span>
+              <span className="open-in-note">{target.unavailable ?? target.blurb}</span>
             </span>
-            <span className="open-in-note">{target.unavailable ?? target.blurb}</span>
-          </span>
-        </button>
+          </button>
+        </Tooltip>
       ))}
     </>
   );
@@ -142,18 +147,19 @@ export function OpenInMenu({
 
   return (
     <div className="open-in" ref={root}>
-      <button
-        type="button"
-        className="btn open-in-btn"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={disabled || busy}
-        title={disabled ? "Select a file first" : "Open this file in another application"}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {busy ? "Opening…" : "Open in"}
-        <span className="open-in-caret" aria-hidden>▾</span>
-      </button>
+      <Tooltip label={disabled ? "Select a file first" : "Open this file in another application"}>
+        <button
+          type="button"
+          className="btn open-in-btn"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={disabled || busy}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {busy ? "Opening…" : "Open in"}
+          <span className="open-in-caret" aria-hidden>▾</span>
+        </button>
+      </Tooltip>
       {open && (
         <div className="open-in-pop" role="menu" aria-label="Open this file in">
           <OpenInList

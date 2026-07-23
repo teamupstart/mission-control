@@ -3,6 +3,7 @@ import type { LlmProviderView } from "@shared/types.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import { deriveImportedPersonaName, personaRequest } from "./personaApi.ts";
 
@@ -144,16 +145,22 @@ export function PersonaLibrary({
             <h3>Personas</h3>
             <p>{active.length} active</p>
           </div>
-          <button className="btn" onClick={() => start(EMPTY_SEED)}>New</button>
+          <Tooltip label="Author a new reviewer Persona">
+            <button className="btn" onClick={() => start(EMPTY_SEED)}>New</button>
+          </Tooltip>
         </div>
         <div className="persona-import-row">
-          <button className="btn btn-ghost" onClick={() => importRef.current?.click()}>Import .md</button>
+          <Tooltip label="Create a Persona from a markdown file on disk">
+            <button className="btn btn-ghost" onClick={() => importRef.current?.click()}>Import .md</button>
+          </Tooltip>
           <label>
-            <input
-              type="checkbox"
-              checked={includeArchived}
-              onChange={(event) => setIncludeArchived(event.target.checked)}
-            />
+            <Tooltip label="Include archived Personas in this list">
+              <input
+                type="checkbox"
+                checked={includeArchived}
+                onChange={(event) => setIncludeArchived(event.target.checked)}
+              />
+            </Tooltip>
             Archived
           </label>
           <input
@@ -171,14 +178,15 @@ export function PersonaLibrary({
         <div className="persona-list">
           {listed.length === 0 && <p className="persona-list-empty">No saved Personas yet.</p>}
           {listed.map((persona) => (
-            <button
-              key={persona.id}
-              className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
-              onClick={() => select(persona.id)}
-            >
-              <span>{persona.name}</span>
-              <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
-            </button>
+            <Tooltip key={persona.id} label={`Open ${persona.name} in the editor`}>
+              <button
+                className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
+                onClick={() => select(persona.id)}
+              >
+                <span>{persona.name}</span>
+                <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
+              </button>
+            </Tooltip>
           ))}
         </div>
       </aside>

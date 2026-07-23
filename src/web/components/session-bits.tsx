@@ -98,17 +98,18 @@ export function WorkflowChip({
 }): React.JSX.Element | null {
   if (!run) return null;
   return (
-    <button
-      className={`workflow-chip workflow-${workflowRunTone(run)}`}
-      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen?.();
-      }}
-    >
-      <span aria-hidden>⌁</span>
-      {workflowRunLabel(run)}
-    </button>
+    <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
+      <button
+        className={`workflow-chip workflow-${workflowRunTone(run)}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>⌁</span>
+        {workflowRunLabel(run)}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -121,16 +122,17 @@ export function WorkflowTileFlag({
 }): React.JSX.Element | null {
   if (!run) return null;
   return (
-    <button
-      className={`tile-flag tf-workflow workflow-${workflowRunTone(run)}`}
-      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen?.();
-      }}
-    >
-      ⌁ {workflowRunLabel(run)}
-    </button>
+    <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
+      <button
+        className={`tile-flag tf-workflow workflow-${workflowRunTone(run)}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        ⌁ {workflowRunLabel(run)}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -143,16 +145,17 @@ export function WorkflowRailMark({
 }): React.JSX.Element | null {
   if (!run) return null;
   return (
-    <span
-      className={`rail-workflow workflow-${workflowRunTone(run)}`}
-      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen?.();
-      }}
-    >
-      ⌁
-    </span>
+    <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
+      <span
+        className={`rail-workflow workflow-${workflowRunTone(run)}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        ⌁
+      </span>
+    </Tooltip>
   );
 }
 
@@ -167,23 +170,22 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
   const unsupported = GOAL_UNSUPPORTED[session.agent];
   if (unsupported) {
     return (
-      <p className="goal goal-none" title={`Goal is derived from a session's prompts. ${unsupported}`}>
-        No goal · {unsupported}
-      </p>
+      <Tooltip label={`Goal is derived from a session's prompts. ${unsupported}`}>
+        <p className="goal goal-none">No goal · {unsupported}</p>
+      </Tooltip>
     );
   }
   if (!session.goal?.text) return null;
   return (
-    <p
-      className={`goal goal-${session.goal.source ?? "heuristic"}`}
-      title={
+    <Tooltip
+      label={
         session.goal.source === "heuristic"
-          ? `${session.goal.text}\n\n(your prompt, verbatim - being summarised)`
+          ? `${session.goal.text} (your prompt, verbatim - being summarised)`
           : session.goal.text
       }
     >
-      {session.goal.text}
-    </p>
+      <p className={`goal goal-${session.goal.source ?? "heuristic"}`}>{session.goal.text}</p>
+    </Tooltip>
   );
 }
 
@@ -430,16 +432,20 @@ export function StateBadge({
   const st = stateDisplay(session, gateNeedsYou);
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (
-      <button
-        className={`badge badge-${st.tone} badge-btn`}
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpenReviews();
-        }}
+      <Tooltip
+        label={`${session.pendingReviews} review${session.pendingReviews === 1 ? "" : "s"} waiting on you - open the queue`}
       >
-        <span className="badge-dot" />
-        {st.label} →
-      </button>
+        <button
+          className={`badge badge-${st.tone} badge-btn`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenReviews();
+          }}
+        >
+          <span className="badge-dot" />
+          {st.label} →
+        </button>
+      </Tooltip>
     );
   }
   return (
@@ -473,24 +479,29 @@ export function SessionTitle({
   if (canRename) {
     return (
       <h2>
-        <button
-          type="button"
-          className="card-title-edit"
-          title={`Rename "${session.name}"`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRenameStart?.();
-          }}
-        >
-          <span className="card-title-name">{session.name || "(unnamed)"}</span>
-          <span className="rename-pencil" aria-hidden>
-            ✎
-          </span>
-        </button>
+        <Tooltip label={`Rename "${session.name}"`}>
+          <button
+            type="button"
+            className="card-title-edit"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRenameStart?.();
+            }}
+          >
+            <span className="card-title-name">{session.name || "(unnamed)"}</span>
+            <span className="rename-pencil" aria-hidden>
+              ✎
+            </span>
+          </button>
+        </Tooltip>
       </h2>
     );
   }
-  return <h2 title={session.name}>{session.name || "(unnamed)"}</h2>;
+  return (
+    <Tooltip label={session.name || "This session has no name"}>
+      <h2>{session.name || "(unnamed)"}</h2>
+    </Tooltip>
+  );
 }
 
 /**
@@ -574,26 +585,30 @@ export function RenameEditor({
             if (!busy && document.hasFocus()) onClose();
           }}
         />
-        <button
-          type="button"
-          className="rename-btn rename-save"
-          aria-label="Save name"
-          disabled={busy}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => void submit()}
-        >
-          ✓
-        </button>
-        <button
-          type="button"
-          className="rename-btn rename-cancel"
-          aria-label="Cancel rename"
-          disabled={busy}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onClose}
-        >
-          ✕
-        </button>
+        <Tooltip label={busy ? "Renaming…" : "Save the new name (Enter)"}>
+          <button
+            type="button"
+            className="rename-btn rename-save"
+            aria-label="Save name"
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void submit()}
+          >
+            ✓
+          </button>
+        </Tooltip>
+        <Tooltip label={busy ? "Renaming…" : "Discard the rename (Escape)"}>
+          <button
+            type="button"
+            className="rename-btn rename-cancel"
+            aria-label="Cancel rename"
+            disabled={busy}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </Tooltip>
       </div>
       {error && (
         <span className="rename-error" role="alert">
@@ -632,35 +647,38 @@ export function RuntimeMetaRow({
   return (
     <span className="card-runtime">
       {meta.model && (
-        <span className="rt-pill rt-model" title={meta.modelId ?? undefined}>
-          {meta.model}
-          {meta.longContext && <span className="rt-1m">1M</span>}
-        </span>
+        <Tooltip label={meta.modelId ? `Model: ${meta.modelId}` : `Model: ${meta.model}`}>
+          <span className="rt-pill rt-model">
+            {meta.model}
+            {meta.longContext && <span className="rt-1m">1M</span>}
+          </span>
+        </Tooltip>
       )}
       {showEffort && meta.thinkingLevel &&
         (session ? (
           <EffortPicker session={session} />
         ) : (
-          <span
-            className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
-            title={`Reasoning effort: ${meta.thinkingLevel}`}
-          >
-            <span className="rt-think-glyph" aria-hidden>
-              ✦
+          <Tooltip label={`Reasoning effort: ${meta.thinkingLevel}`}>
+            <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}>
+              <span className="rt-think-glyph" aria-hidden>
+                ✦
+              </span>
+              {meta.thinkingLevel}
             </span>
-            {meta.thinkingLevel}
-          </span>
+          </Tooltip>
         ))}
       {hasCtx && (
-        <span className={`rt-ctx rt-ctx-${tone}`} title={ctxTitle}>
-          <span className="rt-meter" aria-hidden>
-            <span
-              className="rt-meter-fill"
-              style={{ width: `${Math.min(100, Math.max(0, meta.contextPct!))}%` }}
-            />
+        <Tooltip label={ctxTitle}>
+          <span className={`rt-ctx rt-ctx-${tone}`}>
+            <span className="rt-meter" aria-hidden>
+              <span
+                className="rt-meter-fill"
+                style={{ width: `${Math.min(100, Math.max(0, meta.contextPct!))}%` }}
+              />
+            </span>
+            <span className="rt-ctx-num">{meta.contextPct}%</span>
           </span>
-          <span className="rt-ctx-num">{meta.contextPct}%</span>
-        </span>
+        </Tooltip>
       )}
     </span>
   );
@@ -757,9 +775,9 @@ export function ChecksFailedIcon(): React.JSX.Element {
 export function PriorityChip({ priority }: { priority: TaskPriority | null }): React.JSX.Element | null {
   if (!priority) return null;
   return (
-    <span className={`task-priority prio-${priority}`} title={`Priority: ${PRIORITY_LABELS[priority]}`}>
-      {PRIORITY_LABELS[priority]}
-    </span>
+    <Tooltip label={`Priority: ${PRIORITY_LABELS[priority]}`}>
+      <span className={`task-priority prio-${priority}`}>{PRIORITY_LABELS[priority]}</span>
+    </Tooltip>
   );
 }
 
@@ -799,26 +817,29 @@ export function ScheduleSwitch({
   onChange: (enabled: boolean) => void;
 }): React.JSX.Element {
   return (
-    <button
-      className={`task-switch${enabled ? "" : " is-off"}`}
-      role="switch"
-      aria-checked={enabled}
-      aria-label={`Foreman may schedule ${taskTitle}`}
-      disabled={busy}
-      title={
+    <Tooltip
+      label={
         enabled
           ? "Enabled - Foreman's autopilot may schedule this. Click to hold it back."
           : "Disabled - Foreman's autopilot will skip this. You can still launch it yourself."
       }
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        onChange(!enabled);
-      }}
     >
-      <span className="task-switch-track" aria-hidden />
-      {enabled ? "on" : "off"}
-    </button>
+      <button
+        className={`task-switch${enabled ? "" : " is-off"}`}
+        role="switch"
+        aria-checked={enabled}
+        aria-label={`Foreman may schedule ${taskTitle}`}
+        disabled={busy}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(!enabled);
+        }}
+      >
+        <span className="task-switch-track" aria-hidden />
+        {enabled ? "on" : "off"}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -840,13 +861,15 @@ export function LabelChips({
   const shown = labels.slice(0, max);
   const hidden = labels.length - shown.length;
   return (
-    <span className="task-labels" title={labels.join(", ")}>
-      {shown.map((l) => (
-        <span className="task-label" key={l}>
-          {l}
-        </span>
-      ))}
-      {hidden > 0 && <span className="task-label task-label-more">+{hidden}</span>}
-    </span>
+    <Tooltip label={`Labels: ${labels.join(", ")}`}>
+      <span className="task-labels">
+        {shown.map((l) => (
+          <span className="task-label" key={l}>
+            {l}
+          </span>
+        ))}
+        {hidden > 0 && <span className="task-label task-label-more">+{hidden}</span>}
+      </span>
+    </Tooltip>
   );
 }

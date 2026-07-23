@@ -11,6 +11,7 @@ import {
   setBinding,
   useKeybindings,
 } from "../lib/keybindings.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const GROUPS = [
   { key: "global", label: "Anywhere" },
@@ -76,9 +77,11 @@ export function KeyboardPanel(): React.JSX.Element {
       <div className="settings-section-head">
         <h3>Keyboard shortcuts</h3>
         {hasCustom && (
-          <button className="btn btn-ghost" onClick={() => resetAll()}>
-            Reset all
-          </button>
+          <Tooltip label="Restore every shortcut to its default key">
+            <button className="btn btn-ghost" onClick={() => resetAll()}>
+              Reset all
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -104,26 +107,33 @@ export function KeyboardPanel(): React.JSX.Element {
                   )}
                 </div>
                 <div className="kb-row-controls">
-                  <button
-                    className={`kb-capture${isRec ? " is-recording" : ""}`}
-                    onClick={() => startRecording(a.id)}
-                    aria-label={
-                      isRec
-                        ? `Recording new shortcut for ${a.label}`
-                        : `Change shortcut for ${a.label} (currently ${formatChord(chord)})`
-                    }
+                  <Tooltip
+                    label={isRec ? "Press the key you want" : `Click, then press a new key for ${a.label}`}
                   >
-                    {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formatChord(chord)}</kbd>}
-                  </button>
-                  <button
-                    className="kb-reset"
-                    disabled={!custom}
-                    onClick={() => resetBinding(a.id)}
-                    title="Reset to default"
-                    aria-label={`Reset ${a.label} to default`}
+                    <button
+                      className={`kb-capture${isRec ? " is-recording" : ""}`}
+                      onClick={() => startRecording(a.id)}
+                      aria-label={
+                        isRec
+                          ? `Recording new shortcut for ${a.label}`
+                          : `Change shortcut for ${a.label} (currently ${formatChord(chord)})`
+                      }
+                    >
+                      {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formatChord(chord)}</kbd>}
+                    </button>
+                  </Tooltip>
+                  <Tooltip
+                    label={custom ? `Reset ${a.label} to ${formatChord(a.defaultBinding)}` : "Already the default"}
                   >
-                    ↺
-                  </button>
+                    <button
+                      className="kb-reset"
+                      disabled={!custom}
+                      onClick={() => resetBinding(a.id)}
+                      aria-label={`Reset ${a.label} to default`}
+                    >
+                      ↺
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
             );

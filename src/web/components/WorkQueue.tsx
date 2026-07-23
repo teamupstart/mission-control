@@ -16,6 +16,7 @@ import {
   type ImageDrop,
   type PendingAttachment,
 } from "./ImageDrop.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The work-queue panel inside an expanded card: the batch of work queued for this
 // session, in the order you authored it. Items are drag-reorderable, editable, and
@@ -128,9 +129,11 @@ export function WorkQueue({
           {summary?.totalCount === 1 ? "item is" : "items are"} still there - don&apos;t re-add them.
         </p>
         <div className="wq-actions">
-          <button className="btn" disabled={busy} onClick={() => void refresh()}>
-            Retry
-          </button>
+          <Tooltip label="Try loading this session's work queue again">
+            <button className="btn" disabled={busy} onClick={() => void refresh()}>
+              Retry
+            </button>
+          </Tooltip>
         </div>
       </section>
     );
@@ -353,15 +356,16 @@ export function WorkQueue({
                       controls float, so the intent only wraps under them from here. */}
                   {(isWaiting(item.state) || isTerminal(item.state)) && (
                     <div className="wq-controls">
-                      <button
-                        className="icon-btn"
-                        aria-label={`Remove "${item.intent}"`}
-                        title="Remove"
-                        disabled={busy}
-                        onClick={() => void remove(item)}
-                      >
-                        ✕
-                      </button>
+                      <Tooltip label="Remove this item from the queue">
+                        <button
+                          className="icon-btn"
+                          aria-label={`Remove "${item.intent}"`}
+                          disabled={busy}
+                          onClick={() => void remove(item)}
+                        >
+                          ✕
+                        </button>
+                      </Tooltip>
                     </div>
                   )}
                   <div className="wq-body">
@@ -417,9 +421,11 @@ export function WorkQueue({
               onDragEnd={() => setDragId(null)}
             >
               {isWaiting(item.state) && (
-                <span className="wq-grip" aria-hidden title="Drag to reorder">
-                  ⠿
-                </span>
+                <Tooltip label="Drag to reorder this item">
+                  <span className="wq-grip" aria-hidden>
+                    ⠿
+                  </span>
+                </Tooltip>
               )}
 
               {/*
@@ -439,14 +445,16 @@ export function WorkQueue({
                     server refuses this too; the button just shouldn't be there.
                   */}
                   {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
-                    <button
-                      className="btn btn-primary"
-                      aria-label={`Approve the prompt Foreman would send for "${item.intent}"`}
-                      disabled={busy}
-                      onClick={() => void approve(item)}
-                    >
-                      Approve
-                    </button>
+                    <Tooltip label="Consent to the exact prompt Foreman drafted, and let it send">
+                      <button
+                        className="btn btn-primary"
+                        aria-label={`Approve the prompt Foreman would send for "${item.intent}"`}
+                        disabled={busy}
+                        onClick={() => void approve(item)}
+                      >
+                        Approve
+                      </button>
+                    </Tooltip>
                   )}
                   {/*
                     The keyboard path to the reorder the grip offers by drag. Disabled
@@ -455,49 +463,65 @@ export function WorkQueue({
                   */}
                   {isWaiting(item.state) && (
                     <>
-                      <button
-                        className="icon-btn"
-                        aria-label={`Move "${item.intent}" earlier in the queue`}
-                        title="Move up"
-                        disabled={busy || moveTarget(items, item, -1) < 0}
-                        onClick={() => void move(item, -1)}
+                      <Tooltip
+                        label={
+                          moveTarget(items, item, -1) < 0
+                            ? "Already first in the queue"
+                            : "Move this item earlier in the queue"
+                        }
                       >
-                        ↑
-                      </button>
-                      <button
-                        className="icon-btn"
-                        aria-label={`Move "${item.intent}" later in the queue`}
-                        title="Move down"
-                        disabled={busy || moveTarget(items, item, 1) < 0}
-                        onClick={() => void move(item, 1)}
+                        <button
+                          className="icon-btn"
+                          aria-label={`Move "${item.intent}" earlier in the queue`}
+                          disabled={busy || moveTarget(items, item, -1) < 0}
+                          onClick={() => void move(item, -1)}
+                        >
+                          ↑
+                        </button>
+                      </Tooltip>
+                      <Tooltip
+                        label={
+                          moveTarget(items, item, 1) < 0
+                            ? "Already last in the queue"
+                            : "Move this item later in the queue"
+                        }
                       >
-                        ↓
-                      </button>
+                        <button
+                          className="icon-btn"
+                          aria-label={`Move "${item.intent}" later in the queue`}
+                          disabled={busy || moveTarget(items, item, 1) < 0}
+                          onClick={() => void move(item, 1)}
+                        >
+                          ↓
+                        </button>
+                      </Tooltip>
                     </>
                   )}
                   {isWaiting(item.state) && (
-                    <button
-                      className="icon-btn"
-                      aria-label={`Edit "${item.intent}"`}
-                      title="Edit"
-                      onClick={() => {
-                        setEditing(item.id);
-                        setEditText(item.intent);
-                      }}
-                    >
-                      ✎
-                    </button>
+                    <Tooltip label="Edit this item's intent">
+                      <button
+                        className="icon-btn"
+                        aria-label={`Edit "${item.intent}"`}
+                        onClick={() => {
+                          setEditing(item.id);
+                          setEditText(item.intent);
+                        }}
+                      >
+                        ✎
+                      </button>
+                    </Tooltip>
                   )}
                   {(isWaiting(item.state) || isTerminal(item.state)) && (
-                    <button
-                      className="icon-btn"
-                      aria-label={`Remove "${item.intent}"`}
-                      title="Remove"
-                      disabled={busy}
-                      onClick={() => void remove(item)}
-                    >
-                      ✕
-                    </button>
+                    <Tooltip label="Remove this item from the queue">
+                      <button
+                        className="icon-btn"
+                        aria-label={`Remove "${item.intent}"`}
+                        disabled={busy}
+                        onClick={() => void remove(item)}
+                      >
+                        ✕
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
               )}
@@ -531,12 +555,16 @@ export function WorkQueue({
                     }}
                   />
                   <div className="wq-actions">
-                    <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
-                      Save
-                    </button>
-                    <button className="btn btn-ghost" onClick={() => setEditing(null)}>
-                      Cancel
-                    </button>
+                    <Tooltip label="Save this item's new intent (Enter)">
+                      <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
+                        Save
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Discard the edit (Escape)">
+                      <button className="btn btn-ghost" onClick={() => setEditing(null)}>
+                        Cancel
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
               ) : (
@@ -665,15 +693,11 @@ function Header({
   if (!onToggle) return <header className="wq-head">{inner}</header>;
   return (
     <header className="wq-head">
-      <button
-        type="button"
-        className="wq-head-btn"
-        aria-expanded={!collapsed}
-        title={collapsed ? "Unfold the work queue" : "Fold the work queue away"}
-        onClick={onToggle}
-      >
-        {inner}
-      </button>
+      <Tooltip label={collapsed ? "Unfold the work queue" : "Fold the work queue away"}>
+        <button type="button" className="wq-head-btn" aria-expanded={!collapsed} onClick={onToggle}>
+          {inner}
+        </button>
+      </Tooltip>
     </header>
   );
 }
@@ -688,9 +712,9 @@ function ItemStatus({ item }: { item: WorkItem }): React.JSX.Element | null {
     <div className="wq-status">
       {showState && <span className={`wq-state wq-state-${item.state}`}>{itemLabel(item)}</span>}
       {item.round > 0 && !isTerminal(item.state) && (
-        <span className="wq-round" title="Fix rounds spent on this item">
-          fix {item.round}
-        </span>
+        <Tooltip label="Fix rounds spent on this item">
+          <span className="wq-round">fix {item.round}</span>
+        </Tooltip>
       )}
       {item.escalationReason && <span className="wq-escalation">{item.escalationReason}</span>}
       {blocking.length > 0 && (
@@ -700,9 +724,9 @@ function ItemStatus({ item }: { item: WorkItem }): React.JSX.Element | null {
               <span className="wq-gap-kind">{g.kind}</span>
               {g.detail}
               {g.strikes > 0 && (
-                <span className="wq-strikes" title="How many rounds this gap has survived">
-                  ×{g.strikes + 1}
-                </span>
+                <Tooltip label="How many rounds this gap has survived">
+                  <span className="wq-strikes">×{g.strikes + 1}</span>
+                </Tooltip>
               )}
             </li>
           ))}
@@ -741,7 +765,9 @@ function ProposedPayload({ item }: { item: WorkItem }): React.JSX.Element | null
   if (item.proposedPayload.trim() === item.intent.trim()) return null;
   return (
     <details className="wq-payload">
-      <summary>Foreman would send:</summary>
+      <Tooltip label="Show the exact prompt Foreman would type into this session">
+        <summary>Foreman would send:</summary>
+      </Tooltip>
       <pre className="wq-payload-text">{item.proposedPayload}</pre>
     </details>
   );
@@ -808,13 +834,23 @@ export function AddBox({
             else if (e.key === "Escape") e.currentTarget.blur();
           }}
         />
-        <button
-          className="btn btn-send"
-          disabled={disabled || drop.uploading || empty}
-          onClick={onAdd}
+        <Tooltip
+          label={
+            drop.uploading
+              ? "Waiting for the attachments to finish uploading"
+              : empty
+                ? "Write what this item should ask the agent to do"
+                : "Add this item to the end of the queue (Enter)"
+          }
         >
-          {drop.uploading ? "Uploading…" : "Add"}
-        </button>
+          <button
+            className="btn btn-send"
+            disabled={disabled || drop.uploading || empty}
+            onClick={onAdd}
+          >
+            {drop.uploading ? "Uploading…" : "Add"}
+          </button>
+        </Tooltip>
       </div>
       {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
     </div>
@@ -925,11 +961,15 @@ function Wrapup({
           alert reads the same rule off the card summary's `totalCount`. */}
       <p className="wq-wrapup-title">{wrapupAskCopy(queue.items.length > 0).card}</p>
       <label className="alert-row">
-        <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} />
+        <Tooltip label="Ask the agent to open a pull request as part of wrapping up">
+          <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} />
+        </Tooltip>
         Create a PR
       </label>
       <label className="alert-row">
-        <input type="checkbox" checked={nm} onChange={(e) => setNm(e.target.checked)} />
+        <Tooltip label="Ask the agent to run the no-mistakes gate before it wraps up">
+          <input type="checkbox" checked={nm} onChange={(e) => setNm(e.target.checked)} />
+        </Tooltip>
         Run no-mistakes
       </label>
       {/* `rows` is the FLOOR, not the height: `field-sizing: content` grows this to fit
@@ -948,12 +988,24 @@ function Wrapup({
         }}
       />
       <div className="wq-actions">
-        <button className="btn btn-primary" disabled={busy || sent || !text.trim()} onClick={() => void send()}>
-          Send
-        </button>
-        <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>
-          Dismiss
-        </button>
+        <Tooltip
+          label={
+            sent
+              ? "Already sent to this session"
+              : !text.trim()
+                ? "Write the wrap-up instruction to send"
+                : "Type this wrap-up instruction into the session's prompt"
+          }
+        >
+          <button className="btn btn-primary" disabled={busy || sent || !text.trim()} onClick={() => void send()}>
+            Send
+          </button>
+        </Tooltip>
+        <Tooltip label="Dismiss this wrap-up ask without sending anything">
+          <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>
+            Dismiss
+          </button>
+        </Tooltip>
       </div>
       {/* A dead Send with no explanation reads as broken. `err` says it better when
           there is one - this is for the remount, which has lost it. */}
@@ -997,9 +1049,11 @@ function ReattachHint({
         {hint.branch ? ` (${hint.branch})` : ""} - re-attach?
       </p>
       <div className="wq-actions">
-        <button className="btn" disabled={busy} onClick={() => void reattach()}>
-          Re-attach
-        </button>
+        <Tooltip label="Move that previous session's queued items onto this session">
+          <button className="btn" disabled={busy} onClick={() => void reattach()}>
+            Re-attach
+          </button>
+        </Tooltip>
       </div>
       {err && <p className="wq-error">{err}</p>}
     </div>

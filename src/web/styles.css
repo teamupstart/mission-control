@@ -5572,7 +5572,9 @@ kbd {
   padding: 8px;
 }
 .workflow-library-list > button,
-.workflow-version-list > button {
+.workflow-library-list > .tt-anchor > button,
+.workflow-version-list > button,
+.workflow-version-list > .tt-anchor > button {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -5587,12 +5589,16 @@ kbd {
   cursor: pointer;
 }
 .workflow-library-list > button.active,
-.workflow-version-list > button.active {
+.workflow-library-list > .tt-anchor > button.active,
+.workflow-version-list > button.active,
+.workflow-version-list > .tt-anchor > button.active {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
   background: color-mix(in oklab, var(--working) 11%, var(--panel));
 }
 .workflow-library-list span,
 .workflow-version-list span { font-size: 10px; color: var(--dim); }
+.workflow-library-list > .tt-anchor,
+.workflow-version-list > .tt-anchor { font: inherit; color: inherit; }
 .workflow-show-archived { display: flex; align-items: center; gap: 6px; padding: 7px 9px; font-size: 10.5px; color: var(--dim); }
 .workflow-palette {
   display: flex;
@@ -7049,7 +7055,15 @@ kbd {
   border-radius: 7px;
   box-shadow: var(--shadow);
   pointer-events: none;
-  animation: tooltip-in 0.1s ease both;
+  /* No entrance animation, and deliberately NO `will-change`/`transform: translateZ`
+     compositing hint. Either one keeps this bubble on its own GPU layer, and the topbar
+     carries `backdrop-filter` (also a GPU layer): while the page repaints under a held
+     hover - an SSE frame landing every few seconds - the backdrop layer composited over
+     the tooltip's layer, and the bubble flickered translucent behind the usage strip
+     despite `z-index: 100`. That is layer paint order, which `z-index` does not govern.
+     Painted inline (no promotion), the bubble stacks strictly by z-index and stays solid.
+     The `visibility: hidden` until measured (set inline) already prevents the one-frame
+     position jump the fade used to cover, so nothing is lost. */
 }
 .tt-above {
   transform: translate(-50%, calc(-100% - 8px));
@@ -7057,12 +7071,37 @@ kbd {
 .tt-below {
   transform: translate(-50%, 8px);
 }
+/* The always-rendered accessible description behind every tooltip. Out of flow, so a
+   trigger's own layout - flex item, grid cell, inline chip - is untouched by its
+   presence; readable by assistive tech, invisible and unhittable to a pointer. */
+.tt-desc {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  pointer-events: none;
+}
+/* A disabled control dispatches no mouse events, so Tooltip hangs the hover on this
+   anchor instead and lets the hit test fall through to it. `inline-flex` shrink-wraps
+   the control, so a disabled trigger keeps the box it had as a flex/inline item. */
+.tt-anchor {
+  display: inline-flex;
+}
+.tt-anchor > :disabled {
+  pointer-events: none;
+}
 /* Caret: a small rotated square borrowing the bubble's surface + border, with
-   the two edges facing the trigger left visible. */
+   the two edges facing the trigger left visible. `--tt-caret` is the bubble's own
+   centre until it slides to stay on screen, then walks back by the same distance. */
 .tooltip::after {
   content: "";
   position: absolute;
-  left: 50%;
+  left: var(--tt-caret, 50%);
   width: 8px;
   height: 8px;
   background: var(--panel-2);
@@ -7078,19 +7117,6 @@ kbd {
   top: -4px;
   border-bottom: none;
   border-right: none;
-}
-@keyframes tooltip-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tooltip {
-    animation: none;
-  }
 }
 
 /* ---- work queue (the batch of work queued for one session) ---- */
@@ -8693,7 +8719,7 @@ kbd {
    is a link, and a link cannot live inside one. So the open action is a transparent
    button stretched over the tile, kept there purely to be focusable and labelled for
    the keyboard. It takes no pointer events: mouse clicks hit the content and bubble to
-   the tile root, which leaves every `title` underneath it hoverable. */
+   the tile root, which leaves every tooltip trigger underneath it hoverable. */
 .tile-open {
   position: absolute;
   inset: 0;

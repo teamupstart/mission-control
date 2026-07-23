@@ -23,6 +23,7 @@ import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { EffortPicker } from "../src/web/components/EffortPicker.tsx";
 import { ModePicker } from "../src/web/components/ModePicker.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { containsMarkup } from "./helpers/markup.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
 /**
@@ -92,7 +93,7 @@ function bit<P extends object>(
 test("the card's agent dot is the shared AgentDot", () => {
   for (const agent of ["claude", "codex"] as const) {
     assert.ok(
-      card({ agent }).includes(bit(AgentDot, { agent })),
+      containsMarkup(card({ agent }), bit(AgentDot, { agent })),
       `card should render the shared AgentDot for ${agent}`,
     );
   }
@@ -116,7 +117,7 @@ test("the card's PR chip is the shared PrChip", () => {
   for (const over of cases) {
     const session = mkSession(over);
     assert.ok(
-      card(over).includes(bit(PrChip, { session })),
+      containsMarkup(card(over), bit(PrChip, { session })),
       `card should render the shared PrChip for ${JSON.stringify(over)}`,
     );
   }
@@ -143,7 +144,7 @@ test("the card's inspector chip is the shared InspectorChip", () => {
   for (const over of cases) {
     const session = mkSession(over);
     assert.ok(
-      card(over).includes(bit(InspectorChip, { session })),
+      containsMarkup(card(over), bit(InspectorChip, { session })),
       `card should render the shared InspectorChip for ${JSON.stringify(over.inspector)}`,
     );
   }
@@ -178,10 +179,27 @@ test("the rail's inspector mark is the shared InspectorRailMark", () => {
       createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
     );
     assert.ok(
-      rail.includes(bit(InspectorRailMark, { session })),
+      containsMarkup(rail, bit(InspectorRailMark, { session })),
       `rail should render the shared InspectorRailMark for ${JSON.stringify(over.inspector)}`,
     );
   }
+});
+
+test("the rail row keeps a keyboard-focus description outside its nested marks", () => {
+  const rail = renderToStaticMarkup(
+    createElement(RailRow, {
+      session: mkSession({ name: "focus-target" }),
+      selected: false,
+      gateNeedsYou: false,
+      onSelect: () => {},
+    }),
+  );
+  const describedBy = rail.match(/<button[^>]*class="rail-row[^"]*"[^>]*aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(describedBy);
+  assert.match(
+    rail,
+    new RegExp(`<span id="${describedBy}" class="tt-desc">focus-target - [^<]+</span>`),
+  );
 });
 
 // The board tile draws the Inspector as a `.tile-flag`, but that link has to come from
@@ -209,7 +227,7 @@ test("the board tile's inspector flag is the shared InspectorTileFlag", () => {
       }),
     );
     assert.ok(
-      tile.includes(bit(InspectorTileFlag, { session })),
+      containsMarkup(tile, bit(InspectorTileFlag, { session })),
       `tile should render the shared InspectorTileFlag for ${JSON.stringify(over.inspector)}`,
     );
   }
@@ -287,7 +305,7 @@ test("the board tile's PR flag is the shared PrTileFlag, wrapped in the shared T
       }),
     );
     assert.ok(
-      tile.includes(bit(PrTileFlag, { session })),
+      containsMarkup(tile, bit(PrTileFlag, { session })),
       `tile should render the shared PrTileFlag for ${JSON.stringify(over)}`,
     );
   }
@@ -306,7 +324,8 @@ test("the card's state badge is the shared StateBadge", () => {
   for (const pendingReviews of [0, 2]) {
     const session = mkSession({ pendingReviews });
     assert.ok(
-      card({ pendingReviews }).includes(
+      containsMarkup(
+        card({ pendingReviews }),
         bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} }),
       ),
       `card should render the shared StateBadge with ${pendingReviews} pending reviews`,
@@ -326,7 +345,7 @@ test("a parked no-mistakes gate gives cards and rails the same attention status"
     }),
   );
 
-  assert.ok(card({ state: "idle", pendingReviews: 0 }, true).includes(badge));
+  assert.ok(containsMarkup(card({ state: "idle", pendingReviews: 0 }, true), badge));
   assert.match(badge, /badge-attention/);
   assert.match(badge, /needs decision/);
   assert.match(rail, /tone-attention/);
@@ -343,9 +362,7 @@ test("the card's title and rename affordance are the shared SessionTitle", () =>
   for (const { over, canRename } of cases) {
     const session = mkSession(over);
     assert.ok(
-      card(over).includes(
-        bit(SessionTitle, { session, canRename, renaming: false }),
-      ),
+      containsMarkup(card(over), bit(SessionTitle, { session, canRename, renaming: false })),
       `card should render the shared SessionTitle (canRename=${canRename})`,
     );
   }
@@ -355,7 +372,7 @@ test("the card's context meter is the shared RuntimeMetaRow", () => {
   const m = meta({ contextPct: 73 });
   const session = mkSession({ meta: m });
   assert.ok(
-    card({ meta: m }).includes(bit(RuntimeMetaRow, { meta: m, session })),
+    containsMarkup(card({ meta: m }), bit(RuntimeMetaRow, { meta: m, session })),
     "card should render the shared RuntimeMetaRow",
   );
 });
@@ -378,7 +395,7 @@ test("the card's cost badge is the shared CostChip", () => {
       assert.ok(!card({ cost }).includes("cost-chip"), "a session with no usage draws no chip");
       continue;
     }
-    assert.ok(card({ cost }).includes(fragment), `card should render the shared CostChip (${cost?.costUsd})`);
+    assert.ok(containsMarkup(card({ cost }), fragment), `card should render the shared CostChip (${cost?.costUsd})`);
   }
   const api = bit(CostChip, { cost: cases[3]! });
   assert.ok(api.includes("≈$2.75"));
@@ -391,21 +408,21 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
   const session = mkSession({ meta: m });
   const html = tile(session);
   assert.ok(
-    html.includes(bit(AgentDot, { agent: session.agent })),
+    containsMarkup(html, bit(AgentDot, { agent: session.agent })),
     "tile should render the shared AgentDot",
   );
   assert.ok(
-    html.includes(bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
+    containsMarkup(html, bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
     "tile should render the shared meter without nesting its effort control",
   );
-  assert.ok(html.includes(bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
+  assert.ok(containsMarkup(html, bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
 });
 
 test("the board tile's cost badge is the shared CostChip", () => {
   const cost: SessionCost = {
     costUsd: 3.5, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
   };
-  assert.ok(tile(mkSession({ cost })).includes(bit(CostChip, { cost })), "tile should render the shared CostChip");
+  assert.ok(containsMarkup(tile(mkSession({ cost })), bit(CostChip, { cost })), "tile should render the shared CostChip");
 });
 
 test("the board tile's permission mode is the shared ModePicker", () => {
@@ -422,11 +439,11 @@ test("the board tile's permission mode is the shared ModePicker", () => {
     const fragment = bit(ModePicker, { session });
     assert.ok(fragment, `ModePicker should draw something for ${over.permissionMode}`);
     assert.ok(
-      tile(session).includes(fragment),
+      containsMarkup(tile(session), fragment),
       `tile should render the shared ModePicker (${over.permissionMode})`,
     );
     assert.ok(
-      card(over).includes(fragment),
+      containsMarkup(card(over), fragment),
       `card should render the shared ModePicker (${over.permissionMode})`,
     );
   }
@@ -496,8 +513,8 @@ test("card and console detail agree on every shared leaf", () => {
     ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta!, session })],
     ["CostChip", bit(CostChip, { cost: session.cost })],
   ] as const) {
-    assert.ok(html.includes(fragment), `card should contain the shared ${name}`);
-    assert.ok(detail.includes(fragment), `console detail should contain the shared ${name}`);
+    assert.ok(containsMarkup(html, fragment), `card should contain the shared ${name}`);
+    assert.ok(containsMarkup(detail, fragment), `console detail should contain the shared ${name}`);
   }
 });
 

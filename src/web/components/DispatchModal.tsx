@@ -34,6 +34,7 @@ import {
 } from "./ImageDrop.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -557,9 +558,11 @@ function DispatchModal({
     >
       <header className="modal-head">
         <h2>{editing ? "Edit backlog task" : "Dispatch an agent"}</h2>
-        <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-          ✕
-        </button>
+        <Tooltip label={busy ? "Waiting for the dispatch to land" : "Close without dispatching (Escape)"}>
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="dispatch-body">
@@ -582,37 +585,41 @@ function DispatchModal({
         <div className="field-row">
           <label className="field">
             <span className="field-label">Kind</span>
-            <select
-              className="field-input"
-              value={draft.kind}
-              onChange={(e) => update({ kind: e.target.value as TaskKind })}
-            >
-              <option value="ship">ship - deliver a change</option>
-              <option value="scout">scout - investigate / report</option>
-            </select>
+            <Tooltip label="Whether this task asks for a delivered change or an investigation">
+              <select
+                className="field-input"
+                value={draft.kind}
+                onChange={(e) => update({ kind: e.target.value as TaskKind })}
+              >
+                <option value="ship">ship - deliver a change</option>
+                <option value="scout">scout - investigate / report</option>
+              </select>
+            </Tooltip>
           </label>
           <label className="field">
             <span className="field-label">Agent</span>
-            <select
-              className="field-input"
-              value={draft.agent}
-              // Switching harness drops model and effort overrides with it: neither
-              // selection is portable across harnesses. Back to the defaults, which are
-              // per-agent and always right for the harness now chosen.
-              onChange={(e) =>
-                update({ agent: e.target.value as AgentType, model: "", effort: "" })
-              }
-            >
+            <Tooltip label="Which harness this task is dispatched to - switching resets the model and effort overrides">
+              <select
+                className="field-input"
+                value={draft.agent}
+                // Switching harness drops model and effort overrides with it: neither
+                // selection is portable across harnesses. Back to the defaults, which are
+                // per-agent and always right for the harness now chosen.
+                onChange={(e) =>
+                  update({ agent: e.target.value as AgentType, model: "", effort: "" })
+                }
+              >
               {/* Driven off the union, so a harness that exists cannot be one the
                   operator has no way to pick: a hand-written pair of options is a
                   list that goes stale silently, with the new agent dispatchable
                   everywhere except the modal that dispatches. */}
-              {AGENT_TYPES.map((a) => (
-                <option key={a} value={a}>
-                  {AGENT_IDENTITY[a].label}
-                </option>
-              ))}
-            </select>
+                {AGENT_TYPES.map((a) => (
+                  <option key={a} value={a}>
+                    {AGENT_IDENTITY[a].label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </label>
         </div>
 
@@ -627,11 +634,12 @@ function DispatchModal({
               {draft.model ? "overriding the default for this task" : "set in Settings → Harnesses"}
             </span>
           </span>
-          <select
-            className="field-input"
-            value={draft.model}
-            onChange={(e) => update({ model: e.target.value })}
-          >
+          <Tooltip label="Pin the model this task's agent launches with, overriding the harness default">
+            <select
+              className="field-input"
+              value={draft.model}
+              onChange={(e) => update({ model: e.target.value })}
+            >
             <option value="">
               {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
             </option>
@@ -640,12 +648,13 @@ function DispatchModal({
                 row naming a model this build's catalog doesn't list, and an unlisted value
                 renders the select on nothing - reading as "Default" over a task that is
                 pinned, and saving as one on the next edit. */}
-            {modelChoicesFor(draft.agent, draft.model).map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} - {m.hint}
-              </option>
-            ))}
-          </select>
+              {modelChoicesFor(draft.agent, draft.model).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} - {m.hint}
+                </option>
+              ))}
+            </select>
+          </Tooltip>
         </label>
 
         <label className="field">
@@ -657,21 +666,23 @@ function DispatchModal({
                 : "set in Settings → Harnesses"}
             </span>
           </span>
-          <select
-            className="field-input"
-            value={draft.effort}
-            onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
-            aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
-          >
+          <Tooltip label="How much reasoning effort this task's agent spends, overriding the harness default">
+            <select
+              className="field-input"
+              value={draft.effort}
+              onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
+              aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
+            >
             <option value="">
               {defaultEffortOptionLabel(draft.agent, defaults?.defaultEffort ?? null)}
             </option>
-            {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
+              {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+          </Tooltip>
         </label>
 
         <div className="field-row">
@@ -679,20 +690,22 @@ function DispatchModal({
             <span className="field-label">
               Priority <span className="field-hint">optional</span>
             </span>
-            <select
-              className="field-input"
-              value={draft.priority}
-              onChange={(e) => update({ priority: e.target.value as TaskPriority | "" })}
-            >
+            <Tooltip label="How this task is ranked in the backlog - a task carries one only if you choose it">
+              <select
+                className="field-input"
+                value={draft.priority}
+                onChange={(e) => update({ priority: e.target.value as TaskPriority | "" })}
+              >
               {/* The empty option is first and is the default: a task carries a priority
                   only because someone chose one, never because the form defaulted it. */}
-              <option value="">none</option>
-              {TASK_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-            </select>
+                <option value="">none</option>
+                {TASK_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {PRIORITY_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
           </label>
           <label className="field">
             <span className="field-label">
@@ -745,9 +758,10 @@ function DispatchModal({
             Dependencies{" "}
             <span className="field-hint">optional - ⌘/Ctrl-click to choose several</span>
           </span>
-          <select
-            className="field-input dependency-select"
-            multiple
+          <Tooltip label="Tasks that must finish before this one may be dispatched">
+            <select
+              className="field-input dependency-select"
+              multiple
             size={Math.min(7, Math.max(3, dependencyByKey.size))}
             value={dependencyKeys}
             onChange={(event) => {
@@ -767,7 +781,8 @@ function DispatchModal({
                 .filter(([, option]) => option.group === "session")
                 .map(([key, option]) => <option key={key} value={key}>{option.label}</option>)}
             </optgroup>
-          </select>
+            </select>
+          </Tooltip>
           <span className="field-hint">
             Every dependency waits for its merged PR. Sessions without observable hooks cannot be selected.
             {selectedDependenciesUnmet ? " This task will stay in the backlog." : ""}
@@ -800,47 +815,57 @@ function DispatchModal({
       </div>
 
       <footer className="modal-foot">
-        <button
-          className="btn btn-ghost"
-          onClick={() => void submit(false)}
-          disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
-          title={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}
-        >
+        <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => void submit(false)}
+            disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
+          >
           {editing
             ? pending === "shelve"
               ? "Saving…"
               : "Save"
             : pending === "shelve"
               ? "Shelving…"
-              : "Add to backlog"}
-        </button>
-        <button
-          className="btn btn-ghost"
-          onClick={clearDraft}
-          disabled={
-            busy ||
-            (editing ? draftsEqual(draft, draftFromTask(editing)) : isEmptyDispatchDraft(draft))
-          }
-          title={editing ? "Undo these edits" : "Reset the form"}
-        >
-          {editing ? "Revert" : "Clear"}
-        </button>
+                : "Add to backlog"}
+          </button>
+        </Tooltip>
+        <Tooltip label={editing ? "Undo these edits" : "Reset the form"}>
+          <button
+            className="btn btn-ghost"
+            onClick={clearDraft}
+            disabled={
+              busy ||
+              (editing ? draftsEqual(draft, draftFromTask(editing)) : isEmptyDispatchDraft(draft))
+            }
+          >
+            {editing ? "Revert" : "Clear"}
+          </button>
+        </Tooltip>
         <span className="actions-spacer" />
-        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-          Cancel
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={() => void submit(true)}
-          disabled={
-            busy ||
-            drop.uploading ||
-            !draft.repoRoot.trim() ||
-            !draft.intent.trim() ||
-            Boolean(editing && selectedDependenciesUnmet)
+        <Tooltip label="Close without dispatching (Escape)">
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </Tooltip>
+        <Tooltip
+          label={
+            selectedDependenciesUnmet
+              ? "Dependencies must complete first; schedule this in the backlog"
+              : "Provision a worktree and launch the agent now (⌘/Ctrl+Enter)"
           }
-          title={selectedDependenciesUnmet ? "Dependencies must complete first; schedule this in the backlog" : "⌘/Ctrl+Enter"}
         >
+          <button
+            className="btn btn-primary"
+            onClick={() => void submit(true)}
+            disabled={
+              busy ||
+              drop.uploading ||
+              !draft.repoRoot.trim() ||
+              !draft.intent.trim() ||
+              Boolean(editing && selectedDependenciesUnmet)
+            }
+          >
           {pending === "dispatch"
             ? "Dispatching…"
             : drop.uploading
@@ -849,8 +874,9 @@ function DispatchModal({
                 ? editing
                   ? "Waiting for dependencies"
                   : "Schedule after dependencies"
-                : "Dispatch now"}
-        </button>
+                  : "Dispatch now"}
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

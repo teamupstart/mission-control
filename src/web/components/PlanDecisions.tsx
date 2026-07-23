@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PlanDecision } from "@shared/types.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /** Per-decision answer state: chosen option ids plus any free-text "Other". */
 type Answers = Record<string, { selected: string[]; other: string }>;
@@ -129,13 +130,15 @@ export function DecisionForm({
           {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
           {d.options.map((o) => (
             <label key={o.id} className="decision-option">
-              <input
-                type={d.multiSelect ? "checkbox" : "radio"}
-                name={`${namePrefix}-${d.id}`}
-                checked={get(d.id).selected.includes(o.id)}
-                onChange={(e) => choose(d, o.id, e.target.checked)}
-                disabled={busy}
-              />
+              <Tooltip label={o.detail ?? o.label}>
+                <input
+                  type={d.multiSelect ? "checkbox" : "radio"}
+                  name={`${namePrefix}-${d.id}`}
+                  checked={get(d.id).selected.includes(o.id)}
+                  onChange={(e) => choose(d, o.id, e.target.checked)}
+                  disabled={busy}
+                />
+              </Tooltip>
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}
@@ -158,17 +161,23 @@ export function DecisionForm({
       ))}
       <div className="decisions-actions">
         {onDismiss && (
-          <button className="btn btn-ghost" disabled={busy} onClick={onDismiss}>
-            Dismiss
-          </button>
+          <Tooltip label="Dismiss this decision request without sending an answer">
+            <button className="btn btn-ghost" disabled={busy} onClick={onDismiss}>
+              Dismiss
+            </button>
+          </Tooltip>
         )}
-        <button
-          className="btn btn-approve"
-          disabled={busy || !complete}
-          onClick={() => onSubmit(formatResponse(decisions, answers, lead))}
+        <Tooltip
+          label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
         >
-          Submit
-        </button>
+          <button
+            className="btn btn-approve"
+            disabled={busy || !complete}
+            onClick={() => onSubmit(formatResponse(decisions, answers, lead))}
+          >
+            Submit
+          </button>
+        </Tooltip>
       </div>
     </div>
   );

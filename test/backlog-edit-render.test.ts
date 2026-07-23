@@ -7,6 +7,7 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import type { Task } from "../src/shared/types.ts";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
 import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
+import { hasTooltip } from "./helpers/markup.ts";
 
 // Reopening a shelved task in the form that wrote it. Static markup rather than a
 // driven browser: the dashboard's pages don't take script injection from the
@@ -73,7 +74,8 @@ test("Revert is dead until something has actually been edited", () => {
   assert.match(editor(mkTask()), /<button[^>]*disabled=""[^>]*>Revert<\/button>/);
   // Save, beside it, is live from the start: an untouched form is still a valid one,
   // and a Save that has to be armed by an edit is a Save that looks broken.
-  assert.match(editor(mkTask()), /<button class="btn btn-ghost" title="[^"]*">Save<\/button>/);
+  assert.match(editor(mkTask()), /<button class="btn btn-ghost"[^>]*>Save<\/button>/);
+  assert.ok(hasTooltip(editor(mkTask()), "Keep it in the backlog"), "Save must say what it does");
 });
 
 test("a fresh dispatch is untouched by the edit mode", () => {

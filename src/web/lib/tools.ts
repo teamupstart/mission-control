@@ -14,14 +14,14 @@ export interface ToolChip {
   name: string;
   /** The concrete target, capped for the chip. Null when the input carried none. */
   detail: string | null;
-  /** The uncapped source of `detail` (the whole command, the full path) for the hover title. */
+  /** The uncapped source of `detail` (the whole command, the full path) for the tooltip. */
   title: string;
 }
 
 /**
  * Cap on chip detail. A chip is a glance: past ~40 chars one long `grep` pattern
  * would push the rest of a merged row off the card, which is the crowding this whole
- * change exists to fix. The full text stays reachable on hover via `title`.
+ * change exists to fix. The full text stays reachable through the shared tooltip.
  */
 const DETAIL_CAP = 40;
 
@@ -193,7 +193,7 @@ function splitSegments(line: string): string[] {
  * across the line, so `cd /repo && sqlite3 state.db …` reads `sqlite3` rather than
  * `cd`, and `echo "=== status ==="; git log` reads `git`. Scaffolding is the answer
  * only when there's nothing else - naming an `echo` beats naming nothing. A heuristic
- * by nature; the hover title carries the literal command.
+ * by nature; the tooltip carries the literal command.
  */
 export function commandName(command: string): string | null {
   let scaffold: string | null = null;
@@ -249,7 +249,7 @@ export function toolChip(t: ToolCall): ToolChip {
   if (!source) return { name, detail: null, title: t.name };
 
   // A shell call chips the command name (`ls`), not the command line - the line is the
-  // title. Path-valued tools chip the basename for the same reason: the leaf identifies
+  // tooltip. Path-valued tools chip the basename for the same reason: the leaf identifies
   // the file, the directories just eat the row.
   const detail = isShell
     ? commandName(source)

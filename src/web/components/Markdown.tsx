@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 export type WorkspaceLinkHandler = (href: string, probe?: boolean) => boolean | Promise<boolean>;
 
@@ -33,19 +34,24 @@ function WorkspaceAnchor({
     return () => { live = false; };
   }, [href]);
 
+  // Where the link actually goes, which is the one thing markdown's own rendering hides -
+  // and, for a checkout-contained link, that clicking it opens the file here rather than
+  // in a browser tab. A link this app claims and one it hands to the OS look identical.
   return (
-    <a
-      {...props}
-      href={href}
-      onClick={(event) => {
-        let shouldOpen = claimed;
-        if (!shouldOpen && href) {
-          const result = handler.current(href, true);
-          shouldOpen = typeof result === "boolean" && result;
-        }
-        if (href && shouldOpen && handler.current(href) === true) event.preventDefault();
-      }}
-    />
+    <Tooltip label={claimed && href ? `Open ${href} in this session's files` : (href || "Blocked link")}>
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          let shouldOpen = claimed;
+          if (!shouldOpen && href) {
+            const result = handler.current(href, true);
+            shouldOpen = typeof result === "boolean" && result;
+          }
+          if (href && shouldOpen && handler.current(href) === true) event.preventDefault();
+        }}
+      />
+    </Tooltip>
   );
 }
 
@@ -85,11 +91,16 @@ export const Markdown = memo(function Markdown({
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
       rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
       urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
-      components={onLinkClick ? {
-        a: ({ node: _node, href, onClick: _onClick, ...props }) => (
-          <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
-        ),
-      } : undefined}
+      components={{
+        a: ({ node: _node, href, onClick: _onClick, ...props }) =>
+          onLinkClick ? (
+            <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
+          ) : (
+            <Tooltip label={href || "Blocked link"}>
+              <a {...props} href={href} />
+            </Tooltip>
+          ),
+      }}
     >
       {children}
     </ReactMarkdown>

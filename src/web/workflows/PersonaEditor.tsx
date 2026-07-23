@@ -11,6 +11,7 @@ import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
 import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
 import { personaMarkdownBlob, personaRequest } from "./personaApi.ts";
 
 export interface PersonaDraftSeed {
@@ -142,8 +143,12 @@ export function PersonaEditorStatus({
     return (
       <div className="persona-state conflict" role="alert">
         <span>A newer revision exists. Your local Markdown has not been changed.</span>
-        <button className="btn" onClick={onReload}>Reload latest</button>
-        <button className="btn" onClick={onDuplicate}>Save as duplicate</button>
+        <Tooltip label="Discard your unsaved edits and load the newer revision">
+          <button className="btn" onClick={onReload}>Reload latest</button>
+        </Tooltip>
+        <Tooltip label="Keep your edits by saving them as a new Persona">
+          <button className="btn" onClick={onDuplicate}>Save as duplicate</button>
+        </Tooltip>
       </div>
     );
   }
@@ -337,11 +342,25 @@ export function PersonaEditor({
           <h3>{draft.name || "Untitled Persona"}</h3>
         </div>
         <div className="persona-actions">
-          <button className="btn" disabled={readOnly || saving || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
-          <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>{copied ? "Copied ✓" : "Copy Markdown"}</button>
-          <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>
-          {persona && <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>}
-          {persona && !archived && <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>}
+          <Tooltip label={readOnly ? "This Persona is archived and cannot be edited" : persona !== null && !dirty ? "No unsaved changes" : "Save this Persona as a new revision"}>
+            <button className="btn" disabled={readOnly || saving || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+          </Tooltip>
+          <Tooltip label="Copy this Persona's guidance markdown to the clipboard">
+            <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>{copied ? "Copied ✓" : "Copy Markdown"}</button>
+          </Tooltip>
+          <Tooltip label="Save this Persona's guidance to a markdown file">
+            <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>
+          </Tooltip>
+          {persona && (
+            <Tooltip label="Copy this Persona into a new one">
+              <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>
+            </Tooltip>
+          )}
+          {persona && !archived && (
+            <Tooltip label="Archive this Persona - workflows already published keep their copy">
+              <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>
+            </Tooltip>
+          )}
         </div>
       </header>
 
@@ -365,19 +384,21 @@ export function PersonaEditor({
         </label>
         <label>
           <span>Provider override</span>
-          <select
-            value={draft.runner ?? ""}
-            disabled={readOnly}
-            onChange={(event) => edit({ runner: event.target.value || null, model: null })}
-          >
+          <Tooltip label="Which model provider runs this Persona, overriding the app default">
+            <select
+              value={draft.runner ?? ""}
+              disabled={readOnly}
+              onChange={(event) => edit({ runner: event.target.value || null, model: null })}
+            >
             <option value="">App default</option>
             {draft.runner !== null && selectedRunner === null && (
               <option value={draft.runner} disabled>Unavailable: {draft.runner}</option>
             )}
-            {providers.map((provider) => (
-              <option key={provider.id} value={provider.id}>{provider.label}</option>
-            ))}
-          </select>
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.label}</option>
+              ))}
+            </select>
+          </Tooltip>
         </label>
         <div className="persona-effective" aria-label="Effective Persona model">
           <span>Effective</span>
@@ -400,8 +421,12 @@ export function PersonaEditor({
       </section>
 
       <div className="persona-narrow-toggle" role="group" aria-label="Persona guidance view">
-        <button className={narrowPane === "edit" ? "active" : ""} onClick={() => setNarrowPane("edit")}>Edit</button>
-        <button className={narrowPane === "preview" ? "active" : ""} onClick={() => setNarrowPane("preview")}>Preview</button>
+        <Tooltip label="Edit the guidance markdown">
+          <button className={narrowPane === "edit" ? "active" : ""} onClick={() => setNarrowPane("edit")}>Edit</button>
+        </Tooltip>
+        <Tooltip label="Preview the guidance as the reviewer will read it">
+          <button className={narrowPane === "preview" ? "active" : ""} onClick={() => setNarrowPane("preview")}>Preview</button>
+        </Tooltip>
       </div>
       <section className="persona-split">
         <div className="persona-pane persona-edit-pane" data-mobile-active={narrowPane === "edit"}>

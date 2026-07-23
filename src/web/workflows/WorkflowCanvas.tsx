@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  ControlButton,
   Controls,
   ReactFlow,
   applyEdgeChanges,
@@ -10,6 +11,8 @@ import {
   type EdgeChange,
   type NodeChange,
   type ReactFlowInstance,
+  useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import type {
   PersonaView,
@@ -22,11 +25,52 @@ import type {
   WorkflowTargetPort,
 } from "@shared/workflow.ts";
 import { connectionAllowed } from "@shared/workflow-graph.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
 
 export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
 
 const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
+
+function WorkflowControls(): React.JSX.Element {
+  const { fitView, zoomIn, zoomOut } = useReactFlow();
+  const zoom = useStore((state) => state.transform[2]);
+  const minZoom = useStore((state) => state.minZoom);
+  const maxZoom = useStore((state) => state.maxZoom);
+  const minZoomReached = zoom <= minZoom;
+  const maxZoomReached = zoom >= maxZoom;
+  return (
+    <Controls showZoom={false} showFitView={false} showInteractive={false}>
+      <Tooltip label={maxZoomReached ? "Already at maximum zoom" : "Zoom in"}>
+        <ControlButton
+          aria-label="Zoom in"
+          disabled={maxZoomReached}
+          onClick={() => {
+            if (!maxZoomReached) void zoomIn();
+          }}
+        >
+          <span aria-hidden>＋</span>
+        </ControlButton>
+      </Tooltip>
+      <Tooltip label={minZoomReached ? "Already at minimum zoom" : "Zoom out"}>
+        <ControlButton
+          aria-label="Zoom out"
+          disabled={minZoomReached}
+          onClick={() => {
+            if (!minZoomReached) void zoomOut();
+          }}
+        >
+          <span aria-hidden>−</span>
+        </ControlButton>
+      </Tooltip>
+      <Tooltip label="Fit the graph to view">
+        <ControlButton aria-label="Fit the graph to view" onClick={() => void fitView()}>
+          <span aria-hidden>□</span>
+        </ControlButton>
+      </Tooltip>
+    </Controls>
+  );
+}
 
 function isPublishedPersona(node: WorkflowDraftNode | PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
   return node.kind === "persona" && "persona" in node;
@@ -218,8 +262,9 @@ export function WorkflowCanvas({
           } catch {}
         }}
       >
+        {/* React Flow's free-tier license requires its generated attribution link. */}
         <Background gap={18} size={1} />
-        <Controls showInteractive={false} />
+        <WorkflowControls />
       </ReactFlow>
     </div>
   );

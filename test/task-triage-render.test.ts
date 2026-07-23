@@ -9,6 +9,7 @@ import { TASK_PRIORITIES } from "../src/shared/task.ts";
 import { backlogTasks } from "../src/shared/session.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
+import { containsMarkup, hasTooltip } from "./helpers/markup.ts";
 
 /**
  * What is at stake: an untriaged task must look EXACTLY as it did before priorities
@@ -91,13 +92,13 @@ test("the roundup's task chips are the shared ones, not a re-inlined copy", () =
   // Same argument as session-leaf-parity.test.ts: the roundup and the board both draw
   // task marks, so a private copy in either is how the two drift.
   const html = roundup([mkTask({ id: "t1", priority: "high", labels: ["infra"] })]);
-  assert.ok(html.includes(bit(PriorityChip, { priority: "high" })), "shared PriorityChip");
-  assert.ok(html.includes(bit(LabelChips, { labels: ["infra"], max: 3 })), "shared LabelChips");
+  assert.ok(containsMarkup(html, bit(PriorityChip, { priority: "high" })), "shared PriorityChip");
+  assert.ok(containsMarkup(html, bit(LabelChips, { labels: ["infra"], max: 3 })), "shared LabelChips");
 });
 
 test("the backlog card's label chips are the shared ones too", () => {
   const html = column([mkTask({ id: "t1", labels: ["infra"] })]);
-  assert.ok(html.includes(bit(LabelChips, { labels: ["infra"], max: 3 })), "shared LabelChips");
+  assert.ok(containsMarkup(html, bit(LabelChips, { labels: ["infra"], max: 3 })), "shared LabelChips");
 });
 
 test("the backlog card colours its priority control with the shared token class", () => {
@@ -121,7 +122,10 @@ test("labels beyond the card's cap are counted, never silently dropped", () => {
   const labels = ["a", "b", "c", "d", "e"];
   const html = bit(LabelChips, { labels, max: 3 });
   assert.ok(html.includes("+2"), "the remainder must be shown as a count");
-  assert.ok(html.includes(labels.join(", ")), "the full list stays reachable as a title");
+  assert.ok(
+    hasTooltip(html, `Labels: ${labels.join(", ")}`),
+    "the full list stays reachable on hover",
+  );
 });
 
 test("the backlog column offers retriage on every card", () => {

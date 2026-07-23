@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanConfigPatch } from "@shared/protocol.ts";
@@ -122,16 +123,18 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
       <fieldset className="foreman-modes">
         <legend>Cheap tier</legend>
         {(["off", "shadow", "on"] as const).map((t) => (
-          <label className="alert-row" key={t}>
-            <input
-              type="radio"
-              name="foreman-triage-settings"
-              checked={triage === t}
-              disabled={!config}
-              onChange={() => void update({ triage: t })}
-            />
-            {TIER_LABEL[t]}
-          </label>
+          <Tooltip label={TIER_LABEL[t]} key={t}>
+            <label className="alert-row">
+              <input
+                type="radio"
+                name="foreman-triage-settings"
+                checked={triage === t}
+                disabled={!config}
+                onChange={() => void update({ triage: t })}
+              />
+              {TIER_LABEL[t]}
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 
@@ -139,6 +142,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
         <p className="settings-group-label">Models</p>
         <label className="foreman-model-row" htmlFor="foreman-provider">
           <span className="foreman-model-label">Provider</span>
+          <Tooltip label="Which model provider Foreman's own calls are spawned with">
           <select
             id="foreman-provider"
             className="field-input foreman-model-input"
@@ -159,6 +163,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
               <option key={runner} value={runner}>{AGENT_IDENTITY[runner].label}</option>
             ))}
           </select>
+          </Tooltip>
           <span className="settings-hint foreman-model-blurb">Runs every Foreman model role through this provider.</span>
         </label>
         <p className="settings-hint foreman-models-hint">
@@ -226,17 +231,18 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
           <ul className="foreman-repo-list">
             {allowlist.map((path) => (
               <li className="foreman-repo-row" key={path}>
-                <span className="foreman-repo-path" title={path}>
-                  {path}
-                </span>
-                <button
-                  className="foreman-repo-remove"
-                  onClick={() => remove(path)}
-                  title="Remove from the trusted list"
-                  aria-label={`Stop trusting ${path}`}
-                >
-                  ✕
-                </button>
+                <Tooltip label={path}>
+                  <span className="foreman-repo-path">{path}</span>
+                </Tooltip>
+                <Tooltip label="Remove from the trusted list">
+                  <button
+                    className="foreman-repo-remove"
+                    onClick={() => remove(path)}
+                    aria-label={`Stop trusting ${path}`}
+                  >
+                    ✕
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -251,13 +257,15 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
               setAddError(null);
             }}
           />
-          <button
-            className="btn"
-            disabled={!config || !draft.trim() || adding}
-            onClick={() => void add()}
-          >
-            {adding ? "Adding…" : "Add"}
-          </button>
+          <Tooltip label="Trust this repo - Foreman may send live in it">
+            <button
+              className="btn"
+              disabled={!config || !draft.trim() || adding}
+              onClick={() => void add()}
+            >
+              {adding ? "Adding…" : "Add"}
+            </button>
+          </Tooltip>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
       </div>

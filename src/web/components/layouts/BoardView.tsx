@@ -8,6 +8,7 @@ import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
 import type { SessionViewProps } from "./types.ts";
+import { Tooltip } from "../Tooltip.tsx";
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
 interface PendingDrop {
@@ -122,14 +123,15 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             >
               <header className="board-col-head">
                 {isRail && (
-                  <button
-                    className="board-back"
-                    aria-label="Back to the board"
-                    title="Back to the board (Esc)"
-                    onClick={props.onDeselect}
-                  >
-                    ‹
-                  </button>
+                  <Tooltip label="Back to the board (Esc)">
+                    <button
+                      className="board-back"
+                      aria-label="Back to the board"
+                      onClick={props.onDeselect}
+                    >
+                      ‹
+                    </button>
+                  </Tooltip>
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{g.label}</h2>
@@ -137,10 +139,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {/* A revealed column can be put back where it came from. Only offered
                     on empty ones - a column with sessions in it is not stashable. */}
                 {modes.get(g.tone) === "revealed" && revealed.has(g.tone) && (
+                  <Tooltip label={`Hide the empty ${g.label} column again`}>
                   <button
                     className="board-restash"
                     aria-label={`Hide the empty ${g.label} column`}
-                    title="Hide again"
                     onClick={() =>
                       setRevealed((prev) => {
                         const next = new Set(prev);
@@ -151,6 +153,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   >
                     ×
                   </button>
+                  </Tooltip>
                 )}
               </header>
               <div className="board-col-body">
@@ -205,15 +208,15 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         <div className="board-stash">
           <span className="board-stash-label">empty</span>
           {stashed.map((g) => (
-            <button
-              key={g.tone}
-              className={`board-stash-chip tone-${g.tone}`}
-              title={`Show the empty ${g.label} column`}
-              onClick={() => setRevealed((prev) => new Set(prev).add(g.tone))}
-            >
-              <span className="board-swatch" aria-hidden />
-              {g.label}
-            </button>
+            <Tooltip key={g.tone} label={`Show the empty ${g.label} column`}>
+              <button
+                className={`board-stash-chip tone-${g.tone}`}
+                onClick={() => setRevealed((prev) => new Set(prev).add(g.tone))}
+              >
+                <span className="board-swatch" aria-hidden />
+                {g.label}
+              </button>
+            </Tooltip>
           ))}
         </div>
       )}
@@ -221,9 +224,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       {dropError && (
         <p className="board-drop-error" role="status">
           {dropError}
-          <button onClick={() => setDropError(null)} aria-label="Dismiss">
-            ×
-          </button>
+          <Tooltip label="Dismiss this message">
+            <button onClick={() => setDropError(null)} aria-label="Dismiss">
+              ×
+            </button>
+          </Tooltip>
         </p>
       )}
 

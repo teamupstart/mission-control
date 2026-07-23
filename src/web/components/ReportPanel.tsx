@@ -13,6 +13,7 @@ import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { AgentDot, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 function BacklogReportRow({
   task,
@@ -40,13 +41,11 @@ function BacklogReportRow({
     <div className={`report-row${task.enabled ? "" : " is-disabled"}`}>
       <div className="report-row-main report-row-stack">
         <span className="report-line">
-          <button
-            className="report-name report-name-btn"
-            onClick={() => onEditTask(task.id)}
-            title="Open this task for editing"
-          >
-            {task.title}
-          </button>
+          <Tooltip label="Open this task for editing">
+            <button className="report-name report-name-btn" onClick={() => onEditTask(task.id)}>
+              {task.title}
+            </button>
+          </Tooltip>
           <PriorityChip priority={task.priority} />
           <span className="task-kind">{task.kind}</span>
           <ScheduleSwitch
@@ -77,17 +76,26 @@ function BacklogReportRow({
         )}
       </div>
       <div className="report-row-actions">
-        <button
-          className="btn btn-send"
-          onClick={() => void api.dispatchBacklog(task.id, true)}
-          disabled={blockers.length > 0}
-          title={blockers.length > 0 ? "Dependencies must complete first" : undefined}
+        <Tooltip
+          label={
+            blockers.length > 0
+              ? "Dependencies must complete first"
+              : "Launch an agent on this task now"
+          }
         >
-          {blockers.length > 0 ? "Waiting" : "Dispatch"}
-        </button>
-        <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(task.id)}>
-          Delete
-        </button>
+          <button
+            className="btn btn-send"
+            onClick={() => void api.dispatchBacklog(task.id, true)}
+            disabled={blockers.length > 0}
+          >
+            {blockers.length > 0 ? "Waiting" : "Dispatch"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Delete this task from the backlog">
+          <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(task.id)}>
+            Delete
+          </button>
+        </Tooltip>
       </div>
     </div>
   );
@@ -187,19 +195,25 @@ export function ReportPanel({
     }
     if (confirmCancel !== task.id) {
       return (
-        <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(task.id)}>
-          Cancel
-        </button>
+        <Tooltip label="Abort this agent and reclaim its worktree - asks for a confirming click first">
+          <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(task.id)}>
+            Cancel
+          </button>
+        </Tooltip>
       );
     }
     return (
       <span className="report-cancel">
-        <button className="btn btn-danger" onClick={() => void cancel(task.id)}>
-          Confirm cancel
-        </button>
-        <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
-          ✕
-        </button>
+        <Tooltip label="Abort this agent now and reclaim its worktree">
+          <button className="btn btn-danger" onClick={() => void cancel(task.id)}>
+            Confirm cancel
+          </button>
+        </Tooltip>
+        <Tooltip label="Leave this agent running">
+          <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+            ✕
+          </button>
+        </Tooltip>
       </span>
     );
   }
@@ -219,12 +233,16 @@ export function ReportPanel({
             is spelled out here instead - where you can read it while the panel
             is up, and act on it next time. */}
         <kbd aria-hidden>{formatChord(bindings.roundup)}</kbd>
-        <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
-          {copied ? "Copied ✓" : "Copy as markdown"}
-        </button>
-        <button className="icon-btn" aria-label="Close" onClick={onClose}>
-          ✕
-        </button>
+        <Tooltip label="Copy this whole sitrep to the clipboard as markdown">
+          <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
+            {copied ? "Copied ✓" : "Copy as markdown"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Close the sitrep (Escape)">
+          <button className="icon-btn" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="report-body">
@@ -232,14 +250,18 @@ export function ReportPanel({
           {needsYou.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
               {s.pendingReviews > 0 && (
-                <button className="btn" onClick={() => onOpenReviews(s.id)}>
-                  Review
-                </button>
+                <Tooltip label="Open this session's pending reviews">
+                  <button className="btn" onClick={() => onOpenReviews(s.id)}>
+                    Review
+                  </button>
+                </Tooltip>
               )}
               {s.task && cancelControl(s.task)}
-              <button className="btn" onClick={() => void api.focus(s.id)}>
-                Focus
-              </button>
+              <Tooltip label="Bring this session's terminal pane to the front">
+                <button className="btn" onClick={() => void api.focus(s.id)}>
+                  Focus
+                </button>
+              </Tooltip>
             </SessionRow>
           ))}
         </Section>
@@ -261,24 +283,26 @@ export function ReportPanel({
                         if (e.key === "Escape") setMarking(null);
                       }}
                     />
-                    <button className="btn btn-send" onClick={() => void markDone(s.task!.id)}>
-                      Save
-                    </button>
+                    <Tooltip label="Record this outcome and mark the task done (Enter)">
+                      <button className="btn btn-send" onClick={() => void markDone(s.task!.id)}>
+                        Save
+                      </button>
+                    </Tooltip>
                   </span>
                 ) : (
-                  <button
-                    className="btn"
-                    title="Record an outcome. The worktree + agent stay until you Clean up."
-                    onClick={() => setMarking(s.task!.id)}
-                  >
-                    Mark done…
-                  </button>
+                  <Tooltip label="Record an outcome. The worktree + agent stay until you Clean up.">
+                    <button className="btn" onClick={() => setMarking(s.task!.id)}>
+                      Mark done…
+                    </button>
+                  </Tooltip>
                 )
               ) : null}
               {s.task && cancelControl(s.task)}
-              <button className="btn" onClick={() => void api.focus(s.id)}>
-                Focus
-              </button>
+              <Tooltip label="Bring this session's terminal pane to the front">
+                <button className="btn" onClick={() => void api.focus(s.id)}>
+                  Focus
+                </button>
+              </Tooltip>
             </SessionRow>
           ))}
         </Section>
@@ -286,9 +310,11 @@ export function ReportPanel({
         <Section title="Idle" tone="idle" count={idle.length} empty="Nothing sitting idle.">
           {idle.map((s) => (
             <SessionRow key={s.id} s={s} branch={branchOf(s)} reason="">
-              <button className="btn" onClick={() => void api.focus(s.id)}>
-                Focus
-              </button>
+              <Tooltip label="Bring this session's terminal pane to the front">
+                <button className="btn" onClick={() => void api.focus(s.id)}>
+                  Focus
+                </button>
+              </Tooltip>
             </SessionRow>
           ))}
         </Section>
@@ -312,9 +338,11 @@ export function ReportPanel({
                 <span className={`report-status status-${t.status}`}>{t.status}</span>
                 {t.outcome &&
                   (t.outcomeUrl ? (
-                    <a className="task-outcome" href={t.outcomeUrl} target="_blank" rel="noreferrer">
-                      {t.outcome}
-                    </a>
+                    <Tooltip label={`Outcome: ${t.outcome} - open on GitHub`}>
+                      <a className="task-outcome" href={t.outcomeUrl} target="_blank" rel="noreferrer">
+                        {t.outcome}
+                      </a>
+                    </Tooltip>
                   ) : (
                     <span className="report-sub">{t.outcome}</span>
                   ))}
@@ -324,12 +352,14 @@ export function ReportPanel({
                   place - it re-provisions from scratch. */}
               {t.status === "failed" && !t.worktreePath && (
                 <div className="report-row-actions">
-                  <button
-                    className="btn btn-send"
-                    onClick={() => void api.dispatchBacklog(t.id, true)}
-                  >
-                    Retry
-                  </button>
+                  <Tooltip label="Dispatch this failed task again from scratch">
+                    <button
+                      className="btn btn-send"
+                      onClick={() => void api.dispatchBacklog(t.id, true)}
+                    >
+                      Retry
+                    </button>
+                  </Tooltip>
                 </div>
               )}
               {/* A terminal task that still holds a worktree - a done task
@@ -340,17 +370,23 @@ export function ReportPanel({
                   {confirmCancel === t.id ? (
                     <span className="report-cancel">
                       <span className="report-sub">reclaim worktree &amp; stop agent?</span>
-                      <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
-                        Clean up
-                      </button>
-                      <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
-                        ✕
-                      </button>
+                      <Tooltip label="Reclaim this task's worktree and stop any agent still holding it">
+                        <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
+                          Clean up
+                        </button>
+                      </Tooltip>
+                      <Tooltip label="Keep the worktree">
+                        <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+                          ✕
+                        </button>
+                      </Tooltip>
                     </span>
                   ) : (
-                    <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
-                      Clean up
-                    </button>
+                    <Tooltip label="Reclaim this task's worktree - asks for a confirming click first">
+                      <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
+                        Clean up
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
               )}
@@ -401,9 +437,9 @@ function SessionRow({
     <div className="report-row">
       <div className="report-row-main">
         <AgentDot agent={s.agent} />
-        <span className="report-name" title={label}>
-          {label}
-        </span>
+        <Tooltip label={label}>
+          <span className="report-name">{label}</span>
+        </Tooltip>
         {s.task && <span className="task-kind">{s.task.kind}</span>}
         {branch && <span className="report-sub mono branch">{branch}</span>}
         {reason && <span className="report-sub">{reason}</span>}

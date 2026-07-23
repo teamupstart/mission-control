@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { PaneDialog, PaneOption } from "@shared/types.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The option dialog a session's terminal is parked on, rendered for the human to answer
@@ -123,6 +124,7 @@ export function PaneDialogPrompt({
         {dialog.options.map((o) =>
           form && o.checked !== undefined ? (
             <li key={o.number}>
+              <Tooltip label={o.detail ?? `Tick option ${o.number}: ${o.label}`}>
               <button
                 type="button"
                 role="checkbox"
@@ -144,9 +146,11 @@ export function PaneDialogPrompt({
                   {o.detail && <span className="pd-detail">{o.detail}</span>}
                 </span>
               </button>
+              </Tooltip>
             </li>
           ) : (
             <li key={o.number}>
+              <Tooltip label={o.detail ?? `Answer this prompt with option ${o.number}: ${o.label}`}>
               <button
                 type="button"
                 // The cursor's row is marked because it is where an Enter in the terminal
@@ -165,6 +169,7 @@ export function PaneDialogPrompt({
                 </span>
                 {busy === o.number && <span className="pd-spin dim">sending…</span>}
               </button>
+              </Tooltip>
             </li>
           ),
         )}
@@ -172,9 +177,11 @@ export function PaneDialogPrompt({
 
       {form && (
         <div className="pd-actions">
-          <button type="button" className="pd-submit" disabled={busy !== null} onClick={() => void submit()}>
-            {busy === "form" ? "Submitting…" : "Submit answers"}
-          </button>
+          <Tooltip label="Send the ticked options to this session's prompt">
+            <button type="button" className="pd-submit" disabled={busy !== null} onClick={() => void submit()}>
+              {busy === "form" ? "Submitting…" : "Submit answers"}
+            </button>
+          </Tooltip>
         </div>
       )}
 

@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
-import { WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
+import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
+import { nextWorkflowName } from "../src/web/workflows/WorkflowLibrary.tsx";
 import type { LlmState } from "../src/web/useLlm.ts";
 import type { WorkflowDefinition, WorkflowVersion } from "../src/shared/workflow.ts";
 
@@ -48,14 +49,20 @@ test("version history names immutable source revisions and never offers update-v
   const version: WorkflowVersion = {
     id: "v", workflowId: "w", version: 1, sourceDraftRevision: 2,
     graph: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } }], edges: [] },
-    completionPolicy: { kind: "none" },
+    completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "offer_prepare_pr" },
     bindingDefaults: workflow.bindingDefaults,
     publishedAt: 3,
   };
-  const html = renderToStaticMarkup(createElement(WorkflowVersionHistory, { versions: [version], personas: [] }));
+  const { graph: _graph, ...metadata } = version;
+  const html = renderToStaticMarkup(createElement(WorkflowVersionHistory, { versions: [metadata], personas: [] }));
   assert.match(html, /Version 1/);
   assert.match(html, /Draft r2/);
   assert.doesNotMatch(html, /Update version/);
+  const detail = renderToStaticMarkup(createElement(WorkflowVersionDetail, { version, personas: [] }));
+  assert.match(detail, /Maximum repair rounds/);
+  assert.match(detail, />5</);
+  assert.match(detail, /inspector_only/);
+  assert.match(detail, /offer_prepare_pr/);
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {
@@ -63,4 +70,19 @@ test("autosave conflict recovery offers reload and duplicate without overwriting
   assert.match(source, /Autosave is paused/);
   assert.match(source, /Reload latest/);
   assert.match(source, /Duplicate my draft/);
+  assert.match(source, /if \(!\(await draft\.saveNow\(\)\)\) return;/);
+});
+
+test("generated create and duplicate names honor normalized durable uniqueness", () => {
+  const summaries = [
+    { id: "1", name: "Ｕｎｔｉｔｌｅｄ   Workflow", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
+    { id: "2", name: "Review COPY", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: 2, updatedAt: 2, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
+  ];
+  assert.equal(nextWorkflowName("Untitled workflow", summaries), "Untitled workflow 2");
+  assert.equal(nextWorkflowName("Review copy", summaries), "Review copy 2");
+});
+
+test("top-bar workflow navigation opens the builder tab", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  assert.match(source, /route\.page === "fleet"[\s\S]*\{ page: "workflows", tab: "workflows" \}/);
 });

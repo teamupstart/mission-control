@@ -88,8 +88,16 @@ test("Publish is idempotent and immutable versions are readable", async () => {
   assert.equal(repeatedBody.idempotent, true);
   assert.equal(repeatedBody.version.id, firstBody.version.id);
   const list = await request(`/api/workflows/${valid.workflow.id}/versions`);
-  assert.equal((await list.json() as unknown[]).length, 1);
-  assert.equal((await request(`/api/workflows/${valid.workflow.id}/versions/1`)).status, 200);
+  const listed = await list.json() as Array<Record<string, unknown>>;
+  assert.equal(listed.length, 1);
+  assert.equal("graph" in listed[0]!, false);
+  const detail = await request(`/api/workflows/${valid.workflow.id}`);
+  const detailBody = await detail.json() as { versions: Array<Record<string, unknown>> };
+  assert.equal("graph" in detailBody.versions[0]!, false);
+  const versionRead = await request(`/api/workflows/${valid.workflow.id}/versions/1`);
+  assert.equal(versionRead.status, 200);
+  const versionBody = await versionRead.json() as Record<string, unknown>;
+  assert.equal("graph" in versionBody, true);
 });
 
 test("workflow summaries are bounded SSE projections, not graph blobs", async () => {

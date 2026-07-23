@@ -859,7 +859,7 @@ export function App(): React.JSX.Element {
               onClick={() =>
                 navigate(
                   route.page === "fleet"
-                    ? { page: "workflows", tab: "personas" }
+                    ? { page: "workflows", tab: "workflows" }
                     : { page: "fleet" },
                 )
               }

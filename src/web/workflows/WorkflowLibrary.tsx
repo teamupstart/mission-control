@@ -1,19 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PersonaView, WorkflowDraftNode, WorkflowSummary } from "@shared/workflow.ts";
+import { normalizeWorkflowName, type PersonaView, type WorkflowDraftNode, type WorkflowSummary } from "@shared/workflow.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { WorkflowCanvas, type WorkflowSelection } from "./WorkflowCanvas.tsx";
 import { WorkflowProperties } from "./WorkflowProperties.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
 import { workflowRequest } from "./workflowApi.ts";
+import { readLastWorkflowId, rememberWorkflowId } from "./workflowSelection.ts";
 
 interface CreateResponse { summary: WorkflowSummary }
 
-function nextName(summaries: WorkflowSummary[]): string {
-  const names = new Set(summaries.map((workflow) => workflow.name));
+export function nextWorkflowName(base: string, summaries: WorkflowSummary[]): string {
+  const names = new Set(summaries.map((workflow) => normalizeWorkflowName(workflow.name)));
   let n = 1;
-  while (names.has(n === 1 ? "Untitled workflow" : `Untitled workflow ${n}`)) n += 1;
-  return n === 1 ? "Untitled workflow" : `Untitled workflow ${n}`;
+  while (names.has(normalizeWorkflowName(n === 1 ? base : `${base} ${n}`))) n += 1;
+  return n === 1 ? base : `${base} ${n}`;
 }
 
 export function WorkflowLibrary({
@@ -29,7 +30,7 @@ export function WorkflowLibrary({
   const active = ordered.filter((workflow) => workflow.archivedAt === null);
   const [showArchived, setShowArchived] = useState(false);
   const listed = showArchived ? ordered : active;
-  const [selectedId, setSelectedId] = useState<string | null>(() => active[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
   const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
@@ -39,25 +40,41 @@ export function WorkflowLibrary({
   const activePersonas = personas.filter((persona) => persona.archivedAt === null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   useEffect(() => {
-    if (selectedId === null && active[0]) setSelectedId(active[0].id);
+    if (selectedId !== null || active.length === 0) return;
+    const remembered = readLastWorkflowId();
+    const next = active.find((workflow) => workflow.id === remembered)?.id ?? active[0]!.id;
+    rememberWorkflowId(next);
+    setSelectedId(next);
   }, [active, selectedId]);
   useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
 
-  const select = async (id: string): Promise<void> => {
-    if (id === selectedId) return;
-    if ((draft.dirty || draft.saving) && !(await draft.saveNow())) return;
+  const openWorkflow = (id: string | null): void => {
+    rememberWorkflowId(id);
     setSelection(null);
     setSelectedId(id);
   };
 
+  const select = async (id: string): Promise<void> => {
+    if (id === selectedId) return;
+    if (!(await draft.saveNow())) return;
+    openWorkflow(id);
+  };
+
   const create = async (): Promise<void> => {
+    if (!(await draft.saveNow())) return;
     const response = await workflowRequest<CreateResponse>("/api/workflows", {
       method: "POST",
-      body: JSON.stringify({ name: nextName(ordered) }),
+      body: JSON.stringify({ name: nextWorkflowName("Untitled workflow", ordered) }),
     });
-    setSelectedId(response.summary.id);
+    openWorkflow(response.summary.id);
+  };
+
+  const duplicate = async (): Promise<void> => {
+    if (!workflow) return;
+    const summary = await draft.duplicate(nextWorkflowName(`${workflow.name} copy`, ordered));
+    if (summary) openWorkflow(summary.id);
   };
 
   const addNode = (kind: "persona" | "all_pass" | "end", personaId = palettePersona, at?: { x: number; y: number }): void => {
@@ -113,16 +130,19 @@ export function WorkflowLibrary({
             <header className="workflow-builder-toolbar">
               <div><p className="workflow-eyebrow">Draft revision {workflow.draftRevision}</p><h3>{workflow.name}</h3></div>
               <span className={draft.saving ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
-              <button className="btn btn-ghost" onClick={() => void draft.duplicate().then((summary) => summary && setSelectedId(summary.id))}>Duplicate</button>
+              <button className="btn btn-ghost" onClick={() => void duplicate()}>Duplicate</button>
               <button className="btn btn-danger" disabled={workflow.archivedAt !== null} onClick={async () => {
                 if (!window.confirm(`Archive ${workflow.name}? Published versions remain readable.`)) return;
-                await workflowRequest(`/api/workflows/${workflow.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: workflow.draftRevision }) });
-                setSelectedId(active.find((item) => item.id !== workflow.id)?.id ?? null);
+                if (!(await draft.saveNow())) return;
+                const current = draft.current();
+                if (!current) return;
+                await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
               }}>Archive</button>
               <button className="btn" disabled={workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
             </header>
             {draft.conflict && (
-              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><button onClick={() => void draft.reload()}>Reload latest</button><button onClick={() => void draft.duplicate().then((summary) => summary && setSelectedId(summary.id))}>Duplicate my draft</button></div>
+              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><button onClick={() => void draft.reload()}>Reload latest</button><button onClick={() => void duplicate()}>Duplicate my draft</button></div>
             )}
             {draft.error && <p className="persona-error" role="alert">{draft.error}</p>}
             <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />

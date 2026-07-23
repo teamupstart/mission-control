@@ -36,6 +36,7 @@ import type {
   WorkflowRun,
   WorkflowSubmission,
   WorkflowVersion,
+  WorkflowVersionMetadata,
   WorkflowSummary,
   WorkflowDiagnostic,
 } from "@shared/workflow.ts";
@@ -238,6 +239,33 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
     version: row.version,
     sourceDraftRevision: row.source_draft_revision,
     graph: parseJson("workflow_versions", row.id, "graph_json", row.graph_json, PublishedWorkflowGraphSchema),
+    completionPolicy: parseJson(
+      "workflow_versions",
+      row.id,
+      "completion_policy_json",
+      row.completion_policy_json,
+      WorkflowCompletionPolicySchema,
+    ),
+    bindingDefaults: parseJson(
+      "workflow_versions",
+      row.id,
+      "binding_defaults_json",
+      row.binding_defaults_json,
+      WorkflowBindingDefaultsSchema,
+    ),
+    publishedAt: row.published_at,
+  };
+}
+
+const WorkflowVersionMetadataRowSchema = WorkflowVersionRowSchema.omit({ graph_json: true });
+
+export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersionMetadata {
+  const row = parseShape("workflow_versions", WorkflowVersionMetadataRowSchema, value);
+  return {
+    id: row.id,
+    workflowId: row.workflow_id,
+    version: row.version,
+    sourceDraftRevision: row.source_draft_revision,
     completionPolicy: parseJson(
       "workflow_versions",
       row.id,
@@ -911,6 +939,19 @@ export class WorkflowStore {
     const out: WorkflowVersion[] = [];
     for (const row of rows) {
       try { out.push(parseWorkflowVersionRow(row)); } catch (error) { diagnose(error); }
+    }
+    return out;
+  }
+
+  listWorkflowVersionMetadata(workflowId: string): WorkflowVersionMetadata[] {
+    const rows = this.db.prepare(
+      `SELECT id, workflow_id, version, source_draft_revision,
+              completion_policy_json, binding_defaults_json, published_at
+         FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
+    ).all(workflowId) as unknown[];
+    const out: WorkflowVersionMetadata[] = [];
+    for (const row of rows) {
+      try { out.push(parseWorkflowVersionMetadataRow(row)); } catch (error) { diagnose(error); }
     }
     return out;
   }

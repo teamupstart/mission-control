@@ -313,6 +313,8 @@ export interface WorkflowVersion {
   publishedAt: number;
 }
 
+export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph">;
+
 /** The bounded catalog projection carried over SSE. Graphs and guidance stay on HTTP. */
 export interface WorkflowSummary {
   id: WorkflowId;
@@ -331,7 +333,7 @@ export interface WorkflowSummary {
 
 export interface WorkflowDetail {
   workflow: WorkflowDefinition;
-  versions: WorkflowVersion[];
+  versions: WorkflowVersionMetadata[];
 }
 
 export interface WorkflowBinding {

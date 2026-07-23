@@ -4,6 +4,7 @@ import type {
   WorkflowDetail,
   WorkflowSummary,
   WorkflowVersion,
+  WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 
@@ -48,19 +49,52 @@ export function workflowPublishBlocked(input: {
   return input.dirty || input.saving || input.conflicted || !input.valid || input.alreadyPublished || input.archived;
 }
 
+export type WorkflowSummaryAction = "ignore" | "reload" | "conflict";
+
+export function workflowSummaryAction(input: {
+  local: WorkflowDefinition;
+  summary: WorkflowSummary;
+  dirty: boolean;
+  saving: boolean;
+}): WorkflowSummaryAction {
+  const { local, summary, dirty, saving } = input;
+  if (summary.id !== local.id || saving || summary.draftRevision < local.draftRevision) return "ignore";
+  if (summary.draftRevision > local.draftRevision) return dirty ? "conflict" : "reload";
+  const metadataChanged = summary.currentVersionId !== local.currentVersionId
+    || summary.archivedAt !== local.archivedAt
+    || summary.updatedAt > local.updatedAt;
+  return metadataChanged && !dirty ? "reload" : "ignore";
+}
+
+export function versionMetadata(version: WorkflowVersion): WorkflowVersionMetadata {
+  const { graph: _graph, ...metadata } = version;
+  return metadata;
+}
+
+export function workflowSavePreflight(
+  workflow: WorkflowDefinition | null,
+  conflict: WorkflowSummary | null,
+  savedFingerprint: string | null,
+): "blocked" | "clean" | "save" {
+  if (conflict) return "blocked";
+  if (!workflow || editableFingerprint(workflow) === savedFingerprint) return "clean";
+  return "save";
+}
+
 export interface WorkflowDraftState {
   workflow: WorkflowDefinition | null;
-  versions: WorkflowVersion[];
+  versions: WorkflowVersionMetadata[];
   dirty: boolean;
   saving: boolean;
   loading: boolean;
   conflict: WorkflowSummary | null;
   error: string | null;
+  current: () => WorkflowDefinition | null;
   update: (patch: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults">>) => void;
   saveNow: () => Promise<boolean>;
   reload: () => Promise<void>;
   publish: () => Promise<WorkflowVersion | null>;
-  duplicate: () => Promise<WorkflowSummary | null>;
+  duplicate: (name: string) => Promise<WorkflowSummary | null>;
   clearConflict: () => void;
 }
 
@@ -71,40 +105,52 @@ export function useWorkflowDraft(
   onDirtyChange: (dirty: boolean) => void,
 ): WorkflowDraftState {
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
-  const [versions, setVersions] = useState<WorkflowVersion[]>([]);
+  const [versions, setVersions] = useState<WorkflowVersionMetadata[]>([]);
   const [savedFingerprint, setSavedFingerprint] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [conflict, setConflict] = useState<WorkflowSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const workflowRef = useRef(workflow);
+  const workflowIdRef = useRef(workflowId);
+  const loadGeneration = useRef(0);
+  workflowIdRef.current = workflowId;
+  const currentWorkflow = workflow?.id === workflowId ? workflow : null;
+  const currentConflict = conflict?.id === workflowId ? conflict : null;
+  const workflowRef = useRef(currentWorkflow);
   const inFlight = useRef<Promise<boolean> | null>(null);
-  workflowRef.current = workflow;
+  workflowRef.current = currentWorkflow;
 
-  const fingerprint = workflow ? editableFingerprint(workflow) : null;
+  const fingerprint = currentWorkflow ? editableFingerprint(currentWorkflow) : null;
   const dirty = fingerprint !== null && savedFingerprint !== null && fingerprint !== savedFingerprint;
   useEffect(() => onDirtyChange(dirty || saving), [dirty, onDirtyChange, saving]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const reload = useCallback(async (): Promise<void> => {
-    if (!workflowId) {
+    const requestedId = workflowId;
+    const generation = ++loadGeneration.current;
+    if (!requestedId) {
       setWorkflow(null);
       setVersions([]);
       setSavedFingerprint(null);
+      setConflict(null);
+      setError(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const detail = await workflowRequest<WorkflowDetail>(`/api/workflows/${workflowId}`);
+      const detail = await workflowRequest<WorkflowDetail>(`/api/workflows/${requestedId}`);
+      if (loadGeneration.current !== generation || workflowIdRef.current !== requestedId) return;
       setWorkflow(detail.workflow);
       setVersions(detail.versions);
       setSavedFingerprint(editableFingerprint(detail.workflow));
       setConflict(null);
     } catch (caught) {
+      if (loadGeneration.current !== generation || workflowIdRef.current !== requestedId) return;
       setError(caught instanceof Error ? caught.message : "Could not load workflow");
     } finally {
-      setLoading(false);
+      if (loadGeneration.current === generation && workflowIdRef.current === requestedId) setLoading(false);
     }
   }, [workflowId]);
 
@@ -112,9 +158,10 @@ export function useWorkflowDraft(
 
   useEffect(() => {
     const local = workflowRef.current;
-    if (!streamedSummary || !local || streamedSummary.id !== local.id || streamedSummary.draftRevision <= local.draftRevision) return;
-    if (dirty || saving) setConflict(streamedSummary);
-    else void reload();
+    if (!streamedSummary || !local) return;
+    const action = workflowSummaryAction({ local, summary: streamedSummary, dirty, saving });
+    if (action === "conflict") setConflict(streamedSummary);
+    if (action === "reload") void reload();
   }, [dirty, reload, saving, streamedSummary]);
 
   const update = useCallback((patch: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults">>): void => {
@@ -124,7 +171,9 @@ export function useWorkflowDraft(
   const saveNow = useCallback(async (): Promise<boolean> => {
     if (inFlight.current) return inFlight.current;
     const submitted = workflowRef.current;
-    if (!submitted || conflict || editableFingerprint(submitted) === savedFingerprint) return true;
+    const preflight = workflowSavePreflight(submitted, currentConflict, savedFingerprint);
+    if (preflight !== "save") return preflight === "clean";
+    if (!submitted) return true;
     const submittedFingerprint = editableFingerprint(submitted);
     const request = (async (): Promise<boolean> => {
       setSaving(true);
@@ -141,11 +190,15 @@ export function useWorkflowDraft(
             bindingDefaults: submitted.bindingDefaults,
           }),
         });
-        setSavedFingerprint(submittedFingerprint);
+        if (workflowIdRef.current === submitted.id) setSavedFingerprint(submittedFingerprint);
+        if (workflowRef.current?.id === submitted.id) {
+          workflowRef.current = reconcileWorkflowSave(workflowRef.current, submittedFingerprint, response.workflow);
+        }
         setWorkflow((current) => {
           if (!current || current.id !== submitted.id) return current;
           return reconcileWorkflowSave(current, submittedFingerprint, response.workflow);
         });
+        setConflict(null);
         return true;
       } catch (caught) {
         if (caught instanceof WorkflowApiError && caught.status === 409) {
@@ -161,17 +214,17 @@ export function useWorkflowDraft(
     })();
     inFlight.current = request;
     return request;
-  }, [conflict, savedFingerprint, streamedSummary]);
+  }, [currentConflict, savedFingerprint, streamedSummary]);
 
   useEffect(() => {
-    if (!dirty || saving || conflict) return;
+    if (!dirty || saving || currentConflict) return;
     const timer = window.setTimeout(() => void saveNow(), 500);
     return () => window.clearTimeout(timer);
-  }, [conflict, dirty, saveNow, saving]);
+  }, [currentConflict, dirty, saveNow, saving]);
 
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;
-    if (!current || dirty || saving || conflict) return null;
+    if (!current || dirty || saving || currentConflict) return null;
     setError(null);
     try {
       const response = await workflowRequest<WorkflowPublishResponse>(`/api/workflows/${current.id}/publish`, {
@@ -182,22 +235,22 @@ export function useWorkflowDraft(
       setSavedFingerprint(editableFingerprint(response.workflow));
       setVersions((items) => items.some((item) => item.id === response.version.id)
         ? items
-        : [response.version, ...items]);
+        : [versionMetadata(response.version), ...items]);
       return response.version;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not publish workflow");
       return null;
     }
-  }, [conflict, dirty, saving]);
+  }, [currentConflict, dirty, saving]);
 
-  const duplicate = useCallback(async (): Promise<WorkflowSummary | null> => {
+  const duplicate = useCallback(async (name: string): Promise<WorkflowSummary | null> => {
     const current = workflowRef.current;
     if (!current) return null;
     try {
       const response = await workflowRequest<WorkflowWriteResponse>("/api/workflows", {
         method: "POST",
         body: JSON.stringify({
-          name: `${current.name} copy`,
+          name,
           description: current.description,
           draft: current.draft,
           completionPolicy: current.completionPolicy,
@@ -212,18 +265,19 @@ export function useWorkflowDraft(
   }, []);
 
   return useMemo(() => ({
-    workflow,
+    workflow: currentWorkflow,
     versions,
     dirty,
     saving,
-    loading,
-    conflict,
+    loading: loading || Boolean(workflowId && !currentWorkflow),
+    conflict: currentConflict,
     error,
+    current: () => workflowRef.current,
     update,
     saveNow,
     reload,
     publish,
     duplicate,
     clearConflict: () => setConflict(null),
-  }), [conflict, dirty, duplicate, error, loading, publish, reload, saveNow, saving, update, versions, workflow]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, loading, publish, reload, saveNow, saving, update, versions, workflowId]);
 }

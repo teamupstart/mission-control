@@ -1129,6 +1129,8 @@ live SSE connection, and Cards, Console, or Board selection stay mounted, so ret
 **Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
 `#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
 library, `#/workflows/runs` for future run history, and `#/fleet` to return.
+The top-bar button opens the graph library and restores the last active workflow selected
+in this browser when it is still available.
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
@@ -1164,7 +1166,9 @@ a graph node.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
-**Duplicate my draft**. Validation runs from the same browser-safe implementation in the
+**Duplicate my draft**. A conflicted draft cannot be replaced by selecting or creating
+another workflow; Duplicate is the explicit path that preserves it under a unique name.
+Validation runs from the same browser-safe implementation in the
 canvas and at the daemon boundary. It checks ports, routes, Join pairs, reachability,
 Session-centered cycles, active Personas, graph limits, and finite bounded coordinates.
 
@@ -1173,7 +1177,8 @@ that revision and creates an immutable version containing the exact name, descri
 Markdown, provider/model overrides, and revision of every Persona. Editing or archiving a
 Persona later never changes old versions; history marks its snapshot as outdated or its
 source as archived. To update a published design, edit the mutable draft and publish a new
-version.
+version. Opening a workflow fetches only bounded version metadata; selecting one history
+entry fetches that immutable graph and its exact Persona Markdown from the version route.
 
 Workflow settings also store defaults for the future binding: Manual or Foreman-complete
 trigger, Preview or Live delivery, and a repair-round limit. The optional Inspector final

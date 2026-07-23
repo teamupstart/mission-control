@@ -7,6 +7,7 @@ import type {
   WorkflowSummary,
   WorkflowValidationResult,
   WorkflowVersion,
+  WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
 import { normalizeWorkflowName } from "@shared/workflow.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
@@ -54,7 +55,7 @@ export class WorkflowManager {
 
   get(id: string): WorkflowDetail | null {
     const workflow = this.store.getWorkflow(id);
-    return workflow ? { workflow, versions: this.store.listWorkflowVersions(id) } : null;
+    return workflow ? { workflow, versions: this.store.listWorkflowVersionMetadata(id) } : null;
   }
 
   create(input: CreateWorkflow, now = Date.now()): WorkflowMutation {
@@ -103,8 +104,8 @@ export class WorkflowManager {
     return { ...result, summary };
   }
 
-  versions(id: string): WorkflowVersion[] | null {
-    return this.store.getWorkflow(id) ? this.store.listWorkflowVersions(id) : null;
+  versions(id: string): WorkflowVersionMetadata[] | null {
+    return this.store.getWorkflow(id) ? this.store.listWorkflowVersionMetadata(id) : null;
   }
 
   version(id: string, version: number): WorkflowVersion | null {

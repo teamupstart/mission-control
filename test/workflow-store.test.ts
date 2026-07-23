@@ -61,6 +61,9 @@ test("Publish snapshots exact Persona bytes, is idempotent per draft, and never 
   assert.equal(first.ok, true);
   if (!first.ok) return;
   assert.equal(first.version.version, 1);
+  const metadata = store.listWorkflowVersionMetadata("w1")[0]!;
+  assert.equal(metadata.version, 1);
+  assert.equal("graph" in metadata, false);
   const node = first.version.graph.nodes.find((candidate) => candidate.kind === "persona");
   assert.ok(node?.kind === "persona");
   if (node?.kind !== "persona") return;

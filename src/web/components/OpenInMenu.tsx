@@ -79,15 +79,28 @@ export function OpenInMenu({
   }, [disabled, open]);
 
   // Keys are taken in the CAPTURE phase on `window`, above every other listener in the
-  // app. Escape has three claimants while this is up - the menu, the files Overlay (which
-  // listens on `window`, see Overlay.tsx) and App's grid handler - and only the topmost
-  // one may act, or dismissing the menu also closes the window behind it. The arrows are
-  // here for the same reason: in the console layout they scroll the file reader.
+  // app, and stopped IMMEDIATELY. Escape has three claimants while this is up - the menu,
+  // the files Overlay and App's grid handler - and only the topmost may act, or dismissing
+  // the menu also closes the window behind it. The arrows are here for the same reason: in
+  // the console layout they scroll the file reader.
+  //
+  // Both halves are load-bearing, and the second is the subtle one. Capture-at-window runs
+  // before the other two (which listen on `window` in the BUBBLE phase - see Overlay.tsx
+  // and App.tsx), and plain `stopPropagation` is enough to keep the event from ever
+  // reaching that later point in the path. It is NOT enough against a listener on the same
+  // target in the same phase, which only `stopImmediatePropagation` stops - so the weaker
+  // call would make this correct by the accident of what phase everyone else happens to
+  // have picked, and the next capture-phase window listener would silently take Escape
+  // alongside the menu.
   useEffect(() => {
     if (!open) return;
+    function seize(event: KeyboardEvent): void {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    }
     function onKey(event: KeyboardEvent): void {
       if (event.key === "Escape") {
-        event.stopPropagation();
+        seize(event);
         setOpen(false);
         root.current?.querySelector<HTMLButtonElement>(".open-in-btn")?.focus();
         return;
@@ -96,8 +109,7 @@ export function OpenInMenu({
       const rows = [...(root.current?.querySelectorAll<HTMLButtonElement>(".open-in-row") ?? [])]
         .filter((row) => !row.disabled);
       if (rows.length === 0) return;
-      event.stopPropagation();
-      event.preventDefault();
+      seize(event);
       const at = rows.indexOf(document.activeElement as HTMLButtonElement);
       const step = event.key === "ArrowDown" ? 1 : -1;
       rows[(at + step + rows.length) % rows.length]?.focus();

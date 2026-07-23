@@ -65,6 +65,27 @@ test("every target the daemon reports gets a row, in the order it reported them"
   assert.ok(html.indexOf("Browser") < html.indexOf("Editor"));
 });
 
+// What is at stake here is one keystroke doing two things. The files view can be an
+// Overlay, and App's grid handler is live behind the console's, so Escape has three
+// claimants while the menu is up. The menu wins by listening in the CAPTURE phase on
+// `window` - ahead of the other two, which bubble - and by stopping IMMEDIATE propagation
+// rather than plain propagation: the weaker call leaves correctness resting on the phase
+// every other listener happened to choose, and the next capture-phase window listener
+// would take Escape alongside the menu with nothing failing.
+test("the menu takes Escape exclusively, ahead of the overlay and the grid", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../src/web/components/OpenInMenu.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(source, /addEventListener\("keydown", onKey, true\)/, "capture phase, or it runs last");
+  assert.match(source, /removeEventListener\("keydown", onKey, true\)/, "a capture listener must be removed as one");
+  assert.match(source, /stopImmediatePropagation\(\)/);
+  assert.doesNotMatch(source, /event\.stopPropagation\(\)/, "the weaker call is what this test exists to prevent");
+  // Only while the menu is open: a closed menu that kept eating Escape would be worse
+  // than one that shared it.
+  assert.match(source, /if \(!open\) return;\s*function seize/);
+});
+
 test("the menu names no target itself - rows come only from the registry", () => {
   const source = readFileSync(
     fileURLToPath(new URL("../src/web/components/OpenInMenu.tsx", import.meta.url)),

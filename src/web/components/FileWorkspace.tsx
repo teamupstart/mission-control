@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { OpenTargetId } from "@shared/open-targets.ts";
-import { isSavePending, type FileBuffer, type SessionFilesController } from "../lib/sessionFiles.ts";
+import {
+  hasUnwrittenEdits,
+  isSavePending,
+  type FileBuffer,
+  type SessionFilesController,
+} from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
@@ -227,6 +232,9 @@ export function FileWorkspace({
     setLaunchError(result.ok ? null : (result.error ?? "could not open the file"));
   }, [session.id]);
 
+  /** Both refusal paths say the same thing, because they are the same refusal. */
+  const unwritten = (path: string): string => `Not opened - ${path} could not be saved first.`;
+
   /**
    * Hand the SAVED file to a target, not the one on disk a moment ago.
    *
@@ -234,6 +242,12 @@ export function FileWorkspace({
    * clicking straight after an edit would open the previous version - a bug that looks
    * exactly like the launcher having cached the page. Flushing and waiting for the buffer
    * to settle is what makes what-you-see and what-opens the same bytes.
+   *
+   * The two unsaved states are handled HERE as well as in the effect below, and both
+   * branches are needed: a buffer that is `modified` when clicked ends up in the effect,
+   * but one that is ALREADY `failed`, `offline` or `conflict` never enters it - nothing is
+   * pending, so there is nothing to wait for - and would otherwise fall straight through
+   * to a launch of the stale file.
    */
   function openIn(target: OpenTargetId): void {
     if (!selectedPath || !buffer) return;
@@ -241,6 +255,10 @@ export function FileWorkspace({
     if (isSavePending(buffer)) {
       controller.flush(session.id, selectedPath);
       setPendingOpen({ path: selectedPath, target });
+      return;
+    }
+    if (hasUnwrittenEdits(buffer)) {
+      setLaunchError(unwritten(selectedPath));
       return;
     }
     void launch(selectedPath, target);
@@ -252,13 +270,14 @@ export function FileWorkspace({
     if (pending && isSavePending(pending)) return;
     setPendingOpen(null);
     if (!pending) return;
-    if (pending.saveState === "saved" || pending.saveState === "readonly") {
-      void launch(pendingOpen.path, pendingOpen.target);
+    // The flush ended in `failed`, `offline` or `conflict`: the edits are real and are NOT
+    // on disk, so opening now would quietly show the wrong thing. The save notice below
+    // says which of those it was.
+    if (hasUnwrittenEdits(pending)) {
+      setLaunchError(unwritten(pendingOpen.path));
       return;
     }
-    // `failed`, `offline` or `conflict`: the edits are real and are NOT on disk, so
-    // opening now would quietly show the wrong thing. The save notice below says why.
-    setLaunchError(`Not opened - ${pendingOpen.path} could not be saved first.`);
+    void launch(pendingOpen.path, pendingOpen.target);
   }, [launch, pendingOpen, state?.buffers]);
 
   // A refusal is about the file it names, so it goes when that file leaves the toolbar.

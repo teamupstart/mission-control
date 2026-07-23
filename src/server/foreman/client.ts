@@ -212,10 +212,7 @@ export class ForemanClient implements ForemanActions {
    * own as well; see `recentlyActed`.
    */
   async dispatchTask(id: string, defaultModel: string | null): Promise<TaskActionResult> {
-    const res = await send("POST", `/api/tasks/${enc(id)}/dispatch`, {
-      defaultModel,
-      autopilot: true,
-    });
+    const res = await send("POST", `/api/tasks/${enc(id)}/dispatch`, { defaultModel });
     if (res.ok) return { ok: true, status: res.status };
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     return { ok: false, status: res.status, error: body.error ?? `dispatch -> ${res.status}` };
@@ -236,7 +233,6 @@ export class ForemanClient implements ForemanActions {
   async assignTask(id: string, sessionId: string): Promise<TaskActionResult> {
     const res = await send("POST", `/api/tasks/${enc(id)}/assign`, {
       sessionId,
-      autopilot: true,
       confirmReset: true,
     });
     const body = (await res.json().catch(() => ({}))) as {

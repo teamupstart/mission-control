@@ -83,7 +83,7 @@ test("submitted Foreman replies use settled prompt injection; unsubmitted drafts
   assert.deepEqual(calls[1]!.body, { text: "Draft only.", submit: false });
 });
 
-test("backlog actions identify the caller as autopilot", async () => {
+test("Foreman backlog actions never override a disabled task", async () => {
   const real = globalThis.fetch;
   const calls: Array<{ url: string; body: unknown }> = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -100,10 +100,9 @@ test("backlog actions identify the caller as autopilot", async () => {
     globalThis.fetch = real;
   }
 
-  assert.deepEqual(calls[0]!.body, { defaultModel: "model-a", autopilot: true });
+  assert.deepEqual(calls[0]!.body, { defaultModel: "model-a" });
   assert.deepEqual(calls[1]!.body, {
     sessionId: "session/1",
-    autopilot: true,
     confirmReset: true,
   });
 });

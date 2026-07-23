@@ -1111,12 +1111,11 @@ export interface Task {
    * `plannableBacklog` retains it so inferred dependency edges pointing at parked work
    * survive replanning and continue to block their dependents.
    *
-   * It deliberately does NOT stop a human: the launch button, drag-to-assign and
-   * `POST /api/tasks/:id/dispatch` all still work on a disabled item, the same way
-   * they work on one Foreman thinks is blocked. The toggle says "not without me", not
-   * "not at all" - a gate that refused the button the operator just pressed to protect
-   * a background scheduler's ordering is the same surprise `maxSessions` deliberately
-   * avoids.
+   * It deliberately does NOT stop a human: the launch button and drag-to-assign send
+   * an explicit override, as can `POST /api/tasks/:id/dispatch`. The toggle says "not
+   * without me", not "not at all" - a gate that refused the button the operator just
+   * pressed to protect a background scheduler's ordering is the same surprise
+   * `maxSessions` deliberately avoids.
    *
    * A disabled item still BLOCKS anything that depends on it, and reports as its own
    * `BlockerState` (@shared/backlog.ts) rather than as "waiting": it will not finish

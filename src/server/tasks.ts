@@ -72,14 +72,14 @@ export class TaskDependencyError extends Error {}
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
   defaultModel?: string | null;
-  /** Enforce the backlog enable toggle for a Foreman-initiated launch. */
-  autopilot?: boolean;
+  /** Deliberately launch a backlog task whose enable toggle is off. */
+  overrideDisabled?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
-  /** Enforce the backlog enable toggle for a Foreman-initiated handover. */
-  autopilot?: boolean;
+  /** Deliberately assign a backlog task whose enable toggle is off. */
+  overrideDisabled?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
    * the default, and what an omitted flag gets - means a reset with anything to lose is
@@ -483,10 +483,10 @@ export class TaskManager {
       return { ok: false, error: "task is being assigned", task: t };
     }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (t.status === "backlog" && options.autopilot && !t.enabled) {
+      if (t.status === "backlog" && !t.enabled && !options.overrideDisabled) {
         return {
           ok: false,
-          error: "task's enable toggle is off for the backlog autopilot",
+          error: "task's enable toggle is off; pass overrideDisabled to launch it anyway",
           task: t,
         };
       }
@@ -630,10 +630,10 @@ export class TaskManager {
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
-    if (opts.autopilot && !t.enabled) {
+    if (!t.enabled && !opts.overrideDisabled) {
       return {
         ok: false,
-        error: "task's enable toggle is off for the backlog autopilot",
+        error: "task's enable toggle is off; pass overrideDisabled to assign it anyway",
         scope: "task",
       };
     }

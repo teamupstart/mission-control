@@ -415,9 +415,12 @@ export const api = {
 
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
-  // `{}` is intentional: the daemon validates every mutating route body. Foreman adds
-  // its launch-time default here; a human dispatch leaves the task's model untouched.
-  dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
+  /**
+   * Launch an existing task. Dashboard calls are deliberate operator actions and pass
+   * the disabled-toggle override; Foreman uses its separate client and never does.
+   */
+  dispatchBacklog: (id: string, overrideDisabled: boolean) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.
@@ -435,8 +438,17 @@ export const api = {
    * queue, a branch - refuses with a `resetConfirm` breakdown instead. Re-POST with
    * `confirmReset` once the operator has seen it; a clean agent never gets that far.
    */
-  assignTask: (id: string, sessionId: string, confirmReset = false) =>
-    post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId, confirmReset }),
+  assignTask: (
+    id: string,
+    sessionId: string,
+    overrideDisabled: boolean,
+    confirmReset = false,
+  ) =>
+    post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, {
+      sessionId,
+      overrideDisabled,
+      confirmReset,
+    }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>

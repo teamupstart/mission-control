@@ -1899,7 +1899,7 @@ export function buildApp(
     const parsed = await parseBody(c, AssignTaskSchema);
     if (!parsed.ok) return parsed.res;
     const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId, {
-      autopilot: parsed.data.autopilot,
+      overrideDisabled: parsed.data.overrideDisabled,
       confirmReset: parsed.data.confirmReset,
     });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

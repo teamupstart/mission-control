@@ -947,13 +947,16 @@ item - not into a fresh worktree, not onto an idle agent. It's on the board's ba
 next to the priority picker, and on the same row in [Sitrep](#roundup); both draw the same
 control, so you can park an item from wherever you happen to be reading the list.
 
-**It's a hold on the machine, not on you.** **launch new agent**, dragging the card onto an
-idle agent, and `POST /api/tasks/:id/dispatch` all still work on a parked item - the button
-just reads **launch anyway**, the way it does on an item Foreman thinks is waiting its
-turn. Blocking a button you pressed yourself to protect a background scheduler is the worse
-surprise, and it's the same call `Max agents` makes.
+**It's a hold on the machine, not on you.** **launch new agent** and dragging the card onto
+an idle agent both send a deliberate override for a parked item; the button reads
+**launch anyway**, the way it does on an item Foreman thinks is waiting its turn. Direct
+callers can do the same with `POST /api/tasks/:id/dispatch` and
+`{"overrideDisabled":true}`. Without that explicit override, the daemon refuses parked
+work, including requests from an older Foreman worker. Blocking a button you pressed
+yourself to protect a background scheduler is the worse surprise, and it's the same call
+`Max agents` makes.
 
-A parked card dims, says `disabled - autopilot will skip it`, and drops out of the
+A parked card dims, says `autopilot will skip this`, and drops out of the
 autopilot's `ready` count into its own `disabled` one in the Foreman popover - so an
 autopilot with nothing to do can say *why* it has nothing to do rather than looking broken.
 The Sitrep digest marks the row too (`- "On hold" (ship, disabled) - /repo`).

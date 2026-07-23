@@ -142,7 +142,7 @@ function BacklogCard({
 
   async function launch(): Promise<void> {
     setBusy(true);
-    const r = await api.dispatchBacklog(task.id);
+    const r = await api.dispatchBacklog(task.id, true);
     if (!r.ok) onAssignError(r.error ?? "could not dispatch");
     setBusy(false);
   }
@@ -349,7 +349,7 @@ export async function dropTaskOnSession(
 ): Promise<void> {
   const id = e.dataTransfer.getData("application/x-mission-task");
   if (!id) return;
-  const r = await api.assignTask(id, session.id);
+  const r = await api.assignTask(id, session.id, true);
   if (r.ok) return;
   if (r.resetConfirm) {
     onConfirm({ taskId: id, confirm: r.resetConfirm });

@@ -79,7 +79,7 @@ function BacklogReportRow({
       <div className="report-row-actions">
         <button
           className="btn btn-send"
-          onClick={() => void api.dispatchBacklog(task.id)}
+          onClick={() => void api.dispatchBacklog(task.id, true)}
           disabled={blockers.length > 0}
           title={blockers.length > 0 ? "Dependencies must complete first" : undefined}
         >
@@ -324,7 +324,10 @@ export function ReportPanel({
                   place - it re-provisions from scratch. */}
               {t.status === "failed" && !t.worktreePath && (
                 <div className="report-row-actions">
-                  <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
+                  <button
+                    className="btn btn-send"
+                    onClick={() => void api.dispatchBacklog(t.id, true)}
+                  >
                     Retry
                   </button>
                 </div>

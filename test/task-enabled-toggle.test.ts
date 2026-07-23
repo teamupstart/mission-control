@@ -147,7 +147,7 @@ test("a parked task carries no dependency blocker of its own", () => {
   assert.deepEqual(tasks.dependencyBlockers(tasks.get("t1")!), []);
 });
 
-test("only an autopilot-declared dispatch is refused for a parked task", async () => {
+test("a stale worker cannot dispatch or assign a parked task without an override", async () => {
   const { registry, tasks, app } = setup({ enabled: false });
   let dispatched = 0;
   const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
@@ -161,13 +161,38 @@ test("only an autopilot-declared dispatch is refused for a parked task", async (
       body: JSON.stringify(body),
     });
 
-  const autopilot = await post({ autopilot: true });
-  assert.equal(autopilot.status, 409);
-  assert.match((await autopilot.json() as { error: string }).error, /toggle.*off.*autopilot/);
+  const legacyDispatch = await post({});
+  assert.equal(legacyDispatch.status, 409);
+  assert.match((await legacyDispatch.json() as { error: string }).error, /toggle.*off.*override/);
   assert.equal(dispatched, 0);
   assert.equal(registry.getTask("t1")!.status, "backlog");
 
-  const manual = await post({});
+  const legacyAssign = await app.request("/api/tasks/t1/assign", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "legacy-worker-session" }),
+  });
+  assert.equal(legacyAssign.status, 409);
+  assert.match((await legacyAssign.json() as { error: string }).error, /toggle.*off.*override/);
+
+  const manual = await post({ overrideDisabled: true });
   assert.equal(manual.status, 200);
+  assert.equal(dispatched, 1);
+});
+
+test("an enabled backlog task needs no disabled-toggle override", async () => {
+  const { tasks, app } = setup();
+  let dispatched = 0;
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async () => {
+    dispatched++;
+  };
+
+  const response = await app.request("/api/tasks/t1/dispatch", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 200);
   assert.equal(dispatched, 1);
 });

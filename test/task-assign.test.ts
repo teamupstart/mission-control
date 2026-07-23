@@ -287,16 +287,17 @@ const cleanReset = async (): Promise<ResetResult> => ({
   detached: true,
 });
 
-test("only an autopilot-declared assign is refused for a parked task", async () => {
+test("a parked task requires an explicit override before assignment", async () => {
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-disabled-");
   r.upsertTask(mkTask({ repoRoot: clone, enabled: false }));
 
-  const autopilot = await tasks.assign("t1", sessionId, { autopilot: true });
-  assert.equal(autopilot.ok, false);
-  assert.equal(autopilot.scope, "task");
-  assert.match(autopilot.error ?? "", /toggle.*off.*autopilot/);
+  const unflagged = await tasks.assign("t1", sessionId);
+  assert.equal(unflagged.ok, false);
+  assert.equal(unflagged.scope, "task");
+  assert.match(unflagged.error ?? "", /toggle.*off.*override/);
 
   const manual = await tasks.assign("t1", sessionId, {
+    overrideDisabled: true,
     paneReady,
     reset: cleanReset,
     inject: async () => ({ ok: true, pasted: true, submitVerified: true }),

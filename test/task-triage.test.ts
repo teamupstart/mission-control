@@ -114,6 +114,26 @@ test("a dispatch with no triage fields parses to unset, not to defaults", () => 
   const parsed = DispatchSchema.parse({ repoRoot: "/repo", intent: "do it" });
   assert.equal(parsed.priority, null, "priority must be null, never a guessed level");
   assert.deepEqual(parsed.labels, []);
+  assert.deepEqual(parsed.dependencies, []);
+});
+
+test("task dependency inputs are bounded, typed, and deduplicated", () => {
+  const input = { repoRoot: "/repo", intent: "do it" };
+  assert.deepEqual(
+    DispatchSchema.parse({ ...input, dependencies: [{ type: "task", taskId: "t1" }] }).dependencies,
+    [{ type: "task", taskId: "t1" }],
+  );
+  assert.equal(
+    DispatchSchema.safeParse({
+      ...input,
+      dependencies: [{ type: "task", taskId: "t1" }, { type: "task", taskId: "t1" }],
+    }).success,
+    false,
+  );
+  assert.equal(
+    DispatchSchema.safeParse({ ...input, dependencies: [{ type: "session", taskId: "t1" }] }).success,
+    false,
+  );
 });
 
 test("DispatchSchema normalizes labels itself, so no writer can bypass it", () => {

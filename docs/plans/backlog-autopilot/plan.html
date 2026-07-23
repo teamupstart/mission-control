@@ -247,49 +247,9 @@
     typing, refusing when the reset would destroy work.</p>
 
   <h2>The dependency read, and why it is not trusted as written</h2>
-  <p>A fresh tool-less <code>claude -p</code> (Sonnet by default, <code>FOREMAN_BACKLOG_MODEL</code>)
-    sees every backlog item's title and intent and returns an order plus a <code>dependsOn</code>
-    list per item. Tool-less because the prompt embeds text a human typed and the model only
-    needs to emit JSON.</p>
-  <p><code>sanitizePlan</code> then makes it safe to schedule from. Every repair closes a
-    <strong>silent</strong> failure:</p>
-  <div class="scroll-x">
-    <table>
-      <thead><tr><th>Repair</th><th>What it prevents</th></tr></thead>
-      <tbody>
-        <tr><td>unknown ids dropped</td><td>a dependency no task can ever satisfy under that id</td></tr>
-        <tr><td>self-references dropped</td><td>a task waiting on itself, which never starts</td></tr>
-        <tr><td><strong>cycles broken</strong></td><td>two cards blocked forever, looking exactly like two cards waiting their turn</td></tr>
-        <tr><td><strong>missing entries appended</strong></td><td>a permanently stale plan - an unbounded loop of model calls that produces nothing</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p>Cycles are broken by keeping only the edges that point <em>backward</em> in the model's
-    own order, so the repair follows its intent rather than overriding it - an edge pointing
-    forward is the reply contradicting itself, and that is the one to drop.</p>
-
-  <h3>Staleness is coverage, not a fingerprint</h3>
-  <div class="why">
-    A plan is a set of statements about the tasks it names, and a task <strong>leaving</strong>
-    the backlog invalidates none of them. A fingerprint would burn a model call on every
-    single dispatch - the one moment the backlog always changes. A task <strong>arriving</strong>
-    is different: it may be the thing everything else waits on, and nothing in the stored plan
-    can say so.
-  </div>
-
-  <h3>What one read is allowed to cost</h3>
-  <p>The read's time budget <strong>scales with the backlog</strong> - <code>60s + 20s</code> an
-    item, capped at 10 minutes, with <code>FOREMAN_BACKLOG_TIMEOUT_MS</code> pinning a flat one
-    instead. It has to: the model writes one entry per task, so the same call costs seconds for
-    a handful of items and minutes for two dozen.</p>
-  <div class="why">
-    A fixed cap is an expiry date, not a tuning value. The original 90s worked on the backlogs
-    it was built against and then failed <strong>totally and silently</strong> once one grew
-    past it: a read that never completes stores no plan, a backlog with no plan is stale on
-    every tick, and a stale backlog is re-read forever and scheduled never. The operator's only
-    symptom was two dozen ready items next to an idle fleet, with no error anywhere. Backlogs
-    grow - that is the direction of travel this feature exists for.
-  </div>
+  <p>This visual predates operator-declared prerequisites. The authoritative dependency
+    rules, plan sanitization, staleness contract, and read budget live in
+    <a href="plan.md">plan.md</a>.</p>
 
   <h3>When planning breaks</h3>
   <p>Three consecutive failures and the machine stops asking and drops to <strong>serial
@@ -333,8 +293,8 @@
     <li>a <strong>blocked</strong> chip naming what an item waits on - in the attention tone
       when the dependency was cancelled or failed, since that one will never clear on its own;</li>
     <li>a <strong>next up</strong> mark on the item autopilot would take next;</li>
-    <li>on a blocked card, the launch button reads <strong>launch anyway</strong>. A dependency
-      read is a model's opinion, and overruling it should be one gesture.</li>
+    <li>launch controls distinguish overridable inferred blockers from authoritative declared
+      prerequisites; see the <a href="plan.md#what-the-board-shows">authoritative plan</a>.</li>
   </ul>
   <p>The Foreman popover carries the live readout - <code>2/3 agents · 4 ready · 1 blocked</code> -
     so "why is nothing launching?" is answerable without reading a log. All of it is drawn from

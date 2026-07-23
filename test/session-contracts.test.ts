@@ -124,6 +124,10 @@ test("the handle list compares only what the card renders", () => {
     sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, windowName: "w2" }] })),
     false,
   );
+  assert.equal(
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, sessionName: "s2" }] })),
+    false,
+  );
 
   // The two the old pair MISSED, and the reason this is not a straight port. The pane id
   // reaches the card's subtitle and the multiplexer session name reaches Kill's confirm

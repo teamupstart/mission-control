@@ -24,12 +24,13 @@ export async function resetSession(
   registry: Registry,
   session: Session,
   clear: boolean,
+  reset: (session: Session, clear: boolean) => Promise<ResetResult> = resetToOrigin,
 ): Promise<ResetResult> {
   // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
   // or clear the run in that window.
   const showing = session.nomistakes;
 
-  const r = await resetToOrigin(session, clear);
+  const r = await reset(session, clear);
 
   // Retired against the checkout it wiped (root + the branch that was standing in it),
   // not this session, so it holds for a sibling sharing the checkout and across a
@@ -48,10 +49,28 @@ export async function resetSession(
   // affordance a bare /clear leans on. Keyed on the PRE-reset session, whose note key
   // still names the queue: a /clear only rotates that key once the agent processes it,
   // which is after this returns.
+  let workIdentityReady = false;
   if (r.ok) {
+    // A successful git reset and a successful context reset are separate claims.
+    // If `/clear` is still sitting in the composer, the old agent episode is still
+    // active and remains the only episode allowed to own its task and dependencies.
+    // Rotating here would detach that work before the command actually runs.
+    const episode = !clear || r.cleared
+      ? registry.resetWorkEpisode(session.id, {
+          awaitingAgentRebind: clear,
+          previousAgentSessionId: session.agentSessionId,
+          at: r.clearIssuedAt ?? Date.now(),
+        })
+      : null;
+    workIdentityReady = Boolean(
+      episode &&
+      (!episode.awaitingAgentRebind ||
+        (clear && r.cleared &&
+          await registry.waitForWorkEpisodeReady(session.id, episode.episodeId, 5000)))
+    );
     registry.clearObservedSessionEffort(session.id);
     registry.clearQueue(noteKeyFor(session));
   }
 
-  return r;
+  return { ...r, workIdentityReady };
 }

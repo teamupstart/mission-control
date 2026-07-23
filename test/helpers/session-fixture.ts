@@ -58,10 +58,12 @@ export function nm(over: Partial<NmRunSummary> = {}): NmRunSummary {
  * looks like everywhere.
  */
 export function mkMuxHandle(over: Partial<MuxHandle> = {}): MuxHandle {
+  const session = over.session ?? "s";
   return {
     kind: "multiplexer",
     backend: "tmux",
-    session: "s",
+    session,
+    sessionName: over.sessionName ?? session,
     windowIndex: 0,
     windowName: "w",
     paneId: "%1",
@@ -149,6 +151,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     agent: "claude",
     priority: null,
     labels: [],
+    dependencies: [],
     model: null,
     effort: null,
     source: null,
@@ -157,6 +160,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     branch: null,
     provider: null,
     tmuxSession: null,
+    terminalResourceId: null,
     sessionId: null,
     status: "backlog",
     outcome: null,

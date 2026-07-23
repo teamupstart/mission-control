@@ -59,7 +59,9 @@ pure decision machine, a model call, and a worker that only does I/O.
 
 ### `src/shared/backlog.ts` - the predicates both sides read
 
-`planStale`, `blockersFor`, `readyBacklog`, `nextUpTaskId`. Shared for the reason
+`planStale`, `blockersFor`, `readyBacklog`, `nextUpTaskId`. `blockersFor` combines
+operator-declared prerequisites with Foreman's inferred plan; `declaredBlockers` exposes
+the authoritative subset to every manual scheduling route. Shared for the reason
 `foremanAllowlisted` is: the scheduler decides with these and the Backlog column
 *explains* that decision with them, so a copy that drifted would have the board promise
 a launch that never comes - or mark a card ready that the machine will not touch.
@@ -99,9 +101,10 @@ would destroy work (see the README's autopilot section and `agentIsFree`).
 ### `src/server/foreman/backlog-plan.ts` + `backlog-prompt.ts` - the dependency read
 
 A fresh tool-less `claude -p` (Sonnet by default, `FOREMAN_BACKLOG_MODEL` to override)
-is shown every backlog item's title and intent and returns an order plus a `dependsOn`
-list per item. Tool-less for the reason the reviewer is: the prompt embeds task text a
-human typed, and the model only needs to emit JSON.
+is shown every backlog item's title, intent, and unresolved operator dependencies. It
+returns an order plus an inferred `dependsOn` list per item. Tool-less for the reason the
+reviewer is: the prompt embeds task text a human typed, and the model only needs to emit
+JSON.
 
 The reply is **not trusted as written**. `sanitizePlan` drops ids that are not in the
 backlog, drops self-references, drops dependencies on tasks nobody has heard of,
@@ -109,9 +112,11 @@ backlog, drops self-references, drops dependencies on tasks nobody has heard of,
 not tidiness: a cycle deadlocks the backlog forever, and a missing entry leaves the plan
 permanently stale, which is an infinite replanning loop - both silent.
 
-Only the edges that actually close a cycle are cut, so a dependency the model stated
-survives whatever order it listed the items in; the entries are then emitted in
-dependency order.
+Operator-declared edges are fixed input to that repair: the model cannot remove or reverse
+them, and an inferred edge that would close a cycle against them is cut. Among inferred
+edges, only the ones that actually close a cycle are cut, so every other dependency the
+model stated survives whatever order it listed the items in. The entries are then emitted
+in dependency order.
 
 Planning re-runs only when the plan stops covering the backlog, so a steady backlog
 costs nothing. Its time budget SCALES with the backlog (`60s + 20s` an item, capped at
@@ -177,7 +182,9 @@ land skips itself instead of parking the whole backlog behind it.
 
 - a **blocked** chip on cards with unmet dependencies, titled with what they wait on,
 - a **next up** marker on the item autopilot would take next,
-- and, for a blocked card, its Launch button reads as the override it is.
+- **launch anyway** for a card blocked only by Foreman's inferred plan,
+- and **waiting for dependencies** with no manual override for an operator-declared
+  prerequisite.
 
 The Foreman popover gains the knobs above plus a live `3 / 5 agents` readout and a
 `4 ready · 2 blocked` line, so "why is nothing launching?" is answerable without
@@ -191,6 +198,8 @@ reading a log.
 - `backlog-plan.test.ts` - `sanitizePlan` on a two- and a three-task cycle, a self-dep,
   an unknown id, a forgotten entry; `blockersFor` across every dependency status;
   ordering and `planStale`.
+- `task-dependencies.test.ts` - declared prerequisites remain enforced across manual and
+  automatic scheduling, session disappearance, restart, and PR-merge reconciliation.
 - `backlog-plan-http.test.ts` - the plan round-trips through `buildApp`, cannot be
   back-dated, replaces rather than merges, and a malformed body is refused.
 
@@ -199,5 +208,4 @@ reading a log.
 - Autopilot **completing** a task. An agent that finishes still hands its work to the
   existing wrap-up triggers; nothing here marks a task done on its own.
 - A hard fleet cap on manual dispatch (see above).
-- Cross-repo dependencies. Items in different repos are independent to the scheduler;
-  the planner may still say one waits on another, and that is honoured.
+- Cross-repo scheduling coordination beyond honoring declared or inferred dependencies.

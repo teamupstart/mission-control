@@ -85,6 +85,7 @@ const MUX_HANDLE: TerminalHandle = {
   kind: "multiplexer",
   backend: "tmux",
   session: "api",
+  sessionName: "api",
   windowIndex: 0,
   windowName: "w",
   paneId: "%3",

@@ -175,6 +175,7 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
+    dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
   // Attachments are excluded on purpose: they are not a task field, they are how the
   // intent gets composed, which the `intent` case above covers.

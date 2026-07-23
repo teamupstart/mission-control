@@ -3901,6 +3901,17 @@ kbd {
   min-height: 90px;
   line-height: 1.5;
 }
+.dependency-select {
+  min-height: 82px;
+  line-height: 1.4;
+}
+.dependency-select optgroup {
+  color: var(--muted);
+}
+.dependency-select option {
+  color: var(--fg);
+  padding: 3px 6px;
+}
 
 /* ---- themed repo combobox (replaces the un-styleable native datalist) ---- */
 .combobox {

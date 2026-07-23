@@ -10,7 +10,7 @@
 // means "leave it alone" (see `UpdateTaskSchema`).
 
 import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
-import type { UpdateTask } from "@shared/protocol.ts";
+import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
 
@@ -44,6 +44,8 @@ export type DispatchDraft = {
   model: string;
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
+  /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
+  dependencies: TaskDependencyInput[];
   /** Images dropped on the task box; sent as paths appended to the intent. */
   attachments: PendingAttachment[];
 };
@@ -58,6 +60,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   labels: "",
   model: "",
   effort: "",
+  dependencies: [],
   attachments: [],
 };
 
@@ -97,6 +100,11 @@ export function draftFromTask(t: Task): DispatchDraft {
     // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
+    dependencies: t.dependencies.map((dependency) =>
+      dependency.type === "task"
+        ? { type: "task" as const, taskId: dependency.taskId }
+        : { type: "session" as const, sessionId: dependency.sessionId },
+    ),
     attachments: [],
   };
 }
@@ -125,9 +133,20 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.labels === b.labels &&
     a.model === b.model &&
     a.effort === b.effort &&
+    dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
+}
+
+function dependencyInputKey(dependency: TaskDependencyInput): string {
+  return dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
+}
+
+function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[]): boolean {
+  if (a.length !== b.length) return false;
+  const bKeys = new Set(b.map(dependencyInputKey));
+  return a.every((dependency) => bKeys.has(dependencyInputKey(dependency)));
 }
 
 /**
@@ -173,5 +192,13 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
+  const storedDependencies: TaskDependencyInput[] = task.dependencies.map((dependency) =>
+    dependency.type === "task"
+      ? { type: "task", taskId: dependency.taskId }
+      : { type: "session", sessionId: dependency.sessionId },
+  );
+  if (!dependencyInputsEqual(draft.dependencies, storedDependencies)) {
+    patch.dependencies = draft.dependencies;
+  }
   return Object.keys(patch).length > 0 ? patch : null;
 }

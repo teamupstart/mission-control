@@ -7261,6 +7261,26 @@ kbd {
   min-height: 0;
   max-height: none;
 }
+/* The fix log lives above the transcript in the conversation tab, so letting it
+   shrink to zero means its rollup survives while the fix the person asked to read
+   is clipped behind the transcript. Keep an opened log large enough to remain a
+   real reading surface, but let it give back space before the transcript falls
+   below its own 120px floor.
+
+   The scroll cap scales with the available screen height: a short laptop keeps a
+   compact log and a visible conversation, while a taller display spends the extra
+   vertical room on the response, findings, and diff link instead of making each
+   of those require a few lines of scrolling. The Gate tab shares the responsive
+   cap, where its outer pane can use the same extra space without a transcript to
+   protect. */
+.detail-conv > .nm-log-open {
+  flex: 0 1 auto;
+  min-height: min(260px, 34dvh);
+}
+.detail-conv > .nm-log-open .nm-scroll,
+.detail-pane > .nm-log-open .nm-scroll {
+  max-height: clamp(160px, 42dvh, 480px);
+}
 /* The other tabs are short - let the whole pane scroll. */
 .detail-pane {
   flex: 1;

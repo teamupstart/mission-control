@@ -638,7 +638,7 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, RetryWorkflowDeliverySchema);
     if (!parsed.ok) return parsed.res;
-    const result = await manager.retryDelivery(c.req.param("id"), parsed.data.requestId);
+    const result = await manager.retryDelivery(c.req.param("id"), parsed.data);
     return result.ok
       ? c.json({ delivery: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);

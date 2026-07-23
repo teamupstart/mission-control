@@ -532,8 +532,11 @@ export function WorkflowRuns({
             }}
             onCopyFeedback={copyFeedback}
             onRetryDelivery={async (deliveryId) => {
+              if (!detail.binding.sessionId) return;
               await mutate(`/api/workflow-deliveries/${deliveryId}/retry`, {
                 requestId: crypto.randomUUID(),
+                expectedSessionId: detail.binding.sessionId,
+                expectedNoteKey: detail.binding.noteKey,
               });
             }}
             onResolveDelivery={async (deliveryId, resolution, confirmation) => {
@@ -541,6 +544,12 @@ export function WorkflowRuns({
                 requestId: crypto.randomUUID(),
                 resolution,
                 ...(confirmation ? { confirmation } : {}),
+                ...(resolution === "discard_and_new_round" && detail.binding.sessionId
+                  ? {
+                      expectedSessionId: detail.binding.sessionId,
+                      expectedNoteKey: detail.binding.noteKey,
+                    }
+                  : {}),
               });
             }}
             onOpenSession={() => {

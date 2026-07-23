@@ -1404,6 +1404,12 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowSubmissionRow);
   }
 
+  listSubmissionsByState(status: WorkflowSubmission["status"]): WorkflowSubmission[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE status = ? ORDER BY created_at ASC, id ASC`,
+    ).all(status) as unknown[]).map(parseWorkflowSubmissionRow);
+  }
+
   latestSubmission(runId: string): WorkflowSubmission | null {
     const row = this.db.prepare(
       `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1`,
@@ -1466,12 +1472,15 @@ export class WorkflowStore {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
       this.insertSubmissionInTransaction(input);
-      this.db.prepare(
+      const updated = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
                 updated_at = ?, completed_at = NULL
-          WHERE id = ?`,
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(input.now, input.runId);
+      if (Number(updated.changes) !== 1) {
+        throw new Error(`Workflow run ${input.runId} is terminal`);
+      }
       this.appendEvent(input.runId, "submission_created", {
         submissionId: input.id,
         triggerKey: input.triggerKey,
@@ -1664,7 +1673,7 @@ export class WorkflowStore {
       `UPDATE workflow_runs
           SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
-        WHERE id = ?`,
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
   }
@@ -1678,7 +1687,7 @@ export class WorkflowStore {
     this.db.prepare(
       `UPDATE workflow_submissions SET status = ?, updated_at = ?,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
-        WHERE id = ?`,
+        WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, now, terminal ? 1 : 0, now, id);
     return this.mustSubmission(id);
   }
@@ -1984,6 +1993,8 @@ export class WorkflowStore {
     return transaction(this.db, () => {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
       const eligible = delivery.state === "prepared" || (allowRefused && delivery.state === "refused");
       if (!eligible) return null;
       const sibling = this.db.prepare(
@@ -2041,6 +2052,8 @@ export class WorkflowStore {
     return transaction(this.db, () => {
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
       const changed = this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = 'delivered', error = NULL, updated_at = ?, delivered_at = ?
@@ -2126,19 +2139,47 @@ export class WorkflowStore {
     });
   }
 
-  retargetDelivery(
+  requireDeliveryRetryConfirmation(
     id: string,
-    sessionId: string,
-    noteKey: string,
     now = Date.now(),
   ): WorkflowDelivery | null {
     const result = this.db.prepare(
       `UPDATE workflow_deliveries
-          SET session_id = ?, note_key = ?, state = 'refused',
-              error = 'reattach_confirmation_required', updated_at = ?
+          SET state = 'refused', error = 'reattach_confirmation_required', updated_at = ?
         WHERE id = ? AND state IN ('prepared', 'refused')`,
-    ).run(sessionId, noteKey, now, id);
+    ).run(now, id);
     return Number(result.changes) === 1 ? this.getDelivery(id) : null;
+  }
+
+  confirmDeliveryRetryTarget(
+    id: string,
+    expectedSessionId: string,
+    expectedNoteKey: string,
+    now = Date.now(),
+  ): WorkflowDelivery | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(id);
+      const run = delivery ? this.getRun(delivery.runId) : null;
+      const binding = run ? this.getBinding(run.bindingId) : null;
+      if (
+        !delivery
+        || delivery.state !== "refused"
+        || !run
+        || ["completed", "cancelled", "failed"].includes(run.status)
+        || !binding
+        || binding.state !== "active"
+        || binding.sessionId !== expectedSessionId
+        || binding.noteKey !== expectedNoteKey
+      ) {
+        return null;
+      }
+      const changed = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET session_id = ?, note_key = ?, updated_at = ?
+          WHERE id = ? AND state = 'refused'`,
+      ).run(expectedSessionId, expectedNoteKey, now, id);
+      return Number(changed.changes) === 1 ? this.mustDelivery(id) : null;
+    });
   }
 
   resolveUncertainDelivery(
@@ -2150,6 +2191,8 @@ export class WorkflowStore {
     return transaction(this.db, () => {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
       const prior = this.db.prepare(
         `SELECT json_extract(payload_json, '$.resolution') AS resolution
            FROM workflow_events
@@ -2193,6 +2236,83 @@ export class WorkflowStore {
         }
       }
       return { delivery: this.mustDelivery(id), idempotent: false, rearmedDrain };
+    });
+  }
+
+  replaceUncertainDeliveryWithRepair(
+    deliveryId: string,
+    requestId: string,
+    input: WorkflowSubmissionInsert,
+  ): {
+    delivery: WorkflowDelivery;
+    run: WorkflowRun;
+    submission: WorkflowSubmission;
+    idempotent: boolean;
+  } | null {
+    return transaction(this.db, () => {
+      const delivery = this.getDelivery(deliveryId);
+      if (!delivery) return null;
+      const run = this.getRun(delivery.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      const prior = this.db.prepare(
+        `SELECT json_extract(payload_json, '$.submissionId') AS submission_id
+           FROM workflow_events
+          WHERE run_id = ? AND event_kind = 'delivery_uncertain_resolved'
+            AND json_extract(payload_json, '$.deliveryId') = ?
+            AND json_extract(payload_json, '$.requestId') = ?
+            AND json_extract(payload_json, '$.resolution') = 'discard_and_new_round'
+          LIMIT 1`,
+      ).get(delivery.runId, deliveryId, requestId) as { submission_id: string | null } | undefined;
+      if (prior?.submission_id) {
+        const submission = this.getSubmission(prior.submission_id);
+        return submission
+          ? { delivery, run, submission, idempotent: true }
+          : null;
+      }
+      if (
+        delivery.state !== "uncertain"
+        || input.runId !== run.id
+        || !["waiting_for_session", "blocked"].includes(run.status)
+      ) {
+        return null;
+      }
+      const latest = this.latestSubmission(run.id);
+      if (!latest || input.round !== latest.round + 1) return null;
+      this.insertSubmissionInTransaction(input);
+      const runChanged = this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
+                updated_at = ?, completed_at = NULL
+          WHERE id = ? AND status IN ('waiting_for_session', 'blocked')`,
+      ).run(input.now, run.id);
+      if (Number(runChanged.changes) !== 1) {
+        throw new Error(`Workflow run ${run.id} cannot start a replacement round`);
+      }
+      const deliveryChanged = this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'cancelled', error = 'discarded_by_operator', updated_at = ?
+          WHERE id = ? AND state = 'uncertain'`,
+      ).run(input.now, delivery.id);
+      if (Number(deliveryChanged.changes) !== 1) {
+        throw new Error(`Workflow delivery ${delivery.id} cannot be discarded`);
+      }
+      this.appendEvent(run.id, "submission_created", {
+        submissionId: input.id,
+        triggerKey: input.triggerKey,
+        round: input.round,
+      }, input.now);
+      this.appendEvent(run.id, "delivery_uncertain_resolved", {
+        deliveryId: delivery.id,
+        requestId,
+        resolution: "discard_and_new_round",
+        submissionId: input.id,
+      }, input.now);
+      return {
+        delivery: this.mustDelivery(delivery.id),
+        run: this.mustRun(run.id),
+        submission: this.mustSubmission(input.id),
+        idempotent: false,
+      };
     });
   }
 
@@ -2290,11 +2410,25 @@ export class WorkflowStore {
                 completed_at = COALESCE(completed_at, ?)
           WHERE run_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
       ).run(now, now, id);
+      const sending = this.db.prepare(
+        `SELECT id FROM workflow_deliveries WHERE run_id = ? AND state = 'sending'`,
+      ).all(id) as { id: string }[];
       this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = 'cancelled', error = ?, updated_at = ?
-          WHERE run_id = ? AND state = 'prepared'`,
+          WHERE run_id = ? AND state IN ('prepared', 'refused')`,
       ).run(reason, now, id);
+      this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'uncertain', error = 'run_cancelled_during_send', updated_at = ?
+          WHERE run_id = ? AND state = 'sending'`,
+      ).run(now, id);
+      for (const delivery of sending) {
+        this.appendEvent(id, "delivery_uncertain", {
+          deliveryId: delivery.id,
+          reason: "run_cancelled_during_send",
+        }, now);
+      }
       this.db.prepare(
         `UPDATE workflow_llm_calls
             SET state = 'cancelled', finished_at = ?, duration_ms = ? - started_at,

@@ -2199,14 +2199,24 @@ export const WorkflowCompletionClaimResultSchema = z.discriminatedUnion("claimed
 
 export const RetryWorkflowDeliverySchema = z.object({
   requestId: z.string().min(1).max(200),
+  expectedSessionId: z.string().min(1),
+  expectedNoteKey: z.string().min(1),
 });
 export type RetryWorkflowDelivery = z.infer<typeof RetryWorkflowDeliverySchema>;
 
-export const ResolveWorkflowDeliverySchema = z.object({
-  requestId: z.string().min(1).max(200),
-  resolution: z.enum(["mark_delivered", "discard_and_new_round"]),
-  confirmation: z.string().max(200).optional(),
-});
+export const ResolveWorkflowDeliverySchema = z.discriminatedUnion("resolution", [
+  z.object({
+    requestId: z.string().min(1).max(200),
+    resolution: z.literal("mark_delivered"),
+  }),
+  z.object({
+    requestId: z.string().min(1).max(200),
+    resolution: z.literal("discard_and_new_round"),
+    confirmation: z.string().max(200).optional(),
+    expectedSessionId: z.string().min(1),
+    expectedNoteKey: z.string().min(1),
+  }),
+]);
 export type ResolveWorkflowDelivery = z.infer<typeof ResolveWorkflowDeliverySchema>;
 
 // Exported closed schemas make durable row parsers reject unknown values before constructing

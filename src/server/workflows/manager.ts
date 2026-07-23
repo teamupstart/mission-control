@@ -5,7 +5,9 @@ import type { Session } from "@shared/types.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
+  ResolveWorkflowDelivery,
   ResubmitWorkflow,
+  RetryWorkflowDelivery,
   RetryWorkflowRun,
   SubmitWorkflow,
   UpdateWorkflow,
@@ -121,6 +123,10 @@ export interface WorkflowManagerOptions {
   recordInjection?: typeof recordInjection;
 }
 
+function runIsTerminal(run: WorkflowRun): boolean {
+  return ["completed", "cancelled", "failed"].includes(run.status);
+}
+
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
@@ -148,20 +154,7 @@ export class WorkflowManager {
       {
         ...options.engine,
         onSubmissionWaiting: (submissionId) => {
-          this.trackDeliveryTask(this.prepareAndMaybeDeliver(submissionId).catch((error) => {
-            const submission = this.store.getSubmission(submissionId);
-            if (!submission) return;
-            const message = error instanceof Error ? error.message : String(error);
-            this.store.setRunState(submission.runId, "blocked", "delivery_prepare_error", {
-              submissionId,
-              error: message,
-            });
-            this.store.appendEvent(submission.runId, "delivery_prepare_error", {
-              submissionId,
-              error: message,
-            });
-            this.publishRun(submission.runId);
-          }));
+          this.scheduleWaitingDelivery(submissionId);
           configuredWaiting?.(submissionId);
         },
       },
@@ -212,14 +205,14 @@ export class WorkflowManager {
       });
     }
     if (this.registry.sessionsObserved()) {
+      this.recoverWaitingDeliveries();
       this.reconcileBindingsAfterDiscovery();
-      this.resumePreparedDeliveries();
       this.engine.start();
     } else if (!this.discoveryUnsubscribe) {
       this.discoveryUnsubscribe = this.registry.onSessionsObserved(() => {
         this.discoveryUnsubscribe = null;
+        this.recoverWaitingDeliveries();
         this.reconcileBindingsAfterDiscovery();
-        this.resumePreparedDeliveries();
         this.engine.start();
       });
     }
@@ -598,13 +591,13 @@ export class WorkflowManager {
     if (active) {
       for (const delivery of this.store.listDeliveries(active.id)) {
         if (delivery.state !== "prepared" && delivery.state !== "refused") continue;
-        const retargeted = this.store.retargetDelivery(delivery.id, session.id, noteKey, now);
-        if (retargeted) {
-          this.store.appendEvent(active.id, "delivery_retargeted_for_retry", {
+        const held = this.store.requireDeliveryRetryConfirmation(delivery.id, now);
+        if (held) {
+          this.store.appendEvent(active.id, "delivery_retry_confirmation_required", {
             deliveryId: delivery.id,
             priorSessionId: delivery.sessionId,
-            sessionId: session.id,
             priorNoteKey: delivery.noteKey,
+            sessionId: session.id,
             noteKey,
           }, now);
         }
@@ -694,12 +687,21 @@ export class WorkflowManager {
 
   async retryDelivery(
     deliveryId: string,
-    requestId: string,
+    input: RetryWorkflowDelivery,
     now = Date.now(),
   ): Promise<WorkflowRuntimeMutation<WorkflowDelivery>> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery) return { ok: false, reason: "not_found", message: "No such workflow delivery" };
-    const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_requested", requestId);
+    const run = this.store.getRun(delivery.runId);
+    if (!run || runIsTerminal(run)) {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "A terminal workflow run cannot deliver another repair packet",
+        current: run,
+      };
+    }
+    const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_requested", input.requestId);
     if (prior) {
       return {
         ok: true,
@@ -715,9 +717,25 @@ export class WorkflowManager {
         current: delivery,
       };
     }
+    const targeted = this.store.confirmDeliveryRetryTarget(
+      delivery.id,
+      input.expectedSessionId,
+      input.expectedNoteKey,
+      now,
+    );
+    if (!targeted) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "The workflow attachment changed; refresh before confirming this retry target",
+        current: this.store.getBinding(run.bindingId),
+      };
+    }
     this.store.appendEvent(delivery.runId, "delivery_retry_requested", {
       deliveryId,
-      requestId,
+      requestId: input.requestId,
+      sessionId: input.expectedSessionId,
+      noteKey: input.expectedNoteKey,
     }, now);
     await this.deliverPrepared(delivery.id, true);
     const updated = this.store.getDelivery(delivery.id) ?? delivery;
@@ -726,15 +744,20 @@ export class WorkflowManager {
 
   async resolveDelivery(
     deliveryId: string,
-    input: {
-      requestId: string;
-      resolution: "mark_delivered" | "discard_and_new_round";
-      confirmation?: string;
-    },
+    input: ResolveWorkflowDelivery,
     now = Date.now(),
   ): Promise<WorkflowRuntimeMutation<WorkflowDelivery | WorkflowSubmitResult>> {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery) return { ok: false, reason: "not_found", message: "No such workflow delivery" };
+    const run = this.store.getRun(delivery.runId);
+    if (!run || runIsTerminal(run)) {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "A terminal workflow run cannot resolve a delivery into new work",
+        current: run,
+      };
+    }
     if (
       input.resolution === "discard_and_new_round"
       && input.confirmation !== "DISCARD AND SEND A NEW REPAIR ROUND"
@@ -745,21 +768,21 @@ export class WorkflowManager {
         message: "Type the exact discard confirmation before creating a new repair round",
       };
     }
-    const resolved = this.store.resolveUncertainDelivery(
-      delivery.id,
-      input.resolution,
-      input.requestId,
-      now,
-    );
-    if (!resolved) {
-      return {
-        ok: false,
-        reason: "invalid_delivery_state",
-        message: "Only an uncertain delivery needs explicit resolution",
-        current: this.store.getDelivery(delivery.id) ?? delivery,
-      };
-    }
     if (input.resolution === "mark_delivered") {
+      const resolved = this.store.resolveUncertainDelivery(
+        delivery.id,
+        input.resolution,
+        input.requestId,
+        now,
+      );
+      if (!resolved) {
+        return {
+          ok: false,
+          reason: "invalid_delivery_state",
+          message: "Only an uncertain delivery needs explicit resolution",
+          current: this.store.getDelivery(delivery.id) ?? delivery,
+        };
+      }
       if (!resolved.idempotent) {
         const session = this.registry.getSession(delivery.sessionId);
         if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
@@ -773,13 +796,73 @@ export class WorkflowManager {
       };
     }
 
-    const resubmitted = await this.resubmit(delivery.runId, {
-      requestId: `delivery-resolution:${input.requestId}`,
-      resubmitUnchanged: true,
-    }, now);
-    return resubmitted.ok
-      ? { ok: true, value: resubmitted.value, idempotent: resubmitted.idempotent }
-      : resubmitted;
+    const binding = this.store.getBinding(run.bindingId);
+    if (
+      !binding
+      || binding.state !== "active"
+      || binding.sessionId !== input.expectedSessionId
+      || binding.noteKey !== input.expectedNoteKey
+    ) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "The workflow attachment changed; refresh before creating a replacement round",
+        current: binding,
+      };
+    }
+    const latest = this.store.latestSubmission(run.id);
+    if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
+    if (latest.round > run.maxRepairRounds) {
+      this.store.setRunState(run.id, "blocked", "round_limit", {
+        maxRepairRounds: run.maxRepairRounds,
+      }, now);
+      this.publishRun(run.id);
+      return {
+        ok: false,
+        reason: "round_limit",
+        message: "The workflow has exhausted its configured repair rounds",
+      };
+    }
+    const replaced = this.store.replaceUncertainDeliveryWithRepair(
+      delivery.id,
+      input.requestId,
+      {
+        id: randomUUID(),
+        runId: run.id,
+        round: latest.round + 1,
+        triggerSource: "manual",
+        triggerKey: `manual:${binding.id}:delivery-resolution:${input.requestId}`,
+        context: {},
+        evidence: {},
+        now,
+      },
+    );
+    if (!replaced) {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "Only an uncertain delivery on a waiting run can create a replacement round",
+        current: this.store.getDelivery(delivery.id) ?? delivery,
+      };
+    }
+    this.publishRun(run.id);
+    if (replaced.idempotent && replaced.submission.status !== "capturing") {
+      return {
+        ok: true,
+        value: { run: replaced.run, submission: replaced.submission },
+        idempotent: true,
+      };
+    }
+    const captured = await this.captureAndActivate(
+      binding,
+      replaced.run,
+      replaced.submission,
+      latest.evidenceFingerprint,
+      true,
+    );
+    return captured.ok && replaced.idempotent
+      ? { ...captured, idempotent: true }
+      : captured;
   }
 
   async claimCompletion(
@@ -862,7 +945,16 @@ export class WorkflowManager {
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
     const summary = run ? this.store.runSummary(run.id) : null;
-    if (!submission || !run || !binding || !version || !summary || !binding.sessionId) return;
+    if (
+      !submission
+      || submission.status !== "waiting_for_session"
+      || !run
+      || runIsTerminal(run)
+      || !binding
+      || !version
+      || !summary
+      || !binding.sessionId
+    ) return;
     const rendered = renderWorkflowFeedback({
       workflowName: summary.workflowName,
       version,
@@ -892,31 +984,28 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
-  private resumePreparedDeliveries(): void {
-    for (const delivery of this.store.listDeliveriesByState("prepared")) {
-      const run = this.store.getRun(delivery.runId);
-      const binding = run ? this.store.getBinding(run.bindingId) : null;
-      if (binding?.deliveryMode === "live") {
-        this.trackDeliveryTask(this.deliverPrepared(delivery.id, false).catch((error) => {
-          const current = this.store.getDelivery(delivery.id);
-          if (!current) return;
-          const message = error instanceof Error ? error.message : String(error);
-          if (current.state === "sending") {
-            this.markDeliveryUncertain(current, message);
-            return;
-          }
-          this.store.setRunState(current.runId, "blocked", "delivery_resume_error", {
-            deliveryId: current.id,
-            error: message,
-          });
-          this.store.appendEvent(current.runId, "delivery_resume_error", {
-            deliveryId: current.id,
-            error: message,
-          });
-          this.publishRun(current.runId);
-        }));
-      }
+  private recoverWaitingDeliveries(): void {
+    for (const submission of this.store.listSubmissionsByState("waiting_for_session")) {
+      this.scheduleWaitingDelivery(submission.id);
     }
+  }
+
+  private scheduleWaitingDelivery(submissionId: string): void {
+    this.trackDeliveryTask(this.prepareAndMaybeDeliver(submissionId).catch((error) => {
+      const submission = this.store.getSubmission(submissionId);
+      const run = submission ? this.store.getRun(submission.runId) : null;
+      if (!submission || !run || runIsTerminal(run)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRunState(submission.runId, "blocked", "delivery_prepare_error", {
+        submissionId,
+        error: message,
+      });
+      this.store.appendEvent(submission.runId, "delivery_prepare_error", {
+        submissionId,
+        error: message,
+      });
+      this.publishRun(submission.runId);
+    }));
   }
 
   private trackDeliveryTask(task: Promise<void>): void {
@@ -929,6 +1018,7 @@ export class WorkflowManager {
 
   private deliveryBlock(delivery: WorkflowDelivery, expectedPane?: string | null): string | null {
     const run = this.store.getRun(delivery.runId);
+    if (!run || runIsTerminal(run)) return "run_terminal";
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     if (!binding || binding.state !== "active") return "binding_not_active";
     if (binding.noteKey !== delivery.noteKey) return "conversation_changed";
@@ -955,7 +1045,6 @@ export class WorkflowManager {
         "conversation_changed",
         "session_retargeted",
         "session_unavailable",
-        "reset_in_progress",
       ].includes(initialBlock);
       if (!retainPrepared) {
         this.store.setDeliveryState(delivery.id, "refused", initialBlock);

@@ -968,6 +968,15 @@ async function processPromptedWrapup(
     return false;
   }
 
+  const currentSessions = await client.sessions().catch(() => null);
+  const currentSession = currentSessions
+    ? resolveLiveSession(currentSessions, noteKeyOf(session))
+    : null;
+  const currentGoal = currentSession && currentSession.id === session.id
+    ? await client.goal(currentSession.id).catch(() => null)
+    : null;
+  if (currentGoal?.prompt?.trim() !== candidate.goal) return false;
+
   if (
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")

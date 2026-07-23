@@ -27,6 +27,7 @@ import {
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import { COST_UNSUPPORTED } from "../src/shared/cost.ts";
 import { PI_SESSION_LINES, PI_SESSION_JSONL } from "./fixtures/pi-sessions.ts";
+import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
 
 // ---- the capability shape: what pi declares vs what it disables ----
 
@@ -48,8 +49,8 @@ test("pi's unsupported capabilities are DECLARED null, not stubbed", () => {
   assert.equal(pi.workQueue, null, "no hooks -> Foreman can't verify pickup/completion");
   // Present, and driving real behaviour.
   assert.equal(pi.clearContext?.command, "/new", "pi clears context in place with /new");
-  assert.equal(pi.skills?.reloadCommand, null, "hookless pi cannot be reloaded safely");
-  assert.equal(pi.skills?.watchesDir, false, "pi loads skills only at launch");
+  assert.equal(pi.skills?.reloadCommand, "/reload", "bound pi sessions reload at idle");
+  assert.equal(pi.skills?.reloadIdleSource, "transcript");
   assert.deepEqual(pi.skills?.homeDir, [".pi", "agent", "skills"], "pi's own skills dir");
   assert.equal(pi.control.kind, "keystroke", "a turn is typed into pi's pane");
   assert.equal(pi.control.kind === "keystroke" && pi.control.pastePlaceholder, null,
@@ -134,6 +135,15 @@ test("an agent session id binds the matching filename uuid immediately", () => {
   }
 });
 
+test("preparePiLaunch injects and reports one exact session id", () => {
+  const prepared = preparePiLaunch();
+  assert.deepEqual(prepared.args, ["--session-id", prepared.sessionId]);
+  assert.match(
+    prepared.sessionId,
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
+  );
+});
+
 test("a hookless session declines transcript attribution", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
@@ -144,6 +154,26 @@ test("a hookless session declines transcript attribution", () => {
     writeSession(dir, fileId, Date.parse("2026-07-20T10:00:00.000Z"));
     const session = locateSession("pi-no-identity", cwd);
     assert.equal(locatePiTranscript(session, root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a launch-identified session binds its transcript and reads runtime state", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const path = join(dir, `2026-07-20T10:00:00.000Z_${sessionId}.jsonl`);
+  writeFileSync(path, PI_SESSION_JSONL);
+  try {
+    const located = locatePiTranscript(locateSession("pi-dispatched", cwd, sessionId), root);
+    assert.equal(located, path);
+    const read = piTranscript.passiveRead?.(located!);
+    assert.equal(read?.meta?.modelId, "gpt-5.5");
+    assert.equal(read?.activity?.state, "working");
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });

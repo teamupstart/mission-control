@@ -97,7 +97,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
   // TS, not a shell-out hook), but `transcript` is non-null WITH `messages`, because pi writes
   // a Claude-shaped per-line JSONL that reads back as turns AND carries a clean idle/working
-  // signal. So it rides the passive path fully rather than degrading to the pane.
+  // signal. Dispatched sessions bind it through pi's native launch session id; sessions
+  // discovered without that identity degrade safely to no transcript.
   //
   // `tui: null`, and it is MEASURED, not assumed: pi's screen IS readable (its footer and its
   // `/model` selector were captured live, cursor glyph `→` U+2192), but pi has no

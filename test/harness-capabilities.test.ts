@@ -265,7 +265,7 @@ test("a harness with no skills is never owed a reload, however healthy the sessi
 test("a harness with skills but NO reload command is owed nothing either", () => {
   const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
   const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
-  assert.deepEqual(owed, ["codex", "pi"]);
+  assert.deepEqual(owed, ["codex"]);
   for (const agent of owed) {
     const s = mkSession({ id: `sk-${agent}`, agent, state: "idle", hooksSeen: true, startedAt: null });
     assert.equal(reloadOwed(s, new Map(), cfg), false);
@@ -277,7 +277,7 @@ test("a harness with skills but NO reload command is owed nothing either", () =>
 test("the reload command comes from the harness, not from a shared constant", () => {
   // It is typed into a live pane, so it has exactly one definition - and that definition
   // is per-harness, which is what stops a second one inheriting Claude's slash vocabulary.
-  assert.deepEqual(skillsAgents(), ["claude"]);
+  assert.deepEqual(skillsAgents(), ["claude", "pi"]);
   for (const agent of skillsAgents()) {
     const cmd = capabilitiesFor(agent).skills?.reloadCommand;
     assert.ok(cmd, `${agent} is in skillsAgents() so it must carry a reload command`);

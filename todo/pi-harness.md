@@ -7,9 +7,10 @@ where it does, that touch is a **finding about the interface**, recorded here an
 not a workaround.
 
 Spiked the way `codex-instrumentation.md` did: establish what the tool exposes before writing
-an adapter. The JSONL format is fully readable, but a hookless process supplies no session id
-that can safely attribute one of those files. The core (discover / name / focus / type) is real;
-transcript-derived state remains unavailable until identity instrumentation exists.
+an adapter. The JSONL format is fully readable, and Mission Control dispatches pi with its
+native `--session-id` so that exact UUID binds the launched process to its file. An
+operator-started pi supplies no identity and stays on the safe discover / name / focus / type
+degradation with no attributed transcript.
 
 ## What pi is
 
@@ -80,10 +81,11 @@ pi writes one JSON record per line to
   the UUID in a candidate filename. Positive exact matches are cached; misses are rescanned
   without reading file contents. There is no timestamp, newest-file, cwd-occupancy, or
   persistence fallback.
-- **Hookless limits are visible absence, never guessed ownership.** Current pi sessions have no
-  `agentSessionId`, so the dashboard shows no transcript, passive metadata, or passive activity.
-  The parser remains a real capability for a known path and becomes live as soon as a future
-  hook or launch wrapper supplies identity.
+- **Instrumentation is launch-scoped.** `preparePiLaunch()` injects pi's native
+  `--session-id <uuid>`, and the dispatcher records that UUID on the discovered session. A
+  dispatched pi therefore gets transcript, metadata, activity, goal, and safe idle reload from
+  exact identity. An operator-started pi supplies no `agentSessionId`, so all five degrade to
+  visible absence rather than guessed ownership.
 
 ### control - REQUIRED, non-null
 
@@ -100,10 +102,9 @@ pi's extensions are **in-process TypeScript modules** loaded via `--extension` /
 a plugin API (subscribe to lifecycle events, register tools, drive the UI), NOT a shell-out
 hook like Claude's `settings.json` hooks or Codex's launch-scoped `-c hooks.*` overrides. pi
 pushes NOTHING at us through any mechanism we have wired, so `hooks: null` is honest and
-first-class. Without the session identity a hook or launch wrapper would carry, discovery
-cannot safely select a transcript for `passiveRead`. Wiring a pi extension that POSTs to the
-daemon is a whole instrumentation project (a TS extension + an install/launch mechanism),
-i.e. the codex-instrumentation follow-on, not the acceptance test.
+first-class. Discovery alone cannot safely select a transcript for `passiveRead`; dispatched pi
+instead uses its native launch session id. Wiring a pi extension that POSTs to the daemon would
+be the follow-on required to instrument operator-started sessions.
 
 Consequence, same as an uninstrumented Codex: `workQueue` is null (no pickup/finish signal to
 verify), and the 20s hook wait is skipped.
@@ -157,10 +158,10 @@ not collide with Codex in `skillsDirs()`:
   and `~/.agents/skills`. The reconciler's `skillsDirs()` fold picks pi up with ZERO code
   change (the fold the single-dir version predicted a second declarer would need - pi is the
   third).
-- `reloadCommand: null`, `watchesDir: false` - pi has a `/reload` slash command and no
-  skills-dir watcher, but a hookless session has neither attributable idle evidence nor a
-  readable TUI readiness gate. Mission Control therefore does not type into it autonomously.
-  Skills load at launch; running pi sessions must be restarted to pick up changes.
+- `reloadCommand: "/reload"`, `reloadIdleSource: "transcript"` - pi has no skills-dir watcher.
+  A dispatched session's exact transcript supplies the settled idle signal, and its `tui: null`
+  means the reloader uses that passive readiness directly. A session without a current exact
+  transcript binding is neither counted nor typed into.
 - `dirEnvVar: "PI_SKILLS_DIR"`, `isolatedDirName: "pi-skills"`.
 
 ### mcp - null
@@ -174,8 +175,9 @@ exist.
 
 `{ command: "/new" }` - **verified**: `/new` starts a fresh session in-place ("✓ New session
 started", no confirmation prompt), which is pi's equivalent of Claude's `/clear`. (pi also has
-`/compact`, which summarizes rather than clears; there is no `/clear`.) Hookless sessions have
-no attributable transcript before or after the reset.
+`/compact`, which summarizes rather than clears; there is no `/clear`.) The new conversation
+UUID no longer matches the injected launch UUID, so the exact binding fails closed rather than
+following a different file heuristically.
 
 ### effort - non-null
 
@@ -194,29 +196,30 @@ with token tiers AND dollar cost (`usage.cost.total`) in every assistant record.
 pi is multi-provider and its true model ids are `provider/id` (`openai/gpt-5.5`). But
 `ModelIdSchema` (protocol.ts) is `/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/` - it **rejects `/`**,
 because Claude's and Codex's ids are single tokens (each harness IS a provider). Dispatch is
-not in the acceptance scope (the criterion is discover/name/focus/type of EXISTING sessions),
-so the picker uses bare frontier ids that pass the schema (`gpt-5.5-pro`, `gpt-5.5`,
+launch-integrated, but provider-qualified model selection is outside this acceptance test, so
+the picker uses bare frontier ids that pass the schema (`gpt-5.5-pro`, `gpt-5.5`,
 `gpt-5-codex`, `gpt-5-mini`, all real from pi's model store; `gpt-5.5` is 272k, matching the
 footer). Fully supporting pi's model selection would need the id shape to admit a provider
 qualifier - recorded as a finding.
 
 ## The interface findings (what the acceptance test surfaced)
 
-The CORE holds: pi discovers, names, focuses, and types through declarative registry entries -
-no `if (agent === "pi")` anywhere, and every remaining `agent === "claude"/"codex"` branch
-(dispatcher's codex launch, codex-rollouts, agents-shadow) lets pi fall through correctly.
-The transcript parser is real but correctly degrades to no live binding without identity. The
-couplings that remain:
+The CORE holds: pi discovers, names, focuses, and types through declarative registry entries.
+The one deliberate `agent === "pi"` branch is launch preparation, where identity must be
+chosen before the process starts; transcript polling remains heuristic-free. The transcript
+parser is live for launched sessions and correctly degrades without identity. The couplings
+that remain:
 
 1. **`PermissionMode` is a closed union of Claude's mode strings.** pi has real approval modes
    that don't fit it. Handled by `permissionModes: null` (visible degradation). The one place
    the Harness axis still bakes in a Claude assumption. NOT fixed here - a legitimate null.
 2. **`ModelIdSchema` rejects `/`,** so pi's provider-scoped ids can't be expressed. Handled
    with bare ids for the picker (dispatch out of scope). NOT fixed here.
-3. **`SkillsSpec` conflated “no reload command” with “watches its directory.”** That was true
-   for Codex but false for pi, which loads at launch and has no safe autonomous reload path.
-   **Fixed** with `watchesDir`: Codex is described as automatic, pi as restart-required, and
-   `skillsAgents()` remains the Claude-only keystroke set.
+3. **Reload readiness assumed hooks plus a readable mode line.** pi has neither but does have
+   an exactly attributed passive transcript for dispatched sessions. **Fixed** by declaring
+   `reloadIdleSource` on `SkillsSpec`: the reloader preserves Claude's hook and mode-line path,
+   while transcript-driven sessions require a current binding and skip the nonexistent TUI
+   read. `skillsAgents()` returns `AgentType[]` because pi also needs a pane nudge.
 4. **`process.title = "pi"`** erases subcommands from `ps`, so `BackgroundSpec` can't exclude
    management commands. Honest `background: {[],[]}`, low/transient risk. Not an interface gap,
    a pi quirk worth stating.
@@ -248,22 +251,29 @@ couplings that remain:
    (`skills-reconcile`, `terminal-home`) were confirmed clean in isolation - concurrent runs in
    this live Mission Control environment had contaminated the bisect.
 
-8. **The existing reload readiness contract correctly rejects hookless pi.** A command existing
-   in pi is not enough to authorize an autonomous keystroke: there is no hook-confirmed idle
-   state, attributable passive transcript, or readable TUI gate. `reloadCommand: null` exposes
-   that degradation; Claude remains hook-gated and mode-line checked byte-for-byte.
+8. **Launch identity scopes pi's reload capability.** A command existing in pi is not enough
+   to authorize an autonomous keystroke. Dispatched sessions have an exact current transcript
+   and can use `/reload` after settled idle; operator-started and post-`/new` sessions have no
+   current binding and are refused. Claude remains hook-gated and mode-line checked byte-for-byte.
 
 9. **`providerModelDefault(AgentType)` conflated the harness and runner axes.** Adding pi
    widened the parameter even though every caller supplies `LlmRunnerId`, allowing a harness
    that is not an offline provider to silently receive Claude's fallback. **Fixed** by narrowing
    the helper to `LlmRunnerId`; harness model catalogs continue to use `AgentType`.
 
-10. **A hookless transcript has no provable session identity.** Newest-file, live-occupancy,
+10. **A hookless transcript has no provable discovery identity.** Newest-file, live-occupancy,
     process-start, delay-window, and persistence heuristics all admit foreign files under
     ordinary sibling, resume, or `/new` races. **Fixed** by exact filename UUID correlation
-    only. Current hookless sessions visibly lack transcript, meta, activity, and live reload;
-    all four light up when a future hook or launch wrapper supplies `agentSessionId`. This
-    honest degradation is the acceptance test's most valuable finding.
+    only. `preparePiLaunch` supplies that UUID for dispatched sessions; operator-started
+    sessions visibly lack transcript, meta, activity, goal, and live reload. This launch-scoped
+    capability, symmetric with Codex's launch-scoped hooks, is the acceptance test's most
+    valuable finding.
+
+11. **Harness launch preparation is a documented dispatcher footprint.** Exact identity cannot
+    be recovered inside a transcript adapter after launch. pi therefore adds
+    `harness/pi/launch.ts`, and the dispatcher composes its returned argv and records its
+    session id just as it composes Codex's launch-scoped hook preparation. The integration is
+    per-harness launch data, not transcript attribution special-casing.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's
 real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid), detection
@@ -272,13 +282,13 @@ phantom card survives a multiplexer session named with a `pi` token. The capture
 still proves the parser independently through a known fixture path.
 
 Every implementation touch outside the forced `Record<AgentType,...>` maps and the pi adapter
-is accounted for above, including the reload-readiness contract. The two contract-test lines
+is accounted for above, including launch preparation and the reload-readiness contract. The two contract-test lines
 that assert `agent: "pi"` is REJECTED (the authors anticipated this - the probe agent is
 `probeagent`, not `pi`) were updated to a still-invalid id.
 
 ## Pointers
 
-- Adapter: `src/server/harness/pi/{detect,bin,control,transcript,meta,tui}.ts`, registered in
+- Adapter: `src/server/harness/pi/{detect,bin,control,transcript,meta,tui,launch}.ts`, registered in
   `src/server/harness/index.ts`.
 - Forced maps: `AGENT_TYPES` (types.ts), `AGENT_IDENTITY` (agent.ts), `HARNESS_CAPABILITIES`
   (harness-capabilities.ts), `HARNESSES` (harness/index.ts), `COST_UNSUPPORTED` (cost.ts),

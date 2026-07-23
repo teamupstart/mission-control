@@ -16,6 +16,7 @@ import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
+import { preparePiLaunch } from "./harness/pi/launch.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -96,11 +97,15 @@ export class Dispatcher {
       const codexLaunch = task.agent === "codex"
         ? prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch)
         : { args: [] as string[], instrumented: true };
+      const piLaunch = task.agent === "pi"
+        ? preparePiLaunch()
+        : { args: [] as string[], sessionId: null };
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
         ...(await askChannelArgs(task.agent)),
         ...codexLaunch.args,
+        ...piLaunch.args,
       ];
 
       const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
@@ -116,7 +121,12 @@ export class Dispatcher {
 
       // Discovery only proves the process exists. Wait for the agent to prove it can
       // READ before typing at it - see `awaitReady`.
-      const { session, instrumented } = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
+      const ready = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
+      const session = piLaunch.sessionId
+        ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
+        : ready.session;
+      if (!session) throw new Error("agent session changed before its launch identity was recorded");
+      const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;

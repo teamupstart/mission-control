@@ -75,6 +75,23 @@ test("waitForSessionAtCwd resolves on bare process discovery - it proves nothing
   assert.equal(s?.hooksSeen, false, "...and it has not yet said it can read anything");
 });
 
+test("a dispatched pi launch binds its injected native session id", () => {
+  const registry = new Registry();
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "pi-launched", agent: "pi", cwd: "/wt/pi-task" }),
+  ]);
+
+  const bound = registry.bindLaunchedAgentSession(
+    "pi-launched",
+    "pi",
+    "019f7d35-beb8-7ae4-8b33-049e4f65cacd",
+  );
+
+  assert.equal(bound?.agentSessionId, "019f7d35-beb8-7ae4-8b33-049e4f65cacd");
+  assert.equal(bound?.hooksSeen, false);
+  assert.equal(registry.getSession("pi-launched")?.agentSessionId, bound?.agentSessionId);
+});
+
 test("waitForReadySessionAtCwd does NOT resolve on discovery alone", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "boot-1" })]);

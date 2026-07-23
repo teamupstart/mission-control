@@ -106,11 +106,11 @@ test("the panel says the change is global before you click anything", () => {
   assert.match(html, /every<\/strong>/);
 });
 
-test("the panel distinguishes watched skills from restart-only skills", () => {
+test("the panel distinguishes idle-reloaded skills from watched skills", () => {
   const html = render();
+  assert.match(html, /Running Claude Code or Pi sessions pick changes up at their next idle moment/);
   assert.match(html, /Changes are picked up automatically by Codex/);
-  assert.match(html, /For Pi, skills load at launch; restart running sessions to pick up changes/);
-  assert.doesNotMatch(html, /Pi sessions watch/);
+  assert.doesNotMatch(html, /restart running sessions/);
 });
 
 test("the rows are disabled while the master switch is off", () => {

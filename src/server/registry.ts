@@ -1036,6 +1036,34 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
+  bindLaunchedAgentSession(
+    sessionId: string,
+    agent: AgentType,
+    agentSessionId: string,
+  ): Session | null {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.state === "exited" || s.agent !== agent) return null;
+    if (s.agentSessionId === agentSessionId) return s;
+    const next: Session = {
+      ...s,
+      agentSessionId,
+      transcriptPath: null,
+    };
+    if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
+      next.meta = { ...next.meta, thinkingLevel: null };
+    }
+    next.note = this.noteSummaryFor(next);
+    next.goal = this.goalSummaryFor(next);
+    next.cost = sessionCostFor(noteKeyFor(next));
+    next.queue = this.queueSummaryFor(next);
+    next.orphanedQueue = this.orphanedQueueFor(next);
+    this.rememberAgentSession(next, s.agentSessionId);
+    this.ensureWorkEpisode(next);
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+    return next;
+  }
+
   recordRuntimeEffortBaseline(
     sessionId: string,
     revision: string | null,

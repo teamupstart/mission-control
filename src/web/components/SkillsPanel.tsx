@@ -34,11 +34,7 @@ const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
  * panel is careful about.
  */
 const RELOADED = skillsAgents();
-const WATCHING = SKILLED.filter((a) => capabilitiesFor(a).skills?.watchesDir);
-const RESTARTED = SKILLED.filter((a) => {
-  const skills = capabilitiesFor(a).skills;
-  return skills && !skills.reloadCommand && !skills.watchesDir;
-});
+const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a));
 /**
  * Where the links actually go, read off the same `homeDir` the reconciler symlinks
  * into. Spelled out rather than said in prose because the operator may want to look:
@@ -135,13 +131,8 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         ))}
         , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
         ones this app never launched.
-        {/*
-          How they pick them up differs by harness: a reloadable session waits for idle,
-          a watcher notices automatically, and a launch-only harness needs a restart.
-        */}
         {RELOADED.length > 0 && ` Running ${agentList(RELOADED)} sessions pick changes up at their next idle moment.`}
-        {WATCHING.length > 0 && ` Changes are picked up automatically by ${agentList(WATCHING)}.`}
-        {RESTARTED.length > 0 && ` For ${agentList(RESTARTED)}, skills load at launch; restart running sessions to pick up changes.`}
+        {SELF_RELOADING.length > 0 && ` Changes are picked up automatically by ${agentList(SELF_RELOADING)}.`}
       </p>
 
       {error && <p className="settings-error">{error}</p>}

@@ -82,7 +82,7 @@ export interface SkillsSpec {
    * message is not trustworthy. Treat delivery as fire-and-forget.
   */
   reloadCommand: string | null;
-  watchesDir: boolean;
+  reloadIdleSource: "hooks" | "transcript" | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -252,7 +252,7 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
  */
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
-  watchesDir: false,
+  reloadIdleSource: "hooks",
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -296,11 +296,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     permissionModes: null,
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
     // watches that directory itself, so the set it offers changes without anything being
-    // typed at a running session. `watchesDir` distinguishes that behavior from a harness
-    // that loads only at launch, while `skillsAgents()` selects the pane broadcast.
+    // typed at a running session. `skillsAgents()` therefore excludes it from the pane
+    // broadcast.
     skills: {
       reloadCommand: null,
-      watchesDir: true,
+      reloadIdleSource: null,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -354,11 +354,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Verified: pi loads SKILL.md skills (agentskills.io standard) from its own
     // `~/.pi/agent/skills` (probed live) as well as the shared `~/.agents/skills`. Declared
     // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
-    // Codex. pi has no skills-dir watcher, and without attributable idle evidence Mission
-    // Control cannot safely type its `/reload` command into a live session.
+    // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
+    // makes its transcript an attributable idle source for the verified command.
     skills: {
-      reloadCommand: null,
-      watchesDir: false,
+      reloadCommand: "/reload",
+      reloadIdleSource: "transcript",
       dirEnvVar: "PI_SKILLS_DIR",
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
@@ -473,8 +473,8 @@ export function skillLoadingAgents(): AgentType[] {
  * command for a session that would render it as a prompt.
  *
  */
-export function skillsAgents(): "claude"[] {
-  return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
+export function skillsAgents(): AgentType[] {
+  return AGENT_TYPES.filter((a) => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
 /**

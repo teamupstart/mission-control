@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
-import type { PersonaView } from "../src/shared/workflow.ts";
+import type { PersonaView, WorkflowSummary } from "../src/shared/workflow.ts";
 
 // What is at stake: Personas are SSE state, not a second polling subsystem. A reconnect snapshot
 // and the incremental upsert stream must converge on the same catalog, including a soft archive.
@@ -15,6 +15,7 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
 
 const db = openDb();
@@ -57,4 +58,38 @@ test("snapshot, upsert, archive, and reconnect produce one equivalent Persona ca
   const reconnect = new Registry();
   new PersonaManager(reconnect, new WorkflowStore(db));
   assert.deepEqual(reconnect.snapshot().personas, registry.snapshot().personas);
+});
+
+test("workflow summary snapshot, upsert, archive, and reconnect converge without graph JSON", () => {
+  clearWorkflowTables(db);
+  const registry = new Registry();
+  const store = new WorkflowStore(db);
+  new PersonaManager(registry, store);
+  const manager = new WorkflowManager(registry, store);
+  assert.deepEqual(registry.snapshot().workflowSummaries, []);
+  const events: ServerEvent[] = [];
+  const unsubscribe = registry.subscribe((event) => events.push(event));
+  const created = manager.create({
+    name: "Review",
+    description: "",
+    draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Complete", position: { x: 360, y: 0 } }], edges: [] },
+    completionPolicy: { kind: "none" },
+    bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
+  }, 100);
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  manager.archive(created.workflow.id, 1, 200);
+  unsubscribe();
+  assert.deepEqual(events.map((event) => event.type), ["workflow_upsert", "workflow_upsert"]);
+  const reduced = new Map<string, WorkflowSummary>();
+  for (const event of events) {
+    if (event.type === "workflow_upsert") reduced.set(event.workflow.id, event.workflow);
+    if (event.type === "workflow_remove") reduced.delete(event.id);
+  }
+  assert.deepEqual([...reduced.values()], registry.snapshot().workflowSummaries);
+  assert.equal("draft" in registry.snapshot().workflowSummaries[0]!, false);
+  const reconnect = new Registry();
+  new PersonaManager(reconnect, store);
+  new WorkflowManager(reconnect, store);
+  assert.deepEqual(reconnect.snapshot().workflowSummaries, registry.snapshot().workflowSummaries);
 });

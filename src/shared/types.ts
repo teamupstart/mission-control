@@ -10,7 +10,7 @@ import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
-import type { PersonaId, PersonaView } from "./workflow.ts";
+import type { PersonaId, PersonaView, WorkflowId, WorkflowSummary } from "./workflow.ts";
 
 /**
  * Every agent harness Mission Control can drive. THE source of the union - the
@@ -1685,6 +1685,7 @@ export type ServerEvent =
       reviews: ReviewItem[];
       tasks: Task[];
       personas: PersonaView[];
+      workflowSummaries: WorkflowSummary[];
       /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
@@ -1700,6 +1701,8 @@ export type ServerEvent =
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }
   | { type: "persona_remove"; id: PersonaId }
+  | { type: "workflow_upsert"; workflow: WorkflowSummary }
+  | { type: "workflow_remove"; id: WorkflowId }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

@@ -1,11 +1,13 @@
-import type { PersonaView } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
+import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 
 export function WorkflowPage({
   tab,
   personas,
+  workflowSummaries = [],
   llm,
   isOverlayOpen,
   onTab,
@@ -13,6 +15,7 @@ export function WorkflowPage({
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
+  workflowSummaries?: WorkflowSummary[];
   llm: LlmState;
   isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
@@ -49,14 +52,7 @@ export function WorkflowPage({
         />
       )}
       {tab === "workflows" && (
-        <section className="workflow-empty">
-          <span className="workflow-empty-mark" aria-hidden>◇</span>
-          <h3>Workflow builder arrives in Phase 2</h3>
-          <p>
-            Phase 1 establishes the durable contracts and Persona library. Graph editing and
-            publishing are intentionally not active yet.
-          </p>
-        </section>
+        <WorkflowLibrary summaries={workflowSummaries} personas={personas} onDirtyChange={onDirtyChange} />
       )}
       {tab === "runs" && (
         <section className="workflow-empty">

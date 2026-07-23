@@ -77,6 +77,9 @@ export function normalizePersonaName(name: string): string {
   return name.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
 }
 
+/** Workflow names use the same durable Unicode spelling rule as Persona names. */
+export const normalizeWorkflowName = normalizePersonaName;
+
 export interface Point {
   x: number;
   y: number;
@@ -129,6 +132,50 @@ export type PublishedWorkflowNode =
 export interface PublishedWorkflowGraph {
   nodes: PublishedWorkflowNode[];
   edges: WorkflowEdge[];
+}
+
+export const WORKFLOW_DIAGNOSTIC_CODES = [
+  "missing_session",
+  "multiple_sessions",
+  "missing_end",
+  "duplicate_node_id",
+  "duplicate_edge_id",
+  "node_limit",
+  "edge_limit",
+  "graph_size",
+  "invalid_position",
+  "coordinate_limit",
+  "dangling_edge",
+  "invalid_source_port",
+  "invalid_target_port",
+  "session_submitted_route",
+  "session_return_route",
+  "missing_pass_route",
+  "missing_fail_route",
+  "join_predecessors",
+  "join_predecessor_kind",
+  "join_missing_outcome",
+  "join_duplicate_outcome",
+  "unreachable_node",
+  "no_terminal_path",
+  "cycle_without_session",
+  "missing_persona",
+  "archived_persona",
+  "invalid_completion_policy",
+] as const;
+export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
+
+export interface WorkflowDiagnostic {
+  code: WorkflowDiagnosticCode;
+  severity: "error" | "warning";
+  message: string;
+  nodeId?: string;
+  edgeId?: string;
+}
+
+export interface WorkflowValidationResult {
+  valid: boolean;
+  diagnostics: WorkflowDiagnostic[];
 }
 
 export const INSPECTOR_FINDINGS_POLICIES = ["restart_workflow", "inspector_only"] as const;
@@ -264,6 +311,27 @@ export interface WorkflowVersion {
   completionPolicy: WorkflowCompletionPolicy;
   bindingDefaults: WorkflowBindingDefaults;
   publishedAt: number;
+}
+
+/** The bounded catalog projection carried over SSE. Graphs and guidance stay on HTTP. */
+export interface WorkflowSummary {
+  id: WorkflowId;
+  name: string;
+  description: string;
+  draftRevision: number;
+  currentVersionId: WorkflowVersionId | null;
+  publishedVersion: number | null;
+  archivedAt: number | null;
+  updatedAt: number;
+  errorCount: number;
+  warningCount: number;
+  nodeCount: number;
+  personaCount: number;
+}
+
+export interface WorkflowDetail {
+  workflow: WorkflowDefinition;
+  versions: WorkflowVersion[];
 }
 
 export interface WorkflowBinding {

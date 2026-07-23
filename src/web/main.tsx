@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
+import "@xyflow/react/dist/style.css";
 import "./styles.css";
 
 // In the Electron shell the window has no native title bar (titleBarStyle:

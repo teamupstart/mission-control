@@ -92,7 +92,7 @@ export function personaView(
 export class PersonaManager {
   constructor(
     private readonly registry: Registry,
-    private readonly store = new WorkflowStore(),
+    readonly store = new WorkflowStore(),
   ) {
     // Archived rows remain in the snapshot because published history may link to them.
     registry.initializePersonas(this.store.listPersonas(true).map((persona) => personaView(persona)));

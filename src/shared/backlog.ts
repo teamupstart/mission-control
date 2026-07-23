@@ -71,19 +71,13 @@ export const PLANNABLE_LIMIT = 400;
 /**
  * The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`.
  *
- * Disabled items are dropped BEFORE the slice, and that is deliberate on both counts.
- * A parked item is not work that is going to happen, so ordering the rest against it
- * is a plan about a hypothetical; and because `planStale` is coverage over this list,
- * leaving them in would make disabling a task cost a model call and make re-enabling
- * it cost nothing - exactly backwards. Dropping them here means a park is free and an
- * un-park is what replans, which is the moment the ordering actually changed.
- * A disabled item also does not consume the 400-item budget, so a backlog with a long
- * parked tail still gets a real dependency read on the part of it that can run.
+ * Coverage is over the whole backlog head regardless of the enable toggle. A parked
+ * item therefore consumes a plan entry it cannot use, which keeps the dependency graph
+ * complete: inferred edges pointing at it survive replanning and continue to block
+ * their dependents until the item is enabled or manually launched.
  */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks)
-    .filter((t) => t.enabled)
-    .slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
 }
 
 /**
@@ -266,10 +260,9 @@ function declaredReachable(
  * the fallback the machine drops to when planning has failed its cap has NO plan at
  * all and relies entirely on this ordering being sensible.
  *
- * Disabled items are not here at all, which is what makes the toggle mean anything:
- * this is the ONE list the autopilot decides from, for both of the ways it can start
- * work (a fresh worktree and an assign to an idle agent), so a park applies to both
- * by construction rather than by each path remembering to ask.
+ * Disabled items are not here at all. This is the list the autopilot decides from for
+ * both ways it can start work (a fresh worktree and an assign to an idle agent); the
+ * daemon then revalidates that policy when the selected action arrives.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const backlog = backlogTasks(tasks).filter((t) => t.enabled);

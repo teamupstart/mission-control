@@ -14,6 +14,85 @@ import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { AgentDot, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
+function BacklogReportRow({
+  task,
+  tasks,
+  onEditTask,
+}: {
+  task: Task;
+  tasks: Task[];
+  onEditTask: (taskId: string) => void;
+}): React.JSX.Element {
+  const [toggleBusy, setToggleBusy] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+  const blockers = declaredBlockers(task, tasks);
+
+  async function setEnabled(enabled: boolean): Promise<void> {
+    if (toggleBusy) return;
+    setToggleBusy(true);
+    setToggleError(null);
+    const result = await api.updateTask(task.id, { enabled });
+    if (!result.ok) setToggleError(result.error ?? "Could not change the schedule setting");
+    setToggleBusy(false);
+  }
+
+  return (
+    <div className={`report-row${task.enabled ? "" : " is-disabled"}`}>
+      <div className="report-row-main report-row-stack">
+        <span className="report-line">
+          <button
+            className="report-name report-name-btn"
+            onClick={() => onEditTask(task.id)}
+            title="Open this task for editing"
+          >
+            {task.title}
+          </button>
+          <PriorityChip priority={task.priority} />
+          <span className="task-kind">{task.kind}</span>
+          <ScheduleSwitch
+            enabled={task.enabled}
+            taskTitle={task.title}
+            busy={toggleBusy}
+            onChange={(enabled) => void setEnabled(enabled)}
+          />
+        </span>
+        <span className="report-line report-line-sub">
+          <LabelChips labels={task.labels} max={3} />
+          <span className="report-sub mono">{shortenCwd(task.repoRoot)}</span>
+        </span>
+        {blockers.length > 0 && (
+          <span className="report-line report-line-sub">
+            Waiting for{" "}
+            {blockers
+              .map((blocker) =>
+                blocker.state === "disabled" ? `${blocker.title} (disabled)` : blocker.title,
+              )
+              .join(", ")}
+          </span>
+        )}
+        {toggleError && (
+          <span className="report-line report-line-sub report-task-error" role="alert">
+            {toggleError}
+          </span>
+        )}
+      </div>
+      <div className="report-row-actions">
+        <button
+          className="btn btn-send"
+          onClick={() => void api.dispatchBacklog(task.id)}
+          disabled={blockers.length > 0}
+          title={blockers.length > 0 ? "Dependencies must complete first" : undefined}
+        >
+          {blockers.length > 0 ? "Waiting" : "Dispatch"}
+        </button>
+        <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(task.id)}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The Sitrep panel (`/api/report`): who needs you, who's working, what's idle, the
  * backlog, and recent outcomes - assembled from the same live snapshot the grid
@@ -215,70 +294,14 @@ export function ReportPanel({
         </Section>
 
         <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
-          {backlog.map((t) => {
-            const blockers = declaredBlockers(t, tasks);
-            return <div className={`report-row${t.enabled ? "" : " is-disabled"}`} key={t.id}>
-              {/* Two lines, not one. This panel is narrow and a backlog row carries a
-                  title, a priority, a kind, up to three labels and a repo path - on a
-                  single flex line those fought each other and every one of them lost:
-                  the title clipped to "Bloc…" and the labels to "i…". Splitting puts
-                  what identifies the task on the first line and what describes it on
-                  the second, and nothing has to be read as an ellipsis. */}
-              <div className="report-row-main report-row-stack">
-                <span className="report-line">
-                  {/* The same door the board's backlog card is: a shelved task is read and
-                      corrected in the form that wrote it, from wherever it's listed. */}
-                  <button
-                    className="report-name report-name-btn"
-                    onClick={() => onEditTask(t.id)}
-                    title="Open this task for editing"
-                  >
-                    {t.title}
-                  </button>
-                  <PriorityChip priority={t.priority} />
-                  <span className="task-kind">{t.kind}</span>
-                  {/* The same switch the board's card carries, from the same component.
-                      This panel already dispatches and deletes, so a hold it could show
-                      but not set would be the one backlog decision you had to leave the
-                      list to make. */}
-                  <ScheduleSwitch
-                    enabled={t.enabled}
-                    taskTitle={t.title}
-                    onChange={(enabled) => void api.updateTask(t.id, { enabled })}
-                  />
-                </span>
-                <span className="report-line report-line-sub">
-                  <LabelChips labels={t.labels} max={3} />
-                  <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
-                </span>
-                {blockers.length > 0 && (
-                  <span className="report-line report-line-sub">
-                    {/* A parked prerequisite is named as one. "Waiting for X" promises a
-                        queue that is moving, and this is the one blocker that is not -
-                        it clears when somebody flips X's switch back on, which is a
-                        different thing to go and do. */}
-                    Waiting for{" "}
-                    {blockers
-                      .map((b) => (b.state === "disabled" ? `${b.title} (disabled)` : b.title))
-                      .join(", ")}
-                  </span>
-                )}
-              </div>
-              <div className="report-row-actions">
-                <button
-                  className="btn btn-send"
-                  onClick={() => void api.dispatchBacklog(t.id)}
-                  disabled={blockers.length > 0}
-                  title={blockers.length > 0 ? "Dependencies must complete first" : undefined}
-                >
-                  {blockers.length > 0 ? "Waiting" : "Dispatch"}
-                </button>
-                <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(t.id)}>
-                  Delete
-                </button>
-              </div>
-            </div>;
-          })}
+          {backlog.map((task) => (
+            <BacklogReportRow
+              key={task.id}
+              task={task}
+              tasks={tasks}
+              onEditTask={onEditTask}
+            />
+          ))}
         </Section>
 
         <Section title="Recent outcomes" tone="neutral" count={recent.length} empty="No finished tasks yet.">

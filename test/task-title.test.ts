@@ -188,7 +188,7 @@ test("dispatching while titling is in flight uses the model's title, not the heu
   const dispatched = await tasks.dispatch(t.id);
 
   assert.equal(titleAtDispatch, "Fix flaky worktree cleanup", "the branch/tmux name is cut from this");
-  assert.equal(dispatched?.title, "Fix flaky worktree cleanup");
+  assert.equal(dispatched.task?.title, "Fix flaky worktree cleanup");
 });
 
 test("dispatching a task removed during titling is refused rather than resurrecting it", async () => {
@@ -197,7 +197,7 @@ test("dispatching a task removed during titling is refused rather than resurrect
   const t = create(tasks, "add a dark mode toggle to the settings pane");
   const gone = tasks.dispatch(t.id);
   await tasks.remove(t.id);
-  assert.equal(await gone, null, "the post-wait re-read must see the removal");
+  assert.deepEqual(await gone, { ok: false, error: "no such task" }, "the post-wait re-read must see the removal");
 });
 
 test("a Foreman backlog launch pins its default only when the task has no model of its own", async () => {

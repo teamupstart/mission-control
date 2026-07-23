@@ -1107,10 +1107,9 @@ export interface Task {
    * the toggle existed.
    *
    * A SCHEDULING GATE, not a dependency and not annotation. `readyBacklog` drops a
-   * disabled item, so the autopilot never dispatches it and never assigns it to an
-   * idle agent, and `plannableBacklog` drops it too - a parked item must not force a
-   * replan, eat the plan budget, or be ordered against work that is actually going to
-   * happen.
+   * disabled item, so the autopilot does not select it for dispatch or assignment.
+   * `plannableBacklog` retains it so inferred dependency edges pointing at parked work
+   * survive replanning and continue to block their dependents.
    *
    * It deliberately does NOT stop a human: the launch button, drag-to-assign and
    * `POST /api/tasks/:id/dispatch` all still work on a disabled item, the same way

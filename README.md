@@ -963,11 +963,12 @@ The Sitrep digest marks the row too (`- "On hold" (ship, disabled) - /repo`).
 distinction a cancelled or failed dependency gets, with a one-click fix instead of an
 investigation.
 
-Parking is free and un-parking is what costs: a disabled item is left out of the backlog
-read entirely, so it neither makes Foreman's plan stale nor spends any of its 400-item
-budget, and switching one back on is the edit that triggers a fresh read. Like the rest of
-the launch configuration, the switch can only be changed while the task is *in* the
-backlog; there's nothing left to schedule once it has started.
+A parked item stays in Foreman's dependency read, so anything inferred to depend on it
+keeps waiting through later replans. It spends one of the 400 plan entries even though
+autopilot will not schedule it; preserving that graph is what prevents dependents from
+quietly becoming ready. Like the rest of the launch configuration, the switch can only be
+changed while the task is *in* the backlog; there's nothing left to schedule once it has
+started.
 
 ### Priority and labels
 
@@ -1737,7 +1738,7 @@ one fresh read is tried, so an API blip heals itself instead of waiting for a re
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
 
-One read, one model call, over the **first 400 backlog items** that aren't
+One read, one model call, over the **first 400 backlog items**, including items
 [held back](#hold-a-backlog-item-back). Reading a longer backlog in
 several calls was tried and taken back out: they run on the Foreman worker's single loop,
 which also drives queue drain and needs-you triage, so each extra call is another span in

@@ -72,10 +72,14 @@ export class TaskDependencyError extends Error {}
 /** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
 export interface DispatchOptions {
   defaultModel?: string | null;
+  /** Enforce the backlog enable toggle for a Foreman-initiated launch. */
+  autopilot?: boolean;
 }
 
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
+  /** Enforce the backlog enable toggle for a Foreman-initiated handover. */
+  autopilot?: boolean;
   /**
    * The caller has accepted what the handover reset discards beyond git state. False -
    * the default, and what an omitted flag gets - means a reset with anything to lose is
@@ -100,6 +104,10 @@ export interface AssignOutcome extends Ok {
   scope?: AssignRefusalScope;
   resetConfirm?: AssignResetConfirm;
 }
+
+export type DispatchOutcome =
+  | { ok: true; task: Task }
+  | { ok: false; error: string; task?: Task };
 
 /** Whether the handover would take anything the caller has not already agreed to. */
 function needsResetConfirm(c: AssignResetConfirm): boolean {
@@ -466,14 +474,30 @@ export class TaskManager {
    * from `task.title`, and later title edits do not propagate to them. Dispatching
    * mid-titling would name them after the heuristic title and leave the card disagreeing.
    */
-  async dispatch(id: string, options: DispatchOptions = {}): Promise<Task | null> {
+  async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
-    if (!t) return null;
-    if (this.assigningTasks.has(id)) return t;
+    if (!t) return { ok: false, error: "no such task" };
+    if (this.assigningTasks.has(id)) {
+      return { ok: false, error: "task is being assigned", task: t };
+    }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
-      if (this.dependencyBlockers(t).length > 0) return t;
+      if (t.status === "backlog" && options.autopilot && !t.enabled) {
+        return {
+          ok: false,
+          error: "task's enable toggle is off for the backlog autopilot",
+          task: t,
+        };
+      }
+      const blockers = this.dependencyBlockers(t);
+      if (blockers.length > 0) {
+        return {
+          ok: false,
+          error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`,
+          task: t,
+        };
+      }
       // A task-specific model is an explicit operator choice and must always win. Foreman
       // supplies this only for a fresh backlog launch; persisting it before the async
       // dispatcher starts makes the task card's model match the command line it will use.
@@ -483,7 +507,7 @@ export class TaskManager {
       }
       void this.dispatcher.dispatch(id);
     }
-    return this.registry.getTask(id) ?? t;
+    return { ok: true, task: this.registry.getTask(id) ?? t };
   }
 
   /**
@@ -605,6 +629,13 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
+    if (opts.autopilot && !t.enabled) {
+      return {
+        ok: false,
+        error: "task's enable toggle is off for the backlog autopilot",
+        scope: "task",
+      };
     }
     const dependencyBlockers = this.dependencyBlockers(t);
     if (dependencyBlockers.length > 0) {

@@ -2,20 +2,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decideBacklogTick } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
+import { sanitizePlan } from "../src/server/foreman/backlog-plan.ts";
 import {
-  PLANNABLE_LIMIT,
   blockersFor,
   declaredBlockers,
   nextUpTaskId,
   plannableBacklog,
-  planStale,
   readyBacklog,
 } from "../src/shared/backlog.ts";
 import type { BacklogPlan, Task } from "../src/shared/types.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 
 /**
- * What a disabled backlog item costs the autopilot, and what it must NOT cost.
+ * What a disabled backlog item costs the autopilot.
  *
  * The toggle only means something if exactly one list decides scheduling, so the
  * property worth pinning is not "the flag is read" but "the flag is read in the ONE
@@ -24,14 +23,9 @@ import { mkTask as baseTask } from "./helpers/session-fixture.ts";
  * of them is how a parked task gets typed into somebody's pane anyway, with the board
  * still showing it held.
  *
- * The costs it must not have are the quiet ones. A park that made the plan stale would
- * spend a model call every time somebody triaged a row, and would make un-parking free
- * while parking was expensive - precisely backwards, since un-parking is the edit that
- * changes the ordering. A park that left the item in the plannable head would spend
- * budget describing work that is not going to happen.
- *
- * And the one thing it must keep costing: a disabled item still blocks whatever depends
- * on it, in its own words. "After X" promises a queue that is moving.
+ * A parked item remains in the planner input so inferred edges pointing at it survive a
+ * replan. The one scheduling gate is still `readyBacklog`, and the daemon revalidates
+ * Foreman actions against the toggle before carrying them out.
  */
 
 const NOW = 1_000_000;
@@ -101,39 +95,29 @@ test("re-enabling puts it back in line, in the order the plan already gave", () 
   );
 });
 
-// ---- what a park must NOT cost -------------------------------------------------------
+// ---- what a park must preserve -------------------------------------------------------
 
-test("parking an item does not make the plan stale", () => {
-  // Coverage is asked over the plannable head, and a disabled item is not in it. If it
-  // were, every triage click would burn a backlog read - on the one edit that says this
-  // work is NOT happening.
-  const off = mkTask({ enabled: false });
-  const on = mkTask();
-  assert.equal(planStale([off, on], mkPlan([[on.id, []]])), false);
-});
-
-test("un-parking an item DOES make the plan stale - that is the edit that changed the order", () => {
+test("an inferred edge to a parked prerequisite survives replanning", () => {
   const parked = mkTask({ enabled: false });
-  const on = mkTask();
-  const plan = mkPlan([[on.id, []]]);
-  assert.equal(planStale([parked, on], plan), false);
-  assert.equal(planStale([{ ...parked, enabled: true }, on], plan), true);
-});
+  const dependent = mkTask();
+  const input = plannableBacklog([parked, dependent]);
+  const replanned = sanitizePlan(
+    {
+      tasks: [
+        { id: parked.id, dependsOn: [] },
+        { id: dependent.id, dependsOn: [parked.id] },
+      ],
+    },
+    input,
+  );
+  const plan: BacklogPlan = { ...replanned, generatedAt: NOW };
 
-test("a disabled item is not sent to the planner, and does not eat the plannable budget", () => {
-  const parked = Array.from({ length: 5 }, () => mkTask({ enabled: false }));
-  const live = Array.from({ length: 3 }, () => mkTask());
-  const plannable = plannableBacklog([...parked, ...live]);
-  assert.deepEqual(plannable.map((t) => t.id), live.map((t) => t.id));
-
-  // The cap applies to what is left after the park, so a long parked tail cannot push
-  // schedulable work past the limit and out of the dependency read entirely.
-  const many = [
-    ...Array.from({ length: 10 }, () => mkTask({ enabled: false })),
-    ...Array.from({ length: PLANNABLE_LIMIT }, () => mkTask()),
-  ];
-  assert.equal(plannableBacklog(many).length, PLANNABLE_LIMIT);
-  assert.ok(plannableBacklog(many).every((t) => t.enabled));
+  assert.deepEqual(input.map((task) => task.id), [parked.id, dependent.id]);
+  assert.deepEqual(
+    plan.entries.find((entry) => entry.taskId === dependent.id)?.dependsOn,
+    [parked.id],
+  );
+  assert.deepEqual(readyBacklog([parked, dependent], plan), []);
 });
 
 // ---- a disabled item still blocks what depends on it ---------------------------------
@@ -228,11 +212,8 @@ test("a disabled item never becomes the thing that is launched", () => {
 });
 
 test("a parked backlog does not replan on every tick", () => {
-  // The stale-plan branch short-circuits everything, so an item that stayed plannable
-  // while disabled would put the machine in a permanent `plan` loop: replan, still not
-  // covered by anything that matters, replan again.
   const parked = mkTask({ enabled: false });
   const on = mkTask();
-  const a = decide([parked, on], mkPlan([[on.id, []]]));
+  const a = decide([parked, on], mkPlan([[parked.id, []], [on.id, []]]));
   assert.notEqual(a.kind, "plan");
 });

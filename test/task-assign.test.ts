@@ -287,6 +287,24 @@ const cleanReset = async (): Promise<ResetResult> => ({
   detached: true,
 });
 
+test("only an autopilot-declared assign is refused for a parked task", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-disabled-");
+  r.upsertTask(mkTask({ repoRoot: clone, enabled: false }));
+
+  const autopilot = await tasks.assign("t1", sessionId, { autopilot: true });
+  assert.equal(autopilot.ok, false);
+  assert.equal(autopilot.scope, "task");
+  assert.match(autopilot.error ?? "", /toggle.*off.*autopilot/);
+
+  const manual = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(manual.ok, true);
+  assert.equal(r.getTask("t1")?.status, "running");
+});
+
 test("a pane that cannot take a prompt is refused BEFORE the agent is touched", async () => {
   // The fixture session has neither a tmux nor a wezterm handle, so the readiness probe
   // refuses it. The ordering is what is pinned here: this used to be discovered only

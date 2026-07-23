@@ -51,7 +51,7 @@ function setup(over: Partial<Task> = {}) {
       headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-  return { registry, tasks, patch };
+  return { registry, tasks, app, patch };
 }
 
 // ---- persistence ---------------------------------------------------------------------
@@ -145,4 +145,29 @@ test("a parked task carries no dependency blocker of its own", () => {
   // the hold as a blocker would have refused the operator's own button too.
   const { tasks } = setup({ enabled: false });
   assert.deepEqual(tasks.dependencyBlockers(tasks.get("t1")!), []);
+});
+
+test("only an autopilot-declared dispatch is refused for a parked task", async () => {
+  const { registry, tasks, app } = setup({ enabled: false });
+  let dispatched = 0;
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async () => {
+    dispatched++;
+  };
+  const post = (body: unknown): Promise<Response> =>
+    app.request("/api/tasks/t1/dispatch", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  const autopilot = await post({ autopilot: true });
+  assert.equal(autopilot.status, 409);
+  assert.match((await autopilot.json() as { error: string }).error, /toggle.*off.*autopilot/);
+  assert.equal(dispatched, 0);
+  assert.equal(registry.getTask("t1")!.status, "backlog");
+
+  const manual = await post({});
+  assert.equal(manual.status, 200);
+  assert.equal(dispatched, 1);
 });

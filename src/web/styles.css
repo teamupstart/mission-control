@@ -4609,6 +4609,10 @@ kbd {
 .report-line-sub {
   gap: 6px;
 }
+.report-task-error {
+  color: var(--danger);
+  white-space: normal;
+}
 /* The path is the flexible one on this line, so it absorbs the remainder and ellipsises
    rather than squeezing the label chips. */
 .report-line-sub .report-sub {

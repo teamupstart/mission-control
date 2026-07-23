@@ -558,12 +558,22 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
  */
 export const DispatchBacklogTaskSchema = z.object({
   defaultModel: ModelIdSchema.nullable().optional(),
+  /**
+   * True only for Foreman's backlog scheduler. Human dispatches omit it so launching
+   * a parked item remains a deliberate operator override.
+   */
+  autopilot: z.boolean().optional().default(false),
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
+  /**
+   * True only for Foreman's backlog scheduler. Human drag-to-assign calls omit it so
+   * assigning a parked item remains a deliberate operator override.
+   */
+  autopilot: z.boolean().optional().default(false),
   /**
    * The caller has accepted what the handover reset discards beyond git state - the
    * agent's work queue, its context, the branch it stands on.

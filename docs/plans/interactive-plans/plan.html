@@ -79,9 +79,9 @@
       self-contained <code>docs/plans/&lt;name&gt;/plan.html</code> beside the markdown, not
       only when someone asks to "share" it.</li>
     <li><strong>A plan that needs a decision presents its options as selectable controls
-      with a Submit button, and the human's selections come back to the agent.</strong> The
-      agent presents the choices, blocks, and receives the answer - no copy-paste, no
-      free-text round-trip.</li>
+      with Submit and Dismiss buttons.</strong> The agent presents the choices and blocks;
+      submitting returns the selections, while dismissing releases the wait without
+      fabricating an answer - no copy-paste or free-text round-trip.</li>
   </ol>
 
   <h2>Approach (decided): reuse the MCP review channel</h2>
@@ -92,8 +92,9 @@
     its terminal env (<code>registry.findSessionByEnv</code>), so <strong>the agent never needs
     to know its own session id</strong>, and there is <strong>no token or CORS surface</strong>
     because the resolving UI is the same-origin, loopback-guarded dashboard.</p>
-  <p>Interactive plans are one more review <em>kind</em> on that exact path. Selections return
-    to the blocked agent as the tool's return value. This was chosen over a standalone file that
+  <p>Interactive plans are one more review <em>kind</em> on that exact path. A submission
+    returns selections to the blocked agent, while a dismissal returns an explicit no-response
+    result. This was chosen over a standalone file that
     POSTs into the pane, which would have to bake the daemon token and a churn-prone
     <code>session.id</code> into a file on disk, clear CORS from a <code>file://</code> origin,
     and time its pane inject against the agent's prompt - every hazard the env-join path already
@@ -103,7 +104,7 @@
 
   <figure>
     <svg viewBox="0 0 760 262" role="img"
-         aria-label="One decision round-trip: the Claude session's MCP bridge creates a review on the daemon, the dashboard renders it as a DecisionForm for the human, and on Submit the daemon resolves the review and returns the selections to the blocked session.">
+         aria-label="One decision round-trip: the Claude session's MCP bridge creates a review on the daemon, the dashboard renders it as a DecisionForm for the human, and Submit or Dismiss resolves the review and releases the blocked session.">
       <defs>
         <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
           <path class="dg-arrow" d="M0,0 L7,3 L0,6 Z" />
@@ -138,8 +139,8 @@
       <!-- legend -->
       <text class="dg-sub" x="30" y="196">1 · request_plan_decisions → POST /mcp/reviews (bound to the session by pane env)</text>
       <text class="dg-sub" x="30" y="214">2 · review renders as a DecisionForm; the agent blocks on /mcp/reviews/:id/wait</text>
-      <text class="dg-sub" x="30" y="232">3 · human clicks Submit → POST /api/reviews/:id/resolve</text>
-      <text class="dg-sub" x="30" y="250">4 · /wait unblocks and returns the selections to the agent</text>
+      <text class="dg-sub" x="30" y="232">3 · human clicks Submit or Dismiss → POST /api/reviews/:id/resolve</text>
+      <text class="dg-sub" x="30" y="250">4 · /wait returns selections or an explicit dismissal to the agent</text>
     </svg>
     <figcaption>One decision round-trip across the three major components. Inline SVG, no runtime.</figcaption>
   </figure>
@@ -166,8 +167,9 @@ export interface PlanDecision {
 
 export interface ReviewItem {
   // ...existing fields...
-  decisions?: PlanDecision[] | null; // present only for kind "plan-decisions"
+  decisions?: PlanDecision[] | null;
 }</code></pre>
+  <p><code>src/shared/types.ts</code> owns the current review-kind and status unions.</p>
 
   <h2>Backend</h2>
   <ul>
@@ -180,34 +182,41 @@ export interface ReviewItem {
     <li><strong><code>src/shared/protocol.ts</code></strong> - add <code>PlanDecisionSchema</code>
       (+ option schema). Extend <code>CreateReviewSchema.kind</code> to include
       <code>"plan-decisions"</code> and add an optional <code>decisions</code> field.
-      <code>ResolveReviewSchema</code> is unchanged: the dashboard formats the selections into the
-      <code>response</code> string on <code>action: "answer"</code>.</li>
+      <code>ResolveReviewSchema</code> accepts <code>action: "dismiss"</code> and normalizes
+      its <code>response</code> to null so a supplied value can never masquerade as a
+      selection.</li>
     <li><strong><code>src/server/reviews.ts</code></strong> - <code>create(...)</code> takes an
-      optional <code>decisions</code> and stores it on the item.</li>
+      optional <code>decisions</code> and stores it on the item. <code>resolve(...)</code>
+      limits dismissal to option-bearing reviews, persists the <code>dismissed</code> status
+      with no response, and wakes only that review's waiters.</li>
     <li><strong><code>src/server/routes.ts</code></strong> - <code>/mcp/reviews</code> forwards
-      <code>decisions</code> into <code>reviews.create</code>. <code>/api/reviews/:id/resolve</code>
-      is unchanged.</li>
+      <code>decisions</code> into <code>reviews.create</code>.
+      <code>/api/reviews/:id/resolve</code> returns a client error when dismissal is not
+      available for that review.</li>
   </ul>
 
   <h2>MCP tool</h2>
   <p><strong><code>src/mcp/server.ts</code></strong> - new tool
     <code>request_plan_decisions({ title, plan, decisions })</code>. It creates a
     <code>plan-decisions</code> review, blocks via <code>waitForResolution</code>, and returns
-    <code>review.response</code> - the formatted selections. <code>createReview</code> is
-    generalized to carry an optional <code>decisions</code> payload on the POST.</p>
+    either <code>review.response</code> - the formatted selections - or an explicit dismissal
+    result without selections. <code>createReview</code> is generalized to carry an optional
+    <code>decisions</code> payload on the POST.</p>
 
   <h2>Frontend</h2>
   <ul>
     <li><strong><code>src/web/components/PlanDecisions.tsx</code></strong> (new) - a
       <code>DecisionForm</code> that renders each decision as a radio group (single) or checkbox
-      group (multi), an optional "Other" text field, and a <strong>Submit</strong> button disabled
-      until every decision is answered. On submit it formats a readable, deterministic response
-      string (one line per question with the chosen label(s), plus any free text) and calls the
-      provided <code>onSubmit</code>.</li>
+      group (multi), an optional "Other" text field, a <strong>Submit</strong> button disabled
+      until every decision is answered, and an optional <strong>Dismiss</strong> button. Submit
+      formats a readable, deterministic response string (one line per question with the chosen
+      label(s), plus any free text); Dismiss resolves the review without formatting or sending
+      the form state.</li>
     <li><strong><code>src/web/components/ReviewModal.tsx</code></strong> - <code>ReviewCard</code>
       gains a <code>plan-decisions</code> branch: render the plan with the existing
-      <code>PlanView</code>, then the <code>DecisionForm</code>, whose submit resolves the review
-      with <code>action: "answer"</code>.</li>
+      <code>PlanView</code>, then the <code>DecisionForm</code>, whose Submit resolves with
+      <code>action: "answer"</code> and whose Dismiss resolves with
+      <code>action: "dismiss"</code>.</li>
     <li><strong><code>src/web/styles.css</code></strong> - <code>.decision</code> /
       <code>.decision-option</code> styling, derived from the existing review controls.</li>
   </ul>
@@ -233,7 +242,8 @@ export interface ReviewItem {
       the questions, options, and a disabled-until-answered Submit (matching the existing
       <code>*-render.test.ts</code> convention; the SSE stream blocks browser automation here).</li>
     <li><strong>http</strong> - the full create -&gt; resolve -&gt; wait loop over the real routes,
-      asserting the agent's blocked wait returns the human's selections verbatim.</li>
+      asserting the agent's blocked wait returns a submission or dismissal. Independent pending
+      sets keep the session under Needs you until each has been submitted or dismissed.</li>
   </ul>
 
   <h2>Out of scope</h2>

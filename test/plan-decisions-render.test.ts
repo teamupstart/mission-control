@@ -73,6 +73,19 @@ test("Submit starts disabled so the agent can't unblock on an empty form", () =>
   assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
 });
 
+test("a review can expose Dismiss without treating it as a submitted choice", () => {
+  const html = renderToStaticMarkup(
+    createElement(DecisionForm, {
+      decisions,
+      busy: false,
+      onSubmit: () => {},
+      onDismiss: () => {},
+    }),
+  );
+  assert.match(html, /<button[^>]*>Dismiss<\/button>/);
+  assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
+});
+
 test("zero decisions leave Submit disabled rather than vacuously complete", () => {
   // A degraded `decisions` blob reaches the form as an empty list; "every decision is
   // answered" is trivially true for none of them, so Submit must be gated on having

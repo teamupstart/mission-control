@@ -43,12 +43,14 @@ function formatResponse(decisions: PlanDecision[], answers: Answers, lead: strin
 /**
  * Renders each decision as a radio group (choose one) or checkbox group (choose many),
  * with an optional free-text "Other". Its Submit hands the formatted selections up so
- * the caller can resolve the review with `action: "answer"`.
+ * the caller can resolve the review with `action: "answer"`. When `onDismiss` is
+ * supplied, Dismiss resolves the whole request without submitting any selections.
  */
 export function DecisionForm({
   decisions,
   busy,
   onSubmit,
+  onDismiss,
   /** Opening line of the response the agent receives - see `formatResponse`. */
   lead = "Plan decisions submitted:",
   /**
@@ -80,6 +82,8 @@ export function DecisionForm({
   decisions: PlanDecision[];
   busy: boolean;
   onSubmit: (response: string) => void;
+  /** Resolve this decision request without sending any of its options as an answer. */
+  onDismiss?: () => void;
   lead?: string;
   hideQuestions?: boolean;
   namePrefix?: string;
@@ -153,6 +157,11 @@ export function DecisionForm({
         </fieldset>
       ))}
       <div className="decisions-actions">
+        {onDismiss && (
+          <button className="btn btn-ghost" disabled={busy} onClick={onDismiss}>
+            Dismiss
+          </button>
+        )}
         <button
           className="btn btn-approve"
           disabled={busy || !complete}

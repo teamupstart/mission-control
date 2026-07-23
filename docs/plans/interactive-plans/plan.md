@@ -9,10 +9,10 @@ Two changes, driven by the `html-plans` skill:
 1. **Every plan is rendered as HTML.** The skill always emits a self-contained
    `docs/plans/<name>/plan.html` beside the markdown, not only when someone asks to
    "share" it.
-2. **A plan that needs a decision presents its options as selectable controls with a
-   Submit button, and the human's selections come back to the agent.** The agent
-   presents the choices, blocks, and receives the answer - no copy-paste, no free-text
-   round-trip.
+2. **A plan that needs a decision presents its options as selectable controls with
+   Submit and Dismiss buttons.** The agent presents the choices and blocks; submitting
+   returns the selections, while dismissing releases the wait without fabricating an
+   answer - no copy-paste or free-text round-trip.
 
 ## Approach (decided): reuse the MCP review channel
 
@@ -24,8 +24,9 @@ The daemon binds the call to the right session from its terminal env
 and there is **no token or CORS surface** because the resolving UI is the same-origin,
 loopback-guarded dashboard.
 
-Interactive plans are one more review *kind* on that exact path. Selections return to the
-blocked agent as the tool's return value. This was chosen over a standalone file that
+Interactive plans are one more review *kind* on that exact path. A submission returns
+selections to the blocked agent, while a dismissal returns an explicit no-response result.
+This was chosen over a standalone file that
 POSTs into the pane, which would have to bake the daemon token and a churn-prone
 `session.id` into a file on disk, clear CORS from a `file://` origin, and time its pane
 inject against the agent's prompt - every hazard the env-join path already avoids.
@@ -39,8 +40,8 @@ The request flow of one decision round-trip, across the three major components:
 flowchart LR
   A["Claude session<br/>(MCP bridge)"] -->|"1 · request_plan_decisions<br/>POST /mcp/reviews"| D["Mission Control<br/>daemon"]
   D -->|"2 · renders as DecisionForm"| W["Dashboard<br/>+ human"]
-  W -->|"3 · Submit<br/>POST /api/reviews/:id/resolve"| D
-  D -->|"4 · /mcp/reviews/:id/wait<br/>returns selections"| A
+  W -->|"3 · Submit or Dismiss<br/>POST /api/reviews/:id/resolve"| D
+  D -->|"4 · /mcp/reviews/:id/wait<br/>returns selections or dismissal"| A
 ```
 
 ## Data model
@@ -69,9 +70,11 @@ export interface PlanDecision {
 
 export interface ReviewItem {
   // ...existing fields...
-  decisions?: PlanDecision[] | null; // present only for kind "plan-decisions"
+  decisions?: PlanDecision[] | null;
 }
 ```
+
+`src/shared/types.ts` owns the current review-kind and status unions.
 
 ## Backend
 
@@ -82,30 +85,34 @@ export interface ReviewItem {
   static-file generator consume unchanged.
 - **`src/shared/protocol.ts`** - add `PlanDecisionSchema` (+ option schema). Extend
   `CreateReviewSchema.kind` to include `"plan-decisions"` and add an optional
-  `decisions` field. `ResolveReviewSchema` is unchanged: the dashboard formats the
-  selections into the `response` string on `action: "answer"`.
+  `decisions` field. `ResolveReviewSchema` accepts `action: "dismiss"` and normalizes
+  its `response` to null so a supplied value can never masquerade as a selection.
 - **`src/server/reviews.ts`** - `create(...)` takes an optional `decisions` and stores it
-  on the item.
+  on the item. `resolve(...)` limits dismissal to option-bearing reviews, persists the
+  `dismissed` status with no response, and wakes only that review's waiters.
 - **`src/server/routes.ts`** - `/mcp/reviews` forwards `decisions` into `reviews.create`.
-  `/api/reviews/:id/resolve` is unchanged.
+  `/api/reviews/:id/resolve` returns a client error when dismissal is not available for
+  that review.
 
 ## MCP tool
 
 **`src/mcp/server.ts`** - new tool `request_plan_decisions({ title, plan, decisions })`.
-It creates a `plan-decisions` review, blocks via `waitForResolution`, and returns
-`review.response` - the formatted selections. `createReview` is generalized to carry an
-optional `decisions` payload on the POST.
+It creates a `plan-decisions` review, blocks via `waitForResolution`, and returns either
+`review.response` - the formatted selections - or an explicit dismissal result without
+selections. `createReview` is generalized to carry an optional `decisions` payload on the
+POST.
 
 ## Frontend
 
 - **`src/web/components/PlanDecisions.tsx`** (new) - a `DecisionForm` that renders each
   decision as a radio group (single) or checkbox group (multi), an optional "Other" text
-  field, and a **Submit** button disabled until every decision is answered. On submit it
-  formats a readable, deterministic response string (one line per question with the
-  chosen label(s), plus any free text) and calls the provided `onSubmit`.
+  field, a **Submit** button disabled until every decision is answered, and an optional
+  **Dismiss** button. Submit formats a readable, deterministic response string (one line
+  per question with the chosen label(s), plus any free text); Dismiss resolves the review
+  without formatting or sending the form state.
 - **`src/web/components/ReviewModal.tsx`** - `ReviewCard` gains a `plan-decisions` branch:
-  render the plan with the existing `PlanView`, then the `DecisionForm`, whose submit
-  resolves the review with `action: "answer"`.
+  render the plan with the existing `PlanView`, then the `DecisionForm`, whose Submit
+  resolves with `action: "answer"` and whose Dismiss resolves with `action: "dismiss"`.
 - **`src/web/styles.css`** - `.decision` / `.decision-option` styling, derived from the
   existing review controls.
 
@@ -128,8 +135,9 @@ optional `decisions` payload on the POST.
   shows the questions, options, and a disabled-until-answered Submit (matching the
   existing `*-render.test.ts` convention; the SSE stream blocks browser automation here).
 - **http** - the full round-trip over the real daemon: `POST /mcp/reviews` creates the
-  review, `POST /api/reviews/:id/resolve` submits the selections, and the blocked
-  `/mcp/reviews/:id/wait` returns them to the caller.
+  review, `POST /api/reviews/:id/resolve` submits or dismisses it, and the blocked
+  `/mcp/reviews/:id/wait` returns that resolution to the caller. Independent pending sets
+  keep the session under Needs you until each has been submitted or dismissed.
 
 ## Out of scope
 

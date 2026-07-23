@@ -83,9 +83,11 @@ server.registerTool(
     title: "Present a plan with selectable decisions",
     description:
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
-      "human answers by selecting options and clicking Submit, then BLOCK until they do. " +
-      "Returns their selections so you can proceed. Use this instead of asking open-ended " +
-      "questions whenever the plan's open choices can be expressed as options.",
+      "human can resolve by selecting options and clicking Submit, or dismiss without an " +
+      "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
+      "their selections or an explicit dismissal so you can proceed appropriately. Use this " +
+      "instead of asking open-ended questions whenever the plan's open choices can be " +
+      "expressed as options.",
     inputSchema: {
       title: z.string().describe("Short title for the plan"),
       plan: z.string().describe("The plan as GitHub-flavored markdown, shown above the decisions"),
@@ -125,6 +127,9 @@ server.registerTool(
     try {
       const id = await createReview("plan-decisions", title, plan, decisions);
       const review = await waitForResolution(id);
+      if (review.status === "dismissed") {
+        return textResult("Decision request dismissed without a response.");
+      }
       return textResult(review.response ?? "(no selections given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
@@ -238,9 +243,11 @@ server.registerTool(
     title: "Ask the human a question",
     description:
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
-      "they answer. Returns their answer. Pass `options` whenever the answer is a choice " +
-      "between discrete alternatives - they become real controls the human clicks, which is " +
-      "faster and less ambiguous than free text. Omit `options` only for open-ended asks.",
+      "they resolve it. Without `options`, they answer in free text and the tool returns that " +
+      "answer. With `options`, they can submit clickable choices or dismiss the stale choice " +
+      "set without an answer; the tool returns their selections or an explicit dismissal. " +
+      "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
+      "`options` only for open-ended asks.",
     inputSchema: {
       question: z.string().describe("The question to ask"),
       options: z
@@ -293,6 +300,9 @@ server.registerTool(
       // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
       const id = await createReview("input", titleLine(question), question, decisions);
       const review = await waitForResolution(id);
+      if (review.status === "dismissed") {
+        return textResult("Input request dismissed without a response.");
+      }
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

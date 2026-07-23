@@ -1468,7 +1468,7 @@ export interface NmFixDetail {
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
-export type ReviewStatus = "pending" | "approved" | "rejected" | "answered";
+export type ReviewStatus = "pending" | "approved" | "rejected" | "answered" | "dismissed";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {

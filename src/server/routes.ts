@@ -85,7 +85,7 @@ import type {
   SkillsView,
   WorkItem,
 } from "@shared/types.ts";
-import type { ReviewManager } from "./reviews.ts";
+import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
@@ -974,9 +974,14 @@ export function buildApp(
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const updated = reviews.resolve(c.req.param("id"), parsed.data.action, parsed.data.response);
-    if (!updated) return c.json({ error: "no such review" }, 404);
-    return c.json(updated);
+    try {
+      const updated = reviews.resolve(c.req.param("id"), parsed.data.action, parsed.data.response);
+      if (!updated) return c.json({ error: "no such review" }, 404);
+      return c.json(updated);
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
   });
 
   // --- session actions (localhost only) ---

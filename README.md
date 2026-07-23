@@ -742,18 +742,25 @@ exposes six tools:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
-  options (radios / checkboxes) and **block** until the human submits their choices
+  options (radios / checkboxes) and **block** until the human submits their choices or
+  dismisses that decision set without an answer
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
 - `create_task(title, intent, dependsOnTaskIds?, dependsOnCurrentSession?)` - add a ship task
   for the current repo to the backlog with the default agent/model/effort, returning its id so
   later tasks can carry durable dependency edges
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
-  `multiSelect`, plus an optional free-text "Other"); without them, a text box
+  `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
+  submitting it; without them, a text box
 - `report_status(activity)` - update the session's activity line
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
+
+Each option-based question or plan decision set is an independent review. Dismiss resolves
+only that review, persists without a fabricated answer, and releases its blocked tool call.
+These reviews keep the session under **Needs you** while any set remains pending; submitting
+or dismissing the final set clears that review-based signal.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).

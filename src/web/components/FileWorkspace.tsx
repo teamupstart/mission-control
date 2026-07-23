@@ -6,18 +6,21 @@ import { Markdown } from "./Markdown.tsx";
 import { api } from "../lib/api.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 
+const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
+const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
+const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
 const PREVIEW_CSP =
-  "default-src 'none'; connect-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; " +
+  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
   "font-src data:; form-action 'none'; navigate-to 'none'";
 
 export function htmlPreviewSource(source: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`;
+  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script>`;
   const head = source.match(/<head(?:\s[^>]*)?>/i);
   if (head?.index != null) {
     const at = head.index + head[0].length;
-    return source.slice(0, at) + meta + source.slice(at);
+    return source.slice(0, at) + headContent + source.slice(at);
   }
-  return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+  return `<!doctype html><html><head>${headContent}</head><body>${source}</body></html>`;
 }
 
 interface StylesheetLink {
@@ -114,6 +117,32 @@ export interface FileWorkspaceHandle {
   scrollByArrow: (direction: -1 | 1) => void;
 }
 
+function scrollElement(element: HTMLElement, direction: -1 | 1): void {
+  element.scrollBy({ top: direction * Math.max(80, element.clientHeight * 0.18) });
+}
+
+export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boolean {
+  const contentReaders = root.querySelectorAll<HTMLElement>(
+    ".file-content .cm-scroller, .file-content .file-markdown-preview, .file-content .file-compare pre",
+  );
+  if (contentReaders.length > 0) {
+    contentReaders.forEach((element) => scrollElement(element, direction));
+    return true;
+  }
+  const preview = root.querySelector<HTMLIFrameElement>(".file-content .html-preview");
+  if (preview?.contentWindow) {
+    preview.contentWindow.postMessage({
+      type: PREVIEW_SCROLL_MESSAGE,
+      top: direction * Math.max(80, preview.clientHeight * 0.18),
+    }, "*");
+    return true;
+  }
+  const list = root.querySelector<HTMLElement>(".file-list");
+  if (!list) return false;
+  scrollElement(list, direction);
+  return true;
+}
+
 export function FileWorkspace({
   session,
   controller,
@@ -174,14 +203,7 @@ export function FileWorkspace({
   useImperativeHandle(ref, () => ({
     scrollByArrow: (direction) => {
       const root = workspaceRef.current;
-      if (!root) return;
-      // Content wins over the file list. CodeMirror owns its scroller; Markdown and
-      // conflict views use ordinary elements. If no document is open, the list is the
-      // useful reader left to move.
-      const el = root.querySelector<HTMLElement>(
-        ".cm-scroller, .file-markdown-preview, .file-compare pre, .file-list",
-      );
-      if (el) el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
+      if (root) scrollActiveFileReader(root, direction);
     },
   }), []);
 
@@ -259,7 +281,7 @@ export function FileWorkspace({
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
-            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="" srcDoc={htmlPreviewSource(previewText)} />
+            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="allow-scripts" srcDoc={htmlPreviewSource(previewText)} />
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
             <article className="file-markdown-preview markdown">

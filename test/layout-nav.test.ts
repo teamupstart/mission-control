@@ -24,6 +24,7 @@ test("nothing selected: the first arrow press takes the first session, in any la
 
 test("a selection that has since vanished is treated as no selection", () => {
   assert.equal(move("grid", "ArrowRight", "gone"), "a");
+  assert.equal(move("console", "ArrowDown", "gone"), "a");
 });
 
 test("grid: left/right walk the list, up/down jump a row", () => {

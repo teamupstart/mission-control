@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { htmlPreviewSource, inlinePreviewStyles } from "../src/web/components/FileWorkspace.tsx";
 
 test("HTML preview injects a restrictive CSP into an existing head", () => {
@@ -7,15 +8,21 @@ test("HTML preview injects a restrictive CSP into an existing head", () => {
   assert.match(source, /Content-Security-Policy/);
   assert.match(source, /default-src 'none'/);
   assert.match(source, /connect-src 'none'/);
+  const script = source.match(/<script>([^<]+)<\/script>/)?.[1];
+  assert.ok(script);
+  const hash = createHash("sha256").update(script).digest("base64");
+  assert.match(source, new RegExp(`script-src 'sha256-${hash}'`));
   assert.match(source, /form-action 'none'/);
   assert.match(source, /navigate-to 'none'/);
   assert.ok(source.indexOf("Content-Security-Policy") < source.indexOf("<title>"));
 });
 
-test("HTML fragments are wrapped without enabling scripts or same-origin access", () => {
+test("HTML fragments stay opaque and authorize only the scroll bridge", () => {
   const source = htmlPreviewSource("<h1>Hello</h1><script>alert(1)</script>");
   assert.match(source, /^<!doctype html><html><head>/);
-  assert.doesNotMatch(source, /allow-scripts|allow-same-origin/);
+  assert.doesNotMatch(source, /allow-same-origin/);
+  assert.match(source, /event\.source===parent/);
+  assert.match(source, /mission:file-preview-scroll/);
 });
 
 test("checkout-local stylesheets are inlined without weakening the preview CSP", async () => {
@@ -31,7 +38,7 @@ test("checkout-local stylesheets are inlined without weakening the preview CSP",
   assert.match(hydrated, /--bg: #111/);
   const preview = htmlPreviewSource(hydrated);
   assert.match(preview, /style-src 'unsafe-inline'/);
-  assert.doesNotMatch(preview, /allow-same-origin|allow-scripts/);
+  assert.doesNotMatch(preview, /allow-same-origin/);
 });
 
 test("unquoted local stylesheet attributes are inlined", async () => {

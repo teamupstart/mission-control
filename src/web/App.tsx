@@ -666,8 +666,11 @@ export function App(): React.JSX.Element {
           // different nested containers. With no selection there is no reader yet,
           // so the first arrow retains its old job of selecting the first session.
           if (layout === "console" && selectedId && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-            detailScrollers.current.get(selectedId)?.(e.key === "ArrowUp" ? -1 : 1);
-            return;
+            const detailScroll = detailScrollers.current.get(selectedId);
+            if (detailScroll) {
+              detailScroll(e.key === "ArrowUp" ? -1 : 1);
+              return;
+            }
           }
           const nextId = moveSelection({
             mode: layout,

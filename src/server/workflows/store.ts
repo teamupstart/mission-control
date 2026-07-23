@@ -2232,7 +2232,8 @@ export class WorkflowStore {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
       const run = this.getRun(delivery.runId);
-      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+      if (!run) return null;
+      const runTerminal = ["completed", "cancelled", "failed"].includes(run.status);
       const prior = this.db.prepare(
         `SELECT json_extract(payload_json, '$.resolution') AS resolution
            FROM workflow_events
@@ -2262,9 +2263,13 @@ export class WorkflowStore {
         resolution,
       }, now);
       let rearmedDrain = false;
-      if (resolution === "mark_delivered") {
+      if (resolution === "mark_delivered" && !runTerminal) {
         const binding = this.getBinding(run.bindingId);
-        if (binding?.state === "active") {
+        if (
+          binding?.state === "active"
+          && binding.sessionId === delivery.sessionId
+          && binding.noteKey === delivery.noteKey
+        ) {
           this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
             deliveryId: delivery.id,
             resolvedByOperator: true,

@@ -105,6 +105,74 @@ test("resolving an uncertain delivery preserves an orphaned run block", () => {
   assert.deepEqual(store.getRun("run-orphaned-resolution"), blocked);
 });
 
+test("resolving an old uncertain delivery preserves a reattached run block", () => {
+  const store = seededStore("reattached-resolution");
+  const delivery = prepare(store, "reattached-resolution");
+  store.claimDeliverySend(delivery.id);
+  store.recoverSendingDeliveries(10);
+  store.reattachBinding("binding-reattached-resolution", {
+    noteKey: "note-reattached",
+    sessionId: "session-reattached",
+    sessionAgent: "claude",
+    sessionName: "work",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+  }, 11);
+  store.setRunState("run-reattached-resolution", "waiting_for_session", "reattached_resubmit_required", {
+    priorNoteKey: "note-reattached-resolution",
+    noteKey: "note-reattached",
+  }, 11);
+
+  const blocked = store.getRun("run-reattached-resolution");
+  const resolved = store.resolveUncertainDelivery(
+    delivery.id,
+    "mark_delivered",
+    "inspected-after-reattach",
+    12,
+  );
+
+  assert.equal(resolved?.delivery.state, "delivered");
+  assert.equal(resolved?.rearmedDrain, false);
+  assert.deepEqual(store.getRun("run-reattached-resolution"), blocked);
+});
+
+test("terminal runs allow acknowledgement-only uncertain delivery resolution", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+
+  for (const resolution of ["mark_delivered", "discard_and_new_round"] as const) {
+    const suffix = `terminal-${resolution}`;
+    const store = seededStore(suffix);
+    const delivery = prepare(store, suffix);
+    store.claimDeliverySend(delivery.id);
+    store.cancelRun(`run-${suffix}`, "operator_cancelled", 10);
+    const terminalRun = store.getRun(`run-${suffix}`);
+    assert.equal(store.getDelivery(delivery.id)?.state, "uncertain");
+
+    const manager = new WorkflowManager(new Registry(), store);
+    const resolved = await manager.resolveDelivery(delivery.id, resolution === "mark_delivered"
+      ? {
+          requestId: `resolve-${suffix}`,
+          resolution,
+        }
+      : {
+          requestId: `resolve-${suffix}`,
+          resolution,
+          confirmation: "DISCARD AND SEND A NEW REPAIR ROUND",
+          expectedSessionId: `session-${suffix}`,
+          expectedNoteKey: `note-${suffix}`,
+        }, 11);
+
+    assert.equal(resolved.ok, true);
+    assert.equal(
+      store.getDelivery(delivery.id)?.state,
+      resolution === "mark_delivered" ? "delivered" : "cancelled",
+    );
+    assert.deepEqual(store.getRun(`run-${suffix}`), terminalRun);
+    assert.equal(store.listSubmissions(`run-${suffix}`).length, 1);
+  }
+});
+
 test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and recovery is explicit", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { WorkflowManager } = await import("../src/server/workflows/manager.ts");

@@ -764,14 +764,8 @@ export class WorkflowManager {
     const delivery = this.store.getDelivery(deliveryId);
     if (!delivery) return { ok: false, reason: "not_found", message: "No such workflow delivery" };
     const run = this.store.getRun(delivery.runId);
-    if (!run || runIsTerminal(run)) {
-      return {
-        ok: false,
-        reason: "invalid_delivery_state",
-        message: "A terminal workflow run cannot resolve a delivery into new work",
-        current: run,
-      };
-    }
+    if (!run) return { ok: false, reason: "not_found", message: "The delivery has no workflow run" };
+    const acknowledgementOnly = runIsTerminal(run);
     if (
       input.resolution === "discard_and_new_round"
       && input.confirmation !== "DISCARD AND SEND A NEW REPAIR ROUND"
@@ -782,7 +776,7 @@ export class WorkflowManager {
         message: "Type the exact discard confirmation before creating a new repair round",
       };
     }
-    if (input.resolution === "mark_delivered") {
+    if (input.resolution === "mark_delivered" || acknowledgementOnly) {
       const resolved = this.store.resolveUncertainDelivery(
         delivery.id,
         input.resolution,
@@ -798,8 +792,10 @@ export class WorkflowManager {
         };
       }
       if (!resolved.idempotent) {
-        const session = this.registry.getSession(delivery.sessionId);
-        if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
+        if (input.resolution === "mark_delivered") {
+          const session = this.registry.getSession(delivery.sessionId);
+          if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
+        }
         if (resolved.rearmedDrain) this.queues.refresh(delivery.noteKey);
         this.publishRun(delivery.runId);
       }

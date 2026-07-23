@@ -2004,6 +2004,7 @@ export const WorkflowContextSnapshotSchema = z.object({
     diffTruncated: z.boolean(),
     workingTreeDirty: z.boolean(),
     workingTreeStatus: z.array(z.string().max(2_000)).max(500),
+    workingTreeStatusTruncated: z.boolean().default(false),
     transcript: z.array(z.object({
       role: z.enum(["user", "assistant"]),
       content: z.string().max(48_000),

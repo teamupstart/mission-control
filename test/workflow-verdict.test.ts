@@ -88,6 +88,7 @@ test("Persona prompts put immutable human intent before exact Persona Markdown a
       diffTruncated: false,
       workingTreeDirty: false,
       workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
       transcript: [],
       transcriptAnchor: null,
       transcriptTruncated: false,

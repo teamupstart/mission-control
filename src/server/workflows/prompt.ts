@@ -72,6 +72,7 @@ export function buildPersonaPrompt(
       headSha: context.evidence.headSha,
       workingTreeDirty: context.evidence.workingTreeDirty,
       workingTreeStatus: context.evidence.workingTreeStatus,
+      workingTreeStatusTruncated: context.evidence.workingTreeStatusTruncated,
       diffFingerprint: context.evidence.diffFingerprint,
       diffTruncated: context.evidence.diffTruncated,
       transcriptTruncated: context.evidence.transcriptTruncated,

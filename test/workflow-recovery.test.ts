@@ -53,6 +53,7 @@ const context: WorkflowContextSnapshot = {
     diffTruncated: false,
     workingTreeDirty: false,
     workingTreeStatus: [],
+    workingTreeStatusTruncated: false,
     transcript: [],
     transcriptAnchor: null,
     transcriptTruncated: false,

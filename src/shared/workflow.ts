@@ -524,6 +524,7 @@ export interface WorkflowContextSnapshot {
     diffTruncated: boolean;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
+    workingTreeStatusTruncated: boolean;
     transcript: WorkflowTranscriptMessage[];
     transcriptAnchor: number | null;
     transcriptTruncated: boolean;

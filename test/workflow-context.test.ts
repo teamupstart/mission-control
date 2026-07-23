@@ -40,6 +40,7 @@ const raw = {
     diffTruncated: false,
     workingTreeDirty: false,
     workingTreeStatus: [],
+    workingTreeStatusTruncated: false,
     transcript: [],
     transcriptAnchor: 12,
     transcriptTruncated: false,
@@ -73,6 +74,7 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
       diffTruncated: false,
       workingTreeDirty: true,
       workingTreeStatus: [" M file.ts"],
+      workingTreeStatusTruncated: false,
       transcript: [],
       transcriptAnchor: 12,
       transcriptTruncated: false,
@@ -191,6 +193,16 @@ test("repository capture fails closed and detects worktree evidence changes", as
 
   assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), true);
 
+  writeFileSync(join(repo, "file.txt"), "one\n");
+  for (let index = 0; index <= 500; index++) {
+    writeFileSync(join(repo, `untracked-${String(index).padStart(3, "0")}.txt`), "");
+  }
+  const capped = await readWorkflowContextRaw(registry, binding);
+  assert.equal(capped.raw.evidence.workingTreeStatus.length, 500);
+  assert.equal(capped.raw.evidence.workingTreeStatusTruncated, true);
+  writeFileSync(join(repo, "z-after-status-cap.txt"), "");
+  assert.equal(await captureBoundaryChanged(registry, binding, capped.boundary), true);
+
   const missing = join(home, "not-a-repository");
   mkdirSync(missing);
   const unavailableRegistry = new Registry();
@@ -224,14 +236,16 @@ test("compaction preserves raw intent and visibly degrades on infrastructure fai
   const compacted = await compactWorkflowContext(raw, {
     runner: "codex",
     model: "fake",
-    execute: async () => ({
-      kind: "ok",
-      value: {
-        rationales: [{ sourceId: "review:r1", rationale: "advisory rewrite" }],
-        constraints: ["Keep compatibility"],
-        acceptanceCriteria: ["Tests pass"],
-      },
-    }),
+    execute: async (prompt) => {
+      assert.doesNotMatch(prompt, /rationales/);
+      return {
+        kind: "ok",
+        value: {
+          constraints: ["Keep compatibility"],
+          acceptanceCriteria: ["Tests pass"],
+        },
+      };
+    },
   });
   assert.equal(compacted.compaction.status, "model");
   assert.equal(compacted.compaction.runner, "codex");

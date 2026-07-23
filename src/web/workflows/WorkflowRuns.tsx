@@ -192,7 +192,13 @@ export function WorkflowRunView({
             <summary>Evidence snapshot</summary>
             <dl>
               <div><dt>HEAD</dt><dd>{context.evidence.headSha ?? "unavailable"}</dd></div>
-              <div><dt>Working tree</dt><dd>{context.evidence.workingTreeDirty ? "dirty" : "clean"}</dd></div>
+              <div>
+                <dt>Working tree</dt>
+                <dd>
+                  {context.evidence.workingTreeDirty ? "dirty" : "clean"}
+                  {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
+                </dd>
+              </div>
               <div><dt>Fingerprint</dt><dd><code>{latest?.evidenceFingerprint}</code></dd></div>
               <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>

@@ -116,6 +116,7 @@ const detail: WorkflowRunDetail = {
         diffTruncated: true,
         workingTreeDirty: true,
         workingTreeStatus: [" M file.ts"],
+        workingTreeStatusTruncated: true,
         transcript: [],
         transcriptAnchor: 1,
         transcriptTruncated: false,
@@ -187,6 +188,7 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.match(html, /Deterministic fallback/);
   assert.match(html, /Compaction fallback: timeout/);
   assert.match(html, /Diff<\/dt><dd>truncated/);
+  assert.match(html, /status truncated/);
   assert.match(html, /Fix the race/);
   assert.match(html, /changed line/);
   assert.match(html, /claude\/reviewer/);

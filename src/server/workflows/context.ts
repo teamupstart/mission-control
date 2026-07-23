@@ -37,10 +37,6 @@ const MAX_COMPACTION_BYTES = 160_000;
 export const WORKFLOW_CONTEXT_TIMEOUT_MS = 45_000;
 
 const CompactionSchema = z.object({
-  rationales: z.array(z.object({
-    sourceId: z.string().max(500),
-    rationale: z.string().max(MAX_DECISION_TEXT),
-  })).max(MAX_DECISIONS),
   constraints: z.array(z.string().max(4_000)).max(100),
   acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
 });
@@ -179,8 +175,8 @@ export function workflowReviewDecision(review: ReviewItem): WorkflowHumanDecisio
 function compactPrompt(raw: RawWorkflowContext): string {
   return [
     "Compact workflow intent without rewriting it.",
-    "Return ONLY JSON with rationales [{sourceId,rationale}], constraints [string], and acceptanceCriteria [string].",
-    "Use sourceId exactly as supplied. Do not add decisions or infer a rationale that is not supported.",
+    "Return ONLY JSON with constraints [string] and acceptanceCriteria [string].",
+    "Do not add decisions or infer intent that is not supported by the supplied sources.",
     JSON.stringify({
       rawGoal: raw.primaryGoal.rawPrompt,
       refinedGoal: raw.primaryGoal.refined,
@@ -245,8 +241,8 @@ export async function compactWorkflowContext(
   );
   const compacted: WorkflowContextSnapshot = {
     ...raw,
-    // Raw, sourced decisions and rationales are immutable evidence. Model-produced
-    // rationales are advisory and may not overwrite a missing human rationale.
+    // Raw, sourced decisions and their human rationale remain immutable evidence.
+    // Compaction adds only derived constraints and acceptance criteria.
     humanDecisions: raw.humanDecisions,
     constraints,
     acceptanceCriteria,
@@ -286,6 +282,8 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
+  statusTruncated: boolean;
+  statusFingerprint: string;
   standards: ReturnType<typeof readStandards>;
   repositoryFingerprint: string;
 }> {
@@ -299,18 +297,21 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   if (statusResult.code !== 0) {
     throw new Error(`Could not capture repository status: ${statusResult.stderr.trim() || "git status failed"}`);
   }
-  const allStatus = statusResult.stdout.split("\n").filter(Boolean).slice(0, MAX_STATUS);
+  const allStatus = statusResult.stdout.split("\n").filter(Boolean);
   const status = boundedStrings(
     allStatus.map((item) => clip(item, MAX_STATUS_LINE)),
     MAX_STATUS_BYTES,
     MAX_STATUS,
   );
+  const statusTruncated = status.length !== allStatus.length
+    || status.some((item, index) => item !== allStatus[index]);
+  const statusFingerprint = sha(statusResult.stdout);
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
     patch: diff.patch,
     patchTruncated: diff.truncated,
-    status,
+    statusFingerprint,
     standardsTruncated: standards.truncated,
     standards: standardsDocuments(standards.docs).map((doc) => ({
       path: doc.path,
@@ -318,7 +319,15 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
       truncated: doc.truncated,
     })),
   }));
-  return { diff, allStatus, status, standards, repositoryFingerprint };
+  return {
+    diff,
+    allStatus,
+    status,
+    statusTruncated,
+    statusFingerprint,
+    standards,
+    repositoryFingerprint,
+  };
 }
 
 function sourceFingerprint(context: WorkflowContextSnapshot): string {
@@ -373,6 +382,8 @@ export async function readWorkflowContextRaw(
     diff,
     allStatus,
     status,
+    statusTruncated,
+    statusFingerprint,
     standards,
     repositoryFingerprint,
   } = await readRepositoryEvidence(session.cwd);
@@ -412,11 +423,12 @@ export async function readWorkflowContextRaw(
     },
     evidence: {
       headSha: diff.headSha,
-      diffFingerprint: sha(JSON.stringify({ patch: diff.patch, status })),
+      diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),
       diff: boundedDiff,
       diffTruncated: diff.truncated || boundedDiff !== diff.patch,
       workingTreeDirty: allStatus.length > 0,
       workingTreeStatus: status,
+      workingTreeStatusTruncated: statusTruncated,
       transcript,
       transcriptAnchor,
       transcriptTruncated:

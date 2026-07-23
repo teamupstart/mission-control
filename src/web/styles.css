@@ -7277,9 +7277,22 @@ kbd {
   flex: 0 1 auto;
   min-height: min(260px, 34dvh);
 }
-.detail-conv > .nm-log-open .nm-scroll,
-.detail-pane > .nm-log-open .nm-scroll {
+.detail-body .nm-log-open > .nm-rollup,
+.detail-body .nm-log-open > .nm-log-foot {
+  flex: none;
+}
+.detail-body .nm-log-open > .nm-scrollwrap {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.detail-body .nm-log-open .nm-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: clamp(160px, 42dvh, 480px);
+}
+.detail-pane > .nm-log-open {
+  flex: none;
 }
 /* The other tabs are short - let the whole pane scroll. */
 .detail-pane {

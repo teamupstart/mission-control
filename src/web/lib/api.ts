@@ -43,6 +43,7 @@ import type {
   UpdateTask,
   TaskDependencyInput,
 } from "@shared/protocol.ts";
+import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
@@ -311,6 +312,16 @@ export async function fetchSessionFile(
 }
 
 /**
+ * Which "Open in" targets this build has, and whether the daemon's host can use each.
+ *
+ * Null on failure, not an empty list: an empty list is a real answer meaning "this build
+ * registers no targets", and drawing it for a failed fetch would hide the control rather
+ * than say why. See `useOpenTargets`.
+ */
+export const fetchOpenTargets = () =>
+  fetchJson<{ targets: OpenTargetView[] }>("/api/open-targets");
+
+/**
  * Park a dropped image on the daemon's disk, resolving to the path an agent can
  * read. Never throws - maps failures into the shape, like the other uploaders
  * here, because a failed drop is a chip that says why, not a broken compose box.
@@ -359,6 +370,15 @@ export const api = {
       text,
       expectedRevision,
     }),
+  /**
+   * Hand one checkout file to an application outside Mission Control. The daemon resolves
+   * the target to a command; the caller only ever names a registered id.
+   */
+  openFile: (id: string, path: string, target: OpenTargetId) =>
+    post<OpenFileResult & ActionResult>(
+      `/api/sessions/${encodeURIComponent(id)}/file/open`,
+      { path, target },
+    ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),

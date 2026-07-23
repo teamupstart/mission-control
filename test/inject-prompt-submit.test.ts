@@ -335,12 +335,16 @@ test("the placeholder is detected through a real capture-pane", { skip: tmuxAvai
     const paneId = execFileSync("tmux", ["list-panes", "-t", sessName, "-F", "#{pane_id}"]).toString().trim();
     const session = { id: "real", agent: "claude", terminals: [tmux(paneId)] } as Session;
 
-    // Wait for the pane to RENDER the line - the shell's echo of the command is on screen
-    // first, and `clear` has not run yet.
+    // Wait for the pane to RENDER the line, which is TWO conditions and needs both. The
+    // shell's echo of the command has to be gone (it contains the placeholder as literal
+    // argument text, so detecting it would prove nothing), AND the printf's own output has
+    // to have arrived. Breaking on the first alone raced: `clear` wipes the echo one redraw
+    // BEFORE the output lands, so a loaded machine reads an empty screen and calls it
+    // rendered. The wait is for the raw line, never for the predicate under test.
     let text: string | null = null;
     for (let i = 0; i < 60; i++) {
       text = await capturePaneText(session);
-      if (text && !text.includes("printf")) break;
+      if (text && !text.includes("printf") && text.includes("[Pasted text #1")) break;
       await new Promise((r) => setTimeout(r, 100));
     }
 

@@ -37,6 +37,7 @@ import {
   ResolveReviewSchema,
   SelectOptionSchema,
   SendTextSchema,
+  OpenSessionFileSchema,
   SaveSessionFileSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
@@ -160,9 +161,11 @@ import {
   listSessionFiles,
   MAX_SESSION_EDITOR_BYTES,
   readSessionFile,
+  resolveSessionFilePath,
   saveSessionFile,
   SessionFileError,
 } from "./session-files.ts";
+import { openFile, openTargetViews } from "./open-targets/index.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
@@ -675,6 +678,41 @@ export function buildApp(
     }
     },
   );
+  // The "Open in" menu: every registered target, and whether THIS machine can use it.
+  // Availability is answered here rather than in the browser because it is a question
+  // about the daemon's host - which is not the machine the dashboard is necessarily
+  // being viewed from.
+  app.get("/api/open-targets", async (c) => c.json({ targets: await openTargetViews() }));
+  // Hand one checkout file to an application outside Mission Control.
+  //
+  // A POST, not a GET, and it deliberately does NOT stream the file back: the daemon
+  // launches a local application against a local path, so nothing about the checkout
+  // crosses the HTTP boundary. Serving the bytes instead would put checkout-controlled
+  // HTML on the daemon's own origin, where its scripts would reach every action route
+  // on this port.
+  app.post("/api/sessions/:id/file/open", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no working directory" }, 400);
+    const parsed = await parseBody(c, OpenSessionFileSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      const file = await resolveSessionFilePath(session.cwd, parsed.data.path);
+      const result = await openFile(parsed.data.target, file);
+      const body = {
+        ok: result.ok,
+        target: parsed.data.target,
+        label: result.label,
+        detail: result.detail,
+        ...(result.error ? { error: result.error } : {}),
+      };
+      return result.ok ? c.json(body) : c.json(body, result.status as 409 | 502 | 504);
+    } catch (error) {
+      const known = error instanceof SessionFileError ? error : null;
+      const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
+      return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
+    }
+  });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
   // Git repos under the workspace roots - the pickable bases for a new dispatch.

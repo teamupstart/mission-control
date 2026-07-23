@@ -106,6 +106,21 @@ async function rootAndTarget(cwd: string, relativePath: string): Promise<{ root:
   return { root, target };
 }
 
+/**
+ * The absolute path of one checkout file, contained exactly as a read is.
+ *
+ * For the callers that hand a file to something OTHER than the editor - the "Open in"
+ * targets - which need the path on disk rather than its bytes. It goes through
+ * `rootAndTarget` rather than joining `cwd` itself so there is ONE containment check in
+ * this file: same realpath, same refusal of symlinks and of anything resolving outside the
+ * checkout, same `SessionFileError` statuses. A second implementation of that walk is a
+ * second chance to hand an arbitrary path to a launcher.
+ */
+export async function resolveSessionFilePath(cwd: string, relativePath: string): Promise<string> {
+  const { target } = await rootAndTarget(cwd, relativePath);
+  return target;
+}
+
 export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]> {
   const root = await realpath(cwd).catch(() => {
     throw new SessionFileError("session checkout is unavailable", 404);

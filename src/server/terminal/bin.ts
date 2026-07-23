@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import type { BinSpec } from "./types.ts";
+import { onPath } from "../util/exec.ts";
 
 /**
  * Reaching a backend's CLI, once: which binary, in what environment, and whether it is
@@ -58,11 +58,8 @@ export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env):
   if (!bin) return false;
   // An absolute or relative path either exists or does not; an env override is taken on
   // trust in `resolveBin`, so re-testing it here is what catches a stale `WEZTERM_BIN`.
-  if (bin.includes("/")) return existsSync(bin);
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (dir && existsSync(join(dir, bin))) return true;
-  }
-  return false;
+  // `onPath` (`util/exec.ts`) is the walk itself, shared with the "Open in" targets.
+  return onPath(bin, env);
 }
 
 /**

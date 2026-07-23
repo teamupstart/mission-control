@@ -472,6 +472,27 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `noDriver(backend: never)` default are gone with the shelling-out they guarded. Persisted
   task ownership is `Task.homeName` / `home_name`; the former `tmux_session` column is an
   inert migration source. See `docs/plans/pluggable-integrations/plan.md` phase 3.
+- **"Open in" targets (handing a checkout file OUT to another application)**: the same
+  purity split again. `OPEN_TARGET_INFO` (`@shared/open-targets.ts`) holds what the files
+  toolbar can answer in the browser - label, blurb, glyph - and `OPEN_TARGETS`
+  (`src/server/open-targets/index.ts`) spreads that in and adds `resolve`, the one call
+  that has to look at the machine. Both are `Record<OpenTargetId, …>`, so an id appended
+  to `OPEN_TARGET_IDS` does not compile until something can launch it. **A target
+  RESOLVES the application; it never shells the file at the platform's default handler.**
+  `open <file>` / `xdg-open <file>` route by FILE TYPE, so they honour a "Browser" row for
+  `.html` and open Xcode for `.ts` - and the files list holds every file in the checkout,
+  which makes that the common case. `resolve` answers "which application, and what argv"
+  ONCE per menu draw and returns a pure `command(file)`, which is what lets a test assert
+  the exact argv for a platform it is not running on (`OpenDeps` is the seam, the
+  `PaneDeps` shape). An unavailable target is a SENTENCE, never a boolean: "not supported
+  on win32 yet" and "install xdg-utils" are different things for the human to do. The
+  daemon launches a local application against a local path and never SERVES the file -
+  serving it would put checkout-controlled HTML on the daemon's own origin, inside every
+  action route on that port. Containment is `resolveSessionFilePath`
+  (`src/server/session-files.ts`), the same `rootAndTarget` walk a read gets, never a
+  second one. The menu is a fold over the daemon's report, so a new target needs no
+  component and no stylesheet rule. Test: `open-target-contract.test.ts`,
+  `open-file-http.test.ts`, `open-in-menu.test.ts`, `open-in-freshness.test.ts`.
 - **Task sources (what pulls work INTO the backlog)**: the same purity split as the
   harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
   panel can answer in the browser - the name, the blurb, the config schema - and

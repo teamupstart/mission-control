@@ -94,6 +94,18 @@ function hasLocalFileChanges(buffer: FileBuffer): boolean {
   return buffer.saveState !== "saved" && buffer.saveState !== "readonly";
 }
 
+/**
+ * The bytes on disk are older than what the human is looking at, and a write is still
+ * coming - so a reader that goes to the FILE (an "Open in" target) would show them
+ * something they have already edited past.
+ *
+ * Narrower than `hasLocalFileChanges` on purpose: `failed`, `offline` and `conflict` are
+ * also unsaved, but no save is pending for them, so waiting on one would wait forever.
+ */
+export function isSavePending(buffer: FileBuffer): boolean {
+  return buffer.saveState === "modified" || buffer.saveState === "saving";
+}
+
 export function applyFileLoadFailure(
   state: SessionFilesState,
   filePath: string,

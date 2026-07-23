@@ -150,6 +150,10 @@ export function openDb(): DatabaseSync {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       dependencies  TEXT,               -- JSON TaskDependency[], NULL = none
+      -- May the backlog autopilot schedule this? 1 unless somebody switched it off.
+      -- NOT NULL DEFAULT 1 rather than nullable: there is no third state, and a NULL
+      -- read as falsy would silently park every task filed before the toggle existed.
+      enabled       INTEGER NOT NULL DEFAULT 1,
       model         TEXT,
       effort        TEXT,
       -- Where a task source swept this task from. The LINK BACK only: identity for
@@ -773,6 +777,11 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole
+  // migration - every task already in an operator's backlog was schedulable before this
+  // column existed, so backfilling anything else would park their backlog on upgrade
+  // and the autopilot would go quiet with nothing on screen to explain it.
+  addColumn(d, "tasks", "enabled", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
@@ -1617,6 +1626,7 @@ interface TaskRow {
   priority: string | null;
   labels: string | null;
   dependencies: string | null;
+  enabled: number;
   model: string | null;
   effort: string | null;
   source_id: string | null;
@@ -1731,6 +1741,10 @@ function rowToTask(r: TaskRow): Task {
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
     dependencies: parseTaskDependencies(r.dependencies),
+    // Only an explicit 0 parks a task. A row written by an older build, or one whose
+    // column somehow reads NULL, is schedulable - the direction that degrades to the
+    // behaviour every install already had rather than to a silently frozen backlog.
+    enabled: r.enabled !== 0,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     // Both key columns or nothing: half a provenance would render as a link to an item
@@ -1775,15 +1789,15 @@ export function upsertTask(t: Task): string[] {
     }
     d.prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
+         id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
          provider, home_name, terminal_resource_id, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
-         model=excluded.model, effort=excluded.effort,
+         enabled=excluded.enabled, model=excluded.model, effort=excluded.effort,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
@@ -1799,6 +1813,7 @@ export function upsertTask(t: Task): string[] {
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
       t.dependencies.length > 0 ? JSON.stringify(t.dependencies) : null,
+      t.enabled ? 1 : 0,
       t.model,
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,

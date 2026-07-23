@@ -17,7 +17,17 @@ export type BlockerState =
   /** Still in the backlog, being provisioned, or running - it will finish. */
   | "waiting"
   /** Cancelled or failed - it will NOT finish on its own; a human has to intervene. */
-  | "stopped";
+  | "stopped"
+  /**
+   * Sitting in the backlog with its enable toggle off, so nothing will start it.
+   *
+   * Its own state rather than folded into either neighbour, because the sentence a
+   * card has to write differs: "waiting" promises the prerequisite is coming and this
+   * one will follow, which a parked item does not; "stopped" sends the operator to
+   * look at a task that failed, when the fix here is one click on the toggle they
+   * themselves turned off.
+   */
+  | "disabled";
 
 /** One unmet dependency of a backlog task, in the words the card needs. */
 export interface BacklogBlocker {
@@ -58,9 +68,22 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
  */
 export const PLANNABLE_LIMIT = 400;
 
-/** The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`. */
+/**
+ * The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`.
+ *
+ * Disabled items are dropped BEFORE the slice, and that is deliberate on both counts.
+ * A parked item is not work that is going to happen, so ordering the rest against it
+ * is a plan about a hypothetical; and because `planStale` is coverage over this list,
+ * leaving them in would make disabling a task cost a model call and make re-enabling
+ * it cost nothing - exactly backwards. Dropping them here means a park is free and an
+ * un-park is what replans, which is the moment the ordering actually changed.
+ * A disabled item also does not consume the 400-item budget, so a backlog with a long
+ * parked tail still gets a real dependency read on the part of it that can run.
+ */
 export function plannableBacklog(tasks: Task[]): Task[] {
-  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
+  return backlogTasks(tasks)
+    .filter((t) => t.enabled)
+    .slice(0, PLANNABLE_LIMIT);
 }
 
 /**
@@ -113,6 +136,21 @@ export function declaredBlockers(task: Task, tasks: Task[]): BacklogBlocker[] {
   return declaredBlockersIn(task, new Map(tasks.map((candidate) => [candidate.id, candidate])));
 }
 
+/**
+ * Why one unsatisfied prerequisite is not moving, for a dependent card to render.
+ *
+ * Asked of a task we can still see; a dependency whose task is GONE never reaches
+ * here (`blockersIn` treats a missing task as satisfied, and a declared edge to one
+ * reports `stopped` at its call site).
+ */
+function dependencyState(target: Task): BlockerState {
+  if (target.status === "cancelled" || target.status === "failed") return "stopped";
+  // Only meaningful while it is still in the backlog: `enabled` gates SCHEDULING, so
+  // a task that already launched is on its way regardless of what the flag says.
+  if (target.status === "backlog" && !target.enabled) return "disabled";
+  return "waiting";
+}
+
 function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
   const out: BacklogBlocker[] = [];
   for (const dependency of task.dependencies) {
@@ -130,10 +168,7 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
     out.push({
       taskId: dependency.taskId,
       title: target?.title ?? dependency.title,
-      state:
-        !target || target.status === "cancelled" || target.status === "failed"
-          ? "stopped"
-          : "waiting",
+      state: target ? dependencyState(target) : "stopped",
       source: "declared",
     });
   }
@@ -189,7 +224,7 @@ export function blockersIn(task: Task, index: BacklogIndex): BacklogBlocker[] {
     out.push({
       taskId: dep.id,
       title: dep.title,
-      state: dep.status === "cancelled" || dep.status === "failed" ? "stopped" : "waiting",
+      state: dependencyState(dep),
       source: "inferred",
     });
   }
@@ -230,9 +265,14 @@ function declaredReachable(
  * being added and the next successful plan there are genuinely unplanned items - and
  * the fallback the machine drops to when planning has failed its cap has NO plan at
  * all and relies entirely on this ordering being sensible.
+ *
+ * Disabled items are not here at all, which is what makes the toggle mean anything:
+ * this is the ONE list the autopilot decides from, for both of the ways it can start
+ * work (a fresh worktree and an assign to an idle agent), so a park applies to both
+ * by construction rather than by each path remembering to ask.
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
-  const backlog = backlogTasks(tasks);
+  const backlog = backlogTasks(tasks).filter((t) => t.enabled);
   const index = backlogIndex(tasks, plan);
   // Consumed as they are placed, so a plan that names the same task twice cannot put it
   // in the result twice, and what is left over is exactly the unnamed tail.

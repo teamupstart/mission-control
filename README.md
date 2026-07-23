@@ -38,7 +38,8 @@ and get your decision back.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + terminal home (or shelves it in a
   backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
-  edit or send).
+  edit or send, and a switch on the row [holds it back](#hold-a-backlog-item-back)
+  from the autopilot without taking it off the list).
 - **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
   sweeps GitHub issues on a schedule and files them into the backlog, so the work you
   already wrote down somewhere doesn't have to be re-typed. It files backlog rows and
@@ -938,6 +939,36 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
+### Hold a backlog item back
+
+Every backlog row carries an **on/off switch**: turn it off and the
+[backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) will not schedule that
+item - not into a fresh worktree, not onto an idle agent. It's on the board's backlog card
+next to the priority picker, and on the same row in [Sitrep](#roundup); both draw the same
+control, so you can park an item from wherever you happen to be reading the list.
+
+**It's a hold on the machine, not on you.** **launch new agent**, dragging the card onto an
+idle agent, and `POST /api/tasks/:id/dispatch` all still work on a parked item - the button
+just reads **launch anyway**, the way it does on an item Foreman thinks is waiting its
+turn. Blocking a button you pressed yourself to protect a background scheduler is the worse
+surprise, and it's the same call `Max agents` makes.
+
+A parked card dims, says `disabled - autopilot will skip it`, and drops out of the
+autopilot's `ready` count into its own `disabled` one in the Foreman popover - so an
+autopilot with nothing to do can say *why* it has nothing to do rather than looking broken.
+The Sitrep digest marks the row too (`- "On hold" (ship, disabled) - /repo`).
+
+**Anything that depends on a parked item says so.** A disabled prerequisite reads as
+`X is disabled` rather than `after X`, because it will never clear on its own - the same
+distinction a cancelled or failed dependency gets, with a one-click fix instead of an
+investigation.
+
+Parking is free and un-parking is what costs: a disabled item is left out of the backlog
+read entirely, so it neither makes Foreman's plan stale nor spends any of its 400-item
+budget, and switching one back on is the edit that triggers a fresh read. Like the rest of
+the launch configuration, the switch can only be changed while the task is *in* the
+backlog; there's nothing left to schedule once it has started.
+
 ### Priority and labels
 
 A task can carry a **priority** and any number of **labels**. Both are optional, both
@@ -1664,7 +1695,9 @@ Three knobs, in the Foreman popover under **Backlog**:
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
 **you** clicked, because blocking a button you pressed to protect a background scheduler's
-budget is the worse surprise. An unmet dependency is different: it is a task-level ordering
+budget is the worse surprise. A backlog item's
+[on/off switch](#hold-a-backlog-item-back) is scoped the same way - it holds the machine
+back, not you. An unmet dependency is different: it is a task-level ordering
 constraint and blocks every scheduling path, manual ones included.
 
 **It only ever launches in Live mode, on an allowlisted repo** - the same gate the
@@ -1704,7 +1737,8 @@ one fresh read is tried, so an API blip heals itself instead of waiting for a re
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
 
-One read, one model call, over the **first 400 backlog items**. Reading a longer backlog in
+One read, one model call, over the **first 400 backlog items** that aren't
+[held back](#hold-a-backlog-item-back). Reading a longer backlog in
 several calls was tried and taken back out: they run on the Foreman worker's single loop,
 which also drives queue drain and needs-you triage, so each extra call is another span in
 which nothing else in the fleet is attended to. Past 400 the tail is scheduled **oldest

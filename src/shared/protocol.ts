@@ -515,6 +515,12 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
+ *
+ * `enabled` is the backlog's enable/disable toggle, and it is deliberately NOT
+ * annotation: it only means anything while the task is in the backlog, so it falls
+ * under the same status guard as the provisioning fields. Exempting it would let a
+ * patch "disable" a task whose agent is already running, and answer 200 to a caller
+ * who would reasonably read that as having paused something.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -523,6 +529,7 @@ export const UpdateTaskSchema = z
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).optional(),
     agent: z.enum(AGENT_TYPES).optional(),
+    enabled: z.boolean().optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),

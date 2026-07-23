@@ -419,8 +419,9 @@ export const api = {
   // its launch-time default here; a human dispatch leaves the task's model untouched.
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
   /**
-   * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker. Rewriting repo/intent/title/kind/agent/model/effort/dependencies is refused (409)
+   * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
+   * picker, or its enable/disable toggle.
+   * Rewriting repo/intent/title/kind/agent/model/effort/dependencies/enabled is refused (409)
    * once the task has been dispatched, when its launch configuration is already in use;
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.

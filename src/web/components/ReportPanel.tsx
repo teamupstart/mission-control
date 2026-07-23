@@ -11,7 +11,7 @@ import { declaredBlockers } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import { AgentDot, LabelChips, PriorityChip } from "./session-bits.tsx";
+import { AgentDot, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
@@ -217,7 +217,7 @@ export function ReportPanel({
         <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
           {backlog.map((t) => {
             const blockers = declaredBlockers(t, tasks);
-            return <div className="report-row" key={t.id}>
+            return <div className={`report-row${t.enabled ? "" : " is-disabled"}`} key={t.id}>
               {/* Two lines, not one. This panel is narrow and a backlog row carries a
                   title, a priority, a kind, up to three labels and a repo path - on a
                   single flex line those fought each other and every one of them lost:
@@ -237,6 +237,15 @@ export function ReportPanel({
                   </button>
                   <PriorityChip priority={t.priority} />
                   <span className="task-kind">{t.kind}</span>
+                  {/* The same switch the board's card carries, from the same component.
+                      This panel already dispatches and deletes, so a hold it could show
+                      but not set would be the one backlog decision you had to leave the
+                      list to make. */}
+                  <ScheduleSwitch
+                    enabled={t.enabled}
+                    taskTitle={t.title}
+                    onChange={(enabled) => void api.updateTask(t.id, { enabled })}
+                  />
                 </span>
                 <span className="report-line report-line-sub">
                   <LabelChips labels={t.labels} max={3} />
@@ -244,7 +253,14 @@ export function ReportPanel({
                 </span>
                 {blockers.length > 0 && (
                   <span className="report-line report-line-sub">
-                    Waiting for {blockers.map((blocker) => blocker.title).join(", ")}
+                    {/* A parked prerequisite is named as one. "Waiting for X" promises a
+                        queue that is moving, and this is the one blocker that is not -
+                        it clears when somebody flips X's switch back on, which is a
+                        different thing to go and do. */}
+                    Waiting for{" "}
+                    {blockers
+                      .map((b) => (b.state === "disabled" ? `${b.title} (disabled)` : b.title))
+                      .join(", ")}
                   </span>
                 )}
               </div>

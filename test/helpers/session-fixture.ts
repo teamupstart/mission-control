@@ -152,6 +152,9 @@ export function mkTask(over: Partial<Task> = {}): Task {
     priority: null,
     labels: [],
     dependencies: [],
+    // The default every task is created with, so a test that says nothing about the
+    // autopilot toggle keeps describing a schedulable backlog item.
+    enabled: true,
     model: null,
     effort: null,
     source: null,

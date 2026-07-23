@@ -251,6 +251,12 @@ function freeAgentFor(
  *  5. the first allowlisted ready item, if the fleet is under `maxSessions` -> dispatch.
  *  6. otherwise nothing, saying which of those it was.
  *
+ * "Ready" throughout is `readyBacklog`, which already drops items whose enable toggle
+ * is off - so a parked item is invisible to steps 3, 4 and 5 alike rather than each of
+ * them having to remember to ask. The only place this file names `enabled` itself is
+ * the refusal message, because "nothing is ready" and "you switched everything off" are
+ * the same silence with very different fixes.
+ *
  * The mode gate sits at the END rather than the top, so a dry run reports the decision
  * it would have taken instead of a flat "off". That is the whole value of dry-run here:
  * the ordering and the dependency read are what you want to check before you trust it
@@ -300,10 +306,19 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     // untrusted repo is not "blocked", it is out of scope, and including it would have
     // the count disagree with the board's blocked chips.
     const index = backlogIndex(tasks, plan);
-    const blocked = allowed.filter((t) => blockersIn(t, index).length > 0).length;
+    const off = allowed.filter((t) => !t.enabled).length;
+    // Blocked is asked of the ENABLED items only. A parked item is not held up by
+    // anything - it is switched off - and blaming a dependency graph for it is the same
+    // misdirection the allowlist ordering above exists to avoid, one layer in.
+    const blocked = allowed.filter((t) => t.enabled && blockersIn(t, index).length > 0).length;
+    if (blocked === 0 && off > 0) {
+      return { kind: "none", why: `every schedulable backlog item is disabled (${off} disabled)` };
+    }
     return {
       kind: "none",
-      why: `every schedulable backlog item is waiting on another task (${blocked} blocked)`,
+      why:
+        `every schedulable backlog item is waiting on another task (${blocked} blocked` +
+        `${off > 0 ? `, ${off} disabled` : ""})`,
     };
   }
 

@@ -370,6 +370,11 @@ export class TaskManager {
       priority: input.priority ?? null,
       labels: input.labels ?? [],
       dependencies,
+      // Always schedulable to begin with, on every path - the form, an MCP call, a task
+      // source sweep. Parking is a decision taken about an item you can already see on
+      // the board, so nothing gets to file work that is invisible to the autopilot
+      // without anyone having said so.
+      enabled: true,
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
       // defaults it happened to see (see `resolveDispatchModel` and
@@ -493,7 +498,10 @@ export class TaskManager {
    * other status is a conflict the caller shows, not retries.
    *
    * Dependencies share that guard because changing them can change whether launch is
-   * allowed. `priority` and `labels` are exempt because nothing is provisioned from them. They
+   * allowed, and `enabled` shares it because it is the same kind of statement: it
+   * decides whether the autopilot may start this item, and a task that already started
+   * has no such question left to answer.
+   * `priority` and `labels` are exempt because nothing is provisioned from them. They
    * are annotation, so re-marking a RUNNING task `blocker` is safe, and re-marking a
    * finished one keeps the record honest - the two things the guard above is protecting
    * simply are not at stake. Refusing them would make the board's priority picker dead
@@ -548,6 +556,10 @@ export class TaskManager {
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
       dependencies,
+      // Guarded by the status check above, like the provisioning fields and unlike
+      // priority/labels: it is a statement about scheduling, and there is nothing left
+      // to schedule once the task has left the backlog.
+      enabled: patch.enabled ?? t.enabled,
       // `undefined` leaves an override as it stands unless the agent changed; `null` is
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,

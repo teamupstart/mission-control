@@ -71,6 +71,8 @@ export interface SessionViewProps {
   resetNonces: Record<string, number>;
   registerEl: (id: string, el: HTMLElement | null) => void;
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
+  /** Register the open detail pane's vertical reader for Console arrow-key scrolling. */
+  registerDetailScroll: (id: string, scroll: ((direction: -1 | 1) => void) | null) => void;
   renamingId: string | null;
   onRenameStart: (id: string) => void;
   onRenameClose: () => void;

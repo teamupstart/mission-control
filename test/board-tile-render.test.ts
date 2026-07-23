@@ -39,6 +39,7 @@ function props(sessions: Session[]): SessionViewProps {
     resetNonces: {},
     registerEl: () => {},
     registerActions: () => {},
+    registerDetailScroll: () => {},
     renamingId: null,
     onRenameStart: () => {},
     onRenameClose: () => {},

@@ -1790,7 +1790,7 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
-  Gate / Diff** - because a split pane has room a card doesn't: the conversation is
+  Gate / Diff / Files** - because a split pane has room a card doesn't: the conversation is
   permanent, and the sections that share a card's height in the grid get a tab each. The
   **Board** drills into that same detail when you open a card.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
@@ -1802,14 +1802,15 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   command bar are unique to it. In the console, and in the board once you're drilled in, the
   open detail *is* the selected session, so there is nothing to expand, and its controls are
   on screen permanently instead of on a bar that floats over them.
-- **Selecting is opening in the console**: the arrow keys move the detail with them, and
-  <kbd>Esc</kbd> deselects, emptying the pane.
+- **Selecting is opening in the console**: click a rail row to switch sessions. Once a
+  detail is open, <kbd>↑</kbd>/<kbd>↓</kbd> scroll its active Conversation or Files reader
+  instead of changing the selection, and <kbd>Esc</kbd> deselects, emptying the pane.
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
   detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
-  you're in, the arrow keys move the open detail as the console's do - the drill-in is
-  always the selected session. Clicking a tile still does both in the one gesture.
+  you're in, the arrow keys keep moving the open detail through the board - the drill-in
+  is always the selected session. Clicking a tile still does both in the one gesture.
   Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd>,
   <kbd>⇧</kbd><kbd>Tab</kbd> and <kbd>k</kbd> pressed on the overview drill in and then do
   what they say, so no shortcut is missing from the board.
@@ -1856,12 +1857,13 @@ file reader, without granting the sandbox scripts or network access.
 
 ## Keyboard shortcuts
 
-The dashboard is keyboard-driven - select a session with the arrow keys and act on it
-without reaching for the mouse. Every shortcut works in every layout:
+The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, or to
+scroll the active Console reader, then act without reaching for the mouse. Every shortcut
+works in every layout:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection. Around the grid in **Cards**; up and down the rail in **Console**; along and across the columns in **Board** | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; <kbd>↑</kbd>/<kbd>↓</kbd> scroll the selected session's active Conversation or Files reader in **Console**; along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**) or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
@@ -1887,8 +1889,8 @@ Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
 (<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
-them) to its default. The arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> drive navigation
-and can't be reassigned.
+them) to its default. The arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> drive layout
+navigation and Console reading, and can't be reassigned.
 
 ## Inspector (automated PR review)
 

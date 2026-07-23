@@ -40,6 +40,8 @@ export interface TranscriptHandle {
   focusReply: () => boolean;
   /** Scroll to the inline Foreman entry for this episode marker, if it's rendered. */
   scrollToEpisode: (marker: string | null) => void;
+  /** Move the conversation reader by one comfortable keyboard step. */
+  scrollByArrow: (direction: -1 | 1) => void;
 }
 
 /**
@@ -150,6 +152,11 @@ export function TranscriptPanel({
       // no-op, which is the right outcome for "scroll to something not on screen".
       const el = logRef.current?.querySelector(`[data-episode-marker="${CSS.escape(marker)}"]`);
       el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    },
+    scrollByArrow: (direction) => {
+      const el = logRef.current;
+      if (!el) return;
+      el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
     },
   }), []);
 

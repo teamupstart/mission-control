@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { FileBuffer, SessionFilesController } from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
@@ -6,18 +6,21 @@ import { Markdown } from "./Markdown.tsx";
 import { api } from "../lib/api.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 
+const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
+const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
+const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
 const PREVIEW_CSP =
-  "default-src 'none'; connect-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; " +
+  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
   "font-src data:; form-action 'none'; navigate-to 'none'";
 
 export function htmlPreviewSource(source: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`;
-  const head = source.match(/<head(?:\s[^>]*)?>/i);
-  if (head?.index != null) {
-    const at = head.index + head[0].length;
-    return source.slice(0, at) + meta + source.slice(at);
-  }
-  return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script>`;
+  // This prefix must be parsed before a single checkout-controlled byte. Searching
+  // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
+  // after which `allow-scripts` would run the document's own JavaScript unrestricted.
+  // The HTML parser supplies the implicit html/head elements here; a later doctype or
+  // explicit head in a complete source document is harmless and cannot precede this CSP.
+  return `<!doctype html>${headContent}${source}`;
 }
 
 interface StylesheetLink {
@@ -109,17 +112,51 @@ function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
   return <span className={`file-save-state is-${buffer.saveState}`}>{labels[buffer.saveState]}</span>;
 }
 
+export interface FileWorkspaceHandle {
+  /** Move whichever file reader is visible (editor, preview, comparison, or list). */
+  scrollByArrow: (direction: -1 | 1) => void;
+}
+
+function scrollElement(element: HTMLElement, direction: -1 | 1): void {
+  element.scrollBy({ top: direction * Math.max(80, element.clientHeight * 0.18) });
+}
+
+export function scrollActiveFileReader(root: ParentNode, direction: -1 | 1): boolean {
+  const contentReaders = root.querySelectorAll<HTMLElement>(
+    ".file-content .cm-scroller, .file-content .file-markdown-preview, .file-content .file-compare pre",
+  );
+  if (contentReaders.length > 0) {
+    contentReaders.forEach((element) => scrollElement(element, direction));
+    return true;
+  }
+  const preview = root.querySelector<HTMLIFrameElement>(".file-content .html-preview");
+  if (preview?.contentWindow) {
+    preview.contentWindow.postMessage({
+      type: PREVIEW_SCROLL_MESSAGE,
+      top: direction * Math.max(80, preview.clientHeight * 0.18),
+    }, "*");
+    return true;
+  }
+  const list = root.querySelector<HTMLElement>(".file-list");
+  if (!list) return false;
+  scrollElement(list, direction);
+  return true;
+}
+
 export function FileWorkspace({
   session,
   controller,
   onExtract,
   extracted = false,
+  ref,
 }: {
   session: Session;
   controller: SessionFilesController;
   onExtract?: () => void;
   extracted?: boolean;
+  ref?: React.Ref<FileWorkspaceHandle>;
 }): React.JSX.Element {
+  const workspaceRef = useRef<HTMLElement>(null);
   const state = controller.sessions[session.id];
   const [filter, setFilter] = useState("");
   const [manualPath, setManualPath] = useState("");
@@ -163,13 +200,20 @@ export function FileWorkspace({
     return q ? files.filter((file) => file.path.toLowerCase().includes(q)) : files;
   }, [files, filter]);
 
+  useImperativeHandle(ref, () => ({
+    scrollByArrow: (direction) => {
+      const root = workspaceRef.current;
+      if (root) scrollActiveFileReader(root, direction);
+    },
+  }), []);
+
   function choose(path: string): void {
     setComparing(false);
     controller.select(session.id, path);
   }
 
   return (
-    <section className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
+    <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
       <aside className="file-nav">
         <div className="file-nav-tools">
           <input
@@ -237,7 +281,7 @@ export function FileWorkspace({
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
-            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="" srcDoc={htmlPreviewSource(previewText)} />
+            <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="allow-scripts" srcDoc={htmlPreviewSource(previewText)} />
           )}
           {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
             <article className="file-markdown-preview markdown">

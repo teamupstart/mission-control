@@ -537,7 +537,7 @@ export class TaskManager {
 
   /**
    * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker.
+   * priority picker and enable/disable toggle.
    *
    * The status guard applies to the PROVISIONING fields only, and that split is the
    * whole rule. The moment a task dispatches, its title has supplied a git branch and an

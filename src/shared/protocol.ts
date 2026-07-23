@@ -499,12 +499,12 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort` and `dependencies` are
- * PROVISIONING fields -
- * repo, intent and title are cut into a branch name and a tmux session at dispatch and
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `dependencies` and
+ * `enabled` are PROVISIONING fields -
+ * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
- * command line, while dependencies decide whether a launch is allowed - so a patch touching
- * any of them is refused once the task has left the backlog.
+ * command line, while dependencies and enabled decide whether a launch is allowed - so a
+ * patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
  *

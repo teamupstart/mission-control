@@ -12,10 +12,10 @@ The backlog is a list of things you want done and a board that shows you idle ag
 next to it - and nothing closes that gap but your hand. Foreman already drains a
 *session's* work queue; this drains the *fleet's* backlog.
 
-Foreman reads the whole backlog to preserve its dependency graph, then schedules enabled,
-ready items one at a time: onto an agent that is already idle when there is one, or into
-a fresh worktree when there is not - and never past a ceiling you set on how many agents
-may be running at once.
+Foreman reads the backlog's planning head - up to 400 items, including parked ones - to
+preserve its dependency graph, then schedules enabled, ready items one at a time: onto an
+agent that is already idle when there is one, or into a fresh worktree when there is not -
+and never past a ceiling you set on how many agents may be running at once.
 
 ## What the human sets
 

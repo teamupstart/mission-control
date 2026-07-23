@@ -954,11 +954,11 @@ yourself to protect a background scheduler is the worse surprise, and it's the s
 `Max agents` makes.
 
 That works because the switch is enforced in **two** places, and only one of them can be
-opted out of. Foreman never reaches a parked item at all: it schedules from the one ready
-list both its paths share, so neither the fresh-worktree launch nor the assign-onto-an-idle
--agent shortcut can see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and
-`/assign` for a parked item **unless the request explicitly claims an override** - which
-the dashboard's own buttons do, and Foreman never does.
+opted out of. Foreman's scheduling paths never reach a parked item: both use the same ready
+list, so neither the fresh-worktree launch nor the assign-onto-an-idle-agent shortcut can
+see one. The daemon then refuses `POST /api/tasks/:id/dispatch` and `/assign` for a parked
+item **unless the request explicitly claims an override** - which the dashboard's own
+buttons do, and Foreman never does.
 
 The refusing default is the point. The Foreman worker is a separate process you start by
 hand, so it can outlive a daemon restart; one that predates this feature sends no override
@@ -1696,9 +1696,9 @@ says so rather than letting you queue work that can't run.
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*
 [backlog](#dispatch-an-agent) - the items you've queued but not started. Foreman reads the
-whole backlog to preserve its dependency graph, then schedules enabled, ready items one at
-a time: onto an agent that's already idle when there is one, or into a fresh worktree when
-there isn't - never past a ceiling you set.
+planning head - up to 400 items, including held ones - to preserve its dependency graph,
+then schedules enabled, ready items one at a time: onto an agent that's already idle when
+there is one, or into a fresh worktree when there isn't - never past a ceiling you set.
 
 Three knobs, in the Foreman popover under **Backlog**:
 

@@ -80,9 +80,9 @@
 </head><body>
 <main>
   <h1>Plan: Backlog autopilot - Foreman schedules the backlog</h1>
-  <p class="muted">Foreman reads the whole backlog to preserve its dependency graph, then hands
-    enabled, ready items one at a time to an idle agent or to a fresh worktree - up to a
-    ceiling you set.</p>
+  <p class="muted">Foreman reads the backlog's planning head - up to 400 items, including
+    parked ones - to preserve its dependency graph, then hands enabled, ready items one at
+    a time to an idle agent or to a fresh worktree - up to a ceiling you set.</p>
   <span class="status">Implemented · live-only · max agents default 3</span>
 
   <h2>Why</h2>

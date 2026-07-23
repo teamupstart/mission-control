@@ -81,6 +81,8 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
 - **Shared leaf pieces live in `session-bits.tsx`** (`AgentDot`, `PrChip`, `StateBadge`,
   `SessionTitle`, `RuntimeMetaRow`, `GoalLine`). Put new ones there; do not inline a variant.
   Test: `session-leaf-parity.test.ts`.
+- The backlog's scheduling toggle is one shared `ScheduleSwitch` in `session-bits.tsx`,
+  used by both the Board card and Sitrep row. Test: `backlog-enabled-render.test.ts`.
 - **Three mark vocabularies still disagree**: `RailRow` glyphs, `SessionTile` `.tile-flag`
   chips, `SessionCard` chips (+ `queueChipView` in `lib/queue.ts`). A new session-level signal
   must be added to all three. Known gap, next thing worth unifying. `CostChip` is the worked
@@ -497,9 +499,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 - **Shared predicates**: `repoAllowlisted` (`@shared/allowlist.ts`, re-exported as
   `foremanAllowlisted` from `@shared/foreman.ts` for Foreman's own callers), `composeWrapup`
   (`@shared/queue.ts`), `costTone` / `costIsNotable` (`@shared/cost.ts`), and the backlog
-  autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
-  so every surface, and the server, decides identically. Do not copy them into a component. A
-  third consent gate extends `allowlist.ts`; it does not start a matcher.
+  autopilot's `plannableBacklog` / `readyBacklog` / `blockersIn` / `nextUpTaskId`
+  (`@shared/backlog.ts`) are shared so every surface, and the server, decides identically.
+  Do not copy them into a component. A third consent gate extends `allowlist.ts`; it does
+  not start a matcher.
 - **Which model a headless call spawns with**: one ladder, `resolveModelChoice`
   (`@shared/model-choice.ts`) - config, then env, then a NAMED fallback - and the roles stay
   with their subsystem: `FOREMAN_MODEL_SPECS` (Foreman's four), `INSPECTOR_MODEL_SPEC` (the

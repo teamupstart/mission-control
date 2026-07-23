@@ -123,7 +123,10 @@ test("the dispatcher treats the dispatched pi session file as readiness", async 
   ).awaitReady.bind(dispatcher);
 
   const ready = await awaitReady("/wt/pi-ready", discovered, true, sessionId);
-  assert.deepEqual(observed?.slice(0, 2), ["/wt/pi-ready", sessionId]);
+  assert.deepEqual(
+    (observed as [string, string, number, number] | null)?.slice(0, 2),
+    ["/wt/pi-ready", sessionId],
+  );
   assert.equal(ready.session.id, "pi-ready");
   assert.equal(ready.instrumented, false);
   assert.equal(ready.piTranscriptPath, "/tmp/pi-ready.jsonl");

@@ -6,6 +6,8 @@ import type { WorkflowDefinition } from "../src/shared/workflow.ts";
 import {
   editableFingerprint,
   reconcileWorkflowSave,
+  workflowDraftLoading,
+  workflowPublishMetadataChanged,
   workflowPublishBlocked,
   workflowSavePreflight,
   workflowSummaryAction,
@@ -23,10 +25,17 @@ const workflow = (description: string, revision = 1): WorkflowDefinition => ({
 test("save reconciliation preserves edits made while the request is in flight", () => {
   const submitted = workflow("first");
   const concurrentlyEdited = workflow("typed while saving");
-  const stored = workflow("first", 2);
+  const stored = { ...workflow("first", 2), currentVersionId: "v1" };
   const reconciled = reconcileWorkflowSave(concurrentlyEdited, editableFingerprint(submitted), stored);
   assert.equal(reconciled.description, "typed while saving");
   assert.equal(reconciled.draftRevision, 2);
+  assert.equal(reconciled.currentVersionId, "v1");
+  assert.equal(workflowPublishMetadataChanged(submitted, stored), true);
+  assert.equal(
+    workflowSavePreflight(reconciled, null, editableFingerprint(submitted)),
+    "save",
+    "the flush must persist an edit that arrived during the first PATCH",
+  );
 });
 
 test("Publish guards cover dirty, saving, conflict, invalid, duplicate-revision, and archive states", () => {
@@ -42,8 +51,18 @@ test("autosave is debounced and one in-flight Promise owns concurrent callers", 
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/useWorkflowDraft.ts", import.meta.url)), "utf8");
   assert.match(source, /window\.setTimeout\(\(\) => void saveNow\(\), 500\)/);
   assert.match(source, /if \(inFlight\.current\) return inFlight\.current/);
+  assert.match(source, /while \(true\)[\s\S]*workflowSavePreflight/);
   assert.match(source, /loadGeneration\.current !== generation/);
   assert.match(source, /workflow\?\.id === workflowId/);
+  assert.match(source, /\/api\/workflows\/\$\{requestedId\}\/versions/);
+});
+
+test("a completed failed detail load is retryable instead of permanently loading", () => {
+  const input = { workflowId: "w", workflow: null, error: null, loading: false };
+  assert.equal(workflowDraftLoading(input), true);
+  assert.equal(workflowDraftLoading({ ...input, error: "Could not load workflow" }), false);
+  assert.equal(workflowDraftLoading({ ...input, error: "Could not load workflow", loading: true }), true);
+  assert.equal(workflowDraftLoading({ ...input, workflowId: null }), false);
 });
 
 const summary = (revision: number, currentVersionId: string | null = null): WorkflowSummary => ({

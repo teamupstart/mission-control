@@ -17,7 +17,12 @@ import {
   workflowSelectionRestore,
 } from "../src/web/workflows/WorkflowLibrary.tsx";
 import type { LlmState } from "../src/web/useLlm.ts";
-import type { WorkflowDefinition, WorkflowVersion } from "../src/shared/workflow.ts";
+import {
+  WORKFLOW_LIMITS,
+  type WorkflowDefinition,
+  type WorkflowSummary,
+  type WorkflowVersion,
+} from "../src/shared/workflow.ts";
 
 const llm: LlmState = { config: null, status: null, personaDefaults: null, error: null, update: async () => {} };
 const workflow: WorkflowDefinition = {
@@ -111,15 +116,33 @@ test("autosave conflict recovery offers reload and duplicate without overwriting
   assert.match(source, /Reload latest/);
   assert.match(source, /Duplicate my draft/);
   assert.match(source, /if \(!\(await draft\.saveNow\(\)\)\) return;/);
+  assert.match(source, /if \(!draft\.conflict && !\(await draft\.saveNow\(\)\)\) return;/);
+});
+
+test("workflow transitions lock every editor surface until the latest draft is durable", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  assert.match(source, /transitionRef\.current = true/);
+  assert.match(source, /await runTransition\(async \(\) => \{[\s\S]*await draft\.saveNow\(\)/);
+  assert.match(source, /readOnly=\{transitioning \|\| workflow\.archivedAt !== null\}/);
+  assert.match(source, /disabled=\{transitioning \|\| workflow\.archivedAt !== null\}/);
 });
 
 test("generated create and duplicate names honor normalized durable uniqueness", () => {
-  const summaries = [
+  const summaries: WorkflowSummary[] = [
     { id: "1", name: "Ｕｎｔｉｔｌｅｄ   Workflow", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
     { id: "2", name: "Review COPY", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: 2, updatedAt: 2, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
   ];
   assert.equal(nextWorkflowName("Untitled workflow", summaries), "Untitled workflow 2");
   assert.equal(nextWorkflowName("Review copy", summaries), "Review copy 2");
+
+  const maximum = "x".repeat(WORKFLOW_LIMITS.workflowName);
+  const firstCopy = nextWorkflowName(maximum, summaries, " copy");
+  assert.equal(firstCopy.length, WORKFLOW_LIMITS.workflowName);
+  assert.match(firstCopy, / copy$/);
+  const copySummary: WorkflowSummary = { ...summaries[0]!, id: "3", name: firstCopy };
+  const secondCopy = nextWorkflowName(maximum, [...summaries, copySummary], " copy");
+  assert.equal(secondCopy.length, WORKFLOW_LIMITS.workflowName);
+  assert.match(secondCopy, / copy 2$/);
 });
 
 test("top-bar workflow navigation opens the builder tab", () => {

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { normalizeWorkflowName, type PersonaView, type WorkflowDraftNode, type WorkflowSummary } from "@shared/workflow.ts";
+import {
+  normalizeWorkflowName,
+  WORKFLOW_LIMITS,
+  type PersonaView,
+  type WorkflowDraftNode,
+  type WorkflowSummary,
+} from "@shared/workflow.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { WorkflowCanvas, type WorkflowSelection } from "./WorkflowCanvas.tsx";
 import { WorkflowProperties } from "./WorkflowProperties.tsx";
@@ -10,11 +16,20 @@ import { readLastWorkflowId, rememberWorkflowId } from "./workflowSelection.ts";
 
 interface CreateResponse { summary: WorkflowSummary }
 
-export function nextWorkflowName(base: string, summaries: WorkflowSummary[]): string {
+export function nextWorkflowName(
+  base: string,
+  summaries: WorkflowSummary[],
+  requiredSuffix = "",
+): string {
   const names = new Set(summaries.map((workflow) => normalizeWorkflowName(workflow.name)));
   let n = 1;
-  while (names.has(normalizeWorkflowName(n === 1 ? base : `${base} ${n}`))) n += 1;
-  return n === 1 ? base : `${base} ${n}`;
+  while (true) {
+    const suffix = `${requiredSuffix}${n === 1 ? "" : ` ${n}`}`;
+    const stem = base.trim().slice(0, WORKFLOW_LIMITS.workflowName - suffix.length).trimEnd();
+    const candidate = `${stem}${suffix}`;
+    if (!names.has(normalizeWorkflowName(candidate))) return candidate;
+    n += 1;
+  }
 }
 
 export function workflowSelectionRestore(
@@ -59,6 +74,8 @@ export function WorkflowLibrary({
   const [showArchived, setShowArchived] = useState(false);
   const listed = showArchived ? ordered : active;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [transitioning, setTransitioning] = useState(false);
+  const transitionRef = useRef(false);
   const selectionInitialized = useRef(false);
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
@@ -91,25 +108,45 @@ export function WorkflowLibrary({
     setSelectedId(id);
   };
 
+  const runTransition = async (work: () => Promise<void>): Promise<void> => {
+    if (transitionRef.current) return;
+    transitionRef.current = true;
+    setTransitioning(true);
+    try {
+      await work();
+    } finally {
+      transitionRef.current = false;
+      setTransitioning(false);
+    }
+  };
+
   const select = async (id: string): Promise<void> => {
-    if (id === selectedId) return;
-    if (!(await draft.saveNow())) return;
-    openWorkflow(id);
+    if (id === selectedId || transitionRef.current) return;
+    await runTransition(async () => {
+      if (!(await draft.saveNow())) return;
+      openWorkflow(id);
+    });
   };
 
   const create = async (): Promise<void> => {
-    if (!(await draft.saveNow())) return;
-    const response = await workflowRequest<CreateResponse>("/api/workflows", {
-      method: "POST",
-      body: JSON.stringify({ name: nextWorkflowName("Untitled workflow", ordered) }),
+    await runTransition(async () => {
+      if (!(await draft.saveNow())) return;
+      const response = await workflowRequest<CreateResponse>("/api/workflows", {
+        method: "POST",
+        body: JSON.stringify({ name: nextWorkflowName("Untitled workflow", ordered) }),
+      });
+      openWorkflow(response.summary.id);
     });
-    openWorkflow(response.summary.id);
   };
 
   const duplicate = async (): Promise<void> => {
-    if (!workflow) return;
-    const summary = await draft.duplicate(nextWorkflowName(`${workflow.name} copy`, ordered));
-    if (summary) openWorkflow(summary.id);
+    await runTransition(async () => {
+      if (!draft.conflict && !(await draft.saveNow())) return;
+      const current = draft.current();
+      if (!current) return;
+      const summary = await draft.duplicate(nextWorkflowName(current.name, ordered, " copy"));
+      if (summary) openWorkflow(summary.id);
+    });
   };
 
   const addNode = (kind: "persona" | "all_pass" | "end", personaId = palettePersona, at?: { x: number; y: number }): void => {
@@ -128,11 +165,11 @@ export function WorkflowLibrary({
   return (
     <section className="workflow-builder">
       <aside className="workflow-library-sidebar" aria-label="Workflow library and node palette">
-        <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><button className="btn" onClick={() => void create()}>New</button></header>
+        <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></header>
         <div className="workflow-library-list">
           {listed.length === 0 && <p>No workflow drafts yet.</p>}
           {listed.map((summary) => (
-            <button key={summary.id} className={selectedId === summary.id ? "active" : ""} onClick={() => void select(summary.id)}>
+            <button key={summary.id} disabled={transitioning} className={selectedId === summary.id ? "active" : ""} onClick={() => void select(summary.id)}>
               <strong>{summary.name}</strong>
               <span>{summary.archivedAt !== null ? "Archived" : summary.errorCount ? `${summary.errorCount} errors` : "Draft valid"}{summary.publishedVersion ? ` · v${summary.publishedVersion}` : ""}</span>
             </button>
@@ -143,13 +180,13 @@ export function WorkflowLibrary({
           <section className="workflow-palette">
             <h4>Node palette</h4>
             <p>Session is fixed. Add review and terminal nodes.</p>
-            <select aria-label="Persona for new node" value={palettePersona} onChange={(event) => setPalettePersona(event.target.value)}>
+            <select aria-label="Persona for new node" disabled={transitioning} value={palettePersona} onChange={(event) => setPalettePersona(event.target.value)}>
               <option value="">Choose a Persona</option>
               {activePersonas.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
             </select>
-            <button disabled={!palettePersona} draggable={Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
-            <button draggable onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
-            <button draggable onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
+            <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
+            <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
+            <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
             <small>No checkpoint node · Inspector is a final-gate setting.</small>
           </section>
         )}
@@ -157,7 +194,7 @@ export function WorkflowLibrary({
 
       <div className="workflow-builder-main">
         {!selectedId && (
-          <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><button className="btn" onClick={() => void create()}>New workflow</button></section>
+          <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><button className="btn" disabled={transitioning} onClick={() => void create()}>New workflow</button></section>
         )}
         {draft.loading && <section className="workflow-empty"><p>Loading workflow…</p></section>}
         <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
@@ -165,29 +202,31 @@ export function WorkflowLibrary({
           <>
             <header className="workflow-builder-toolbar">
               <div><p className="workflow-eyebrow">Draft revision {workflow.draftRevision}</p><h3>{workflow.name}</h3></div>
-              <span className={draft.saving ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
-              <button className="btn btn-ghost" onClick={() => void duplicate()}>Duplicate</button>
-              <button className="btn btn-danger" disabled={workflow.archivedAt !== null} onClick={async () => {
+              <span className={draft.saving || transitioning ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{transitioning ? "Working…" : draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
+              <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
+              <button className="btn btn-danger" disabled={transitioning || workflow.archivedAt !== null} onClick={() => {
                 if (!window.confirm(`Archive ${workflow.name}? Published versions remain readable.`)) return;
-                if (!(await draft.saveNow())) return;
-                const current = draft.current();
-                if (!current) return;
-                await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
-                openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                void runTransition(async () => {
+                  if (!(await draft.saveNow())) return;
+                  const current = draft.current();
+                  if (!current) return;
+                  await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                  openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                });
               }}>Archive</button>
-              <button className="btn" disabled={workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
+              <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
             </header>
             {draft.conflict && (
               <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><button onClick={() => void draft.reload()}>Reload latest</button><button onClick={() => void duplicate()}>Duplicate my draft</button></div>
             )}
-            <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />
+            <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={transitioning || workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />
           </>
         )}
       </div>
 
       {workflow && validation && (
         <div className="workflow-builder-right">
-          <WorkflowProperties workflow={workflow} personas={personas} diagnostics={validation.diagnostics} selection={selection} readOnly={workflow.archivedAt !== null} onUpdate={draft.update} />
+          <WorkflowProperties workflow={workflow} personas={personas} diagnostics={validation.diagnostics} selection={selection} readOnly={transitioning || workflow.archivedAt !== null} onUpdate={draft.update} />
           <WorkflowVersionHistory versions={draft.versions} personas={personas} />
         </div>
       )}

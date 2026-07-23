@@ -819,9 +819,9 @@ test("a rename that fails does not un-run a task the agent is already working on
 });
 
 test("a name another task's teardown still aims at is not taken", async () => {
-  // `Task.tmuxSession` aims `tmux kill-session`. Renaming onto a name a task still
-  // records - tmux frees a dead session's name for immediate reuse, so this is reachable
-  // without any collision among live sessions - would point that task's teardown at this
+  // `Task.homeName` aims the home teardown (`killHome`). Renaming onto a name a task still
+  // records - a multiplexer frees a dead session's name for immediate reuse, so this is
+  // reachable without any collision among live sessions - would point that task's teardown at this
   // live agent. Answered the way `spawnUniquely` answers it: retry under a unique name.
   const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-taken-", "old-name");
   gitIn(clone, "checkout", "-q", "--detach");
@@ -830,7 +830,7 @@ test("a name another task's teardown still aims at is not taken", async () => {
     mkTask({
       id: "t2",
       status: "done",
-      tmuxSession: "Ship the thing",
+      homeName: "Ship the thing",
       worktreePath: "/some/other/worktree",
     }),
   );
@@ -899,7 +899,7 @@ test("an assigned task never claims a worktree - cancel must not remove one", ()
   assert.equal(t.worktreePath, null);
   assert.equal(t.provider, null);
   // And no tmux session of ours, which is what stops `cancel` killing the agent.
-  assert.equal(t.tmuxSession, null);
+  assert.equal(t.homeName, null);
 });
 
 test("a task assigned to a session decorates that session's card, with no worktree to match on", () => {

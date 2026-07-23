@@ -111,8 +111,8 @@ export interface BacklogTickInput {
  * rather than to wrong" instead scheduled nothing at all, forever. Observed exactly that
  * way - a backlog of two dozen ready items parked behind one dead row.
  *
- * A task with no session yet still counts: `dispatching`, or `running` with a tmux
- * session we cut, is the discovery window, and that is the one this must not launch into.
+ * A task with no session yet still counts: `dispatching`, or `running` with a terminal
+ * home we cut, is the discovery window, and that is the one this must not launch into.
  */
 function inFlightTasks(tasks: Task[], sessions: Session[]): number {
   const live = new Set(sessions.filter((s) => s.state !== "exited").map((s) => s.id));
@@ -122,7 +122,7 @@ function inFlightTasks(tasks: Task[], sessions: Session[]): number {
     // Bound to an agent: in flight only while that agent is still one of ours.
     if (t.sessionId !== null) return live.has(t.sessionId);
     // Not bound yet, but we cut it a session - the window before discovery finds it.
-    return t.tmuxSession !== null;
+    return t.homeName !== null;
   }).length;
 }
 

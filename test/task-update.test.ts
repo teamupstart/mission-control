@@ -105,7 +105,7 @@ test("retriage touches nothing but the triage fields and updatedAt", async () =>
     status: "running",
     worktreePath: "/wt/t1",
     branch: "harness/t1",
-    tmuxSession: "t1",
+    homeName: "t1",
     sessionId: "s1",
   });
   r.upsertTask(before);

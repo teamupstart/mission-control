@@ -1566,15 +1566,15 @@ export function validateSessionName(
 }
 
 /**
- * Refuse a rename that would move this tmux session ONTO a name a task still
+ * Refuse a rename that would move this multiplexer session ONTO a name a task still
  * records. Pairs with `validateSessionName` on the route's 400 path: the name rules
  * there are pure characters, this one needs task state, so the two stay separate and
  * the route (which holds the task list) runs both.
  *
- * `Task.tmuxSession` is a second copy of the name, and it aims destructive teardown:
- * `teardownWorktree` runs `tmux kill-session -t tmuxSession`, and `reconcileOnStartup`
+ * `Task.homeName` is a second copy of the name, and it aims destructive teardown:
+ * `teardownWorktree` kills the home by name (`killHome`), and `reconcileOnStartup`
  * probes it to decide whether to reclaim the worktree. That copy outlives its session
- * - a `done` task keeps it until an explicit reclaim, while tmux frees a dead
+ * - a `done` task keeps it until an explicit reclaim, while a multiplexer frees a dead
  * session's name for immediate reuse - so a name no LIVE session holds can still be
  * spoken for. Taking it would re-aim that task's Reclaim at this live agent, or
  * convince the reconciler the dead task's agent survived and leak its tree.
@@ -1588,21 +1588,17 @@ export function validateSessionName(
 export function validateSessionNameAgainstTasks(
   session: PaneHandles & Pick<Session, "cwd">,
   name: string,
-  tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
-  deps: TerminalDeps = defaultTerminalDeps,
+  tasks: readonly Pick<Task, "homeName" | "worktreePath">[],
 ): { ok: true } | { ok: false; error: string } {
   // Only a multiplexer rename moves a name teardown targets - an emulator tab title is
   // free-form and no task binds to it.
   if (!muxHandle(session)) return { ok: true };
   const collides = tasks.some(
-    (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
+    (t) => t.worktreePath !== null && t.homeName === name && t.worktreePath !== session.cwd,
   );
-  if (!collides) return { ok: true };
-  const handle = muxHandle(session)!;
-  return {
-    ok: false,
-    error: `another task still holds the ${deps.multiplexers[handle.backend].label} session name '${name}'`,
-  };
+  return collides
+    ? { ok: false, error: `another task still holds the terminal session name '${name}'` }
+    : { ok: true };
 }
 
 /** One emulator tab that hosts a multiplexer client, with the backend that can act on it. */

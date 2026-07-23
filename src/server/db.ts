@@ -162,7 +162,7 @@ export function openDb(): DatabaseSync {
       worktree_path TEXT,
       branch        TEXT,
       provider      TEXT,
-      tmux_session  TEXT,
+      home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       terminal_resource_id TEXT,
       session_id    TEXT,
       status        TEXT NOT NULL,
@@ -858,6 +858,28 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "external_id", "TEXT");
   addColumn(d, "tasks", "source_url", "TEXT");
 
+  // `home_name`: the terminal home a dispatched agent lives in, renamed from the
+  // tmux-specific `tmux_session` now that the name is resolved against ANY backend
+  // (`killHome` / `homeAlive`), not assumed to be tmux. This is the destructive one: the
+  // name drives `teardownWorktree`'s kill and `reconcileOnStartup`'s reclaim, and a real
+  // user's upgraded db carries live agents' home names in the old column. So this is a
+  // schema migration, not just a rename.
+  //
+  // Nullable with no default: NULL is "no home yet" (a backlog task, or one whose home was
+  // reclaimed), a distinct and truthful answer that `homeName ? … : …` reads directly.
+  //
+  // The backfill runs EXACTLY ONCE - gated on `addColumn` having just added the column -
+  // and never again. `tmux_session` becomes a frozen fossil after this rename (no write
+  // path names it), so re-running the copy on every open would RESURRECT a home name onto a
+  // task that had since been reclaimed to NULL, re-aiming its teardown at a stranger. Gated
+  // on the add, it copies each live name across on the one start after upgrade and then the
+  // fossil is inert forever. `hasColumn` guards the pre-triage-fresh-db path where
+  // `tmux_session` never existed to copy from (the `&&` also short-circuits on a fresh db,
+  // where `home_name` is in the CREATE TABLE so nothing was added).
+  if (addColumn(d, "tasks", "home_name", "TEXT") && hasColumn(d, "tasks", "tmux_session")) {
+    d.exec(`UPDATE tasks SET home_name = tmux_session WHERE home_name IS NULL AND tmux_session IS NOT NULL;`);
+  }
+
   // `fail_count` / `next_attempt_at`: the Inspector's retry backoff. Same window as
   // `foreman_episodes.resolved_by` above - `inspector_prs` has never shipped, so the
   // only dbs carrying it are the ones this feature was developed against - but CREATE
@@ -970,11 +992,23 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
   }
 }
 
-/** Add a column unless it's already there. The idempotent half of a migration. */
-function addColumn(d: DatabaseSync, table: string, column: string, decl: string): void {
+/** Whether a table already has a column. The building block of an idempotent migration. */
+function hasColumn(d: DatabaseSync, table: string, column: string): boolean {
   const cols = d.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
-  if (cols.some((c) => c.name === column)) return;
+  return cols.some((c) => c.name === column);
+}
+
+/**
+ * Add a column unless it's already there. The idempotent half of a migration.
+ *
+ * Returns whether it ADDED the column (false when it was already present), so a caller can
+ * hang a one-time data backfill off "the column is new" rather than re-running it on every
+ * open - see the `home_name` migration.
+ */
+function addColumn(d: DatabaseSync, table: string, column: string, decl: string): boolean {
+  if (hasColumn(d, table, column)) return false;
   d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
+  return true;
 }
 
 interface ReviewRow {
@@ -1546,7 +1580,7 @@ interface TaskRow {
   worktree_path: string | null;
   branch: string | null;
   provider: string | null;
-  tmux_session: string | null;
+  home_name: string | null;
   terminal_resource_id: string | null;
   session_id: string | null;
   status: string;
@@ -1663,7 +1697,7 @@ function rowToTask(r: TaskRow): Task {
     worktreePath: r.worktree_path,
     branch: r.branch,
     provider: r.provider as WorktreeProvider | null,
-    tmuxSession: r.tmux_session,
+    homeName: r.home_name,
     terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
     status: r.status as TaskStatus,
@@ -1697,7 +1731,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, tmux_session, terminal_resource_id, session_id, status, outcome, outcome_url, error,
+         provider, home_name, terminal_resource_id, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -1707,7 +1741,7 @@ export function upsertTask(t: Task): string[] {
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         provider=excluded.provider, tmux_session=excluded.tmux_session,
+         provider=excluded.provider, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
@@ -1723,7 +1757,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
-      t.tmuxSession, t.terminalResourceId, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.homeName, t.terminalResourceId, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
     if (ownsTransaction) d.exec("COMMIT");
@@ -2333,9 +2367,9 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 export function loadResourceHoldingTerminalTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks
+       `SELECT * FROM tasks
        WHERE status IN ('done','failed','cancelled')
-         AND (worktree_path IS NOT NULL OR tmux_session IS NOT NULL)`,
+         AND (worktree_path IS NOT NULL OR home_name IS NOT NULL)`,
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);

@@ -1069,7 +1069,7 @@ export type TaskDependency =
 
 export interface Task {
   id: string;
-  /** Short label - source of the tmux session slug and the card title. */
+  /** Short label - source of the terminal home name slug and the card title. */
   title: string;
   /** The full task prompt injected as the agent's first message. */
   intent: string;
@@ -1115,8 +1115,17 @@ export interface Task {
   branch: string | null;
   /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
   provider: WorktreeProvider | null;
-  /** The detached tmux session we created for this task. */
-  tmuxSession: string | null;
+  /**
+   * The name of the terminal home we created for this task, or null before dispatch.
+   *
+   * Vendor-neutral: it is a NAME, and which backend holds it is resolved against the
+   * terminal registry (`killHome` / `homeAlive` in `terminal/home.ts`), never assumed to
+   * be tmux. Persisted as `home_name`, migrated in place from the former `tmux_session`
+   * column - see the backfill in `db.ts`'s `migrate()`. It drives destructive teardown, so
+   * a value that fails to resolve leaves the worktree standing rather than reclaiming it.
+   */
+  homeName: string | null;
+  /** Stable backend resource identity used to retain cleanup ownership across renames. */
   terminalResourceId: string | null;
   /** Bound live session's synthetic id, once discovered. */
   sessionId: string | null;

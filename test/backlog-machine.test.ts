@@ -612,7 +612,7 @@ test("when planning has failed its cap the machine schedules anyway, one at a ti
 });
 
 test("serial mode launches nothing while a task is still in flight", () => {
-  const inFlight = mkTask({ status: "running", tmuxSession: "harness-x" });
+  const inFlight = mkTask({ status: "running", homeName: "harness-x" });
   const waiting = mkTask();
   const a = decide({
     tasks: [inFlight, waiting],
@@ -624,10 +624,10 @@ test("serial mode launches nothing while a task is still in flight", () => {
 });
 
 test("serial mode counts a task that is still being provisioned", () => {
-  // The window between the dispatch POST answering and the tmux spawn. The loop skips
+  // The window between the dispatch POST answering and the home spawn. The loop skips
   // its sleep after a successful dispatch, so this is the tick that would launch again -
-  // and counting only tasks that already hold a tmux session would let it.
-  const provisioning = mkTask({ status: "dispatching", tmuxSession: null, sessionId: null });
+  // and counting only tasks that already hold a terminal home would let it.
+  const provisioning = mkTask({ status: "dispatching", homeName: null, sessionId: null });
   const waiting = mkTask();
   const a = decide({
     tasks: [provisioning, waiting],
@@ -643,7 +643,7 @@ test("serial mode holds the ASSIGN path too, not just the launch path", () => {
   // worktree does, so an assign that skipped the cap would hand out the whole backlog
   // at once - the failure the cap exists to prevent, by the other door.
   const busy = mkSession({ state: "working" });
-  const inFlight = mkTask({ status: "running", sessionId: busy.id, tmuxSession: null });
+  const inFlight = mkTask({ status: "running", sessionId: busy.id, homeName: null });
   const waiting = mkTask();
   const free = mkSession();
   const a = decide({
@@ -662,7 +662,7 @@ test("serial mode holds the ASSIGN path too, not just the launch path", () => {
 // lives. Counting it meant one dead row parked the entire backlog - not "slow", stopped -
 // and the operator's only signal was a board full of ready items and an idle fleet.
 test("serial mode does not stall behind a task whose agent is gone", () => {
-  const gone = mkTask({ status: "running", sessionId: "s-vanished", tmuxSession: null });
+  const gone = mkTask({ status: "running", sessionId: "s-vanished", homeName: null });
   const waiting = mkTask();
   const a = decide({
     tasks: [gone, waiting],
@@ -676,7 +676,7 @@ test("serial mode does not stall behind a task whose agent is gone", () => {
 
 test("an exited session does not keep its task in flight either", () => {
   const dead = mkSession({ state: "exited" });
-  const gone = mkTask({ status: "running", sessionId: dead.id, tmuxSession: null });
+  const gone = mkTask({ status: "running", sessionId: dead.id, homeName: null });
   const waiting = mkTask();
   const a = decide({
     tasks: [gone, waiting],
@@ -687,11 +687,11 @@ test("an exited session does not keep its task in flight either", () => {
   assert.equal(a.kind, "dispatch");
 });
 
-// The other half of the same predicate: a task we cut a tmux session for but that
+// The other half of the same predicate: a task we cut a terminal home for but that
 // discovery has not bound yet has NO sessionId to look up, and it is the one case serial
 // mode must still hold for - it is the window a sub-second next tick would launch into.
 test("serial mode still holds for a task whose agent has not been discovered yet", () => {
-  const undiscovered = mkTask({ status: "running", tmuxSession: "harness-x", sessionId: null });
+  const undiscovered = mkTask({ status: "running", homeName: "harness-x", sessionId: null });
   const waiting = mkTask();
   const a = decide({
     tasks: [undiscovered, waiting],

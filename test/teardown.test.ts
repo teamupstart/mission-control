@@ -35,7 +35,7 @@ test("teardownWorktree removes a git-fallback worktree AND its harness branch (s
     worktreePath: wt,
     branch: "harness/demo",
     provider: "git",
-    tmuxSession: null,
+    homeName: null,
   });
 
   assert.equal(existsSync(wt), false, "worktree dir should be gone");
@@ -58,7 +58,7 @@ test("teardownWorktree never deletes a non-harness branch", async () => {
     worktreePath: wt,
     branch: "feature/keep-me",
     provider: "git",
-    tmuxSession: null,
+    homeName: null,
   });
 
   assert.equal(existsSync(wt), false, "worktree dir should be gone");

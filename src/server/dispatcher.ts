@@ -103,8 +103,8 @@ export class Dispatcher {
         ...codexLaunch.args,
       ];
 
-      const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
-      this.patch(taskId, { tmuxSession });
+      const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
+      this.patch(taskId, { homeName });
       if (await this.abortIfSettled(taskId)) return;
 
       const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
@@ -158,7 +158,7 @@ export class Dispatcher {
       // land on the KEEP side with the `true` case rather than on the reclaim side with
       // `false`: erring towards keeping costs one Reclaim click, erring the other way runs
       // `git worktree remove --force` over a checkout an agent is working in.
-      const alive = cur.tmuxSession ? await homeAlive(cur.tmuxSession) : false;
+      const alive = cur.homeName ? await homeAlive(cur.homeName) : false;
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
@@ -372,7 +372,7 @@ export class Dispatcher {
         worktreePath: null,
         branch: null,
         provider: null,
-        tmuxSession: null,
+        homeName: null,
         terminalResourceId: null,
       });
       return true;
@@ -530,20 +530,18 @@ async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
  * treehouse lease is handed back to the pool rather than leaked by a bare
  * `git worktree remove`.
  *
- * `tmuxSession` still spells one backend, and deliberately so for now - it is a persisted
- * column, and generalizing it is phase 3's schema migration. What it holds is the NAME of
- * the home, and which backend that name lives on is resolved through the registry
- * (`killHome`) rather than assumed here.
+ * `homeName` names the home vendor-neutrally: which backend holds that name is resolved
+ * through the registry (`killHome`) rather than assumed here.
  */
 export async function teardownWorktree(task: {
   repoRoot: string;
   worktreePath: string | null;
   branch: string | null;
   provider: WorktreeProvider | null;
-  tmuxSession: string | null;
+  homeName: string | null;
 }): Promise<void> {
-  if (task.tmuxSession) {
-    const killed = await killHome(task.tmuxSession);
+  if (task.homeName) {
+    const killed = await killHome(task.homeName);
     // An adapter lookup that found nothing must not read as "there was nothing to kill".
     // This is the one path where the difference is destructive: we are about to hand the
     // worktree back to the pool, so an agent still running in it loses its checkout with no
@@ -552,7 +550,7 @@ export async function teardownWorktree(task: {
     // name what the operator has to do by hand.
     if (!killed.asked) {
       console.warn(
-        `[mission-control] no terminal backend can close the session '${task.tmuxSession}' - ` +
+        `[mission-control] no terminal backend can close the session '${task.homeName}' - ` +
           "if an agent is still running there, stop it yourself; its worktree is being reclaimed now",
       );
     }

@@ -159,7 +159,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     worktreePath: null,
     branch: null,
     provider: null,
-    tmuxSession: null,
+    homeName: null,
     terminalResourceId: null,
     sessionId: null,
     status: "backlog",

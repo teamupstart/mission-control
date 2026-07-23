@@ -26,6 +26,8 @@ import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx
 
 export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
 
+const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
+
 function isPublishedPersona(node: WorkflowDraftNode | PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
   return node.kind === "persona" && "persona" in node;
 }
@@ -108,7 +110,7 @@ export function WorkflowCanvas({
   onChange,
   onSelection,
   onDropNode,
-  nodeStatuses = {},
+  nodeStatuses = EMPTY_NODE_STATUSES,
 }: {
   graph: WorkflowDraftGraph | PublishedWorkflowGraph;
   personas: PersonaView[];

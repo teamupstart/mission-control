@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -108,6 +108,41 @@ test("published workflow nodes stay within the visible React Flow graph", () => 
     assert.ok(node.top >= graph.top && node.bottom <= graph.bottom, "published node must remain inside the visible graph");
     assert.ok(node.top >= root.top && node.bottom <= root.bottom, "published node must remain inside the React Flow root");
   }
+});
+
+test("editable workflow canvas remains mounted with default node statuses", () => {
+  const require = createRequire(import.meta.url);
+  const electron = require("electron") as string;
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const fixtureDir = mkdtempSync(join(tmpdir(), "mission-workflow-canvas-"));
+  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
+  const bundlePath = join(fixtureDir, "canvas.js");
+  const htmlPath = join(fixtureDir, "index.html");
+  let output: string;
+  try {
+    execFileSync(require.resolve("esbuild/bin/esbuild"), [
+      fileURLToPath(new URL("fixtures/workflow-canvas-mount.tsx", import.meta.url)),
+      "--bundle",
+      "--platform=browser",
+      "--format=iife",
+      `--outfile=${bundlePath}`,
+    ], { encoding: "utf8" });
+    writeFileSync(htmlPath, '<!doctype html><div id="root" style="width:800px;height:600px"></div><script src="./canvas.js"></script>');
+    output = execFileSync(electron, [
+      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
+      `--user-data-dir=${userData}`,
+      fileURLToPath(new URL("fixtures/workflow-canvas-mount-browser.cjs", import.meta.url)),
+      htmlPath,
+    ], { encoding: "utf8", env, timeout: 20_000 });
+  } finally {
+    rmSync(fixtureDir, { force: true, recursive: true });
+    rmSync(userData, { force: true, recursive: true });
+  }
+
+  const result = JSON.parse(output.trim()) as { mounted: boolean; errors: string[] };
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.mounted, true);
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {

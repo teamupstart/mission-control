@@ -1,0 +1,1512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Multi-Agent Ensembles · Best-of-N First · Implementation Plan</title>
+<style>:root{color-scheme:light dark;--bg:#f4f7fb;--surface:#fff;--surface-2:#eef3fa;--text:#172033;--muted:#5b667c;--line:#d9e1ed;--blue:#1d65d6;--blue-soft:#e6f0ff;--purple:#6941c6;--purple-soft:#f0eaff;--green:#17744b;--green-soft:#e5f6ed;--amber:#9a5b00;--amber-soft:#fff3d7;--red:#b52a37;--red-soft:#ffe8eb;--shadow:0 18px 54px rgba(27,39,64,.09);--code:#122033;--code-bg:#edf2f8}
+:root[data-theme='dark']{--bg:#0c111b;--surface:#131b28;--surface-2:#1a2434;--text:#edf3ff;--muted:#a6b2c7;--line:#2a374a;--blue:#78aaf9;--blue-soft:#172d4f;--purple:#bd9aff;--purple-soft:#2c2148;--green:#73d7a5;--green-soft:#153629;--amber:#f4bf62;--amber-soft:#3d2b12;--red:#ff8d98;--red-soft:#442027;--shadow:0 20px 60px rgba(0,0,0,.32);--code:#dfeaff;--code-bg:#0d1522}
+@media(prefers-color-scheme:dark){:root:not([data-theme='light']){--bg:#0c111b;--surface:#131b28;--surface-2:#1a2434;--text:#edf3ff;--muted:#a6b2c7;--line:#2a374a;--blue:#78aaf9;--blue-soft:#172d4f;--purple:#bd9aff;--purple-soft:#2c2148;--green:#73d7a5;--green-soft:#153629;--amber:#f4bf62;--amber-soft:#3d2b12;--red:#ff8d98;--red-soft:#442027;--shadow:0 20px 60px rgba(0,0,0,.32);--code:#dfeaff;--code-bg:#0d1522}}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.68 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}button,a{font:inherit}a{color:var(--blue);text-decoration-thickness:1px;text-underline-offset:3px}.progress{position:fixed;inset:0 auto auto 0;height:3px;width:0;background:linear-gradient(90deg,var(--blue),var(--purple));z-index:50}.shell{max-width:1560px;margin:auto;padding:24px}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:28px;background:linear-gradient(135deg,var(--surface) 0%,var(--blue-soft) 58%,var(--purple-soft) 100%);box-shadow:var(--shadow);padding:46px 52px}.hero:after{content:'';position:absolute;width:420px;height:420px;border-radius:50%;right:-190px;top:-220px;background:radial-gradient(circle,rgba(105,65,198,.2),transparent 68%)}.eyebrow{display:flex;gap:10px;align-items:center;color:var(--blue);font-weight:750;text-transform:uppercase;letter-spacing:.12em;font-size:12px}.eyebrow span{border:1px solid currentColor;border-radius:999px;padding:4px 9px}.hero h1{max-width:1000px;margin:18px 0 12px;font-size:clamp(38px,5.2vw,74px);line-height:1.02;letter-spacing:-.045em}.hero p{max-width:920px;margin:0;color:var(--muted);font-size:clamp(17px,2vw,22px)}.hero-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}.button{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:10px 14px;text-decoration:none;font-weight:700;cursor:pointer}.button.primary{background:var(--text);color:var(--surface);border-color:var(--text)}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:20px 0}.metric{border:1px solid var(--line);border-radius:18px;background:var(--surface);padding:20px;box-shadow:0 8px 28px rgba(27,39,64,.05)}.metric b{display:block;font-size:24px;line-height:1.2;margin-bottom:5px}.metric span{color:var(--muted)}.notice{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start;border:1px solid color-mix(in srgb,var(--purple) 35%,var(--line));background:var(--purple-soft);border-radius:18px;padding:20px;margin:20px 0}.notice-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--purple);color:white;font-weight:850}.notice h2{font-size:17px;margin:0 0 4px}.notice p{margin:0;color:var(--muted)}.layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:26px;align-items:start;margin-top:26px}.toc{position:sticky;top:18px;max-height:calc(100vh - 36px);overflow:auto;border:1px solid var(--line);border-radius:18px;background:var(--surface);padding:18px}.toc strong{display:block;margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted)}.toc a{display:block;padding:6px 8px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:13px;line-height:1.25}.toc a:hover,.toc a:focus{background:var(--surface-2);color:var(--text)}article{min-width:0;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:var(--shadow);padding:clamp(24px,4vw,58px)}article>h1{font-size:34px;margin:0 0 8px;letter-spacing:-.035em}article>h1+p{color:var(--muted)}h2{font-size:28px;line-height:1.22;letter-spacing:-.025em;margin:64px 0 20px;padding-top:8px;border-top:1px solid var(--line)}h3{font-size:20px;line-height:1.3;margin:36px 0 12px}.heading-anchor{display:inline-block;width:1.2em;margin-left:-1.2em;opacity:0;text-decoration:none}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,.heading-anchor:focus{opacity:.48}p,li{max-width:1000px}strong{font-weight:760}ul,ol{padding-left:24px}li+li{margin-top:5px}blockquote{margin:24px 0;border-left:4px solid var(--purple);background:var(--purple-soft);padding:16px 20px;border-radius:0 12px 12px 0}.table-scroll{max-width:100%;overflow-x:auto;margin:20px 0;border:1px solid var(--line);border-radius:14px}.table-scroll:focus{outline:3px solid color-mix(in srgb,var(--blue) 40%,transparent)}table{width:100%;min-width:720px;border-collapse:collapse;background:var(--surface)}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{position:sticky;top:0;background:var(--surface-2);font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}tr:last-child td{border-bottom:0}code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code);background:var(--code-bg);padding:.14em .38em;border-radius:5px}pre{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--code-bg);padding:18px}pre code{padding:0;background:transparent}.diagram{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--surface),var(--surface-2));padding:16px;margin:24px 0}.diagram svg{display:block;min-width:980px;width:100%;height:auto}.svg-node{fill:var(--surface);stroke:var(--line);stroke-width:2}.svg-blue{fill:var(--blue-soft);stroke:var(--blue)}.svg-purple{fill:var(--purple-soft);stroke:var(--purple)}.svg-green{fill:var(--green-soft);stroke:var(--green)}.svg-amber{fill:var(--amber-soft);stroke:var(--amber)}.svg-red{fill:var(--red-soft);stroke:var(--red)}.svg-line{fill:none;stroke:var(--muted);stroke-width:2}.svg-dashed{stroke-dasharray:7 6}.svg-red-line{stroke:var(--red)}.svg-arrow{fill:var(--muted)}.svg-start{fill:var(--text)}.svg-title{fill:var(--text);font:700 15px system-ui,sans-serif}.svg-copy{fill:var(--muted);font:12px system-ui,sans-serif}.svg-note{fill:var(--muted);font:italic 12px system-ui,sans-serif}.svg-lane{fill:var(--blue);font:800 12px system-ui,sans-serif;letter-spacing:1.4px}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.footer{padding:28px 0 8px;color:var(--muted);text-align:center;font-size:13px}
+@media(max-width:900px){.shell{padding:12px}.hero{padding:30px 24px;border-radius:20px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.layout{display:block}.toc{position:relative;top:auto;max-height:none;margin-bottom:18px}.toc a{display:inline-block;margin:2px}article{padding:24px;border-radius:18px}.heading-anchor{margin-left:0;width:auto;margin-right:.4em;opacity:.3}h2{font-size:24px;margin-top:46px}}@media(max-width:520px){.metrics{grid-template-columns:1fr}.hero-actions{display:grid}.button{justify-content:center}.notice{grid-template-columns:1fr}.hero h1{font-size:40px}}@media print{.progress,.toc,.hero-actions{display:none}.shell{max-width:none;padding:0}.hero,article{box-shadow:none;border:0}.layout{display:block}article{padding:0}.metrics{break-inside:avoid}.diagram{break-inside:avoid}a{color:inherit;text-decoration:none}}</style>
+</head>
+<body>
+<div class="progress" aria-hidden="true"></div>
+<div class="shell">
+<header class="hero">
+<div class="eyebrow"><span>Implementation-ready</span><span>Deep investigation</span><span>2026-07-23</span></div>
+<h1>Multi-agent ensembles</h1>
+<p>A reusable, versioned engine for launching bounded groups of agent Tasks, collecting immutable artifacts, and composing comparison, voting, tournament, adaptive, critique, synthesis, and finalization strategies. Best-of-N ships first.</p>
+<div class="hero-actions"><a class="button primary" href="#executive-recommendation">Read recommendation</a><a class="button " href="#workflow-integration-contract">Workflow integration</a><a class="button " href="#implementation-sequence">Implementation sequence</a><button class="button" id="theme-toggle" type="button" aria-label="Toggle theme">◐ Theme</button></div>
+</header>
+<section class="metrics" aria-label="Plan summary"><div class="metric"><b>Best-of-N</b><span>first strategy: 2–5 Tasks</span></div><div class="metric"><b>7 policies</b><span>launch through finalization</span></div><div class="metric"><b>Hard budgets</b><span>members · waves · concurrency</span></div><div class="metric"><b>Composable</b><span>versioned stages and artifacts</span></div></section>
+<section class="notice"><div class="notice-icon">E</div><div><h2>Generalized before the schema ships</h2><p>EnsembleRun is the reusable core; Best-of-N is best_of_n@1. Launch count, information topology, artifacts, evaluation, advancement, stopping, finalization, and optional Workflow placement are independent policies. New strategies composed from existing primitives require no migration, route, SSE, or layout change.</p></div></section>
+<div class="layout">
+<nav class="toc" aria-label="Plan contents"><strong>Contents</strong><a href="#executive-recommendation">Executive recommendation</a>
+<a href="#what-changed-since-the-brainstorm">What changed since the brainstorm</a>
+<a href="#product-contract">Product contract</a>
+<a href="#comparison-and-collaboration-patterns-worth-supporting">Comparison and collaboration patterns worth supporting</a>
+<a href="#reusable-ensemble-strategy-model">Reusable Ensemble strategy model</a>
+<a href="#end-to-end-architecture">End-to-end architecture</a>
+<a href="#workflow-integration-contract">Workflow integration contract</a>
+<a href="#durable-data-model">Durable data model</a>
+<a href="#state-machines-and-invariants">State machines and invariants</a>
+<a href="#pinned-input-dispatch">Pinned-input dispatch</a>
+<a href="#explicit-submission-and-immutable-snapshots">Explicit submission and immutable snapshots</a>
+<a href="#best-of-n-comparative-evaluator">Best-of-N comparative evaluator</a>
+<a href="#finalization-cleanup-and-recoverability">Finalization, cleanup, and recoverability</a>
+<a href="#api-mcp-and-live-events">API, MCP, and live events</a>
+<a href="#dashboard-design-and-parity">Dashboard design and parity</a>
+<a href="#failure-race-and-restart-analysis">Failure, race, and restart analysis</a>
+<a href="#security-and-resource-controls">Security and resource controls</a>
+<a href="#implementation-sequence">Implementation sequence</a>
+<a href="#verification-matrix">Verification matrix</a>
+<a href="#acceptance-criteria">Acceptance criteria</a>
+<a href="#explicit-non-goals-for-the-first-release">Explicit non-goals for the first release</a>
+<a href="#likely-follow-ups">Likely follow-ups</a></nav>
+<article><h1 id="multi-agent-ensembles-best-of-n-first"><a class="heading-anchor" href="#multi-agent-ensembles-best-of-n-first" aria-label="Link to Multi-Agent Ensembles: Best-of-N First">#</a>Multi-Agent Ensembles: Best-of-N First</h1>
+<p>Status: implementation-ready investigation<br/>
+Date: 2026-07-23<br/>
+Source idea: docs/plans/feature-ideas/plan.html from the brainstorming checkout<br/>
+Workflow compatibility audit: main at 57ea5bc, with Workflow Phases 1–3 implemented<br/>
+Recommended foundation: one versioned Ensemble engine; first strategy is 2–5 isolated
+implementation candidates, one tool-less comparative evaluator, and human-confirmed promotion</p>
+<h2 id="executive-recommendation"><a class="heading-anchor" href="#executive-recommendation" aria-label="Link to Executive recommendation">#</a>Executive recommendation</h2>
+<p>Build a reusable Ensemble orchestration layer above the existing Task and Dispatcher machinery.
+Ship Best-of-N as its first versioned strategy, not as the name or schema of the engine. Do not make
+an Ensemble another Task status or a node inside the new Workflow graph.</p>
+<p>Each participating agent should still be a normal Task. That preserves all of the hard-won behavior
+around harness selection, worktree provisioning, terminal launch, session discovery, hooks,
+cost capture, cancellation, and restart reconciliation. A generic EnsembleRun owns group-level
+facts that a Task cannot express: a versioned strategy snapshot, launch waves, member roles,
+information-sharing rules, submitted artifacts, evaluations, advancement decisions, budgets,
+terminal outcomes, and idempotent cleanup.</p>
+<p>The implemented Workflow design changes the integration point, not that ownership boundary. A Workflow is
+deliberately a review/repair loop over exactly one selected Session. An ensemble is the preceding
+exploration/selection stage over N Sessions. They should compose at promotion: N candidates become
+one exact winning Session, then an optional immutable Workflow version binds to and immediately
+reviews that winner. This preserves Workflow&#x27;s one-Session context, delivery, Foreman, Inspector,
+Reset, and Shipping invariants.</p>
+<p>For the Best-of-N strategy, the critical product safety decision is that the comparative evaluator
+recommends; it does not promote.
+An operator sees the evidence and confirms a winner. Promotion then keeps or rematerializes
+that candidate at its exact submitted snapshot and reaps the other worktrees. Loser evidence
+remains recoverable through private Git refs until the ensemble is explicitly deleted.</p>
+<p>The first release should implement only the Best-of-N strategy, with implementation candidates,
+default three and maximum five. The underlying persistence, API, events, session projection, and
+execution loop should already use Ensemble/Member/Artifact/Stage/Evaluation vocabulary. It should
+offer an optional published Workflow Preview handoff through the implemented Phase 3 engine after
+the external-source compatibility slice in this plan lands. Live delivery and Foreman-triggered
+repair remain disabled until Workflow Phase 4. It should not run
+arbitrary repository commands, open candidate pull requests, auto-promote, treat an idle hook as
+completion, or expose a general-purpose user-authored orchestration language before the primitives
+have been proven.</p>
+<h2 id="what-changed-since-the-brainstorm"><a class="heading-anchor" href="#what-changed-since-the-brainstorm" aria-label="Link to What changed since the brainstorm">#</a>What changed since the brainstorm</h2>
+<p>The brainstorming file got the opportunity right: dispatch already creates isolated
+worktrees and the Board already puts sessions side by side. It also identified useful
+ranking inputs such as tests, diff size, and review notes. The current checkout has since
+added foundations that make the feature stronger:</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Brainstorm premise</th><th>Current reality</th><th>Design consequence</th></tr></thead><tbody><tr><td>Dispatch isolates work</td><td>Dispatcher and TaskManager already own launch, cancellation, resource cleanup, and restart reconciliation</td><td>Reuse a normal Task per candidate</td></tr><tr><td>Board can show candidates together</td><td>All three layouts share session state but render different signals</td><td>Add a small shared ensemble projection and preserve layout parity</td></tr><tr><td>Judge can compare tests, diff size, and review notes</td><td>Diff capture, no-mistakes summaries, session metadata, and cost telemetry now exist</td><td>Build a typed evidence packet; distinguish observed evidence from agent claims</td></tr><tr><td>A judge can select and reap</td><td>There is no group, explicit completion signal, immutable candidate snapshot, or promotion transaction</td><td>Add a durable EnsembleRun state machine and a submission MCP tool</td></tr><tr><td>One model can judge</td><td>Provider-neutral LlmRunner and revisioned Personas now exist</td><td>Reuse Persona snapshots, shared review framing, and the structured LLM path</td></tr><tr><td>Concurrent worktrees begin from the same state</td><td>Current dispatch provisions from whatever HEAD or pool lease is available at each launch</td><td>Pin one full base SHA before any candidate is launched</td></tr><tr><td>Workflows can review the result</td><td>Phases 1–3 are implemented: immutable publishing, one-note-key bindings, stable evidence capture, concurrent Persona review, retries, recovery, SSE, and Run detail</td><td>Hand the exact winner into the shipped Preview engine after promotion; add a generic external-source seam, not a multi-session graph node</td></tr></tbody></table></div>
+<p>The implemented Workflow contracts make this separation load-bearing:</p>
+<ul>
+<li>exactly one Session node exists in every published graph;</li>
+<li>bindings and capture locks use one durable noteKey;</li>
+<li>every submission has one session context/evidence snapshot;</li>
+<li>capture already records headSha, workingTreeDirty, repository fingerprints, and a stable
+before/after boundary;</li>
+<li>feedback delivery has one terminal target;</li>
+<li>Foreman claims one session completion;</li>
+<li>Inspector pins one adopted PR/head; and</li>
+<li>Reset removes one session-scoped workflow family.</li>
+</ul>
+<p>An Ensemble node would force all seven contracts to become multi-subject and would turn finalization into
+an implicit graph mutation. Ensemble therefore keeps its own store and lifecycle, reuses Persona,
+review-prompt, model-runner, and scheduling primitives, and calls a narrow WorkflowManager handoff
+only after a human selects one winner.</p>
+<h2 id="product-contract"><a class="heading-anchor" href="#product-contract" aria-label="Link to Product contract">#</a>Product contract</h2>
+<h3 id="operator-flow"><a class="heading-anchor" href="#operator-flow" aria-label="Link to Operator flow">#</a>Operator flow</h3>
+<ol>
+<li>Open Dispatch, switch from Single to Ensemble, choose Best-of-N, and enter one task and
+repository.</li>
+<li>Configure two to five candidate rows. Each row selects agent, model, effort, and an
+optional approach hint. Repeated configurations are valid.</li>
+<li>Submit once. The daemon snapshots best_of_n version 1, its compiled plan/budgets, and a full base
+commit before launching any candidate.</li>
+<li>The existing Board, Cards, or Console shows every candidate as a normal session, with a
+shared group badge and candidate number.</li>
+<li>Each candidate implements and tests independently. Its prompt prohibits pushing or
+opening a PR and requires an explicit submission when its candidate is ready.</li>
+<li>Submission snapshots the complete working tree into an immutable Git commit and records
+the candidate summary, reported checks, observed no-mistakes state, diff statistics, and
+accumulated agent cost.</li>
+<li>When every live candidate has submitted or terminated, and at least two submitted, the
+daemon runs one comparative evaluator over the immutable evidence.</li>
+<li>The Ensemble detail shows ranked scorecards, caveats, exact diffs, evidence provenance, and
+aggregate candidate cost.</li>
+<li>The operator confirms a winner. The daemon persists that choice, restores the winner to
+its exact submitted snapshot, and reaps loser worktrees.</li>
+<li>If Dispatch pinned a published Workflow version, promotion idempotently binds that exact version
+to the winner and creates its first submission from the selected snapshot. Otherwise the daemon
+tells the winner to continue through the normal shipping flow.</li>
+<li>Workflow then owns Persona repair rounds, optional Foreman resubmission, optional Inspector
+final gate, and Shipping veto exactly as designed in the Workflow plans.</li>
+</ol>
+<h3 id="release-decisions"><a class="heading-anchor" href="#release-decisions" aria-label="Link to Release decisions">#</a>Release decisions</h3>
+<p>These are resolved design decisions, not launch-time configuration questions.</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Area</th><th>Decision</th><th>Reason</th></tr></thead><tbody><tr><td>Core product noun</td><td>Ensemble</td><td>Covers isolated comparison, voting, tournaments, critique, and synthesis without implying communication</td></tr><tr><td>First strategy</td><td>best_of_n version 1</td><td>Delivers the original value while exercising the reusable kernel</td></tr><tr><td>Strategy identity</td><td>Append-only id plus integer version, snapshotted per run</td><td>Old runs must recover after strategy defaults or implementations change</td></tr><tr><td>Strategy extension</td><td>Compose typed policies and generic stage primitives; use a driver only for adaptive decisions</td><td>New modes should not require new persistence or transport contracts</td></tr><tr><td>Candidate count</td><td>Minimum 2, default 3, maximum 5</td><td>Meaningful comparison without uncontrolled local resource use</td></tr><tr><td>Candidate kind</td><td>Implementation Tasks only</td><td>Scouts may legitimately have no diff and need a different evidence model</td></tr><tr><td>Base</td><td>One full commit SHA pinned before launch</td><td>Candidate comparison is invalid if starting points differ</td></tr><tr><td>Completion</td><td>Explicit MCP submission plus manual UI fallback</td><td>Idle and Stop mean turn completion, not task completion</td></tr><tr><td>Candidate artifact</td><td>Immutable private Git commit and ref</td><td>Exact comparison, recoverability, and safe worktree cleanup</td></tr><tr><td>Judge</td><td>One tool-less, provider-neutral structured call</td><td>Fair input across providers and reduced prompt-injection surface</td></tr><tr><td>Judge guidance</td><td>Built-in rubric or one snapshotted Persona</td><td>Reproducible judgment while reusing the existing Persona model</td></tr><tr><td>Promotion</td><td>Human confirmation required</td><td>An LLM ranking must not trigger destructive cleanup on its own</td></tr><tr><td>Loser policy</td><td>Reap worktrees after promotion; retain snapshot refs</td><td>Saves resources without discarding evidence</td></tr><tr><td>Validation</td><td>Reported checks plus existing no-mistakes evidence in v1</td><td>There is no safe repository-neutral command to run</td></tr><tr><td>Candidate publishing</td><td>No pushes and no PRs before promotion</td><td>Avoids duplicate public branches and PRs</td></tr><tr><td>Workflow relationship</td><td>Optional immutable Workflow version, executed only on the finalized result</td><td>Composes N-session selection with the existing one-Session review engine</td></tr><tr><td>Workflow start</td><td>Bind and submit immediately after the exact winner is active</td><td>The selected candidate has already declared itself ready for review</td></tr><tr><td>Workflow graph</td><td>No Ensemble node and no graph-port changes</td><td>Preserves the explicit one-Session workflow invariant</td></tr><tr><td>Group UI</td><td>Dispatch mode plus an Ensembles tab in the Workflows page; no new shortcut in v1</td><td>Keeps orchestration history together without another overlay/topbar surface</td></tr><tr><td>Strategy builder</td><td>Built-in versioned presets first; no arbitrary user graph in v1</td><td>Prevents a second unsafe Workflow language before runtime primitives are proven</td></tr></tbody></table></div>
+<h2 id="comparison-and-collaboration-patterns-worth-supporting"><a class="heading-anchor" href="#comparison-and-collaboration-patterns-worth-supporting" aria-label="Link to Comparison and collaboration patterns worth supporting">#</a>Comparison and collaboration patterns worth supporting</h2>
+<p>Best-of-N is only one point in a larger design space. The engine should not assume that every run
+launches all members at once, compares all artifacts in one prompt, selects exactly one, or even
+ends with a winner.</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Strategy pattern</th><th>Launch shape</th><th>Information topology</th><th>Evaluation and terminal result</th><th>New primitive beyond Best-of-N</th></tr></thead><tbody><tr><td>Best-of-N</td><td>Fixed roster, usually 2–5</td><td>Isolated</td><td>One comparative rank; select one</td><td>First-release baseline</td></tr><tr><td>Deterministic gate then rank</td><td>Fixed roster</td><td>Isolated</td><td>Tests/static evidence eliminate ineligible artifacts; rank survivors</td><td>Evaluator pipeline and eligibility filter</td></tr><tr><td>Persona panel vote</td><td>Fixed roster plus M headless judges</td><td>Isolated candidates; independent judges</td><td>Approval/ranking aggregation, disagreement visible</td><td>Parallel evaluator panel and vote aggregation</td></tr><tr><td>Pairwise tournament</td><td>Fixed roster, potentially larger N</td><td>Isolated</td><td>Bracket, Swiss, or round-robin pair comparisons; select top one/K</td><td>Pair scheduler and accumulated standings</td></tr><tr><td>Successive halving</td><td>Fixed or matrix roster in waves</td><td>Isolated</td><td>Cheap first evaluation, advance top fraction to deeper work/review</td><td>Multiple waves and top-K advancement</td></tr><tr><td>Adaptive sampling</td><td>Start small; add batches until stop rule or hard cap</td><td>Isolated</td><td>Stop on sufficient agreement/margin or exhaust budget</td><td>Deterministic strategy driver and spawn-more command</td></tr><tr><td>Critique then revise</td><td>N proposals, cross-assigned critiques, one revision round</td><td>Artifact-mediated sharing only</td><td>Compare revised artifacts; select one/K</td><td>Feedback delivery, revision artifact, bounded rounds</td></tr><tr><td>Proposer–critic–verifier</td><td>Role roster rather than identical candidates</td><td>Directed artifact visibility</td><td>Verifier accepts, rejects, or requests bounded repair</td><td>Role-specific prompts and directed dependencies</td></tr><tr><td>Red-team / defender</td><td>One builder plus one or more adversarial reviewers</td><td>Reviewers see builder artifact; builder sees bounded findings</td><td>Patched artifact plus residual-risk report</td><td>Role topology and repair loop</td></tr><tr><td>Top-K synthesis</td><td>N proposals, then a fresh synthesizer</td><td>Synthesizer sees selected artifacts</td><td>Produce a new combined artifact rather than choosing an original</td><td>Synthesis member and derived-artifact lineage</td></tr><tr><td>Consensus / no-consensus</td><td>N independent answers</td><td>Optional blind voting</td><td>Return agreement, minority report, or no consensus; retain all</td><td>Non-destructive terminal outcome</td></tr><tr><td>Map–reduce</td><td>Role/shard roster</td><td>Shards isolated; reducer sees all outputs</td><td>One synthesized result; comparison may be absent</td><td>Different task intents and report artifacts</td></tr></tbody></table></div>
+<p>The first six are natural comparison strategies. The latter patterns show why the core must use
+member, artifact, evaluation, stage, and outcome rather than candidate, diff, judge, and winner as
+its only durable nouns.</p>
+<h3 id="how-many-agents-to-launch"><a class="heading-anchor" href="#how-many-agents-to-launch" aria-label="Link to How many agents to launch">#</a>How many agents to launch</h3>
+<p>Make launch count a strategy policy, separate from evaluator and finalization:</p>
+<pre><code>type LaunchPolicy =
+  | { kind: &quot;fixed_roster&quot;; members: MemberTemplate[] }
+  | { kind: &quot;replicated&quot;; template: MemberTemplate; count: number }
+  | { kind: &quot;matrix&quot;; axes: MemberAxis[]; repetitions: number }
+  | {
+      kind: &quot;adaptive_waves&quot;;
+      initial: MemberTemplate[];
+      batch: MemberTemplate[];
+      maxMembers: number;
+      stop: StopPolicy;
+    }
+  | { kind: &quot;roles&quot;; roles: Array&lt;{ role: string; count: number; template: MemberTemplate }&gt; };
+</code></pre>
+<p>Total launches and concurrent launches are different controls. Every strategy snapshot carries:</p>
+<ul>
+<li>maxMembers: hard lifetime cap, including retries/replacements;</li>
+<li>maxConcurrentMembers: local process/worktree ceiling;</li>
+<li>maxWaves and maxStageAttempts;</li>
+<li>optional wall-clock deadline;</li>
+<li>a visible estimated launch count/range before confirmation;</li>
+<li>cost as advisory unless every participating harness reports authoritative live cost.</li>
+</ul>
+<p>Best-of-N version 1 validates fixed_roster with 2–5 members. A future tournament may allow eight
+with concurrency four. Adaptive sampling may show 2–8 and start only two. No strategy driver may
+spawn past the persisted hard caps, even if an LLM asks it to.</p>
+<h3 id="information-topology-is-explicit"><a class="heading-anchor" href="#information-topology-is-explicit" aria-label="Link to Information topology is explicit">#</a>Information topology is explicit</h3>
+<p>Default informationPolicy is isolated: members receive the shared task, their own role/approach,
+and no sibling identities or artifacts. A strategy that needs critique or synthesis declares a
+directed artifact-sharing policy. The daemon renders bounded, attributed prompts from immutable
+artifacts; agents do not browse sibling worktrees or private refs.</p>
+<p>This separates useful collaboration from accidental filesystem visibility and makes every
+cross-member influence visible in the run timeline.</p>
+<h2 id="reusable-ensemble-strategy-model"><a class="heading-anchor" href="#reusable-ensemble-strategy-model" aria-label="Link to Reusable Ensemble strategy model">#</a>Reusable Ensemble strategy model</h2>
+<h3 id="compose-policies-do-not-multiply-run-types"><a class="heading-anchor" href="#compose-policies-do-not-multiply-run-types" aria-label="Link to Compose policies, do not multiply run types">#</a>Compose policies, do not multiply run types</h3>
+<p>An immutable strategy recipe composes seven independent questions:</p>
+<pre><code>interface EnsembleStrategyRecipe {
+  launch: LaunchPolicy;
+  information: InformationPolicy;
+  artifact: ArtifactPolicy;
+  stages: EnsembleStageSpec[];
+  stop: StopPolicy;
+  finalization: FinalizationPolicy;
+  memberWorkflow: MemberWorkflowPolicy;
+}
+</code></pre>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Policy</th><th>Answers</th><th>Best-of-N v1</th></tr></thead><tbody><tr><td>LaunchPolicy</td><td>Which roles/configurations start, in which waves, under what caps?</td><td>Fixed explicit roster of 2–5</td></tr><tr><td>InformationPolicy</td><td>Which immutable artifacts may each member see?</td><td>Isolated</td></tr><tr><td>ArtifactPolicy</td><td>What counts as a submission and how is it snapshotted/compared?</td><td>Git working-tree snapshot</td></tr><tr><td>Stage plan</td><td>In what order do collect, evaluate, advance, revise, synthesize, and decide occur?</td><td>Spawn → collect-all → compare-all → await decision</td></tr><tr><td>StopPolicy</td><td>When is there enough evidence, and what happens on failures/timeouts?</td><td>All members settled; at least two eligible</td></tr><tr><td>FinalizationPolicy</td><td>Select one/K, synthesize, retain all, or return no consensus?</td><td>Human-confirmed select one and reap others</td></tr><tr><td>MemberWorkflowPolicy</td><td>Does a one-Session Workflow review each member, the selected result, or neither?</td><td>Optional Workflow after selection</td></tr></tbody></table></div>
+<p>Invalid combinations fail at creation. Examples: pairwise evaluation needs at least two comparable
+artifacts; a pre-comparison member Workflow cannot include an Inspector final gate because
+candidates may not create N PRs; synthesis requires an artifact adapter the synthesizer can read;
+and top-K finalization cannot feed a handoff that requires exactly one Session.</p>
+<h3 id="versioned-strategy-registry"><a class="heading-anchor" href="#versioned-strategy-registry" aria-label="Link to Versioned strategy registry">#</a>Versioned strategy registry</h3>
+<p>Put append-only built-in ids in src/shared/ensemble.ts:</p>
+<pre><code>export const ENSEMBLE_STRATEGY_IDS = [
+  &quot;best_of_n&quot;,
+  // append future persisted ids
+] as const;
+</code></pre>
+<p>Split browser-safe description from daemon execution:</p>
+<pre><code>interface EnsembleStrategyDescriptor&lt;C&gt; {
+  id: EnsembleStrategyId;
+  latestVersion: number;
+  label: string;
+  description: string;
+  configSchema: ZodType&lt;C&gt;;
+  defaults: C;
+  form: StrategyFormSpec;
+  capabilities: StrategyCapabilities;
+  summarize(config: C): LaunchEstimate;
+}
+
+interface EnsembleStrategyCompiler&lt;C&gt; {
+  id: EnsembleStrategyId;
+  version: number;
+  compile(config: C, context: CreationContext): EnsembleExecutionPlan;
+}
+
+interface EnsembleStrategySnapshot {
+  id: EnsembleStrategyId;
+  version: number;
+  label: string;
+  config: EnsembleJson;
+  plan: EnsembleExecutionPlan;
+  capabilities: StrategyCapabilities;
+  launchEstimate: LaunchEstimate;
+}
+</code></pre>
+<p>Use Record&lt;EnsembleStrategyId, ...&gt; for both registries, following the Harness/LLM/terminal
+registry pattern. A new strategy id fails typecheck until it describes its configuration, launch
+estimate, capabilities, compiler, and tests. Existing ids and versions are append-only because
+durable runs reference them.</p>
+<p>The compiled execution plan is snapshotted into EnsembleRun. Runtime recovery executes generic
+stage primitives from that plan; it does not recompile with newer defaults. A compiler version can
+therefore evolve without changing an active or historical run.</p>
+<p>If a strategy needs an adaptive driver, store driverKey as id@version in the plan and keep a
+separate append-only runtime registry for every persisted driver version. Removing an old driver
+while a nonterminal run references it is a startup health error, not permission to invoke the
+latest driver. Fixed plans need no strategy-specific runtime after compilation.</p>
+<h3 id="small-durable-stage-vocabulary"><a class="heading-anchor" href="#small-durable-stage-vocabulary" aria-label="Link to Small durable stage vocabulary">#</a>Small durable stage vocabulary</h3>
+<p>Start with a deliberately bounded union and append primitives only when a real strategy requires
+them:</p>
+<pre><code>type EnsembleStageSpec =
+  | { kind: &quot;spawn&quot;; launch: LaunchPolicy }
+  | { kind: &quot;collect&quot;; artifact: ArtifactPolicy; barrier: BarrierPolicy }
+  | { kind: &quot;evaluate&quot;; evaluator: EvaluatorPolicy; subjects: SubjectPolicy }
+  | { kind: &quot;advance&quot;; selection: AdvancementPolicy }
+  | { kind: &quot;feedback&quot;; assignment: FeedbackAssignment; maxRounds: number }
+  | { kind: &quot;synthesize&quot;; actor: MemberTemplate; inputs: SubjectPolicy }
+  | { kind: &quot;decision&quot;; decision: DecisionPolicy }
+  | { kind: &quot;finalize&quot;; finalization: FinalizationPolicy };
+</code></pre>
+<p>This is not arbitrary JavaScript or a second React Flow builder. Every primitive has bounded Zod
+configuration, durable input/output, idempotency rules, and a generic renderer. Best-of-N needs
+spawn, collect, evaluate, decision, and finalize. Tournament later adds repeated evaluate/advance;
+critique adds feedback; top-K synthesis adds synthesize.</p>
+<h3 id="deterministic-engine-optional-adaptive-driver"><a class="heading-anchor" href="#deterministic-engine-optional-adaptive-driver" aria-label="Link to Deterministic engine, optional adaptive driver">#</a>Deterministic engine, optional adaptive driver</h3>
+<p>EnsembleEngine executes the immutable plan and owns generic scheduling, transactions, recovery,
+events, and side-effect ordering. Most strategies compile to a fixed stage plan.</p>
+<p>Adaptive strategies may additionally register a pure driver:</p>
+<pre><code>interface EnsembleStrategyDriver {
+  decide(snapshot: EnsembleDecisionSnapshot): EnsembleCommand[];
+}
+</code></pre>
+<p>Allowed commands are a closed union such as spawnWave, scheduleEvaluation, advanceMembers,
+requestFeedback, requestHumanDecision, finalize, or fail. The engine validates each command against
+the plan and hard budgets, persists a deterministic command key before side effects, and then acts.
+The driver receives validated durable summaries only and performs no I/O. An LLM result may be
+evidence to a driver, never executable commands by itself.</p>
+<h3 id="pluggable-artifact-and-evaluator-contracts"><a class="heading-anchor" href="#pluggable-artifact-and-evaluator-contracts" aria-label="Link to Pluggable artifact and evaluator contracts">#</a>Pluggable artifact and evaluator contracts</h3>
+<p>Do not bake Git diffs into every member:</p>
+<pre><code>interface ArtifactAdapter {
+  kind: EnsembleArtifactKind;
+  capture(member: EnsembleMember): Promise&lt;CapturedArtifact&gt;;
+  summarize(artifact: CapturedArtifact): ArtifactSummary;
+  materializeForEvaluation(artifact: CapturedArtifact, budget: number): EvaluationMaterial;
+  restore?(artifact: CapturedArtifact): Promise&lt;Task&gt;;
+}
+</code></pre>
+<p>First implement git_snapshot. Later adapters can add markdown_report, structured_answer, or plan
+without changing member/stage tables. Artifact kind ids and persisted format versions are
+append-only.</p>
+<p>EvaluatorPolicy is likewise a union:</p>
+<ul>
+<li>deterministic evidence gate;</li>
+<li>one all-at-once comparative LLM;</li>
+<li>pairwise LLM;</li>
+<li>independent Persona panel plus aggregation;</li>
+<li>human-only decision;</li>
+<li>hybrid pipeline with deterministic filters before model judgment.</li>
+</ul>
+<p>Evaluations always record subject artifact ids, evaluator snapshot/version, actual runner/model,
+bounded inputs, structured output, provenance, and attempt state. Scores and ranks belong to
+evaluation results, not EnsembleMember, because one artifact may participate in several panels,
+pairs, rounds, or rubrics.</p>
+<h3 id="what-adding-a-strategy-should-cost"><a class="heading-anchor" href="#what-adding-a-strategy-should-cost" aria-label="Link to What adding a strategy should cost">#</a>What adding a strategy should cost</h3>
+<p>After the kernel exists, a normal built-in strategy should require:</p>
+<ol>
+<li>Append one strategy id and descriptor/config schema/defaults.</li>
+<li>Compose existing policies and stages in one compiler.</li>
+<li>Add a generic-form description or, only when necessary, one focused config panel.</li>
+<li>Add pure compiler/validation fixtures and engine scenario tests.</li>
+<li>Add README copy and a preset card.</li>
+</ol>
+<p>It should not require a database migration, new HTTP route family, new ServerEvent variant, a
+useEventStream branch, new session props, or new layout-specific mark vocabulary. A proposed mode
+that needs those surfaces is evidence that it introduces a genuinely new primitive, not merely a
+new strategy.</p>
+<h2 id="end-to-end-architecture"><a class="heading-anchor" href="#end-to-end-architecture" aria-label="Link to End-to-end architecture">#</a>End-to-end architecture</h2>
+<div><div class="diagram"><svg viewBox='0 0 1380 500' role='img' aria-labelledby='arch-title arch-desc' xmlns='http://www.w3.org/2000/svg'><title id='arch-title'>Multi-agent Ensemble strategy architecture</title><desc id='arch-desc'>Dispatch snapshots a versioned strategy and launches member Tasks in bounded waves. Members submit immutable artifacts. Generic stages evaluate, advance, synthesize, or request a human decision. A compatible final result may enter one Session Workflow.</desc><defs><marker id='arrow-a' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' class='svg-arrow'/></marker></defs><text x='28' y='34' class='svg-lane'>ORCHESTRATE · BOUNDED MEMBER TASKS</text><rect x='28' y='58' width='180' height='82' rx='16' class='svg-node svg-blue'/><text x='118' y='90' text-anchor='middle' class='svg-title'>Dispatch</text><text x='118' y='115' text-anchor='middle' class='svg-copy'>strategy + configuration</text><path d='M208 99 H262' class='svg-line' marker-end='url(#arrow-a)'/><rect x='270' y='58' width='190' height='82' rx='16' class='svg-node'/><text x='365' y='90' text-anchor='middle' class='svg-title'>EnsembleEngine</text><text x='365' y='115' text-anchor='middle' class='svg-copy'>plan · budgets · stages</text><path d='M460 99 H516' class='svg-line' marker-end='url(#arrow-a)'/><rect x='524' y='46' width='210' height='106' rx='16' class='svg-node svg-purple'/><text x='629' y='80' text-anchor='middle' class='svg-title'>Member Tasks / waves</text><text x='629' y='105' text-anchor='middle' class='svg-copy'>TaskManager + Dispatcher</text><text x='629' y='128' text-anchor='middle' class='svg-copy'>verified input commits</text><path d='M734 99 H790' class='svg-line' marker-end='url(#arrow-a)'/><rect x='798' y='46' width='214' height='106' rx='16' class='svg-node'/><text x='905' y='80' text-anchor='middle' class='svg-title'>Artifact capture</text><text x='905' y='105' text-anchor='middle' class='svg-copy'>versioned immutable result</text><text x='905' y='128' text-anchor='middle' class='svg-copy'>claims + observed evidence</text><path d='M1012 99 H1068' class='svg-line' marker-end='url(#arrow-a)'/><rect x='1076' y='46' width='274' height='106' rx='16' class='svg-node svg-amber'/><text x='1213' y='80' text-anchor='middle' class='svg-title'>Evaluation stages</text><text x='1213' y='105' text-anchor='middle' class='svg-copy'>compare · vote · advance</text><text x='1213' y='128' text-anchor='middle' class='svg-copy'>synthesize · decide</text><path d='M1213 152 V205' class='svg-line' marker-end='url(#arrow-a)'/><rect x='1088' y='214' width='250' height='82' rx='16' class='svg-node svg-green'/><text x='1213' y='246' text-anchor='middle' class='svg-title'>Human finalization</text><text x='1213' y='271' text-anchor='middle' class='svg-copy'>authorize terminal outcome</text><path d='M1088 255 H902' class='svg-line' marker-end='url(#arrow-a)'/><rect x='678' y='214' width='216' height='82' rx='16' class='svg-node svg-red'/><text x='786' y='246' text-anchor='middle' class='svg-title'>Policy cleanup</text><text x='786' y='271' text-anchor='middle' class='svg-copy'>retain artifact refs</text><path d='M1213 296 V348' class='svg-line' marker-end='url(#arrow-a)'/><text x='28' y='372' class='svg-lane'>OPTIONAL HANDOFF · ONE FINAL SESSION</text><rect x='436' y='390' width='232' height='82' rx='16' class='svg-node svg-green'/><text x='552' y='422' text-anchor='middle' class='svg-title'>Exact result active</text><text x='552' y='447' text-anchor='middle' class='svg-copy'>selected or synthesized</text><path d='M668 431 H738' class='svg-line' marker-end='url(#arrow-a)'/><rect x='746' y='390' width='238' height='82' rx='16' class='svg-node svg-blue'/><text x='865' y='422' text-anchor='middle' class='svg-title'>Workflow handoff</text><text x='865' y='447' text-anchor='middle' class='svg-copy'>idempotent bind + submit</text><path d='M984 431 H1052' class='svg-line' marker-end='url(#arrow-a)'/><rect x='1060' y='380' width='290' height='102' rx='16' class='svg-node svg-purple'/><text x='1205' y='414' text-anchor='middle' class='svg-title'>One-session Workflow</text><text x='1205' y='439' text-anchor='middle' class='svg-copy'>Personas · repairs · Foreman</text><text x='1205' y='462' text-anchor='middle' class='svg-copy'>optional Inspector + Shipping veto</text><path d='M1213 296 C1150 340 620 330 560 390' class='svg-line svg-dashed' marker-end='url(#arrow-a)'/><text x='795' y='339' text-anchor='middle' class='svg-note'>Best-of-N is N → 1; other strategies may retain K, synthesize, or report no consensus</text></svg></div></div>
+<p>Boundary rules:</p>
+<ul>
+<li>EnsembleManager owns creation, policy, and external adapters. EnsembleEngine owns generic durable
+stages and listens to Task changes. TaskManager remains the owner of individual Task transitions.</li>
+<li>Dispatcher accepts a pinned base override but does not learn Ensemble semantics.</li>
+<li>Artifact adapters own capture/materialization. The first git_snapshot adapter uses the private
+Git snapshot helper.</li>
+<li>Evaluators receive supplied evidence only. The Best-of-N model evaluator has no repository,
+shell, network, GitHub, or terminal tools.</li>
+<li>WorkflowManager receives only the finalized session, pinned version, expected snapshot SHA, and an
+idempotency source key. It never reads ensemble tables or ranks members.</li>
+<li>SQLite remains single-writer state. Git refs preserve large artifacts; SQLite stores
+metadata and verdicts, not full patches.</li>
+</ul>
+<h2 id="workflow-integration-contract"><a class="heading-anchor" href="#workflow-integration-contract" aria-label="Link to Workflow integration contract">#</a>Workflow integration contract</h2>
+<h3 id="compatibility-audit-against-workflow-preview-at-57ea5bc"><a class="heading-anchor" href="#compatibility-audit-against-workflow-preview-at-57ea5bc" aria-label="Link to Compatibility audit against Workflow Preview at 57ea5bc">#</a>Compatibility audit against Workflow Preview at 57ea5bc</h3>
+<p>The Ensemble architecture is compatible with the Workflow engine that is now on main, but the
+handoff cannot call the current browser-oriented methods unchanged. The audit found these exact
+seams:</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Shipped Workflow contract</th><th>Compatibility result</th><th>Required Ensemble-facing change</th></tr></thead><tbody><tr><td>Published graphs accept only Session, Persona, all-pass Join, and End, and validation requires exactly one Session</td><td>Compatible</td><td>Keep the graph union and validators unchanged; do not add an Ensemble node</td></tr><tr><td>workflow_bindings has one active owner per note_key, and WorkflowManager resolves live Session/noteKey identity</td><td>Compatible with an additive seam</td><td>Add one transactional external claim that creates or returns the same binding; never bypass the active-note conflict</td></tr><tr><td>WorkflowManager.submit creates manual:&lt;binding&gt;:&lt;request&gt; keys, while WorkflowStore currently writes trigger_source = manual in both run and submission inserts</td><td>Requires refactoring before handoff</td><td>Make trigger source/key explicit store inputs, preserve manual at existing call sites, and append ensemble as a source</td></tr><tr><td>Stable capture retries once across Session, noteKey, HEAD, repository fingerprint, and transcript boundary; the context includes headSha and workingTreeDirty</td><td>Strong reusable base</td><td>Add an external capture expectation and require both the selected snapshot SHA and a clean working tree before evidence is persisted or an LLM starts</td></tr><tr><td>WorkflowEngine owns a per-engine concurrency-three limiter; context compaction calls runJobStructured outside that limiter</td><td>Not yet a shared daemon budget</td><td>Inject one daemon-owned review scheduler into Workflow review/compaction and Ensemble evaluation while leaving the separate Foreman process and unrelated background jobs alone</td></tr><tr><td>WorkflowRunDetail has no source relation, and WorkflowTab/hash routing is a closed workflows/personas/runs union</td><td>Additive UI work</td><td>Join an optional external source in Run detail and append Ensembles list/detail routes to the existing shell</td></tr><tr><td>resetForNoteKey deletes the complete binding/run family</td><td>Compatible only if the new relation participates</td><td>Delete external claims with their binding during Workflow Reset; retain Ensemble audit/ref history and render a missing linked run as reset/removed</td></tr></tbody></table></div>
+<p>This is a local extension of the shipped Phase 3 boundary. It does not reopen graph execution,
+Persona verdicts, recovery, SSE ownership, or Preview semantics.</p>
+<h3 id="the-best-of-n-cardinality-boundary"><a class="heading-anchor" href="#the-best-of-n-cardinality-boundary" aria-label="Link to The Best-of-N cardinality boundary">#</a>The Best-of-N cardinality boundary</h3>
+<p>For Best-of-N, treat promotion as an explicit N-to-one boundary:</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Before promotion: Ensemble owns</th><th>After promotion: Workflow owns</th></tr></thead><tbody><tr><td>N Tasks, sessions, worktrees, candidate prompts, and costs</td><td>One active binding and one selected Session</td></tr><tr><td>One pinned base and N immutable snapshot refs</td><td>One immutable Workflow version and per-round evidence snapshots</td></tr><tr><td>Comparative score/rank/recommendation</td><td>Persona pass/fail verdicts and repair feedback</td></tr><tr><td>Candidate withdrawal and loser teardown</td><td>Session repair, resubmission, and round limits</td></tr><tr><td>No PR creation or shipping</td><td>Optional Inspector final gate and Shipping veto</td></tr></tbody></table></div>
+<p>An Ensemble terminal outcome does not mean the work is approved or shipped. Workflow completion does not
+retroactively choose a different candidate. The Ensemble detail links to the Workflow run, and the
+Workflow run links back to its source ensemble, but each engine remains authoritative for its own
+states.</p>
+<p>Other strategies may finalize to top K, a newly synthesized Task, retained independent results, or
+no consensus. Only a finalization that materializes exactly one live Session can request the
+post-selection Workflow handoff described below. This is expressed as a strategy capability and
+validated at creation rather than assumed by EnsembleRun.</p>
+<h3 id="why-ensemble-is-not-a-workflow-node"><a class="heading-anchor" href="#why-ensemble-is-not-a-workflow-node" aria-label="Link to Why Ensemble is not a Workflow node">#</a>Why Ensemble is not a Workflow node</h3>
+<p>The shipped Workflow contracts intentionally compile against only Session, Persona, all-pass Join, and
+End nodes. Adding Ensemble to that union would not be a cosmetic palette addition. It would require:</p>
+<ul>
+<li>multiple note keys and session identities in one binding;</li>
+<li>a multi-subject WorkflowContextSnapshot;</li>
+<li>candidate launch, completion, and snapshot ports;</li>
+<li>fan-in that selects a mutable delivery target rather than aggregates verdicts;</li>
+<li>Reset and reattach rules across N sessions;</li>
+<li>multiple potential PRs before one Inspector gate; and</li>
+<li>new Shipping semantics while the graph still has no selected session.</li>
+</ul>
+<p>That is a second orchestration engine hidden inside the review engine. Keep the Phase 2 graph union
+and its negative no-extra-node tests unchanged. A future guided builder can display an Ensemble-to-
+Workflow composition as two linked products without storing it as one graph.</p>
+<h3 id="compatibility-changes-required-in-the-shipped-workflow-engine"><a class="heading-anchor" href="#compatibility-changes-required-in-the-shipped-workflow-engine" aria-label="Link to Compatibility changes required in the shipped Workflow engine">#</a>Compatibility changes required in the shipped Workflow engine</h3>
+<p>Land these changes as a focused compatibility slice before Ensemble Workflow handoff:</p>
+<ol>
+<li>Replace the hand-written WorkflowTriggerSource union with an append-only
+WORKFLOW_TRIGGER_SOURCES tuple and append ensemble. Do not add it to WorkflowTriggerMode: Manual
+and Foreman-complete are recurring binding behavior, while ensemble is the server-owned source
+of one initial submission.</li>
+<li>Add a generic workflow_binding_claims table with non-null source_kind, source_key, source_id,
+binding_id, and created_at. source_key is the primary key and binding_id is unique. source_id is
+display/deep-link identity; consumers never parse the opaque idempotency key. Delete claims in
+the existing resetForNoteKey transaction before deleting their bindings.</li>
+<li>Parameterize WorkflowRunInsert, WorkflowSubmissionInsert, createInitialSubmission, and the
+submission insert helper with triggerSource. Existing manual manager methods explicitly pass
+manual, preserving their current keys and stored rows byte-for-byte.</li>
+<li>Add WorkflowStore.ensureExternalBindingClaim as one transaction, then add
+WorkflowManager.ensureExternalBinding and WorkflowManager.submitExternal. They resolve the live
+Session/noteKey server-side and reuse immutable version validation, active-note conflicts, stable
+capture, engine activation, recovery, and SSE publication.</li>
+<li>submitExternal accepts a capture expectation containing expectedHeadSha and
+requireCleanWorktree: true. Check both after stable capture and before raw evidence persistence or
+compaction. A mismatch blocks visibly. A retry after Ensemble restores the artifact resumes the
+same initial external submission; it never creates a second binding, run, or round.</li>
+<li>Introduce a daemon-owned review scheduler and inject it from src/server/index.ts. Workflow
+context compaction, Workflow Persona attempts, and Ensemble evaluator calls share it. Do not make
+createLimiter module-global: Foreman is a separate process, and unrelated daemon background jobs
+have different degradation and latency contracts.</li>
+<li>Factor reusable intent-priority wording, untrusted-evidence fencing, and field/byte-cap helpers
+out of Workflow-specific prompt code. Workflow Persona calls and the Ensemble comparator use
+those helpers; their prompts and output schemas remain distinct.</li>
+<li>Keep WorkflowContextSnapshot session-shaped. Generalizing it to N candidates or a synthetic
+artifact subject is unnecessary for the winner handoff.</li>
+<li>Extend Workflow Run detail with an optional external source kind/id link and extend the closed
+WorkflowTab/MissionRoute union with Ensembles list/detail variants. Compact run summaries remain
+unchanged unless a source badge proves necessary.</li>
+</ol>
+<p>Suggested pure/shared seams:</p>
+<pre><code>src/shared/review.ts
+src/server/review/prompt.ts
+src/server/llm/review-scheduler.ts
+src/server/workflows/external-binding.ts
+</code></pre>
+<p>The binding claim transaction resolves the winner session and noteKey server-side. If an active
+binding already owns that noteKey, it returns a typed conflict; it never replaces or silently adopts
+the existing binding. WorkflowManager should receive a narrow binding-eligibility guard from
+EnsembleManager so active ensemble members refuse ordinary manual binding until the compiled
+MemberWorkflowPolicy allows it. Workflow modules do not import the Ensemble store.</p>
+<h3 id="pinned-handoff"><a class="heading-anchor" href="#pinned-handoff" aria-label="Link to Pinned handoff">#</a>Pinned handoff</h3>
+<p>Ensemble creation may include:</p>
+<pre><code>interface EnsembleWorkflowHandoff {
+  workflowId: WorkflowId;
+  workflowVersionId: WorkflowVersionId;
+  workflowVersion: number;
+  workflowName: string;
+  bindingDefaults: WorkflowBindingDefaults;
+  completionPolicy: WorkflowCompletionPolicy;
+  state: &quot;pending&quot; | &quot;binding&quot; | &quot;submitted&quot; | &quot;failed&quot;;
+  sourceKey: string | null;
+  expectedHeadSha: string | null;
+  requireCleanWorktree: true;
+  bindingId: WorkflowBindingId | null;
+  runId: WorkflowRunId | null;
+  error: string | null;
+}
+</code></pre>
+<p>Resolve this from an immutable published version at ensemble creation and store the display snapshot in
+the new ensemble row. Reject an archived definition, missing version, unsupported binding mode, or Live
+delivery that is not currently authorized for repoRoot. Never replace Live with Preview silently.</p>
+<p>At promotion, derive the source key entirely server-side:</p>
+<pre><code>ensemble:&lt;ensemble-id&gt;:result:&lt;member-or-artifact-id&gt;:workflow:&lt;version-id&gt;
+</code></pre>
+<p>ensureExternalBinding and submitExternal use that same key. A response loss or daemon restart
+returns the existing binding/run. Ensemble finalization reaches completed after the handoff
+submission is durably captured and activated, not after the Workflow completes. Before activation,
+stable capture must observe expectedHeadSha and a clean working tree; matching HEAD with uncommitted
+changes is not the selected artifact.</p>
+<p>If no Workflow is selected, nothing changes in Workflow state. The operator can still bind one
+later through the normal UI.</p>
+<h3 id="optional-workflows-per-member"><a class="heading-anchor" href="#optional-workflows-per-member" aria-label="Link to Optional Workflows per member">#</a>Optional Workflows per member</h3>
+<p>The generic MemberWorkflowPolicy reserves a future before_comparison mode:</p>
+<ul>
+<li>Each member remains a normal one-Session Workflow binding/run.</li>
+<li>The member is eligible to submit its comparison artifact only after the pinned Workflow reaches
+its configured terminal outcome.</li>
+<li>Pre-comparison Workflows must use completionPolicy none; an Inspector gate would require N
+candidate PRs and violate candidate publishing/provenance rules.</li>
+<li>The external binding source key includes ensemble, member, and Workflow version.</li>
+<li>Evaluation consumes the member&#x27;s final immutable artifact plus Workflow verdict evidence.</li>
+</ul>
+<p>Best-of-N version 1 implements only after_selection. before_comparison should ship only after the
+normal Workflow engine is proven and the N-times Persona cost/concurrency is explicit in the launch
+estimate. This composes multiple one-Session Workflows without turning the Workflow graph itself
+multi-session.</p>
+<h3 id="persona-reuse-without-conflating-verdicts"><a class="heading-anchor" href="#persona-reuse-without-conflating-verdicts" aria-label="Link to Persona reuse without conflating verdicts">#</a>Persona reuse without conflating verdicts</h3>
+<p>The ensemble comparator may use one active Persona as optional judging guidance. Snapshot its exact
+revision at ensemble creation, just as Publish snapshots Persona nodes. The shared intent/evidence
+contract remains above that Markdown.</p>
+<p>Do not execute PersonaVerdict for comparison. Workflow Personas answer pass/fail about one subject;
+the Best-of-N comparator must rank all eligible artifacts in one typed BestOfNComparisonResult. Resolve blank
+runner/model overrides through the same Persona ladder at attempt time and record the actual values
+used. This matches Workflow retry semantics while preserving exact guidance.</p>
+<p>Do not use the selected Workflow&#x27;s Persona nodes automatically as the comparator. That would make
+the cost N times the graph width, mix pass/fail with ranking, and activate repair/Inspector semantics
+before there is a winner. A future evaluation-only Workflow mode can be designed from real demand.</p>
+<h3 id="workflow-phase-impact-matrix"><a class="heading-anchor" href="#workflow-phase-impact-matrix" aria-label="Link to Workflow phase impact matrix">#</a>Workflow phase impact matrix</h3>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Workflow phase</th><th>Status in this checkout</th><th>Ensemble impact</th></tr></thead><tbody><tr><td>Phase 1 — foundation/Personas</td><td>Implemented</td><td>Reuse PersonaSnapshot, model ladders, table parsing discipline, Workflows page shell, and existing front-loaded run family. Add no Persona fork. The new binding-claim table can be created normally because it is a new table.</td></tr><tr><td>Phase 2 — builder/publishing</td><td>Implemented</td><td>No graph/schema/port change. Keep exactly one Session and the negative no-Ensemble-node contract. Published versions are already the immutable handoff target. Append Ensembles route awareness to the shell only.</td></tr><tr><td>Phase 3 — preview engine</td><td>Implemented</td><td>Reuse its binding conflict, stable capture, evidence, engine, retry/recovery, SSE, Reset, and Run detail paths. Add the external claim/source, clean exact-snapshot expectation, shared daemon review scheduler, and source deep link as the Phase 0A compatibility slice.</td></tr><tr><td>Phase 4 — live/Foreman</td><td>Implementation-ready</td><td>An ensemble starts only the first submission. If the pinned binding uses Foreman, later repair completion still travels through the planned Foreman claim endpoint. Live delivery repeats global/per-binding/repo consent; Ensemble adds no terminal delivery path.</td></tr><tr><td>Phase 5 — Inspector gate</td><td>Implementation-ready</td><td>Candidate prompts forbid PRs before promotion. After handoff, the Workflow&#x27;s normal adopted-PR, fresh-observation, exact-head, finding, and Shipping-veto rules apply. Ensemble never adopts, polls, posts, pushes, or merges.</td></tr><tr><td>Phase 6 — hardening</td><td>Implementation-ready</td><td>Keep Workflow and Ensemble model-call ledgers and retention families distinct, but present linked totals honestly. Workflow retention never removes ensemble refs; Ensemble refs remain manual-delete in v1. Add ensemble transitions to the shared alert engine rather than a separate notifier.</td></tr></tbody></table></div>
+<p>Phase 0A must now change implemented code rather than a future Phase 3 plan. Keep it additive and
+prove that manual Preview behavior, stored manual trigger identity, restart recovery, and Reset are
+unchanged while the external path enters through the same engine.</p>
+<h2 id="durable-data-model"><a class="heading-anchor" href="#durable-data-model" aria-label="Link to Durable data model">#</a>Durable data model</h2>
+<p>Add shared wire types in src/shared/ensemble.ts and a store under
+src/server/ensembles/store.ts. Use new tables rather than columns on tasks, so no migration
+addColumn calls are needed.</p>
+<h3 id="ensemblerun"><a class="heading-anchor" href="#ensemblerun" aria-label="Link to EnsembleRun">#</a>EnsembleRun</h3>
+<pre><code>type EnsembleStatus =
+  | &quot;planning&quot;
+  | &quot;running&quot;
+  | &quot;waiting&quot;
+  | &quot;evaluating&quot;
+  | &quot;awaiting_decision&quot;
+  | &quot;finalizing&quot;
+  | &quot;completed&quot;
+  | &quot;cancelled&quot;
+  | &quot;failed&quot;;
+
+interface EnsembleRun {
+  id: string;
+  requestId: string;
+  strategy: EnsembleStrategySnapshot;
+  title: string;
+  intent: string;
+  repoRoot: string;
+  baseSha: string;
+  baseBranch: string | null;
+  status: EnsembleStatus;
+  activeStageId: string | null;
+  budget: EnsembleBudgetSnapshot;
+  outcome: EnsembleOutcome | null;
+  workflowHandoff: EnsembleWorkflowHandoff | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+  members: EnsembleMemberSummary[];
+  stageSummaries: EnsembleStageSummary[];
+}
+</code></pre>
+<p>request_id must be NOT NULL UNIQUE. The UI creates a stable UUID for one submission and
+reuses it on retries. This prevents a response-loss retry from launching another N agents.
+All columns used by a UNIQUE or ON CONFLICT target must be non-null.</p>
+<p>strategy contains the append-only strategy id/version, validated config, compiled primitive plan,
+capabilities, and display summary. A run never reloads current registry defaults to recover.</p>
+<h3 id="ensemblemember"><a class="heading-anchor" href="#ensemblemember" aria-label="Link to EnsembleMember">#</a>EnsembleMember</h3>
+<pre><code>type EnsembleMemberStatus =
+  | &quot;launching&quot;
+  | &quot;active&quot;
+  | &quot;submitted&quot;
+  | &quot;reviewing&quot;
+  | &quot;advanced&quot;
+  | &quot;eliminated&quot;
+  | &quot;failed&quot;
+  | &quot;withdrawn&quot;
+  | &quot;retained&quot;;
+
+interface EnsembleMember {
+  id: string;
+  ensembleId: string;
+  ordinal: number;
+  wave: number;
+  role: string;
+  parentMemberId: string | null;
+  taskId: string;
+  agent: AgentType;
+  requestedModel: string | null;
+  requestedEffort: string | null;
+  observedModel: string | null;
+  approach: string | null;
+  inputArtifactIds: string[];
+  status: EnsembleMemberStatus;
+  workflowBindingId: string | null;
+  workflowRunId: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+</code></pre>
+<p>The member row snapshots identity and launch configuration. taskId remains historical even if the
+Task is later removed. Adaptive strategies may append later waves, so ordinal is stable creation
+order rather than a promise that all members existed at run creation.</p>
+<p>Do not store score, rank, diff, or one winner directly on a member. Those facts belong to artifacts,
+evaluations, and the terminal outcome and may occur several times.</p>
+<h3 id="ensembleartifact"><a class="heading-anchor" href="#ensembleartifact" aria-label="Link to EnsembleArtifact">#</a>EnsembleArtifact</h3>
+<pre><code>interface EnsembleArtifact {
+  id: string;
+  ensembleId: string;
+  memberId: string;
+  parentArtifactIds: string[];
+  kind: EnsembleArtifactKind;
+  formatVersion: number;
+  attempt: number;
+  status: &quot;capturing&quot; | &quot;ready&quot; | &quot;failed&quot; | &quot;superseded&quot;;
+  locator: EnsembleArtifactLocator;
+  summary: string;
+  reportedClaims: string[];
+  observedEvidence: EnsembleObservedEvidence;
+  fingerprint: string;
+  createdAt: number;
+  readyAt: number | null;
+}
+</code></pre>
+<p>For git_snapshot, locator contains snapshot SHA/ref, base SHA, diff summary, and truncation metadata.
+For a later report artifact it may contain a bounded content/blob locator instead. Artifact
+adapters validate their own versioned locator union.</p>
+<h3 id="stage-attempts-evaluations-and-outcome"><a class="heading-anchor" href="#stage-attempts-evaluations-and-outcome" aria-label="Link to Stage attempts, evaluations, and outcome">#</a>Stage attempts, evaluations, and outcome</h3>
+<pre><code>interface EnsembleStageAttempt {
+  id: string;
+  ensembleId: string;
+  stageId: string;
+  stageKind: EnsembleStageSpec[&quot;kind&quot;];
+  attempt: number;
+  state: &quot;queued&quot; | &quot;running&quot; | &quot;waiting&quot; | &quot;succeeded&quot; | &quot;failed&quot; | &quot;cancelled&quot;;
+  input: EnsembleJson;
+  output: EnsembleJson | null;
+  commandKey: string;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface EnsembleEvaluation {
+  id: string;
+  ensembleId: string;
+  stageAttemptId: string;
+  method: EvaluatorPolicy[&quot;kind&quot;];
+  subjectArtifactIds: string[];
+  evaluatorSnapshot: EnsembleJson;
+  result: EnsembleJson | null;
+  state: &quot;queued&quot; | &quot;running&quot; | &quot;succeeded&quot; | &quot;failed&quot; | &quot;interrupted&quot;;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type EnsembleOutcome =
+  | { kind: &quot;selected&quot;; memberIds: string[]; artifactIds: string[]; materializedTaskId: string | null }
+  | { kind: &quot;synthesized&quot;; memberId: string; artifactId: string; materializedTaskId: string | null }
+  | { kind: &quot;retained&quot;; memberIds: string[]; artifactIds: string[] }
+  | { kind: &quot;no_consensus&quot;; artifactIds: string[]; reason: string };
+</code></pre>
+<p>For Best-of-N, the comparative guidance is snapshotted inside the evaluate stage&#x27;s
+evaluatorSnapshot. The typed result contains recommendation, rank, scores, strengths, risks,
+rationale, confidence, and caveats. Other strategies may store pair verdicts, vote ballots,
+eligibility reports, standings, or synthesis provenance without widening EnsembleMember.</p>
+<h3 id="sqlite-tables"><a class="heading-anchor" href="#sqlite-tables" aria-label="Link to SQLite tables">#</a>SQLite tables</h3>
+<p>Add ensemble_runs, ensemble_members, ensemble_artifacts, ensemble_stage_attempts,
+ensemble_evaluations, ensemble_llm_calls, ensemble_events, and the generic
+workflow_binding_claims table inside openDb. Keep comments in that SQL block free of backticks.
+Store structured fields as JSON using the same parsing discipline as Tasks and Workflows.
+Suggested constraints:</p>
+<ul>
+<li>ensemble_runs.request_id is NOT NULL UNIQUE.</li>
+<li>ensemble_members.ensemble_id plus ordinal is NOT NULL UNIQUE.</li>
+<li>ensemble_members.task_id is NOT NULL UNIQUE.</li>
+<li>ensemble_artifacts.ensemble_id, member_id, kind, attempt are NOT NULL UNIQUE.</li>
+<li>ensemble_stage_attempts.ensemble_id, stage_id, attempt are NOT NULL UNIQUE.</li>
+<li>ensemble_stage_attempts.command_key is NOT NULL UNIQUE.</li>
+<li>ensemble_evaluations.stage_attempt_id plus a non-null evaluation key is NOT NULL UNIQUE.</li>
+<li>ensemble_llm_calls has non-null ensemble_id, purpose, runner_id, model_id, attempt, and timestamps;
+monetary cost remains nullable and authoritative-only.</li>
+<li>workflow_binding_claims has non-null source_kind, source_key, source_id, binding_id, and
+created_at; source_key is the primary key and binding_id is unique.</li>
+<li>Foreign-key deletion should not cascade through Tasks. Ensemble history outlives task cleanup.</li>
+<li>Full patches are never stored in SQLite or sent in the SSE snapshot.</li>
+</ul>
+<p>The handoff snapshot and its binding/run ids live in ensemble_runs JSON/columns because that table is
+new. Do not add ensemble columns to workflow_bindings. The generic claim table is the Workflow-owned
+idempotency seam for this and future external orchestrators.</p>
+<h2 id="state-machines-and-invariants"><a class="heading-anchor" href="#state-machines-and-invariants" aria-label="Link to State machines and invariants">#</a>State machines and invariants</h2>
+<div><div class="diagram"><svg viewBox='0 0 1320 520' role='img' aria-labelledby='state-title state-desc' xmlns='http://www.w3.org/2000/svg'><title id='state-title'>Durable EnsembleRun state machine</title><desc id='state-desc'>An Ensemble executes an immutable strategy plan through running, evaluation, decision, and finalization. Generic stage attempts and command keys make retries and restart recovery idempotent.</desc><defs><marker id='arrow-s' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' class='svg-arrow'/></marker></defs><circle cx='54' cy='115' r='14' class='svg-start'/><path d='M68 115 H116' class='svg-line' marker-end='url(#arrow-s)'/><rect x='124' y='76' width='166' height='78' rx='15' class='svg-node svg-blue'/><text x='207' y='108' text-anchor='middle' class='svg-title'>planning</text><text x='207' y='132' text-anchor='middle' class='svg-copy'>plan before launch</text><path d='M290 115 H350' class='svg-line' marker-end='url(#arrow-s)'/><rect x='358' y='76' width='166' height='78' rx='15' class='svg-node'/><text x='441' y='108' text-anchor='middle' class='svg-title'>running</text><text x='441' y='132' text-anchor='middle' class='svg-copy'>candidates active</text><path d='M524 115 H584' class='svg-line' marker-end='url(#arrow-s)'/><rect x='592' y='76' width='166' height='78' rx='15' class='svg-node svg-amber'/><text x='675' y='108' text-anchor='middle' class='svg-title'>evaluating</text><text x='675' y='132' text-anchor='middle' class='svg-copy'>stage evaluation</text><path d='M758 115 H818' class='svg-line' marker-end='url(#arrow-s)'/><rect x='826' y='66' width='210' height='98' rx='15' class='svg-node svg-purple'/><text x='931' y='104' text-anchor='middle' class='svg-title'>awaiting_decision</text><text x='931' y='130' text-anchor='middle' class='svg-copy'>human authority required</text><path d='M1036 115 H1096' class='svg-line' marker-end='url(#arrow-s)'/><rect x='1104' y='66' width='184' height='98' rx='15' class='svg-node svg-green'/><text x='1196' y='104' text-anchor='middle' class='svg-title'>finalizing</text><text x='1196' y='130' text-anchor='middle' class='svg-copy'>intent before effects</text><path d='M1196 164 V226' class='svg-line' marker-end='url(#arrow-s)'/><rect x='1094' y='234' width='204' height='86' rx='15' class='svg-node svg-green'/><text x='1196' y='268' text-anchor='middle' class='svg-title'>completed</text><text x='1196' y='294' text-anchor='middle' class='svg-copy'>outcome durable</text><path d='M675 154 V216 H826' class='svg-line svg-red-line' marker-end='url(#arrow-s)'/><rect x='826' y='198' width='210' height='82' rx='15' class='svg-node svg-red'/><text x='931' y='231' text-anchor='middle' class='svg-title'>retry_wait</text><text x='931' y='256' text-anchor='middle' class='svg-copy'>bounded stage retry</text><path d='M826 239 H774 V154' class='svg-line svg-dashed' marker-end='url(#arrow-s)'/><path d='M1196 66 V28 H1118 V66' class='svg-line svg-dashed' marker-end='url(#arrow-s)'/><text x='1157' y='22' text-anchor='middle' class='svg-note'>restart resumes idempotently</text><path d='M207 154 V386' class='svg-line svg-red-line' marker-end='url(#arrow-s)'/><path d='M441 154 V386' class='svg-line svg-red-line' marker-end='url(#arrow-s)'/><path d='M931 280 V386' class='svg-line svg-red-line' marker-end='url(#arrow-s)'/><rect x='312' y='394' width='180' height='78' rx='15' class='svg-node svg-red'/><text x='402' y='426' text-anchor='middle' class='svg-title'>cancelled</text><text x='402' y='450' text-anchor='middle' class='svg-copy'>refs retained</text><rect x='780' y='394' width='180' height='78' rx='15' class='svg-node svg-red'/><text x='870' y='426' text-anchor='middle' class='svg-title'>failed</text><text x='870' y='450' text-anchor='middle' class='svg-copy'>recovery visible</text><path d='M207 386 H312' class='svg-line svg-red-line'/><path d='M441 386 H402' class='svg-line svg-red-line'/><path d='M931 386 H870' class='svg-line svg-red-line'/><text x='54' y='505' class='svg-note'>Infrastructure errors never become evaluations. Models and strategy drivers cannot cross a destructive finalization boundary without a human.</text></svg></div></div>
+<p>Required invariants:</p>
+<ul>
+<li>An EnsembleRun with its immutable strategy/config/compiled plan and hard budgets is persisted
+before any member Task is created.</li>
+<li>Every member input is explicit: run base SHA or immutable parent artifact ids. Best-of-N members
+all verify the same run base; a synthesis/revision member may deliberately start from an artifact.</li>
+<li>Every member in one launch wave is persisted in backlog before the first Task in that wave is
+dispatched. Adaptive later waves append members without rewriting earlier ordinals.</li>
+<li>At most one member row points at a Task, and every Task is owned by at most one active Ensemble.</li>
+<li>Artifact attempts are immutable. Repeated identical submissions return the prior artifact;
+conflicting repeats require a new attempt or are rejected by strategy policy.</li>
+<li>A ready artifact always has a validated versioned locator, fingerprint, observed evidence, and
+readyAt.</li>
+<li>A stage starts only when its persisted dependency/barrier predicate is true.</li>
+<li>An evaluation contains every and only its declared ready subject artifacts, never live worktrees.</li>
+<li>Scores, ranks, votes, and eligibility never mutate member identity; each result stays attached to
+its evaluation attempt.</li>
+<li>A driver command is accepted only if its deterministic commandKey is new, the compiled plan
+permits it, and every hard budget remains satisfied.</li>
+<li>An LLM output can supply evidence but cannot directly spawn members, send feedback, select, reap,
+publish, or finalize.</li>
+<li>Any destructive finalization requires human confirmation, regardless of strategy.</li>
+<li>completed is not persisted until the declared terminal artifacts/tasks are exact, cleanup is
+complete, and any selected Workflow handoff is durable.</li>
+<li>A Workflow handoff has one immutable version and one stable source key; restart cannot bind or
+submit it twice.</li>
+<li>Workflow capture for a handoff requires HEAD equal to the selected artifact snapshot SHA and a
+clean working tree.</li>
+<li>No automatic transition deletes a restorable artifact ref.</li>
+</ul>
+<p>Best-of-N adds strategy-specific validation: fixed roster 2–5, at least two eligible ready
+git_snapshot artifacts, one validated comparative result containing each eligible artifact once,
+rank 1 recommendation, human selection of an eligible artifact, and select-one finalization.</p>
+<p>Use database transactions for every aggregate transition. Side effects are handled with the
+persist-before-act pattern: persist a stage attempt/command and finalization intent, perform
+idempotent Task/Git/terminal/Workflow operations, then persist the result. A daemon restart can
+safely resume the middle state.</p>
+<h2 id="pinned-input-dispatch"><a class="heading-anchor" href="#pinned-input-dispatch" aria-label="Link to Pinned-input dispatch">#</a>Pinned-input dispatch</h2>
+<p>Current worktree provisioning uses current HEAD or a Treehouse pool lease at the moment of
+each dispatch. N calls can therefore diverge if the source checkout moves or a warm lease
+has a different head.</p>
+<h3 id="creation-preflight"><a class="heading-anchor" href="#creation-preflight" aria-label="Link to Creation preflight">#</a>Creation preflight</h3>
+<p>Before inserting the EnsembleRun:</p>
+<ol>
+<li>Canonicalize and validate repoRoot using the existing repository policy.</li>
+<li>Resolve git rev-parse HEAD^{commit} once and store the full SHA.</li>
+<li>Record the display branch separately; it is informational.</li>
+<li>Parse the selected strategy id/version/config and compile its immutable execution plan.</li>
+<li>Resolve every distinct initial member agent binary and validate model/effort combinations.</li>
+<li>Validate artifact/evaluator/finalization/Workflow capability compatibility and hard budgets.</li>
+<li>Fail without launching anything if the repository, plan, or all required harnesses are invalid.</li>
+</ol>
+<p>Partial launch remains possible after preflight because processes can fail. Persist every member
+Task in the current wave first, then dispatch through the plan&#x27;s maxConcurrentMembers ceiling.
+Strategy barriers decide whether enough members/artifacts remain to continue.</p>
+<h3 id="dispatcher-seam"><a class="heading-anchor" href="#dispatcher-seam" aria-label="Link to Dispatcher seam">#</a>Dispatcher seam</h3>
+<p>Add an internal DispatchOptions object:</p>
+<pre><code>interface DispatchOptions {
+  defaultModel?: string;
+  baseSha?: string;
+  launchMcp?: MissionMcpLaunchConfig;
+}
+</code></pre>
+<p>TaskManager.dispatch passes it to Dispatcher. Normal dispatch omits baseSha and keeps
+existing behavior. An Ensemble member with run-base input requires it. A later revision/synthesis
+member may instead receive a verified artifact commit selected by its stage input.</p>
+<p>Extend provisionWorktree with an optional pinned base:</p>
+<ul>
+<li>Git fallback: git worktree add PATH -b BRANCH BASE_SHA.</li>
+<li>Treehouse lease: verify the lease belongs to the same repository, then reset the worktree
+and branch to BASE_SHA and remove nonignored untracked files before prompt injection.</li>
+<li>Preserve intentionally ignored warm dependencies. Do not use a clean mode that erases
+ignored caches.</li>
+<li>Re-read HEAD after provisioning and reject the member if it is not exactly its persisted input
+commit.</li>
+</ul>
+<p>This is a mechanism change in dispatcher/worktree code. Ensemble policy remains in
+EnsembleManager.</p>
+<h3 id="role-aware-member-prompt"><a class="heading-anchor" href="#role-aware-member-prompt" aria-label="Link to Role-aware member prompt">#</a>Role-aware member prompt</h3>
+<p>Generate a harness-neutral member appendix from the compiled strategy/stage and append it to the
+ordinary Task intent. Best-of-N version 1 says:</p>
+<ul>
+<li>This is candidate ordinal of total in ensemble id.</li>
+<li>Work independently from the pinned base and follow the optional approach hint.</li>
+<li>Implement and test the complete task.</li>
+<li>Do not inspect sibling worktrees or ensemble refs.</li>
+<li>Do not push, create a PR, or run the shipping gate.</li>
+<li>When the work is ready for comparison, call submit_candidate_result with a concise summary
+and the checks actually run.</li>
+<li>Do not claim checks that were not run.</li>
+</ul>
+<p>Sibling isolation is behavioral, not a security boundary. Worktrees and private refs share
+one Git repository, and a local agent can discover them. The UI and docs must not describe
+the members as adversarially isolated.</p>
+<p>Critique/synthesis strategies add only server-rendered, stage-authorized input artifacts to this
+appendix. Member prompts never expose ref namespaces or invite arbitrary sibling discovery.</p>
+<h2 id="explicit-submission-and-immutable-snapshots"><a class="heading-anchor" href="#explicit-submission-and-immutable-snapshots" aria-label="Link to Explicit submission and immutable snapshots">#</a>Explicit submission and immutable snapshots</h2>
+<h3 id="why-hooks-are-insufficient"><a class="heading-anchor" href="#why-hooks-are-insufficient" aria-label="Link to Why hooks are insufficient">#</a>Why hooks are insufficient</h3>
+<p>Stop, idle, and prompt-complete hooks report that one turn ended. A member can stop to
+ask a question, wait for approval, or report partial work. Existing Task completion is
+human-recorded and no-mistakes is optional. None is a reliable ready-for-comparison signal.</p>
+<p>Add submit_candidate_result as an MCP tool and a matching manual Submit result action in
+the Ensemble detail. The MCP request contains summary and checks, but never a caller-supplied
+ensemble/member/artifact id. The compiled stage decides which ArtifactAdapter captures the result.</p>
+<p>The daemon attributes the request using the authenticated MCP environment, session id, and
+working directory:</p>
+<ol>
+<li>Resolve the live session through the same attribution boundary used by other MCP calls.</li>
+<li>Resolve its current Task.</li>
+<li>Find the active member row whose taskId matches.</li>
+<li>Reject if the session, cwd, Task, or ensemble state does not match.</li>
+<li>Ask the stage&#x27;s ArtifactAdapter to capture and validate.</li>
+<li>Persist the immutable artifact first; only then mark the member submitted and wake barriers.</li>
+</ol>
+<p>This prevents one member from submitting a sibling by guessing its id. The initial tool shape is
+intentionally a readiness signal plus bounded claims; future artifact adapters can extend the
+duplicated protocol schema with a discriminated, strategy-authorized result payload.</p>
+<h3 id="launch-scoped-mcp-availability"><a class="heading-anchor" href="#launch-scoped-mcp-availability" aria-label="Link to Launch-scoped MCP availability">#</a>Launch-scoped MCP availability</h3>
+<p>Submission must work even if an operator did not previously install the Mission MCP
+integration.</p>
+<ul>
+<li>Claude: reuse the existing launch-scoped mcp-config mechanism used by the ask channel.</li>
+<li>Codex: add launch overrides for mcp_servers.mission-control.command, args, and env. A local
+probe against Codex 0.145.0 confirmed that repeated -c TOML overrides register a per-launch
+MCP server.</li>
+<li>Build one shared launch-scoped Mission MCP descriptor so the command, token, session
+attribution, and server path cannot drift between harnesses.</li>
+<li>Keep the existing global integration behavior unchanged for normal sessions.</li>
+</ul>
+<p>The MCP argument schema must be implemented twice, in src/shared/protocol.ts and
+src/mcp/server.ts, because that duplication is an existing contract.</p>
+<h3 id="gitsnapshot-adapter"><a class="heading-anchor" href="#gitsnapshot-adapter" aria-label="Link to git_snapshot adapter">#</a>git_snapshot adapter</h3>
+<p>Do not commit through the member&#x27;s real index or mutate its branch merely to evaluate it.
+Create an immutable commit through a temporary Git index:</p>
+<ol>
+<li>Create a temporary index path.</li>
+<li>Set GIT_INDEX_FILE only for the snapshot subprocesses.</li>
+<li>git read-tree HEAD.</li>
+<li>git add -A from the member worktree. This includes tracked changes and untracked,
+nonignored files.</li>
+<li>git write-tree.</li>
+<li>git commit-tree TREE -p HEAD with a generated local message.</li>
+<li>git update-ref refs/mission-control/ensembles/ENSEMBLE_ID/ARTIFACT_ID COMMIT.</li>
+<li>Delete the temporary index in a finally block.</li>
+<li>Re-read the ref and commit before persisting submission.</li>
+</ol>
+<p>Use the existing argument-array process runner, never a shell command. Ref components are
+generated UUIDs, not user text.</p>
+<p>The algorithm preserves the member&#x27;s real staged/unstaged split and HEAD. It captures
+the complete submitted worktree. Add tests for tracked, staged, unstaged, deleted, renamed,
+and untracked files, and prove that the real index is byte-for-byte unchanged.</p>
+<h3 id="exact-git-artifact-diff"><a class="heading-anchor" href="#exact-git-artifact-diff" aria-label="Link to Exact Git artifact diff">#</a>Exact Git artifact diff</h3>
+<p>Compare baseSha directly with snapshotSha. Do not route this through the existing explicit
+source ancestry guard: a member may amend or rebase before submission, while the
+snapshot commit is still an exact artifact. The new helper should emit:</p>
+<ul>
+<li>file list and add/delete counts,</li>
+<li>binary markers,</li>
+<li>full patch up to a configured per-artifact budget,</li>
+<li>truncation flag and omitted byte count,</li>
+<li>snapshot and base ids.</li>
+</ul>
+<p>The Ensemble detail fetches materialized artifact evidence on demand. For git_snapshot this is an
+exact diff endpoint. SSE carries only
+the small summary.</p>
+<h3 id="evidence-provenance"><a class="heading-anchor" href="#evidence-provenance" aria-label="Link to Evidence provenance">#</a>Evidence provenance</h3>
+<p>Record evidence in separate fields and label it in the UI and prompt:</p>
+<ul>
+<li>Reported by member: summary and checks supplied to the MCP tool.</li>
+<li>Observed by Mission Control: Git diff statistics, snapshot identity, no-mistakes outcome
+if present, observed model, timestamps, and member cost.</li>
+<li>Not known: a reported test command does not become tests-green merely because the agent
+said it ran.</li>
+</ul>
+<p>The first release does not execute an arbitrary validation command. A follow-up can add
+repo-owned evaluation profiles with an explicit command, timeout, sandbox policy, and
+artifact contract.</p>
+<h2 id="best-of-n-comparative-evaluator"><a class="heading-anchor" href="#best-of-n-comparative-evaluator" aria-label="Link to Best-of-N comparative evaluator">#</a>Best-of-N comparative evaluator</h2>
+<h3 id="input-assembly"><a class="heading-anchor" href="#input-assembly" aria-label="Link to Input assembly">#</a>Input assembly</h3>
+<p>The best_of_n v1 compiler emits one all-at-once comparative evaluate stage after every member is
+submitted, failed, or withdrawn. Require at least two eligible ready git_snapshot artifacts.</p>
+<p>Build one evidence packet with:</p>
+<ul>
+<li>original task and acceptance intent,</li>
+<li>exact pinned base SHA,</li>
+<li>snapshotted evaluator guidance,</li>
+<li>one stable anonymous label per subject artifact,</li>
+<li>immutable diff and statistics,</li>
+<li>member summary and clearly labeled reported checks,</li>
+<li>observed no-mistakes status and agent cost when available,</li>
+<li>truncation metadata.</li>
+</ul>
+<p>Anonymize agent, model, and member ordinal in the evaluator input. Those attributes are
+useful to the operator but invite brand and order bias. The mapping back to artifact/member ids
+stays server-side.</p>
+<p>Cap total patch input at approximately 400 KiB for the first implementation and
+allocate it evenly across eligible artifacts. Always retain file-level statistics and a
+truncation disclosure. Reject rather than silently evaluating an artifact with no usable diff
+or evidence.</p>
+<h3 id="rubric"><a class="heading-anchor" href="#rubric" aria-label="Link to Rubric">#</a>Rubric</h3>
+<p>The built-in guidance should rank in this order:</p>
+<ol>
+<li>Correctness against the task and acceptance criteria.</li>
+<li>Strength of observed evidence and quality of relevant reported checks.</li>
+<li>Maintainability, clarity, and fit with repository conventions.</li>
+<li>Scope discipline, regression surface, and security risk.</li>
+<li>Diff size as a tie-breaker, never a smallest-diff-wins rule.</li>
+</ol>
+<p>The evaluator should explicitly surface uncertainty caused by truncation, missing tests, binary
+changes, or incomparable approaches.</p>
+<h3 id="execution-boundary"><a class="heading-anchor" href="#execution-boundary" aria-label="Link to Execution boundary">#</a>Execution boundary</h3>
+<p>Use the provider-neutral LlmRunner structured-call path with a fresh context and no tools. Schedule
+the call through the daemon review scheduler introduced in Phase 0A, so Workflow context
+compaction, Persona attempts, and an Ensemble evaluator cannot independently exceed the local
+concurrency budget.
+Do not give the evaluator a repository path, shell, web, GitHub, or terminal access. Candidate
+diffs are untrusted input and may contain prompt injection. Delimit each evidence object as
+data with the shared review fence, repeat that instructions in candidate content are not
+executable, and validate all output through Zod.</p>
+<p>Suggested result:</p>
+<pre><code>interface BestOfNComparisonResult {
+  recommendedArtifactId: string;
+  comparison: string;
+  caveats: string[];
+  subjects: Array&lt;{
+    artifactId: string;
+    score: number;
+    rank: number;
+    strengths: string[];
+    risks: string[];
+    rationale: string;
+    confidence: number;
+  }&gt;;
+}
+</code></pre>
+<p>After parsing:</p>
+<ul>
+<li>require exactly the eligible artifact ids, each once;</li>
+<li>require integer scores from 0 through 100;</li>
+<li>require unique contiguous ranks;</li>
+<li>require confidence from 0 through 1;</li>
+<li>require the recommendation to exist and have rank 1;</li>
+<li>cap text and array lengths before persistence and SSE;</li>
+<li>map anonymous labels back only after validation.</li>
+</ul>
+<p>Insert an ensemble_llm_calls row before each call and finalize actual runner/model, duration, byte
+counts, outcome, and nullable authoritative cost afterward. An invalid or interrupted result marks
+the evaluation attempt failed and exposes bounded retry; infrastructure failure never becomes a
+ranking. Retry uses the same immutable subjects and evaluator snapshot.</p>
+<h2 id="finalization-cleanup-and-recoverability"><a class="heading-anchor" href="#finalization-cleanup-and-recoverability" aria-label="Link to Finalization, cleanup, and recoverability">#</a>Finalization, cleanup, and recoverability</h2>
+<p>Every strategy declares a FinalizationPolicy and terminal EnsembleOutcome. Any finalization that
+resets a branch, types a continuation, creates a Workflow binding, cancels members, reaps
+worktrees, publishes, or deletes requires explicit human confirmation. Model recommendations,
+panel votes, test scores, and strategy drivers remain advisory.</p>
+<h3 id="best-of-n-select-one-transaction"><a class="heading-anchor" href="#best-of-n-select-one-transaction" aria-label="Link to Best-of-N select-one transaction">#</a>Best-of-N select-one transaction</h3>
+<ol>
+<li>In one database transaction, verify awaiting_decision, persist a selected outcome intent and
+status finalizing, and clear prior cleanup errors.</li>
+<li>Verify that the selected ready artifact ref still resolves to its snapshot SHA.</li>
+<li>If the winning Task, session, and worktree are live, return that branch to the exact
+snapshot with a hard reset and removal of nonignored untracked files. Refuse if the
+session is actively running or waiting on an approval; retry when idle.</li>
+<li>If the winner cannot be rebound after restart, create exactly one replacement normal
+Task from snapshotSha, store materializedTaskId, and launch it with a continuation prompt.
+requestId-derived identity prevents duplicate replacement Tasks.</li>
+<li>Cancel every loser Task through TaskManager so terminal and worktree teardown remain
+centralized.</li>
+<li>Persist retained/eliminated member states as each side effect succeeds.</li>
+<li>If no Workflow handoff is pinned, inject a winner continuation message that includes the
+original task, candidate summary, caveats, and instruction to inspect and ship normally.</li>
+<li>If a handoff is pinned, call ensureExternalBinding with the immutable version and stable source
+key, then submitExternal with expectedHeadSha equal to snapshotSha and requireCleanWorktree true.
+Persist bindingId/runId after each idempotent result. Do not send the generic shipping
+continuation before review.</li>
+<li>Persist outcome selected and status completed only after the exact winner is available, all
+loser teardowns finish, and the optional initial Workflow submission is captured and activated.</li>
+</ol>
+<p>If any side effect fails, remain in finalizing with an actionable error. Restart
+reconciliation resumes the same steps. Never report completed while a loser still owns a
+live worktree unless the store records an explicit retryable cleanup state.</p>
+<p>Workflow execution is not part of finalizing. Once its initial submission exists, the engines
+advance independently: the Ensemble is completed and the linked Workflow run may be running, waiting
+for repair, blocked, at Inspector, completed, or cancelled. Cancelling/deleting old Ensemble history
+must never cancel or prune the linked Workflow family.</p>
+<h3 id="snapshot-retention"><a class="heading-anchor" href="#snapshot-retention" aria-label="Link to Snapshot retention">#</a>Snapshot retention</h3>
+<p>Finalization reaps worktrees only when its policy says so; it does not reap evidence. Keep every
+restorable artifact ref after completion or cancellation. The UI exposes the ref and a Restore
+member/result action can create a normal Task
+from that commit.</p>
+<p>Delete refs only through an explicit Delete ensemble/history action with confirmation. Do not
+add time-based pruning in the first release; it would turn a cleanup optimization into a
+data-loss policy without a storage budget or retention setting.</p>
+<h3 id="cancellation-and-withdrawal"><a class="heading-anchor" href="#cancellation-and-withdrawal" aria-label="Link to Cancellation and withdrawal">#</a>Cancellation and withdrawal</h3>
+<ul>
+<li>Cancel ensemble cancels all launching or active member Tasks through TaskManager.</li>
+<li>Submitted refs survive cancellation.</li>
+<li>Cancel member marks that member withdrawn after Task cleanup.</li>
+<li>Strategy eligibility decides how failed/withdrawn members affect barriers.</li>
+<li>For Best-of-N, if all work settles with fewer than two eligible artifacts, mark the ensemble
+failed with an explanation and offer Retry member, Restore result, or Cancel. Do not manufacture
+a competition from one artifact.</li>
+</ul>
+<h2 id="api-mcp-and-live-events"><a class="heading-anchor" href="#api-mcp-and-live-events" aria-label="Link to API, MCP, and live events">#</a>API, MCP, and live events</h2>
+<h3 id="http-routes"><a class="heading-anchor" href="#http-routes" aria-label="Link to HTTP routes">#</a>HTTP routes</h3>
+<p>Add zod schemas in src/shared/protocol.ts and route every mutating body through parseBody.</p>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Method</th><th>Route</th><th>Purpose</th></tr></thead><tbody><tr><td>GET</td><td>/api/ensembles</td><td>Paginated run summaries</td></tr><tr><td>POST</td><td>/api/ensembles</td><td>Idempotently create and launch one ensemble</td></tr><tr><td>GET</td><td>/api/ensembles/:id</td><td>Full bounded members/stages/artifacts/evaluations detail</td></tr><tr><td>GET</td><td>/api/ensembles/:id/artifacts/:artifactId</td><td>Materialize evidence/diff on demand</td></tr><tr><td>POST</td><td>/api/ensembles/:id/members/:memberId/submit</td><td>Manual result submission fallback</td></tr><tr><td>POST</td><td>/api/ensembles/:id/actions</td><td>Generic parsed operator decision/retry/withdraw/cancel/restore action</td></tr><tr><td>DELETE</td><td>/api/ensembles/:id</td><td>Explicitly delete history and private refs after confirmation</td></tr></tbody></table></div>
+<p>POST /api/ensembles accepts:</p>
+<ul>
+<li>requestId, title, intent, repoRoot, priority, labels, attachments;</li>
+<li>strategy id plus optional explicit version and validated strategy config;</li>
+<li>strategy config containing roster/matrix/adaptive launch policy and any evaluator Persona;</li>
+<li>optional compatible Workflow placement/version.</li>
+</ul>
+<p>Server-generated ids remain authoritative. Attachments use the existing dispatch
+serialization and are included consistently according to the compiled member prompt policy. The
+daemon resolves referenced Personas and Workflows to immutable snapshots during creation; it does
+not trust client-supplied bodies.</p>
+<p>EnsembleActionSchema is a discriminated union of generic engine authorities such as retry_stage,
+withdraw_member, decide, resolve_finalization, cancel, and restore_artifact. A new strategy composed
+from existing primitives adds no route. A genuinely new operator authority extends this schema and
+the one actions route.</p>
+<h3 id="mcp-route-and-tool"><a class="heading-anchor" href="#mcp-route-and-tool" aria-label="Link to MCP route and tool">#</a>MCP route and tool</h3>
+<p>Add token-authenticated POST /mcp/ensemble/submit and tool
+submit_candidate_result(summary, checks?). The transport request also contains server-supplied
+session attribution. Mirror validation in the MCP server and shared protocol.</p>
+<p>Return the artifact kind/fingerprint, Git short SHA when applicable, and a durable acknowledgement
+so the agent can stop. Late calls after the member&#x27;s collect barrier closes return the existing
+artifact if identical or a clear state error.</p>
+<h3 id="sse-and-registry"><a class="heading-anchor" href="#sse-and-registry" aria-label="Link to SSE and Registry">#</a>SSE and Registry</h3>
+<p>Add ensembleSummaries as a top-level collection:</p>
+<ul>
+<li>Registry.snapshot() includes ensembleSummaries.</li>
+<li>MissionState includes ensembleSummaries.</li>
+<li>ServerEvent adds ensemble_upsert and ensemble_remove.</li>
+<li>src/web/useEventStream.ts handles both variants and the snapshot collection exhaustively.</li>
+</ul>
+<p>Broadcast one compact EnsembleSummary containing strategy, status, active stage, member/artifact
+counts, attention, budget usage, and terminal outcome summary. Full members, artifacts,
+evaluations, stage outputs, and patches stay on HTTP. This remains bounded when a later strategy
+launches more than five or generates pairwise evaluations.</p>
+<h3 id="session-projection"><a class="heading-anchor" href="#session-projection" aria-label="Link to Session projection">#</a>Session projection</h3>
+<p>Extend TaskSummary with a nested optional projection:</p>
+<pre><code>ensemble?: {
+  id: string;
+  strategyId: EnsembleStrategyId;
+  strategyLabel: string;
+  memberId: string;
+  ordinal: number;
+  wave: number;
+  role: string;
+  launchedMembers: number;
+  maxMembers: number;
+  status: EnsembleMemberStatus;
+  resultLabel: string | null;
+};
+</code></pre>
+<p>This avoids adding another denormalized top-level Session field. Session.task is already
+compared structurally. resultLabel is a bounded strategy-derived human label such as rank 1,
+advanced, critic, synthesis, or retained; components do not interpret strategy-specific JSON.
+Keep the projection derived from the Ensemble store whenever Task
+summaries are built.</p>
+<h2 id="dashboard-design-and-parity"><a class="heading-anchor" href="#dashboard-design-and-parity" aria-label="Link to Dashboard design and parity">#</a>Dashboard design and parity</h2>
+<h3 id="dispatch-modal"><a class="heading-anchor" href="#dispatch-modal" aria-label="Link to Dispatch modal">#</a>Dispatch modal</h3>
+<p>Add Single and Ensemble modes only for new dispatches. A backlog Task edit remains single.
+In Ensemble mode:</p>
+<ul>
+<li>keep the existing title, intent, repository, attachment, label, and priority controls;</li>
+<li>select a strategy from descriptor-driven preset cards; Best-of-N is the only enabled v1 card;</li>
+<li>render its generic StrategyFormSpec, with roster rows owning agent, model, effort, role, and
+optional approach;</li>
+<li>offer the evaluator Persona and compatible Workflow placement/version fields declared by strategy
+capabilities; show exact revisions/versions that will be pinned;</li>
+<li>when a Workflow is selected, show its trigger/delivery defaults, round cap, final gate, and any
+Live/Foreman prerequisites before launch;</li>
+<li>show launch estimate as exact or range, max concurrency, waves, artifact type, evaluation stages,
+finalization, and hard stop budgets before confirmation;</li>
+<li>show the strategy&#x27;s information-sharing and publishing rules;</li>
+<li>allow duplicate rows;</li>
+<li>preserve all fields in DispatchLayer and lib/task-draft.ts across close/unmount;</li>
+<li>disable submit while attachments upload and reuse the current reset nonce behavior.</li>
+</ul>
+<p>This change does not add a composer to TranscriptPanel, WorkQueue, or ActionBar, so those
+compose surfaces remain unchanged. Dispatch is already its own attachment-capable layer.</p>
+<h3 id="ensembles-inside-the-workflows-page"><a class="heading-anchor" href="#ensembles-inside-the-workflows-page" aria-label="Link to Ensembles inside the Workflows page">#</a>Ensembles inside the Workflows page</h3>
+<p>Extend the existing hash shell with #/workflows/ensembles and
+#/workflows/ensembles/:id. Add Ensembles beside Workflows, Personas, and Runs. The page owns selected ensemble
+state through the route, while App keeps the one fleet EventSource mounted exactly as the Workflow
+plan requires.</p>
+<p>Do not add an Ensemble overlay, OVERLAY_IDS entry, or separate top-bar button. The existing Workflows
+top-bar entry is the home for durable orchestration. Dispatch remains the creation surface; the
+Ensembles tab is monitoring, evidence, selection, recovery, and history.</p>
+<p>The Ensemble detail should show:</p>
+<ul>
+<li>strategy/version, status, active stage, pinned inputs, elapsed time, launch/budget use, and
+aggregate member cost;</li>
+<li>member cards grouped by wave/role, with lineage and linked Workflow state;</li>
+<li>immutable artifacts and their provenance;</li>
+<li>stage timeline, barriers, retries, evaluations, advancement, and strategy decisions;</li>
+<li>reported versus observed evidence labels;</li>
+<li>on-demand artifact materialization/diff;</li>
+<li>focus session, manual submit, withdraw, retry stage, cancel, and generic pending decisions;</li>
+<li>evaluator identities and structured results;</li>
+<li>terminal outcome, retained/eliminated members, and recovery actions;</li>
+<li>pinned post-promotion Workflow version and settings;</li>
+<li>handoff state, linked binding/run, exact reviewed result SHA, and deep link to Workflow Run detail.</li>
+</ul>
+<p>Best-of-N&#x27;s strategy result renderer presents the familiar anonymous scorecards, recommendation,
+caveats, Select candidate confirmation, snapshot refs, and Restore actions. A future panel renderer
+can show judge agreement; a tournament renderer can show a bracket/standings; both consume generic
+evaluation rows and add no new page route.</p>
+<p>No new keyboard shortcut is needed in v1. Workflows page focus continues to stand down fleet
+shortcuts, and Back/Forward owns detail navigation.</p>
+<h3 id="layout-parity"><a class="heading-anchor" href="#layout-parity" aria-label="Link to Layout parity">#</a>Layout parity</h3>
+<p>Board already supplies the overview, but an ensemble signal must appear in every layout:</p>
+<ul>
+<li>SessionCard: a shared EnsembleChip leaf.</li>
+<li>ConsoleDetail: the same shared EnsembleChip.</li>
+<li>SessionTile: a tile flag with member ordinal/role and state.</li>
+<li>RailRow: a compact E mark plus bounded resultLabel.</li>
+</ul>
+<p>Put the shared leaf in session-bits.tsx. Route onOpenEnsemble through SessionViewProps and
+cardProps in layouts/types.ts so GridView cannot drop it. Update all three mark vocabularies
+together and add parity coverage. Do not add an affordance only to SessionCard.</p>
+<p>The Workflow Phase 3 marks and Ensemble marks may coexist on a selected/synthesized result. Do not collapse one
+into the other or use a single ambiguous status:</p>
+<ul>
+<li>Ensemble mark answers strategy, member role/wave, and its current/result state.</li>
+<li>Workflow mark answers the selected Session&#x27;s review/repair/gate state.</li>
+<li>Cards and details render both shared chips.</li>
+<li>Tile and rail vocabularies reserve distinct E and W marks with accessible labels.</li>
+</ul>
+<p>Implement the shared chip row once so the order is stable. Clicking E opens the Ensemble detail;
+clicking W opens the Workflow Run.</p>
+<h2 id="failure-race-and-restart-analysis"><a class="heading-anchor" href="#failure-race-and-restart-analysis" aria-label="Link to Failure, race, and restart analysis">#</a>Failure, race, and restart analysis</h2>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Scenario</th><th>Required behavior</th></tr></thead><tbody><tr><td>Duplicate create request</td><td>requestId returns the existing EnsembleRun; no new Tasks</td></tr><tr><td>Unknown/corrupt strategy plan</td><td>Fail visibly before launch or block recovery; never compile with current defaults</td></tr><tr><td>Source branch moves during launch</td><td>Every worktree still verifies its persisted input commit</td></tr><tr><td>One harness binary disappears</td><td>Member fails; strategy barrier decides whether others continue</td></tr><tr><td>Member process dies before submit</td><td>Member fails and no artifact is invented</td></tr><tr><td>Member calls submit twice</td><td>Same payload returns prior artifact; conflict is rejected/new attempt required</td></tr><tr><td>Member tries sibling id</td><td>Impossible through MCP schema; attribution comes from session Task</td></tr><tr><td>Artifact capture fails</td><td>Member stays active; no ready artifact is persisted</td></tr><tr><td>Daemon exits during a launch wave</td><td>Task reconciliation runs; durable stage/command keys prevent duplicate members</td></tr><tr><td>Driver requests too many agents</td><td>Engine rejects command against hard member/wave/concurrency caps</td></tr><tr><td>Barrier can no longer be satisfied</td><td>Stage/run fails with exact missing/failed subjects and recovery actions</td></tr><tr><td>Daemon exits during evaluator</td><td>LLM child becomes interrupted; evaluation retry is bounded and idempotent</td></tr><tr><td>Evaluator output is malformed</td><td>Preserve artifacts, fail the attempt, expose retry; never create a decision</td></tr><tr><td>Artifact contains prompt injection</td><td>Tool-less evaluator, data fencing, typed output validation</td></tr><tr><td>Daemon exits during finalization</td><td>finalizing is durable and side effects are idempotently resumed</td></tr><tr><td>Cleanup fails</td><td>Remain finalizing with the exact member error; retry cleanup</td></tr><tr><td>Winner session disappeared</td><td>Create one replacement Task at snapshotSha</td></tr><tr><td>Existing Workflow binding owns winner</td><td>Block handoff; require explicit keep-existing or remove-binding choice</td></tr><tr><td>Workflow version is archived after ensemble creation</td><td>Pinned immutable version remains executable; its display says archived source</td></tr><tr><td>Live Workflow consent was revoked</td><td>Do not downgrade; remain finalizing with an authorization recovery action</td></tr><tr><td>Winner HEAD differs or its working tree is dirty during Workflow capture</td><td>Refuse the handoff, restore snapshotSha cleanly, then resume the same external submission</td></tr><tr><td>Crash after binding but before ensemble update</td><td>Stable binding claim returns the same binding and submission</td></tr><tr><td>Linked Workflow later fails/cancels</td><td>Ensemble remains completed and links the true Workflow state</td></tr><tr><td>Artifact ref is missing</td><td>Refuse finalization/restore; do not clean remaining members</td></tr><tr><td>Best-of-N gets one artifact</td><td>No comparison; show insufficient-evidence failure and recovery actions</td></tr><tr><td>Pairwise evaluation partially completes</td><td>Preserve completed pairs; retry only missing attempts</td></tr><tr><td>Adaptive stop rule is inconclusive</td><td>Spawn next allowed wave or terminate no_consensus at hard cap</td></tr><tr><td>Operator cancels</td><td>Cancel active Tasks; keep existing refs and history</td></tr><tr><td>SSE reconnects</td><td>Snapshot contains bounded EnsembleSummary collection; detail refetches over HTTP</td></tr></tbody></table></div>
+<h3 id="restart-reconciliation"><a class="heading-anchor" href="#restart-reconciliation" aria-label="Link to Restart reconciliation">#</a>Restart reconciliation</h3>
+<p>On daemon start, after Tasks and sessions load:</p>
+<ol>
+<li>Load nonterminal EnsembleRuns and validate their snapshotted plan/primitives.</li>
+<li>Join members to current Tasks and artifacts without erasing immutable ready results.</li>
+<li>Recover running LLM evaluations as interrupted and finalize durable Task/artifact observations.</li>
+<li>Recompute stage readiness from attempts, barriers, evaluations, and command keys.</li>
+<li>Recover WorkflowEngine/bindings before resuming a finalization with a handoff.</li>
+<li>Resume finalizing from persisted outcome intent, cleanup progress, binding claim, and submission
+key.</li>
+<li>Invoke the pure strategy driver only after the generic durable state is consistent; deduplicate
+every returned command.</li>
+<li>Emit reconciled summary upserts after Registry holds one coherent run view.</li>
+</ol>
+<p>Use a per-ensemble serialized queue or mutex for submit, Task updates, stage/evaluation completion,
+driver decisions, operator actions, cancel, and finalization. The daemon is single-process but async
+completions can otherwise race.</p>
+<h2 id="security-and-resource-controls"><a class="heading-anchor" href="#security-and-resource-controls" aria-label="Link to Security and resource controls">#</a>Security and resource controls</h2>
+<ul>
+<li>Creating an ensemble is explicit authorization to launch an exact count or bounded range of local
+agents; show initial, maximum, concurrency, waves, and Workflow/evaluator calls before submit.</li>
+<li>Reuse repository allowlisting and MCP token checks.</li>
+<li>Resolve identity from live session/Task state, never a user-supplied member/artifact id.</li>
+<li>Generate refs and branches from UUIDs and pass process arguments without a shell.</li>
+<li>Pre-finalization member prompts prohibit push and PR creation unless a future strategy explicitly
+introduces a separately consented publishing primitive. Finalization returns to the normal
+provenance-aware shipping flow.</li>
+<li>Active member sessions cannot acquire a normal Workflow binding except through the compiled
+MemberWorkflowPolicy and server-owned external-binding boundary.</li>
+<li>Workflow handoff identity, version, noteKey, expected HEAD, and clean-worktree requirement are
+resolved/rechecked by the daemon; the client cannot target another session.</li>
+<li>Model evaluators have no tools; their results and strategy-driver commands cannot delete or
+publish.</li>
+<li>Destructive finalization requires a human and preserves restorable artifacts before cleanup.</li>
+<li>Enforce persisted max members/concurrency/waves/stage attempts, cap artifact/prompt/result bytes,
+and reuse LLM timeout/cancellation.</li>
+<li>Member cost is the sum of session cost telemetry at submission. Label it agent cost. Evaluator and
+linked Workflow monetary costs appear only when their runner reports them authoritatively; call
+count, model, duration, and bytes remain visible otherwise.</li>
+<li>Do not promise adversarial isolation between worktrees in one local repository.</li>
+</ul>
+<h2 id="implementation-sequence"><a class="heading-anchor" href="#implementation-sequence" aria-label="Link to Implementation sequence">#</a>Implementation sequence</h2>
+<p>Each phase should land with its tests and leave normal dispatch unchanged.</p>
+<p>The dependency-linked implementation schedule has now been re-audited against main <code>57ea5bc</code> and
+lives in <a href="./phased-plan.md">phased-plan.md</a>, with one complete implementation document per task.
+That eight-phase schedule is authoritative for merge order and file ownership. The slices below
+remain a compact architectural map; their older 0A/0B numbering must not be used to schedule work.</p>
+<h3 id="phase-0a-extend-the-shipped-workflow-preview-boundary"><a class="heading-anchor" href="#phase-0a-extend-the-shipped-workflow-preview-boundary" aria-label="Link to Phase 0A — extend the shipped Workflow Preview boundary">#</a>Phase 0A — extend the shipped Workflow Preview boundary</h3>
+<p>Files:</p>
+<ul>
+<li>src/shared/workflow.ts</li>
+<li>src/shared/protocol.ts</li>
+<li>src/server/db.ts</li>
+<li>src/server/workflows/store.ts</li>
+<li>src/server/workflows/manager.ts</li>
+<li>src/server/workflows/context.ts</li>
+<li>src/server/workflows/engine.ts</li>
+<li>src/server/workflows/external-binding.ts</li>
+<li>src/server/llm/review-scheduler.ts</li>
+<li>src/server/index.ts</li>
+<li>src/web/workflows/WorkflowRuns.tsx</li>
+<li>targeted Workflow store, binding HTTP, context, recovery, Reset, and run-render tests</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Keep the published graph and one-Session context contracts unchanged.</li>
+<li>Append ensemble to WorkflowTriggerSource while leaving WorkflowTriggerMode unchanged; remove the
+store&#x27;s manual-source literals by passing source explicitly from existing manual call sites.</li>
+<li>Add the transactional workflow_binding_claims seam and external bind/submit methods.</li>
+<li>Add stable expected-HEAD plus clean-worktree enforcement, including idempotent resume of the same
+external initial submission after a mismatch.</li>
+<li>Inject one daemon review scheduler into Workflow compaction/Persona calls and later Ensemble
+evaluators; preserve unrelated per-caller limits and the Foreman process boundary.</li>
+<li>Factor only reusable prompt fencing/cap helpers, not Persona or comparator result semantics.</li>
+<li>Delete claims with Workflow Reset while retaining Ensemble history and a visible removed-link state.</li>
+</ul>
+<p>Exit: all existing manual Preview tests remain green, existing manual keys and rows retain their
+meaning, and one finalized exact clean result can idempotently create and activate one externally
+sourced Workflow run through the shipped engine.</p>
+<p>This slice is a dependency of Ensemble Phase 5, not of core Phases 0B–4. Preview handoff can be
+enabled after it lands because Workflow Phase 3 exists. Live/Foreman handoff choices remain disabled
+until Workflow Phase 4 exists.</p>
+<h3 id="phase-0b-prove-the-two-low-level-ensemble-seams"><a class="heading-anchor" href="#phase-0b-prove-the-two-low-level-ensemble-seams" aria-label="Link to Phase 0B — prove the two low-level ensemble seams">#</a>Phase 0B — prove the two low-level ensemble seams</h3>
+<p>Files:</p>
+<ul>
+<li>src/server/git/ensemble-snapshot.ts, or a nearby focused Git helper</li>
+<li>src/server/dispatcher.ts</li>
+<li>src/server/tasks.ts</li>
+<li>src/server/ask-channel.ts</li>
+<li>src/server/mission-mcp.ts</li>
+<li>src/server/harness/codex/launch.ts</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Implement and exhaustively test temporary-index snapshots and exact base-to-snapshot diff.</li>
+<li>Add pinned base provisioning to Git and Treehouse paths and verify post-provision HEAD.</li>
+<li>Add a shared launch-scoped Mission MCP descriptor and Codex TOML overrides.</li>
+<li>Retain the local probe as a unit fixture around exact argv; do not depend on installed
+Codex in the test suite.</li>
+</ul>
+<p>Exit: two temp worktrees start at one SHA, diverge, snapshot without index mutation, and
+remain restorable after teardown.</p>
+<h3 id="phase-1-contracts-store-and-live-state"><a class="heading-anchor" href="#phase-1-contracts-store-and-live-state" aria-label="Link to Phase 1 — contracts, store, and live state">#</a>Phase 1 — contracts, store, and live state</h3>
+<p>Files:</p>
+<ul>
+<li>src/shared/ensemble.ts</li>
+<li>src/shared/protocol.ts</li>
+<li>src/server/db.ts</li>
+<li>src/server/ensembles/store.ts</li>
+<li>src/server/registry.ts</li>
+<li>src/shared/types.ts</li>
+<li>src/web/useEventStream.ts</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Add append-only strategy/artifact ids, policy/stage/outcome unions, Zod request schemas, generic
+tables, row parsing, idempotency, and transition contracts.</li>
+<li>Add browser-safe strategy descriptors and server compiler registries with exhaustive Records.</li>
+<li>Add compact summary snapshot/upsert/remove events and nested TaskSummary projection.</li>
+<li>Implement pure plan/capability/budget validation before side effects.</li>
+</ul>
+<p>Exit: an EnsembleRun with members, artifacts, stage attempts, evaluations, and a compiled strategy
+snapshot round-trips through SQLite; SSE remains compact and strategy-agnostic.</p>
+<h3 id="phase-2-generic-engine-member-launch-and-artifact-submission"><a class="heading-anchor" href="#phase-2-generic-engine-member-launch-and-artifact-submission" aria-label="Link to Phase 2 — generic engine, member launch, and artifact submission">#</a>Phase 2 — generic engine, member launch, and artifact submission</h3>
+<p>Files:</p>
+<ul>
+<li>src/server/ensembles/manager.ts</li>
+<li>src/server/ensembles/engine.ts</li>
+<li>src/server/ensembles/strategies/index.ts</li>
+<li>src/server/ensembles/artifacts/index.ts</li>
+<li>src/server/tasks.ts</li>
+<li>src/server/dispatcher.ts</li>
+<li>src/server/routes.ts</li>
+<li>src/mcp/server.ts</li>
+<li>harness launch builders</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Add generic plan execution, durable command keys, barriers, per-run serialization, hard budgets,
+restart recovery, and stage events.</li>
+<li>Add preflight, create-wave-before-launch orchestration, pinned input dispatch, and role-aware
+member prompt appendix.</li>
+<li>Add HTTP and MCP submission routes with session-derived attribution.</li>
+<li>Implement git_snapshot ArtifactAdapter, record evidence, and wake collect barriers.</li>
+<li>Add generic cancel/withdraw/retry/restore actions through TaskManager.</li>
+</ul>
+<p>Exit: a test strategy can launch members in two waves, capture immutable artifacts, survive restart,
+and advance stages without Best-of-N branches in EnsembleEngine.</p>
+<h3 id="phase-3-best-of-n-v1-strategy-and-comparative-evaluator"><a class="heading-anchor" href="#phase-3-best-of-n-v1-strategy-and-comparative-evaluator" aria-label="Link to Phase 3 — Best-of-N v1 strategy and comparative evaluator">#</a>Phase 3 — Best-of-N v1 strategy and comparative evaluator</h3>
+<p>Files:</p>
+<ul>
+<li>src/shared/ensemble-strategies/best-of-n.ts</li>
+<li>src/server/ensembles/strategies/best-of-n.ts</li>
+<li>src/server/ensembles/evaluators/comparative.ts</li>
+<li>src/server/llm/structured.ts as needed</li>
+<li>src/server/workflows/personas.ts for reuse, not Ensemble coupling</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Implement the descriptor/schema/defaults/compiler for fixed roster 2–5, isolated information,
+git_snapshot artifacts, comparative evaluate, human decision, and select-one finalization.</li>
+<li>Resolve and snapshot built-in or Persona evaluator guidance.</li>
+<li>Assemble bounded anonymous artifact evidence.</li>
+<li>Run the tool-less structured evaluator, normalize the result, and implement retry.</li>
+<li>Persist results only in evaluation rows and derive scorecards/resultLabel.</li>
+</ul>
+<p>Exit: deterministic fixture members produce a validated ranked evaluation; malformed, injected,
+truncated, and interrupted responses fail closed, and EnsembleEngine contains no best_of_n id test.</p>
+<h3 id="phase-4-generic-finalization-plus-best-of-n-select-one"><a class="heading-anchor" href="#phase-4-generic-finalization-plus-best-of-n-select-one" aria-label="Link to Phase 4 — generic finalization plus Best-of-N select-one">#</a>Phase 4 — generic finalization plus Best-of-N select-one</h3>
+<p>Files:</p>
+<ul>
+<li>src/server/ensembles/finalize.ts</li>
+<li>src/server/ensembles/manager.ts</li>
+<li>src/server/git/ensemble-snapshot.ts</li>
+<li>src/server/reset.ts</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Implement generic human decision/finalization authority and terminal outcomes.</li>
+<li>Implement select-one exact-reset, loser Task cancellation, restore, explicit delete, and
+private-ref cleanup through the finalization policy.</li>
+<li>Add finalizing restart reconciliation and replacement result Task fallback.</li>
+<li>Route exact selected-result restoration through resetSession&#x27;s injected reset function so every
+session-scoped family is cleared once, while shared ensemble refs remain retained.</li>
+</ul>
+<p>Exit: fault injection at every finalization step resumes without duplicate Tasks, lost refs,
+or a false completed outcome.</p>
+<h3 id="phase-5-workflow-handoff"><a class="heading-anchor" href="#phase-5-workflow-handoff" aria-label="Link to Phase 5 — Workflow handoff">#</a>Phase 5 — Workflow handoff</h3>
+<p>Dependency: Ensemble Phase 0A plus the implemented Workflow Phase 3 for Preview; Workflow Phase 4
+for Live/Foreman-triggered repair.</p>
+<p>Files:</p>
+<ul>
+<li>src/shared/workflow.ts and src/shared/protocol.ts</li>
+<li>src/server/workflows/store.ts</li>
+<li>src/server/workflows/manager.ts</li>
+<li>src/server/workflows/external-binding.ts</li>
+<li>src/server/ensembles/finalize.ts</li>
+<li>src/server/ensembles/store.ts</li>
+<li>src/server/db.ts</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Use the Phase 0A workflow_binding_claims table, server-owned external source, and submitExternal
+exact-clean-snapshot capture.</li>
+<li>Pin an optional immutable Workflow version at ensemble creation.</li>
+<li>Extend compatible select-one/synthesis finalization with binding/submission handoff and recovery.</li>
+<li>Link Ensemble and Workflow details without merging lifecycle or retention.</li>
+<li>Keep active member sessions ineligible for ordinary Workflow binding except through declared
+MemberWorkflowPolicy.</li>
+</ul>
+<p>Exit: one confirmed winner is reviewed by the exact pinned Workflow version at the exact submitted
+snapshot; retry/restart cannot create a second binding or run, and later Workflow state does not
+rewrite Ensemble state.</p>
+<h3 id="phase-6-dashboard-and-layout-parity"><a class="heading-anchor" href="#phase-6-dashboard-and-layout-parity" aria-label="Link to Phase 6 — dashboard and layout parity">#</a>Phase 6 — dashboard and layout parity</h3>
+<p>Files:</p>
+<ul>
+<li>src/web/components/DispatchModal.tsx</li>
+<li>src/web/lib/task-draft.ts</li>
+<li>src/web/App.tsx</li>
+<li>src/web/workflows/WorkflowPage.tsx</li>
+<li>src/web/workflows/EnsembleRuns.tsx</li>
+<li>src/web/ensembles/*</li>
+<li>src/web/components/session-bits.tsx</li>
+<li>all four session renderers and src/web/components/layouts/types.ts</li>
+<li>src/web/lib/api.ts and styles</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Add mode, strategy cards, descriptor-driven configuration, launch estimate, and Best-of-N roster
+editor to Dispatch.</li>
+<li>Add the Ensembles tab, generic stage/member/artifact/evaluation views, Best-of-N scorecards,
+Workflow handoff state, and hash routing.</li>
+<li>Add shared and layout-specific group signals across Cards, Console, and Board.</li>
+<li>Preserve attachment, Enter, Escape, draft, reset nonce, Workflow page focus, and Back/Forward
+contracts.</li>
+</ul>
+<p>Exit: every layout can identify and open an ensemble, and the full operator flow works without
+losing a draft or creating a second compose box.</p>
+<h3 id="phase-7-extension-proof-documentation-soak-and-release"><a class="heading-anchor" href="#phase-7-extension-proof-documentation-soak-and-release" aria-label="Link to Phase 7 — extension proof, documentation, soak, and release">#</a>Phase 7 — extension proof, documentation, soak, and release</h3>
+<p>Files:</p>
+<ul>
+<li>README.md</li>
+<li>focused server and web tests</li>
+<li>docs describing refs, cost, recovery, and limits</li>
+<li>test-only fixed, adaptive-wave, pairwise, and synthesis strategy fixtures</li>
+</ul>
+<p>Work:</p>
+<ul>
+<li>Document explicit local resource fan-out, no-push behavior, human promotion, recovery,
+snapshot retention, and the Ensemble-to-Workflow ownership boundary.</li>
+<li>Prove new strategies composed from existing primitives require no DB, HTTP, SSE, Session, or
+layout changes. Test a two-wave adaptive driver, pair scheduler, and synthesized outcome with fake
+Tasks/artifacts/evaluators even though their product presets remain disabled.</li>
+<li>Run fault-injection and restart soak with mixed Claude/Codex candidates.</li>
+<li>Verify packaged paths for MCP and hooks.</li>
+</ul>
+<p>Exit: the acceptance suite, typecheck, build, package smoke paths, and restart soak pass.</p>
+<h2 id="verification-matrix"><a class="heading-anchor" href="#verification-matrix" aria-label="Link to Verification matrix">#</a>Verification matrix</h2>
+<h3 id="pure-contracts"><a class="heading-anchor" href="#pure-contracts" aria-label="Link to Pure contracts">#</a>Pure contracts</h3>
+<ul>
+<li>Strategy/artifact ids and versions are append-only and registry Records are exhaustive.</li>
+<li>Best-of-N roster count 1 and 6 rejected; 2 through 5 accepted.</li>
+<li>Invalid artifact/evaluator/finalization/Workflow capability combinations are rejected.</li>
+<li>Compiled plans round-trip and never change when descriptor defaults change.</li>
+<li>Fixed, matrix, role, and adaptive launch policies calculate bounded estimates correctly.</li>
+<li>Hard member/concurrency/wave/stage budgets cannot be exceeded by config or driver command.</li>
+<li>Unknown agents, models, effort, Persona, Workflow version, and repo rejected before launch.</li>
+<li>requestId, ensemble/member ordinal, task, artifact attempt, stage command, and evaluation
+uniqueness enforced.</li>
+<li>WorkflowTriggerSource accepts ensemble while WorkflowTriggerMode still rejects it.</li>
+<li>Workflow graph schemas and validators still reject an Ensemble node.</li>
+<li>Every state transition accepts only its legal predecessor.</li>
+<li>Best-of-N normalization rejects missing, duplicate, extra, out-of-range, or noncontiguous
+artifact subjects.</li>
+<li>Fake adaptive, pairwise, and synthesis strategies compile/drive through existing primitives
+without schema/route/event changes.</li>
+<li>Text, arrays, artifact material, evaluation results, and plan JSON are bounded.</li>
+</ul>
+<h3 id="git-integration"><a class="heading-anchor" href="#git-integration" aria-label="Link to Git integration">#</a>Git integration</h3>
+<ul>
+<li>Every Best-of-N member begins at byte-identical baseSha even if source HEAD moves.</li>
+<li>Treehouse and Git fallback converge on the same pinned base.</li>
+<li>Snapshot includes committed changes after base, staged, unstaged, deletion, rename, binary,
+and untracked nonignored files.</li>
+<li>Snapshot does not mutate HEAD, branch, working tree, or real index.</li>
+<li>Exact diff reports truncation honestly.</li>
+<li>Ref survives Task cancellation and worktree teardown.</li>
+<li>Artifact lineage is stable; restore and selected-result reset reproduce the snapshot tree exactly.</li>
+</ul>
+<h3 id="manager-and-persistence"><a class="heading-anchor" href="#manager-and-persistence" aria-label="Link to Manager and persistence">#</a>Manager and persistence</h3>
+<ul>
+<li>Create retry launches one group.</li>
+<li>All Task rows in a wave exist before its first dispatch.</li>
+<li>Partial launch, member failure, manual withdrawal, barrier failure, and insufficient artifacts.</li>
+<li>Concurrent duplicate submit and submit-versus-cancel serialize correctly.</li>
+<li>Stage readiness/evaluation queues once from durable dependencies.</li>
+<li>Evaluation retry uses identical artifact ids and evaluator snapshot.</li>
+<li>Driver command keys deduplicate spawn/advance/finalize across concurrency and restart.</li>
+<li>Restart in planning, running, waiting, evaluating, awaiting_decision, and every finalization step.</li>
+<li>Human override selects a nonrecommended but eligible artifact.</li>
+<li>Cleanup failure stays visible and retryable.</li>
+<li>Restore creates one normal Task.</li>
+<li>No EnsembleEngine source branch tests strategyId.</li>
+</ul>
+<h3 id="workflow-composition"><a class="heading-anchor" href="#workflow-composition" aria-label="Link to Workflow composition">#</a>Workflow composition</h3>
+<ul>
+<li>A pinned version is immutable even if its draft/Personas later change.</li>
+<li>External binding source key creates one claim and one binding under concurrent retry.</li>
+<li>An existing active binding produces a typed conflict and is never overwritten.</li>
+<li>submitExternal refuses a winner whose HEAD differs from snapshotSha or whose working tree is
+dirty.</li>
+<li>A crash before/after claim, binding insert, submission capture, or Ensemble update returns the same
+binding/run on recovery.</li>
+<li>Preview and Live prerequisites remain byte-identical to normal Workflow binding behavior.</li>
+<li>Live authorization removal blocks rather than downgrades.</li>
+<li>Workflow context compaction, Persona attempts, and Ensemble evaluator calls share one injected
+daemon review scheduler; Foreman and unrelated background-job limits remain independent.</li>
+<li>before_comparison rejects Inspector completion policy and accounts for per-member Workflow calls.</li>
+<li>Workflow run failure/cancellation/completion does not mutate a completed Ensemble.</li>
+<li>Ensemble deletion does not delete Workflow bindings, runs, Inspector ledgers, or Shipping state.</li>
+<li>Workflow Reset removes its session-scoped family and external binding claim but does not delete
+Ensemble history or refs; the linked run renders as reset/removed and a completed Ensemble does
+not recreate it.</li>
+</ul>
+<h3 id="mcp-and-routing"><a class="heading-anchor" href="#mcp-and-routing" aria-label="Link to MCP and routing">#</a>MCP and routing</h3>
+<ul>
+<li>Shared and MCP schemas accept and reject the same arguments.</li>
+<li>Correct session Task is attributed.</li>
+<li>Wrong cwd, stale session, nonmember Task, sibling guess, late submission, and conflicting
+duplicate are rejected.</li>
+<li>Claude and Codex launch argv contain the scoped MCP configuration only when required.</li>
+<li>Every mutating route uses parseBody.</li>
+</ul>
+<h3 id="web-and-parity"><a class="heading-anchor" href="#web-and-parity" aria-label="Link to Web and parity">#</a>Web and parity</h3>
+<ul>
+<li>Ensemble draft survives modal close and resets only after successful creation.</li>
+<li>Strategy descriptor form, launch estimate/range, roster bounds, and per-agent model/effort
+derivation.</li>
+<li>Attachments follow compiled member prompt policy and uploading blocks submit/Enter.</li>
+<li>Summary snapshot and ensemble events are exhaustive in useEventStream; full detail stays HTTP.</li>
+<li>#/workflows/ensembles list/detail supports Back/Forward and keeps fleet SSE mounted.</li>
+<li>Evaluator Persona and pinned Workflow version/defaults render accurately in Dispatch and detail.</li>
+<li>SessionCard, ConsoleDetail, SessionTile, and RailRow all expose the ensemble signal.</li>
+<li>A selected/synthesized result can show distinct Ensemble and Workflow marks with correct links.</li>
+<li>Artifact evidence is fetched on demand and full material never appears in SSE.</li>
+<li>Best-of-N, fake panel, pairwise, adaptive-wave, and synthesis results render through generic
+member/stage/evaluation data.</li>
+<li>Evidence labels do not render a claim as observed fact.</li>
+</ul>
+<h3 id="commands-before-merge"><a class="heading-anchor" href="#commands-before-merge" aria-label="Link to Commands before merge">#</a>Commands before merge</h3>
+<p>Run the focused new tests first, then:</p>
+<pre><code>npm run typecheck
+npm test
+npm run build
+npm run smoke
+</code></pre>
+<p>If the repository has a packaged Electron smoke command in the implementation branch, run
+that too because the launch-scoped MCP server path is a packaged-build risk.</p>
+<h2 id="acceptance-criteria"><a class="heading-anchor" href="#acceptance-criteria" aria-label="Link to Acceptance criteria">#</a>Acceptance criteria</h2>
+<p>The feature is complete when:</p>
+<ul>
+<li>Best-of-N is stored/executed as strategy id best_of_n version 1 over the generic Ensemble model;</li>
+<li>one submission compiles a plan and launches 2–5 normal member Tasks from one verified commit SHA;</li>
+<li>members are visibly grouped in Cards, Console, and Board;</li>
+<li>Claude and Codex members can explicitly submit without a prior global MCP install;</li>
+<li>each submission produces a recoverable immutable artifact without mutating member Git
+state;</li>
+<li>the comparative evaluator compares at least two bounded, anonymous, provenance-labeled artifacts
+and persists a validated recommendation;</li>
+<li>no evaluation or strategy-driver result publishes, selects, spawns past budget, or deletes;</li>
+<li>an operator can inspect exact diffs, override the recommendation, and confirm finalization;</li>
+<li>select-one finalization leaves one exact result available, reaps loser worktrees through TaskManager,
+and preserves all snapshot refs;</li>
+<li>when selected, the exact immutable Workflow version binds once to that winner, captures only when
+HEAD equals the chosen snapshot and the working tree is clean, and creates one initial
+submission;</li>
+<li>the Workflow then owns Persona repair, Foreman, Inspector, and Shipping semantics without Ensemble
+code duplicating or weakening them;</li>
+<li>interruption at any durable state resumes or fails visibly without duplicate members, stages,
+evaluations, artifacts, or finalization effects;</li>
+<li>aggregate agent cost is visible and honestly excludes unknown evaluator cost;</li>
+<li>test-only fixed, adaptive-wave, pairwise, and synthesis strategies use the same tables, engine,
+API, SSE summary, session projection, and layout marks;</li>
+<li>adding a strategy composed only from existing primitives requires no migration, route,
+ServerEvent, useEventStream, or session-renderer change;</li>
+<li>normal single dispatch behavior and every existing layout/shortcut remain unchanged.</li>
+</ul>
+<h2 id="explicit-non-goals-for-the-first-release"><a class="heading-anchor" href="#explicit-non-goals-for-the-first-release" aria-label="Link to Explicit non-goals for the first release">#</a>Explicit non-goals for the first release</h2>
+<ul>
+<li>Shipping more than the Best-of-N strategy in the first release.</li>
+<li>Arbitrary user-authored strategy graphs or executable plugins.</li>
+<li>Unmediated agent-to-agent communication; future collaboration is artifact-mediated.</li>
+<li>Scout or research ensembles with transcript-only artifacts.</li>
+<li>More than five members in Best-of-N v1 or cross-machine execution.</li>
+<li>Arbitrary repository validation commands.</li>
+<li>Automatic destructive finalization or automatic ref pruning.</li>
+<li>One PR per candidate.</li>
+<li>Replacing Tasks with a generic workflow engine.</li>
+<li>An Ensemble node or multi-session binding in the Workflow graph.</li>
+<li>Pre-comparison member Workflows in Best-of-N v1.</li>
+<li>Adversarial process or filesystem isolation.</li>
+<li>A new keyboard shortcut.</li>
+</ul>
+<h2 id="likely-follow-ups"><a class="heading-anchor" href="#likely-follow-ups" aria-label="Link to Likely follow-ups">#</a>Likely follow-ups</h2>
+<p>After real usage validates the lifecycle:</p>
+<ul>
+<li>repository-owned evaluation profiles with safe commands and timeouts;</li>
+<li>Persona panel voting as the smallest second product strategy;</li>
+<li>pairwise tournament/Swiss scheduling for larger rosters and smaller comparison prompts;</li>
+<li>successive-halving and adaptive-wave strategies under hard member/concurrency budgets;</li>
+<li>critique/revise and proposer–critic–verifier through artifact-mediated feedback;</li>
+<li>top-K synthesis with explicit artifact lineage and a fresh synthesis member;</li>
+<li>consensus/no-consensus output for questions where retaining dissent is better than one winner;</li>
+<li>a cost-versus-score comparison and evaluator cost once LlmRunner reports usage;</li>
+<li>blind A/B evaluator calibration;</li>
+<li>transcript/research artifact support for scout ensembles;</li>
+<li>configurable snapshot retention with storage accounting;</li>
+<li>reusable ensemble presets for candidate mixes and approach briefs;</li>
+<li>an evaluation-only Workflow mode for scoring each immutable candidate, if measured usage
+justifies N times the Persona calls and a new non-repair execution contract;</li>
+<li>a guided composition view that draws Ensemble then Workflow without changing either persistence
+model.</li>
+</ul>
+<p>The first implementation should deliberately earn these extensions by making the generic stage
+kernel, artifacts, evidence provenance, human finalization, hard budgets, and restart behavior
+trustworthy first.</p></article>
+</div>
+<footer class="footer">Self-contained review artifact · source: plan.md · no external requests</footer>
+</div>
+<script>
+const root=document.documentElement,button=document.getElementById("theme-toggle");
+const stored=localStorage.getItem("mission-plan-theme");if(stored)root.dataset.theme=stored;
+button.addEventListener("click",()=>{const dark=root.dataset.theme==="dark"||(!root.dataset.theme&&matchMedia("(prefers-color-scheme: dark)").matches);root.dataset.theme=dark?"light":"dark";localStorage.setItem("mission-plan-theme",root.dataset.theme)});
+const progress=document.querySelector(".progress");addEventListener("scroll",()=>{const max=document.documentElement.scrollHeight-innerHeight;progress.style.width=(max?scrollY/max*100:0)+"%"},{passive:true});
+</script>
+</body>
+</html>

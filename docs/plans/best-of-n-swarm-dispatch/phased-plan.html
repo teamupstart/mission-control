@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Multi-Agent Ensembles · Phased Implementation Plan</title>
+<style>:root{color-scheme:light dark;--bg:#f4f7fb;--surface:#fff;--surface-2:#eef3fa;--text:#172033;--muted:#5b667c;--line:#d9e1ed;--blue:#1d65d6;--blue-soft:#e6f0ff;--purple:#6941c6;--purple-soft:#f0eaff;--green:#17744b;--green-soft:#e5f6ed;--amber:#9a5b00;--amber-soft:#fff3d7;--red:#b52a37;--red-soft:#ffe8eb;--shadow:0 18px 54px rgba(27,39,64,.09);--code:#122033;--code-bg:#edf2f8}
+:root[data-theme='dark']{--bg:#0c111b;--surface:#131b28;--surface-2:#1a2434;--text:#edf3ff;--muted:#a6b2c7;--line:#2a374a;--blue:#78aaf9;--blue-soft:#172d4f;--purple:#bd9aff;--purple-soft:#2c2148;--green:#73d7a5;--green-soft:#153629;--amber:#f4bf62;--amber-soft:#3d2b12;--red:#ff8d98;--red-soft:#442027;--shadow:0 20px 60px rgba(0,0,0,.32);--code:#dfeaff;--code-bg:#0d1522}
+@media(prefers-color-scheme:dark){:root:not([data-theme='light']){--bg:#0c111b;--surface:#131b28;--surface-2:#1a2434;--text:#edf3ff;--muted:#a6b2c7;--line:#2a374a;--blue:#78aaf9;--blue-soft:#172d4f;--purple:#bd9aff;--purple-soft:#2c2148;--green:#73d7a5;--green-soft:#153629;--amber:#f4bf62;--amber-soft:#3d2b12;--red:#ff8d98;--red-soft:#442027;--shadow:0 20px 60px rgba(0,0,0,.32);--code:#dfeaff;--code-bg:#0d1522}}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.68 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}button,a{font:inherit}a{color:var(--blue);text-decoration-thickness:1px;text-underline-offset:3px}.progress{position:fixed;inset:0 auto auto 0;height:3px;width:0;background:linear-gradient(90deg,var(--blue),var(--purple));z-index:50}.shell{max-width:1560px;margin:auto;padding:24px}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:28px;background:linear-gradient(135deg,var(--surface) 0%,var(--blue-soft) 58%,var(--purple-soft) 100%);box-shadow:var(--shadow);padding:46px 52px}.hero:after{content:'';position:absolute;width:420px;height:420px;border-radius:50%;right:-190px;top:-220px;background:radial-gradient(circle,rgba(105,65,198,.2),transparent 68%)}.eyebrow{display:flex;gap:10px;align-items:center;color:var(--blue);font-weight:750;text-transform:uppercase;letter-spacing:.12em;font-size:12px}.eyebrow span{border:1px solid currentColor;border-radius:999px;padding:4px 9px}.hero h1{max-width:1000px;margin:18px 0 12px;font-size:clamp(38px,5.2vw,74px);line-height:1.02;letter-spacing:-.045em}.hero p{max-width:920px;margin:0;color:var(--muted);font-size:clamp(17px,2vw,22px)}.hero-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}.button{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:10px 14px;text-decoration:none;font-weight:700;cursor:pointer}.button.primary{background:var(--text);color:var(--surface);border-color:var(--text)}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:20px 0}.metric{border:1px solid var(--line);border-radius:18px;background:var(--surface);padding:20px;box-shadow:0 8px 28px rgba(27,39,64,.05)}.metric b{display:block;font-size:24px;line-height:1.2;margin-bottom:5px}.metric span{color:var(--muted)}.notice{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start;border:1px solid color-mix(in srgb,var(--purple) 35%,var(--line));background:var(--purple-soft);border-radius:18px;padding:20px;margin:20px 0}.notice-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--purple);color:white;font-weight:850}.notice h2{font-size:17px;margin:0 0 4px}.notice p{margin:0;color:var(--muted)}.layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:26px;align-items:start;margin-top:26px}.toc{position:sticky;top:18px;max-height:calc(100vh - 36px);overflow:auto;border:1px solid var(--line);border-radius:18px;background:var(--surface);padding:18px}.toc strong{display:block;margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted)}.toc a{display:block;padding:6px 8px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:13px;line-height:1.25}.toc a:hover,.toc a:focus{background:var(--surface-2);color:var(--text)}article{min-width:0;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:var(--shadow);padding:clamp(24px,4vw,58px)}article>h1{font-size:34px;margin:0 0 8px;letter-spacing:-.035em}article>h1+p{color:var(--muted)}h2{font-size:28px;line-height:1.22;letter-spacing:-.025em;margin:64px 0 20px;padding-top:8px;border-top:1px solid var(--line)}h3{font-size:20px;line-height:1.3;margin:36px 0 12px}.heading-anchor{display:inline-block;width:1.2em;margin-left:-1.2em;opacity:0;text-decoration:none}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,.heading-anchor:focus{opacity:.48}p,li{max-width:1000px}strong{font-weight:760}ul,ol{padding-left:24px}li+li{margin-top:5px}blockquote{margin:24px 0;border-left:4px solid var(--purple);background:var(--purple-soft);padding:16px 20px;border-radius:0 12px 12px 0}.table-scroll{max-width:100%;overflow-x:auto;margin:20px 0;border:1px solid var(--line);border-radius:14px}.table-scroll:focus{outline:3px solid color-mix(in srgb,var(--blue) 40%,transparent)}table{width:100%;min-width:720px;border-collapse:collapse;background:var(--surface)}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{position:sticky;top:0;background:var(--surface-2);font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}tr:last-child td{border-bottom:0}code{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code);background:var(--code-bg);padding:.14em .38em;border-radius:5px}pre{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--code-bg);padding:18px}pre code{padding:0;background:transparent}.diagram{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--surface),var(--surface-2));padding:16px;margin:24px 0}.diagram svg{display:block;min-width:980px;width:100%;height:auto}.svg-node{fill:var(--surface);stroke:var(--line);stroke-width:2}.svg-blue{fill:var(--blue-soft);stroke:var(--blue)}.svg-purple{fill:var(--purple-soft);stroke:var(--purple)}.svg-green{fill:var(--green-soft);stroke:var(--green)}.svg-amber{fill:var(--amber-soft);stroke:var(--amber)}.svg-red{fill:var(--red-soft);stroke:var(--red)}.svg-line{fill:none;stroke:var(--muted);stroke-width:2}.svg-dashed{stroke-dasharray:7 6}.svg-red-line{stroke:var(--red)}.svg-arrow{fill:var(--muted)}.svg-start{fill:var(--text)}.svg-title{fill:var(--text);font:700 15px system-ui,sans-serif}.svg-copy{fill:var(--muted);font:12px system-ui,sans-serif}.svg-note{fill:var(--muted);font:italic 12px system-ui,sans-serif}.svg-lane{fill:var(--blue);font:800 12px system-ui,sans-serif;letter-spacing:1.4px}hr{border:0;border-top:1px solid var(--line);margin:38px 0}.footer{padding:28px 0 8px;color:var(--muted);text-align:center;font-size:13px}
+@media(max-width:900px){.shell{padding:12px}.hero{padding:30px 24px;border-radius:20px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.layout{display:block}.toc{position:relative;top:auto;max-height:none;margin-bottom:18px}.toc a{display:inline-block;margin:2px}article{padding:24px;border-radius:18px}.heading-anchor{margin-left:0;width:auto;margin-right:.4em;opacity:.3}h2{font-size:24px;margin-top:46px}}@media(max-width:520px){.metrics{grid-template-columns:1fr}.hero-actions{display:grid}.button{justify-content:center}.notice{grid-template-columns:1fr}.hero h1{font-size:40px}}@media print{.progress,.toc,.hero-actions{display:none}.shell{max-width:none;padding:0}.hero,article{box-shadow:none;border:0}.layout{display:block}article{padding:0}.metrics{break-inside:avoid}.diagram{break-inside:avoid}a{color:inherit;text-decoration:none}}</style>
+</head>
+<body>
+<div class="progress" aria-hidden="true"></div>
+<div class="shell">
+<header class="hero">
+<div class="eyebrow"><span>Implementation schedule</span><span>8 merge units</span><span>2026-07-23</span></div>
+<h1>Build the ensemble kernel in eight phases</h1>
+<p>Two independent foundations establish Workflow compatibility and pinned launch artifacts. They converge on a generic runtime, then add comparison, human finalization, the dashboard, and a release-blocking extension proof.</p>
+<div class="hero-actions"><a class="button primary" href="#phase-graph">See dependency graph</a><a class="button " href="#phase-index">Review phase index</a><a class="button " href="#cross-phase-contracts">Read cross-phase contracts</a><button class="button" id="theme-toggle" type="button" aria-label="Toggle theme">◐ Theme</button></div>
+</header>
+<section class="metrics" aria-label="Plan summary"><div class="metric"><b>8 phases</b><span>one implementation task each</span></div><div class="metric"><b>2 parallel</b><span>Workflow and launch foundations</span></div><div class="metric"><b>1 fan-in</b><span>generic runtime consumes both</span></div><div class="metric"><b>Opus 4.8</b><span>Claude Code · xhigh effort</span></div></section>
+<section class="notice"><div class="notice-icon">E</div><div><h2>Merge-aware and implementation-ready</h2><p>Every task embeds its complete phase instructions, depends on this planning session, and names only its direct task prerequisites. Phases 1 and 2 can start together; all later work follows the dependency graph.</p></div></section>
+<div class="layout">
+<nav class="toc" aria-label="Plan contents"><strong>Contents</strong><a href="#incorporated-human-decisions">Incorporated human decisions</a>
+<a href="#repository-findings-that-changed-the-phase-boundaries">Repository findings that changed the phase boundaries</a>
+<a href="#phase-graph">Phase graph</a>
+<a href="#phase-index">Phase index</a>
+<a href="#cross-phase-contracts">Cross-phase contracts</a>
+<a href="#merge-order-and-handoffs">Merge order and handoffs</a>
+<a href="#final-verification-strategy">Final verification strategy</a>
+<a href="#cross-phase-audit-record">Cross-phase audit record</a></nav>
+<article><h1 id="multi-agent-ensembles-phased-implementation-plan"><a class="heading-anchor" href="#multi-agent-ensembles-phased-implementation-plan" aria-label="Link to Multi-Agent Ensembles: Phased Implementation Plan">#</a>Multi-Agent Ensembles: Phased Implementation Plan</h1>
+<p>Status: implementation tasks scheduled<br/>
+Date: 2026-07-23<br/>
+Source plan: <a href="./plan.md">plan.md</a><br/>
+Investigated baseline: main at <code>57ea5bc</code></p>
+<h2 id="incorporated-human-decisions"><a class="heading-anchor" href="#incorporated-human-decisions" aria-label="Link to Incorporated human decisions">#</a>Incorporated human decisions</h2>
+<ul>
+<li>Implement the reusable Ensemble kernel, with <code>best_of_n@1</code> as the only enabled product strategy.</li>
+<li>Keep Ensemble orchestration separate from the one-Session Workflow graph and compose them only
+after an exact result is finalized.</li>
+<li>Preserve the broader comparison/collaboration design space through versioned policies, generic
+stages, immutable artifacts, and bounded strategy drivers.</li>
+<li>Generate dependency-linked implementation tasks now.</li>
+<li>Target every implementation task at Claude Code using <code>claude-opus-4-8</code> with <code>xhigh</code> effort.</li>
+</ul>
+<p>There are no unresolved product decisions in this decomposition.</p>
+<h2 id="repository-findings-that-changed-the-phase-boundaries"><a class="heading-anchor" href="#repository-findings-that-changed-the-phase-boundaries" aria-label="Link to Repository findings that changed the phase boundaries">#</a>Repository findings that changed the phase boundaries</h2>
+<ol>
+<li>Workflow Phases 1–3 are implemented, not WIP. <code>WorkflowManager</code>, <code>WorkflowEngine</code>, stable
+context capture, immutable publishing, bindings, retries, recovery, SSE, Reset cleanup, and Run
+detail already exist. The Ensemble handoff is an additive compatibility slice over shipped code.</li>
+<li>Workflow persistence currently hard-codes <code>trigger_source = &#x27;manual&#x27;</code> in run and submission
+inserts. External handoff must first make trigger identity an explicit store input while
+preserving existing manual keys and rows.</li>
+<li>Workflow Persona attempts have a per-engine limiter of three, but context compaction bypasses it.
+A daemon-owned scheduler must be injected before Ensemble evaluation can honestly share a local
+review-call ceiling.</li>
+<li>Worktree provisioning and teardown live in <code>src/server/dispatcher.ts</code>; there is no
+<code>src/server/worktree.ts</code>. Pinned-base and exact-reset work belongs in focused helpers plus that
+existing owner.</li>
+<li><code>TaskManager.dispatch</code> accepts only a launch-time default model and currently does not pass an
+options object to <code>Dispatcher.dispatch</code>. The pinned input and launch-scoped MCP descriptor must
+flow through both layers without changing normal dispatch.</li>
+<li>Claude&#x27;s launch-scoped MCP setup is embedded in <code>ask-channel.ts</code>, while Codex launch preparation
+currently composes auto-mode and hook overrides only. A shared Mission MCP descriptor is the
+correct seam; a second ad hoc config writer would drift.</li>
+<li>Session grouping should extend nested <code>TaskSummary</code>. It must not add a top-level <code>Session</code> field,
+so <code>SESSION_FIELD_COMPARATORS</code> needs no new entry.</li>
+<li>The live browser channel remains one SSE stream. Ensemble summaries add a top-level snapshot
+collection and exhaustive event variants; full members, artifacts, evaluations, and patches stay
+on HTTP.</li>
+<li>The Workflow page route/tab union is closed over Workflows, Personas, and Runs. The Ensemble
+route should land with the actual list/detail UI, not earlier as a dead tab.</li>
+<li>Current source files are <code>src/web/components/session-bits.tsx</code> and <code>src/web/lib/api.ts</code>; phase
+plans use those real paths instead of speculative names from the root plan.</li>
+</ol>
+<h2 id="phase-graph"><a class="heading-anchor" href="#phase-graph" aria-label="Link to Phase graph">#</a>Phase graph</h2>
+<div><div class="diagram"><svg viewBox="0 0 1690 390" role="img" aria-labelledby="phase-title phase-desc" xmlns="http://www.w3.org/2000/svg">
+<title id="phase-title">Multi-Agent Ensembles implementation dependency graph</title>
+<desc id="phase-desc">The planning session releases two parallel foundations. Workflow compatibility leads to the durable kernel. Pinned dispatch and the kernel join at the generic runtime. Evaluation, finalization, dashboard, and release hardening then proceed in order.</desc>
+<defs><marker id="phase-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" class="svg-arrow"/></marker></defs>
+<text x="26" y="30" class="svg-lane">FOUNDATIONS · PHASES 1 AND 2 MAY RUN CONCURRENTLY</text>
+<rect x="28" y="148" width="150" height="78" rx="15" class="svg-node svg-blue"/>
+<text x="103" y="179" text-anchor="middle" class="svg-title">Plan merged</text>
+<text x="103" y="203" text-anchor="middle" class="svg-copy">current session</text>
+<path d="M178 174 C210 174 204 103 238 103" class="svg-line" marker-end="url(#phase-arrow)"/>
+<path d="M178 200 C210 200 204 273 238 273" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="246" y="58" width="210" height="90" rx="15" class="svg-node svg-purple"/>
+<text x="351" y="89" text-anchor="middle" class="svg-title">1 · Workflow boundary</text>
+<text x="351" y="114" text-anchor="middle" class="svg-copy">external source + scheduler</text>
+<text x="351" y="134" text-anchor="middle" class="svg-copy">exact clean capture</text>
+<rect x="246" y="228" width="210" height="90" rx="15" class="svg-node svg-purple"/>
+<text x="351" y="259" text-anchor="middle" class="svg-title">2 · Pinned launch seam</text>
+<text x="351" y="284" text-anchor="middle" class="svg-copy">artifact refs + Mission MCP</text>
+<text x="351" y="304" text-anchor="middle" class="svg-copy">Claude and Codex</text>
+<path d="M456 103 H508" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="516" y="58" width="210" height="90" rx="15" class="svg-node svg-blue"/>
+<text x="621" y="89" text-anchor="middle" class="svg-title">3 · Durable kernel</text>
+<text x="621" y="114" text-anchor="middle" class="svg-copy">contracts · store · catalog</text>
+<text x="621" y="134" text-anchor="middle" class="svg-copy">compact SSE state</text>
+<path d="M726 103 C760 103 752 170 786 170" class="svg-line" marker-end="url(#phase-arrow)"/>
+<path d="M456 273 C600 273 620 208 786 208" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="794" y="143" width="210" height="90" rx="15" class="svg-node svg-green"/>
+<text x="899" y="174" text-anchor="middle" class="svg-title">4 · Generic runtime</text>
+<text x="899" y="199" text-anchor="middle" class="svg-copy">waves · submit · artifacts</text>
+<text x="899" y="219" text-anchor="middle" class="svg-copy">restart recovery</text>
+<path d="M1004 188 H1040" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="1048" y="143" width="174" height="90" rx="15" class="svg-node svg-amber"/>
+<text x="1135" y="174" text-anchor="middle" class="svg-title">5 · Evaluate</text>
+<text x="1135" y="199" text-anchor="middle" class="svg-copy">anonymous compare</text>
+<text x="1135" y="219" text-anchor="middle" class="svg-copy">human boundary</text>
+<path d="M1222 188 H1258" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="1266" y="143" width="174" height="90" rx="15" class="svg-node svg-green"/>
+<text x="1353" y="174" text-anchor="middle" class="svg-title">6 · Finalize</text>
+<text x="1353" y="199" text-anchor="middle" class="svg-copy">recoverable selection</text>
+<text x="1353" y="219" text-anchor="middle" class="svg-copy">Workflow handoff</text>
+<path d="M1440 188 H1476" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="1484" y="58" width="178" height="90" rx="15" class="svg-node svg-blue"/>
+<text x="1573" y="89" text-anchor="middle" class="svg-title">7 · Dashboard</text>
+<text x="1573" y="114" text-anchor="middle" class="svg-copy">creation · evidence</text>
+<text x="1573" y="134" text-anchor="middle" class="svg-copy">layout parity</text>
+<path d="M1573 148 V220" class="svg-line" marker-end="url(#phase-arrow)"/>
+<rect x="1484" y="228" width="178" height="90" rx="15" class="svg-node svg-red"/>
+<text x="1573" y="259" text-anchor="middle" class="svg-title">8 · Release gate</text>
+<text x="1573" y="284" text-anchor="middle" class="svg-copy">extension proof · soak</text>
+<text x="1573" y="304" text-anchor="middle" class="svg-copy">build + package</text>
+<text x="26" y="365" class="svg-note">Every task also depends on the active planning session. Direct task edges stay unflattened so Phases 1 and 2 can execute concurrently.</text>
+</svg></div></div>
+<p>Phase 1 and Phase 2 are the only parallel implementation group. Their production files are
+disjoint except for documentation and they establish independent seams. Phase 3 waits for Phase 1
+because both own <code>protocol.ts</code>, <code>db.ts</code>, and daemon construction; this avoids two migrations and two
+competing LLM-concurrency shapes. Phase 4 is the fan-in point for the two foundations.</p>
+<h2 id="phase-index"><a class="heading-anchor" href="#phase-index" aria-label="Link to Phase index">#</a>Phase index</h2>
+<div class="table-scroll" role="region" tabindex="0" aria-label="Scrollable table"><table><thead><tr><th>Phase</th><th>Outcome</th><th>Direct prerequisites</th><th>Merge notes</th></tr></thead><tbody><tr><td><a href="./phase-1-workflow-external-source.md">1</a></td><td>Shipped Workflow Preview accepts one exact, clean, idempotent external result through a shared daemon review scheduler</td><td>Planning session</td><td>May run with Phase 2</td></tr><tr><td><a href="./phase-2-pinned-artifacts-and-mcp.md">2</a></td><td>Dispatcher can provision from one pinned commit, snapshot a worktree immutably, and attach Mission MCP to Claude/Codex launches</td><td>Planning session</td><td>May run with Phase 1</td></tr><tr><td><a href="./phase-3-ensemble-kernel-contracts.md">3</a></td><td>Versioned Ensemble contracts, tables, store, strategy compilation, compact SSE state, and Task projection are durable</td><td>Phase 1</td><td>Can merge before Phase 2; does not launch</td></tr><tr><td><a href="./phase-4-generic-runtime-and-submission.md">4</a></td><td>Generic engine launches bounded member waves, accepts attributable submissions, captures artifacts, and recovers</td><td>Phases 2 and 3</td><td>First fan-in</td></tr><tr><td><a href="./phase-5-best-of-n-evaluation.md">5</a></td><td><code>best_of_n@1</code> anonymously compares eligible immutable artifacts and reaches a human decision boundary</td><td>Phase 4</td><td>No destructive finalization</td></tr><tr><td><a href="./phase-6-finalization-and-workflow-handoff.md">6</a></td><td>Human-confirmed select-one finalization, cleanup, restore, and optional exact Workflow handoff recover safely</td><td>Phase 5</td><td>Backend feature complete</td></tr><tr><td><a href="./phase-7-dashboard-and-layout-parity.md">7</a></td><td>Dispatch creation, Ensemble history/detail, actions, evidence, and all layout signals form one usable product flow</td><td>Phase 6</td><td>UI/API contract lock</td></tr><tr><td><a href="./phase-8-extension-proof-and-release.md">8</a></td><td>Alternative strategy fixtures prove composability; docs, build/package validation, and restart/fault soak make it releasable</td><td>Phase 7</td><td>Release gate</td></tr></tbody></table></div>
+<h2 id="cross-phase-contracts"><a class="heading-anchor" href="#cross-phase-contracts" aria-label="Link to Cross-phase contracts">#</a>Cross-phase contracts</h2>
+<p>These contracts are owned once and inherited by every later phase:</p>
+<ul>
+<li><code>EnsembleRun</code>, member, artifact, stage attempt, evaluation, and outcome are generic durable nouns.
+Scores, ranks, votes, and Best-of-N result fields never migrate onto members or Sessions.</li>
+<li>Strategy ids and versions, artifact kinds/versions, and any persisted driver ids are append-only.
+Active runs execute their immutable compiled plan rather than current defaults.</li>
+<li><code>EnsembleEngine</code> may dispatch only generic stage/driver commands and must never branch on
+<code>strategyId</code>. Production strategies compile into the same bounded command vocabulary.</li>
+<li>Every member is a normal Task. TaskManager and Dispatcher remain the only owners of Task state,
+terminal homes, worktrees, cancellation, and cleanup.</li>
+<li>Every Best-of-N member starts from one verified full base SHA. Every submitted Git artifact is an
+immutable private commit/ref created without mutating the real index, branch, or working tree.</li>
+<li>MCP submission identity comes from authenticated Session → Task → active member attribution. No
+caller supplies an ensemble, member, artifact, or sibling id.</li>
+<li>Model outputs are advisory and tool-less. They cannot launch, promote, publish, cancel, reap, or
+delete. Destructive finalization always requires an explicit human decision.</li>
+<li>Workflow remains one Session. External handoff uses one immutable version, one active-note
+conflict rule, one stable source claim, one exact clean snapshot expectation, and the shipped
+capture/engine/recovery paths.</li>
+<li>Workflow and Ensemble lifecycles and retention remain separate. Reset removes the Workflow family
+and claim, not Ensemble history or private refs. A completed Ensemble never recreates a reset run.</li>
+<li>The browser receives compact summaries over the existing SSE stream and fetches bounded detail and
+artifact evidence over HTTP. No polling and no full patches in SSE.</li>
+<li>Session UI extends nested <code>TaskSummary</code>; layout-visible props flow through <code>SessionViewProps</code> /
+<code>cardProps</code>, and all four renderers receive the Ensemble signal.</li>
+<li>Live Workflow/Foreman and Inspector behavior remain gated on their future Workflow phases.
+Ensemble Preview handoff must not silently downgrade a selected Live configuration.</li>
+</ul>
+<h2 id="merge-order-and-handoffs"><a class="heading-anchor" href="#merge-order-and-handoffs" aria-label="Link to Merge order and handoffs">#</a>Merge order and handoffs</h2>
+<ol>
+<li>Merge Phases 1 and 2 in either order.</li>
+<li>Merge Phase 3 after Phase 1. Phase 3 may merge while Phase 2 is still in review.</li>
+<li>Merge Phase 4 only after Phases 2 and 3; it consumes both foundations.</li>
+<li>Merge Phases 5 through 8 in order.</li>
+</ol>
+<p>Every phase leaves typecheck and its focused tests green. Hidden/internal seams may exist before a
+later product surface, but no route or UI promises behavior that the current phase cannot execute.</p>
+<h2 id="final-verification-strategy"><a class="heading-anchor" href="#final-verification-strategy" aria-label="Link to Final verification strategy">#</a>Final verification strategy</h2>
+<p>Each phase runs its focused tests plus <code>npm run typecheck</code>. Phases that touch a build entry,
+launch-scoped MCP configuration, or web code also run the relevant build/smoke commands. Phase 8
+runs the complete gate:</p>
+<pre><code class="language-text">npm run typecheck
+npm test
+npm run build
+npm run smoke
+</code></pre>
+<p>It also runs restart/fault scenarios across planning, launch, submission, evaluation, decision,
+every finalization step, Workflow claim/capture, and mixed Claude/Codex launch configuration. The
+release is blocked if a test-only adaptive, pairwise, or synthesis strategy needs a new database
+table, route family, SSE event, Session field, or layout-specific special case.</p>
+<h2 id="cross-phase-audit-record"><a class="heading-anchor" href="#cross-phase-audit-record" aria-label="Link to Cross-phase audit record">#</a>Cross-phase audit record</h2>
+<ul>
+<li>2026-07-23: Rebased the root plan audit onto main <code>57ea5bc</code>; Workflow Phases 2 and 3 are now
+implemented.</li>
+<li>2026-07-23: Moved Workflow route/tab rendering to Phase 7 so Phase 1 does not ship a dead
+navigation target; Phase 1 still owns source metadata and the backend handoff contract.</li>
+<li>2026-07-23: Replaced speculative <code>worktree.ts</code>, server <code>api.ts</code>, web <code>api.ts</code>, and
+<code>src/web/session-bits.tsx</code> paths with the actual Dispatcher, routes, <code>src/web/lib/api.ts</code>, and
+<code>src/web/components/session-bits.tsx</code> owners.</li>
+<li>2026-07-23: Kept Phase 1 and Phase 2 concurrent, serialized the durable kernel after Phase 1 due to
+shared schema/migration/daemon files, and made Phase 4 the explicit merge fan-in.</li>
+<li>2026-07-23: Split browser-safe strategy form metadata from server-only compilers, while allowing
+recovery to load and visibly block unknown persisted strategy/driver keys after a downgrade.</li>
+<li>2026-07-23: Added a side-effect-free preview endpoint so Dispatch can show an exact launch,
+budget, and Workflow estimate before confirmation without duplicating compilation in the browser.</li>
+<li>2026-07-23: Routed selected-result restoration through <code>resetSession</code> with an injected exact
+artifact reset, preserving the repository&#x27;s single owner for session-scoped cleanup.</li>
+<li>2026-07-23: Corrected the root plan&#x27;s older conceptual sequence to remove nonexistent
+<code>worktree.ts</code> / server <code>api.ts</code> paths and defer Ensemble routing until the actual dashboard phase.</li>
+</ul></article>
+</div>
+<footer class="footer">Self-contained review artifact · source: phased-plan.md · no external requests</footer>
+</div>
+<script>
+const root=document.documentElement,button=document.getElementById("theme-toggle");
+const stored=localStorage.getItem("mission-plan-theme");if(stored)root.dataset.theme=stored;
+button.addEventListener("click",()=>{const dark=root.dataset.theme==="dark"||(!root.dataset.theme&&matchMedia("(prefers-color-scheme: dark)").matches);root.dataset.theme=dark?"light":"dark";localStorage.setItem("mission-plan-theme",root.dataset.theme)});
+const progress=document.querySelector(".progress");addEventListener("scroll",()=>{const max=document.documentElement.scrollHeight-innerHeight;progress.style.width=(max?scrollY/max*100:0)+"%"},{passive:true});
+</script>
+</body>
+</html>

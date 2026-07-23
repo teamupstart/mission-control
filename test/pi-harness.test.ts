@@ -27,7 +27,10 @@ import {
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import { COST_UNSUPPORTED } from "../src/shared/cost.ts";
 import { PI_SESSION_LINES, PI_SESSION_JSONL } from "./fixtures/pi-sessions.ts";
-import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
+import {
+  preparePiLaunch,
+  waitForPiLaunchReady,
+} from "../src/server/harness/pi/launch.ts";
 
 // ---- the capability shape: what pi declares vs what it disables ----
 
@@ -142,6 +145,24 @@ test("preparePiLaunch injects and reports one exact session id", () => {
     prepared.sessionId,
     /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
   );
+});
+
+test("pi launch readiness replaces an invalid timeout with a finite wait", async () => {
+  let now = 0;
+  let locates = 0;
+  const sleeps: number[] = [];
+  const path = await waitForPiLaunchReady("/repo", "session-id", Number.NaN, 0, {
+    locate: () => (++locates === 2 ? "/tmp/pi-session.jsonl" : null),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      now += ms;
+    },
+    now: () => now,
+  });
+
+  assert.equal(path, "/tmp/pi-session.jsonl");
+  assert.equal(sleeps[0], 100);
+  assert.ok(sleeps.every(Number.isFinite));
 });
 
 test("a hookless session declines transcript attribution", () => {

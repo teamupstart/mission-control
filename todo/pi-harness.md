@@ -284,7 +284,10 @@ that remain:
     `harness/pi/launch.ts`, and the dispatcher composes its returned argv and records its
     session id just as it composes Codex's launch-scoped hook preparation. The matching file's
     appearance is also pi's launch-scoped readiness proof: dispatch waits for it and refuses an
-    unverified launch rather than typing after the generic fixed delay. The integration is
+    unverified launch rather than typing after the generic fixed delay. Readiness and prompt
+    acceptance remain separate: immediately before delivery the dispatcher records that exact
+    file's byte size, and only a user turn appended beyond that boundary acknowledges the
+    prompt. Metadata-only growth and generic `working` state are refused. The integration is
     per-harness launch data, not transcript attribution special-casing.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's

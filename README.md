@@ -815,14 +815,16 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`) in a **terminal home** rooted there - a named
+2. launches the agent (`claude`/`codex`/`pi`) in a **terminal home** rooted there - a named
    multiplexer home when one is installed (tmux adds a second **shell pane split beside
    it** for ad-hoc git/build/inspection), or a terminal tab in that worktree when no
    multiplexer is available, and
 3. waits for that exact discovered session to become ready (falling back to a brief settle
-   when hooks cannot report readiness), verifies it is still live, and injects your task as
-   its first prompt. If the agent exits during startup, dispatch fails instead of sending
-   the prompt to a retained snapshot of its dead pane.
+   when no stronger signal exists), verifies it is still live, and injects your task as its
+   first prompt. A dispatched Pi proves startup when its injected-id session file appears,
+   then proves delivery only when that exact file appends a new user turn. Metadata changes
+   and generic `working` state do not count. If the agent exits during startup or Pi never
+   records the prompt, dispatch fails instead of calling an unverified task running.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without

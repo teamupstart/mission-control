@@ -68,42 +68,12 @@ export function piSessionFileForIdentity(
   return exactSessionFile(sessionFiles(piProjectDir(cwd, sessionsDir)), agentSessionId)?.path ?? null;
 }
 
-interface Binding {
-  cwd: string;
-  sessionsDir: string;
-  agentSessionId: string;
-  path: string;
-}
-
-/**
- * The state lives HERE, on the spec, not in the generic poller - the rule the harness axis
- * settled: per-session path bindings stay with the harness that understands them,
- * so the poller never grows a per-vendor map.
- */
-const bindings = new Map<string, Binding>();
-
-function recordBinding(s: Session, sessionsDir: string, agentSessionId: string, path: string): void {
-  bindings.set(s.id, {
-    cwd: s.cwd!,
-    sessionsDir,
-    agentSessionId,
-    path,
-  });
-}
-
 export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
-  if (!s.cwd || !s.agentSessionId) {
-    bindings.delete(s.id);
-    return null;
-  }
+  if (!s.cwd || !s.agentSessionId) return null;
 
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const match = exactSessionFile(files, s.agentSessionId);
-  const path =
-    match && !files.some((file) => file.createdAt > match.createdAt) ? match.path : null;
-  if (path) recordBinding(s, sessionsDir, s.agentSessionId, path);
-  else bindings.delete(s.id);
-  return path;
+  return match && !files.some((file) => file.createdAt > match.createdAt) ? match.path : null;
 }
 
 /**
@@ -168,6 +138,8 @@ export function piToMessage(o: unknown): TranscriptMessage | null {
 }
 
 /** Pi's transcript capability: a located JSONL file, read as messages and as runtime meta. */
+export const piMessages = jsonlMessages({ parse: piToMessage, narration: () => null });
+
 export const piTranscript: TranscriptSpec = {
   metaSource: "transcript",
   locate: locatePiTranscript,
@@ -175,8 +147,6 @@ export const piTranscript: TranscriptSpec = {
   // pi has no TodoWrite-style progress tool, so there is no "what's happening now" one-liner
   // to surface - null degrades to showing nothing, which is the right answer for a harness
   // with no such notion.
-  messages: jsonlMessages({ parse: piToMessage, narration: () => null }),
-  retain: (live) => {
-    for (const id of bindings.keys()) if (!live.has(id)) bindings.delete(id);
-  },
+  messages: piMessages,
+  retain: null,
 };

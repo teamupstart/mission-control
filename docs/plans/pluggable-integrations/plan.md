@@ -1557,8 +1557,10 @@ delivery. The spike is `todo/pi-harness.md`; what it found:
   workaround.** Identity must be chosen before pi starts, so the adapter owns
   `harness/pi/launch.ts` and the dispatcher composes its returned argv and session id just as it
   composes Codex's launch preparation. Dispatch waits for the exact session file to appear and
-  treats silence as an unverified launch instead of typing after a fixed delay; that same file
-  then supplies passive prompt acceptance. Nothing in transcript discovery guesses ownership.
+  treats silence as an unverified launch instead of typing after a fixed delay. File appearance
+  proves readiness, not prompt ingestion: dispatch captures that file's byte size before typing
+  and accepts only a user turn appended beyond it. Metadata-only growth and generic `working`
+  upserts do not count. Nothing in transcript discovery guesses ownership.
 
 - **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
   captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no

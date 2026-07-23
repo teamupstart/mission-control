@@ -16,7 +16,12 @@ import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
-import { preparePiLaunch, waitForPiLaunchReady } from "./harness/pi/launch.ts";
+import {
+  piPromptBaseline,
+  preparePiLaunch,
+  waitForPiLaunchReady,
+  waitForPiPromptAccepted,
+} from "./harness/pi/launch.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -51,6 +56,7 @@ export class Dispatcher {
     private deps: {
       inject?: typeof injectPrompt;
       waitForPiReady?: typeof waitForPiLaunchReady;
+      waitForPiAcceptance?: typeof waitForPiPromptAccepted;
     } = {},
   ) {}
 
@@ -134,7 +140,7 @@ export class Dispatcher {
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
-      const { instrumented } = ready;
+      const { instrumented, piTranscriptPath } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;
@@ -147,7 +153,13 @@ export class Dispatcher {
       // Mode selection takes terminal I/O and can race the process exiting. Re-read at
       // the actual send boundary so a lingered session cannot type into its dead pane.
       const deliverySession = this.requireLiveSession(session.id);
-      await this.deliverIntent(deliverySession.id, task.intent, wt.path, instrumented);
+      await this.deliverIntent(
+        deliverySession.id,
+        task.intent,
+        wt.path,
+        instrumented,
+        piTranscriptPath,
+      );
 
       if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
@@ -201,8 +213,9 @@ export class Dispatcher {
    *
    * Discovery is a `ps` sweep: it fires when the binary is exec'd, seconds before any
    * TUI exists. A hook-capable launch proves readiness with its first hook. A pi launch
-   * proves it when the file for its injected session id appears. Returns whether the
-   * launch is instrumented, because that decides whether later silence is evidence.
+   * proves it when the file for its injected session id appears. The result keeps hook
+   * instrumentation separate from pi's transcript path because prompt acceptance uses
+   * different evidence after the send.
    *
    * The fallback is deliberate. An agent whose hooks aren't installed will never satisfy
    * this, and refusing to dispatch to it would be a regression, so a timeout degrades
@@ -219,10 +232,10 @@ export class Dispatcher {
     discovered: Session,
     hooksPrepared = true,
     piSessionId: string | null = null,
-  ): Promise<{ session: Session; instrumented: boolean }> {
+  ): Promise<{ session: Session; instrumented: boolean; piTranscriptPath: string | null }> {
     if (piSessionId) {
       this.requireLiveSession(discovered.id);
-      const ready = await (this.deps.waitForPiReady ?? waitForPiLaunchReady)(
+      const path = await (this.deps.waitForPiReady ?? waitForPiLaunchReady)(
         cwd,
         piSessionId,
         HOOK_READY_MS,
@@ -234,13 +247,14 @@ export class Dispatcher {
           },
         },
       );
-      if (!ready) {
+      if (!path) {
         this.requireLiveSession(discovered.id);
         throw new Error("pi session file never appeared before the initial prompt");
       }
       return {
         session: this.requireLiveSession(discovered.id),
-        instrumented: true,
+        instrumented: false,
+        piTranscriptPath: path,
       };
     }
     if (hooksPrepared && hooksFor(discovered.agent)) {
@@ -249,7 +263,7 @@ export class Dispatcher {
         discovered.id,
         HOOK_READY_MS,
       );
-      if (ready) return { session: ready, instrumented: true };
+      if (ready) return { session: ready, instrumented: true, piTranscriptPath: null };
     }
     // A null readiness result means either hook silence or an observed exit. Preserve
     // the fallback settle only for a live-but-silent session; an exited one has no TUI
@@ -261,6 +275,7 @@ export class Dispatcher {
     return {
       session: this.requireLiveSession(discovered.id),
       instrumented: false,
+      piTranscriptPath: null,
     };
   }
 
@@ -313,15 +328,17 @@ export class Dispatcher {
    * `injectPrompt` succeeding means the terminal accepted the write, NOT that the agent read
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
    * it is what let a task sit `running` for 13 minutes against a session whose first
-   * prompt was pasted 647ms before its TUI existed. So on an instrumented session we
-   * wait for the `working` transition only `UserPromptSubmit` can produce.
+   * prompt was pasted 647ms before its TUI existed. Hooked sessions wait for the
+   * `working` transition only `UserPromptSubmit` can produce; pi waits for a user turn
+   * appended after the transcript byte boundary captured before delivery.
    *
-   * The retry is gated on positive evidence (it typed, and the agent is STILL idle 15s
-   * later), never on silence alone. It is not free: if the paste reached the input box
-   * but the Enter did not, a second paste concatenates onto the first and the agent
-   * reads its intent twice over. That is the accepted cost - a garbled-but-visible
-   * prompt a human can fix beats a session that sits empty and calls itself `running`,
-   * and if neither attempt takes, the task now FAILS loudly instead of lying.
+   * The retry is gated on positive evidence: a hooked session is STILL idle, or pi's
+   * exact transcript still has no new user turn. It is not free: if the paste reached
+   * the input box but the Enter did not, a second paste concatenates onto the first and
+   * the agent reads its intent twice over. That is the accepted cost - a
+   * garbled-but-visible prompt a human can fix beats a session that sits empty and calls
+   * itself `running`, and if neither attempt takes, the task now FAILS loudly instead of
+   * lying.
    *
    * None of this transfers to the wrap-up, whose instruction pushes: there a second
    * delivery is a second PR, so it never retries. See queue-apply's `auto-wrapup`.
@@ -334,15 +351,21 @@ export class Dispatcher {
     intent: string,
     cwd: string,
     instrumented: boolean,
+    piTranscriptPath: string | null = null,
   ): Promise<void> {
+    const piOffset = piTranscriptPath ? piPromptBaseline(piTranscriptPath) : null;
+    if (piTranscriptPath && piOffset === null) {
+      throw new Error("pi transcript disappeared before the initial prompt could be sent");
+    }
+
     for (let attempt = 1; ; attempt++) {
       // Preflight before subscribing. If the process already exited, there will be no
       // prompt acknowledgement and no reason to retain a listener until its timeout.
       const session = this.requireLiveSession(sessionId);
 
       // Listen BEFORE typing - the hook can land before the next line runs.
-      const acceptanceAbort = instrumented ? new AbortController() : null;
-      const accepted = instrumented
+      const acceptanceAbort = instrumented && !piTranscriptPath ? new AbortController() : null;
+      const accepted = instrumented && !piTranscriptPath
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
         : null;
 
@@ -361,6 +384,24 @@ export class Dispatcher {
       if (!sent.ok) {
         acceptanceAbort?.abort();
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
+      }
+      if (piTranscriptPath) {
+        const piAccepted = await (
+          this.deps.waitForPiAcceptance ?? waitForPiPromptAccepted
+        )(piTranscriptPath, piOffset!, ACCEPT_MS, {
+          isLive: () => {
+            const current = this.registry.getSession(sessionId);
+            return !!current && current.state !== "exited";
+          },
+        });
+        if (piAccepted) return;
+        this.requireLiveSession(sessionId);
+        if (attempt >= 2) {
+          throw new Error(
+            "the agent never acknowledged the initial prompt (it was typed but not ingested)",
+          );
+        }
+        continue;
       }
       if (!accepted) return;
       if (await accepted) return;

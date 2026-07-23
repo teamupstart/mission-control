@@ -107,6 +107,47 @@ test("an unknown task or session is refused rather than half-applied", async () 
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+test("a reset task retaining resources blocks replacement work", async () => {
+  const { r, tasks, sessionId } = setup();
+  r.upsertTask(mkTask({
+    id: "old-task",
+    title: "Old task",
+    status: "running",
+    sessionId,
+    repoRoot: "/repo",
+    worktreePath: "/repo",
+    branch: "harness/old-task",
+    provider: "git",
+    tmuxSession: "agent",
+  }));
+  r.bindTaskToWorkEpisode("old-task", sessionId);
+  r.resetWorkEpisode(sessionId);
+  r.upsertTask(mkTask({ id: "replacement", repoRoot: "/repo" }));
+  let resetCalled = false;
+  let injected = false;
+
+  const res = await tasks.assign("replacement", sessionId, {
+    paneReady,
+    reset: async () => {
+      resetCalled = true;
+      return cleanReset();
+    },
+    inject: async () => {
+      injected = true;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /clean up.*before reusing/);
+  assert.equal(resetCalled, false);
+  assert.equal(injected, false);
+  assert.equal(r.getTask("replacement")?.status, "backlog");
+  assert.equal(r.getTask("old-task")?.status, "cancelled");
+  assert.equal(r.getTask("old-task")?.worktreePath, "/repo");
+  assert.equal(r.getTask("old-task")?.tmuxSession, "agent");
+});
+
 test("a busy agent is refused - the prompt would land mid-turn", async () => {
   const { r, tasks, agentSessionId } = setup();
   r.upsertTask(mkTask());

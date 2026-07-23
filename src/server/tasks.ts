@@ -673,6 +673,14 @@ export class TaskManager {
         scope: "session",
       };
     }
+    const resourceOwner = this.registry.taskResourceOwnerForSession(s.id);
+    if (resourceOwner) {
+      return {
+        ok: false,
+        error: `that agent still holds resources for ${resourceOwner.title} - clean up that task before reusing it`,
+        scope: "session",
+      };
+    }
     // Asked BEFORE the reset, and that ordering is the whole reason it is a separate
     // probe. Everything below strips the agent - detaches its checkout, drops its work
     // queue, wipes its context - for the sake of a prompt that is typed at the very end.

@@ -43,7 +43,10 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
  * human-readable reason rather than crashing the daemon.
  */
 export class Dispatcher {
-  constructor(private registry: Registry) {}
+  constructor(
+    private registry: Registry,
+    private teardown: typeof teardownWorktree = teardownWorktree,
+  ) {}
 
   async dispatch(taskId: string): Promise<void> {
     const task = this.registry.getTask(taskId);
@@ -132,8 +135,7 @@ export class Dispatcher {
       // leaving it as a reclaimable done-with-worktree task.
       if (cur.status !== "dispatching") {
         if (cur.status === "cancelled") {
-          await teardownWorktree(cur).catch(() => {});
-          this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+          await this.teardownTaskResources(taskId, cur, cur.error);
         }
         return;
       }
@@ -157,16 +159,12 @@ export class Dispatcher {
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
-        await teardownWorktree(cur).catch(() => {});
         this.patch(taskId, {
           status: "failed",
           error: message,
-          worktreePath: null,
-          branch: null,
-          provider: null,
-          tmuxSession: null,
           sessionId: null,
         });
+        await this.teardownTaskResources(taskId, cur, message);
       }
     }
   }
@@ -313,10 +311,34 @@ export class Dispatcher {
     // them KEPT (Mark done must not discard work). Only tear down for a cancel.
     const cur = this.registry.getTask(taskId);
     if (cur?.status === "cancelled") {
-      await teardownWorktree(cur).catch(() => {});
-      this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+      await this.teardownTaskResources(taskId, cur, cur.error);
     }
     return true;
+  }
+
+  private async teardownTaskResources(
+    taskId: string,
+    task: Task,
+    baseError: string | null,
+  ): Promise<boolean> {
+    try {
+      await this.teardown(task);
+      this.patch(taskId, {
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        tmuxSession: null,
+      });
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.patch(taskId, {
+        error: baseError
+          ? `${baseError} - resource cleanup failed: ${detail}`
+          : `resource cleanup failed: ${detail}`,
+      });
+      return false;
+    }
   }
 
   /** Merge fields onto the CURRENT registry task, never a stale local snapshot. */

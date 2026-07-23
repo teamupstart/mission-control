@@ -3050,6 +3050,18 @@ export class Registry extends EventEmitter {
     return [...this.tasks.values()];
   }
 
+  taskResourceOwnerForSession(sessionId: string): Task | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    const tmuxSession = muxHandle(session)?.session ?? null;
+    return this.listTasks().find((task) =>
+      (Boolean(task.worktreePath) || Boolean(task.tmuxSession)) &&
+      (task.sessionId === sessionId ||
+        (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
+        (Boolean(tmuxSession) && task.tmuxSession === tmuxSession))
+    );
+  }
+
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task, deferDependencyCleanup = false): void {
     const previous = this.tasks.get(task.id);

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Mission Control: a local control plane for Claude Code / Codex sessions across wezterm tabs
+Mission Control: a local control plane for Claude Code / Codex / Pi sessions across wezterm tabs
 and tmux sessions.
 
 This file lists the **surfaces that have to move together**. For what the product does and
@@ -23,7 +23,7 @@ issues, push the code, monitor the CI / PR for new inspector comments, and repea
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
 | `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
 | `src/server/terminal` | `registry.ts` | tmux/wezterm behind two interfaces. Mechanism only; the write policy stays in `actions.ts`. |
-| `hooks/` | `harness-hook.mjs`, `codex-hook.mjs` | One bare node per hook event, one bridge per harness. POSTs to the daemon. |
+| `hooks/` | `harness-hook.mjs`, `codex-hook.mjs` | One bare node per hook event, one bridge per hook-capable harness. POSTs to the daemon. |
 
 - The Foreman is a separate process and **never touches the DB**. If it needs state, add a
   route.
@@ -199,9 +199,9 @@ meet: which model judges is settled before the prompt is built, but what is bein
 a session of some harness, and the menu grammar ("you MUST fill answer.option", "it
 discards typed characters") is a claim about that harness's TUI. `ReviewInput.session.agent`
 is required for this, and `promptHarness` (`foreman/prompt.ts`) is the projection - a small
-pure shape, so the no-menu branch is reachable from a test before a harness declaring
-`tui: null` exists. Both shipped harnesses draw dialogs, so that branch has no agent id to
-reach it. Test: `foreman-prompt-harness.test.ts`.
+pure shape. Pi declares `tui: null`, so its sessions take the no-menu branch rather than
+being described in another harness's dialog vocabulary. Test:
+`foreman-prompt-harness.test.ts`.
 
 **New mutating route** → add a zod schema in `protocol.ts` and go through `parseBody`. Never
 hand-parse a body.
@@ -292,11 +292,11 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   instead let a harness pass a `parse: () => null` stub beside the real batch parser to
   satisfy the type - dead code that reads like a live contract, with nothing in the
   interface saying which of the two would have won.
-  **The three degradations Codex's `hooks: null` used to drive are still the contract; they
-  are just no longer reached by either shipped harness.** `applyHook` refuses an ingest whose
+  **The three degradations Codex's `hooks: null` used to drive are still the contract, and
+  Pi now exercises the null capability.** `applyHook` refuses an ingest whose
   harness declares no hooks rather than reading it in Claude's vocabulary; the pane-keyed
   overlay is agent-scoped; `awaitReady` skips its 20s wait. The middle one got MORE
-  load-bearing, not less - both harnesses write overlays now, so `overlayFor` scoping on
+  load-bearing, not less - Claude and Codex write overlays, so `overlayFor` scoping on
   `HookOverlay.agent` is the only thing stopping the card Codex started in a vacated pane
   from inheriting Claude's last state. The third is now gated on `prepareCodexLaunch`'s
   `instrumented` as well as on the capability, because an uninstrumented Codex launch will
@@ -363,8 +363,8 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   a skill and making a running session notice are two capabilities, and one selector
   serving both is how a harness gets the nudge it does not need and none of the skills it
   does. `applyMcp` (`src/main/integrations.ts`) is the same shape and used to be the other
-  half of the defect: a hand-written `["claude", "codex"]` tuple, which a third harness
-  would have been left out of with nothing failing. Test: `skills-multi-harness.test.ts`
+  half of the defect: a hand-written `["claude", "codex"]` tuple, which would have left Pi
+  out with nothing failing. Test: `skills-multi-harness.test.ts`
   (the fold), `skills-reconcile.test.ts` (the walk), `skills-config.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the

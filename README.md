@@ -1,6 +1,6 @@
 # Mission Control
 
-A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
+A local, auto-refreshing dashboard for the Claude Code / Codex / Pi sessions running
 across your **terminal panes**. See every agent at a glance,
 act on any of them, and let an agent push a **diff or plan** to you for review -
 and get your decision back.
@@ -9,7 +9,7 @@ and get your decision back.
 
 ## What it does
 
-- **Discovers** every running `claude` / `codex` session by walking process →
+- **Discovers** every running `claude` / `codex` / `pi` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
@@ -56,9 +56,10 @@ and get your decision back.
   and rate-limit runway. Claude calculates its rows and reports them over OpenTelemetry;
   Mission Control calculates Codex rows from request-level rollout counters. See
   [Cost telemetry](#cost-telemetry).
-- **Says what each session is for**: every card carries a one-sentence **Goal** - what
-  that session is currently trying to solve - derived from your own prompts and
-  refreshed as you steer it. No API key: it runs the local `claude` CLI.
+- **Says what each prompt-reporting session is for**: its card carries a one-sentence
+  **Goal** - what that session is currently trying to solve - derived from your own
+  prompts and refreshed as you steer it. No API key: it runs the configured local
+  model provider.
 - **Triages** the needs-you queue for you: **Foreman** is an optional auto-responder
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
@@ -68,10 +69,11 @@ and get your decision back.
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
   run concurrent, read-only Persona reviews against one immutable evidence snapshot.
-- **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
-  on in Settings and it is linked into each harness's own skills directory, so it applies
-  to **every** Claude Code and Codex session on the machine - including ones this app never
-  launched - without restarting any of them.
+- **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
+  a skill on in Settings and it is linked into each harness's own skills directory, including
+  sessions this app never launched. Claude reloads when idle, Codex watches automatically,
+  dispatched identity-bound Pi sessions reload when idle, and operator-started Pi sessions
+  pick changes up on their next launch or restart.
 - **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
   request Mission Control opened once the Inspector has reviewed and **published** on the
   current push with nothing outstanding, CI is green, no thread is unresolved, and it has
@@ -278,8 +280,8 @@ else, if you want those too.
 
 ### What each agent can do is declared, not assumed
 
-Claude Code and Codex are not the same product, and several features below work for
-one and not the other. Rather than testing "is this Claude?" at each of those places,
+Claude Code, Codex and Pi are not the same product, and several features below reach
+only the harnesses that support them. Rather than testing "is this Claude?" at each place,
 every agent **declares** what it has: permission modes, skills, work queues, reasoning
 effort controls, a command that clears its context, an MCP client. Absent is a first-class
 answer.
@@ -288,7 +290,7 @@ That is why the differences you see are consistent rather than piecemeal. A Code
 draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
 Codex has no mode cycle to walk; its work-queue drawer is available once that session's
 launch-scoped hooks have reported, so [Foreman](#foreman-auto-responder) can observe and
-drive it; and the [skills](#skills-every-session-no-restarts) catalog links a skill into
+drive it; and the [skills](#skills-every-session-mixed-reload-behavior) catalog links a skill into
 each harness's own directory while nudging only the one that needs telling. Where the
 capability *is* there the branch disappears entirely: a **reset** of a Codex checkout clears
 its context with the same `/clear` a Claude one gets, because Codex declares that command too.
@@ -311,7 +313,16 @@ computed from the capability, never typed out.
 
 Adding a third agent means filling that declaration in. The types make it impossible to
 add one and quietly inherit Claude's answers, and nothing about it needs a component or a
-stylesheet edited to show up.
+stylesheet edited to show up. **Pi** (`@earendil-works/pi-coding-agent`) is that third
+agent, added as the migration's acceptance test: it discovers, names, focuses and takes
+typed input, all from declaration alone. Its session format parses as rich conversation,
+but an operator-started process supplies no identity that can safely bind it to one file.
+Mission Control-dispatched Pi sessions receive an exact native session id and can use
+transcript-derived state; operator-started ones visibly degrade to no transcript. It disables
+what it lacks in the open: no MCP client, no work queue without hooks, and no permission-mode
+chip, because its `manual`/`auto`/`readonly` approval modes are its own vocabulary rather than
+the ones the chip is built for. The spike and the interface couplings it surfaced are written
+up in `todo/pi-harness.md`.
 
 ### Precise status (Claude hooks)
 
@@ -351,7 +362,10 @@ than to the installer: both live on `HARNESSES.claude.hooks`
 keys - is in the bridge itself; the transport under it
 (`src/shared/hook-bridge.mjs`) names no agent. An agent that reports nothing declares
 `hooks: null` instead, and its cards are read passively, off discovery and whatever its
-own session file says. Both shipped harnesses report - Codex by a different route, [below](#precise-status-for-codex-hooks-that-ride-on-the-dispatch).
+own session file says. Claude and Codex report hooks - Codex by a different route,
+[below](#precise-status-for-codex-hooks-that-ride-on-the-dispatch). Pi declares
+`hooks: null`; only a Mission Control-dispatched Pi has the exact transcript binding needed
+for passive working/idle state.
 
 **2. Start a new Claude Code session.** Claude reads hook config when a session
 starts, so **sessions already running when you install won't report until you
@@ -490,16 +504,17 @@ Each card's status badge and its left edge stripe encode the session's state:
 | ⚪ grey | **running** | alive, but precise state unknown - hooks aren't reporting |
 | ⚫ dim | **exited** | the process is gone |
 
-Blue / green and **needs input / needs review** require **hooks** - the [Claude
-ones](#precise-status-claude-hooks) you install once, or the [Codex
-ones](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) that ride on a dispatch.
-Without them (or before you restart a session) a card shows grey **running** - with one
-exception: **needs an answer** is read off the terminal itself, so a session sitting on a
-menu goes amber whether or not it's instrumented. That exception is the point: an
-uninstrumented session waiting on a permission prompt is the most blocked thing on the
-board, and it used to report as grey running forever. The small colored dot
-next to each title is *not* a status - it's the brand color the agent declares for
-itself (terracotta for Claude Code, green for Codex).
+Blue / green needs a trustworthy lifecycle source: the [Claude
+hooks](#precise-status-claude-hooks) you install once, the [Codex
+hooks](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) that ride on a dispatch,
+or an exactly bound passive transcript such as a Mission Control-dispatched Pi session.
+Without one, a card shows grey **running** - with one exception: **needs an answer** is read
+off the terminal itself, so a session sitting on a menu goes amber whether or not it's
+instrumented. That exception is the point: an uninstrumented session waiting on a
+permission prompt is the most blocked thing on the board, and it used to report as grey
+running forever. **Needs input / needs review** still comes from hooks or a review item.
+The small colored dot next to each title is *not* a status - it's the brand color the agent
+declares for itself (terracotta for Claude Code, green for Codex, blue for Pi).
 
 A Claude session also carries a **permission mode** chip once Mission Control observes one -
 `manual`, `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't
@@ -640,9 +655,10 @@ prompt over its own `UserPromptSubmit`, and the refiner reads the same rollout f
 transcript does, so there is a conversation window to summarise from. Tier 1 is what
 starts the whole thing, so this needs the hooks - an uninstrumented Codex session (one you
 started yourself) has no prompt to show and stays blank, the same way an uninstrumented
-Claude session does. What is gone is the *permanent* refusal: `GOAL_UNSUPPORTED` is null
-for both harnesses now, and a card only ever prints a sentence there for an agent whose
-harness can never read a prompt at all.
+Claude session does. Pi can read conversation turns too, so it has no permanent
+`GOAL_UNSUPPORTED` refusal; it does not yet push a prompt event, however, so current Pi
+cards do not seed a Goal. The permanent-refusal map is null for all three harnesses, and
+only agents whose harness can never read turns get an unsupported sentence.
 
 ### Cost telemetry
 
@@ -806,29 +822,31 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`) in a **terminal home** rooted there - a named
+2. launches the agent (`claude`/`codex`/`pi`) in a **terminal home** rooted there - a named
    multiplexer home when one is installed (tmux adds a second **shell pane split beside
    it** for ad-hoc git/build/inspection), or a terminal tab in that worktree when no
    multiplexer is available, and
 3. waits for that exact discovered session to become ready (falling back to a brief settle
-   when hooks cannot report readiness), verifies it is still live, and injects your task as
-   its first prompt. If the agent exits during startup, dispatch fails instead of sending
-   the prompt to a retained snapshot of its dead pane.
+   when no stronger signal exists), verifies it is still live, and injects your task as its
+   first prompt. A dispatched Pi proves startup when its injected-id session file appears,
+   then proves delivery only when that exact file appends a new user turn. Metadata changes
+   and generic `working` state do not count. If the agent exits during startup or Pi never
+   records the prompt, dispatch fails instead of calling an unverified task running.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without
 opening Settings. Pick a different one to override it for this task alone - more
 horsepower for a gnarly refactor, something cheap and fast for a one-line fix - and the
 daemon launches the agent with `--model <id>`. Switching **Agent** resets the model,
-since a Claude id means nothing to Codex. Leaving it on **Default** stores no model at
+since model ids are harness-specific. Leaving it on **Default** stores no model at
 all rather than pinning today's, so a task you shelve now picks up the default in force
 when it's actually dispatched.
 
 **Effort** sits immediately after Model and follows the same rule: it starts on the
 chosen harness's default, can be overridden for one task, and switching Agent resets it.
 Claude launches with `--effort <level>`; Codex receives the corresponding
-`model_reasoning_effort` launch override. Leaving it on **Default** keeps the task tied
-to the effort default in force when it launches.
+`model_reasoning_effort` launch override; Pi receives `--thinking <level>`. Leaving it on
+**Default** keeps the task tied to the effort default in force when it launches.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
@@ -885,11 +903,11 @@ the agent keeps the one it had - which is exactly why cancelling it later never 
 
 **The drop resets that agent's checkout first**, the same reset the card's **reset**
 control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
-the branch, and clear the context (`/clear` for Claude Code; an agent that declares no
-clear command has its context left alone rather than being sent a command it does not
-speak). Without it the next task inherits the last one's branch and context, and
-no-mistakes - seeing a non-default branch - validates and pushes onto it, putting two
-unrelated tasks in one PR.
+the branch, and clear the context (`/clear` for Claude Code and Codex, `/new` for Pi; an
+agent that declares no clear command has its context left alone rather than being sent a
+command it does not speak). Without it the next task inherits the last one's branch and
+context, and no-mistakes - seeing a non-default branch - validates and pushes onto it,
+putting two unrelated tasks in one PR.
 
 So the drop **asks first whenever there's something to lose**: a dialog naming the agent's
 queued work items, the branch being released, and the context being cleared, and nothing
@@ -1035,9 +1053,10 @@ dispatch doesn't name one - one row per harness, because a Claude model id is no
 something Codex can run. The dispatch form starts on it, so choosing well here is usually
 the last time you have to think about models; the per-task picker is for the exceptions.
 
-Both ship as **Harness default**, which means Mission Control passes **no `--model` flag
+All three ship as **Harness default**, which means Mission Control passes **no `--model` flag
 at all** and the CLI keeps using whatever you configured in the harness itself
-(`/model`, `~/.claude/settings.json`, `~/.codex/config.toml`). That's a real setting, not
+(`/model`, `~/.claude/settings.json`, `~/.codex/config.toml`, or
+`~/.pi/agent/settings.json`). That's a real setting, not
 an empty one - it's how you tell Mission Control to stay out of the way, and you can
 always put a row back to it.
 
@@ -1046,7 +1065,7 @@ changes what a task already sitting in the backlog will run on. Like every setti
 this section it applies **only to sessions Mission Control dispatched** - a session you
 started yourself and the app merely discovered is never touched.
 
-Both model lists are maintained in `src/shared/model.ts`; a model released after your
+All three model lists are maintained in `src/shared/model.ts`; a model released after your
 build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
 `/api/harnesses/config`) still shows and still applies rather than being silently
 dropped.
@@ -1054,11 +1073,11 @@ dropped.
 ### Default effort
 
 **Settings → Harnesses → Default effort** sets the reasoning level each harness starts
-with when a dispatch does not name one. Claude Code and Codex have separate rows, and
-Claude Code offers `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`,
-`medium`, `high`, and `xhigh`.
+with when a dispatch does not name one. Each harness has its own row. Claude Code and Pi
+offer `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`, `medium`, `high`,
+and `xhigh`.
 
-Both ship as **Harness default**, so Mission Control passes no effort override and the
+All three ship as **Harness default**, so Mission Control passes no effort override and the
 CLI keeps its own configured choice. Like the model default, this is resolved when the
 task launches: changing it applies to already-shelved tasks unless a task selected its
 own effort in the dispatch form.
@@ -1695,9 +1714,10 @@ popover bound it: **fix attempts per issue** (default 3) and **max fix rounds pe
 
 Sends obey the same gate as everything else: dry-run **drafts** each item and waits for your
 **Approve**, and live sends only happen in allowlisted repos. Verification is read-only, so
-it runs in any mode - you see Foreman's judgment before it ever types. A queue needs a
-hook-instrumented Claude session (there's no completion signal otherwise), and the panel
-says so rather than letting you queue work that can't run.
+it runs in any mode - you see Foreman's judgment before it ever types. A queue needs hook
+pickup/completion signals: Claude sessions must report installed hooks, Codex sessions must
+have the launch-scoped hooks attached, and Pi is unsupported. The panel says so rather than
+letting you queue work that can't run.
 
 ## Backlog autopilot (Foreman schedules the fleet)
 
@@ -1858,18 +1878,18 @@ Two things worth knowing:
   collapses, so attach yours when you're ready to send. (The
   [dispatch form](#dispatch-an-agent) is the one that keeps its attachments across a close.)
 
-## Skills (every session, no restarts)
+## Skills (every session, mixed reload behavior)
 
 Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,
 switch it on, and it applies to **every** session on this machine whose harness has a
-skills directory - including sessions this app never launched - without terminating or
-recreating any of them.
+skills directory - including sessions this app never launched. How a running session notices
+the change depends on its harness.
 
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
-Claude, `~/.agents/skills` for Codex - which is that agent's own loading path; the harness
-never reimplements it.
+Claude, `~/.agents/skills` for Codex, and `~/.pi/agent/skills` for Pi - which is that
+agent's own loading path; the harness never reimplements it.
 
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Its reviewer-ready description contract lives in
@@ -1886,7 +1906,10 @@ Claude session re-reads its directory only when told, so the daemon types `/relo
 into its pane when it next goes quiet. Codex declares no reload command, because it
 watches its own directory - which means a Codex session picks the change up with nothing
 typed at it at all, and is deliberately excluded from the pane broadcast rather than sent a
-slash command that would land in its composer as text.
+slash command that would land in its composer as text. Pi's reload is launch-scoped: a Pi
+session dispatched by Mission Control has an injected identity, so its exact transcript can
+prove idle and the daemon can safely type `/reload`; an operator-started Pi session has no
+such binding and picks changes up only on its next launch or restart.
 
 Three things worth knowing before you switch one on:
 
@@ -1906,9 +1929,11 @@ Three things worth knowing before you switch one on:
   sits on. "When relevant" means exactly that.
 - **The "N sessions will pick this up" count is about the reload nudge, not about
   reach.** It counts the sessions the daemon will type at, which is the ones whose harness
-  declares a reload command - so it excludes Codex sessions even though the skill is
-  linked where they will read it. Reach is the `skills` capability; the count is the
-  `reloadCommand` one, and they are deliberately different questions.
+  declares a reload command and whose per-session readiness source is currently available.
+  It excludes Codex sessions that watch automatically and operator-started Pi sessions that
+  require a restart, while counting identity-bound dispatched Pi sessions. Reach is the
+  `skills` capability; the count is the reload-readiness contract, and they are
+  deliberately different questions.
 
 ### The daemon is no longer strictly reactive
 
@@ -2514,14 +2539,14 @@ that looks perfectly healthy would help nobody.
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt when a still-live session cannot prove readiness. Used after the hook wait below times out, or immediately when that wait is skipped; an observed exit fails instead |
-| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's first hook - the only honest "I can read input" signal - before falling back to the settle above if that session is still live. An observed exit ends the wait immediately. The wait is skipped when this particular launch could never produce a hook: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt. Used after Pi's exact session file appears, after a hook wait times out, or immediately when no readiness signal exists; an observed exit fails instead |
+| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's readiness signal: the first hook for a hook-capable launch, or the injected-id session file for Pi. A missing Pi file fails the dispatch rather than allowing unverified input; hook silence falls back to the settle above if the session is still live. An observed exit ends either wait immediately. The hook wait is skipped when this particular launch could never produce one, including a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
-| `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
+| `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
@@ -2529,6 +2554,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |
+| `PI_SKILLS_DIR` | `~/.pi/agent/skills` | the same override for Pi's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/pi-skills`. Pi loads SKILL.md skills from the same standard as Claude and Codex, so the reconciler links the catalog into this dir too. Identity-bound Pi sessions dispatched by Mission Control receive `/reload` when idle; operator-started Pi sessions need a launch or restart |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
@@ -2538,6 +2564,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | Codex CLI path override - both for dispatched agents and for every headless `codex exec` the app runs when Codex is the selected [provider](#models-what-the-apps-own-model-work-runs-on) |
 | `MISSION_CODEX_TIMEOUT_MS` | `120000` | hard cap on a single headless `codex exec`, the mirror of `MISSION_CLAUDE_TIMEOUT_MS`. A caller that sets its own budget (the Inspector, the Goal refiner, the dispatch titler) passes it instead |
+| `MISSION_PI_BIN` | `pi` | Pi (`@earendil-works/pi-coding-agent`) CLI path override for dispatched agents. Pi is a discovered/dispatched harness, not one of the app's own headless model providers |
 | `MISSION_CODEX_HOOK` | app's `dist/satellites/codex-hook.mjs` | path to the bundled [Codex hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) the dispatcher points a Codex launch at. If the path doesn't exist the hook overrides are dropped entirely and the session runs uninstrumented rather than failing to launch |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |

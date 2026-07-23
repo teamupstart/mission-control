@@ -146,16 +146,17 @@ test("the live effort picker follows the selected model, not the launch default"
 });
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
-  // A guard nothing exercises rots. Codex used to be the live proof for all five; it now
-  // declares `skills`, `workQueue`, `clearContext` and `mcp`, so those four moved to
-  // `withCapabilityNull` fixtures rather than being dropped - the paths are what a harness
-  // filling in less than these two would land on, and they are still reachable code.
+  // A guard nothing exercises rots. Codex was once the live proof for all five, then declared
+  // them all non-null; pi (Phase 5) then declared `workQueue` and `mcp` null for real - it has
+  // no hooks for the first and no MCP client for the second - so those two moved back OUT of
+  // the fixture list. `skills` and `clearContext` are still declared null by no shipped
+  // harness (pi has both), so they stay on `withCapabilityNull` fixtures.
   //
   // The point of naming them HERE is that the two lists cannot drift apart silently. A
   // capability that gains a null declarer must leave `BY_FIXTURE`, and one that loses its
   // last declarer must join it - either way this fails first, rather than a loop over an
   // empty `hasnt` quietly asserting nothing.
-  const BY_FIXTURE: readonly SplitCap[] = ["skills", "workQueue", "clearContext", "mcp"];
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext"];
   for (const cap of ["permissionModes", "skills", "workQueue", "clearContext", "mcp"] as const) {
     const declared = split(cap).hasnt.length > 0;
     if (BY_FIXTURE.includes(cap)) {
@@ -262,14 +263,9 @@ test("a harness with no skills is never owed a reload, however healthy the sessi
 });
 
 test("a harness with skills but NO reload command is owed nothing either", () => {
-  // Codex, which is the reason `reloadCommand` is nullable at all: it watches its skills
-  // directory itself, so the skill arrives (`skillsDirs()` links it there) and no
-  // keystroke is owed. The two halves are separate capabilities, and conflating them
-  // would either type a made-up slash command into a Codex prompt or leave the panel's
-  // counter above zero for a session nothing will ever reload.
   const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
   const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
-  assert.ok(owed.length > 0, "codex is the live proof - if it goes, this needs a fixture");
+  assert.deepEqual(owed, ["codex"]);
   for (const agent of owed) {
     const s = mkSession({ id: `sk-${agent}`, agent, state: "idle", hooksSeen: true, startedAt: null });
     assert.equal(reloadOwed(s, new Map(), cfg), false);
@@ -281,10 +277,12 @@ test("a harness with skills but NO reload command is owed nothing either", () =>
 test("the reload command comes from the harness, not from a shared constant", () => {
   // It is typed into a live pane, so it has exactly one definition - and that definition
   // is per-harness, which is what stops a second one inheriting Claude's slash vocabulary.
+  assert.deepEqual(skillsAgents(), ["claude", "pi"]);
   for (const agent of skillsAgents()) {
-    const spec = capabilitiesFor(agent).skills!;
-    assert.ok(spec.reloadCommand.startsWith("/"), "a reload command is a slash command");
-    assert.doesNotMatch(spec.reloadCommand, /\n/, "a command carrying a newline is two submissions");
+    const cmd = capabilitiesFor(agent).skills?.reloadCommand;
+    assert.ok(cmd, `${agent} is in skillsAgents() so it must carry a reload command`);
+    assert.ok(cmd.startsWith("/"), "a reload command is a slash command");
+    assert.doesNotMatch(cmd, /\n/, "a command carrying a newline is two submissions");
   }
 });
 

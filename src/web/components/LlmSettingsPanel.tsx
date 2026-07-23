@@ -50,8 +50,8 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
 
       {/* Names no harness, deliberately. The point being made is that the two axes are
           independent, and an illustration spelled "review a Codex session with Claude" makes
-          that point by enumerating today's two - which is the sentence a third harness
-          silently makes stale. The dashboard's rule is that copy naming which agents a
+          that point by enumerating two harnesses - wording Pi would silently have made stale.
+          The dashboard's rule is that copy naming which agents a
           feature reaches is COMPUTED (`agentList`); copy that needs no enumeration to be
           true should not acquire one. */}
       <p className="settings-hint">

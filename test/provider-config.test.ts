@@ -29,6 +29,7 @@ test("Foreman merges backlog launch defaults per harness", () => {
   assert.deepEqual(cfg.backlogDefaultModel, {
     claude: "claude-sonnet-5",
     codex: "gpt-5.6-terra",
+    pi: null,
   });
 });
 

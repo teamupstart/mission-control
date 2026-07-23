@@ -41,6 +41,9 @@ export interface AgentIdentity {
 export const AGENT_IDENTITY: Record<AgentType, AgentIdentity> = {
   claude: { label: "Claude Code", speaker: "claude", accent: "#d97757" },
   codex: { label: "Codex", speaker: "codex", accent: "#10a37f" },
+  // Pi (`@earendil-works/pi-coding-agent`). Its own blue, distinct from Claude's terracotta,
+  // Codex's green and Foreman's purple - a fourth register that reads as neither of them.
+  pi: { label: "Pi", speaker: "pi", accent: "#4d7cfe" },
 };
 
 /**

@@ -39,13 +39,13 @@ test("ships with no default model, so installing this changes nothing about how 
   const cfg = getHarnessesConfig();
   assert.equal(cfg.defaultModel.claude, null);
   assert.equal(cfg.defaultModel.codex, null);
-  assert.deepEqual(cfg.defaultEffort, { claude: null, codex: null });
+  assert.deepEqual(cfg.defaultEffort, { claude: null, codex: null, pi: null });
 });
 
 test("effort defaults merge per harness and resolve behind a task override", () => {
   setHarnessesConfig({ defaultEffort: { codex: "high" } });
   const cfg = setHarnessesConfig({ defaultEffort: { claude: "medium" } });
-  assert.deepEqual(cfg.defaultEffort, { claude: "medium", codex: "high" });
+  assert.deepEqual(cfg.defaultEffort, { claude: "medium", codex: "high", pi: null });
   assert.equal(resolveDispatchEffort("claude", null), "medium");
   assert.equal(resolveDispatchEffort("codex", "xhigh"), "xhigh");
 });
@@ -96,7 +96,7 @@ test("a config stored before default models existed reads as no default, not a c
     .run("harnesses", JSON.stringify({ autoModeOnDispatch: true }));
   const cfg = getHarnessesConfig();
   assert.equal(cfg.autoModeOnDispatch, true);
-  assert.deepEqual(cfg.defaultModel, { claude: null, codex: null });
+  assert.deepEqual(cfg.defaultModel, { claude: null, codex: null, pi: null });
 });
 
 // ---- resolution at dispatch time ----
@@ -153,8 +153,10 @@ test("a model id carrying shell syntax is refused before it can be stored", () =
 
 test("every id the picker can offer passes the schema that guards the command line", () => {
   // The catalog is hand-maintained, so this is what stops a typo'd entry from shipping
-  // as a model nobody can actually dispatch.
-  for (const agent of ["claude", "codex"] as const) {
+  // as a model nobody can actually dispatch. Pi is included because its ids are
+  // provider-qualified (`openai/gpt-5.5`) - the schema admits an interior `/` for exactly
+  // this, so a catalog entry a dispatch cannot pass would fail here.
+  for (const agent of ["claude", "codex", "pi"] as const) {
     for (const choice of MODEL_CATALOG[agent]) {
       assert.equal(
         ModelIdSchema.safeParse(choice.id).success,
@@ -163,6 +165,15 @@ test("every id the picker can offer passes the schema that guards the command li
       );
     }
   }
+});
+
+test("an interior slash is allowed but a leading one, or a traversal, is not", () => {
+  // Pi's `provider/id` form must pass; a path or a flag must not - the leading-char class is
+  // what keeps `/` from opening a hole, so both halves are asserted together.
+  assert.equal(ModelIdSchema.safeParse("openai/gpt-5.5").success, true);
+  assert.equal(ModelIdSchema.safeParse("anthropic/claude-opus-4-5").success, true);
+  assert.equal(ModelIdSchema.safeParse("/etc/passwd").success, false, "no leading slash");
+  assert.equal(ModelIdSchema.safeParse("../../etc/passwd").success, false, "no leading dot");
 });
 
 test("a bad model on a dispatch is rejected with the request, not dropped from it", () => {

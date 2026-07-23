@@ -29,8 +29,8 @@ function mkState(config: HarnessesConfig | null, over: Partial<HarnessesState> =
 function mkConfig(over: Partial<HarnessesConfig>): HarnessesConfig {
   return {
     autoModeOnDispatch: false,
-    defaultModel: { claude: null, codex: null },
-    defaultEffort: { claude: null, codex: null },
+    defaultModel: { claude: null, codex: null, pi: null },
+    defaultEffort: { claude: null, codex: null, pi: null },
     ...over,
   };
 }
@@ -118,7 +118,7 @@ test("no default reads as 'the harness decides', not as an empty setting", () =>
 });
 
 test("a configured default names the flag the dispatcher will actually pass", () => {
-  const html = render({ defaultModel: { claude: "claude-opus-4-8", codex: null } });
+  const html = render({ defaultModel: { claude: "claude-opus-4-8", codex: null, pi: null } });
   assert.match(html, /--model claude-opus-4-8/);
   // Selected, so reopening Settings shows the setting rather than resetting it.
   assert.match(html, /<option value="claude-opus-4-8" selected/);
@@ -128,7 +128,7 @@ test("a default this build doesn't know is still shown as selected", () => {
   // Set by a newer build or straight at the route. Dropping it would render the select
   // on its empty option - claiming "no default" for a setting that has one, and writing
   // that lie back on the operator's next unrelated edit.
-  const html = render({ defaultModel: { claude: "claude-opus-9-9", codex: null } });
+  const html = render({ defaultModel: { claude: "claude-opus-9-9", codex: null, pi: null } });
   assert.match(html, /<option value="claude-opus-9-9" selected/);
   assert.match(html, /not in this build/);
 });
@@ -141,7 +141,7 @@ test("the model pickers are disabled until the first config read lands", () => {
 });
 
 test("both harnesses get a configurable default effort", () => {
-  const html = render({ defaultEffort: { claude: "high", codex: "xhigh" } });
+  const html = render({ defaultEffort: { claude: "high", codex: "xhigh", pi: null } });
   assert.match(html, /Default effort/);
   assert.match(html, /aria-label="Default effort for dispatched Claude Code sessions"/);
   assert.match(html, /aria-label="Default effort for dispatched Codex sessions"/);

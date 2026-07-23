@@ -83,27 +83,24 @@ export function reloadTargets(
 }
 
 /**
- * Whether a session could EVER pick up the current generation - everything except
- * whether it happens to be ready this instant.
+ * Whether a session can pick up the current generation, excluding only its transient
+ * idle/settle state.
  *
  * The split from `reloadNeeded` is the `hooksSeen` / `instrumented` distinction the
  * queue machine already documents, and the two halves must not drift: this one answers
  * "is a reload owed to this session at all", which is what the panel's counter reports,
  * while `reloadNeeded` adds "and is it safe to type right now".
  *
- * Every clause here is a PERMANENT fact about the session, which is what makes the
- * counter honest. Put a transient one in (`instrumented` is a 30-minute freshness
- * window, so a healthy session that simply goes quiet flips it to false) and the count
- * drops to zero for a session that never got the skill. Leave a permanent one out
- * (`hasPane`, `hooksSeen`) and the count sits above zero forever for a session nothing
- * can ever reload - which is the exact never-reaches-zero failure that made this
- * function exclude codex in the first place.
+ * The base clauses are permanent. A transcript-driven harness additionally needs a
+ * currently attributable file, so the counter never promises a reload for a session
+ * whose passive idle source cannot be tied to that pane.
  */
-export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsConfig): boolean {
+function reloadOwedBase(s: Session, acks: Map<string, number>, cfg: SkillsConfig): boolean {
   // 1. This harness has no skills to reload - no directory we symlink into, and no
   //    command that would make a running session notice if there were. Typing one anyway
   //    would put a stray line in someone's prompt and change nothing.
-  if (!harnessFor(s.agent).skills?.reloadCommand) return false;
+  const skills = harnessFor(s.agent).skills;
+  if (!skills?.reloadCommand || !skills.reloadIdleSource) return false;
   if (s.state === "exited") return false;
 
   // 2. Nowhere to type, ever. `capturePaneText` answers null for a handleless session,
@@ -111,12 +108,8 @@ export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsCon
   //    would promise a pick-up that cannot happen.
   if (!hasPane(s)) return false;
 
-  // 3. No hooks have EVER arrived, so nothing will ever report this session idle and
-  //    `settledIdle` can never be true. `hooksSeen` and NOT `instrumented`: the two look
-  //    interchangeable and are not. This is the "do hooks exist at all" question, which
-  //    is permanent; a freshness window is a terrible answer to it, and using one here
-  //    would make the count blink out for any session that had simply been quiet a while.
-  if (!s.hooksSeen) return false;
+  // 3. The harness's declared idle source must exist for this session.
+  if (skills.reloadIdleSource === "hooks" && !s.hooksSeen) return false;
 
   // 4. Already current. The watermark, not a queue: five toggles land at generation 5,
   //    and ONE reload re-reads the directory and satisfies all of them.
@@ -136,6 +129,16 @@ export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsCon
   return true;
 }
 
+function hasCurrentReloadIdleSource(s: Session): boolean {
+  const harness = harnessFor(s.agent);
+  if (harness.skills?.reloadIdleSource !== "transcript") return true;
+  return harness.transcript?.locate(s) !== null;
+}
+
+export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsConfig): boolean {
+  return reloadOwedBase(s, acks, cfg) && hasCurrentReloadIdleSource(s);
+}
+
 /** Whether one session is owed a reload AND is ready for it right now. */
 export function reloadNeeded(
   s: Session,
@@ -144,7 +147,7 @@ export function reloadNeeded(
   now: number,
   settleMs = SETTLE_MS,
 ): boolean {
-  if (!reloadOwed(s, acks, cfg)) return false;
+  if (!reloadOwedBase(s, acks, cfg)) return false;
 
   // `settledIdle` and NOT `reportBucket(s) === "idle"`: idle is that function's
   // catch-all fallthrough, so it's true for UNINSTRUMENTED sessions, where idleness is
@@ -153,7 +156,8 @@ export function reloadNeeded(
   // state - so it holds for a healthy session whose hook merely lapsed (the transcript
   // still proves it parked) while refusing the `working` rebuild default. It's the one
   // transient gate here, which is why it isn't in `reloadOwed`.
-  return settledIdle(s, now, settleMs);
+  if (!settledIdle(s, now, settleMs)) return false;
+  return hasCurrentReloadIdleSource(s);
 }
 
 /** A session's acked generation. Absent and 0 mean the same thing: never acked. */
@@ -238,11 +242,15 @@ export async function reloadOne(
   // by itself. Acking a generation for it instead would record a reload that never
   // happened - and since `reloadOwed` refuses these sessions upstream, an ack branch
   // here is unreachable code that reads like a live one.
-  const skills = harnessFor(session.agent).skills;
+  const harness = harnessFor(session.agent);
+  const skills = harness.skills;
   if (!skills?.reloadCommand) return false;
 
-  const line = await deps.readModeLine(session);
-  if (!line) return false;
+  if (!hasCurrentReloadIdleSource(session)) return false;
+  if (harness.tui?.modeLine) {
+    const line = await deps.readModeLine(session);
+    if (!line) return false;
+  }
 
   // Ack BEFORE typing, mirroring the auto-wrapup path: the write that retires the
   // action lands before the act, so a crash in between costs a reload rather than

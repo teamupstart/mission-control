@@ -34,7 +34,13 @@ const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
  * panel is careful about.
  */
 const RELOADED = skillsAgents();
-const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a as never));
+const HOOK_RELOADED = RELOADED.filter(
+  (a) => capabilitiesFor(a).skills?.reloadIdleSource === "hooks",
+);
+const IDENTITY_RELOADED = RELOADED.filter(
+  (a) => capabilitiesFor(a).skills?.reloadIdleSource === "transcript",
+);
+const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a));
 /**
  * Where the links actually go, read off the same `homeDir` the reconciler symlinks
  * into. Spelled out rather than said in prose because the operator may want to look:
@@ -130,16 +136,12 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
           </span>
         ))}
         , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
-        ones this app never launched. Running sessions pick them up at their next idle moment,
-        without restarting.
-        {/*
-          How they pick them up differs by harness, and the difference is worth one clause:
-          a session the dashboard has to type `/reload-skills` into waits for its next idle
-          moment, while one watching its own directory has the skill already. Without this
-          the count below - which only ever names the first kind - reads as though the
-          second is being left out.
-        */}
-        {SELF_RELOADING.length > 0 && ` ${agentList(SELF_RELOADING)} sessions watch that directory themselves.`}
+        ones this app never launched.
+        {HOOK_RELOADED.length > 0 &&
+          ` Running ${agentList(HOOK_RELOADED)} sessions pick changes up at their next idle moment.`}
+        {IDENTITY_RELOADED.length > 0 &&
+          ` Dispatched, identity-bound ${agentList(IDENTITY_RELOADED)} sessions also reload at idle; operator-started ${agentList(IDENTITY_RELOADED)} sessions load changes on their next launch or restart.`}
+        {SELF_RELOADING.length > 0 && ` Changes are picked up automatically by ${agentList(SELF_RELOADING)}.`}
       </p>
 
       {error && <p className="settings-error">{error}</p>}

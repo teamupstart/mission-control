@@ -106,6 +106,14 @@ test("the panel says the change is global before you click anything", () => {
   assert.match(html, /every<\/strong>/);
 });
 
+test("the panel distinguishes launch-scoped pi reloads from watched skills", () => {
+  const html = render();
+  assert.match(html, /Running Claude Code sessions pick changes up at their next idle moment/);
+  assert.match(html, /Dispatched, identity-bound Pi sessions also reload at idle/);
+  assert.match(html, /operator-started Pi sessions load changes on their next launch or restart/);
+  assert.match(html, /Changes are picked up automatically by Codex/);
+});
+
 test("the rows are disabled while the master switch is off", () => {
   // ForemanBar's fieldset cascade: a row you can still click while the master switch
   // is off is a row that lies about what it does.

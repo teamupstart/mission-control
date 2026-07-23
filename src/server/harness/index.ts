@@ -26,6 +26,10 @@ import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
 import { codexHooks } from "./codex/hooks.ts";
 import { codexUsage } from "./codex/usage.ts";
+import { piTranscript } from "./pi/transcript.ts";
+import { piDetect } from "./pi/detect.ts";
+import { piBin } from "./pi/bin.ts";
+import { piControl } from "./pi/control.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -88,6 +92,32 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: codexBin,
     tui: codexTui,
     control: codexControl,
+  },
+  // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
+  // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
+  // TS, not a shell-out hook), but `transcript` is non-null WITH `messages`, because pi writes
+  // a Claude-shaped per-line JSONL that reads back as turns AND carries a clean idle/working
+  // signal. Dispatched sessions bind it through pi's native launch session id; sessions
+  // discovered without that identity degrade safely to no transcript.
+  //
+  // `tui: null`, and it is MEASURED, not assumed: pi's screen IS readable (its footer and its
+  // `/model` selector were captured live, cursor glyph `→` U+2192), but pi has no
+  // permission-mode footer to read (Shift+Tab cycles thinking, not a mode) and its
+  // approval-dialog grammar could not be captured (login-blocked, the same blocker Codex's
+  // spike hit), so nothing is wired to read off its screen today. The codebase spells "nothing
+  // to parse" as `tui: null` deliberately - `harness-tui.test.ts` forbids a spec with both
+  // sub-capabilities null, because `annotatePaneState` would then capture the pane every tick
+  // to run no parses. The `→` cursor is recorded in `todo/pi-harness.md` so the follow-up, once
+  // pi is logged in, is the one-token confirmation Codex's turned out to be.
+  pi: {
+    ...HARNESS_CAPABILITIES.pi,
+    transcript: piTranscript,
+    usage: null,
+    hooks: null,
+    detect: piDetect,
+    bin: piBin,
+    tui: null,
+    control: piControl,
   },
 };
 

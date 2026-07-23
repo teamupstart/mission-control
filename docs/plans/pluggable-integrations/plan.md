@@ -1,18 +1,19 @@
 # Pluggable integrations: harnesses, multiplexers, terminals
 
-Mission Control hardcodes three vendors: Claude Code, tmux, and WezTerm. Adding a fourth
-agent (`pi`), a different multiplexer (`cmux`, `zellij`), or a different terminal (Ghostty,
-iTerm2) currently means editing dozens of unrelated files and hoping you found them all.
+Mission Control began with three hardcoded vendors: Claude Code, tmux, and WezTerm. Adding
+another agent (`pi`), a different multiplexer (`cmux`, `zellij`), or a different terminal
+(Ghostty, iTerm2) meant editing dozens of unrelated files and hoping you found them all.
 
-This plan defines the interfaces those integrations should sit behind, and sequences the
-migration of the existing code onto them.
+This plan defined the interfaces those integrations should sit behind and sequenced the
+migration of the existing code onto them. The evidence below is the historical baseline;
+the "as landed" sections and sequence table record the current migration state.
 
 ## The finding, in one sentence
 
-There is no abstraction today - `src/server/harnesses.ts` is a 24-line settings blob, not a
-harness registry - and the ~35 `if (agent !== "claude")` guards plus ~20 open-coded
-`if (session.tmux) … else if (session.wezterm) …` branches mean **a new integration degrades
-silently rather than failing to compile**.
+At the outset there was no abstraction - `src/server/harnesses.ts` was a 24-line settings
+blob, not a harness registry - and the ~35 `if (agent !== "claude")` guards plus ~20 open-coded
+`if (session.tmux) … else if (session.wezterm) …` branches meant **a new integration
+degraded silently rather than failing to compile**.
 
 ## Evidence
 
@@ -699,8 +700,9 @@ assumption. An injected env var is unreadable, because `ps -E` is SIP-restricted
 process the operator owns. A surface spawned with a raw `command` reports an **empty**
 working directory, because shell integration never runs to emit OSC 7 - so cwd alone fails
 for precisely the surfaces this app creates. Declaring `list: null` would have recorded a
-false REASON ("cannot enumerate") for a true OUTCOME ("cannot correlate"), which is the
-conflation `HARNESSES.codex.transcript.messages` is null rather than `[]` to avoid.
+false REASON ("cannot enumerate") for a true OUTCOME ("cannot correlate"), the same
+conflation the nullable `TranscriptSpec.messages` slot avoids: unreadable is not an empty
+conversation.
 
 Six deltas, each forced by something real:
 
@@ -983,11 +985,11 @@ specs. Four deltas from the sketch, each forced by something real:
   with their phases rather than landing as `null` placeholders nobody has designed - and
   `accent` duly landed there, not here, with the UI item.
 - **The capability splits in two: `TranscriptSpec` and its `messages`.** "There is a file
-  we can read runtime facts out of" and "that file contains the turns" are separate claims,
-  and Codex is the proof - its rollout carries model / effort / tokens and no conversation.
-  `messages: null` is that stated once, where every reader sees it; the alternative was a
-  window read answering `[]`, which says "this session has said nothing" and is a wrong
-  answer no caller can distinguish from a right one.
+  we can read runtime facts out of" and "that file contains readable turns" are separate
+  claims. Codex originally proved the split while its rollout reader exposed only model /
+  effort / token metadata; it now parses `user_message` / `agent_message` turns too. The
+  nullable slot remains the honest answer for a harness with no message reader, instead of a
+  window read answering `[]` and falsely saying "this session has said nothing".
 - **One `passiveRead` per tick, not one call per axis.** Claude's runtime metadata and its
   hook-free idle/working signal come out of the same tail read, and the poller would
   otherwise double the I/O of its own hot loop.
@@ -1308,7 +1310,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; focus/spawn/rename/kill **(landed)** |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` -> `Task.homeName` migration **(landed)**; de-tmux user-visible strings **(landed)** |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)** - and neither was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have. iTerm2 and `pi` still queued |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)**, and the **`pi` harness (landed)** - and none was written *only* against the interface, which is the finding rather than the failure. See each adapter's landed section; iTerm2 is still queued |
 
 ### Decisions taken
 
@@ -1334,9 +1336,15 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 The migration is not done when the interfaces exist. It is done when a new implementation can
 be added without touching shared code. Phase 5 is the test:
 
-- A **`pi` harness** that discovers, names, focuses, and accepts typed input - and whose
+- ~~A **`pi` harness** that discovers, names, focuses, and accepts typed input - and whose
   unsupported capabilities are visibly disabled in the UI rather than silently absent.
-  Spike first, as `todo/codex-instrumentation.md` did for Codex.
+  Spike first, as `todo/codex-instrumentation.md` did for Codex.~~ **Landed.** pi
+  (`@earendil-works/pi-coding-agent`) does all four. Its session format reads back as
+  conversation (`transcript.messages` non-null). A dispatched pi receives an exact native
+  `--session-id`, so transcript, metadata, activity, and idle reload are launch-scoped;
+  its matching file also proves launch readiness before the initial prompt is sent. An
+  operator-started pi supplies no identity and takes the visible no-transcript degradation.
+  The spike is `todo/pi-harness.md`; the interface findings are below.
 - ~~A **Ghostty** emulator adapter, which supports spawn and focus but **not** enumeration or
   capture - proving the capability-null path is real and not decorative.~~ **Landed, and it
   proved something better.** The clause was written from release notes and three of its four
@@ -1469,6 +1477,23 @@ address did not), every name rule cross-checked against what the live app accept
 `test/fixtures/cmux-panes.ts`, which is a verbatim capture holding the mis-attributed tty in
 the act.
 
+#### pi, as landed - the harness axis's acceptance test
+
+Pi (`@earendil-works/pi-coding-agent`) now discovers, names, focuses and accepts typed input
+through the harness registry. Its adapter lives in `src/server/harness/pi/`; dispatch composes
+the adapter's launch preparation so a native session id can bind the transcript exactly and
+prove readiness before the first prompt is sent.
+
+The proof also found shared seams that were not yet honest: skills reload readiness needed a
+declared source, a model picker prop conflated the harness and LLM-runner axes, terminal
+multiplexers in the process-wrapper list admitted false positives from arbitrary session names,
+and `ModelIdSchema` could not express Pi's provider-qualified ids (fixed - it now admits an
+interior `/`, and the Pi catalog carries `openai/…` ids). One coupling remains as an explicit
+degradation: `PermissionMode` is still Claude's closed vocabulary, so Pi's approval modes read
+as `permissionModes: null`. The spike, capability measurements, justified shared edits,
+remaining findings and regression-test pointers have one detailed owner:
+[`todo/pi-harness.md`](../../../todo/pi-harness.md).
+
 ## Fixes found along the way
 
 Real defects, each folded into the migration item that rewrites its file rather than queued
@@ -1520,6 +1545,6 @@ agent-agnostic and reusable - is confirmed by this investigation, and `HookSpec`
 on it rather than around it: the pipeline is untouched, and what landed is the vocabulary
 above it plus a payload mapper below it. Its "follow-on work once the path is chosen" list
 now has homes rather than open questions - a Codex live-state mapping is
-`HARNESSES.codex.hooks`, no longer null; the rollout parser is
-`HARNESSES.codex.transcript.messages`, still null. The spike itself is unchanged: it decides
+`HARNESSES.codex.hooks`, no longer null; the rollout's `event_msg` records are parsed by
+`HARNESSES.codex.transcript.messages`, also no longer null. The spike itself is unchanged: it decides
 hook-vs-wrapper, and it is still blocked on a Codex login.

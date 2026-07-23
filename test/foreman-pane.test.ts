@@ -199,7 +199,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     triage: "on", maxFixAttempts: 3, maxFixRounds: 10,
     wrapupTriggers: ["drain"], wrapup: "ask",
     autoBacklog: false, maxSessions: 3, backlogRespectOpenPrs: true,
-    backlogDefaultModel: { claude: null, codex: null },
+    backlogDefaultModel: { claude: null, codex: null, pi: null },
     ...over,
   };
 }

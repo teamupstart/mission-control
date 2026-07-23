@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
 import { pendingReloads, reloadTargets } from "../src/server/skills/reload.ts";
+import { HARNESSES } from "../src/server/harness/index.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The reload selector: who gets `/reload-skills` typed into their pane, unprompted, by
@@ -72,6 +73,17 @@ function picked(sessions: Session[], a = acks(), cfg = mkCfg()): string[] {
   return reloadTargets(sessions, a, cfg, NOW, SETTLE).map((s) => s.id);
 }
 
+function withPiTranscriptPath<T>(path: string | null, run: () => T): T {
+  const transcript = HARNESSES.pi.transcript!;
+  const locate = transcript.locate;
+  transcript.locate = () => path;
+  try {
+    return run();
+  } finally {
+    transcript.locate = locate;
+  }
+}
+
 test("a settled, behind claude session is selected", () => {
   assert.deepEqual(picked([mkSession()]), ["s1"]);
 });
@@ -80,6 +92,55 @@ test("a codex session is NEVER selected", () => {
   // Codex has no /reload-skills and no ~/.claude/skills. Typing it there leaves a
   // stray line in someone's prompt and changes nothing.
   assert.deepEqual(picked([mkSession({ agent: "codex" })]), []);
+});
+
+test("a settled launch-identified pi session is selected from its current transcript", () => {
+  const pi = mkSession({
+    id: "pi-bound",
+    agent: "pi",
+    hooksSeen: false,
+    instrumented: false,
+  });
+  withPiTranscriptPath("/tmp/pi-bound.jsonl", () => {
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 1);
+    assert.deepEqual(picked([pi]), ["pi-bound"]);
+  });
+});
+
+test("an operator-started pi session is never owed a reload from stale idle state", () => {
+  const pi = mkSession({
+    id: "pi-unbound",
+    agent: "pi",
+    agentSessionId: null,
+    hooksSeen: false,
+    instrumented: false,
+  });
+  withPiTranscriptPath(null, () => {
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 0);
+    assert.deepEqual(picked([pi]), []);
+  });
+});
+
+test("a pi session stops being owed a reload when its exact binding is invalidated", () => {
+  const pi = mkSession({
+    id: "pi-invalidated",
+    agent: "pi",
+    hooksSeen: false,
+    instrumented: false,
+  });
+  const transcript = HARNESSES.pi.transcript!;
+  const locate = transcript.locate;
+  let path: string | null = "/tmp/pi-bound.jsonl";
+  transcript.locate = () => path;
+  try {
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 1);
+    assert.deepEqual(picked([pi]), ["pi-invalidated"]);
+    path = null;
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 0);
+    assert.deepEqual(picked([pi]), []);
+  } finally {
+    transcript.locate = locate;
+  }
 });
 
 test("an exited session is never selected", () => {
@@ -198,7 +259,7 @@ test("pendingReloads excludes a session with no pane - it can never be reloaded"
   assert.deepEqual(picked(sessions), []);
 });
 
-test("pendingReloads excludes a session that has never had hooks", () => {
+test("pendingReloads excludes a hook-driven session that has never had hooks", () => {
   // Nothing will ever report it idle, so `settledIdle` can never be true and no reload
   // can ever fire. `hooksSeen` is the permanent fact; counting on it keeps the number
   // honest without making a merely-quiet session vanish from the count.

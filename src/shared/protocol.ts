@@ -419,7 +419,12 @@ const TaskDependenciesSchema = z
 export const ModelIdSchema = z
   .string()
   .max(80)
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "model id must be alphanumeric with . _ - only");
+  // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
+  // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
+  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class. No
+  // shell metacharacter is admitted, so the guarantee this schema gives the `tmux new-session`
+  // command line is unchanged. Test: `dispatch-model.test.ts`.
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
 
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
@@ -858,8 +863,9 @@ export const ForemanConfigSchema = z.object({
     .object({
       claude: ModelIdSchema.nullable().default(null),
       codex: ModelIdSchema.nullable().default(null),
+      pi: ModelIdSchema.nullable().default(null),
     })
-    .default({ claude: null, codex: null }),
+    .default({ claude: null, codex: null, pi: null }),
   /**
    * The ceiling on how many agents may be running at once before the backlog autopilot
    * stops launching new ones.
@@ -894,6 +900,7 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial()
       .object({
         claude: ModelIdSchema.nullable().optional(),
         codex: ModelIdSchema.nullable().optional(),
+        pi: ModelIdSchema.nullable().optional(),
       })
       .optional(),
   })
@@ -1158,15 +1165,17 @@ export const HarnessesConfigSchema = z.object({
     .object({
       claude: ModelIdSchema.nullable().default(null),
       codex: ModelIdSchema.nullable().default(null),
+      pi: ModelIdSchema.nullable().default(null),
     })
-    .default({ claude: null, codex: null }),
+    .default({ claude: null, codex: null, pi: null }),
   /** Launch-time reasoning effort per harness; null leaves the harness in control. */
   defaultEffort: z
     .object({
       claude: harnessEffortSchema("claude").nullable().default(null),
       codex: harnessEffortSchema("codex").nullable().default(null),
+      pi: harnessEffortSchema("pi").nullable().default(null),
     })
-    .default({ claude: null, codex: null }),
+    .default({ claude: null, codex: null, pi: null }),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
@@ -1186,12 +1195,14 @@ export const HarnessesConfigPatchSchema = z
       .object({
         claude: ModelIdSchema.nullable().optional(),
         codex: ModelIdSchema.nullable().optional(),
+        pi: ModelIdSchema.nullable().optional(),
       })
       .optional(),
     defaultEffort: z
       .object({
         claude: harnessEffortSchema("claude").nullable().optional(),
         codex: harnessEffortSchema("codex").nullable().optional(),
+        pi: harnessEffortSchema("pi").nullable().optional(),
       })
       .optional(),
   })

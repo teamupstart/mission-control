@@ -6,6 +6,7 @@ import type { InjectResult } from "../src/server/actions.ts";
 import type { PaneModeLine } from "../src/server/discovery/pane-mode.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { HARNESSES } from "../src/server/harness/index.ts";
 
 // What one reload actually DOES, in order. The ordering here is the whole safety
 // argument - read the pane, then ack, then type - and an argument no test can see is
@@ -14,17 +15,20 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const GEN = 4;
 const PRIOR = 1;
 
-function mkSession(): Session {
+function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1",
     agent: "claude",
     state: "idle",
+    cwd: "/repo",
     agentSessionId: "agent-1",
     terminals: [mkMuxHandle({ session: "w", windowName: "w", windowIndex: 0, paneId: "%1" })],
     instrumented: true,
+    hooksSeen: true,
     lastActivity: 0,
     firstSeen: 0,
     startedAt: 0,
+    ...over,
   } as unknown as Session;
 }
 
@@ -121,4 +125,30 @@ test("exactly one command is typed, and it is the literal /reload-skills", async
   });
   await reloadOne(mkSession(), GEN, PRIOR, deps);
   assert.deepEqual(typed, ["/reload-skills"]);
+});
+
+test("pi reloads from a current passive binding without a mode-line read", async () => {
+  const transcript = HARNESSES.pi.transcript!;
+  const locate = transcript.locate;
+  transcript.locate = () => "/tmp/pi-bound.jsonl";
+  const typed: string[] = [];
+  const { deps, log } = spy();
+  deps.inject = async (_s, text) => {
+    typed.push(text);
+    log.push("inject");
+    return { ok: true, pasted: true, submitVerified: true };
+  };
+  try {
+    const sent = await reloadOne(
+      mkSession({ agent: "pi", hooksSeen: false, instrumented: false }),
+      GEN,
+      PRIOR,
+      deps,
+    );
+    assert.equal(sent, true);
+    assert.deepEqual(log, [`ack:${GEN}`, "inject"]);
+    assert.deepEqual(typed, ["/reload"]);
+  } finally {
+    transcript.locate = locate;
+  }
 });

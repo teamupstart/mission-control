@@ -28,13 +28,25 @@ export interface Proc {
 /**
  * Commands that legitimately launch an agent as a sub-argument, e.g.
  * `make claude`, `docker exec ... claude`, `sh -c 'claude ...'`. Only when
- * argv0 is one of these do we treat a bare `claude`/`codex` token as an agent -
+ * argv0 is one of these do we treat a bare `claude`/`codex`/`pi` token as an agent -
  * so an unrelated `git commit -m "fix claude bug"` is not misclassified.
+ *
+ * Terminal MULTIPLEXERS are deliberately NOT here (`tmux`, `screen`), and the Phase 5 `pi`
+ * harness is why the omission is load-bearing rather than incidental. An agent running inside
+ * tmux/screen ALWAYS also appears as its own NATIVE process on the pane's tty (its real binary,
+ * or a `process.title` like pi's), so the wrapped match over the multiplexer's command line
+ * buys no real detection - it only adds false-positive surface, because a multiplexer command
+ * carries an arbitrary SESSION NAME: `tmux attach -t "P5 pi harness adapter"` has `pi` as a
+ * space-delimited word and was carded as a phantom pi session. The risk is symmetric for every
+ * agent (`tmux attach -t "fix claude bug"`), but pi's short, common name makes it routine
+ * rather than rare - the same "a short token in text nobody controls" hazard `BackgroundSpec`
+ * documents, one layer up. `test/detection.test.ts` pins that a multiplexer command carrying an
+ * agent token is not a session.
  */
 const WRAPPERS = new Set([
   "make", "docker", "sh", "bash", "zsh", "fish", "env", "npx", "npm", "pnpm",
   "yarn", "bun", "sudo", "ssh", "script", "timeout", "gtimeout", "nice",
-  "stdbuf", "caffeinate", "tmux", "screen", "uv", "poetry", "direnv",
+  "stdbuf", "caffeinate", "uv", "poetry", "direnv",
   "watchexec", "entr", "mise", "asdf",
 ]);
 

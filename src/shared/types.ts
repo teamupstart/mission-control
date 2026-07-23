@@ -28,7 +28,7 @@ import type {
  * VALUES (a `z.enum`, a `<select>`), and a union alone cannot produce them - which
  * is how three hand-kept copies of two strings came to exist.
  */
-export const AGENT_TYPES = ["claude", "codex"] as const;
+export const AGENT_TYPES = ["claude", "codex", "pi"] as const;
 
 export type AgentType = (typeof AGENT_TYPES)[number];
 

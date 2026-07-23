@@ -51,6 +51,12 @@ export function costIsNotable(cost: SessionCost | null | undefined): boolean {
 export const COST_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,
   codex: null,
+  // Not unsupported: pi records real per-message token AND dollar cost in its transcript,
+  // so it is not an agent that "reports no cost telemetry". We simply do not aggregate it
+  // passively (its usage is per-message, not a cumulative total, and pi has no hook/telemetry
+  // pipeline to feed the ledger), so a pi card shows the same neutral absence a session
+  // shows before telemetry arrives.
+  pi: null,
 };
 
 /** How long each rate-limit window runs, which is what makes a runway projectable. */

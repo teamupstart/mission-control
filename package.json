@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "author": "Mission Control",
-  "description": "Local, auto-refreshing control plane for Claude Code / Codex sessions across terminal panes",
+  "description": "Local, auto-refreshing control plane for Claude Code / Codex / Pi sessions across terminal panes",
   "engines": {
     "node": ">=24"
   },

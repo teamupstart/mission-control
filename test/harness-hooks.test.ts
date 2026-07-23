@@ -74,17 +74,17 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 
 // ---- the registry, and the shape of a spec -------------------------------------
 
-test("every harness answers the hooks question, and both shipped ones push", () => {
-  // Not "codex happens to have no hooks" - the `Record<AgentType, Harness>` makes that a
-  // decision someone had to write down. A new agent id cannot compile without one.
+test("every harness answers the hooks question - claude and codex push, pi does not", () => {
+  // Not "codex happens to have no hooks" - the `Record<AgentType, Harness>` makes each answer
+  // a decision someone had to write down. A new agent id cannot compile without one.
   //
-  // Codex's answer used to be a declared null and is now a spec. The null it declared was
-  // never measured: `harness/codex/launch.ts` gets ten PascalCase events out of Codex by
-  // injecting `-c hooks.<Event>=[...]` at launch. Both shipped harnesses report, so the
-  // refusal path below is driven by a fixture instead.
-  for (const agent of AGENT_TYPES) {
-    assert.ok(hooksFor(agent), `${agent} declares no hooks - drive the refusal test off it`);
-  }
+  // Codex's answer used to be a declared null and is now a spec: `harness/codex/launch.ts`
+  // gets ten PascalCase events out of Codex by injecting `-c hooks.<Event>=[...]` at launch.
+  // pi (Phase 5) declares `hooks: null` for real - its extensions are in-process TS, not a
+  // shell-out hook - so it is the harness the refusal path below is now driven off.
+  assert.ok(hooksFor("claude"), "claude installs machine-wide hooks");
+  assert.ok(hooksFor("codex"), "codex attaches launch-scoped hooks");
+  assert.equal(hooksFor("pi"), null, "pi pushes nothing");
   for (const [id, h] of Object.entries(HARNESSES)) {
     assert.equal(h.hooks, hooksFor(id as keyof typeof HARNESSES), `${id} resolves to its own spec`);
   }
@@ -205,31 +205,25 @@ test("neither installer keeps its own copy of the event vocabulary", () => {
 // ---- a hookless harness is not interpreted -------------------------------------
 
 test("an ingest for a harness that declares no hooks is refused, not guessed at", () => {
-  // Both shipped harnesses report now, so the refusal is driven by a fixture rather than
-  // by Codex. It is not dead code: `applyHook`'s first act is to ask the harness whose
-  // vocabulary the event is written in, and a third harness declaring `hooks: null` lands
+  // pi (Phase 5) declares `hooks: null` for real, so this drives off it directly rather than
+  // temporarily nulling a shipped harness's spec on the shared registry. `applyHook`'s first
+  // act is to ask the harness whose vocabulary the event is written in; a hookless one lands
   // straight here. Without it a stray ingest reaches a switch that answers `working` for
   // anything it does not recognize, pinning the card there until something else moves it.
   const registry = new Registry();
-  registry.applyDiscovery([mkDiscovered({ syntheticId: "cx-1", agent: "codex" })]);
-  const before = registry.getSession("cx-1");
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "pi-1", agent: "pi" })]);
+  const before = registry.getSession("pi-1");
 
-  const prior = HARNESSES.codex.hooks;
-  HARNESSES.codex.hooks = null;
-  try {
-    registry.applyHook({
-      agent: "codex",
-      event: "Stop",
-      sessionId: "cx-agent",
-      cwd: "/wt/one",
-      transcriptPath: null,
-      env: { tmuxPane: PANE },
-    });
-  } finally {
-    HARNESSES.codex.hooks = prior;
-  }
+  registry.applyHook({
+    agent: "pi",
+    event: "Stop",
+    sessionId: "pi-agent",
+    cwd: "/wt/one",
+    transcriptPath: null,
+    env: { tmuxPane: PANE },
+  });
 
-  const after = registry.getSession("cx-1");
+  const after = registry.getSession("pi-1");
   assert.equal(after?.instrumented, false, "nothing pushed anything at us");
   assert.equal(after?.hooksSeen, false);
   assert.equal(after?.activity, before?.activity, "no activity line was invented");

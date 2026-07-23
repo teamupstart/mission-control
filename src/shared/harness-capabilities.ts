@@ -80,8 +80,9 @@ export interface SkillsSpec {
    * Do NOT parse what comes back. On a REMOVAL the count correctly dropped (the skill
    * really did unload) while the label still read "(no changes)". The unload is real; the
    * message is not trustworthy. Treat delivery as fire-and-forget.
-   */
+  */
   reloadCommand: string | null;
+  reloadIdleSource: "hooks" | "transcript" | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -106,9 +107,10 @@ export interface SkillsSpec {
  *
  * Two things have to be true to queue work: the agent must report when it picks an item
  * up and finishes it (hooks), and its transcript must be readable back to check that it
- * did. Both shipped harnesses can do both now, and both use the harness-neutral pane
- * delivery path. Codex hooks are attached only to Mission Control launches, so a
- * discovery-only session still takes the per-session refusal until one reports a hook.
+ * did. Claude and Codex can do both and use the harness-neutral pane delivery path. Codex
+ * hooks are attached only to Mission Control launches, so a discovery-only session still
+ * takes the per-session refusal until one reports a hook. Pi has readable turns but no
+ * pickup/completion signal, so it declares this capability null.
  *
  * Whatever the reason, the consequence of a null is the same and is why it is not a
  * detail: a queue on a session the worker skips is a one-way trip to nowhere. Because the
@@ -251,6 +253,7 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
  */
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
+  reloadIdleSource: "hooks",
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -294,11 +297,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     permissionModes: null,
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
     // watches that directory itself, so the set it offers changes without anything being
-    // typed at a running session. `reloadCommand: null` is what says so - it is the whole
-    // difference between "this harness has no skills" and "this harness needs no nudge",
-    // and `skillsAgents()` reads it to decide who the pane broadcast is even about.
+    // typed at a running session. `skillsAgents()` therefore excludes it from the pane
+    // broadcast.
     skills: {
       reloadCommand: null,
+      reloadIdleSource: null,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -337,6 +340,52 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         lower: "shift-down",
         raise: "shift-up",
       },
+    },
+  },
+  pi: {
+    id: "pi",
+    // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
+    // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
+    // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does
+    // not map onto it, nor is it a Shift+Tab footer cycle (Shift+Tab on pi cycles the THINKING
+    // level). Supporting it would mean widening a shared union with pi's words - a change the
+    // acceptance criterion forbids quietly - so this is null: no chip, routes 400, dispatcher
+    // arms nothing. The one place the harness axis still bakes in a Claude assumption.
+    permissionModes: null,
+    // Verified: pi loads SKILL.md skills (agentskills.io standard) from its own
+    // `~/.pi/agent/skills` (probed live) as well as the shared `~/.agents/skills`. Declared
+    // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
+    // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
+    // makes its transcript an attributable idle source for the verified command.
+    skills: {
+      reloadCommand: "/reload",
+      reloadIdleSource: "transcript",
+      dirEnvVar: "PI_SKILLS_DIR",
+      homeDir: [".pi", "agent", "skills"],
+      isolatedDirName: "pi-skills",
+    },
+    // Null: pi pushes no hooks (`HARNESSES.pi.hooks` is null), so Foreman has no signal for
+    // when a pi session picks work up or finishes it and cannot verify a queue. Its rich
+    // transcript proves the work was done, but authorship of the pickup is exactly the hook
+    // signal it lacks - so `foremanAutomationAuthorized` refuses regardless, and null is the
+    // honest permanent incapacity rather than the fixable-install `uninstrumentedWhy`.
+    workQueue: null,
+    // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
+    // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
+    // summarises rather than clears). Hookless sessions have no attributable transcript path.
+    clearContext: { command: "/new" },
+    // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
+    // the installer says so rather than shelling out to a registration CLI that does not exist.
+    mcp: null,
+    // pi's `--thinking` accepts `off|minimal|low|medium|high|xhigh|max`; the app's
+    // THINKING_LEVELS (`low..max`) are a subset it accepts verbatim.
+    effort: {
+      levels: THINKING_LEVELS,
+      levelsFor: () => THINKING_LEVELS,
+      launchArgs: (level) => ["--thinking", level],
+      // Pi's Shift+Tab walks one direction through seven values, including `off` and
+      // `minimal`, so neither existing live-picker shape can drive it faithfully.
+      sessionPicker: null,
     },
   },
 };
@@ -427,9 +476,10 @@ export function skillLoadingAgents(): AgentType[] {
  * no keystroke. Using this list to answer "who does this switch affect" understates the
  * panel by a whole harness; using the other to answer "who do we type at" invents a slash
  * command for a session that would render it as a prompt.
+ *
  */
-export function skillsAgents(): "claude"[] {
-  return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
+export function skillsAgents(): AgentType[] {
+  return AGENT_TYPES.filter((a) => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
 /**

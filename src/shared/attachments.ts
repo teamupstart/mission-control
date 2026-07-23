@@ -4,8 +4,8 @@
  * This mirrors what a terminal does when you drag a file onto it - the path
  * appears as text, and the agent reads it with its own file tools. There is no
  * richer channel available (the last hop is keystrokes into a pty), and there
- * doesn't need to be: a path is exactly what Claude Code and Codex already know
- * how to act on.
+ * doesn't need to be: a path is exactly what each shipped harness can act on with its
+ * own file tools.
  */
 
 /** An uploaded image, as the UI carries it and the prompt cites it. */

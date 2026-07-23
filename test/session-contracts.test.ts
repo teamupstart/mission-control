@@ -178,8 +178,10 @@ test("an agent id that is not in the union is refused at the wire", () => {
   // The other half: the schema is the boundary, so it must not accept ids the rest of
   // the daemon has no code for. A widened enum that forgot to narrow is a session
   // launched against a binary nobody resolves.
-  assert.throws(() => DispatchSchema.parse({ repoRoot: "/r", intent: "do it", agent: "pi" }));
-  assert.throws(() => UpdateTaskSchema.parse({ agent: "pi" }));
+  // `probeagent`, not `pi`: `pi` is now a real harness in the union, so it is accepted. The
+  // point of this test is that an id the daemon has NO code for is refused at the wire.
+  assert.throws(() => DispatchSchema.parse({ repoRoot: "/r", intent: "do it", agent: "probeagent" }));
+  assert.throws(() => UpdateTaskSchema.parse({ agent: "probeagent" }));
 });
 
 test("every declared agent has a name and a colour to render", () => {
@@ -254,7 +256,7 @@ function edit(dir: string, rel: string, from: string, to: string): void {
 }
 
 const SESSION_END = "  paneDialog: PaneDialog | null;\n}";
-const AGENT_TYPES_DECL = `export const AGENT_TYPES = ["claude", "codex"] as const;`;
+const AGENT_TYPES_DECL = `export const AGENT_TYPES = ["claude", "codex", "pi"] as const;`;
 /**
  * Deliberately not a plausible agent id. A probe named `pi` would start passing for the
  * wrong reason on the day someone adds a real `pi` harness and fills every map in.
@@ -367,7 +369,7 @@ test("a new agent id fails typecheck everywhere it has to be accounted for", () 
       dir,
       "src/shared/types.ts",
       AGENT_TYPES_DECL,
-      `export const AGENT_TYPES = ["claude", "codex", "${PROBE_AGENT}"] as const;`,
+      `export const AGENT_TYPES = ["claude", "codex", "pi", "${PROBE_AGENT}"] as const;`,
     ),
   );
   for (const [file, type] of AGENT_RECORDS) {

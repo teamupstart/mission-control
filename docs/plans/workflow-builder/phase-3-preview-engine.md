@@ -1,6 +1,6 @@
 # Phase 3 plan: bindings, context, and manual preview execution
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 
@@ -77,21 +77,9 @@ Phase 3 only permits active behavior for `manual` plus `preview`. The binding di
 either value until Phase 4 lands. Durable rows written by a newer build with unsupported modes load
 as blocked and visibly explain the version mismatch.
 
-```ts
-export interface WorkflowBinding {
-  id: WorkflowBindingId;
-  workflowVersionId: WorkflowVersionId;
-  workflowId: WorkflowId;
-  noteKey: string;
-  sessionId: string;
-  triggerMode: WorkflowTriggerMode;
-  deliveryMode: WorkflowDeliveryMode;
-  maxRepairRounds: number;
-  state: "active" | "paused" | "orphaned" | "archived";
-  createdAt: number;
-  updatedAt: number;
-}
-```
+The authoritative wire shape is `WorkflowBinding` in `src/shared/workflow.ts`. It pins the immutable
+version id, keeps the live session id nullable, and stores the agent, session name, checkout path,
+and repository root used to validate an explicit reattachment.
 
 `noteKey` is the durable identity. `sessionId` is the last synthetic live identity and can change on
 restart or `/clear`. Do not add a workflow field to `Session`; App joins top-level run summaries to
@@ -148,51 +136,9 @@ identity for retried Foreman claims.
 
 ## Evidence and context snapshot
 
-Create `src/server/workflows/context.ts` and shared wire types for a bounded
-`WorkflowContextSnapshot`.
-
-```ts
-export interface WorkflowContextSnapshot {
-  primaryGoal: {
-    rawPrompt: string;
-    refined: string | null;
-    sourceNoteKey: string;
-  };
-  humanDecisions: Array<{
-    decision: string;
-    rationale: string | null;
-    source: { kind: "transcript" | "review" | "foreman_episode"; id: string };
-  }>;
-  constraints: string[];
-  acceptanceCriteria: string[];
-  priorPersonaFeedback: PersonaFeedbackSummary[];
-  session: {
-    agent: AgentType;
-    name: string;
-    cwd: string | null;
-    branch: string | null;
-  };
-  evidence: {
-    headSha: string | null;
-    diffFingerprint: string;
-    diff: string;
-    diffTruncated: boolean;
-    workingTreeDirty: boolean;
-    workingTreeStatus: string[];
-    transcript: TranscriptMessage[];
-    transcriptAnchor: number | null;
-    transcriptTruncated: boolean;
-    standards: StandardsDocument[];
-    standardsTruncated: boolean;
-  };
-  compaction: {
-    status: "model" | "fallback";
-    runner: LlmRunnerId | null;
-    model: string | null;
-    error: string | null;
-  };
-}
-```
+`src/server/workflows/context.ts` captures the snapshot. The authoritative bounded wire shape is
+`WorkflowContextSnapshot` in `src/shared/workflow.ts`, validated by
+`WorkflowContextSnapshotSchema` in `src/shared/protocol.ts`.
 
 ### Deterministic capture
 
@@ -221,8 +167,8 @@ Use one in-memory capture lock per `noteKey`:
 
 1. Resolve the binding to the current live session and verify its durable `noteKey`.
 2. Persist a `capturing` run/submission row with the idempotency key.
-3. Read goal, decisions, episodes, transcript anchor/window, HEAD, diff, and standards.
-4. Re-read session identity, HEAD, and transcript size.
+3. Read goal, decisions, episodes, transcript anchor/window, HEAD, diff, status, and standards.
+4. Re-read session identity, the repository fingerprint, and transcript path/size.
 5. If any capture boundary changed, retry the whole read once. A second change returns a visible
    stale-capture block; it never creates a mixed snapshot.
 6. Cap and persist raw evidence before starting a model call.
@@ -235,9 +181,8 @@ anchor, and standards fingerprints. A repair resubmission identical to the previ
 
 ### Context compaction
 
-Use `runJobStructured("workflow-context", ...)` with a strict schema for decisions, rationales,
-constraints, and acceptance criteria. Set a prompt-specific timeout and document its measured value
-when implementation lands.
+Use `runJobStructured("workflow-context", ...)` with a strict schema for rationales, constraints,
+and acceptance criteria. Sourced decisions remain raw evidence and are not model output.
 
 Compaction is tool-less and advisory. Spawn, timeout, exit, or parse failure does not block review;
 store `compaction.status = "fallback"` and build deterministic fields from the refined goal, sourced
@@ -323,8 +268,8 @@ registry, not a provider-specific child kill.
 7. A pass/fail reaching End completes that graph outcome. In Phase 3, a successful End completes the
    run even if the version has an Inspector policy; Run detail labels that policy `not active until
    Phase 5` rather than waiting forever.
-8. An infrastructure error retries with a new attempt number up to 3 times using persisted
-   exponential backoff. Exhaustion blocks the run; it never emits a fail edge.
+8. An infrastructure error retries with a new attempt number for up to three total attempts using
+   persisted exponential backoff. Exhaustion blocks the run; it never emits a fail edge.
 
 Use short database transactions around state transitions. Never hold a transaction open across an
 LLM call, filesystem read, or terminal operation.
@@ -334,8 +279,8 @@ LLM call, filesystem read, or terminal operation.
 On daemon boot:
 
 - parse every active run and immutable version;
-- change `running` tool-less attempts to retryable `interrupted` errors and queue the next attempt if
-  budget remains;
+- mark `running` LLM-call rows `interrupted`, mark their node attempts as errors, and queue the next
+  attempt if budget remains;
 - recompute ready nodes from durable receipts;
 - preserve waiting-for-session, blocked, cancelled, and completed states;
 - never re-emit a receipt already protected by its unique index;
@@ -410,14 +355,8 @@ that run.
 
 ## Runs and binding UI
 
-Add:
-
-```text
-src/web/workflows/BindingDialog.tsx
-src/web/workflows/RunList.tsx
-src/web/workflows/RunDetail.tsx
-src/web/workflows/ContextSnapshot.tsx
-```
+The binding surface lives in `src/web/workflows/WorkflowBindingDialog.tsx`; run history, detail,
+context, verdicts, graph state, and timeline live in `src/web/workflows/WorkflowRuns.tsx`.
 
 ### Binding
 

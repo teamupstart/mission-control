@@ -2129,8 +2129,8 @@ export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
 });
 
-// Exported closed schemas let Phase 1's durable row parsers reject unknown values before
-// later phases start transitioning them.
+// Exported closed schemas make durable row parsers reject unknown values before constructing
+// typed runtime records.
 export const WorkflowRunStatusSchema = z.enum(WORKFLOW_RUN_STATUSES);
 export const WorkflowSubmissionModeSchema = z.enum(WORKFLOW_SUBMISSION_MODES);
 export const WorkflowSubmissionStatusSchema = z.enum(WORKFLOW_SUBMISSION_STATUSES);

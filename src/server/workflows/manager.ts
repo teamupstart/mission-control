@@ -103,7 +103,7 @@ export interface WorkflowManagerOptions {
   compactContext?: typeof compactWorkflowContext;
 }
 
-/** Definition policy and catalog SSE. Execution policy joins this manager in Phase 3. */
+/** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
   private unsubscribe: (() => void) | null = null;

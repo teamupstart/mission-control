@@ -1207,9 +1207,9 @@ unavailable.
 ### Manual Preview runs
 
 Bind a session to an exact published workflow version from the workflow history or from any
-fleet layout, then choose **Preview**. A binding retains the conversation note key, harness,
-name, working directory, repository root, and immutable version id from bind time. Publishing
-or editing a newer workflow cannot change an existing binding or run.
+fleet layout, then choose **Preview**. A binding records the conversation note key, harness,
+name, working directory, and repository root, and pins the immutable version id. Publishing or
+editing a newer workflow cannot change an existing binding or run.
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
@@ -1217,8 +1217,9 @@ starts duplicate work. One submission captures one shared snapshot for every con
 Persona. It preserves the raw goal, refined goal when present, human decisions and rationale,
 repository HEAD and diff, transcript evidence, repository standards, and prior Persona
 feedback. A cheap provider-neutral compaction call may summarize that context, but its
-45-second attempts cannot replace the raw evidence. Invalid, timed-out, or unavailable
-compaction produces a deterministic visible fallback.
+45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh
+45-second attempt; invalid, timed-out, or unavailable compaction produces a deterministic
+visible fallback.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
@@ -2391,7 +2392,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt when a still-live session cannot prove readiness. Used after the hook wait below times out, or immediately when that wait is skipped; an observed exit fails instead |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's first hook - the only honest "I can read input" signal - before falling back to the settle above if that session is still live. An observed exit ends the wait immediately. The wait is skipped when this particular launch could never produce a hook: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
-| `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with a deterministic fallback after invalid output or two 45-second attempts. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
+| `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |

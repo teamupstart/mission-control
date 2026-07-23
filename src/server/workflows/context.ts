@@ -349,8 +349,8 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
 }
 
 /**
- * Read one bounded raw snapshot and then compact it. The manager re-reads the returned
- * boundary and retries the entire operation once if identity, HEAD, or transcript size moved.
+ * Read one bounded raw snapshot and its capture boundary. The manager re-reads that boundary
+ * and retries once before persisting the raw evidence and starting compaction.
  */
 export async function readWorkflowContextRaw(
   registry: Registry,

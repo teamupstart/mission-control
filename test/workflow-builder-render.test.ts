@@ -82,6 +82,7 @@ test("published workflow nodes stay within the visible React Flow graph", () => 
   let output: string;
   try {
     output = execFileSync(electron, [
+      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${userData}`,
       fileURLToPath(new URL("fixtures/workflow-graph-browser.cjs", import.meta.url)),
       fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),

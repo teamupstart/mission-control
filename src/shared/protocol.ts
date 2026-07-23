@@ -4,6 +4,7 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
+import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import {
@@ -1777,6 +1778,20 @@ export const SaveSessionFileSchema = z.object({
   expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
 });
 export type SaveSessionFile = z.infer<typeof SaveSessionFileSchema>;
+
+/**
+ * Hand one checkout file to an application outside Mission Control.
+ *
+ * `target` is the registry's id, not a command: `z.enum(OPEN_TARGET_IDS)` is what keeps
+ * "which application" a closed set the daemon resolves for itself, so no part of a request
+ * ever becomes part of an argv. The path takes the same route as a read - the daemon
+ * realpaths it inside the session's checkout before anything is launched.
+ */
+export const OpenSessionFileSchema = z.object({
+  path: z.string().min(1).max(4096),
+  target: z.enum(OPEN_TARGET_IDS),
+});
+export type OpenSessionFile = z.infer<typeof OpenSessionFileSchema>;
 
 // ---- Workflows and Personas -------------------------------------------------
 

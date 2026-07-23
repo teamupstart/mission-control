@@ -94,6 +94,26 @@ function hasLocalFileChanges(buffer: FileBuffer): boolean {
   return buffer.saveState !== "saved" && buffer.saveState !== "readonly";
 }
 
+/**
+ * The two ways the bytes on disk can be older than what the human is looking at - which
+ * matters to any reader that goes to the FILE rather than to this buffer (every "Open in"
+ * target does).
+ *
+ * They are split because the ANSWER differs, not the question: a pending write will land,
+ * so a caller waits for it; an unwritten one will not, so a caller that waits waits
+ * forever and one that proceeds shows the version before the edit. Together they are
+ * `hasLocalFileChanges` above, which is why neither may be spelled out at a call site -
+ * a third state added to `FileSaveState` has to land in exactly one of these.
+ */
+export function isSavePending(buffer: FileBuffer): boolean {
+  return buffer.saveState === "modified" || buffer.saveState === "saving";
+}
+
+/** Edits exist, are NOT on disk, and nothing is going to write them: the refusal case. */
+export function hasUnwrittenEdits(buffer: FileBuffer): boolean {
+  return hasLocalFileChanges(buffer) && !isSavePending(buffer);
+}
+
 export function applyFileLoadFailure(
   state: SessionFilesState,
   filePath: string,

@@ -1,8 +1,15 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import type { FileBuffer, SessionFilesController } from "../lib/sessionFiles.ts";
+import type { OpenTargetId } from "@shared/open-targets.ts";
+import {
+  hasUnwrittenEdits,
+  isSavePending,
+  type FileBuffer,
+  type SessionFilesController,
+} from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 
@@ -161,6 +168,9 @@ export function FileWorkspace({
   const [filter, setFilter] = useState("");
   const [manualPath, setManualPath] = useState("");
   const [comparing, setComparing] = useState(false);
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [pendingOpen, setPendingOpen] = useState<{ path: string; target: OpenTargetId } | null>(null);
 
   useEffect(() => controller.ensure(session.id), [controller.ensure, session.id]);
   useEffect(
@@ -211,6 +221,71 @@ export function FileWorkspace({
     setComparing(false);
     controller.select(session.id, path);
   }
+
+  const launch = useCallback(async (path: string, target: OpenTargetId): Promise<void> => {
+    setLaunching(true);
+    const result = await api.openFile(session.id, path, target);
+    setLaunching(false);
+    // Nothing is said on success: the application takes the screen, which is the whole
+    // confirmation. A failure has to be visible, though - the human is looking at a
+    // window that did not change.
+    setLaunchError(result.ok ? null : (result.error ?? "could not open the file"));
+  }, [session.id]);
+
+  /** Both refusal paths say the same thing, because they are the same refusal. */
+  const unwritten = (path: string): string => `Not opened - ${path} could not be saved first.`;
+
+  /**
+   * Hand the SAVED file to a target, not the one on disk a moment ago.
+   *
+   * Every "Open in" target reads the path, and autosave is 750ms behind the keystroke, so
+   * clicking straight after an edit would open the previous version - a bug that looks
+   * exactly like the launcher having cached the page. Flushing and waiting for the buffer
+   * to settle is what makes what-you-see and what-opens the same bytes.
+   *
+   * The two unsaved states are handled HERE as well as in the effect below, and both
+   * branches are needed: a buffer that is `modified` when clicked ends up in the effect,
+   * but one that is ALREADY `failed`, `offline` or `conflict` never enters it - nothing is
+   * pending, so there is nothing to wait for - and would otherwise fall straight through
+   * to a launch of the stale file.
+   */
+  function openIn(target: OpenTargetId): void {
+    if (!selectedPath || !buffer) return;
+    setLaunchError(null);
+    if (isSavePending(buffer)) {
+      controller.flush(session.id, selectedPath);
+      setPendingOpen({ path: selectedPath, target });
+      return;
+    }
+    if (hasUnwrittenEdits(buffer)) {
+      setLaunchError(unwritten(selectedPath));
+      return;
+    }
+    void launch(selectedPath, target);
+  }
+
+  useEffect(() => {
+    if (!pendingOpen) return;
+    const pending = state?.buffers[pendingOpen.path];
+    if (pending && isSavePending(pending)) return;
+    setPendingOpen(null);
+    if (!pending) return;
+    // The flush ended in `failed`, `offline` or `conflict`: the edits are real and are NOT
+    // on disk, so opening now would quietly show the wrong thing. The save notice below
+    // says which of those it was.
+    if (hasUnwrittenEdits(pending)) {
+      setLaunchError(unwritten(pendingOpen.path));
+      return;
+    }
+    void launch(pendingOpen.path, pendingOpen.target);
+  }, [launch, pendingOpen, state?.buffers]);
+
+  // A refusal is about the file it names, so it goes when that file leaves the toolbar.
+  // A launch already in flight does NOT: the human asked for that file, and switching
+  // away while its save lands is not a change of mind.
+  useEffect(() => {
+    setLaunchError(null);
+  }, [selectedPath]);
 
   return (
     <section ref={workspaceRef} className={`file-workspace${extracted ? " is-extracted" : ""}`} aria-label={`Files for ${session.name}`}>
@@ -270,6 +345,7 @@ export function FileWorkspace({
               <button className={mode === "editor" ? "on" : ""} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button>
             </div>
           )}
+          <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />
           {!extracted && onExtract && (
             <button className="icon-btn file-extract" onClick={() => { controller.flush(session.id); onExtract(); }} title="Extract to a movable window" aria-label="Extract files window">↗</button>
           )}
@@ -305,6 +381,12 @@ export function FileWorkspace({
           )}
         </div>
 
+        {launchError && (
+          <div className="file-notice">
+            <span>{launchError}</span>
+            <button className="btn" onClick={() => setLaunchError(null)}>Dismiss</button>
+          </div>
+        )}
         {buffer && (buffer.saveState === "failed" || buffer.saveState === "offline") && (
           <div className="file-notice">
             <span>{buffer.error ?? (buffer.saveState === "offline" ? "Waiting for the daemon to reconnect." : "The save did not complete.")}</span>

@@ -2011,6 +2011,52 @@ turns plus the most recent ones, and mark the middle as elided when necessary. T
 queue's verifier instead reads forward from the item's delivery point, keeps up to 48
 recent turns, and reports when it had to drop an older prefix.
 
+## Open a checkout file outside Mission Control
+
+The Files workspace reads and edits the checkout in place, and its HTML preview is
+deliberately inert: the sandbox gets no scripts and no network access. That is the right
+trade for a preview pane and the wrong one for a mockup with any JavaScript in it, so the
+file toolbar carries **Open in ▾** - it hands the file on screen to an application outside
+the dashboard, where the document is just a document again and resolves its own relative
+assets.
+
+**Browser** is the target this build ships. It is not `open <file>`: the platform's default
+handler routes by file TYPE, which lands an `.html` mockup in your browser and lands
+`routes.ts` in whatever editor claims `.ts`. The Files list holds every file in the
+checkout, so a row that says "Browser" resolves the application you actually chose for the
+web - on macOS the bundle LaunchServices hands `https` to, on Linux what
+`xdg-settings` reports (falling back to `xdg-open`, which can no longer name the
+application, and says so rather than guessing). The row names what it found, so you can see
+*Browser · Chrome* before clicking.
+
+- **What opens is what you are looking at.** Autosave is 750ms behind the keystroke and
+  every target reads the file from disk, so a pending save is flushed and waited on first.
+  If it cannot be written - offline, or a conflict with an edit made outside the dashboard -
+  nothing opens and the toolbar says so, rather than quietly showing the previous version.
+- **Files the editor cannot open still open here**, which is the point for images, PDFs and
+  anything over the 2 MiB editor limit: the workspace says "binary files cannot be opened"
+  and the browser shows them perfectly well.
+- **What the browser then does with the file is the browser's call.** It renders what it
+  knows - HTML, images, PDF, SVG, plain text - and *downloads* what it doesn't: Chrome puts
+  a `.yml` or a `.ts` in your Downloads folder rather than displaying it. That is worth
+  knowing before you reach for this on source, and it is the gap a future **Editor** target
+  fills; nothing here second-guesses it with an extension allowlist, because which types a
+  browser renders differs between browsers and changes under you.
+- **Availability is answered by the daemon's host**, not by the browser you are reading the
+  dashboard in - it is the daemon that launches the application. A target that cannot run
+  there is greyed out with the reason attached ("not supported on win32 yet"), which is the
+  difference between a broken button and a missing dependency.
+- **Nothing about the checkout crosses HTTP.** The daemon launches a local application
+  against a local path; it does not serve the bytes. Serving them would put
+  checkout-controlled HTML on the daemon's own origin, where its scripts would reach every
+  action route on the port.
+- **Adding a target is a file and two entries.** `OPEN_TARGET_IDS` / `OPEN_TARGET_INFO`
+  (`@shared/open-targets.ts`) say what a target is called and promises; an implementation
+  under `src/server/open-targets/` says how to resolve and launch it. The menu is a fold
+  over that list, so an editor or a JetBrains IDE needs no component, stylesheet or route
+  change. Both records are `Record<OpenTargetId, …>`, so a declared target that nothing can
+  launch does not compile.
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced

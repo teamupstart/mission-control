@@ -1,4 +1,26 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+
+/**
+ * Whether a BARE command name resolves on PATH - answered from the filesystem, never by
+ * running anything.
+ *
+ * Lives beside `run` because it is the other half of one question: a caller that is about
+ * to spawn `bin` wants to know whether spawning it can possibly work, and the cheap answer
+ * is a handful of `existsSync` calls rather than a `fork` + `execve` that fails with
+ * ENOENT. `binPresent` (`terminal/bin.ts`) is this walk with a `BinSpec`'s override and
+ * candidate list in front of it; the "Open in" targets ask it directly, having neither.
+ *
+ * A `true` is not a promise the command will succeed - only that it is there to try.
+ */
+export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!bin || bin.includes("/")) return Boolean(bin) && existsSync(bin);
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (dir && existsSync(join(dir, bin))) return true;
+  }
+  return false;
+}
 
 export interface RunResult {
   stdout: string;

@@ -30,6 +30,7 @@ test("Console and Board route diff opens to their shared detail tab", () => {
   assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\);[\s\S]*?setDiffTabRequest/);
   assert.match(detail, /view\.diffTabRequest[\s\S]*?setTab\("diff"\)/);
   assert.match(detail, /<InlineDiffViewer[\s\S]*?requestNonce=\{[\s\S]*?diffTabRequest\.nonce/);
+  assert.match(detail, /useEffect\(\(\) => \{\s*setDiffCommit\(null\);\s*\}, \[session\.id\]\)/);
   assert.doesNotMatch(detail, /Open the diff viewer/);
 });
 

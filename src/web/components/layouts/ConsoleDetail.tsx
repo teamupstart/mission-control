@@ -106,6 +106,15 @@ export function ConsoleDetail({
     if (view.fileTabRequest?.sessionId === session.id) setTab("files");
   }, [view.fileTabRequest, session.id]);
 
+  // ConsoleView and BoardView key this detail by session today, but the selected fix is
+  // still session-scoped state. Clear it explicitly when the detail is ever reused for
+  // another session, rather than letting that session inherit a commit from the last one.
+  // The diff-request effect below runs afterward and restores a commit only when it was
+  // explicitly requested for this session.
+  useEffect(() => {
+    setDiffCommit(null);
+  }, [session.id]);
+
   useEffect(() => {
     const scroll = (direction: -1 | 1): void => {
       if (tab === "conversation") {

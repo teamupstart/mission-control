@@ -151,8 +151,8 @@ export function latestCodexNarration(lines: string[]): string | null {
 export const codexTranscript: TranscriptSpec = {
   metaSource: "codex-rollout",
   locate,
-  // No activity: a rollout's records aren't turns, so there is nothing to read an
-  // idle/working state off. Codex sessions fall back to the pane, as they do today.
+  // Codex lifecycle markers report task start/completion directly; `readRolloutPassive`
+  // reads them from the same bounded tail as runtime metadata.
   passiveRead: readRolloutPassive,
   messages: jsonlMessages({
     parseBatch: parseCodexMessages,

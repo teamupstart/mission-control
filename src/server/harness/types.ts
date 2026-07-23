@@ -124,18 +124,18 @@ export interface UsageSpec {
 }
 
 export interface TranscriptWindow {
-  /** Opening turns then recent turns, de-duped; empty when unreadable. */
+  /** Returned turns in chronological order; empty when unreadable. */
   messages: TranscriptMessage[];
-  /** True when turns between the head and the tail were dropped for size. */
+  /** True when older or middle turns were omitted from the returned window. */
   truncated: boolean;
   /**
    * How many leading `messages` came from the opening slice - the boundary of the elided
    * middle. Non-zero only when `truncated`, where `messages[headCount - 1]` and
    * `messages[headCount]` sit next to each other in the array but far apart in the session.
    * A reader that wants the genuinely recent turns must therefore slice forward from here
-   * rather than back from the end: the tail's turn count is byte-bounded, so when it yields
-   * fewer turns than the head, slicing from the end runs back into the opening. 0 when the
-   * file was returned whole and every turn is contiguous.
+   * rather than back from the end: a short conversation or the scan ceiling can leave the
+   * tail smaller than requested, so slicing from the end can run back into the opening.
+   * 0 when every returned turn is contiguous.
    */
   headCount: number;
 }
@@ -162,10 +162,10 @@ export interface TranscriptStreamRead {
  * Reading a harness's file as CONVERSATION.
  *
  * Split from `TranscriptSpec` because "there is a file we can read runtime facts out of"
- * and "that file contains the turns" are separate claims, and Codex is the live proof:
- * its rollout carries model / effort / token counts and no messages. Folding the two
- * would have that harness answering every window read with `[]`, which reads as "this
- * session has said nothing" - a wrong answer that no caller can tell from a right one.
+ * and "that file contains turns" are separate claims. Folding the two would force a
+ * harness with passive runtime metadata but no conversation reader to answer every
+ * window read with `[]`, which reads as "this session has said nothing" - a wrong answer
+ * that no caller can tell from a right one.
  */
 export interface TranscriptMessages {
   /**

@@ -1944,6 +1944,18 @@ earns two surfaces a card has nowhere to put:
   matching only backlog items correctly reads as "nothing matches".
 - **The arrow keys follow the shape** - see below.
 
+## How much conversation you see
+
+The Conversation panel opens on up to the session's **last 80 turns**, then streams new
+ones as the agent writes them. Its reader widens the transcript scan until it finds that
+many turns or reaches the 16 MB scan ceiling, so tool output and reasoning records in a
+Codex rollout do not crowd the conversation out of a fixed byte window.
+
+One-shot context readers such as Foreman's reviewer and the goal refiner keep the opening
+turns plus the most recent ones, and mark the middle as elided when necessary. The work
+queue's verifier instead reads forward from the item's delivery point, keeps up to 48
+recent turns, and reports when it had to drop an older prefix.
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced

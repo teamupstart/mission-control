@@ -31,10 +31,9 @@ export const DEFAULT_TRIAGE_MODEL = FOREMAN_MODEL_SPECS.triage.fallback;
 /**
  * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 48.
  *
- * The endpoint's `turns` query param is a BYTE-bound hint, NOT a turn bound: under its
- * head+tail byte budget `readTranscriptWindow` returns the file WHOLE, and over it returns
- * head(12)+tail(turns). So the real bound has to be applied on this side, after the fetch -
- * see `triageSession`.
+ * The endpoint aims its tail reader at this many turns, but a small file still comes back
+ * whole and every large response also carries its opening turns. Apply the exact recent
+ * bound on this side after separating those halves - see `triageSession`.
  */
 export const TIER1_TURNS = 12;
 /**
@@ -180,7 +179,7 @@ function hasProse(messages: TranscriptMessage[]): boolean {
  *  - The router must SEE the opening turns. `purpose` ("what this session is for") is the one
  *    field Tier 1 always produces and it lands on the card, so a prompt built from the last 12
  *    turns alone describes the last ten minutes instead of the task - which is exactly what
- *    `readTranscriptWindow`'s head slice exists to prevent.
+ *    the transcript window's head slice exists to prevent.
  *  - The denylist must NOT scan them. Its patterns over-match on purpose, so ambient prose from
  *    forty turns ago ("I'll read the API key from .env") would escalate every routine ask for
  *    the rest of the session, collapsing Tier 1's only substantive disposal.
@@ -483,9 +482,10 @@ export interface TriageDeps {
  *
  * `messages.slice(-TIER1_TURNS)` alone is NOT that. On the daemon's truncated path the response
  * is the opening turns followed by the closing ones with the middle ELIDED, so the two halves
- * are adjacent in the array but far apart in the session; the tail's turn count is byte-bounded,
- * so when it yields fewer turns than the head, slicing back from the end lands inside the
- * OPENING. That would re-open both gaps this window exists to close: ambient goal prose
+ * are adjacent in the array but far apart in the session. The tail may legitimately contain
+ * fewer than `TIER1_TURNS` (a short conversation or the transcript scan ceiling), so slicing
+ * back from the end can land inside the OPENING. That would re-open both gaps this window exists
+ * to close: ambient goal prose
  * ("read the API key from .env") escalating every routine ask for the rest of the session, and
  * - worse - opening prose satisfying `hasProse` while the actually-recent turns held nothing
  * scannable. So slice FORWARD from `headCount` instead. Re-ordering by `ts` would not help:
@@ -572,10 +572,11 @@ export async function triageSession(
     // distinguishable in the log, so `unavailable` is deliberately left false here.
     return { messages: [], truncated: false };
   });
-  // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
-  // here - see `recentTurns`. The router's prompt gets `recent` plus the opening turns; see
-  // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,
-  // so say so rather than letting the router read a gapped window as the whole story.
+  // The endpoint targets this many tail turns but may also return the opening turns or a
+  // small file whole, so apply the exact recent bound here - see `recentTurns`. The router's
+  // prompt gets `recent` plus the opening turns; see `promptWindow` for why the two windows
+  // differ. Eliding the middle is itself a truncation, so say so rather than letting the
+  // router read a gapped window as the whole story.
   const recent = recentTurns(window);
   const messages = promptWindow(window.messages, recent.messages);
   const truncated = window.truncated || messages.length < window.messages.length;

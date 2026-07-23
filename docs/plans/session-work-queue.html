@@ -496,13 +496,13 @@ satisfied, ignoring unrelated changes.</p>
 <p><strong>Transcript anchoring is the reliable item-scoping signal</strong> - better than the diff, which is
 cumulative whenever the agent does not commit. <code>client.transcript(id, turns = 48)</code> and its route
 take only a turn count, so a 48-turn window can span three items.</p>
-<p>Anchor on a <strong>byte offset</strong>, not a timestamp or uuid. <code>readTranscriptWindow</code> reads a bounded head
-(<code>WINDOW_HEAD_BYTES</code>, 128KB) plus a tail with the middle elided, so <em>filtering that window</em> by <code>ts</code>
-would silently drop an item&#x27;s earliest turns whenever its work exceeds the tail - precisely the
-turns that establish what the agent set out to do. The transcript is append-only and the SSE handler
-already seeks by byte position (<code>transcript.ts:432</code>), so store the file size at delivery as
-<code>transcript_anchor</code> and have <code>?since=&lt;offset&gt;</code> <strong>read forward from it</strong>, bounded by its own cap.
-That is an O(1) seek, a hard bound on window size, and exact item scoping.</p>
+<p>Anchor on a <strong>byte offset</strong>, not a timestamp or uuid. The ordinary window keeps opening and recent
+turns with the middle elided, so <em>filtering that window</em> by <code>ts</code> would silently drop an item&#x27;s
+earliest turns whenever its work exceeds the tail - precisely the turns that establish what the
+agent set out to do. The transcript is append-only and the SSE handler already seeks by byte
+position, so store the file size at delivery as <code>transcript_anchor</code> and have <code>?since=&lt;offset&gt;</code>
+<strong>read forward from it</strong>. That is an O(1) seek and exact item scoping; the forward read keeps up to
+48 turns and stops scanning at 16 MB.</p>
 <p>Guard the anchor: if the file is now <strong>shorter</strong> than the offset the transcript was reset (a
 <code>/clear</code>) and the anchor is meaningless - escalate as a verify-infrastructure failure rather than
 judging the item against a near-empty window and inventing gaps (see E2).</p>

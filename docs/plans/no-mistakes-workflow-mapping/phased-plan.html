@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased implementation: no-mistakes gates as workflow Personas</title>
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1c1c1e; --muted: #6b6b70; --line: #e2e2df;
+    --card: #ffffff; --accent: #7c5cff; --accent-soft: #f0ecff;
+    --session: #2e9e6b; --session-soft: #e6f6ee;
+    --code-bg: #f1f1ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #e8e8ea; --muted: #9a9aa2; --line: #2e2e34;
+      --card: #1f1f24; --accent: #a08aff; --accent-soft: #2a2440;
+      --session: #55c48f; --session-soft: #1a3328;
+      --code-bg: #26262c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 1.2rem; margin: 2.2em 0 0.6em; padding-top: 0.8em; border-top: 1px solid var(--line); }
+  p { margin: 0.7em 0; }
+  a { color: var(--accent); }
+  code {
+    background: var(--code-bg); border-radius: 4px; padding: 1px 5px;
+    font: 0.86em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .scroll { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  ol li, ul li { margin: 0.35em 0; }
+  .note {
+    background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 8px; padding: 12px 18px; margin: 16px 0;
+  }
+  figure { margin: 1.4em 0; }
+  figure .scroll { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+  svg text { font: 12.5px -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--fg); }
+  svg .box { fill: var(--card); stroke: var(--muted); stroke-width: 1.4; rx: 7; }
+  svg .b-phase { fill: var(--session-soft); stroke: var(--session); }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Phased implementation: no-mistakes gates as workflow Personas</h1>
+  <p>Source plan: <code>docs/plans/no-mistakes-workflow-mapping/plan.md</code> (approved
+  2026-07-23; rendered page <code>plan.html</code> beside it). Detailed phase source:
+  <a href="phase-1-seed-personas.md"><code>phase-1-seed-personas.md</code></a>.</p>
+
+  <h2>Incorporated human decisions</h2>
+  <p>Submitted through the Mission Control dashboard review on 2026-07-23 and already folded
+  into the source plan:</p>
+  <ol>
+    <li><b>Persona set</b>: author all four - Intent Conformance Judge, Code Risk Reviewer,
+      Test Evidence Auditor, Documentation Steward. Lint/Housekeeping not adopted.</li>
+    <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
+      them at the PR head; the Inspector final gate (phase 5 of the workflow-builder plan)
+      makes them binding. No check-node kind.</li>
+    <li><b>Ship tail</b>: as planned - graph success shows <code>awaiting_pr</code> offering
+      the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
+      delivery nodes.</li>
+    <li><b>Persona texts</b>: seed <code>.md</code> files shipped in-repo under
+      <code>docs/personas/</code>, importable from the Personas tab.</li>
+    <li><b>Follow-up</b>: this phased implementation plan.</li>
+  </ol>
+  <div class="note"><p>Decisions 2 and 3 are do-nothing decisions: they select the
+  already-planned workflow-builder phases (4-6) over new machinery and require no work here.
+  The implementable remainder is decision 1 + 4: author the four seed persona files, with
+  documentation and tests.</p></div>
+
+  <h2>Investigated findings (what the repository actually does)</h2>
+  <ul>
+    <li><b>Import contract</b> (<code>src/web/workflows/PersonaLibrary.tsx</code>,
+      <code>src/web/workflows/personaApi.ts</code>): <code>readPersonaImport</code> rejects
+      files over <code>WORKFLOW_LIMITS.personaGuidanceBytes</code> (100,000 UTF-8 bytes); the
+      entire file body becomes <code>guidanceMarkdown</code>;
+      <code>deriveImportedPersonaName</code> takes the first <code># H1</code> line (else the
+      filename); description stays empty and runner/model stay at defaults. A seed file is
+      therefore self-describing: its H1 is the Persona name and its opening line doubles as
+      the description the operator will paste.</li>
+    <li><b>Prompt contract</b> (<code>src/server/workflows/prompt.ts</code>,
+      <code>buildPersonaPrompt</code>): the engine already emits the immutable review
+      contract, the original human intent block, prior Persona feedback, fenced untrusted
+      evidence, and the required JSON output schema. The published Persona Markdown is
+      interpolated between intent and evidence. <b>Seed guidance must not restate the
+      contract, the intent priority, the untrusted-evidence rule, or the output schema</b> -
+      duplicating them is double instruction and drifts when the engine's wording
+      changes.</li>
+    <li><b>Verdict semantics</b> (<code>src/server/workflows/verdict.ts</code>,
+      <code>@shared/workflow.ts</code>): a fail needs at least one <code>EvidenceRef</code>
+      per requested change; evidence kinds are
+      <code>diff | transcript | standard | goal | decision</code>; infrastructure problems
+      must never be a fail verdict. Requested changes carry <code>title</code>,
+      <code>rationale</code>, optional <code>path</code>/<code>line</code>. Guidance should
+      tell each Persona what <i>counts</i> as evidence for its domain, in these terms.</li>
+    <li><b>Name limit</b>: <code>WORKFLOW_LIMITS.personaName</code> is 100 characters; the
+      H1-derived name must fit. <code>personaDescription</code> is 500 (unused by
+      import).</li>
+    <li><b><code>docs/personas/</code> does not exist yet</b>; nothing else claims the
+      path.</li>
+    <li><b>README</b> has a "Workflows and Personas" section (anchor
+      <code>#workflows-and-personas</code>); seed-file documentation belongs there, in the
+      same change as the code.</li>
+    <li><b>Tests</b> are flat <code>test/&lt;feature&gt;-&lt;aspect&gt;.test.ts</code>,
+      <code>node:test</code> + <code>node:assert/strict</code>.
+      <code>deriveImportedPersonaName</code> and <code>WORKFLOW_LIMITS</code> are
+      browser-safe pure imports, so a test can pin the seed files against the real import
+      functions without a server or DB.</li>
+    <li><b>Source prompts</b> (the distillation input) live in the public repo
+      <code>github.com/kunchenguid/no-mistakes</code> under
+      <code>internal/pipeline/steps/</code>; the distilled rule inventory is embedded in the
+      phase file, so the implementing agent does not need to clone the upstream repo.</li>
+    <li><b>House rules that bind the persona texts themselves</b>: no em dashes anywhere;
+      the texts are operator-facing product content.</li>
+  </ul>
+  <p>No discrepancies between the source plan and the repository were found; the plan was
+  written against this same code.</p>
+
+  <h2>Phase table</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Phase</th><th>Name</th><th>Direct prerequisites</th><th>Deliverable</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Seed personas</td><td>none (planning session only)</td>
+          <td><code>docs/personas/*.md</code> x4, <code>test/seed-personas.test.ts</code>, README section</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>One phase. The whole deliverable is four Markdown files, one test file, and a README
+  section - splitting it would create review units smaller than their overhead, and there is
+  no schema, migration, or cross-consumer boundary to stage.</p>
+
+  <h2>Dependency graph and concurrency</h2>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 560 70" width="560" height="70" role="img" aria-label="The planning session PR merging releases Phase 1: Seed personas">
+        <defs>
+          <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+          </marker>
+        </defs>
+        <rect x="10" y="16" width="230" height="38" class="box"/>
+        <text x="125" y="39" text-anchor="middle">Planning session PR merges</text>
+        <rect x="320" y="16" width="228" height="38" class="box b-phase"/>
+        <text x="434" y="39" text-anchor="middle">Phase 1: Seed personas</text>
+        <path d="M 240 35 L 320 35" class="arrow" marker-end="url(#m)"/>
+      </svg>
+    </div>
+    <figcaption>No concurrency groups; the only edge is the planning-session prerequisite
+    (the phase reads these plan artifacts from the default branch).</figcaption>
+  </figure>
+
+  <h2>Merge order</h2>
+  <p>Phase 1 merges alone. Its merge releases nothing downstream; future workflow-builder
+  phases (4-6) are owned by <code>docs/plans/workflow-builder/</code> and are independent of
+  these files.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <p>For later work (not scheduled here) that may build on the seed files:</p>
+  <ul>
+    <li>File naming: <code>docs/personas/&lt;kebab-slug&gt;.md</code>, one Persona per file,
+      H1 = Persona name.</li>
+    <li>The H1-name and whole-body-guidance contract is the Personas tab import contract;
+      anything that later auto-imports or drift-checks these files must reuse
+      <code>deriveImportedPersonaName</code> and <code>readPersonaImport</code> semantics
+      rather than re-parse.</li>
+    <li>The seed texts assume the engine's immutable prompt contract exists and deliberately
+      do not restate it; a future engine-prompt change does not require editing the seeds
+      unless it changes what a Persona may claim.</li>
+  </ul>
+
+  <h2>Final verification strategy</h2>
+  <ul>
+    <li><code>npm run typecheck</code> and <code>npm test</code> green (the new test runs
+      with the suite).</li>
+    <li>Manual: <code>make start</code>, open <code>#/workflows/personas</code>, import each
+      of the four files, confirm the derived name, and save. Confirm the README section
+      renders and its instructions match the UI.</li>
+    <li>The phase's exit criteria in <code>phase-1-seed-personas.md</code> are the binding
+      list.</li>
+  </ul>
+</main>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
-import { isOurs, parseMarker } from "./marker.ts";
+import { isCleanReview, isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
@@ -137,8 +137,9 @@ export interface PrSnapshot {
   body: string;
   isDraft: boolean;
   threads: ThreadSnapshot[];
-  /** Recent top-level reviews, used to recover an interrupted clean-review post. */
-  reviews?: ReviewSnapshot[];
+  /** Latest top-level reviews, used to recover an interrupted clean-review post. */
+  reviews: ReviewSnapshot[];
+  reviewsPageInfo: ReviewPageInfo;
   /**
    * When the PR was opened, epoch ms, or null when GitHub's timestamp did not parse.
    *
@@ -171,6 +172,17 @@ export interface ThreadSnapshot {
 export interface ReviewSnapshot {
   body: string;
   author: string;
+  headSha: string;
+}
+
+export interface ReviewPageInfo {
+  hasPreviousPage: boolean;
+  startCursor: string | null;
+}
+
+interface ReviewPage {
+  reviews: ReviewSnapshot[];
+  pageInfo: ReviewPageInfo;
 }
 
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
@@ -186,7 +198,21 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
           }
         }
       }
-      reviews(last:100){ nodes{ body author{ login } } }
+      reviews(last:100){
+        nodes{ body author{ login } commit{ oid } }
+        pageInfo{ hasPreviousPage startCursor }
+      }
+    }
+  }
+}`;
+
+const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$before:String!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviews(last:100,before:$before){
+        nodes{ body author{ login } commit{ oid } }
+        pageInfo{ hasPreviousPage startCursor }
+      }
     }
   }
 }`;
@@ -269,6 +295,7 @@ function toChecks(state: unknown): ChecksState {
 function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   const threadNodes =
     ((pr.reviewThreads as { nodes?: unknown[] } | undefined)?.nodes as unknown[]) ?? [];
+  const reviewPage = toReviewPage(pr.reviews);
   const headCommit = (
     ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
       commit?: { statusCheckRollup?: { state?: unknown } | null };
@@ -313,16 +340,130 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
         }),
       };
     }),
-    reviews: (((pr.reviews as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[])
-      .filter(Boolean)
-      .map((raw) => {
-        const review = raw as Record<string, unknown>;
-        return {
-          body: typeof review.body === "string" ? review.body : "",
-          author: String((review.author as { login?: unknown } | null)?.login ?? "unknown"),
-        };
-      }),
+    reviews: reviewPage.reviews,
+    reviewsPageInfo: reviewPage.pageInfo,
   };
+}
+
+function toReviewPage(raw: unknown): ReviewPage {
+  const connection = (raw ?? {}) as {
+    nodes?: unknown[];
+    pageInfo?: { hasPreviousPage?: unknown; startCursor?: unknown };
+  };
+  return {
+    reviews: (connection.nodes ?? []).filter(Boolean).map((item) => {
+      const review = item as Record<string, unknown>;
+      return {
+        body: typeof review.body === "string" ? review.body : "",
+        author: String((review.author as { login?: unknown } | null)?.login ?? "unknown"),
+        headSha: String((review.commit as { oid?: unknown } | null)?.oid ?? ""),
+      };
+    }),
+    pageInfo: {
+      hasPreviousPage: connection.pageInfo?.hasPreviousPage === true,
+      startCursor:
+        typeof connection.pageInfo?.startCursor === "string"
+          ? connection.pageInfo.startCursor
+          : null,
+    },
+  };
+}
+
+async function fetchReviewPage(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  before: string,
+): Promise<GhResult<ReviewPage>> {
+  const res = await run(
+    "gh",
+    [
+      "api",
+      "graphql",
+      "-f",
+      `query=${REVIEW_PAGE_QUERY}`,
+      "-F",
+      `owner=${owner}`,
+      "-F",
+      `name=${repo}`,
+      "-F",
+      `number=${number}`,
+      "-F",
+      `before=${before}`,
+    ],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api graphql (reviews)", res);
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) {
+      return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    }
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    return { ok: true, value: toReviewPage(pr.reviews) };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh review output: ${String(err)}` };
+  }
+}
+
+type ReviewPageLoader = (before: string) => Promise<GhResult<ReviewPage>>;
+
+export async function cleanReviewExists(
+  input: {
+    cwd: string | null;
+    owner: string;
+    repo: string;
+    number: number;
+    snapshot: Pick<PrSnapshot, "reviews" | "reviewsPageInfo">;
+    login: string;
+    headSha: string;
+  },
+  loadPrevious: ReviewPageLoader = (before) =>
+    fetchReviewPage(input.cwd, input.owner, input.repo, input.number, before),
+): Promise<GhResult<boolean>> {
+  let page: ReviewPage = {
+    reviews: input.snapshot.reviews,
+    pageInfo: input.snapshot.reviewsPageInfo,
+  };
+  const cursors = new Set<string>();
+  while (true) {
+    if (page.reviews.some((review) => isCleanReview(review, input.login, input.headSha))) {
+      return { ok: true, value: true };
+    }
+    if (!page.pageInfo.hasPreviousPage) return { ok: true, value: false };
+    const cursor = page.pageInfo.startCursor;
+    if (!cursor || cursors.has(cursor)) {
+      return { ok: false, error: "could not traverse the complete pull request review history" };
+    }
+    cursors.add(cursor);
+    const previous = await loadPrevious(cursor);
+    if (!previous.ok || !previous.value) {
+      return {
+        ok: false,
+        error: previous.error ?? "could not read an earlier pull request review page",
+        outcomeUnknown: previous.outcomeUnknown,
+        tooLarge: previous.tooLarge,
+      };
+    }
+    page = previous.value;
+  }
+}
+
+export function allOwnedThreadsResolved(
+  snapshot: PrSnapshot,
+  login: string,
+  resolvedThreadIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return snapshot.threads.every((thread) => {
+    if (thread.isResolved || resolvedThreadIds.has(thread.id)) return true;
+    const first = thread.comments[0];
+    return !first || !isOurs(first, login);
+  });
 }
 
 /**

@@ -29,11 +29,11 @@ import { createHash } from "node:crypto";
 const MARKER_PREFIX = "mission-inspector:v1";
 
 /**
- * A reserved marker fingerprint for the top-level review that records a clean round.
+ * A reserved marker fingerprint for a top-level review that records a clean head.
  *
  * This is not an issue fingerprint: it never appears in the finding ledger or in a
  * review thread. It lets a retry recognise that GitHub accepted the one generic
- * "safe to merge" review even when the response was lost after the write.
+ * "safe to merge" review for a reviewed head even when the response was lost.
  */
 export const CLEAN_REVIEW_FINGERPRINT = "clean-review";
 
@@ -107,15 +107,15 @@ export function isOurs(comment: AuthoredComment, login: string | null): boolean 
   return parseMarker(comment.body) !== null;
 }
 
-/** Whether this is our clean top-level review for one particular Inspector round. */
+/** Whether this is our clean top-level review for one particular reviewed head. */
 export function isCleanReview(
-  comment: AuthoredComment,
+  comment: AuthoredComment & { headSha: string },
   login: string | null,
-  round: number,
+  headSha: string,
 ): boolean {
   if (!isOurs(comment, login)) return false;
   const marker = parseMarker(comment.body);
-  return marker?.fingerprint === CLEAN_REVIEW_FINGERPRINT && marker.round === round;
+  return marker?.fingerprint === CLEAN_REVIEW_FINGERPRINT && comment.headSha === headSha;
 }
 
 /**

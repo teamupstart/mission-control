@@ -142,7 +142,7 @@ test("locate prefers an exact header id when multiple pi sessions share a cwd", 
   }
 });
 
-test("locate refuses a newest file already bound to a sibling pi session", () => {
+test("two hookless sessions sharing a cwd both decline after occupancy is known", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
@@ -150,8 +150,12 @@ test("locate refuses a newest file already bound to a sibling pi session", () =>
   const path = join(dir, "newest.jsonl");
   try {
     writeSession(path, "unknown-agent", 2_000);
-    assert.equal(locatePiTranscript(locateSession("pi-owner", cwd), root), path);
-    assert.equal(locatePiTranscript(locateSession("pi-sibling", cwd), root), null);
+    const owner = locateSession("pi-owner", cwd);
+    const sibling = locateSession("pi-sibling", cwd);
+    assert.equal(locatePiTranscript(owner, root), path, "the first poll sees a sole occupant");
+    assert.equal(locatePiTranscript(sibling, root), null, "the sibling registers occupancy");
+    assert.equal(locatePiTranscript(owner, root), null, "the first claim self-corrects");
+    assert.equal(locatePiTranscript(sibling, root), null);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });

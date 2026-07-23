@@ -152,7 +152,7 @@ not collide with Codex in `skillsDirs()`:
 - `reloadCommand: "/reload"` - **verified pi needs a nudge**: it has a `/reload` slash command
   and NO skills-dir watcher (no `fs.watch`/`chokidar` on the resource dirs). So unlike Codex
   (which watches, `reloadCommand: null`), a skill symlinked in mid-session is picked up only
-  after `/reload`. This surfaced the `skillsAgents()` finding below.
+  after `/reload`. This surfaced the `skillsAgents()` and reload-readiness findings below.
 - `dirEnvVar: "PI_SKILLS_DIR"`, `isolatedDirName: "pi-skills"`.
 
 ### mcp - null
@@ -242,16 +242,24 @@ lets pi fall through correctly. The couplings that remain:
    (`skills-reconcile`, `terminal-home`) were confirmed clean in isolation - concurrent runs in
    this live Mission Control environment had contaminated the bisect.
 
+8. **Skills reload readiness baked in hooks and a readable TUI.** `reloadOwed` hard-gated on
+   `hooksSeen`, and `reloadOne` always required a mode-line read. pi has neither hooks nor a
+   TUI spec, but its passive transcript supplies a real idle/working signal and its keystroke
+   control can deliver `/reload`. **Fixed** by adding `reloadIdleSource` to `SkillsSpec`:
+   `reloadOwed` accepts the declared transcript source, while `reloadOne` skips the mode-line
+   read only when the harness has no TUI. Claude remains hook-gated and TUI-checked; Codex
+   remains excluded because it has no reload command.
+
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's
 real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid, and its
 transcript resolves to 5 turns with model `gpt-5.5`, 1252 context tokens, activity `working`),
 detection classifies the `pi` process as native off its `process.title`, and after the WRAPPERS
 fix no phantom card survives a multiplexer session named with a `pi` token.
 
-Nothing else outside the eight forced `Record<AgentType,...>` maps + `AGENT_TYPES` + the pi
-adapter directory needed touching. The two contract-test lines that assert `agent: "pi"` is
-REJECTED (the authors anticipated this - the probe agent is `probeagent`, not `pi`) were
-updated to a still-invalid id.
+Every implementation touch outside the forced `Record<AgentType,...>` maps and the pi adapter
+is accounted for above, including the reload-readiness contract. The two contract-test lines
+that assert `agent: "pi"` is REJECTED (the authors anticipated this - the probe agent is
+`probeagent`, not `pi`) were updated to a still-invalid id.
 
 ## Pointers
 

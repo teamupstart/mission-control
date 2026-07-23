@@ -84,6 +84,7 @@ interface Binding {
   path: string | null;
   newestPath: string | null;
   newestMtime: number;
+  exact: boolean;
 }
 
 /**
@@ -93,9 +94,9 @@ interface Binding {
  */
 const bindings = new Map<string, Binding>();
 
-function boundToOther(sessionId: string, path: string): boolean {
+function hasCwdOccupant(sessionId: string, cwd: string): boolean {
   for (const [id, binding] of bindings) {
-    if (id !== sessionId && binding.path === path) return true;
+    if (id !== sessionId && binding.cwd === cwd) return true;
   }
   return false;
 }
@@ -109,9 +110,10 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
   const transcriptMtime = s.transcriptPath ? fileMtime(s.transcriptPath) : null;
   if (s.transcriptPath && transcriptMtime !== null) {
     const sourceId = sessionIdFromHeader(s.transcriptPath);
+    const exact = !!s.agentSessionId && sourceId === s.agentSessionId;
     const path =
       (s.agentSessionId && sourceId && sourceId !== s.agentSessionId) ||
-      boundToOther(s.id, s.transcriptPath)
+      (!exact && hasCwdOccupant(s.id, s.cwd))
         ? null
         : s.transcriptPath;
     bindings.set(s.id, {
@@ -120,12 +122,14 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
       path,
       newestPath: s.transcriptPath,
       newestMtime: transcriptMtime,
+      exact,
     });
     return path;
   }
 
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const newest = files[0] ?? null;
+  const occupied = hasCwdOccupant(s.id, s.cwd);
   const hit = bindings.get(s.id);
   if (
     hit?.path &&
@@ -133,21 +137,26 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
     hit.agentSessionId === s.agentSessionId &&
     hit.newestPath === (newest?.path ?? null) &&
     hit.newestMtime === (newest?.mtime ?? 0) &&
-    files.some((file) => file.path === hit.path)
+    files.some((file) => file.path === hit.path) &&
+    (hit.exact || (s.agentSessionId === null && !occupied))
   ) {
     return hit.path;
   }
 
   let path: string | null = null;
+  let exact = false;
   if (newest) {
-    const identified = files.map((file) => ({ ...file, sessionId: sessionIdFromHeader(file.path) }));
     if (s.agentSessionId) {
-      path = identified.find((file) => file.sessionId === s.agentSessionId)?.path ?? null;
-      if (!path && identified.every((file) => file.sessionId === null)) path = newest.path;
-    } else {
+      for (const file of files) {
+        if (sessionIdFromHeader(file.path) !== s.agentSessionId) continue;
+        path = file.path;
+        exact = true;
+        break;
+      }
+    }
+    if (!path && !occupied) {
       path = newest.path;
     }
-    if (path && boundToOther(s.id, path)) path = null;
   }
 
   bindings.set(s.id, {
@@ -156,6 +165,7 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
     path,
     newestPath: newest?.path ?? null,
     newestMtime: newest?.mtime ?? 0,
+    exact,
   });
   return path;
 }

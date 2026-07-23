@@ -202,8 +202,11 @@ The fix log is **not** gated on an active run - that is the entire point.
 
 - **Rollup row** (collapsed default): `◇ fixed by no-mistakes · review 5 · document 3` and
   a count. This is the whole footprint at rest.
-- **Scroll region** (open): `max-height: 208px`, `overscroll-behavior: contain` so hitting
-  the end does not scroll the sessions grid behind it. The card's height is a constant.
+- **Scroll region** (open): cards cap it at `208px`; Console and Board detail views cap it
+  responsively with `clamp(160px, 42dvh, 480px)`, while preserving the Conversation
+  transcript's `120px` minimum. The shared Gate tab uses the same responsive cap.
+  `overscroll-behavior: contain` keeps reaching the end from scrolling the surrounding
+  sessions surface.
 - **Per-fix detail**, opened in place, one at a time, fetched on first open and cached:
   - `no-mistakes found · N findings` - severity chip, `file:line`, description clamped to
     3 lines (the clamp `.nm-findings` already uses, for the same 900-char reason).
@@ -275,7 +278,7 @@ tool's display constant and format string, forever, failing silently when either
   commits; an unreachable sha reports rather than guessing.
 
 Verified end-to-end in the real app (isolated daemon, built UI, real fix commits whose
-subjects match live rounds): the card renders the rollup, the scroll region caps at 208px
+subjects match live rounds): the card renders the rollup, its scroll region caps at 208px
 with 501px of content, and the narrative shows real justification text and the real reply
 ("The user decided the ask-user finding. Apply all four."). That pass caught the diff
 header reading "HEAD vs \<parent\>" for a single fix - the exact misreading `?commit=`

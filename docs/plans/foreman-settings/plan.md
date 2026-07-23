@@ -64,7 +64,7 @@ persistence are unchanged; only the input changes from free text to a picked val
 **Decided: workspace git repos (`/api/repos`) + a validated manual add.** Candidates are the
 workspace's git repos, served by the existing `/api/repos` (`listRepos`) and offered through
 the same `RepoCombobox` the dispatch modal uses, minus the repos already on the list. A typed
-path is validated and canonicalized server-side (`POST /api/repos/resolve`, reusing dispatch's
+path is validated and canonicalized server-side (`POST /api/repos/resolve`, using
 `resolveRepoRoot`) before it joins the list, so a typo is refused rather than sitting inert.
 
 The initial sketch derived candidates from the distinct `repoRoot`s across current sessions,
@@ -109,8 +109,7 @@ points at the new home.
 - **`src/web/components/ForemanBar.tsx`** - remove the Tier fieldset and the allowlist
   textarea; add the Live-mode summary line (per the decision above).
 - **Server** - a small validated `POST /api/repos/resolve` ("resolve this path to a repo
-  root") endpoint for the manual add, reusing the existing `resolveRepoRoot` /
-  `realpathSync(top)` logic already used by dispatch (`routes.ts:982-989`). No schema or
+  root") endpoint for the manual add, using the shared `resolveRepoRoot`. No schema or
   persistence change - `repoAllowlist` is already an array of strings.
 
 ## Testing

@@ -293,7 +293,7 @@ npm run build:web
 Required assertions:
 
 - every mutation rejects malformed bodies through `parseBody`;
-- create/update canonicalize repo roots and reject non-repos;
+- create/update canonicalize repo roots and reject invalid task roots;
 - create/update reject unsupported execution modes and non-null runner ids;
 - preview accepts the same definition as save and performs no writes/events;
 - preview count and standby timestamps are bounded/validated;

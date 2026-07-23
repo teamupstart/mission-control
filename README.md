@@ -763,7 +763,9 @@ exposes six tools:
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
 - `create_task(title, intent, dependsOnTaskIds?, dependsOnCurrentSession?)` - add a ship task
   for the current repo to the backlog with the default agent/model/effort, returning its id so
-  later tasks can carry durable dependency edges
+  later tasks can carry durable dependency edges. The calling agent is usually standing in a
+  worktree; the task is filed against the **repo that owns it** - see [A task's repo is the
+  repo, not the worktree](#a-tasks-repo-is-the-repo-not-the-worktree)
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
@@ -891,6 +893,27 @@ dispatched or queued, or when you hit **Clear** to start a fresh one - either wa
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
 
+### A task's repo is the repo, not the worktree
+
+Every path that files a task - the dispatch form, the MCP
+[`create_task`](#review-channel-mcp) tool, an edit to a shelved task, a [task
+source](#task-sources-pulling-work-into-the-backlog) sweep - resolves what you give it to
+the **main checkout**. A linked worktree resolves to the repo that owns it, so an agent
+calling `create_task` from `~/.treehouse/<repo>-<hash>/16/<repo>` files against `<repo>`.
+
+That walk-back is what makes the rest of the app agree with itself. A task's repo is what
+[Foreman's allowlist](#foreman-auto-responder) is asked about before autopilot will
+schedule it, and the allowlist names repos you chose - never a pooled tree, which no
+operator has ever seen the path of. Store the worktree and the item is in no trusted repo,
+so it is passed over on every tick, silently and forever, while the popover's ready count
+(which ignores the allowlist by design) still counts it. A pooled tree is also *reclaimed*
+and handed to the next agent, so the row would outlive the directory it named.
+
+A root that **cannot** be walked back to a main checkout - a `.git` that points somewhere
+with no owning repo, like a submodule or a relocated git dir - is refused rather than
+written and never scheduled. HTTP task creation and edits return `400 not a repo's main
+checkout` naming the path; task-source sweeps report the same refusal in their result.
+
 ### Hand a shelved task to an agent that's already running
 
 On the [Board](#layout-cards-console-or-board), **drag a backlog card onto an idle
@@ -953,7 +976,7 @@ title alone, leaving the priority where the card put it. And a kept edit is only
 the task itself stands still - if the row changed while the form was closed, reopening it
 shows the task as it now reads rather than a picture of how it used to. A task whose **repo
 has since gone** - a reclaimed worktree, a project moved - stays editable too; only a repo
-you actually change is checked for being a git root.
+you actually change is checked against the [task-root rules above](#a-tasks-repo-is-the-repo-not-the-worktree).
 
 Only *shelved* work can be rewritten. Once a task is dispatched its title has already
 supplied the name of a git branch and terminal home, so the daemon refuses the edit rather
@@ -1084,9 +1107,9 @@ own effort in the dispatch form.
 
 ## Task sources (pulling work into the backlog)
 
-Every task in Mission Control is typed by a human into the dispatch form. Meanwhile the
-work already exists somewhere: open issues, a triage board, an on-call queue. A **task
-source** reads one of those on a schedule and files what it finds into the
+Tasks can be typed into the dispatch form or created through the MCP `create_task` tool.
+Meanwhile work already exists somewhere: open issues, a triage board, an on-call queue. A
+**task source** reads one of those on a schedule and files what it finds into the
 [backlog](#dispatch-an-agent).
 
 **A source files backlog rows and nothing else.** It never dispatches an agent, never cuts

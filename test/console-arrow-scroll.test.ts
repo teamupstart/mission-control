@@ -41,7 +41,7 @@ function reader(height: number): { element: HTMLElement; moves: number[] } {
     element: {
       clientHeight: height,
       scrollBy: ({ top }: ScrollToOptions) => moves.push(top ?? 0),
-    } as HTMLElement,
+    } as unknown as HTMLElement,
     moves,
   };
 }

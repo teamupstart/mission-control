@@ -1527,15 +1527,19 @@ letting pi fall through correctly. The spike is `todo/pi-harness.md`; what it fo
   only map to labels), which is exactly why it needed widening to `AgentType[]` by hand.
   Likewise `ModelField.runner: LlmRunnerId` was widened to `AgentType`: the backlog-task model
   field passes the task's harness, which can be pi, a harness that is not a runner - the runner
-  axis and the harness axis had been conflated in one prop type.
+  axis and the harness axis had been conflated in one prop type. The inverse coupling existed
+  in `providerModelDefault(AgentType)`: every caller is an offline `LlmRunnerId`, so admitting
+  pi silently selected a Claude fallback for a harness that is not a provider. Its parameter is
+  now narrowed to `LlmRunnerId`.
 
 - **Skills reload readiness baked in hooks and a readable TUI.** `reloadOwed` hard-gated on
   `hooksSeen`, and `reloadOne` always required a mode-line read. pi has neither hooks nor a TUI
   spec, but its passive transcript carries a real idle/working signal and its keystroke control
   can deliver `/reload`. `SkillsSpec.reloadIdleSource` now declares whether hook or transcript
-  evidence makes a reload eligible; a transcript-driven, TUI-null harness skips the impossible
-  mode-line read after the passive settled-idle gate. Claude remains hook-gated and TUI-checked,
-  and Codex remains excluded because its reload command is null.
+  evidence makes a reload eligible; transcript-driven readiness also requires a current,
+  attributable transcript binding, and a TUI-null harness skips the impossible mode-line read
+  after that passive settled-idle gate. Claude remains hook-gated and TUI-checked, and Codex
+  remains excluded because its reload command is null.
 
 - **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
   captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no

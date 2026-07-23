@@ -76,6 +76,7 @@ interface Binding {
   path: string | null;
   confirmedSoleOccupant: boolean;
   candidatePath: string | null;
+  observedCandidatePath: string | null;
 }
 
 /**
@@ -98,6 +99,7 @@ function recordBinding(s: Session, sessionsDir: string, path: string | null): vo
     path,
     confirmedSoleOccupant: false,
     candidatePath: null,
+    observedCandidatePath: null,
   });
 }
 
@@ -217,12 +219,18 @@ export const piTranscript: TranscriptSpec = {
       next.set(binding.cwd, next.has(binding.cwd) ? null : id);
     }
     for (const [id, binding] of bindings) {
-      const confirmed =
-        next.get(binding.cwd) === id && soleOccupants.get(binding.cwd) === id;
-      binding.confirmedSoleOccupant = confirmed;
-      binding.candidatePath = confirmed
+      const sole = next.get(binding.cwd) === id;
+      const observedCandidatePath = sole
         ? (sessionFiles(piProjectDir(binding.cwd, binding.sessionsDir))[0]?.path ?? null)
         : null;
+      const confirmed =
+        sole &&
+        soleOccupants.get(binding.cwd) === id &&
+        observedCandidatePath !== null &&
+        observedCandidatePath === binding.observedCandidatePath;
+      binding.confirmedSoleOccupant = confirmed;
+      binding.candidatePath = confirmed ? observedCandidatePath : null;
+      binding.observedCandidatePath = observedCandidatePath;
     }
     soleOccupants = next;
   },

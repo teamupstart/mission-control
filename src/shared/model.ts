@@ -9,6 +9,7 @@
 // The one import is type-only, so this stays dependency-free at runtime.
 
 import type { AgentType } from "./types.ts";
+import type { LlmRunnerId } from "./llm.ts";
 
 /** The context-window budget for a model with no size hint (standard Claude). */
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -149,7 +150,7 @@ export function modelChoicesFor(
 
 /** Provider-compatible shipped defaults for Mission Control's own model calls. */
 export function providerModelDefault(
-  provider: AgentType,
+  provider: LlmRunnerId,
   tier: "deep" | "balanced" | "cheap",
 ): string {
   if (provider === "codex") {

@@ -77,8 +77,9 @@ pi writes one JSON record per line to
   only because its file is not a turn log.)
 - `locate` reruns the project-directory scan on every read so `/new` is discovered. It caches
   only per-session bindings; `retain` prunes dead bindings and confirms sole ownership only
-  when the same session owns its cwd across two consecutive tick-boundary snapshots, then
-  snapshots the exact newest candidate that `locate` may bind until the next snapshot.
+  when the same session owns its cwd and observes the same newest candidate across two
+  consecutive tick-boundary snapshots. `locate` may bind only that twice-stable path while
+  it remains newest.
 
 ### control - REQUIRED, non-null
 
@@ -249,9 +250,15 @@ lets pi fall through correctly. The couplings that remain:
    `hooksSeen`, and `reloadOne` always required a mode-line read. pi has neither hooks nor a
    TUI spec, but its passive transcript supplies a real idle/working signal and its keystroke
    control can deliver `/reload`. **Fixed** by adding `reloadIdleSource` to `SkillsSpec`:
-   `reloadOwed` accepts the declared transcript source, while `reloadOne` skips the mode-line
-   read only when the harness has no TUI. Claude remains hook-gated and TUI-checked; Codex
-   remains excluded because it has no reload command.
+   `reloadOwed` accepts the declared transcript source, while `reloadNeeded` requires a current
+   attributable transcript binding and `reloadOne` skips the mode-line read only when the
+   harness has no TUI. Claude remains hook-gated and TUI-checked; Codex remains excluded because
+   it has no reload command.
+
+9. **`providerModelDefault(AgentType)` conflated the harness and runner axes.** Adding pi
+   widened the parameter even though every caller supplies `LlmRunnerId`, allowing a harness
+   that is not an offline provider to silently receive Claude's fallback. **Fixed** by narrowing
+   the helper to `LlmRunnerId`; harness model catalogs continue to use `AgentType`.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's
 real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid, and its

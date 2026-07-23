@@ -58,9 +58,9 @@ function resolveSettleMs(raw = envVar("SKILLS_SETTLE_MS")): number {
 const SETTLE_MS = resolveSettleMs();
 
 /**
- * The sessions this tick should try to reload. Pure, `now` injected, no I/O - the
- * discipline `decideQueueTick` holds, and for the same reason: a selector is policy,
- * so it has to be testable as a table.
+ * The sessions this tick should try to reload. `now` is injected so the policy remains
+ * testable as a table; transcript-driven readiness also asks that harness for its current
+ * binding before allowing an autonomous keystroke.
  *
  * Cheapest filter first, because step 4 of the gate (reading the pane) costs a
  * subprocess per session per tick and everything here exists to keep it from running.
@@ -153,7 +153,14 @@ export function reloadNeeded(
   // only ever made by a real source - a fresh hook OR the transcript-derived passive
   // state - so it holds for a healthy session whose hook merely lapsed (the transcript
   // still proves it parked) while refusing the `working` rebuild default. It's the one
-  // transient gate here, which is why it isn't in `reloadOwed`.
+  // transient gates here, which is why they aren't in `reloadOwed`.
+  const harness = harnessFor(s.agent);
+  if (
+    harness.skills?.reloadIdleSource === "transcript" &&
+    (!harness.transcript || harness.transcript.locate(s) === null)
+  ) {
+    return false;
+  }
   return settledIdle(s, now, settleMs);
 }
 

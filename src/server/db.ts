@@ -1923,10 +1923,6 @@ function invalidateTaskOwnershipInTransaction(
     `UPDATE tasks SET
        session_id = NULL,
        status = CASE WHEN status IN ('dispatching', 'running') THEN 'cancelled' ELSE status END,
-       worktree_path = NULL,
-       branch = NULL,
-       provider = NULL,
-       tmux_session = NULL,
        completed_at = CASE
          WHEN status IN ('dispatching', 'running') THEN COALESCE(completed_at, ?)
          ELSE completed_at
@@ -2324,7 +2320,7 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 }
 
 /**
- * Terminal tasks that still hold a worktree (a `done` task awaiting reclaim, or a
+ * Terminal tasks that still hold resources (a task awaiting reclaim, or a
  * failed-but-alive dispatch). Loaded regardless of the recent cap so their live
  * resources are always reconciled on start rather than orphaned once newer terminal
  * tasks push them past the cap.
@@ -2332,7 +2328,9 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 export function loadResourceHoldingTerminalTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status IN ('done','failed') AND worktree_path IS NOT NULL`,
+      `SELECT * FROM tasks
+       WHERE status IN ('done','failed','cancelled')
+         AND (worktree_path IS NOT NULL OR tmux_session IS NOT NULL)`,
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);

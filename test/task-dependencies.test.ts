@@ -2147,10 +2147,10 @@ test("manual session reuse cannot complete the task from the discarded episode",
   const discarded = registry.getTask("manually-assigned");
   assert.equal(discarded?.status, "cancelled");
   assert.equal(discarded?.sessionId, null);
-  assert.equal(discarded?.worktreePath, null);
-  assert.equal(discarded?.branch, null);
-  assert.equal(discarded?.provider, null);
-  assert.equal(discarded?.tmuxSession, null);
+  assert.equal(discarded?.worktreePath, cwd);
+  assert.equal(discarded?.branch, "feat/task-work");
+  assert.equal(discarded?.provider, "git");
+  assert.equal(discarded?.tmuxSession, "manual-reuse-task");
   assert.ok(discarded?.completedAt);
   assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
@@ -2159,10 +2159,32 @@ test("manual session reuse cannot complete the task from the discarded episode",
   const persisted = restarted.getTask("manually-assigned");
   assert.equal(persisted?.status, "cancelled");
   assert.equal(persisted?.sessionId, null);
-  assert.equal(persisted?.worktreePath, null);
-  assert.equal(persisted?.branch, null);
-  assert.equal(persisted?.provider, null);
-  assert.equal(persisted?.tmuxSession, null);
+  assert.equal(persisted?.worktreePath, cwd);
+  assert.equal(persisted?.branch, "feat/task-work");
+  assert.equal(persisted?.provider, "git");
+  assert.equal(persisted?.tmuxSession, "manual-reuse-task");
+  restarted.removeTask("manually-assigned");
+});
+
+test("failed cleanup keeps cancelled task resource ownership durable", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(baseTask({
+    id: "failed-cleanup-owner",
+    status: "cancelled",
+    repoRoot: "/missing/resource-owner-repo",
+    worktreePath: "/missing/resource-owner-worktree",
+    branch: "harness/failed-cleanup-owner",
+    provider: "git",
+  }));
+
+  const result = await tasks.reclaim("failed-cleanup-owner");
+  assert.equal(result.ok, false);
+  const retained = registry.getTask("failed-cleanup-owner");
+  assert.equal(retained?.worktreePath, "/missing/resource-owner-worktree");
+  assert.equal(retained?.branch, "harness/failed-cleanup-owner");
+  assert.equal(retained?.provider, "git");
+  registry.removeTask("failed-cleanup-owner");
 });
 
 test("a dependency follows its work episode from the default branch", () => {
@@ -2604,6 +2626,76 @@ test("a hookless session and its active task cannot become new dependencies", ()
     }),
     /no observable work lifecycle/,
   );
+  registry.removeTask("hookless-active-task");
+});
+
+test("running and dispatching tasks require a non-exited live session", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  for (const status of ["running", "dispatching"] as const) {
+    const id = `stale-${status}-dependency`;
+    registry.upsertTask(baseTask({ id, status }));
+    assert.throws(
+      () => tasks.create({
+        ...createInput,
+        title: `Wait for stale ${status}`,
+        backlog: true,
+        dependencies: [{ type: "task", taskId: id }],
+      }),
+      /neither backlogged nor active/,
+    );
+  }
+
+  const sessionId = "exited-resource-owner";
+  const taskId = "exited-resource-task";
+  const cwd = "/repo/exited-resource-task";
+  registry.upsertTask(baseTask({
+    id: taskId,
+    status: "running",
+    worktreePath: cwd,
+    branch: "harness/exited-resource-task",
+    provider: "git",
+    tmuxSession: "exited-resource-home",
+  }));
+  registry.applyDiscovery([discovered(sessionId, cwd)]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "exited-resource-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask(taskId)!, sessionId });
+  registry.bindTaskToWorkEpisode(taskId, sessionId);
+  const liveDependent = tasks.create({
+    ...createInput,
+    title: "Wait while resource owner is live",
+    backlog: true,
+    dependencies: [{ type: "task", taskId }],
+  });
+  assert.equal(liveDependent.dependencies[0]?.type, "task");
+
+  registry.applyDiscovery([]);
+  assert.equal(registry.getSession(sessionId)?.state, "exited");
+  assert.throws(
+    () => tasks.create({
+      ...createInput,
+      title: "Wait after resource owner exits",
+      backlog: true,
+      dependencies: [{ type: "task", taskId }],
+    }),
+    /neither backlogged nor active/,
+  );
+  const stale = registry.getTask(taskId);
+  assert.equal(stale?.worktreePath, cwd);
+  assert.equal(stale?.branch, "harness/exited-resource-task");
+  assert.equal(stale?.provider, "git");
+  assert.equal(stale?.tmuxSession, "exited-resource-home");
+  registry.removeTask(liveDependent.id);
+  registry.removeTask(taskId);
+  registry.removeTask("stale-running-dependency");
+  registry.removeTask("stale-dispatching-dependency");
 });
 
 test("a scout dependency waits for its merged PR, while dependency cycles are refused", async () => {

@@ -13,7 +13,16 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // (Setting the legacy HARNESS_HOME also exercises the backward-compat env path.)
 const home = mkdtempSync(join(tmpdir(), "mission-db-"));
 process.env.HARNESS_HOME = home;
-const { openDb, upsertTask, getTask, listTasks, loadActiveTasks, loadRecentTerminalTasks, deleteTask } =
+const {
+  openDb,
+  upsertTask,
+  getTask,
+  listTasks,
+  loadActiveTasks,
+  loadRecentTerminalTasks,
+  loadResourceHoldingTerminalTasks,
+  deleteTask,
+} =
   await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 
@@ -100,6 +109,23 @@ test("loadRecentTerminalTasks returns finished tasks newest-first, bounded", () 
   assert.equal(recent[0]?.id, "done-new"); // most recent by updated_at
 });
 
+test("resource-holding cancelled tasks rehydrate until cleanup completes", () => {
+  upsertTask(mkTask({
+    id: "cancelled-resource-owner",
+    status: "cancelled",
+    worktreePath: "/wt/cancelled",
+    branch: "harness/cancelled",
+    provider: "git",
+    tmuxSession: "cancelled-home",
+  }));
+  const loaded = loadResourceHoldingTerminalTasks().find(
+    (task) => task.id === "cancelled-resource-owner",
+  );
+  assert.equal(loaded?.worktreePath, "/wt/cancelled");
+  assert.equal(loaded?.tmuxSession, "cancelled-home");
+  deleteTask("cancelled-resource-owner");
+});
+
 test("a finished task rehydrates into a fresh Registry (recent outcomes survive restart)", () => {
   upsertTask(mkTask({ id: "tDone", status: "done", outcome: "shipped", updatedAt: 5000 }));
   const r = new Registry();
@@ -135,14 +161,16 @@ test("the in-memory task map is bounded: terminal tasks are trimmed to the recen
   assert.equal(r.getTask("bulk-0"), undefined, "oldest terminal task is evicted from memory");
 });
 
-test("prune never evicts a failed-but-alive task that still holds a worktree", () => {
+test("prune never evicts terminal tasks that still hold resources", () => {
   const r = new Registry();
   // Oldest by updatedAt, but it holds a live worktree, so it must survive.
   r.upsertTask(mkTask({ id: "alive-fail", status: "failed", worktreePath: "/wt/alive", updatedAt: 1 }));
+  r.upsertTask(mkTask({ id: "cancelled-home", status: "cancelled", tmuxSession: "alive-home", updatedAt: 2 }));
   for (let i = 0; i < 60; i++) {
     r.upsertTask(mkTask({ id: `done-${i}`, status: "done", updatedAt: 1000 + i }));
   }
   assert.ok(r.getTask("alive-fail"), "a failed task with a worktree is never evicted");
+  assert.ok(r.getTask("cancelled-home"), "a cancelled task with a terminal home is never evicted");
 });
 
 test("a backlog task (no worktree) never decorates a session", () => {

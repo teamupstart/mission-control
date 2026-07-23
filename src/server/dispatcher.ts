@@ -495,16 +495,33 @@ export async function teardownWorktree(task: {
     // Hand the lease back to the pool. Never fall back to `git worktree remove` for
     // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
     // and leak the lease. If return fails, leave it for the pool to reconcile.
-    await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    const returned = await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    if (returned.code !== 0) {
+      throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
+    }
     return;
   }
-  await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
+  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
     timeoutMs: 30000,
   });
+  if (removed.code !== 0) {
+    const repo = await run("git", ["-C", task.repoRoot, "rev-parse", "--is-inside-work-tree"]);
+    if (repo.code !== 0 || existsSync(task.worktreePath)) {
+      throw new Error(`git worktree remove failed: ${removed.stderr.trim() || `exit ${removed.code}`}`);
+    }
+  }
   // Our git-fallback trees sit on a throwaway `harness/…` branch; drop it so a
   // retry of the same task can recreate it. Never touch a non-harness branch.
   if (task.branch && task.branch.startsWith("harness/")) {
-    await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], { timeoutMs: 15000 });
+    const deleted = await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], {
+      timeoutMs: 15000,
+    });
+    if (deleted.code !== 0) {
+      const exists = await run("git", ["-C", task.repoRoot, "show-ref", "--verify", `refs/heads/${task.branch}`]);
+      if (exists.code === 0) {
+        throw new Error(`git branch delete failed: ${deleted.stderr.trim() || `exit ${deleted.code}`}`);
+      }
+    }
   }
 }
 

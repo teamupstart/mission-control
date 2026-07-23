@@ -149,11 +149,14 @@ export class TaskManager {
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
-      // running/failed/done only when they still hold a worktree to check/reclaim.
+      // terminal tasks only when they still hold resources to check/reclaim.
       const needsReconcile =
         t.status === "dispatching" ||
-        (Boolean(t.worktreePath) &&
-          (t.status === "running" || t.status === "failed" || t.status === "done"));
+        ((Boolean(t.worktreePath) || Boolean(t.tmuxSession)) &&
+          (t.status === "running" ||
+            t.status === "failed" ||
+            t.status === "done" ||
+            t.status === "cancelled"));
       if (needsReconcile) void this.reconcileOnStartup(t);
     }
   }
@@ -283,11 +286,11 @@ export class TaskManager {
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
-          const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
+          const eligible = target.status === "backlog" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
           }
-          if (activeSession && !activeSession.hooksSeen && !previousEdge) {
+          if (target.status !== "backlog" && activeSession && !activeSession.hooksSeen && !previousEdge) {
             throw new TaskDependencyError("dependency task has no observable work lifecycle");
           }
           dependency = {
@@ -910,7 +913,13 @@ export class TaskManager {
     }
     // Re-read before tearing down so we don't miss resources a concurrent dispatch
     // created during the kill above. teardownWorktree also kills the tmux session.
-    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    const teardownTarget = this.registry.getTask(id) ?? t;
+    let teardownError: string | null = null;
+    try {
+      await teardownWorktree(teardownTarget);
+    } catch (error) {
+      teardownError = error instanceof Error ? error.message : String(error);
+    }
 
     // Merge onto the LATEST snapshot, not a stale one, so we don't resurrect fields
     // the dispatcher patched during the awaits.
@@ -919,14 +928,16 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "cancelled",
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      tmuxSession: null,
+      worktreePath: teardownError === null ? null : cur.worktreePath,
+      branch: teardownError === null ? null : cur.branch,
+      provider: teardownError === null ? null : cur.provider,
+      tmuxSession: teardownError === null ? null : cur.tmuxSession,
       completedAt: now,
       updatedAt: now,
     });
-    return { ok: true };
+    return teardownError === null
+      ? { ok: true }
+      : { ok: false, error: `task cancelled, but its resources remain tracked: ${teardownError}` };
   }
 
   /**
@@ -959,7 +970,14 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    try {
+      await teardownWorktree(this.registry.getTask(id) ?? t);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     const cur = this.registry.getTask(id) ?? t;
     this.registry.upsertTask({
       ...cur,
@@ -981,7 +999,16 @@ export class TaskManager {
     }
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
-    if (t.worktreePath) await teardownWorktree(t).catch(() => {});
+    if (t.worktreePath || t.tmuxSession) {
+      try {
+        await teardownWorktree(t);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
     this.registry.removeTask(id);
     return { ok: true };
   }
@@ -1012,16 +1039,30 @@ export class TaskManager {
           updatedAt: Date.now(),
         });
       }
-      return; // running / failed / done stay as loaded; their session re-binds by cwd
+      return; // resource-holding tasks stay loaded; live sessions re-bind by cwd
     }
-    // The agent is gone - reclaim its worktree. A `done` task keeps its status and
-    // outcome (its work was already recorded); everything else becomes `failed`.
-    await teardownWorktree(t).catch(() => {});
+    // The agent is gone - reclaim its worktree. Terminal tasks keep their status and outcome.
+    try {
+      await teardownWorktree(t);
+    } catch (error) {
+      const now = Date.now();
+      this.registry.upsertTask({
+        ...t,
+        status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
+        error:
+          t.status === "done" || t.status === "cancelled"
+            ? t.error
+            : `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        sessionId: null,
+        updatedAt: now,
+      });
+      return;
+    }
     this.registry.upsertTask({
       ...t,
-      status: t.status === "done" ? "done" : "failed",
+      status: t.status === "done" || t.status === "cancelled" ? t.status : "failed",
       error:
-        t.status === "done"
+        t.status === "done" || t.status === "cancelled"
           ? t.error
           : t.status === "dispatching"
             ? "dispatch interrupted by a restart - re-dispatch"

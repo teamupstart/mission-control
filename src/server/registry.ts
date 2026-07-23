@@ -419,8 +419,7 @@ export class Registry extends EventEmitter {
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
-    // Always load terminal tasks that still hold a worktree (done-awaiting-reclaim
-    // or failed-but-alive) so their live resources get reconciled, even if newer
+    // Always load terminal tasks that still hold resources so they get reconciled, even if newer
     // terminal tasks would push them past the recent cap.
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
@@ -1626,10 +1625,6 @@ export class Registry extends EventEmitter {
           ...task,
           sessionId: null,
           status: active ? "cancelled" : task.status,
-          worktreePath: null,
-          branch: null,
-          provider: null,
-          tmuxSession: null,
           completedAt: active ? task.completedAt ?? at : task.completedAt,
           updatedAt: Math.max(task.updatedAt, at),
         });
@@ -3090,7 +3085,7 @@ export class Registry extends EventEmitter {
     // a worktree + tmux session and decorates its live card, so it must never be
     // evicted (that would orphan its resources and drop the card's chip).
     const evictable = [...this.tasks.values()].filter(
-      (t) => isTerminalTask(t.status) && !t.worktreePath,
+      (t) => isTerminalTask(t.status) && !t.worktreePath && !t.tmuxSession,
     );
     if (evictable.length <= RECENT_TERMINAL_TASKS) return;
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);

@@ -617,13 +617,13 @@ satisfied, ignoring unrelated changes.
 cumulative whenever the agent does not commit. `client.transcript(id, turns = 48)` and its route
 take only a turn count, so a 48-turn window can span three items.
 
-Anchor on a **byte offset**, not a timestamp or uuid. `readTranscriptWindow` reads a bounded head
-(`WINDOW_HEAD_BYTES`, 128KB) plus a tail with the middle elided, so *filtering that window* by `ts`
-would silently drop an item's earliest turns whenever its work exceeds the tail - precisely the
-turns that establish what the agent set out to do. The transcript is append-only and the SSE handler
-already seeks by byte position (`transcript.ts:432`), so store the file size at delivery as
-`transcript_anchor` and have `?since=<offset>` **read forward from it**, bounded by its own cap.
-That is an O(1) seek, a hard bound on window size, and exact item scoping.
+Anchor on a **byte offset**, not a timestamp or uuid. The ordinary window keeps opening and recent
+turns with the middle elided, so *filtering that window* by `ts` would silently drop an item's
+earliest turns whenever its work exceeds the tail - precisely the turns that establish what the
+agent set out to do. The transcript is append-only and the SSE handler already seeks by byte
+position, so store the file size at delivery as `transcript_anchor` and have `?since=<offset>`
+**read forward from it**. That is an O(1) seek and exact item scoping; the forward read keeps up to
+48 turns and stops scanning at 16 MB.
 
 Guard the anchor: if the file is now **shorter** than the offset the transcript was reset (a
 `/clear`) and the anchor is meaningless - escalate as a verify-infrastructure failure rather than

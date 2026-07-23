@@ -769,9 +769,9 @@ test("triageSession: an empty window still allows the SAFE directions (escalate)
 });
 
 test("triageSession: the window is bounded to TIER1_TURNS, so old history can't force an escalation", async () => {
-  // The endpoint's `turns` is only a byte-bound hint - under its byte budget it returns the
-  // file WHOLE - so a session that once mentioned `.env` forty turns ago would otherwise
-  // escalate every routine ask for the rest of its life, collapsing Tier 1's only disposal.
+  // A small transcript can come back whole, so a session that once mentioned `.env` forty
+  // turns ago would otherwise escalate every routine ask for the rest of its life,
+  // collapsing Tier 1's only disposal.
   const old = Array.from({ length: 30 }, (_, i) => msg(`Turn ${i}: I'll read the API key from .env to wire auth.`));
   const recent = Array.from({ length: TIER1_TURNS }, () => msg("Running the unit tests for the refactor."));
   const out = await triageSession(
@@ -867,12 +867,12 @@ test("triageSession: the denylist scan does NOT reach back into the goal turns",
 
 // ---- the daemon's TRUNCATED (head+tail) response shape ----
 //
-// Over its byte budget the endpoint returns the opening turns followed by the closing ones with
-// the middle elided, and the tail's turn count is byte-bounded - so it can yield FEWER turns
-// than the head. Slicing back from the end of that array lands inside the opening, which is why
-// the recent turns are taken forward from `headCount` instead. These cover the shape directly.
+// A truncated response holds the opening turns followed by the closing ones with the middle
+// elided. A short conversation or the scan ceiling can leave the tail smaller than requested,
+// so slicing back from the end can land inside the opening. The recent turns are therefore
+// taken forward from `headCount`. These cover the shape directly.
 
-/** The daemon's truncated response: `head` opening turns, then a short byte-bounded tail. */
+/** The daemon's truncated response: `head` opening turns, then a short tail. */
 function splitWindow(head: TranscriptMessage[], tail: TranscriptMessage[]) {
   return { messages: [...head, ...tail], truncated: true, headCount: head.length };
 }

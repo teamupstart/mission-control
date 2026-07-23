@@ -1946,25 +1946,15 @@ earns two surfaces a card has nowhere to put:
 
 ## How much conversation you see
 
-The Conversation panel opens on the session's **last 80 turns**, then streams new ones as
-the agent writes them. Reading a one-shot window elsewhere - Foreman's reviewer, the
-queue's verifier, the goal refiner - gets the opening turns plus the recent ones, with the
-middle marked elided.
+The Conversation panel opens on up to the session's **last 80 turns**, then streams new
+ones as the agent writes them. Its reader widens the transcript scan until it finds that
+many turns or reaches the 16 MB scan ceiling, so tool output and reasoning records in a
+Codex rollout do not crowd the conversation out of a fixed byte window.
 
-Those are **turn** counts, and that is the point. Transcripts are read by seeking into a
-file that is often megabytes, so every read is bounded - but the bound is how many turns to
-find, not how many bytes to look at. The difference is the whole ballgame across harnesses:
-a Claude transcript spends ~98% of its bytes on records that *are* turns, while a Codex
-rollout spends 99.7% of its on tool output and reasoning. A fixed byte window that holds a
-comfortable screen of Claude's conversation held **six turns of a twenty-six turn Codex
-session** - and because opening a card (or any reconnect, so any daemon restart) replaces
-the panel with that read, it looked exactly like a session losing its own history. The read
-now widens until it has the turns, so what you see is bounded by the count you asked for on
-either harness.
-
-Two ceilings still apply, and both are honest about themselves. A single read stops at
-16 MB, and a window that dropped the middle of a conversation says so rather than
-presenting head and tail as contiguous.
+One-shot context readers such as Foreman's reviewer and the goal refiner keep the opening
+turns plus the most recent ones, and mark the middle as elided when necessary. The work
+queue's verifier instead reads forward from the item's delivery point, keeps up to 48
+recent turns, and reports when it had to drop an older prefix.
 
 ## Message formatting
 

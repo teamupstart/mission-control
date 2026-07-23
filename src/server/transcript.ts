@@ -11,11 +11,11 @@ import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 // Reading a line-per-record (JSONL) transcript, with NO knowledge of what a record
 // looks like.
 //
-// Everything here is about BYTES: which slice of a possibly-multi-MB file to read for
-// the opening turns, the recent turns, or the turns appended since an offset - none of
-// which depends on whose transcript it is. What a line MEANS is the harness's business,
-// supplied as a `parse` function, so a second JSONL-writing agent is a parser and a
-// `narration` reader rather than a second copy of the windowing.
+// Everything here is about which BYTES to read to satisfy a turn budget: opening turns,
+// recent turns, or turns appended since an offset. None of that depends on whose
+// transcript it is. What a line MEANS is the harness's business, supplied as a `parse`
+// function, so a second JSONL-writing agent is a parser and a `narration` reader rather
+// than a second copy of the windowing.
 //
 // `jsonlMessages` builds the `TranscriptMessages` capability from those two pieces. A
 // harness whose record is not one-JSON-object-per-line implements the interface itself;
@@ -23,13 +23,13 @@ import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 // twice.
 
 const NL = 0x0a; // "\n"
-/** Bytes to read from the tail for a live stream's initial history. */
+/** Starting byte guess for a live stream's initial history. */
 const INIT_TAIL_BYTES = 512 * 1024;
 /** Cap on how many turns a live stream sends on connect. */
 const INIT_LIMIT = 80;
-/** Head bytes to scan for the opening turns (the session's original goal). */
+/** Starting byte guess for the opening turns (the session's original goal). */
 const WINDOW_HEAD_BYTES = 128 * 1024;
-/** Tail bytes to scan for the recent context (the pending question). */
+/** Starting byte guess for the recent context (the pending question). */
 const WINDOW_TAIL_BYTES = 384 * 1024;
 /** First guess at a `since` window, so one long-running item can't return a whole file. */
 const SINCE_MAX_BYTES = 512 * 1024;
@@ -161,8 +161,9 @@ export type JsonlMessagesSpec = {
 /**
  * Build the `TranscriptMessages` capability over a one-record-per-line file.
  *
- * Every read here is bounded: a multi-MB transcript is never parsed in full, on any
- * path, because these run on a poll tick and behind an SSE stream.
+ * Initial, head/tail, and forward-from-offset reads grow only to `MAX_SCAN_BYTES`.
+ * Appended stream reads start at the last reported offset, so they parse only newly
+ * completed records.
  */
 export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
   const { narration } = spec;

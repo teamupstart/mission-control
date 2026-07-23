@@ -200,11 +200,11 @@ export function buildVerifyPrompt(input: VerifyInput): string {
   // Capped like the diff and the standards beside it, and it needs to be for a reason this
   // change created: the deleted private renderer printed every tool call as `[object Object]`,
   // about fifteen characters, so the transcript block could not grow no matter what ran.
-  // Rendering them properly restores up to TOOL_INPUT_CAP (1800) per call with no per-window
-  // count bound, over a source window capped only at 512KB - so a long item could add several
-  // hundred KB on top of the 120KB diff, on every verify. The header says so when it bites,
-  // exactly as the diff's does, because a verifier silently judging a truncated record is the
-  // failure this whole file keeps guarding against.
+  // Rendering them properly restores up to TOOL_INPUT_CAP (1800) per call. Even a source
+  // window capped at 48 turns can therefore exceed the prompt budget when those turns carry
+  // several tools. The header says so when it bites, exactly as the diff's does, because a
+  // verifier silently judging a truncated record is the failure this whole file guards
+  // against.
   const transcript = formatTranscript(input.transcript, "(no transcript turns for this item)");
   lines.push(
     input.transcriptTruncated || transcript.length > TRANSCRIPT_CAP
@@ -243,4 +243,3 @@ export function buildVerifyPrompt(input: VerifyInput): string {
 function capped(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}\n… (truncated)` : s;
 }
-

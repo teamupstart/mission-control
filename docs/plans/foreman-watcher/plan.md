@@ -79,12 +79,11 @@ For sessions that reach here there IS an answerable surface (an `input` review, 
 with a pane, or a parked no-mistakes gate - the last is why backstop 4 below has to exist).
 Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
 but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). The
-endpoint's `turns` turned out to be a *byte*-bound hint rather than a turn bound - under its byte
-budget `readTranscriptWindow` returns the file whole - so the real bound is applied client-side in
-`triageSession`, which also keeps the opening turns so the Purpose still describes what the session
-is *for* rather than its last ten minutes. The denylist scan stays narrower than that (the recent
-turns only), since its patterns over-match by design. A narrow routing prompt asks Haiku to *bucket*
-the ask, not solve it:
+endpoint targets that many recent turns but may also return the opening turns, or a small transcript
+whole, so `triageSession` applies the exact recent bound client-side. It keeps the opening turns in
+the prompt so the Purpose still describes what the session is *for* rather than its last ten
+minutes. The denylist scan stays narrower than that (the recent turns only), since its patterns
+over-match by design. A narrow routing prompt asks Haiku to *bucket* the ask, not solve it:
 
 - `human-only` (design fork, unclear intent, product preference) ⇒ `escalate` or `skip`; Haiku
   writes the Purpose. No Opus call.

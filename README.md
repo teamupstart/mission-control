@@ -763,7 +763,9 @@ exposes six tools:
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
 - `create_task(title, intent, dependsOnTaskIds?, dependsOnCurrentSession?)` - add a ship task
   for the current repo to the backlog with the default agent/model/effort, returning its id so
-  later tasks can carry durable dependency edges
+  later tasks can carry durable dependency edges. The calling agent is usually standing in a
+  worktree; the task is filed against the **repo that owns it** - see [A task's repo is the
+  repo, not the worktree](#a-tasks-repo-is-the-repo-not-the-worktree)
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other") and can dismiss a stale set without
@@ -890,6 +892,26 @@ the grid mid-thought without losing it. The draft is cleared only once the task 
 dispatched or queued, or when you hit **Clear** to start a fresh one - either way the form
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
+
+### A task's repo is the repo, not the worktree
+
+Every path that files a task - the dispatch form, the MCP
+[`create_task`](#review-channel-mcp) tool, an edit to a shelved task, a [task
+source](#task-sources-pulling-work-into-the-backlog) sweep - resolves what you give it to
+the **main checkout**. A linked worktree resolves to the repo that owns it, so an agent
+calling `create_task` from `~/.treehouse/<repo>-<hash>/16/<repo>` files against `<repo>`.
+
+That walk-back is what makes the rest of the app agree with itself. A task's repo is what
+[Foreman's allowlist](#foreman-auto-responder) is asked about before autopilot will
+schedule it, and the allowlist names repos you chose - never a pooled tree, which no
+operator has ever seen the path of. Store the worktree and the item is in no trusted repo,
+so it is passed over on every tick, silently and forever, while the popover's ready count
+(which ignores the allowlist by design) still counts it. A pooled tree is also *reclaimed*
+and handed to the next agent, so the row would outlive the directory it named.
+
+A root that **cannot** be walked back to a main checkout - a `.git` that points somewhere
+with no owning repo, like a submodule or a relocated git dir - is refused with `400 not a
+repo's main checkout` naming the path, rather than written and never scheduled.
 
 ### Hand a shelved task to an agent that's already running
 

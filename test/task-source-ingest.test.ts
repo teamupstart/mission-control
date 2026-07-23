@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SweepResult, TaskCandidate, TaskSourceInstance } from "../src/shared/task-source.ts";
 import type { CreateTaskInput, TaskManager } from "../src/server/tasks.ts";
+// `import type` only - it is erased, so it cannot pull `repos.ts` in ahead of the
+// HARNESS_HOME preamble below the way a value import would.
+import type { TaskRepoRoot } from "../src/server/repos.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 // What is at stake: this is the file that makes the task-source interface safe to hand
@@ -95,9 +98,15 @@ function fakeTasks(): TaskManager {
   } as unknown as TaskManager;
 }
 
-/** `/repo` and its children are checkouts; nothing else is. Stands in for the git call. */
-const resolveRepoRoot = async (p: string): Promise<string | null> =>
-  p.startsWith("/repo") ? p : null;
+/**
+ * `/repo` and its children are main checkouts; nothing else is. Stands in for the git
+ * call, refusal sentence and all - the ingest loop reports whatever the resolver says,
+ * so the stub returns the same shape rather than a boolean the loop would have to word.
+ */
+const resolveRepoRoot = async (p: string): Promise<TaskRepoRoot> =>
+  p.startsWith("/repo")
+    ? { ok: true, repoRoot: p }
+    : { ok: false, error: `not a git repository: ${p}` };
 
 const deps = { resolveRepoRoot };
 

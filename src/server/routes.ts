@@ -155,7 +155,7 @@ import {
 import { resetSession } from "./reset.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
-import { listRepos, resolveRepoRoot } from "./repos.ts";
+import { listRepos, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   listSessionFiles,
@@ -925,8 +925,11 @@ export function buildApp(
       dependsOnTaskIds,
       dependsOnCurrentSession,
     } = parsed.data;
-    const repoRoot = await resolveRepoRoot(requestedRoot);
-    if (!repoRoot) return c.json({ error: `not a git repository: ${requestedRoot}` }, 400);
+    // The door this matters most at: the caller is an agent, and it passes its own cwd,
+    // which for every session we dispatch is a pooled worktree. See `resolveTaskRepoRoot`.
+    const resolved = await resolveTaskRepoRoot(requestedRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    const repoRoot = resolved.repoRoot;
 
     const dependencies: TaskDependencyInput[] = dependsOnTaskIds.map((taskId) => ({
       type: "task",
@@ -1878,8 +1881,9 @@ export function buildApp(
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const repoRoot = await resolveRepoRoot(parsed.data.repoRoot);
-    if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.repoRoot}` }, 400);
+    const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    const repoRoot = resolved.repoRoot;
     let task;
     try {
       task = tasks.create({ ...parsed.data, repoRoot });
@@ -1907,13 +1911,13 @@ export function buildApp(
     // priority change would be refused on the strength of a path the edit never touched,
     // under an error message about git that names neither the field nor the task.
     if (patch.repoRoot !== undefined && patch.repoRoot !== tasks.get(id)?.repoRoot) {
-      const resolved = await resolveRepoRoot(patch.repoRoot);
-      if (!resolved) return c.json({ error: `not a git repository: ${patch.repoRoot}` }, 400);
+      const resolved = await resolveTaskRepoRoot(patch.repoRoot);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
       // Assigned in place rather than spread as `{...patch, repoRoot}`: that spread names
       // the key even when it is undefined, and `isAnnotationOnlyUpdate` counts KEYS - so a
       // priority-only patch would look like it touched the repo and get refused on any
       // task that had already been dispatched.
-      patch.repoRoot = resolved;
+      patch.repoRoot = resolved.repoRoot;
     }
     const r = await tasks.update(id, patch);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);

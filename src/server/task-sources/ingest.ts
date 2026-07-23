@@ -6,7 +6,7 @@ import type {
   TaskSourceInstance,
 } from "@shared/task-source.ts";
 import { inTransaction, recordTaskSourceSeen, seenExternalIds } from "../db.ts";
-import { resolveRepoRoot } from "../repos.ts";
+import { resolveTaskRepoRoot, type TaskRepoRoot } from "../repos.ts";
 import type { TaskManager } from "../tasks.ts";
 
 // Everything a task source does NOT get to do. A source returns candidates; this decides
@@ -18,8 +18,8 @@ import type { TaskManager } from "../tasks.ts";
 
 /** The seams a test replaces. Nothing here is a policy choice; they are the I/O. */
 export interface IngestDeps {
-  /** Validate a candidate's repo is a git root. The dispatch route's own check. */
-  resolveRepoRoot?: (p: string) => Promise<string | null>;
+  /** Validate a candidate's repo is a repo's main checkout. The dispatch route's own check. */
+  resolveRepoRoot?: (p: string) => Promise<TaskRepoRoot>;
   /** What this source has already filed. */
   seen?: (sourceId: string) => Set<string>;
   /** Remember that it has filed this one. */
@@ -36,8 +36,9 @@ export interface IngestDeps {
  *
  *  1. Drop anything already seen, keyed `(sourceId, externalId)` against
  *     `task_source_seen` - NOT against the live tasks. A task you deleted stays deleted.
- *  2. Resolve and validate `repoRoot` through the same `resolveRepoRoot` the dispatch
- *     route uses, so a source cannot file against a path that is not a git repo.
+ *  2. Resolve and validate `repoRoot` through the same `resolveTaskRepoRoot` the dispatch
+ *     route uses, so a source cannot file against a path that is not a repo's main
+ *     checkout - not a non-repo, and not a worktree the scheduler could never act on.
  *  3. Normalize through `DispatchSchema`, so `normalizeLabels` and the priority enum
  *     apply to a machine-authored task exactly as to a typed one.
  *  4. Cap at `maxPerSweep` and SAY what was dropped - a silent truncation reads as
@@ -56,7 +57,7 @@ export async function ingestSweep(
   tasks: TaskManager,
   deps: IngestDeps = {},
 ): Promise<SweepReport> {
-  const resolve = deps.resolveRepoRoot ?? resolveRepoRoot;
+  const resolve = deps.resolveRepoRoot ?? resolveTaskRepoRoot;
   const seenOf = deps.seen ?? seenExternalIds;
   const remember = deps.remember ?? recordTaskSourceSeen;
   const transaction = deps.transaction ?? inTransaction;
@@ -98,13 +99,17 @@ export async function ingestSweep(
   }
 
   for (const c of admitted) {
-    // 2. A path that is not a git root, refused here rather than discovered later by a
-    //    dispatcher half-way through cutting a worktree.
-    const repoRoot = await resolve(c.repoRoot);
-    if (!repoRoot) {
-      report.refused.push(`${c.ref.externalId}: not a git repository: ${c.repoRoot}`);
+    // 2. A path that is not a repo's main checkout, refused here rather than discovered
+    //    later by a dispatcher half-way through cutting a worktree - or, for a worktree
+    //    path, never discovered at all, since the scheduler would simply pass the row
+    //    over forever. The refusal is reported, not swallowed: `refused` is what the
+    //    panel shows, so a misconfigured source says so instead of sweeping up nothing.
+    const resolved = await resolve(c.repoRoot);
+    if (!resolved.ok) {
+      report.refused.push(`${c.ref.externalId}: ${resolved.error}`);
       continue;
     }
+    const repoRoot = resolved.repoRoot;
 
     // 3. The same validation a typed task gets, from the same schema. A source is not
     //    trusted to have capped its labels or to have invented a priority level.

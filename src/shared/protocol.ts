@@ -1935,7 +1935,10 @@ export const WorkflowEvidenceRefSchema = z.object({
 export const WorkflowRequestedChangeSchema = z.object({
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
-  evidence: z.array(WorkflowEvidenceRefSchema).max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
+  evidence: z
+    .array(WorkflowEvidenceRefSchema)
+    .min(1)
+    .max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
 });

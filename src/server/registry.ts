@@ -464,6 +464,15 @@ export class Registry extends EventEmitter {
     return () => this.off("event", fn);
   }
 
+  onSessionsObserved(fn: () => void): () => void {
+    if (this.sweptSessions) {
+      fn();
+      return () => {};
+    }
+    this.once("sessions_observed", fn);
+    return () => this.off("sessions_observed", fn);
+  }
+
   /**
    * Fired when a hook PROVED a session's agent just ran `gh pr create`.
    *
@@ -547,6 +556,7 @@ export class Registry extends EventEmitter {
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
     // so this is the moment the session map starts meaning anything. See `sessionsObserved`.
+    const firstSweep = !this.sweptSessions;
     this.sweptSessions = true;
 
     for (const d of discovered) {
@@ -600,6 +610,7 @@ export class Registry extends EventEmitter {
     // only here to keep a QUIET fleet honest - "today" has to roll over at midnight, and the
     // recent rate has to fall back to zero when the exports stop.
     if (now - this.lastFleetCostAt >= FLEET_COST_IDLE_INTERVAL_MS) this.recomputeFleetCost(now);
+    if (firstSweep) this.emit("sessions_observed");
   }
 
   /**

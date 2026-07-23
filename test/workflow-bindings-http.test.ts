@@ -127,6 +127,7 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
           headSha: "abc",
           transcriptPath: null,
           transcriptSize: 1,
+          repositoryFingerprint: "repository",
         },
       };
     },
@@ -263,6 +264,34 @@ test("positive disappearance orphans, compatible reattach is explicit, and conve
   await workflows.stop();
 });
 
+test("the first completed discovery orphans bindings whose sessions disappeared during downtime", async () => {
+  const registry = new Registry();
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.store.insertBinding({
+    id: "binding-missing-at-startup",
+    workflowVersionId: "v",
+    noteKey: "missing-conversation",
+    sessionId: "missing-session",
+    sessionAgent: "claude",
+    sessionName: "gone",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 7,
+    now: 1,
+  });
+  workflows.start();
+  assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.state, "active");
+
+  registry.applyDiscovery([]);
+
+  assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.state, "orphaned");
+  assert.equal(workflows.store.getBinding("binding-missing-at-startup")?.sessionId, null);
+  await workflows.stop();
+});
+
 test("resubmit fingerprints are durable, unchanged confirmation reuses its trigger, and Persona fails cannot use infrastructure retry", async () => {
   const persona = {
     sourcePersonaId: "persona-repair",
@@ -300,7 +329,11 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
       return JSON.stringify({
         verdict: "fail",
         summary: "Needs changes",
-        requestedChanges: [{ title: "Fix it", rationale: "Not complete", evidence: [] }],
+        requestedChanges: [{
+          title: "Fix it",
+          rationale: "Not complete",
+          evidence: [{ kind: "goal", quote: "Immutable goal" }],
+        }],
         confidence: 1,
       });
     },
@@ -343,6 +376,7 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
           headSha: "abc",
           transcriptPath: null,
           transcriptSize: 1,
+          repositoryFingerprint: "repository",
         },
       };
     },

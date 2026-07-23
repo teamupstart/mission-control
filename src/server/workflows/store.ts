@@ -1665,21 +1665,25 @@ export class WorkflowStore {
           idempotent: true,
         };
       }
+      const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
+      if (!latest || latest.state !== "error") {
+        throw new Error(`Workflow node ${failed.nodeId} has no latest infrastructure failure`);
+      }
       this.insertAttempt({
         id: attemptId,
         submissionId,
-        nodeId: failed.nodeId,
-        attempt: failed.attempt + 1,
+        nodeId: latest.nodeId,
+        attempt: latest.attempt + 1,
         state: "queued",
-        persona: failed.persona,
-        inputFingerprint: failed.inputFingerprint,
+        persona: latest.persona,
+        inputFingerprint: latest.inputFingerprint,
         now,
       });
       this.setSubmissionState(submissionId, "running", now);
       this.setRunState(runId, "running", "persona_review", null, now);
       this.appendEvent(runId, "manual_infrastructure_retry", {
         requestId,
-        nodeAttemptId: failed.id,
+        nodeAttemptId: latest.id,
       }, now);
       return {
         run: this.mustRun(runId),

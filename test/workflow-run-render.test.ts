@@ -4,6 +4,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { WorkflowRunDetail } from "../src/shared/workflow.ts";
 import { WorkflowRunView } from "../src/web/workflows/WorkflowRuns.tsx";
+import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
+import type { Session } from "../src/shared/types.ts";
+import type { WorkflowBinding } from "../src/shared/workflow.ts";
 
 const detail: WorkflowRunDetail = {
   summary: {
@@ -191,4 +194,28 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.match(html, /Open session/);
   assert.match(html, /persona verdict/);
   assert.doesNotMatch(html, />Send</);
+});
+
+test("binding selection reuses only the requested immutable version", () => {
+  const session = {
+    id: "session",
+    state: "idle",
+    agent: "claude",
+    cwd: "/repo",
+    repoRoot: "/repo",
+  } as Session;
+  const binding = {
+    id: "binding",
+    workflowVersionId: "version-one",
+    state: "active",
+    sessionId: "session",
+  } as WorkflowBinding;
+
+  assert.equal(
+    workflowBindingSelection([binding], session, "version-one").existing?.id,
+    "binding",
+  );
+  const mismatch = workflowBindingSelection([binding], session, "version-two");
+  assert.equal(mismatch.existing, undefined);
+  assert.equal(mismatch.conflict?.id, "binding");
 });

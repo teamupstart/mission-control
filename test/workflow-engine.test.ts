@@ -208,7 +208,11 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
         ? JSON.stringify({
             verdict: "fail",
             summary: "Needs repair",
-            requestedChanges: [{ title: "Fix it", rationale: "Intent is not met", evidence: [] }],
+            requestedChanges: [{
+              title: "Fix it",
+              rationale: "Intent is not met",
+              evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
+            }],
             confidence: 0.8,
           })
         : JSON.stringify({
@@ -355,7 +359,7 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
   const first = store.manualInfrastructureRetry(
     "run-infra",
     "submission-infra",
-    failed,
+    attempts[0]!,
     "retry-request",
     "manual-retry-attempt",
     20,
@@ -370,11 +374,100 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
   );
   assert.equal(first.idempotent, false);
   assert.equal(repeated.idempotent, true);
-  assert.equal(store.listAttempts("submission-infra").filter((attempt) => attempt.nodeId === "p").length, 4);
+  assert.deepEqual(
+    store.listAttempts("submission-infra")
+      .filter((attempt) => attempt.nodeId === "p")
+      .map((attempt) => attempt.attempt)
+      .sort((a, b) => a - b),
+    [1, 2, 3, 4],
+  );
   assert.equal(store.addReceipt("submission-infra", "p-pass", failed.id, { outcome: "pass" }, 22), true);
   assert.equal(
     store.addReceipt("submission-infra", "p-pass", "manual-retry-attempt", { outcome: "pass" }, 23),
     false,
+  );
+});
+
+test("manual infrastructure retry reactivates concurrent audit-only Personas", async () => {
+  const retryGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "failing", kind: "persona", persona: persona("failing", "Failing", "claude", "FAIL_THREE"), position: { x: 100, y: 0 } },
+      { id: "slow", kind: "persona", persona: persona("slow", "Slow", "codex", "SLOW_ONCE"), position: { x: 100, y: 100 } },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 50 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 50 } },
+    ],
+    edges: [
+      { id: "s-failing", source: "session", sourcePort: "submitted", target: "failing", targetPort: "activate" },
+      { id: "s-slow", source: "session", sourcePort: "submitted", target: "slow", targetPort: "activate" },
+      { id: "failing-pass", source: "failing", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "failing-fail", source: "failing", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "slow-pass", source: "slow", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "slow-fail", source: "slow", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("concurrent-retry", retryGraph);
+  const engine = new WorkflowEngine(store);
+  engine.activateSubmission("submission-concurrent-retry");
+  const firstFailing = store.latestAttemptForNode("submission-concurrent-retry", "failing")!;
+  store.finishAttempt(firstFailing.id, { state: "error", error: "provider unavailable" }, 10);
+  store.insertAttempt({
+    id: "failing-attempt-2",
+    submissionId: "submission-concurrent-retry",
+    nodeId: "failing",
+    attempt: 2,
+    state: "error",
+    persona: firstFailing.persona,
+    inputFingerprint: firstFailing.inputFingerprint,
+    error: "provider unavailable",
+    now: 11,
+  });
+  const exhausted = store.insertAttempt({
+    id: "failing-attempt-3",
+    submissionId: "submission-concurrent-retry",
+    nodeId: "failing",
+    attempt: 3,
+    state: "error",
+    persona: firstFailing.persona,
+    inputFingerprint: firstFailing.inputFingerprint,
+    error: "provider unavailable",
+    now: 12,
+  });
+  const slow = store.latestAttemptForNode("submission-concurrent-retry", "slow")!;
+  store.finishAttempt(slow.id, {
+    state: "cancelled",
+    error: "Audit-only result after the submission stopped",
+  }, 13);
+  store.setSubmissionState("submission-concurrent-retry", "failed", 14);
+  store.setRunState(
+    "run-concurrent-retry",
+    "blocked",
+    "infrastructure_error",
+    { nodeId: "failing" },
+    14,
+  );
+  store.manualInfrastructureRetry(
+    "run-concurrent-retry",
+    "submission-concurrent-retry",
+    exhausted,
+    "retry-concurrent",
+    "retry-concurrent-attempt",
+    20,
+  );
+  engine.activateSubmission("submission-concurrent-retry");
+
+  assert.deepEqual(
+    store.listAttempts("submission-concurrent-retry")
+      .filter((attempt) => attempt.nodeId === "slow")
+      .sort((a, b) => a.attempt - b.attempt)
+      .map((attempt) => [attempt.attempt, attempt.state]),
+    [[1, "cancelled"], [2, "queued"]],
+  );
+  assert.equal(
+    store.latestAttemptForNode("submission-concurrent-retry", "failing")?.attempt,
+    4,
   );
 });
 

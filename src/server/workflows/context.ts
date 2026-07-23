@@ -70,6 +70,7 @@ export interface WorkflowCaptureRead {
     headSha: string | null;
     transcriptPath: string | null;
     transcriptSize: number | null;
+    repositoryFingerprint: string;
   };
 }
 
@@ -160,16 +161,14 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
   return messages.map(transcriptDecision).filter((item): item is WorkflowHumanDecision => item !== null);
 }
 
-function reviewDecision(review: ReviewItem): WorkflowHumanDecision {
+export function workflowReviewDecision(review: ReviewItem): WorkflowHumanDecision {
   const response = review.response?.trim() || null;
   const answered = review.kind === "input" || review.kind === "plan-decisions";
-  const decision = answered
-    ? [
-        review.title,
-        review.body,
-        `Answer: ${response ?? review.status}`,
-      ].filter(Boolean).join("\n")
-    : `${review.title}: ${review.status}`;
+  const decision = [
+    review.title,
+    review.body,
+    `${answered ? "Answer" : "Decision"}: ${answered ? response ?? review.status : review.status}`,
+  ].filter(Boolean).join("\n");
   return {
     decision: clip(decision, MAX_DECISION_TEXT),
     rationale: !answered && response ? clip(response, MAX_DECISION_TEXT) : null,
@@ -283,6 +282,45 @@ function standardsDocuments(
   }));
 }
 
+async function readRepositoryEvidence(cwd: string | null): Promise<{
+  diff: Awaited<ReturnType<typeof computeSessionDiff>>;
+  allStatus: string[];
+  status: string[];
+  standards: ReturnType<typeof readStandards>;
+  repositoryFingerprint: string;
+}> {
+  const diff = await computeSessionDiff(cwd);
+  if (!diff.ok) {
+    throw new Error(`Could not capture repository diff: ${diff.error ?? "unknown error"}`);
+  }
+  const statusResult = await run("git", ["-C", cwd!, "status", "--porcelain=v1"], {
+    timeoutMs: 15_000,
+  });
+  if (statusResult.code !== 0) {
+    throw new Error(`Could not capture repository status: ${statusResult.stderr.trim() || "git status failed"}`);
+  }
+  const allStatus = statusResult.stdout.split("\n").filter(Boolean).slice(0, MAX_STATUS);
+  const status = boundedStrings(
+    allStatus.map((item) => clip(item, MAX_STATUS_LINE)),
+    MAX_STATUS_BYTES,
+    MAX_STATUS,
+  );
+  const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
+  const repositoryFingerprint = sha(JSON.stringify({
+    headSha: diff.headSha,
+    patch: diff.patch,
+    patchTruncated: diff.truncated,
+    status,
+    standardsTruncated: standards.truncated,
+    standards: standardsDocuments(standards.docs).map((doc) => ({
+      path: doc.path,
+      fingerprint: doc.fingerprint,
+      truncated: doc.truncated,
+    })),
+  }));
+  return { diff, allStatus, status, standards, repositoryFingerprint };
+}
+
 function sourceFingerprint(context: WorkflowContextSnapshot): string {
   return sha(JSON.stringify({
     rawGoal: context.primaryGoal.rawPrompt,
@@ -331,21 +369,15 @@ export async function readWorkflowContextRaw(
     truncated: false,
     headCount: 0,
   };
-  const diff = await computeSessionDiff(session.cwd);
-  const statusResult = session.cwd
-    ? await run("git", ["-C", session.cwd, "status", "--porcelain=v1"], { timeoutMs: 15_000 })
-    : null;
-  const allStatus = statusResult?.code === 0
-    ? statusResult.stdout.split("\n").filter(Boolean).slice(0, MAX_STATUS)
-    : [];
-  const status = boundedStrings(
-    allStatus.map((item) => clip(item, MAX_STATUS_LINE)),
-    MAX_STATUS_BYTES,
-    MAX_STATUS,
-  );
-  const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
+  const {
+    diff,
+    allStatus,
+    status,
+    standards,
+    repositoryFingerprint,
+  } = await readRepositoryEvidence(session.cwd);
   const decisions = boundedDecisions([
-    ...loadResolvedWorkflowReviews(session.id).map(reviewDecision),
+    ...loadResolvedWorkflowReviews(session.id).map(workflowReviewDecision),
     ...registry.listEpisodes(session.id)
       .filter((episode) => episode.resolvedBy === "you")
       .map((episode): WorkflowHumanDecision => ({
@@ -405,6 +437,7 @@ export async function readWorkflowContextRaw(
       headSha: diff.headSha,
       transcriptPath: located?.path ?? null,
       transcriptSize: located?.read.size(located.path) ?? null,
+      repositoryFingerprint,
     },
   };
 }
@@ -433,9 +466,7 @@ export async function captureBoundaryChanged(
   const located = sessionMessages(session);
   const size = located?.read.size(located.path) ?? null;
   if ((located?.path ?? null) !== boundary.transcriptPath || size !== boundary.transcriptSize) return true;
-  const head = session.cwd
-    ? await run("git", ["-C", session.cwd, "rev-parse", "--short", "HEAD"], { timeoutMs: 15_000 })
-    : null;
-  const headSha = head?.code === 0 && head.stdout.trim() ? head.stdout.trim() : null;
-  return headSha !== boundary.headSha;
+  const repository = await readRepositoryEvidence(session.cwd);
+  return repository.diff.headSha !== boundary.headSha
+    || repository.repositoryFingerprint !== boundary.repositoryFingerprint;
 }

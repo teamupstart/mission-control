@@ -18,6 +18,29 @@ export interface WorkflowBindingTarget {
   bindingDefaults?: WorkflowBindingDefaults;
 }
 
+export function workflowBindingSelection(
+  bindings: WorkflowBinding[],
+  session: Session | null,
+  versionId: string,
+): { existing: WorkflowBinding | undefined; conflict: WorkflowBinding | undefined } {
+  if (!session) return { existing: undefined, conflict: undefined };
+  const candidate = bindings.find((binding) =>
+    binding.state !== "archived"
+    && (
+      binding.sessionId === session.id
+      || (
+        binding.state !== "active"
+        && binding.sessionAgent === session.agent
+        && binding.sessionCwd === session.cwd
+        && binding.sessionRepoRoot === session.repoRoot
+      )
+    ));
+  if (!candidate) return { existing: undefined, conflict: undefined };
+  return candidate.workflowVersionId === versionId
+    ? { existing: candidate, conflict: undefined }
+    : { existing: undefined, conflict: candidate };
+}
+
 export function WorkflowBindingDialog({
   target,
   sessions,
@@ -80,29 +103,21 @@ export function WorkflowBindingDialog({
     versionId,
   ]);
   const session = live.find((item) => item.id === sessionId) ?? null;
-  const existing = useMemo(() => {
-    if (!session) return undefined;
-    return bindings.find((binding) =>
-      binding.state !== "archived"
-      && (
-        binding.sessionId === session.id
-        || (
-          binding.state !== "active"
-          && binding.sessionAgent === session.agent
-          && binding.sessionCwd === session.cwd
-          && binding.sessionRepoRoot === session.repoRoot
-        )
-      ));
-  }, [bindings, session]);
+  const { existing, conflict } = useMemo(
+    () => workflowBindingSelection(bindings, session, versionId),
+    [bindings, session, versionId],
+  );
   const canSubmit = Boolean(
     sessionId
     && (versionId || existing)
+    && !conflict
     && Number.isInteger(maxRepairRounds)
     && maxRepairRounds >= 1
     && maxRepairRounds <= 20,
   );
 
   const create = async (): Promise<WorkflowBinding | null> => {
+    if (conflict) throw new Error("This conversation is bound to a different immutable workflow version");
     if (existing?.state === "active") return existing;
     if (existing) {
       const reattached = await workflowRequest<WorkflowBinding>(`/api/workflow-bindings/${existing.id}/reattach`, {
@@ -178,7 +193,7 @@ export function WorkflowBindingDialog({
       </label>
       <label>
         Published workflow
-        <select value={versionId} disabled={busy || Boolean(target.workflowVersionId) || Boolean(existing)} onChange={(event) => setVersionId(event.target.value)}>
+        <select value={versionId} disabled={busy || Boolean(target.workflowVersionId)} onChange={(event) => setVersionId(event.target.value)}>
           <option value="">Choose a published version</option>
           {target.workflowVersionId &&
             !publishable.some((workflow) => workflow.currentVersionId === target.workflowVersionId) && (
@@ -230,6 +245,12 @@ export function WorkflowBindingDialog({
         <p className="workflow-binding-existing">
           {existing.state === "active" ? "Already bound" : `Ready to reattach (${existing.state})`}
           {" "}to version {existing.workflowVersionId.slice(0, 8)}.
+        </p>
+      )}
+      {conflict && (
+        <p className="persona-error" role="alert">
+          This conversation is already bound to immutable version {conflict.workflowVersionId.slice(0, 8)}.
+          Archive that binding before selecting another version.
         </p>
       )}
       {session && (

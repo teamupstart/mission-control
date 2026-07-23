@@ -193,12 +193,13 @@ export class WorkflowEngine {
         const target = graph.nodes.find((node) => node.id === edge.target);
         if (!target) continue;
         if (target.kind === "persona") {
-          if (!this.store.latestAttemptForNode(submission.id, target.id)) {
+          const latest = this.store.latestAttemptForNode(submission.id, target.id);
+          if (!latest || latest.state === "cancelled") {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: submission.id,
               nodeId: target.id,
-              attempt: 1,
+              attempt: (latest?.attempt ?? 0) + 1,
               state: "queued",
               persona: target.persona,
               inputFingerprint: `${submission.evidenceFingerprint}:${target.id}`,

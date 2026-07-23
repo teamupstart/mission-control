@@ -27,7 +27,7 @@ test("Persona verdicts discriminate pass and fail and clamp bounded model values
       (_, index) => ({
         title: `change ${index}`,
         rationale: "needed",
-        evidence: [],
+        evidence: [{ kind: "goal", quote: "required behavior" }],
         line: -10,
       }),
     ),
@@ -41,6 +41,12 @@ test("Persona verdicts discriminate pass and fail and clamp bounded model values
   );
   assert.equal(fail?.summary.length, WORKFLOW_EXECUTION_LIMITS.verdictSummary);
   assert.equal(fail?.verdict === "fail" ? fail.requestedChanges[0]?.line : null, 1);
+  assert.equal(normalizePersonaVerdict({
+    verdict: "fail",
+    summary: "unsupported",
+    requestedChanges: [{ title: "change", rationale: "needed", evidence: [] }],
+    confidence: 1,
+  }), null);
 });
 
 test("malformed model output is an infrastructure parse failure, never a fail verdict", () => {
@@ -57,7 +63,7 @@ test("malformed model output is an infrastructure parse failure, never a fail ve
     requestedChanges: Array.from({ length: 20 }, (_, index) => ({
       title: `change ${index}`,
       rationale: "x".repeat(4_000),
-      evidence: [],
+      evidence: [{ kind: "goal", quote: "required behavior" }],
     })),
     confidence: 1,
   })), null);

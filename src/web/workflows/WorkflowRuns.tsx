@@ -264,20 +264,32 @@ export function WorkflowRuns({
   const ordered = useMemo(() => [...runs].sort((a, b) => b.updatedAt - a.updatedAt), [runs]);
   const [detail, setDetail] = useState<WorkflowRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
   const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedUpdatedAt = ordered.find((run) => run.id === selected)?.updatedAt ?? null;
-  const load = (): void => {
+  const load = (clear = false): void => {
+    const generation = ++loadGeneration.current;
+    if (clear) setDetail(null);
     if (!selected) {
       setDetail(null);
       return;
     }
     setError(null);
     void workflowRequest<WorkflowRunDetail>(`/api/workflow-runs/${selected}`)
-      .then(setDetail)
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not load workflow run"));
+      .then((next) => {
+        if (loadGeneration.current === generation) setDetail(next);
+      })
+      .catch((caught) => {
+        if (loadGeneration.current !== generation) return;
+        setDetail(null);
+        setError(caught instanceof Error ? caught.message : "Could not load workflow run");
+      });
   };
-  useEffect(load, [selected, selectedUpdatedAt]);
+  useEffect(() => {
+    load(true);
+    return () => { loadGeneration.current++; };
+  }, [selected, selectedUpdatedAt]);
 
   const mutate = async (path: string, body: object): Promise<boolean> => {
     setError(null);

@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { WorkflowBinding } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
 process.env.MISSION_HOME = home;
@@ -11,11 +14,15 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const {
   captureStableWorkflowContext,
+  captureBoundaryChanged,
   compactWorkflowContext,
   fallbackWorkflowContext,
   humanTranscriptDecisions,
+  readWorkflowContextRaw,
+  workflowReviewDecision,
   workflowContextFingerprint,
 } = await import("../src/server/workflows/context.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -93,6 +100,23 @@ test("source fingerprints are deterministic and ignore compaction prose", () => 
   );
 });
 
+test("resolved plan decisions preserve the reviewed plan and response", () => {
+  const decision = workflowReviewDecision({
+    id: "plan-review",
+    sessionId: "session",
+    kind: "plan",
+    title: "Implementation plan",
+    body: "1. Keep the stable API\n2. Add recovery coverage",
+    status: "approved",
+    response: "Proceed without changing the wire format",
+    createdAt: 1,
+    resolvedAt: 2,
+  });
+  assert.match(decision.decision, /Keep the stable API/);
+  assert.match(decision.decision, /Decision: approved/);
+  assert.equal(decision.rationale, "Proceed without changing the wire format");
+});
+
 test("stable capture retries one changed boundary and blocks a second change", async () => {
   let reads = 0;
   const stable = await captureStableWorkflowContext(
@@ -109,6 +133,77 @@ test("stable capture retries one changed boundary and blocks a second change", a
   );
   assert.equal(stale, null);
   assert.equal(reads, 2);
+});
+
+test("repository capture fails closed and detects worktree evidence changes", async () => {
+  const repo = join(home, "evidence-repo");
+  mkdirSync(repo);
+  const git = (...args: string[]): void => {
+    execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+  };
+  git("init", "-b", "main");
+  git("config", "user.email", "workflow@example.com");
+  git("config", "user.name", "Workflow Test");
+  writeFileSync(join(repo, "file.txt"), "one\n");
+  git("add", "file.txt");
+  git("commit", "-m", "initial");
+
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "evidence-session",
+    agent: "claude",
+    name: "evidence",
+    nameSource: "process",
+    cwd: repo,
+    gitBranch: "main",
+    gitRoot: repo,
+    repoRoot: repo,
+    nomistakesGated: false,
+    pid: 1,
+    tty: "ttys-evidence",
+    terminals: [],
+    startedAt: 1,
+  } as DiscoveredSession]);
+  const session = registry.getSession("evidence-session")!;
+  const binding = {
+    id: "evidence-binding",
+    sessionId: session.id,
+    noteKey: noteKeyFor(session),
+  } as WorkflowBinding;
+  const captured = await readWorkflowContextRaw(registry, binding);
+  assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), false);
+
+  writeFileSync(join(repo, "file.txt"), "two\n");
+
+  assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), true);
+
+  const missing = join(home, "not-a-repository");
+  mkdirSync(missing);
+  const unavailableRegistry = new Registry();
+  unavailableRegistry.applyDiscovery([{
+    syntheticId: "unavailable-session",
+    agent: "claude",
+    name: "unavailable",
+    nameSource: "process",
+    cwd: missing,
+    gitBranch: null,
+    gitRoot: null,
+    repoRoot: null,
+    nomistakesGated: false,
+    pid: 2,
+    tty: "ttys-unavailable",
+    terminals: [],
+    startedAt: 1,
+  } as DiscoveredSession]);
+  const unavailableSession = unavailableRegistry.getSession("unavailable-session")!;
+  await assert.rejects(
+    readWorkflowContextRaw(unavailableRegistry, {
+      id: "unavailable-binding",
+      sessionId: unavailableSession.id,
+      noteKey: noteKeyFor(unavailableSession),
+    } as WorkflowBinding),
+    /Could not capture repository diff/,
+  );
 });
 
 test("compaction preserves raw intent and visibly degrades on infrastructure failure", async () => {

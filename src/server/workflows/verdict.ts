@@ -20,7 +20,7 @@ const EvidenceInputSchema = z.object({
 const RequestedChangeInputSchema = z.object({
   title: z.string(),
   rationale: z.string(),
-  evidence: z.array(EvidenceInputSchema),
+  evidence: z.array(EvidenceInputSchema).min(1),
   path: z.string().optional(),
   line: z.number().finite().optional(),
 });

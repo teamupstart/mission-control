@@ -107,6 +107,7 @@ export interface WorkflowManagerOptions {
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
   private unsubscribe: (() => void) | null = null;
+  private discoveryUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
 
   constructor(
@@ -163,12 +164,20 @@ export class WorkflowManager {
         }
       });
     }
+    if (!this.discoveryUnsubscribe) {
+      this.discoveryUnsubscribe = this.registry.onSessionsObserved(() => {
+        this.discoveryUnsubscribe = null;
+        this.reconcileBindingsAfterDiscovery();
+      });
+    }
     this.engine.start();
   }
 
   async stop(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.discoveryUnsubscribe?.();
+    this.discoveryUnsubscribe = null;
     await this.engine.stop();
   }
 
@@ -600,16 +609,26 @@ export class WorkflowManager {
         message: "Manual retry is available only for an exhausted infrastructure attempt",
       };
     }
+    const latestFailed = failed
+      ? this.store.latestAttemptForNode(submission.id, failed.nodeId)
+      : null;
+    if (!latestFailed || latestFailed.state !== "error") {
+      return {
+        ok: false,
+        reason: "not_infrastructure_failure",
+        message: "The selected Persona no longer has an infrastructure failure to retry",
+      };
+    }
     const retried = this.store.manualInfrastructureRetry(
       run.id,
       submission.id,
-      failed,
+      latestFailed,
       input.requestId,
       randomUUID(),
       now,
     );
     this.publishRun(run.id);
-    this.engine.wake();
+    this.engine.activateSubmission(submission.id);
     return {
       ok: true,
       value: { run: retried.run, submission: retried.submission },
@@ -828,6 +847,21 @@ export class WorkflowManager {
   private captureIsActive(runId: string, submissionId: string): boolean {
     return this.store.getRun(runId)?.status === "capturing"
       && this.store.getSubmission(submissionId)?.status === "capturing";
+  }
+
+  private reconcileBindingsAfterDiscovery(): void {
+    for (const binding of this.store.listBindings()) {
+      if (binding.state !== "active") continue;
+      const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+      const updated = !session || session.state === "exited"
+        ? this.store.orphanBinding(binding.id, "session_disappeared")
+        : binding.noteKey !== noteKeyFor(session)
+          ? this.store.pauseBinding(binding.id, "conversation_changed")
+          : null;
+      if (!updated) continue;
+      const run = this.store.activeRunForBinding(updated.id);
+      if (run) this.publishRun(run.id);
+    }
   }
 
   private async withCaptureLock<T>(noteKey: string, fn: () => Promise<T>): Promise<T> {

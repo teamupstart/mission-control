@@ -42,6 +42,9 @@ function request(
   sessionId: string,
   marker: string,
   completionKind: "drain" | "prompted" = "drain",
+  expectedGoal: string | null = completionKind === "prompted"
+    ? "Finish the prompted workflow"
+    : null,
 ) {
   return app.request(`/api/sessions/${sessionId}/workflow-completion`, {
     method: "POST",
@@ -51,6 +54,7 @@ function request(
       marker,
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
+      expectedGoal,
     }),
   });
 }
@@ -300,6 +304,19 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(heldPrompted.status, 409);
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
   db.prepare(`UPDATE foreman_queues SET prompted_goal = NULL WHERE note_key = 'prompted'`).run();
+  const stalePrompted = await request(
+    app,
+    "prompted",
+    "d".repeat(64),
+    "prompted",
+    "The prompt the verifier actually judged",
+  );
+  assert.equal(stalePrompted.status, 409);
+  assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
+  const stalePromptedGuard = db.prepare(
+    `SELECT prompted_goal FROM foreman_queues WHERE note_key = 'prompted'`,
+  ).get() as { prompted_goal: string | null };
+  assert.equal(stalePromptedGuard.prompted_goal, null);
   const retriedPrompted = await request(app, "prompted", "e".repeat(64), "prompted");
   assert.equal(retriedPrompted.status, 200);
   const promptedBody = await retriedPrompted.json() as { claimed: boolean; runId: string; state: string };

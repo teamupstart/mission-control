@@ -58,6 +58,8 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
   });
   assert.equal(prompted.completionKind, "prompted");
   assert.equal(prompted.marker.length, 64);
+  assert.equal(prompted.expectedGoal, "repair");
+  assert.equal(drain.expectedGoal, null);
 });
 
 test("claimed suppresses, explicit false falls through, and HTTP failure is fail closed", async () => {

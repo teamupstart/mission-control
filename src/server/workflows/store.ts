@@ -738,7 +738,7 @@ export interface ForemanCompletionStoreInput {
   marker: string;
   summary: string;
   evidenceFingerprint: string;
-  currentGoal: string | null;
+  expectedGoal: string | null;
   runId: string;
   submissionId: string;
   now: number;
@@ -1525,6 +1525,21 @@ export class WorkflowStore {
         };
       }
 
+      const expectedGoal = input.expectedGoal?.trim() || null;
+      const currentGoal = input.completionKind === "prompted"
+        ? (
+            this.db.prepare(
+              `SELECT prompt FROM session_goals WHERE note_key = ?`,
+            ).get(input.binding.noteKey) as { prompt: string | null } | undefined
+          )?.prompt?.trim() || null
+        : null;
+      if (
+        input.completionKind === "prompted"
+        && (!expectedGoal || currentGoal !== expectedGoal)
+      ) {
+        throw new Error("Foreman prompted completion goal is no longer current");
+      }
+
       let run = this.activeRunForBinding(input.binding.id);
       let submission: WorkflowSubmission | null = null;
       let state: ForemanCompletionStoreResult["result"]["state"] = "blocked";
@@ -1606,7 +1621,7 @@ export class WorkflowStore {
 
       const retired = input.completionKind === "drain"
         ? this.retireDrainGuard(input.binding.noteKey, `workflow:${run.id}`, input.now)
-        : this.retirePromptedGuard(input.binding, input.currentGoal, input.now);
+        : this.retirePromptedGuard(input.binding, currentGoal, input.now);
       if (!retired) {
         throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
       }

@@ -895,7 +895,7 @@ export class WorkflowManager {
       marker: claim.marker,
       summary: claim.summary,
       evidenceFingerprint: claim.evidenceFingerprint,
-      currentGoal: this.registry.getGoal(session.id)?.prompt ?? null,
+      expectedGoal: claim.expectedGoal,
       runId: randomUUID(),
       submissionId: randomUUID(),
       now,

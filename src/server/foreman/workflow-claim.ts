@@ -36,6 +36,7 @@ export function drainCompletionClaim(
     marker: sha256(proof),
     summary: `Foreman queue drained after ${queue.items.length} terminal item${queue.items.length === 1 ? "" : "s"}.`,
     evidenceFingerprint: sha256({ headSha, transcriptAnchor, items: proof.items }),
+    expectedGoal: null,
   };
 }
 
@@ -60,6 +61,7 @@ export function promptedCompletionClaim(input: {
       transcriptAnchor: input.transcriptAnchor,
       summary: input.summary,
     }),
+    expectedGoal: input.goal,
   };
 }
 

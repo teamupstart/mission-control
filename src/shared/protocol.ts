@@ -2181,6 +2181,9 @@ export const WorkflowCompletionClaimSchema = z.object({
   marker: z.string().regex(/^[a-f0-9]{64}$/),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
+  // Optional on the wire only for drain-claim compatibility with an older worker.
+  // A prompted claim without it is refused by the daemon rather than trusted.
+  expectedGoal: z.string().min(1).max(INTENT_MAX).nullable().optional().default(null),
 });
 export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
 

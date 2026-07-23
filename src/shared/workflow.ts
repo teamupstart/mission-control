@@ -311,6 +311,13 @@ export interface WorkflowCompletionClaim {
   marker: string;
   summary: string;
   evidenceFingerprint: string;
+  /**
+   * The prompted episode the verifier judged. Null for drain claims.
+   *
+   * The daemon compares this with its current goal at the same synchronous boundary
+   * that retires the guard, so a newer human prompt cannot inherit an older verdict.
+   */
+  expectedGoal: string | null;
 }
 
 export type WorkflowCompletionClaimResult =

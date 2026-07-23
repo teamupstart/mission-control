@@ -34,7 +34,11 @@ const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
  * panel is careful about.
  */
 const RELOADED = skillsAgents();
-const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a as never));
+const WATCHING = SKILLED.filter((a) => capabilitiesFor(a).skills?.watchesDir);
+const RESTARTED = SKILLED.filter((a) => {
+  const skills = capabilitiesFor(a).skills;
+  return skills && !skills.reloadCommand && !skills.watchesDir;
+});
 /**
  * Where the links actually go, read off the same `homeDir` the reconciler symlinks
  * into. Spelled out rather than said in prose because the operator may want to look:
@@ -130,16 +134,14 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
           </span>
         ))}
         , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
-        ones this app never launched. Running sessions pick them up at their next idle moment,
-        without restarting.
+        ones this app never launched.
         {/*
-          How they pick them up differs by harness, and the difference is worth one clause:
-          a session the dashboard has to type `/reload-skills` into waits for its next idle
-          moment, while one watching its own directory has the skill already. Without this
-          the count below - which only ever names the first kind - reads as though the
-          second is being left out.
+          How they pick them up differs by harness: a reloadable session waits for idle,
+          a watcher notices automatically, and a launch-only harness needs a restart.
         */}
-        {SELF_RELOADING.length > 0 && ` ${agentList(SELF_RELOADING)} sessions watch that directory themselves.`}
+        {RELOADED.length > 0 && ` Running ${agentList(RELOADED)} sessions pick changes up at their next idle moment.`}
+        {WATCHING.length > 0 && ` Changes are picked up automatically by ${agentList(WATCHING)}.`}
+        {RESTARTED.length > 0 && ` For ${agentList(RESTARTED)}, skills load at launch; restart running sessions to pick up changes.`}
       </p>
 
       {error && <p className="settings-error">{error}</p>}

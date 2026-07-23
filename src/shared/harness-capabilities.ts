@@ -80,9 +80,9 @@ export interface SkillsSpec {
    * Do NOT parse what comes back. On a REMOVAL the count correctly dropped (the skill
    * really did unload) while the label still read "(no changes)". The unload is real; the
    * message is not trustworthy. Treat delivery as fire-and-forget.
-   */
+  */
   reloadCommand: string | null;
-  reloadIdleSource: "hooks" | "transcript" | null;
+  watchesDir: boolean;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -252,7 +252,7 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
  */
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
-  reloadIdleSource: "hooks",
+  watchesDir: false,
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -296,12 +296,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     permissionModes: null,
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
     // watches that directory itself, so the set it offers changes without anything being
-    // typed at a running session. `reloadCommand: null` is what says so - it is the whole
-    // difference between "this harness has no skills" and "this harness needs no nudge",
-    // and `skillsAgents()` reads it to decide who the pane broadcast is even about.
+    // typed at a running session. `watchesDir` distinguishes that behavior from a harness
+    // that loads only at launch, while `skillsAgents()` selects the pane broadcast.
     skills: {
       reloadCommand: null,
-      reloadIdleSource: null,
+      watchesDir: true,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -355,13 +354,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Verified: pi loads SKILL.md skills (agentskills.io standard) from its own
     // `~/.pi/agent/skills` (probed live) as well as the shared `~/.agents/skills`. Declared
     // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
-    // Codex. `reloadCommand: "/reload"` because pi has that command AND no skills-dir watcher
-    // (measured - no `fs.watch`/`chokidar` on its resource dirs), so a skill symlinked in
-    // mid-session is picked up only on `/reload`. That non-null reloadCommand is what makes pi
-    // the third harness `skillsAgents()`'s return type had to widen for.
+    // Codex. pi has no skills-dir watcher, and without attributable idle evidence Mission
+    // Control cannot safely type its `/reload` command into a live session.
     skills: {
-      reloadCommand: "/reload",
-      reloadIdleSource: "transcript",
+      reloadCommand: null,
+      watchesDir: false,
       dirEnvVar: "PI_SKILLS_DIR",
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
@@ -374,8 +371,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     workQueue: null,
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
-    // summarises rather than clears). Its hookless transcript binding remains on the original
-    // process-start-correlated file, so the cleared context is not reflected in transcript views.
+    // summarises rather than clears). Hookless sessions have no attributable transcript path.
     clearContext: { command: "/new" },
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.
@@ -476,14 +472,9 @@ export function skillLoadingAgents(): AgentType[] {
  * panel by a whole harness; using the other to answer "who do we type at" invents a slash
  * command for a session that would render it as a prompt.
  *
- * Returns `AgentType[]`, not `"claude"[]`: the narrow type hardcoded "only Claude has a reload
- * command", which was true until pi - a third harness with a `/reload` command and no skills
- * watcher - joined the list. That over-narrowing was never a compile error (the predicate was
- * asserted, callers only map the ids to labels), which is exactly why it needed widening by
- * hand. See the Phase 5 finding in `todo/pi-harness.md`.
  */
-export function skillsAgents(): AgentType[] {
-  return AGENT_TYPES.filter((a) => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
+export function skillsAgents(): "claude"[] {
+  return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
 /**

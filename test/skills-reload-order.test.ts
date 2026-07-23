@@ -1,12 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reloadOne, reloadOwed, reloadTargets } from "../src/server/skills/reload.ts";
+import { reloadOne } from "../src/server/skills/reload.ts";
 import type { ReloadDeps } from "../src/server/skills/reload.ts";
 import type { InjectResult } from "../src/server/actions.ts";
 import type { PaneModeLine } from "../src/server/discovery/pane-mode.ts";
 import type { Session } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
-import { HARNESSES } from "../src/server/harness/index.ts";
 
 // What one reload actually DOES, in order. The ordering here is the whole safety
 // argument - read the pane, then ack, then type - and an argument no test can see is
@@ -53,20 +52,6 @@ function spy(over: Partial<ReloadDeps> = {}): { deps: ReloadDeps; log: string[] 
 }
 
 const injecting = (r: InjectResult) => async (): Promise<InjectResult> => r;
-
-async function withPiLocate<T>(
-  locate: (session: Session) => string | null,
-  fn: () => Promise<T> | T,
-): Promise<T> {
-  const transcript = HARNESSES.pi.transcript!;
-  const prior = transcript.locate;
-  transcript.locate = locate;
-  try {
-    return await fn();
-  } finally {
-    transcript.locate = prior;
-  }
-}
 
 test("the pane is read BEFORE anything else - it is the gate, not a formality", async () => {
   const { deps, log } = spy();
@@ -139,72 +124,4 @@ test("exactly one command is typed, and it is the literal /reload-skills", async
   });
   await reloadOne(mkSession(), GEN, PRIOR, deps);
   assert.deepEqual(typed, ["/reload-skills"]);
-});
-
-test("a passive idle pi session is owed and delivered a reload without a TUI read", async () => {
-  await withPiLocate(() => "/pi/current.jsonl", async () => {
-    const session = mkSession({
-      agent: "pi",
-      agentSessionId: null,
-      hooksSeen: false,
-      state: "idle",
-      lastActivity: 1,
-    });
-    const cfg = { enabled: true, skills: {}, generation: GEN, generationAt: 10 };
-    assert.equal(reloadOwed(session, new Map(), cfg), true);
-    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), [session]);
-
-    const typed: string[] = [];
-    const { deps, log } = spy({
-      readModeLine: async () => {
-        throw new Error("pi has no TUI mode line");
-      },
-      inject: async (_session, text) => {
-        typed.push(text);
-        log.push("inject");
-        return { ok: true, pasted: true, submitVerified: false };
-      },
-    });
-    assert.equal(await reloadOne(session, GEN, PRIOR, deps), true);
-    assert.deepEqual(log, [`ack:${GEN}`, "inject"]);
-    assert.deepEqual(typed, ["/reload"]);
-  });
-});
-
-test("a stale passive idle reading cannot reload without a current transcript binding", async () => {
-  let path: string | null = "/pi/current.jsonl";
-  await withPiLocate(() => path, () => {
-    const session = mkSession({
-      agent: "pi",
-      agentSessionId: null,
-      hooksSeen: false,
-      state: "idle",
-      lastActivity: 1,
-    });
-    const cfg = { enabled: true, skills: {}, generation: GEN, generationAt: 10 };
-    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), [session]);
-    path = null;
-    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), []);
-    path = "/pi/rebound.jsonl";
-    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), [session]);
-  });
-});
-
-test("a busy passive session is rejected before transcript lookup", async () => {
-  let located = 0;
-  await withPiLocate(() => {
-    located++;
-    return "/pi/current.jsonl";
-  }, () => {
-    const session = mkSession({
-      agent: "pi",
-      agentSessionId: null,
-      hooksSeen: false,
-      state: "working",
-      lastActivity: 1,
-    });
-    const cfg = { enabled: true, skills: {}, generation: GEN, generationAt: 10 };
-    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), []);
-    assert.equal(located, 0);
-  });
 });

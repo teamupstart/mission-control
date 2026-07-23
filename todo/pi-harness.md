@@ -7,8 +7,9 @@ where it does, that touch is a **finding about the interface**, recorded here an
 not a workaround.
 
 Spiked the way `codex-instrumentation.md` did: establish what the tool exposes before writing
-an adapter. Unlike that spike, pi did not need to be parked - its transcript is fully readable
-off disk, so the core (discover / name / focus / type + transcript) is real, not blocked.
+an adapter. The JSONL format is fully readable, but a hookless process supplies no session id
+that can safely attribute one of those files. The core (discover / name / focus / type) is real;
+transcript-derived state remains unavailable until identity instrumentation exists.
 
 ## What pi is
 
@@ -75,15 +76,14 @@ pi writes one JSON record per line to
   authority-ranked value is `"statusline"`; `"transcript"` means "our passive read of the
   JSONL", which is exactly what pi's is. No shared edit. (Codex has its own `codex-rollout`
   only because its file is not a turn log.)
-- **Identity correlation is conservative.** A known `agentSessionId` matches the UUID in the
-  filename directly. Otherwise `locate` accepts a file only when exactly one filename timestamp
-  falls between two seconds before and fifteen seconds after the process `startedAt`. The result,
-  including null, is cached for that process; `retain` only prunes dead bindings. No newest-file
-  or cwd-occupancy fallback exists.
-- **Hookless limits are visible absence, never guessed ownership.** `/new` is not followed
-  because its new file no longer correlates to process start; `--continue`/`--resume` files with
-  old timestamps and two near-simultaneous same-cwd starts decline. Launch-scoped identity
-  instrumentation like Codex's is what would remove those limits.
+- **Identity correlation is exact or absent.** `locate` binds only when `agentSessionId` equals
+  the UUID in a candidate filename. Positive exact matches are cached; misses are rescanned
+  without reading file contents. There is no timestamp, newest-file, cwd-occupancy, or
+  persistence fallback.
+- **Hookless limits are visible absence, never guessed ownership.** Current pi sessions have no
+  `agentSessionId`, so the dashboard shows no transcript, passive metadata, or passive activity.
+  The parser remains a real capability for a known path and becomes live as soon as a future
+  hook or launch wrapper supplies identity.
 
 ### control - REQUIRED, non-null
 
@@ -100,10 +100,10 @@ pi's extensions are **in-process TypeScript modules** loaded via `--extension` /
 a plugin API (subscribe to lifecycle events, register tools, drive the UI), NOT a shell-out
 hook like Claude's `settings.json` hooks or Codex's launch-scoped `-c hooks.*` overrides. pi
 pushes NOTHING at us through any mechanism we have wired, so `hooks: null` is honest and
-first-class: pi rides the PASSIVE path (discovery + `transcript.passiveRead` + pane), which -
-because its transcript is rich - carries idle/working and runtime meta on its own. Wiring a
-pi extension that POSTs to the daemon is a whole instrumentation project (a TS extension + an
-install/launch mechanism), i.e. the codex-instrumentation follow-on, not the acceptance test.
+first-class. Without the session identity a hook or launch wrapper would carry, discovery
+cannot safely select a transcript for `passiveRead`. Wiring a pi extension that POSTs to the
+daemon is a whole instrumentation project (a TS extension + an install/launch mechanism),
+i.e. the codex-instrumentation follow-on, not the acceptance test.
 
 Consequence, same as an uninstrumented Codex: `workQueue` is null (no pickup/finish signal to
 verify), and the 20s hook wait is skipped.
@@ -157,10 +157,10 @@ not collide with Codex in `skillsDirs()`:
   and `~/.agents/skills`. The reconciler's `skillsDirs()` fold picks pi up with ZERO code
   change (the fold the single-dir version predicted a second declarer would need - pi is the
   third).
-- `reloadCommand: "/reload"` - **verified pi needs a nudge**: it has a `/reload` slash command
-  and NO skills-dir watcher (no `fs.watch`/`chokidar` on the resource dirs). So unlike Codex
-  (which watches, `reloadCommand: null`), a skill symlinked in mid-session is picked up only
-  after `/reload`. This surfaced the `skillsAgents()` and reload-readiness findings below.
+- `reloadCommand: null`, `watchesDir: false` - pi has a `/reload` slash command and no
+  skills-dir watcher, but a hookless session has neither attributable idle evidence nor a
+  readable TUI readiness gate. Mission Control therefore does not type into it autonomously.
+  Skills load at launch; running pi sessions must be restarted to pick up changes.
 - `dirEnvVar: "PI_SKILLS_DIR"`, `isolatedDirName: "pi-skills"`.
 
 ### mcp - null
@@ -174,9 +174,8 @@ exist.
 
 `{ command: "/new" }` - **verified**: `/new` starts a fresh session in-place ("✓ New session
 started", no confirmation prompt), which is pi's equivalent of Claude's `/clear`. (pi also has
-`/compact`, which summarizes rather than clears; there is no `/clear`.) The command clears the
-live agent, but the hookless transcript view remains on its original process-start-correlated
-file; following the new file by cwd would risk attributing a sibling session.
+`/compact`, which summarizes rather than clears; there is no `/clear`.) Hookless sessions have
+no attributable transcript before or after the reset.
 
 ### effort - non-null
 
@@ -203,22 +202,21 @@ qualifier - recorded as a finding.
 
 ## The interface findings (what the acceptance test surfaced)
 
-The CORE holds: pi discovers, names, focuses, types, and renders a rich transcript, ALL
-through declarative registry entries - no `if (agent === "pi")` anywhere, and every remaining
-`agent === "claude"/"codex"` branch (dispatcher's codex launch, codex-rollouts, agents-shadow)
-lets pi fall through correctly. The couplings that remain:
+The CORE holds: pi discovers, names, focuses, and types through declarative registry entries -
+no `if (agent === "pi")` anywhere, and every remaining `agent === "claude"/"codex"` branch
+(dispatcher's codex launch, codex-rollouts, agents-shadow) lets pi fall through correctly.
+The transcript parser is real but correctly degrades to no live binding without identity. The
+couplings that remain:
 
 1. **`PermissionMode` is a closed union of Claude's mode strings.** pi has real approval modes
    that don't fit it. Handled by `permissionModes: null` (visible degradation). The one place
    the Harness axis still bakes in a Claude assumption. NOT fixed here - a legitimate null.
 2. **`ModelIdSchema` rejects `/`,** so pi's provider-scoped ids can't be expressed. Handled
    with bare ids for the picker (dispatch out of scope). NOT fixed here.
-3. **`skillsAgents(): "claude"[]`** hardcoded in its RETURN TYPE that only Claude has a reload
-   command (`SkillsPanel` even carries an `as never` cast to work around it). pi, a third
-   harness that genuinely needs a `/reload` nudge, makes that type a lie - not a compile error
-   (the predicate is asserted, callers only map to labels), but latent unsoundness. **FIXED**:
-   widened to `AgentType[]`. The one genuine shared-logic edit, and exactly the kind of coupling
-   the acceptance test exists to reveal.
+3. **`SkillsSpec` conflated “no reload command” with “watches its directory.”** That was true
+   for Codex but false for pi, which loads at launch and has no safe autonomous reload path.
+   **Fixed** with `watchesDir`: Codex is described as automatic, pi as restart-required, and
+   `skillsAgents()` remains the Claude-only keystroke set.
 4. **`process.title = "pi"`** erases subcommands from `ps`, so `BackgroundSpec` can't exclude
    management commands. Honest `background: {[],[]}`, low/transient risk. Not an interface gap,
    a pi quirk worth stating.
@@ -250,33 +248,28 @@ lets pi fall through correctly. The couplings that remain:
    (`skills-reconcile`, `terminal-home`) were confirmed clean in isolation - concurrent runs in
    this live Mission Control environment had contaminated the bisect.
 
-8. **Skills reload readiness baked in hooks and a readable TUI.** `reloadOwed` hard-gated on
-   `hooksSeen`, and `reloadOne` always required a mode-line read. pi has neither hooks nor a
-   TUI spec, but its passive transcript supplies a real idle/working signal and its keystroke
-   control can deliver `/reload`. **Fixed** by adding `reloadIdleSource` to `SkillsSpec`:
-   `reloadOwed` accepts the declared transcript source, while `reloadNeeded` requires a current
-   attributable transcript binding and `reloadOne` skips the mode-line read only when the
-   harness has no TUI. Claude remains hook-gated and TUI-checked; Codex remains excluded because
-   it has no reload command.
+8. **The existing reload readiness contract correctly rejects hookless pi.** A command existing
+   in pi is not enough to authorize an autonomous keystroke: there is no hook-confirmed idle
+   state, attributable passive transcript, or readable TUI gate. `reloadCommand: null` exposes
+   that degradation; Claude remains hook-gated and mode-line checked byte-for-byte.
 
 9. **`providerModelDefault(AgentType)` conflated the harness and runner axes.** Adding pi
    widened the parameter even though every caller supplies `LlmRunnerId`, allowing a harness
    that is not an offline provider to silently receive Claude's fallback. **Fixed** by narrowing
    the helper to `LlmRunnerId`; harness model catalogs continue to use `AgentType`.
 
-10. **A hookless transcript has no durable reset or resume identity.** Newest-file and
-    live-occupancy heuristics cannot prove ownership: a short-lived `pi --print` sibling can
-    write a persistent file without ever appearing in the live snapshot. **Fixed** by binding
-    filename UUIDs to known agent session ids, otherwise requiring one unambiguous
-    process-start timestamp match and caching that answer for the process lifetime. `/new`,
-    resumed old sessions, and near-simultaneous same-cwd starts now decline or retain the old
-    safe binding instead of guessing; launch instrumentation is the path to fuller coverage.
+10. **A hookless transcript has no provable session identity.** Newest-file, live-occupancy,
+    process-start, delay-window, and persistence heuristics all admit foreign files under
+    ordinary sibling, resume, or `/new` races. **Fixed** by exact filename UUID correlation
+    only. Current hookless sessions visibly lack transcript, meta, activity, and live reload;
+    all four light up when a future hook or launch wrapper supplies `agentSessionId`. This
+    honest degradation is the acceptance test's most valuable finding.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's
-real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid, and its
-transcript resolves to 5 turns with model `gpt-5.5`, 1252 context tokens, activity `working`),
-detection classifies the `pi` process as native off its `process.title`, and after the WRAPPERS
-fix no phantom card survives a multiplexer session named with a `pi` token.
+real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid), detection
+classifies the `pi` process as native off its `process.title`, and after the WRAPPERS fix no
+phantom card survives a multiplexer session named with a `pi` token. The captured transcript
+still proves the parser independently through a known fixture path.
 
 Every implementation touch outside the forced `Record<AgentType,...>` maps and the pi adapter
 is accounted for above, including the reload-readiness contract. The two contract-test lines

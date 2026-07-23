@@ -68,10 +68,10 @@ and get your decision back.
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
   run concurrent, read-only Persona reviews against one immutable evidence snapshot.
-- **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
-  on in Settings and it is linked into each harness's own skills directory, so it applies
-  to **every** Claude Code and Codex session on the machine - including ones this app never
-  launched - without restarting any of them.
+- **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
+  a skill on in Settings and it is linked into each harness's own skills directory, including
+  sessions this app never launched. Claude reloads when idle, Codex watches automatically,
+  and running Pi sessions pick changes up after a restart.
 - **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
   request Mission Control opened once the Inspector has reviewed and **published** on the
   current push with nothing outstanding, CI is green, no thread is unresolved, and it has
@@ -288,7 +288,7 @@ That is why the differences you see are consistent rather than piecemeal. A Code
 draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
 Codex has no mode cycle to walk; its work-queue drawer is available once that session's
 launch-scoped hooks have reported, so [Foreman](#foreman-auto-responder) can observe and
-drive it; and the [skills](#skills-every-session-no-restarts) catalog links a skill into
+drive it; and the [skills](#skills-every-session-mixed-reload-behavior) catalog links a skill into
 each harness's own directory while nudging only the one that needs telling. Where the
 capability *is* there the branch disappears entirely: a **reset** of a Codex checkout clears
 its context with the same `/clear` a Claude one gets, because Codex declares that command too.
@@ -313,10 +313,10 @@ Adding a third agent means filling that declaration in. The types make it imposs
 add one and quietly inherit Claude's answers, and nothing about it needs a component or a
 stylesheet edited to show up. **Pi** (`@earendil-works/pi-coding-agent`) is that third
 agent, added as the migration's acceptance test: it discovers, names, focuses and takes
-typed input, and renders a rich transcript, all from declaration alone. It is the mirror
-image of Codex - it pushes no hooks (its extensions are in-process, not a shell-out), yet
-its session file reads back as conversation - and it disables what it lacks in the open: no
-MCP client, no work queue without hooks, and no permission-mode chip, because its
+typed input, all from declaration alone. Its session format parses as rich conversation,
+but hookless discovery supplies no identity that can safely bind a live process to one file,
+so transcript-derived state stays absent until instrumentation supplies that id. It disables
+what it lacks in the open: no MCP client, no work queue without hooks, and no permission-mode chip, because its
 `manual`/`auto`/`readonly` approval modes are its own vocabulary rather than the ones the
 chip is built for. The spike and the interface couplings it surfaced are written up in
 `todo/pi-harness.md`.
@@ -1866,18 +1866,18 @@ Two things worth knowing:
   collapses, so attach yours when you're ready to send. (The
   [dispatch form](#dispatch-an-agent) is the one that keeps its attachments across a close.)
 
-## Skills (every session, no restarts)
+## Skills (every session, mixed reload behavior)
 
 Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,
 switch it on, and it applies to **every** session on this machine whose harness has a
-skills directory - including sessions this app never launched - without terminating or
-recreating any of them.
+skills directory - including sessions this app never launched. How a running session notices
+the change depends on its harness.
 
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
-Claude, `~/.agents/skills` for Codex - which is that agent's own loading path; the harness
-never reimplements it.
+Claude, `~/.agents/skills` for Codex, and `~/.pi/agent/skills` for Pi - which is that
+agent's own loading path; the harness never reimplements it.
 
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Its reviewer-ready description contract lives in
@@ -1894,7 +1894,10 @@ Claude session re-reads its directory only when told, so the daemon types `/relo
 into its pane when it next goes quiet. Codex declares no reload command, because it
 watches its own directory - which means a Codex session picks the change up with nothing
 typed at it at all, and is deliberately excluded from the pane broadcast rather than sent a
-slash command that would land in its composer as text.
+slash command that would land in its composer as text. Pi also declares no reload command,
+but for a different reason: it loads skills at launch, has no watcher, and its hookless
+sessions provide no attributable idle evidence that would make an autonomous `/reload`
+keystroke safe. Restart a running Pi session to pick up changes.
 
 Three things worth knowing before you switch one on:
 
@@ -1914,9 +1917,10 @@ Three things worth knowing before you switch one on:
   sits on. "When relevant" means exactly that.
 - **The "N sessions will pick this up" count is about the reload nudge, not about
   reach.** It counts the sessions the daemon will type at, which is the ones whose harness
-  declares a reload command - so it excludes Codex sessions even though the skill is
-  linked where they will read it. Reach is the `skills` capability; the count is the
-  `reloadCommand` one, and they are deliberately different questions.
+  declares a reload command - so it excludes Codex sessions that watch automatically and Pi
+  sessions that require a restart, even though the skill is linked where both will read it.
+  Reach is the `skills` capability; the count is the `reloadCommand` one, and they are
+  deliberately different questions.
 
 ### The daemon is no longer strictly reactive
 
@@ -2529,7 +2533,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
-| `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
+| `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
@@ -2537,7 +2541,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |
-| `PI_SKILLS_DIR` | `~/.pi/agent/skills` | the same override for Pi's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/pi-skills`. Pi loads SKILL.md skills from the same standard as Claude and Codex, so the reconciler links the catalog into this dir too and nudges a live Pi session with `/reload` |
+| `PI_SKILLS_DIR` | `~/.pi/agent/skills` | the same override for Pi's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/pi-skills`. Pi loads SKILL.md skills from the same standard as Claude and Codex, so the reconciler links the catalog into this dir too; Pi has no watcher and must be restarted to pick up changes |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |

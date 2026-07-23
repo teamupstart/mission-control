@@ -12,7 +12,7 @@
 // `agent !== "claude"` in each of them.
 
 import { AGENT_IDENTITY } from "./agent.ts";
-import { skillsAgents } from "./harness-capabilities.ts";
+import { skillLoadingAgents } from "./harness-capabilities.ts";
 
 /**
  * Every prefix the reconciler has ever created a `~/.claude/skills` directory under,
@@ -116,6 +116,6 @@ const ENFORCEMENT_HINT: Record<SkillEnforcement, string> = {
  * a blank where a subject should be.
  */
 export function enforcementHint(rung: SkillEnforcement): string {
-  const who = skillsAgents().map((a) => AGENT_IDENTITY[a].label).join(" / ");
+  const who = skillLoadingAgents().map((a) => AGENT_IDENTITY[a].label).join(" / ");
   return ENFORCEMENT_HINT[rung].replace("{agent}", who || "The agent");
 }

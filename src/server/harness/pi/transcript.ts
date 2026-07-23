@@ -33,7 +33,6 @@ export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
 interface SessionFile {
   path: string;
   id: string;
-  createdAt: number;
 }
 
 function sessionFiles(dir: string): SessionFile[] {
@@ -45,22 +44,18 @@ function sessionFiles(dir: string): SessionFile[] {
   }
   const files: SessionFile[] = [];
   for (const name of entries) {
-    const match = /^(.+)_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
+    const match = /^.+_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
     if (!match) continue;
-    const createdAt = Date.parse(match[1]!);
-    if (!Number.isFinite(createdAt)) continue;
-    files.push({ path: join(dir, name), id: match[2]!, createdAt });
+    files.push({ path: join(dir, name), id: match[1]! });
   }
   return files;
 }
 
-/** A cached lookup for one session (path null = looked, none yet). */
 interface Binding {
   cwd: string;
   sessionsDir: string;
-  agentSessionId: string | null;
-  startedAt: number | null;
-  path: string | null;
+  agentSessionId: string;
+  path: string;
 }
 
 /**
@@ -70,21 +65,17 @@ interface Binding {
  */
 const bindings = new Map<string, Binding>();
 
-function recordBinding(s: Session, sessionsDir: string, path: string | null): void {
+function recordBinding(s: Session, sessionsDir: string, agentSessionId: string, path: string): void {
   bindings.set(s.id, {
     cwd: s.cwd!,
     sessionsDir,
-    agentSessionId: s.agentSessionId,
-    startedAt: s.startedAt,
+    agentSessionId,
     path,
   });
 }
 
-const START_SKEW_MS = 2_000;
-const CREATION_DELAY_MS = 15_000;
-
 export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
-  if (!s.cwd) {
+  if (!s.cwd || !s.agentSessionId) {
     bindings.delete(s.id);
     return null;
   }
@@ -93,29 +84,16 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
   if (
     binding?.cwd === s.cwd &&
     binding.sessionsDir === sessionsDir &&
-    binding.agentSessionId === s.agentSessionId &&
-    binding.startedAt === s.startedAt
+    binding.agentSessionId === s.agentSessionId
   ) {
     return binding.path;
   }
 
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
-  let matches: SessionFile[];
-  if (s.agentSessionId) {
-    matches = files.filter((file) => file.id === s.agentSessionId);
-  } else if (s.startedAt !== null) {
-    const startedAt = s.startedAt;
-    matches = files.filter(
-      (file) =>
-        file.createdAt >= startedAt - START_SKEW_MS &&
-        file.createdAt <= startedAt + CREATION_DELAY_MS,
-    );
-  } else {
-    matches = [];
-  }
-
+  const matches = files.filter((file) => file.id === s.agentSessionId);
   const path = matches.length === 1 ? matches[0]!.path : null;
-  recordBinding(s, sessionsDir, path);
+  if (path) recordBinding(s, sessionsDir, s.agentSessionId, path);
+  else bindings.delete(s.id);
   return path;
 }
 

@@ -48,7 +48,8 @@ test("pi's unsupported capabilities are DECLARED null, not stubbed", () => {
   assert.equal(pi.workQueue, null, "no hooks -> Foreman can't verify pickup/completion");
   // Present, and driving real behaviour.
   assert.equal(pi.clearContext?.command, "/new", "pi clears context in place with /new");
-  assert.equal(pi.skills?.reloadCommand, "/reload", "pi needs a nudge - it has no skills watcher");
+  assert.equal(pi.skills?.reloadCommand, null, "hookless pi cannot be reloaded safely");
+  assert.equal(pi.skills?.watchesDir, false, "pi loads skills only at launch");
   assert.deepEqual(pi.skills?.homeDir, [".pi", "agent", "skills"], "pi's own skills dir");
   assert.equal(pi.control.kind, "keystroke", "a turn is typed into pi's pane");
   assert.equal(pi.control.kind === "keystroke" && pi.control.pastePlaceholder, null,
@@ -89,10 +90,9 @@ test("the project-dir munge matches pi's own session-manager encoding", () => {
 function locateSession(
   id: string,
   cwd: string,
-  startedAt: number | null,
   agentSessionId: string | null = null,
 ): Session {
-  return { id, cwd, startedAt, agentSessionId, transcriptPath: null } as Session;
+  return { id, cwd, startedAt: null, agentSessionId, transcriptPath: null } as Session;
 }
 
 function writeSession(dir: string, id: string, createdAt: number, headerId = id): string {
@@ -108,29 +108,6 @@ function writeSession(dir: string, id: string, createdAt: number, headerId = id)
   );
   return path;
 }
-
-test("a short-lived sibling never replaces the process-start-correlated binding", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
-  const cwd = "/repo";
-  const dir = piProjectDir(cwd, root);
-  mkdirSync(dir, { recursive: true });
-  const startedAt = Date.parse("2026-07-20T10:00:00.000Z");
-  const ownerId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  const siblingId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  try {
-    const ownerPath = writeSession(dir, ownerId, startedAt + 500);
-    const session = locateSession("pi-owner", cwd, startedAt);
-    assert.equal(locatePiTranscript(session, root), ownerPath);
-    const siblingPath = writeSession(dir, siblingId, startedAt + 5_000);
-    assert.notEqual(siblingPath, ownerPath);
-    assert.equal(locatePiTranscript(session, root), ownerPath);
-    piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), ownerPath);
-  } finally {
-    piTranscript.retain?.(new Set());
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test("an agent session id binds the matching filename uuid immediately", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
@@ -148,7 +125,7 @@ test("an agent session id binds the matching filename uuid immediately", () => {
       "different-header-id",
     );
     assert.equal(
-      locatePiTranscript(locateSession("pi-exact", cwd, null, secondId), root),
+      locatePiTranscript(locateSession("pi-exact", cwd, secondId), root),
       secondPath,
     );
   } finally {
@@ -157,7 +134,7 @@ test("an agent session id binds the matching filename uuid immediately", () => {
   }
 });
 
-test("process-start correlation declines when no filename timestamp matches", () => {
+test("a hookless session declines transcript attribution", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
@@ -165,7 +142,7 @@ test("process-start correlation declines when no filename timestamp matches", ()
   const fileId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
     writeSession(dir, fileId, Date.parse("2026-07-20T10:00:00.000Z"));
-    const session = locateSession("pi-no-match", cwd, Date.parse("2026-07-20T11:00:00.000Z"));
+    const session = locateSession("pi-no-identity", cwd);
     assert.equal(locatePiTranscript(session, root), null);
   } finally {
     piTranscript.retain?.(new Set());
@@ -173,21 +150,17 @@ test("process-start correlation declines when no filename timestamp matches", ()
   }
 });
 
-test("process-start correlation declines when two files share its window", () => {
+test("a missing exact match is retried rather than negatively cached", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
-  const startedAt = Date.parse("2026-07-20T10:00:00.000Z");
-  const firstId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  const secondId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
-    writeSession(dir, firstId, startedAt + 500);
-    const secondPath = writeSession(dir, secondId, startedAt + 1_000);
-    const session = locateSession("pi-ambiguous", cwd, startedAt);
+    const session = locateSession("pi-delayed", cwd, sessionId);
     assert.equal(locatePiTranscript(session, root), null);
-    rmSync(secondPath);
-    assert.equal(locatePiTranscript(session, root), null);
+    const path = writeSession(dir, sessionId, Date.parse("2026-07-20T10:00:00.000Z"));
+    assert.equal(locatePiTranscript(session, root), path);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });

@@ -263,14 +263,9 @@ test("a harness with no skills is never owed a reload, however healthy the sessi
 });
 
 test("a harness with skills but NO reload command is owed nothing either", () => {
-  // Codex, which is the reason `reloadCommand` is nullable at all: it watches its skills
-  // directory itself, so the skill arrives (`skillsDirs()` links it there) and no
-  // keystroke is owed. The two halves are separate capabilities, and conflating them
-  // would either type a made-up slash command into a Codex prompt or leave the panel's
-  // counter above zero for a session nothing will ever reload.
   const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
   const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
-  assert.ok(owed.length > 0, "codex is the live proof - if it goes, this needs a fixture");
+  assert.deepEqual(owed, ["codex", "pi"]);
   for (const agent of owed) {
     const s = mkSession({ id: `sk-${agent}`, agent, state: "idle", hooksSeen: true, startedAt: null });
     assert.equal(reloadOwed(s, new Map(), cfg), false);
@@ -282,10 +277,8 @@ test("a harness with skills but NO reload command is owed nothing either", () =>
 test("the reload command comes from the harness, not from a shared constant", () => {
   // It is typed into a live pane, so it has exactly one definition - and that definition
   // is per-harness, which is what stops a second one inheriting Claude's slash vocabulary.
+  assert.deepEqual(skillsAgents(), ["claude"]);
   for (const agent of skillsAgents()) {
-    // `skillsAgents()` returns AgentType now (a third harness, pi, has a reload command too),
-    // so the spec's `reloadCommand` is `string | null` at the type level - but by construction
-    // every agent in this list has a non-null one, which is the invariant asserted here.
     const cmd = capabilitiesFor(agent).skills?.reloadCommand;
     assert.ok(cmd, `${agent} is in skillsAgents() so it must carry a reload command`);
     assert.ok(cmd.startsWith("/"), "a reload command is a slash command");

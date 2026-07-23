@@ -58,9 +58,9 @@ function resolveSettleMs(raw = envVar("SKILLS_SETTLE_MS")): number {
 const SETTLE_MS = resolveSettleMs();
 
 /**
- * The sessions this tick should try to reload. `now` is injected so the policy remains
- * testable as a table; transcript-driven readiness also asks that harness for its current
- * binding before allowing an autonomous keystroke.
+ * The sessions this tick should try to reload. Pure, `now` injected, no I/O - the
+ * discipline `decideQueueTick` holds, and for the same reason: a selector is policy,
+ * so it has to be testable as a table.
  *
  * Cheapest filter first, because step 4 of the gate (reading the pane) costs a
  * subprocess per session per tick and everything here exists to keep it from running.
@@ -86,7 +86,7 @@ export function reloadTargets(
  * Whether a session could EVER pick up the current generation - everything except
  * whether it happens to be ready this instant.
  *
- * The split from `reloadNeeded` is the idle-source / current-state distinction the
+ * The split from `reloadNeeded` is the `hooksSeen` / `instrumented` distinction the
  * queue machine already documents, and the two halves must not drift: this one answers
  * "is a reload owed to this session at all", which is what the panel's counter reports,
  * while `reloadNeeded` adds "and is it safe to type right now".
@@ -95,18 +95,15 @@ export function reloadTargets(
  * counter honest. Put a transient one in (`instrumented` is a 30-minute freshness
  * window, so a healthy session that simply goes quiet flips it to false) and the count
  * drops to zero for a session that never got the skill. Leave a permanent one out
- * (`hasPane`, the declared idle source) and the count sits above zero forever for a
- * session nothing can ever reload - which is the exact never-reaches-zero failure that
- * made this function exclude codex in the first place.
+ * (`hasPane`, `hooksSeen`) and the count sits above zero forever for a session nothing
+ * can ever reload - which is the exact never-reaches-zero failure that made this
+ * function exclude codex in the first place.
  */
 export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsConfig): boolean {
-  const harness = harnessFor(s.agent);
-  const skills = harness.skills;
-
   // 1. This harness has no skills to reload - no directory we symlink into, and no
   //    command that would make a running session notice if there were. Typing one anyway
   //    would put a stray line in someone's prompt and change nothing.
-  if (!skills?.reloadCommand) return false;
+  if (!harnessFor(s.agent).skills?.reloadCommand) return false;
   if (s.state === "exited") return false;
 
   // 2. Nowhere to type, ever. `capturePaneText` answers null for a handleless session,
@@ -114,10 +111,12 @@ export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsCon
   //    would promise a pick-up that cannot happen.
   if (!hasPane(s)) return false;
 
-  // 3. No declared source can ever report this session idle, so `settledIdle` can never
-  //    become true. Hook-driven reloads require evidence that hooks have arrived at least
-  //    once; transcript-driven reloads require the harness's passive transcript capability.
-  if (skills.reloadIdleSource === "hooks" ? !s.hooksSeen : !harness.transcript) return false;
+  // 3. No hooks have EVER arrived, so nothing will ever report this session idle and
+  //    `settledIdle` can never be true. `hooksSeen` and NOT `instrumented`: the two look
+  //    interchangeable and are not. This is the "do hooks exist at all" question, which
+  //    is permanent; a freshness window is a terrible answer to it, and using one here
+  //    would make the count blink out for any session that had simply been quiet a while.
+  if (!s.hooksSeen) return false;
 
   // 4. Already current. The watermark, not a queue: five toggles land at generation 5,
   //    and ONE reload re-reads the directory and satisfies all of them.
@@ -152,17 +151,9 @@ export function reloadNeeded(
   // a default rather than a report. `settledIdle` insists on `state === "idle"`, a claim
   // only ever made by a real source - a fresh hook OR the transcript-derived passive
   // state - so it holds for a healthy session whose hook merely lapsed (the transcript
-  // still proves it parked) while refusing the `working` rebuild default. These are the
-  // transient gates, which is why they aren't in `reloadOwed`.
-  if (!settledIdle(s, now, settleMs)) return false;
-  const harness = harnessFor(s.agent);
-  if (
-    harness.skills?.reloadIdleSource === "transcript" &&
-    (!harness.transcript || harness.transcript.locate(s) === null)
-  ) {
-    return false;
-  }
-  return true;
+  // still proves it parked) while refusing the `working` rebuild default. It's the one
+  // transient gate here, which is why it isn't in `reloadOwed`.
+  return settledIdle(s, now, settleMs);
 }
 
 /** A session's acked generation. Absent and 0 mean the same thing: never acked. */
@@ -223,10 +214,9 @@ const defaultReloadDeps: ReloadDeps = {
  * readiness check didn't match and it timed out instead. So the pane read is not
  * paperwork, and it is the LAST gate rather than a filter - it costs a subprocess.
  *
- * For a harness with a readable TUI, `readPaneModeLine` is the check, and it already
- * means exactly this: a dialog or menu replaces Claude's footer entirely, so a mode line
- * on screen IS the evidence that no dialog is up. `setPermissionMode` has drawn that same
- * inference since it shipped.
+ * `readPaneModeLine` is the check, and it already means exactly this: a dialog or menu
+ * replaces Claude's footer entirely, so a mode line on screen IS the evidence that no
+ * dialog is up. `setPermissionMode` has drawn that same inference since it shipped.
  * Its one false negative - a pre-2.1.203 claude sitting in `manual`, which drew no
  * line - fails CLOSED: that session never reloads, which is a skill that doesn't
  * arrive, not a button pressed by a machine.
@@ -248,14 +238,11 @@ export async function reloadOne(
   // by itself. Acking a generation for it instead would record a reload that never
   // happened - and since `reloadOwed` refuses these sessions upstream, an ack branch
   // here is unreachable code that reads like a live one.
-  const harness = harnessFor(session.agent);
-  const skills = harness.skills;
+  const skills = harnessFor(session.agent).skills;
   if (!skills?.reloadCommand) return false;
 
-  if (harness.tui) {
-    const line = await deps.readModeLine(session);
-    if (!line) return false;
-  }
+  const line = await deps.readModeLine(session);
+  if (!line) return false;
 
   // Ack BEFORE typing, mirroring the auto-wrapup path: the write that retires the
   // action lands before the act, so a crash in between costs a reload rather than

@@ -4,6 +4,30 @@ import { CODEX_HOOK_EVENTS } from "./hooks.ts";
 
 export interface CodexLaunchPreparation { args: string[]; instrumented: boolean }
 
+/** One argv word in the POSIX shell command Codex's command-hook schema requires. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/**
+ * One session-layer hook override in Codex's three-level event -> matcher -> handler shape.
+ *
+ * The command hook is a shell string, not an argv array. The old compact shape put
+ * `command=[node, bridge, event]` directly on the matcher group. Codex's permissive config
+ * loader accepted that TOML but found no handler inside it, so every dispatched session
+ * launched successfully and silently emitted no hooks. `UserPromptSubmit` was therefore
+ * never captured, leaving Codex goals blank before the configured refiner model (including
+ * Luna) had anything to run on.
+ */
+export function codexHookOverride(
+  event: (typeof CODEX_HOOK_EVENTS)[number],
+  bridge: string,
+  node = process.execPath,
+): string {
+  const command = [node, bridge, event].map(shellWord).join(" ");
+  return `hooks.${event}=[{hooks=[{type="command",command=${JSON.stringify(command)}}]}]`;
+}
+
 /**
  * Complete, launch-scoped Codex hook configuration. Never returns a lone trust bypass.
  *
@@ -24,7 +48,7 @@ export function prepareCodexLaunch(auto: boolean): CodexLaunchPreparation {
   if (!existsSync(bridge)) return { args: safe, instrumented: false };
   const overrides = CODEX_HOOK_EVENTS.flatMap((event) => [
     "-c",
-    `hooks.${event}=[{command=[${JSON.stringify(process.execPath)},${JSON.stringify(bridge)},${JSON.stringify(event)}]}]`,
+    codexHookOverride(event, bridge),
   ]);
   return { args: [...safe, ...overrides, "--dangerously-bypass-hook-trust"], instrumented: true };
 }

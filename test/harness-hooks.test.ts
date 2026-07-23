@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -38,10 +38,11 @@ process.env.HARNESS_DISPATCH_SETTLE_MS = "10";
 
 const { HARNESSES, hooksFor } = await import("../src/server/harness/index.ts");
 const { claudeHooks } = await import("../src/server/harness/claude/hooks.ts");
-const { codexHooks } = await import("../src/server/harness/codex/hooks.ts");
+const { CODEX_HOOK_EVENTS, codexHooks } = await import("../src/server/harness/codex/hooks.ts");
 const { AGENT_TYPES } = await import("@shared/types.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
+const { codexHookOverride, prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { openDb } = await import("../src/server/db.ts");
 
 after(() => {
@@ -89,6 +90,40 @@ test("every harness answers the hooks question, and both shipped ones push", () 
   }
   assert.equal(claudeHooks.scope, "machine");
   assert.equal(codexHooks.scope, "launch");
+});
+
+test("Codex launch overrides contain command handlers, not inert matcher fields", () => {
+  // Codex's hook schema is event -> matcher group -> hook handler. The former launch argv
+  // stopped one level early at `{command=[node, bridge, event]}`. Its TOML was accepted,
+  // but there was no `hooks` array and therefore no handler to run: in particular no
+  // UserPromptSubmit, which left every dispatched Codex card without a Goal.
+  const bridge = join(home, "bridge with a ' quote.mjs");
+  writeFileSync(bridge, "");
+  process.env.MISSION_CODEX_HOOK = bridge;
+  let prepared: ReturnType<typeof prepareCodexLaunch>;
+  try {
+    prepared = prepareCodexLaunch(false);
+  } finally {
+    delete process.env.MISSION_CODEX_HOOK;
+  }
+
+  assert.equal(prepared.instrumented, true);
+  assert.equal(prepared.args.at(-1), "--dangerously-bypass-hook-trust");
+  const configArgs = prepared.args.slice(0, -1);
+  assert.equal(configArgs.length, CODEX_HOOK_EVENTS.length * 2);
+  for (const [i, event] of CODEX_HOOK_EVENTS.entries()) {
+    assert.equal(configArgs[i * 2], "-c");
+    assert.equal(configArgs[i * 2 + 1], codexHookOverride(event, bridge));
+    assert.match(
+      configArgs[i * 2 + 1]!,
+      new RegExp(`^hooks\\.${event}=\\[\\{hooks=\\[\\{type="command",command=`),
+      `${event} has no nested command handler`,
+    );
+  }
+  const quoted = codexHookOverride("Stop", bridge, "/node's/bin");
+  const encodedCommand = /command=("(?:\\.|[^"])*")/.exec(quoted)?.[1];
+  assert.ok(encodedCommand, "the override carries no TOML string command");
+  assert.match(JSON.parse(encodedCommand) as string, /'\/node'"'"'s\/bin'/);
 });
 
 test("Codex's events are all modelled, and PermissionRequest is not 'working'", () => {

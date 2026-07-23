@@ -4,6 +4,7 @@ import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot, InspectorRailMark, WorkflowRailMark } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { Tooltip } from "../Tooltip.tsx";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -54,6 +55,7 @@ export function RailRow({
   if (costIsNotable(session.cost)) marks.push("≈$");
 
   return (
+    <Tooltip label={`${session.name || "(unnamed)"} - ${st.label}`}>
     <button
       ref={ref}
       className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
@@ -88,5 +90,6 @@ export function RailRow({
         </span>
       </span>
     </button>
+    </Tooltip>
   );
 }

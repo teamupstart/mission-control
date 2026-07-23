@@ -5,6 +5,7 @@ import { canWriteTo, muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
@@ -212,122 +213,138 @@ export function ActionBar({
               if (e.key === "Escape") setComposing(false);
             }}
           />
-          <button className="btn btn-send" disabled={busy === "send"} onClick={() => void submitMessage()}>
-            Send
-          </button>
-          <button className="btn btn-ghost" onClick={() => setComposing(false)}>
-            Cancel
-          </button>
+          <Tooltip label={busy === "send" ? "Sending…" : "Send this message to the agent's prompt"}>
+            <button className="btn btn-send" disabled={busy === "send"} onClick={() => void submitMessage()}>
+              Send
+            </button>
+          </Tooltip>
+          <Tooltip label="Close the compose box - the draft is kept">
+            <button className="btn btn-ghost" onClick={() => setComposing(false)}>
+              Cancel
+            </button>
+          </Tooltip>
         </div>
       ) : variant === "foot" ? (
         // The console footer: the mockup's Focus / Diff / Reset / Kill. Send lives in the
         // conversation's reply box and Queue is a tab, so neither is drawn here - but the
         // handle above still carries startSend and toggleQueue, so `s` and `q` work.
         <>
-          <button
-            className="act act-focus"
-            onClick={focusPane}
-            title="Bring this session's terminal pane to the front"
-          >
-            <kbd>{formatChord(bindings.focus)}</kbd> focus
-          </button>
-          {onDiff && session.cwd && (
-            <button className="act" onClick={onDiff} title="View changes vs source branch">
-              <kbd>{formatChord(bindings.diff)}</kbd> diff
+          <Tooltip label="Bring this session's terminal pane to the front">
+            <button className="act act-focus" onClick={focusPane}>
+              <kbd>{formatChord(bindings.focus)}</kbd> focus
             </button>
+          </Tooltip>
+          {onDiff && session.cwd && (
+            <Tooltip label="View this checkout's changes vs its source branch">
+              <button className="act" onClick={onDiff}>
+                <kbd>{formatChord(bindings.diff)}</kbd> diff
+              </button>
+            </Tooltip>
           )}
           {session.cwd && onReset && (
-            <button
-              className="act act-reset"
-              onClick={onReset}
-              title={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
+            <Tooltip
+              label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >
-              <kbd>{formatChord(bindings.reset)}</kbd> reset
-            </button>
+              <button className="act act-reset" onClick={onReset}>
+                <kbd>{formatChord(bindings.reset)}</kbd> reset
+              </button>
+            </Tooltip>
           )}
           {confirmKill ? (
-            <button
-              className="act act-danger"
-              onClick={() => void doKill()}
-              title={
+            <Tooltip
+              label={
                 killsMux
                   ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}"`
                   : "Terminates the agent process"
               }
             >
-              confirm kill
-            </button>
+              <button className="act act-danger" onClick={() => void doKill()}>
+                confirm kill
+              </button>
+            </Tooltip>
           ) : (
-            <button className="act act-danger" onClick={() => setConfirmKill(true)}>
-              <kbd>{formatChord(bindings.kill)}</kbd> kill
-            </button>
+            <Tooltip label="Terminate this agent - asks for a confirming click first">
+              <button className="act act-danger" onClick={() => setConfirmKill(true)}>
+                <kbd>{formatChord(bindings.kill)}</kbd> kill
+              </button>
+            </Tooltip>
           )}
           {confirmKill && (
-            <button className="act" onClick={() => setConfirmKill(false)}>
-              cancel
-            </button>
+            <Tooltip label="Leave the agent running">
+              <button className="act" onClick={() => setConfirmKill(false)}>
+                cancel
+              </button>
+            </Tooltip>
           )}
         </>
       ) : (
         <>
-          <button
-            className="btn"
-            disabled={!canSend}
-            title={canSend ? "Type into this session's prompt" : "No pane to send to"}
-            onClick={startSend}
-          >
-            Send
-          </button>
-          <button className="btn" onClick={focusPane}>
-            Focus
-          </button>
-          {session.cwd && onFiles && (
-            <button className="btn" onClick={onFiles} title="Browse and edit checkout files">
-              Files
+          <Tooltip label={canSend ? "Type into this session's prompt" : "No pane to send to"}>
+            <button className="btn" disabled={!canSend} onClick={startSend}>
+              Send
             </button>
+          </Tooltip>
+          <Tooltip label="Bring this session's terminal pane to the front">
+            <button className="btn" onClick={focusPane}>
+              Focus
+            </button>
+          </Tooltip>
+          {session.cwd && onFiles && (
+            <Tooltip label="Browse and edit checkout files">
+              <button className="btn" onClick={onFiles}>
+                Files
+              </button>
+            </Tooltip>
           )}
           {onToggleQueue && (
-            <button
-              className={`btn btn-queue${queueOpen ? " on" : ""}`}
-              aria-expanded={queueOpen}
-              title={`${queueOpen ? "Hide" : "Show"} the work queued for this session (${formatChord(bindings.queue)})`}
-              onClick={onToggleQueue}
+            <Tooltip
+              label={`${queueOpen ? "Hide" : "Show"} the work queued for this session (${formatChord(bindings.queue)})`}
             >
-              Queue
-              {openQueued > 0 && <span className="btn-count">{openQueued}</span>}
-            </button>
+              <button
+                className={`btn btn-queue${queueOpen ? " on" : ""}`}
+                aria-expanded={queueOpen}
+                onClick={onToggleQueue}
+              >
+                Queue
+                {openQueued > 0 && <span className="btn-count">{openQueued}</span>}
+              </button>
+            </Tooltip>
           )}
           {session.cwd && onReset && (
-            <button
-              className="btn btn-reset"
-              title={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
-              onClick={onReset}
+            <Tooltip
+              label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >
-              Reset
-            </button>
+              <button className="btn btn-reset" onClick={onReset}>
+                Reset
+              </button>
+            </Tooltip>
           )}
           <span className="actions-spacer" />
           {confirmKill ? (
-            <button
-              className="btn btn-danger"
-              onClick={() => void doKill()}
-              title={
+            <Tooltip
+              label={
                 killsMux
                   ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" (all its windows and panes)`
                   : "Terminates the agent process"
               }
             >
-              Confirm kill
-            </button>
+              <button className="btn btn-danger" onClick={() => void doKill()}>
+                Confirm kill
+              </button>
+            </Tooltip>
           ) : (
-            <button className="btn btn-danger-ghost" onClick={() => setConfirmKill(true)}>
-              Kill
-            </button>
+            <Tooltip label="Terminate this agent - asks for a confirming click first">
+              <button className="btn btn-danger-ghost" onClick={() => setConfirmKill(true)}>
+                Kill
+              </button>
+            </Tooltip>
           )}
           {confirmKill && (
-            <button className="btn btn-ghost" onClick={() => setConfirmKill(false)}>
-              Cancel
-            </button>
+            <Tooltip label="Leave the agent running">
+              <button className="btn btn-ghost" onClick={() => setConfirmKill(false)}>
+                Cancel
+              </button>
+            </Tooltip>
           )}
         </>
       )}

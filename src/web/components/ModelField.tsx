@@ -1,6 +1,7 @@
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
 import type { AgentType } from "@shared/types.ts";
 import { modelChoicesFor } from "@shared/model.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The one input in this app for "which model does this call spawn with?".
 //
@@ -77,20 +78,22 @@ export function ModelField({
       <label className="foreman-model-label" htmlFor={id}>
         {spec.label}
       </label>
-      <select
-        id={id}
-        className="field-input mono foreman-model-input"
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onCommit(e.target.value)}
-      >
-        <option value="">Default - {resolved?.id ?? spec.fallback}</option>
-        {modelChoicesFor(runner, value).map((model) => (
-          <option key={model.id} value={model.id}>
-            {model.label} - {model.hint}
-          </option>
-        ))}
-      </select>
+      <Tooltip label={spec.blurb}>
+        <select
+          id={id}
+          className="field-input mono foreman-model-input"
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onCommit(e.target.value)}
+        >
+          <option value="">Default - {resolved?.id ?? spec.fallback}</option>
+          {modelChoicesFor(runner, value).map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label} - {model.hint}
+            </option>
+          ))}
+        </select>
+      </Tooltip>
       <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>
       {note && <p className="foreman-model-source">{note}</p>}
     </div>

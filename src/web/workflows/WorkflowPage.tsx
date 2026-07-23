@@ -9,6 +9,7 @@ import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 export function WorkflowPage({
   tab,
@@ -45,15 +46,22 @@ export function WorkflowPage({
           <h2>Workflows</h2>
         </div>
         <nav className="workflow-tabs" aria-label="Workflow sections">
-          {(["workflows", "personas", "runs"] as const).map((id) => (
-            <button
-              key={id}
-              className={tab === id ? "active" : ""}
-              aria-current={tab === id ? "page" : undefined}
-              onClick={() => onTab(id)}
-            >
-              {id[0]!.toUpperCase() + id.slice(1)}
-            </button>
+          {(
+            [
+              ["workflows", "Author the review workflows agents are bound to"],
+              ["personas", "Author the reviewer Personas workflow nodes run"],
+              ["runs", "Watch workflow runs and their verdicts"],
+            ] as const
+          ).map(([id, hint]) => (
+            <Tooltip key={id} label={hint}>
+              <button
+                className={tab === id ? "active" : ""}
+                aria-current={tab === id ? "page" : undefined}
+                onClick={() => onTab(id)}
+              >
+                {id[0]!.toUpperCase() + id.slice(1)}
+              </button>
+            </Tooltip>
           ))}
         </nav>
       </header>

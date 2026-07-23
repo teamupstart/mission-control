@@ -7,6 +7,7 @@ import { DecisionForm } from "./PlanDecisions.tsx";
 import { reviewDecisions, decisionLead, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -42,9 +43,11 @@ export function ReviewModal({
           <strong>{session.name}</strong>
           <span className="dim"> · {reviews.length} pending</span>
         </div>
-        <button className="btn btn-ghost" onClick={onClose}>
-          Close (esc)
-        </button>
+        <Tooltip label="Close the review queue - nothing is resolved">
+          <button className="btn btn-ghost" onClick={onClose}>
+            Close (esc)
+          </button>
+        </Tooltip>
       </header>
       <div className="modal-body">
         {reviews.map((r) => (
@@ -137,13 +140,17 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
             onChange={(e) => setAnswer(e.target.value)}
             rows={2}
           />
-          <button
-            className="btn btn-send"
-            disabled={busy || !answer.trim()}
-            onClick={() => void resolve("answer", answer.trim())}
+          <Tooltip
+            label={answer.trim() ? "Send this answer back to the agent" : "Write an answer first"}
           >
-            Send answer
-          </button>
+            <button
+              className="btn btn-send"
+              disabled={busy || !answer.trim()}
+              onClick={() => void resolve("answer", answer.trim())}
+            >
+              Send answer
+            </button>
+          </Tooltip>
         </div>
       ) : (
         <div className="review-actions">
@@ -154,20 +161,24 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
             onChange={(e) => setNote(e.target.value)}
           />
           <span className="actions-spacer" />
-          <button
-            className="btn btn-reject"
-            disabled={busy}
-            onClick={() => void resolve("reject", note.trim() || null)}
-          >
-            Request changes
-          </button>
-          <button
-            className="btn btn-approve"
-            disabled={busy}
-            onClick={() => void resolve("approve", note.trim() || null)}
-          >
-            Approve
-          </button>
+          <Tooltip label="Send this back for another pass, with your note">
+            <button
+              className="btn btn-reject"
+              disabled={busy}
+              onClick={() => void resolve("reject", note.trim() || null)}
+            >
+              Request changes
+            </button>
+          </Tooltip>
+          <Tooltip label="Approve this and let the agent carry on">
+            <button
+              className="btn btn-approve"
+              disabled={busy}
+              onClick={() => void resolve("approve", note.trim() || null)}
+            >
+              Approve
+            </button>
+          </Tooltip>
         </div>
       )}
       {err && <p className="review-err">{err}</p>}

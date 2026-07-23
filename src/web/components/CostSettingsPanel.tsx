@@ -1,5 +1,6 @@
 import { COST_EXPORT_INTERVAL_MAX_MS, COST_EXPORT_INTERVAL_MIN_MS } from "@shared/protocol.ts";
 import type { CostState } from "../useCost.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The Cost settings section: whether we ask Claude Code for its API-equivalent estimate,
 // how often, and how that joins automatic Codex estimates in one fleet total.
@@ -79,13 +80,15 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </div>
         <div className="kb-row-controls">
           <label className="skill-switch">
-            <input
-              type="checkbox"
-              checked={enabled}
-              disabled={!config}
-              onChange={(e) => void update({ enabled: e.target.checked })}
-              aria-label="Export Claude Code usage telemetry to Mission Control"
-            />
+            <Tooltip label="Let sessions report their token usage, so the topbar can cost the fleet">
+              <input
+                type="checkbox"
+                checked={enabled}
+                disabled={!config}
+                onChange={(e) => void update({ enabled: e.target.checked })}
+                aria-label="Export Claude Code usage telemetry to Mission Control"
+              />
+            </Tooltip>
           </label>
         </div>
       </div>
@@ -99,19 +102,21 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
           </span>
         </div>
         <div className="kb-row-controls">
-          <select
-            className="settings-select"
-            value={config?.exportIntervalMs ?? 15_000}
-            disabled={!config}
-            aria-label="Telemetry export interval"
-            onChange={(e) => void update({ exportIntervalMs: Number(e.target.value) })}
-          >
-            {INTERVALS.map((ms) => (
-              <option key={ms} value={ms}>
-                {ms / 1000}s
-              </option>
-            ))}
-          </select>
+          <Tooltip label="How often each session reports its usage back to Mission Control">
+            <select
+              className="settings-select"
+              value={config?.exportIntervalMs ?? 15_000}
+              disabled={!config}
+              aria-label="Telemetry export interval"
+              onChange={(e) => void update({ exportIntervalMs: Number(e.target.value) })}
+            >
+              {INTERVALS.map((ms) => (
+                <option key={ms} value={ms}>
+                  {ms / 1000}s
+                </option>
+              ))}
+            </select>
+          </Tooltip>
         </div>
       </div>
 
@@ -124,16 +129,18 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
           </span>
         </div>
         <div className="kb-row-controls">
-          <select
-            className="settings-select"
-            value={config?.view ?? "usd"}
-            disabled={!config}
-            aria-label="Which cost figure the topbar leads with"
-            onChange={(e) => void update({ view: e.target.value === "plan" ? "plan" : "usd" })}
-          >
-            <option value="usd">Estimated cost</option>
-            <option value="plan">Plan usage</option>
-          </select>
+          <Tooltip label="Which figure the topbar's usage strip leads with">
+            <select
+              className="settings-select"
+              value={config?.view ?? "usd"}
+              disabled={!config}
+              aria-label="Which cost figure the topbar leads with"
+              onChange={(e) => void update({ view: e.target.value === "plan" ? "plan" : "usd" })}
+            >
+              <option value="usd">Estimated cost</option>
+              <option value="plan">Plan usage</option>
+            </select>
+          </Tooltip>
         </div>
       </div>
     </section>

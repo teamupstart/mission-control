@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ForemanEpisode } from "@shared/types.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { relativeTime } from "../lib/format.ts";
 
 // Everything Foreman has decided on this session, with the context that produced it.
@@ -59,9 +60,11 @@ export function ForemanDrawer({
     <aside className="foreman-drawer" onClick={(e) => e.stopPropagation()}>
       <header className="fd-head">
         {detail ? (
-          <button className="fd-back" onClick={() => setSelected(null)}>
-            ← All notes
-          </button>
+          <Tooltip label="Back to every note on this session">
+            <button className="fd-back" onClick={() => setSelected(null)}>
+              ← All notes
+            </button>
+          </Tooltip>
         ) : (
           <>
             <span className="fn-badge">Foreman</span>
@@ -70,9 +73,11 @@ export function ForemanDrawer({
             </span>
           </>
         )}
-        <button className="fd-close" onClick={onClose} aria-label="Close">
-          esc
-        </button>
+        <Tooltip label="Close this drawer (Escape)">
+          <button className="fd-close" onClick={onClose} aria-label="Close">
+            esc
+          </button>
+        </Tooltip>
       </header>
 
       <div className="fd-pane">
@@ -128,7 +133,8 @@ function EpisodeRow({
       ? `answered by ${episode.resolvedBy === "you" ? "you" : "foreman"}`
       : (ROW_LABEL[episode.disposition] ?? episode.disposition);
   return (
-    <button className={`fd-row ${ROW_CLASS[episode.disposition] ?? ""}`} onClick={onOpen}>
+    <Tooltip label={`Open this note - ${answeredBy}`}>
+      <button className={`fd-row ${ROW_CLASS[episode.disposition] ?? ""}`} onClick={onOpen}>
       <span className="fd-row-top">
         <span className="fd-row-state">{answeredBy}</span>
         {episode.createdAt > 0 && (
@@ -136,8 +142,9 @@ function EpisodeRow({
         )}
       </span>
       <span className="fd-row-q">{askPreview(episode)}</span>
-      {episode.purpose && <span className="fd-row-verdict">{episode.purpose}</span>}
-    </button>
+        {episode.purpose && <span className="fd-row-verdict">{episode.purpose}</span>}
+      </button>
+    </Tooltip>
   );
 }
 

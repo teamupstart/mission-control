@@ -7,6 +7,7 @@ import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
 import { ScheduleSwitch } from "../src/web/components/session-bits.tsx";
 import type { Task } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
+import { containsMarkup } from "./helpers/markup.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 /**
@@ -72,8 +73,8 @@ test("both backlog surfaces draw the shared switch, not a private copy", () => {
     ["board column", column([on, off])],
     ["sitrep", roundup([on, off])],
   ] as const) {
-    assert.ok(html.includes(bit(true, "Ship it")), `${surface} must draw the enabled switch`);
-    assert.ok(html.includes(bit(false, "Not yet")), `${surface} must draw the disabled switch`);
+    assert.ok(containsMarkup(html, bit(true, "Ship it")), `${surface} must draw the enabled switch`);
+    assert.ok(containsMarkup(html, bit(false, "Not yet")), `${surface} must draw the disabled switch`);
   }
 });
 

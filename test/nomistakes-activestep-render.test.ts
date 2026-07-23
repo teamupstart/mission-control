@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { gateSelectionKey, NomistakesStrip } from "../src/web/components/NomistakesStrip.tsx";
 import type { NmActiveStep, NmRunSummary } from "@shared/types.ts";
+import { hasTooltipStarting } from "./helpers/markup.ts";
 
 // What the strip SAYS about the step it's on, rendered.
 //
@@ -85,8 +86,10 @@ test("only the running step's activity is shown", () => {
   assert.doesNotMatch(html, /nm-lastact/);
 });
 
-test("the full log line is in the title, since the line itself is clipped to one row", () => {
-  assert.match(render(run()), /title="ci · active 2h26m · quiet 1h17m ago/);
+test("the full log line is on hover, since the line itself is clipped to one row", () => {
+  // It was a `title` until tooltips became one shared component; the clipped row still
+  // has to hand back the whole line, it just does it through Tooltip now.
+  assert.ok(hasTooltipStarting(render(run()), "ci · active 2h26m · quiet 1h17m ago"));
 });
 
 test("a dashboard fix names the submitted round while the terminal can still show the prior question", () => {

@@ -4,6 +4,7 @@ import { autoModeAgents, autoModeUnsupportedWhy, capabilitiesFor } from "@shared
 import { modelChoicesFor } from "@shared/model.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
 // launches - the auto-mode master toggle, then model and effort defaults per harness.
@@ -81,6 +82,7 @@ function DefaultModelRow({
         </span>
       </div>
       <div className="kb-row-controls">
+        <Tooltip label={`Which model every dispatched ${label} session launches with`}>
         <select
           className="harnesses-select"
           value={value ?? ""}
@@ -98,6 +100,7 @@ function DefaultModelRow({
             </option>
           ))}
         </select>
+        </Tooltip>
       </div>
     </div>
   );
@@ -127,20 +130,22 @@ function DefaultEffortRow({
         </span>
       </div>
       <div className="kb-row-controls">
-        <select
-          className="harnesses-select"
-          value={value ?? ""}
-          disabled={disabled}
-          onChange={(e) => onChange((e.target.value || null) as ThinkingLevel | null)}
-          aria-label={`Default effort for dispatched ${label} sessions`}
-        >
-          <option value="">Harness default</option>
-          {capabilitiesFor(agent).effort?.levels.map((level) => (
-            <option key={level} value={level}>
-              {level}
-            </option>
-          ))}
-        </select>
+        <Tooltip label={`How much reasoning effort every dispatched ${label} session starts with`}>
+          <select
+            className="harnesses-select"
+            value={value ?? ""}
+            disabled={disabled}
+            onChange={(e) => onChange((e.target.value || null) as ThinkingLevel | null)}
+            aria-label={`Default effort for dispatched ${label} sessions`}
+          >
+            <option value="">Harness default</option>
+            {capabilitiesFor(agent).effort?.levels.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
       </div>
     </div>
   );
@@ -170,12 +175,11 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
           <span className="kb-row-label">
             Auto mode on dispatch
             {AUTO_EXCLUDED.length > 0 && (
-              <span
-                className="skill-badge skill-badge-agent"
-                title={AUTO_EXCLUDED.map((a) => autoModeUnsupportedWhy(a)).join(" ")}
-              >
-                {AUTO_AGENTS.join(" / ")} only
-              </span>
+              <Tooltip label={AUTO_EXCLUDED.map((a) => autoModeUnsupportedWhy(a)).join(" ")}>
+                <span className="skill-badge skill-badge-agent">
+                  {AUTO_AGENTS.join(" / ")} only
+                </span>
+              </Tooltip>
             )}
           </span>
           <span className="kb-row-desc">
@@ -186,13 +190,17 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
         </div>
         <div className="kb-row-controls">
           <label className="skill-switch">
-            <input
-              type="checkbox"
-              checked={autoMode}
-              disabled={!config}
-              onChange={(e) => void update({ autoModeOnDispatch: e.target.checked })}
-              aria-label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode`}
-            />
+            <Tooltip
+              label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode, so it never stops for a permission prompt`}
+            >
+              <input
+                type="checkbox"
+                checked={autoMode}
+                disabled={!config}
+                onChange={(e) => void update({ autoModeOnDispatch: e.target.checked })}
+                aria-label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode`}
+              />
+            </Tooltip>
           </label>
         </div>
       </div>

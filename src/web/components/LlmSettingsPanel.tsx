@@ -2,6 +2,7 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { LLM_RUNNER_ENV_VAR } from "@shared/llm.ts";
 import type { LlmState } from "../useLlm.ts";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
 //
@@ -84,18 +85,26 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         ) : (
           runners.map((r) => (
             <label className="alert-row" key={r.id}>
-              <input
-                type="radio"
-                name="llm-runner"
-                checked={active === r.id}
-                disabled={!config || runnerPinned}
-                onChange={() =>
-                  void update({
-                    runner: r.id,
-                    models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""])),
-                  })
+              <Tooltip
+                label={
+                  runnerPinned
+                    ? "Pinned by an environment variable - unset it to choose here"
+                    : `Run the app's own background jobs through ${r.label}`
                 }
-              />
+              >
+                <input
+                  type="radio"
+                  name="llm-runner"
+                  checked={active === r.id}
+                  disabled={!config || runnerPinned}
+                  onChange={() =>
+                    void update({
+                      runner: r.id,
+                      models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""])),
+                    })
+                  }
+                />
+              </Tooltip>
               <span>{r.label}</span>
             </label>
           ))

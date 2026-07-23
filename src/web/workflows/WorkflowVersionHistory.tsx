@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { PersonaView, WorkflowVersion, WorkflowVersionMetadata } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { workflowRequest } from "./workflowApi.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 export function WorkflowVersionDetail({
   version,
@@ -15,9 +16,11 @@ export function WorkflowVersionDetail({
   const live = new Map(personas.map((persona) => [persona.id, persona]));
   return (
     <div className="workflow-version-detail">
-      <button className="btn workflow-version-bind" onClick={() => onBindVersion(version)}>
-        Bind this version
-      </button>
+      <Tooltip label="Run this published version against a session">
+        <button className="btn workflow-version-bind" onClick={() => onBindVersion(version)}>
+          Bind this version
+        </button>
+      </Tooltip>
       <WorkflowCanvas graph={version.graph} personas={personas} readOnly />
       <dl>
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
@@ -37,11 +40,13 @@ export function WorkflowVersionDetail({
         const stale = current && current.revision !== node.persona.sourceRevision;
         return (
           <details key={node.id} className="workflow-version-persona">
-            <summary>
-              {node.persona.name} · revision {node.persona.sourceRevision}
-              {stale ? " · outdated" : ""}
-              {!current || current.archivedAt !== null ? " · archived source" : ""}
-            </summary>
+            <Tooltip label={`Show the guidance ${node.persona.name} was published with`}>
+              <summary>
+                {node.persona.name} · revision {node.persona.sourceRevision}
+                {stale ? " · outdated" : ""}
+                {!current || current.archivedAt !== null ? " · archived source" : ""}
+              </summary>
+            </Tooltip>
             <p>{node.persona.runner ?? "App provider"} · {node.persona.model ?? "Provider default"}</p>
             <pre>{node.persona.guidanceMarkdown}</pre>
           </details>
@@ -96,10 +101,12 @@ export function WorkflowVersionHistory({
       {versions.length === 0 && <p>No published versions yet.</p>}
       <div className="workflow-version-list">
         {versions.map((version) => (
-          <button key={version.id} className={selectedId === version.id ? "active" : ""} onClick={() => setSelectedId(selectedId === version.id ? null : version.id)}>
-            <strong>Version {version.version}</strong>
-            <span>Draft r{version.sourceDraftRevision} · {new Date(version.publishedAt).toLocaleString()}</span>
-          </button>
+          <Tooltip key={version.id} label={selectedId === version.id ? `Hide version ${version.version}` : `Show what version ${version.version} contains`}>
+            <button className={selectedId === version.id ? "active" : ""} onClick={() => setSelectedId(selectedId === version.id ? null : version.id)}>
+              <strong>Version {version.version}</strong>
+              <span>Draft r{version.sourceDraftRevision} · {new Date(version.publishedAt).toLocaleString()}</span>
+            </button>
+          </Tooltip>
         ))}
       </div>
       {loading && <p>Loading version…</p>}

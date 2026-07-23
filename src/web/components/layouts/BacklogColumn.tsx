@@ -6,6 +6,7 @@ import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
 import { LabelChips, ScheduleSwitch } from "../session-bits.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 
 /**
  * The backlog as a board column you dispatch OUT of by dragging.
@@ -184,13 +185,17 @@ function BacklogCard({
       // like: one object. A drag doesn't fire this - the browser suppresses the click
       // that ends one - so dragging a card to an agent still only ever assigns it.
       onClick={onEdit}
-      title={task.intent}
     >
       {/* The real, focusable control behind the card-wide click: a card is not a button
-          (it contains one), so the title carries the keyboard route in. */}
-      <button className="bl-title" onClick={onEdit} title="Open this task for editing">
-        {task.title}
-      </button>
+          (it contains one), so the title carries the keyboard route in - and it carries
+          the card's tooltip too. The `<article>` held `title={task.intent}` until this
+          became a Tooltip; wrapping the card itself would have put a second bubble on
+          screen every time you reached for the switch or the launch button inside it. */}
+      <Tooltip label={task.intent || "Open this task for editing"}>
+        <button className="bl-title" onClick={onEdit}>
+          {task.title}
+        </button>
+      </Tooltip>
       <span className="bl-marks">
         {/* The enable/disable switch sits with the priority picker rather than with the
             launch button because it is triage, not execution: both say how this item
@@ -222,6 +227,7 @@ function BacklogCard({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
+          <Tooltip label={`Priority for "${task.title}" - decides where it sits in the backlog`}>
           <select
             aria-label={`Priority for ${task.title}`}
             value={task.priority ?? ""}
@@ -241,6 +247,7 @@ function BacklogCard({
               </option>
             ))}
           </select>
+          </Tooltip>
         </span>
         {/* Capped here and nowhere else: this card is the narrowest surface a task is
             drawn on, and the chip component reports the remainder as "+N" rather than
@@ -253,12 +260,11 @@ function BacklogCard({
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
       {blocked && (
-        <span
-          className={`bl-blocked${needsYou(blockers) ? " is-stopped" : ""}`}
-          title={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}
-        >
-          {blockedLabel(blockers)}
-        </span>
+        <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
+          <span className={`bl-blocked${needsYou(blockers) ? " is-stopped" : ""}`}>
+            {blockedLabel(blockers)}
+          </span>
+        </Tooltip>
       )}
       {/* The CONSEQUENCE, not the setting - the switch above already says which way it
           is set, and repeating "disabled" here would be the card saying one fact twice,
@@ -267,27 +273,19 @@ function BacklogCard({
           quiet autopilot from looking like a broken one. Drawn alongside a blocked chip
           rather than instead of it: different facts, neither implying the other. */}
       {!task.enabled && (
-        <span className="bl-off" title="Turn the switch back on to let Foreman schedule it">
-          autopilot will skip this
-        </span>
+        <Tooltip label="Turn the switch back on to let Foreman schedule it">
+          <span className="bl-off">autopilot will skip this</span>
+        </Tooltip>
       )}
       {/* `nextUp` comes from `readyBacklog`, which drops disabled items, so this is
           already unreachable on a parked card - no second guard here to drift. */}
       {nextUp && !blocked && (
-        <span className="bl-next" title="Foreman's autopilot would pick this up next">
-          next up
-        </span>
+        <Tooltip label="Foreman's autopilot would pick this up next">
+          <span className="bl-next">next up</span>
+        </Tooltip>
       )}
-      <button
-        className="bl-launch"
-        onClick={(e) => {
-          // Launching is not opening: without this the card's own handler would fire
-          // too and drop the modal over a task that is already on its way out.
-          e.stopPropagation();
-          void launch();
-        }}
-        disabled={busy || declaredBlocked}
-        title={
+      <Tooltip
+        label={
           declaredBlocked
             ? `Waiting for: ${blockers.filter((blocker) => blocker.source === "declared").map((blocker) => blocker.title).join(", ")}`
             : !task.enabled
@@ -297,6 +295,16 @@ function BacklogCard({
             : "Dispatch into a fresh worktree"
         }
       >
+      <button
+        className="bl-launch"
+        onClick={(e) => {
+          // Launching is not opening: without this the card's own handler would fire
+          // too and drop the modal over a task that is already on its way out.
+          e.stopPropagation();
+          void launch();
+        }}
+        disabled={busy || declaredBlocked}
+      >
         {busy
           ? "dispatching…"
           : declaredBlocked
@@ -305,6 +313,7 @@ function BacklogCard({
           ? "launch anyway"
           : "launch new agent"}
       </button>
+      </Tooltip>
     </article>
   );
 }

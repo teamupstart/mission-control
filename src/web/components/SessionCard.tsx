@@ -52,18 +52,19 @@ function QueueChip({
 }): React.JSX.Element {
   const chip = queueChipView(queue);
   return (
-    <button
-      className={`queue-chip qc-${queue.inFlightState ?? "waiting"}${chip.attention ? " qc-escalated" : ""}`}
-      title={chip.title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onOpen();
-      }}
-    >
-      <span className="qc-count">{chip.label}</span>
-      {queue.inFlightIntent && <span className="qc-intent">{queue.inFlightIntent}</span>}
-      {queue.round > 0 && <span className="qc-round">fix {queue.round}</span>}
-    </button>
+    <Tooltip label={chip.title}>
+      <button
+        className={`queue-chip qc-${queue.inFlightState ?? "waiting"}${chip.attention ? " qc-escalated" : ""}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen();
+        }}
+      >
+        <span className="qc-count">{chip.label}</span>
+        {queue.inFlightIntent && <span className="qc-intent">{queue.inFlightIntent}</span>}
+        {queue.round > 0 && <span className="qc-round">fix {queue.round}</span>}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -206,49 +207,54 @@ export function SessionCard({
         <InspectorChip session={session} />
         <WorkflowChip run={workflowRun} onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined} />
         {!workflowRun && onBindWorkflow && (
-          <button
-            className="workflow-bind-chip"
-            title="Bind a published workflow version"
-            onClick={(event) => {
-              event.stopPropagation();
-              onBindWorkflow();
-            }}
-          >
-            ＋ workflow
-          </button>
+          <Tooltip label="Bind a published workflow version">
+            <button
+              className="workflow-bind-chip"
+              onClick={(event) => {
+                event.stopPropagation();
+                onBindWorkflow();
+              }}
+            >
+              ＋ workflow
+            </button>
+          </Tooltip>
         )}
         <StateBadge session={session} gateNeedsYou={gateNeedsYou} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&
           (session.note.disposition === "escalated" ||
             (session.note.disposition === "pending" && session.note.recommendation)) && (
-            <button
-              className={`foreman-flag ff-${session.note.disposition}`}
-              title={
+            <Tooltip
+              label={
                 session.note.disposition === "escalated"
                   ? "Foreman escalated a decision to you - expand to see it"
                   : "Foreman drafted a reply - expand to review it"
               }
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleExpand?.();
-              }}
             >
-              {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
-            </button>
+              <button
+                className={`foreman-flag ff-${session.note.disposition}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleExpand?.();
+                }}
+              >
+                {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
+              </button>
+            </Tooltip>
           )}
         {session.cwd && (
-          <button
-            className="diff-btn"
-            aria-label="View changes vs source branch"
-            title="View changes vs source branch"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenDiff?.();
-            }}
-          >
-            diff
-          </button>
+          <Tooltip label="View changes vs source branch">
+            <button
+              className="diff-btn"
+              aria-label="View changes vs source branch"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDiff?.();
+              }}
+            >
+              diff
+            </button>
+          </Tooltip>
         )}
         {canExpand && (
           <Tooltip label={expanded ? "Hide conversation" : "Show conversation"}>
@@ -272,9 +278,9 @@ export function SessionCard({
       <dl className="card-meta">
         <div>
           <dt>path</dt>
-          <dd className="mono" title={session.cwd ?? ""}>
-            {shortenCwd(session.cwd)}
-          </dd>
+          <Tooltip label={session.cwd ?? "This session has no working directory"}>
+            <dd className="mono">{shortenCwd(session.cwd)}</dd>
+          </Tooltip>
         </div>
         {session.gitBranch && (
           <div>
@@ -293,26 +299,32 @@ export function SessionCard({
       </span>
 
       {session.task && (
-        <div className={`task-chip task-${session.task.status}`} title={`${session.task.kind} task`}>
-          <span className="task-kind">{session.task.kind}</span>
-          <span className="task-title" title={session.task.title}>
-            {session.task.title}
-          </span>
+        <div className={`task-chip task-${session.task.status}`}>
+          <Tooltip label={`${session.task.kind} task`}>
+            <span className="task-kind">{session.task.kind}</span>
+          </Tooltip>
+          <Tooltip label={session.task.title}>
+            <span className="task-title">{session.task.title}</span>
+          </Tooltip>
           {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
           {session.task.status === "failed" && <span className="task-status">failed</span>}
           {session.task.outcome &&
             (session.task.outcomeUrl ? (
-              <a
-                className="task-outcome"
-                href={session.task.outcomeUrl}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {session.task.outcome}
-              </a>
+              <Tooltip label={`Outcome: ${session.task.outcome} - open on GitHub`}>
+                <a
+                  className="task-outcome"
+                  href={session.task.outcomeUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {session.task.outcome}
+                </a>
+              </Tooltip>
             ) : (
-              <span className="task-outcome">{session.task.outcome}</span>
+              <Tooltip label={`Outcome: ${session.task.outcome}`}>
+                <span className="task-outcome">{session.task.outcome}</span>
+              </Tooltip>
             ))}
         </div>
       )}
@@ -352,9 +364,9 @@ export function SessionCard({
         <span className="mono dim">pid {session.pid}</span>
         <span className="spacer" />
         {!session.instrumented && (
-          <span className="hint" title="No hooks reporting - status is coarse">
-            uninstrumented
-          </span>
+          <Tooltip label="No hooks reporting - status is coarse">
+            <span className="hint">uninstrumented</span>
+          </Tooltip>
         )}
         <span className="dim seen">
           {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}

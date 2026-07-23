@@ -4,6 +4,7 @@ import type { PermissionMode, Session } from "@shared/types.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The shared permission-mode chip, clickable to pick a different mode instead of
@@ -88,9 +89,9 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
 
   if (!canPick) {
     return (
-      <span className={`mode mode-${current.tone}`} title={current.title}>
-        {current.label}
-      </span>
+      <Tooltip label={current.title}>
+        <span className={`mode mode-${current.tone}`}>{current.label}</span>
+      </Tooltip>
     );
   }
 
@@ -105,23 +106,24 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
 
   return (
     <>
-      <button
-        ref={chipRef}
-        className={`mode mode-${current.tone} mode-btn${open ? " open" : ""}`}
-        title={`${current.title}\nClick to change (or Shift+Tab in the terminal)`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(e) => {
-          e.stopPropagation();
-          setError(null);
-          setOpen((o) => !o);
-        }}
-      >
-        {current.label}
-        <span className="mode-caret" aria-hidden>
-          ⌄
-        </span>
-      </button>
+      <Tooltip label={`${current.title} - click to change (or Shift+Tab in the terminal)`}>
+        <button
+          ref={chipRef}
+          className={`mode mode-${current.tone} mode-btn${open ? " open" : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={(e) => {
+            e.stopPropagation();
+            setError(null);
+            setOpen((o) => !o);
+          }}
+        >
+          {current.label}
+          <span className="mode-caret" aria-hidden>
+            ⌄
+          </span>
+        </button>
+      </Tooltip>
 
       {open &&
         anchor &&
@@ -139,8 +141,8 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
               const d = permissionModeDisplay(m)!;
               const active = session.permissionMode === m;
               return (
+                <Tooltip key={m} label={d.title}>
                 <button
-                  key={m}
                   role="menuitemradio"
                   aria-checked={active}
                   className={`mode-opt${active ? " active" : ""}`}
@@ -159,6 +161,7 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
                     </span>
                   )}
                 </button>
+                </Tooltip>
               );
             })}
             {error && <p className="mode-pop-err">{error}</p>}

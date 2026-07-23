@@ -3,6 +3,7 @@ import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Confirm handing a backlog task to an agent that is holding something the handover
@@ -63,9 +64,11 @@ export function AssignResetModal({
     >
       <header className="modal-head">
         <h2>Hand this task over?</h2>
-        <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-          ✕
-        </button>
+        <Tooltip label="Close without handing the task over (Escape)">
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="reset-body">
@@ -106,12 +109,16 @@ export function AssignResetModal({
 
       <footer className="modal-foot">
         <span className="actions-spacer" />
-        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-          Cancel
-        </button>
-        <button className="btn btn-danger" onClick={() => void go()} disabled={busy}>
-          {busy ? "Handing over…" : "Reset & hand over"}
-        </button>
+        <Tooltip label="Leave this agent on what it is doing">
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </Tooltip>
+        <Tooltip label="Reset this agent's checkout and give it this task instead">
+          <button className="btn btn-danger" onClick={() => void go()} disabled={busy}>
+            {busy ? "Handing over…" : "Reset & hand over"}
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

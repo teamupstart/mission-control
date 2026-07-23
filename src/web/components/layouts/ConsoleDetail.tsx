@@ -31,6 +31,7 @@ import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 
 type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
@@ -209,13 +210,14 @@ export function ConsoleDetail({
           onOpen={workflowRun ? () => view.onOpenWorkflowRun?.(workflowRun.id) : undefined}
         />
         {!workflowRun && view.onBindWorkflow && (
+          <Tooltip label="Bind a published workflow version">
           <button
             className="workflow-bind-chip"
-            title="Bind a published workflow version"
             onClick={() => view.onBindWorkflow?.(session.id)}
           >
             ＋ workflow
           </button>
+          </Tooltip>
         )}
         <StateBadge
           session={session}
@@ -230,9 +232,9 @@ export function ConsoleDetail({
       <dl className="detail-sub">
         <div className="kv">
           <dt>path</dt>
-          <dd className="mono" title={session.cwd ?? ""}>
-            {shortenCwd(session.cwd)}
-          </dd>
+          <Tooltip label={session.cwd ?? "This session has no working directory"}>
+            <dd className="mono">{shortenCwd(session.cwd)}</dd>
+          </Tooltip>
         </div>
         {session.gitBranch && (
           <div className="kv">
@@ -241,11 +243,14 @@ export function ConsoleDetail({
           </div>
         )}
         {session.task && (
-          <div className={`task-chip task-${session.task.status}`} title={`${session.task.kind} task`}>
-            <span className="task-kind">{session.task.kind}</span>
+          <div className={`task-chip task-${session.task.status}`}>
+            <Tooltip label={`${session.task.kind} task`}>
+              <span className="task-kind">{session.task.kind}</span>
+            </Tooltip>
             <span className="task-title">{session.task.title}</span>
             {session.task.outcome &&
               (session.task.outcomeUrl ? (
+                <Tooltip label={`Outcome: ${session.task.outcome} - open on GitHub`}>
                 <a
                   className="task-outcome"
                   href={session.task.outcomeUrl}
@@ -254,6 +259,7 @@ export function ConsoleDetail({
                 >
                   {session.task.outcome}
                 </a>
+                </Tooltip>
               ) : (
                 <span className="task-outcome">{session.task.outcome}</span>
               ))}
@@ -269,8 +275,8 @@ export function ConsoleDetail({
 
       <div className="detail-tabs" role="tablist" aria-label="Session detail">
         {tabs.map((t) => (
+          <Tooltip key={t.id} label={`Show this session's ${t.label.toLowerCase()}`}>
           <button
-            key={t.id}
             role="tab"
             aria-selected={tab === t.id}
             className={`detail-tab${tab === t.id ? " on" : ""}`}
@@ -290,6 +296,7 @@ export function ConsoleDetail({
             {t.label}
             {t.pip > 0 && <span className="detail-pip">{t.pip}</span>}
           </button>
+          </Tooltip>
         ))}
 
         {/* In the tab row but NOT a tab - no `role="tab"`, and pushed to the far end
@@ -298,14 +305,16 @@ export function ConsoleDetail({
             than switching the body. Hidden when Foreman has never spoken here: an
             empty archive isn't worth a permanent control. */}
         {episodes.length > 0 && (
-          <button
-            className="foreman-rail"
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((v) => !v)}
-          >
-            {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
-            Foreman · {episodes.length}
-          </button>
+          <Tooltip label={drawerOpen ? "Close Foreman's notes" : `Read Foreman's ${episodes.length} note${episodes.length === 1 ? "" : "s"} on this session`}>
+            <button
+              className="foreman-rail"
+              aria-expanded={drawerOpen}
+              onClick={() => setDrawerOpen((v) => !v)}
+            >
+              {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
+              Foreman · {episodes.length}
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -434,17 +443,17 @@ export function ConsoleDetail({
       <footer className="detail-foot">
         <span className="detail-agent">{AGENT_IDENTITY[session.agent].label}</span>
         {session.nomistakesGated && (
-          <span className="gated" title="Gated by no-mistakes">
-            ◇ gated
-          </span>
+          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+            <span className="gated">◇ gated</span>
+          </Tooltip>
         )}
         <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
         {!session.instrumented && (
-          <span className="hint" title="No hooks reporting - status is coarse">
-            uninstrumented
-          </span>
+          <Tooltip label="No hooks reporting - status is coarse">
+            <span className="hint">uninstrumented</span>
+          </Tooltip>
         )}
         <span className="detail-seen dim">
           {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}

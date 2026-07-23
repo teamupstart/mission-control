@@ -3,6 +3,7 @@ import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import { parsePatch, type DiffFile } from "../lib/diff.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Full-screen viewer for a session's changes against its source branch. Fetches
@@ -152,7 +153,11 @@ function DiffViewerContent({
     >
       <header className="diff-head">
         <div className="diff-title">
-          {!inline && <h2 title={session.name}>{session.name}</h2>}
+          {!inline && (
+            <Tooltip label={session.name}>
+              <h2>{session.name}</h2>
+            </Tooltip>
+          )}
           {/* A commit diff is ONE commit, so it must not borrow the range
               wording below: "<branch> vs <base>" would read as everything since
               that parent, which is the larger diff and the wrong one. */}
@@ -182,9 +187,11 @@ function DiffViewerContent({
           )}
         </div>
         {onClose && (
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
+          <Tooltip label="Close the diff (Escape)">
+            <button className="icon-btn" aria-label="Close" onClick={onClose}>
+              ✕
+            </button>
+          </Tooltip>
         )}
       </header>
 
@@ -244,18 +251,14 @@ const FileItem = ({
 }): React.JSX.Element => {
   const { dir, name } = splitPath(file.path);
   return (
+    <Tooltip label={`${STATUS_LABEL[file.status]} · ${file.path}`}>
     <button
       ref={ref}
       className={`diff-fileitem${active ? " active" : ""}`}
       onClick={onSelect}
       aria-current={active}
-      title={file.path}
     >
-      <span
-        className={`diff-file-dot status-${file.status}`}
-        title={STATUS_LABEL[file.status]}
-        aria-hidden
-      >
+      <span className={`diff-file-dot status-${file.status}`} aria-hidden>
         {STATUS_INITIAL[file.status]}
       </span>
       <span className="diff-fileitem-path mono">
@@ -267,6 +270,7 @@ const FileItem = ({
         {file.removed > 0 && <span className="diff-del">−{file.removed}</span>}
       </span>
     </button>
+    </Tooltip>
   );
 };
 
@@ -276,9 +280,9 @@ function FileDiff({ file }: { file: DiffFile }): React.JSX.Element {
     <section className="diff-file">
       <div className="diff-file-head">
         <span className={`diff-file-status status-${file.status}`}>{STATUS_LABEL[file.status]}</span>
-        <span className="diff-file-path mono" title={file.path}>
-          {file.path}
-        </span>
+        <Tooltip label={file.path}>
+          <span className="diff-file-path mono">{file.path}</span>
+        </Tooltip>
         <span className="diff-file-stat">
           {file.added > 0 && <span className="diff-add">+{file.added}</span>}
           {file.removed > 0 && <span className="diff-del">−{file.removed}</span>}

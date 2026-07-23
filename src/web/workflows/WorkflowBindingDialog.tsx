@@ -8,6 +8,7 @@ import {
   type WorkflowSummary,
 } from "@shared/workflow.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
+import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 
 export interface WorkflowBindingTarget {
@@ -186,47 +187,57 @@ export function WorkflowBindingDialog({
     >
       <header className="modal-head">
         <div><p className="workflow-eyebrow">Immutable version binding</p><h2>Bind workflow</h2></div>
-        <button className="icon-btn" onClick={onClose} disabled={busy} aria-label="Close">×</button>
+        <Tooltip label="Close without binding (Escape)">
+          <button className="icon-btn" onClick={onClose} disabled={busy} aria-label="Close">×</button>
+        </Tooltip>
       </header>
       <p>Preview reviews one immutable evidence snapshot and never writes to the terminal.</p>
       <label>
         Session
-        <select value={sessionId} disabled={busy || Boolean(target.sessionId)} onChange={(event) => setSessionId(event.target.value)}>
-          <option value="">Choose a live session</option>
-          {live.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.agent}</option>)}
-        </select>
+        <Tooltip label="Which live session this workflow will review">
+          <select value={sessionId} disabled={busy || Boolean(target.sessionId)} onChange={(event) => setSessionId(event.target.value)}>
+            <option value="">Choose a live session</option>
+            {live.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.agent}</option>)}
+          </select>
+        </Tooltip>
       </label>
       <label>
         Published workflow
-        <select value={versionId} disabled={busy || Boolean(target.workflowVersionId)} onChange={(event) => setVersionId(event.target.value)}>
-          <option value="">Choose a published version</option>
+        <Tooltip label="Which published, immutable workflow version to bind">
+          <select value={versionId} disabled={busy || Boolean(target.workflowVersionId)} onChange={(event) => setVersionId(event.target.value)}>
+            <option value="">Choose a published version</option>
           {target.workflowVersionId &&
             !publishable.some((workflow) => workflow.currentVersionId === target.workflowVersionId) && (
               <option value={target.workflowVersionId}>
                 Published version {target.workflowVersionId.slice(0, 8)}
               </option>
             )}
-          {publishable.map((workflow) => (
-            <option key={workflow.currentVersionId!} value={workflow.currentVersionId!}>
-              {workflow.name} · v{workflow.publishedVersion}
-            </option>
-          ))}
-        </select>
+            {publishable.map((workflow) => (
+              <option key={workflow.currentVersionId!} value={workflow.currentVersionId!}>
+                {workflow.name} · v{workflow.publishedVersion}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
       </label>
       <div className="workflow-binding-modes">
         <label>
           Trigger
-          <select value="manual" disabled>
-            <option value="manual">Manual</option>
-            <option value="foreman_complete">Foreman complete (Phase 4)</option>
-          </select>
+          <Tooltip label="Runs start manually - automatic triggers are not available yet">
+            <select value="manual" disabled>
+              <option value="manual">Manual</option>
+              <option value="foreman_complete">Foreman complete (Phase 4)</option>
+            </select>
+          </Tooltip>
         </label>
         <label>
           Delivery
-          <select value="preview" disabled>
-            <option value="preview">Preview</option>
-            <option value="live">Live (Phase 4)</option>
-          </select>
+          <Tooltip label="Preview only reports its verdict and never writes to the terminal">
+            <select value="preview" disabled>
+              <option value="preview">Preview</option>
+              <option value="live">Live (Phase 4)</option>
+            </select>
+          </Tooltip>
         </label>
         <label>
           Maximum repair rounds
@@ -270,20 +281,24 @@ export function WorkflowBindingDialog({
       )}
       {error && <p className="persona-error" role="alert">{error}</p>}
       <footer className="modal-actions">
-        <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>
-          {existing?.state === "active" ? "Keep binding" : existing ? "Reattach only" : "Bind only"}
-        </button>
-        <button
-          className="btn"
-          disabled={busy || !canSubmit}
-          onClick={() => void perform(true)}
-        >
+        <Tooltip label="Attach the workflow to this session without starting a run">
+          <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>
+            {existing?.state === "active" ? "Keep binding" : existing ? "Reattach only" : "Bind only"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
+          <button
+            className="btn"
+            disabled={busy || !canSubmit}
+            onClick={() => void perform(true)}
+          >
           {busy
             ? "Capturing…"
             : existing
               ? existing.state === "active" ? "Preview bound version" : "Reattach and Preview"
               : "Bind and Preview"}
-        </button>
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

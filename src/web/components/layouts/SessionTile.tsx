@@ -13,6 +13,7 @@ import {
 import { EffortPicker } from "../EffortPicker.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 
 /**
  * Whether a click only marks the end of a drag-select rather than a click on the thing
@@ -127,24 +128,28 @@ export function SessionTile({
           because the root declines clicks that merely end a text selection. Reaching a
           session by keyboard must not depend on whether something happens to be selected
           somewhere on the page. */}
-      <button
-        type="button"
-        className="tile-open"
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpen();
-        }}
-        aria-label={`Open ${session.name || "unnamed session"}`}
-        aria-current={selected}
-      />
+      <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+        <button
+          type="button"
+          className="tile-open"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          aria-label={`Open ${session.name || "unnamed session"}`}
+          aria-current={selected}
+        />
+      </Tooltip>
 
       <span className="tile-head">
         <AgentDot agent={session.agent} />
         <span className="tile-name">{session.name || "(unnamed)"}</span>
         {session.nomistakesGated && !session.nomistakes && (
-          <span className="gated" title="Gated by no-mistakes" aria-hidden>
-            ◇
-          </span>
+          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+            <span className="gated" aria-hidden>
+              ◇
+            </span>
+          </Tooltip>
         )}
       </span>
 
@@ -173,9 +178,11 @@ export function SessionTile({
       {gate && (
         <span className="tile-gate">
           <span className="tile-gate-row">
-            <span className="gate-brand" title="Gated by no-mistakes" aria-hidden>
-              ◇
-            </span>
+            <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+              <span className="gate-brand" aria-hidden>
+                ◇
+              </span>
+            </Tooltip>
             <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
             {!gate.done && gate.pos != null && (
               <span className="gate-pos">

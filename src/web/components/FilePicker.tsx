@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionFileEntry } from "@shared/types.ts";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Match paths the way a command palette should: basename prefixes first, then basename
@@ -85,7 +86,7 @@ export function FilePicker({
           <h2>Find a file</h2>
           <span className="file-picker-session mono">{session.name}</span>
         </div>
-        <button className="icon-btn" onClick={onClose} aria-label="Close file picker">✕</button>
+        <Tooltip label="Close the file picker (Escape)"><button className="icon-btn" onClick={onClose} aria-label="Close file picker">✕</button></Tooltip>
       </header>
 
       <form
@@ -137,8 +138,8 @@ export function FilePicker({
         )}
         {state?.listError && <p className="file-picker-error">{state.listError}</p>}
         {shown.map((file, index) => (
+          <Tooltip key={file.path} label={file.path}>
           <button
-            key={file.path}
             id={`file-picker-option-${index}`}
             ref={index === activeIndex ? activeRef : undefined}
             type="button"
@@ -150,6 +151,7 @@ export function FilePicker({
           >
             <span className="file-picker-name mono">{file.path}</span>
           </button>
+          </Tooltip>
         ))}
         {state?.listState === "ready" && shown.length === 0 && (
           <p className="file-picker-empty">No matching files.</p>

@@ -1,4 +1,5 @@
 import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The layout's shape, drawn rather than described - four tiles, a rail + pane, or
@@ -63,13 +64,15 @@ export function LayoutPanel({
       <div className="layout-picker" role="radiogroup" aria-label="Dashboard layout">
         {LAYOUTS.map((l) => (
           <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
-            <input
-              type="radio"
-              name="layout"
-              value={l.id}
-              checked={layout === l.id}
-              onChange={() => onLayoutChange(l.id)}
-            />
+            <Tooltip label={l.description}>
+              <input
+                type="radio"
+                name="layout"
+                value={l.id}
+                checked={layout === l.id}
+                onChange={() => onLayoutChange(l.id)}
+              />
+            </Tooltip>
             <span className="layout-option-text">
               <span className="layout-option-label">
                 <LayoutGlyph mode={l.id} />

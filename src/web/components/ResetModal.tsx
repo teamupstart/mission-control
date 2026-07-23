@@ -3,6 +3,7 @@ import type { ResetPreview, Session } from "@shared/types.ts";
 import { api, fetchResetPreview } from "../lib/api.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Confirm-and-execute a hard reset of a session's checkout to origin's default
@@ -73,9 +74,11 @@ export function ResetModal({
     >
       <header className="modal-head">
         <h2>Reset to {target}</h2>
-        <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-          ✕
-        </button>
+        <Tooltip label="Close without resetting (Escape)">
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className="reset-body">
@@ -92,12 +95,16 @@ export function ResetModal({
 
       <footer className="modal-foot">
         <span className="actions-spacer" />
-        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-          Cancel
-        </button>
-        <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
-          {busy ? "Resetting…" : "Reset & clear"}
-        </button>
+        <Tooltip label="Leave the checkout and the agent's context alone">
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </Tooltip>
+        <Tooltip label={`Discard the changes listed above, reset to ${target}, and clear the agent's context`}>
+          <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
+            {busy ? "Resetting…" : "Reset & clear"}
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

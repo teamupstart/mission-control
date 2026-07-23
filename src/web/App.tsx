@@ -914,16 +914,18 @@ export function App(): React.JSX.Element {
               }}
             />
             {filter && (
-              <button
-                className="filter-clear"
-                aria-label="Clear filter"
-                onClick={() => {
-                  setFilter("");
-                  filterRef.current?.focus();
-                }}
-              >
-                ✕
-              </button>
+              <Tooltip label="Clear the filter">
+                <button
+                  className="filter-clear"
+                  aria-label="Clear filter"
+                  onClick={() => {
+                    setFilter("");
+                    filterRef.current?.focus();
+                  }}
+                >
+                  ✕
+                </button>
+              </Tooltip>
             )}
           </div>
           <div className="summary">
@@ -931,29 +933,41 @@ export function App(): React.JSX.Element {
             {counts.attention > 0 && <Stat n={counts.attention} label="need you" tone="attention" />}
             {counts.working > 0 && <Stat n={counts.working} label="working" tone="working" />}
             {pendingReviews.length > 0 && (
-              <button className="stat-btn" onClick={openReviews}>
-                <Stat n={pendingReviews.length} label="reviews" tone="attention" />
-              </button>
+              <Tooltip
+                label={`${pendingReviews.length} agent${pendingReviews.length === 1 ? "" : "s"} waiting on your review - open the queue`}
+              >
+                <button className="stat-btn" onClick={openReviews}>
+                  <Stat n={pendingReviews.length} label="reviews" tone="attention" />
+                </button>
+              </Tooltip>
             )}
           </div>
           {/* Every action shares one rhythm, tighter than the gap separating them
               from the filter/stats, so they read as one cluster and wrap as a
               unit. `live` stays outside it: that is status, not an action. */}
           <div className="topbar-actions">
-            <button
-              className="ghost-btn workflow-nav-btn"
-              onClick={() =>
-                navigate(
-                  route.page === "fleet"
-                    ? { page: "workflows", tab: "workflows" }
-                    : { page: "fleet" },
-                )
+            <Tooltip
+              label={
+                route.page === "fleet"
+                  ? "Open Workflows - author and run the personas agents follow"
+                  : "Return to the fleet of running sessions"
               }
-              aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
             >
-              <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
-              {route.page === "fleet" ? "Workflows" : "Fleet"}
-            </button>
+              <button
+                className="ghost-btn workflow-nav-btn"
+                onClick={() =>
+                  navigate(
+                    route.page === "fleet"
+                      ? { page: "workflows", tab: "workflows" }
+                      : { page: "fleet" },
+                  )
+                }
+                aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
+              >
+                <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
+                {route.page === "fleet" ? "Workflows" : "Fleet"}
+              </button>
+            </Tooltip>
             <ForemanBar
               state={foreman}
               onOpenSettings={() => {
@@ -961,33 +975,35 @@ export function App(): React.JSX.Element {
                 setSettingsOpen(true);
               }}
             />
-            <button
-              className="dispatch-btn"
-              onClick={openDispatch}
-              title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
+            <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
+              <button className="dispatch-btn" onClick={openDispatch}>
+                <span aria-hidden>＋</span> Dispatch
+              </button>
+            </Tooltip>
+            <Tooltip
+              label={`Sitrep - what every session is doing, and the backlog (${formatChord(bindings.roundup)})`}
             >
-              <span aria-hidden>＋</span> Dispatch
-            </button>
-            <button
-              className="ghost-btn glyph-btn"
-              onClick={() => setReportOpen(true)}
-              title={`Sitrep - press ${formatChord(bindings.roundup)}`}
-              aria-label="Sitrep"
-            >
-              <span aria-hidden>📡</span>
-              {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-            </button>
-            <button
-              className="ghost-btn glyph-btn gear-btn"
-              onClick={() => {
-                setSettingsCategory("keyboard");
-                setSettingsOpen(true);
-              }}
-              title="Settings (⌘,)"
-              aria-label="Settings"
-            >
-              <span aria-hidden>⚙</span>
-            </button>
+              <button
+                className="ghost-btn glyph-btn"
+                onClick={() => setReportOpen(true)}
+                aria-label="Sitrep"
+              >
+                <span aria-hidden>📡</span>
+                {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+              </button>
+            </Tooltip>
+            <Tooltip label="Settings (⌘,)">
+              <button
+                className="ghost-btn glyph-btn gear-btn"
+                onClick={() => {
+                  setSettingsCategory("keyboard");
+                  setSettingsOpen(true);
+                }}
+                aria-label="Settings"
+              >
+                <span aria-hidden>⚙</span>
+              </button>
+            </Tooltip>
             <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
           </div>
           <div className={`link ${connected ? "up" : "down"}`}>
@@ -1112,9 +1128,11 @@ export function App(): React.JSX.Element {
             <p className="empty-sub">
               No {layout === "board" ? "session or backlog task" : "session"} matches that title or
               status.{" "}
-              <button className="link-btn" onClick={() => setFilter("")}>
-                Clear the filter
-              </button>{" "}
+              <Tooltip label="Clear the filter">
+                <button className="link-btn" onClick={() => setFilter("")}>
+                  Clear the filter
+                </button>
+              </Tooltip>{" "}
               to see all {sessions.length} sessions.
             </p>
           </div>
@@ -1289,62 +1307,82 @@ function CommandBar({
       <span className="cmdbar-keys">
         {live && (
           <>
-            <button className="keycap-btn" onClick={() => onAction("startSend")}>
-              <kbd>{formatChord(bindings.send)}</kbd> send
-            </button>
-            <button className="keycap-btn" onClick={() => onAction("focusPane")}>
-              <kbd>{formatChord(bindings.focus)}</kbd> focus
-            </button>
-            <button
-              className="keycap-btn"
-              onClick={() => onAction("toggleQueue")}
-              title="Show or hide this session's work queue"
-            >
-              <kbd>{formatChord(bindings.queue)}</kbd> queue
-            </button>
-            {canCycleMode && (
-              <button className="keycap-btn" onClick={() => onAction("cycleMode")}>
-                <kbd>{formatChord(bindings.mode)}</kbd> mode
+            <Tooltip label="Type a message into this session's prompt">
+              <button className="keycap-btn" onClick={() => onAction("startSend")}>
+                <kbd>{formatChord(bindings.send)}</kbd> send
               </button>
+            </Tooltip>
+            <Tooltip label="Bring this session's terminal pane to the front">
+              <button className="keycap-btn" onClick={() => onAction("focusPane")}>
+                <kbd>{formatChord(bindings.focus)}</kbd> focus
+              </button>
+            </Tooltip>
+            <Tooltip label="Show or hide this session's work queue">
+              <button className="keycap-btn" onClick={() => onAction("toggleQueue")}>
+                <kbd>{formatChord(bindings.queue)}</kbd> queue
+              </button>
+            </Tooltip>
+            {canCycleMode && (
+              <Tooltip label="Cycle this session's permission mode">
+                <button className="keycap-btn" onClick={() => onAction("cycleMode")}>
+                  <kbd>{formatChord(bindings.mode)}</kbd> mode
+                </button>
+              </Tooltip>
             )}
             {canRename && (
-              <button className="keycap-btn" onClick={onRename} title="Rename this session's tab">
-                <kbd>{formatChord(bindings.rename)}</kbd> rename
-              </button>
+              <Tooltip label="Rename this session's tab">
+                <button className="keycap-btn" onClick={onRename}>
+                  <kbd>{formatChord(bindings.rename)}</kbd> rename
+                </button>
+              </Tooltip>
             )}
-            <button className="keycap-btn" onClick={() => onAction("requestKill")}>
-              <kbd>{formatChord(bindings.kill)}</kbd> kill
-            </button>
+            <Tooltip label="Terminate this agent">
+              <button className="keycap-btn" onClick={() => onAction("requestKill")}>
+                <kbd>{formatChord(bindings.kill)}</kbd> kill
+              </button>
+            </Tooltip>
           </>
         )}
         {session.cwd && (
           <>
-            <button className="keycap-btn" onClick={onDiff}>
-              <kbd>{formatChord(bindings.diff)}</kbd> diff
-            </button>
-            {expanded && (
-              <button className="keycap-btn" onClick={onFiles}>
-                <kbd>{formatChord(bindings.files)}</kbd> files
+            <Tooltip label="View this checkout's changes vs its source branch">
+              <button className="keycap-btn" onClick={onDiff}>
+                <kbd>{formatChord(bindings.diff)}</kbd> diff
               </button>
+            </Tooltip>
+            {expanded && (
+              <Tooltip label="Browse and edit this checkout's files">
+                <button className="keycap-btn" onClick={onFiles}>
+                  <kbd>{formatChord(bindings.files)}</kbd> files
+                </button>
+              </Tooltip>
             )}
-            <button className="keycap-btn" onClick={onFilePicker}>
-              <kbd>{formatChord(bindings.filePicker)}</kbd> find file
-            </button>
+            <Tooltip label="Jump to a file in this checkout by name">
+              <button className="keycap-btn" onClick={onFilePicker}>
+                <kbd>{formatChord(bindings.filePicker)}</kbd> find file
+              </button>
+            </Tooltip>
           </>
         )}
         {live && session.cwd && (
-          <button className="keycap-btn" onClick={onReset} title="Reset to origin & clear context">
-            <kbd>{formatChord(bindings.reset)}</kbd> reset
-          </button>
+          <Tooltip label="Reset the checkout to origin's default branch and clear the agent's context">
+            <button className="keycap-btn" onClick={onReset}>
+              <kbd>{formatChord(bindings.reset)}</kbd> reset
+            </button>
+          </Tooltip>
         )}
-        <button className="keycap-btn" onClick={onToggleExpand}>
-          <kbd>{formatChord(bindings.expand)}</kbd> {expanded ? "collapse" : "expand"}
-        </button>
+        <Tooltip label={expanded ? "Collapse this session's detail" : "Expand this session's detail"}>
+          <button className="keycap-btn" onClick={onToggleExpand}>
+            <kbd>{formatChord(bindings.expand)}</kbd> {expanded ? "collapse" : "expand"}
+          </button>
+        </Tooltip>
         <span className="cmdbar-hint">
           <kbd>↑↓←→</kbd> move
-          <button className="keycap-btn" onClick={expanded ? onToggleExpand : onDeselect}>
-            <kbd>esc</kbd> {expanded ? "collapse" : "deselect"}
-          </button>
+          <Tooltip label={expanded ? "Collapse this session's detail" : "Clear the current selection"}>
+            <button className="keycap-btn" onClick={expanded ? onToggleExpand : onDeselect}>
+              <kbd>esc</kbd> {expanded ? "collapse" : "deselect"}
+            </button>
+          </Tooltip>
         </span>
       </span>
     </div>
@@ -1430,21 +1468,22 @@ function UsageBar({
   const compactCost = compactFleetCost(fleet);
   return (
     <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
-      <button
-        type="button"
-        className="topbar-usage-toggle"
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show fleet cost and usage" : "Fold fleet cost and usage away"}
-        onClick={onToggleCollapsed}
-      >
-        <span className="topbar-usage-caret" aria-hidden>
-          {collapsed ? "▸" : "▾"}
-        </span>
-        Usage
-        {collapsed && compactCost && (
-          <span className="topbar-usage-compact">{compactCost}</span>
-        )}
-      </button>
+      <Tooltip label={collapsed ? "Show fleet cost and usage" : "Fold fleet cost and usage away"}>
+        <button
+          type="button"
+          className="topbar-usage-toggle"
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapsed}
+        >
+          <span className="topbar-usage-caret" aria-hidden>
+            {collapsed ? "▸" : "▾"}
+          </span>
+          Usage
+          {collapsed && compactCost && (
+            <span className="topbar-usage-compact">{compactCost}</span>
+          )}
+        </button>
+      </Tooltip>
       {!collapsed && <FleetStrip fleet={fleet} view={view} />}
     </div>
   );

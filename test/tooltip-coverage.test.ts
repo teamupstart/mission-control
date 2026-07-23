@@ -1,0 +1,139 @@
+/**
+ * What is at stake: every control in the dashboard says what it does, through ONE
+ * tooltip, and a new control cannot be added without one.
+ *
+ * The app used to describe its controls with the native `title` attribute - about a
+ * hundred of them, on roughly a third of its buttons. That is three defects in one. The
+ * bubble is drawn by the OS, so it was the single surface in a carefully themed app that
+ * ignored the theme; `title` never fires on focus, so a keyboard user could not reach any
+ * of it; and because it was optional and invisible in review, most controls simply had
+ * none - the operator's only clue to what a bare `✕` or `⌁` did was to click it.
+ *
+ * So the mechanism is `components/Tooltip.tsx`, and this file is what stops the coverage
+ * regressing. It is a source scan rather than a render test on purpose: rendering can only
+ * check the components a test happens to mount, and the failure being prevented here is a
+ * control nobody thought about - exactly the one no test would mount.
+ *
+ * Two rules, and the second is what keeps the first honest:
+ *   1. every interactive element is wrapped directly in `<Tooltip>`;
+ *   2. no `title` attribute survives anywhere, so there is no second way to do this that
+ *      quietly comes back.
+ *
+ * Free-text entry (`<input type=text|number|…>`, `<textarea>`) is deliberately NOT in the
+ * enforced set: those carry a visible `<label>` or placeholder that is on screen the whole
+ * time, and a tooltip repeating it is noise rather than help. Anything you ACT on - a
+ * button, a link, a select, a checkbox, a radio, a `<summary>` - is in.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+
+const WEB = fileURLToPath(new URL("../src/web", import.meta.url));
+
+function tsxFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) out.push(...tsxFiles(p));
+    else if (p.endsWith(".tsx")) out.push(p);
+  }
+  return out.sort();
+}
+
+/**
+ * Blank out comments so prose describing markup is never mistaken for markup. Same width,
+ * so reported line numbers still point at the real line.
+ */
+function withoutComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+}
+
+/** Elements a human ACTS on. Free-text entry is excluded - see the file comment. */
+const INTERACTIVE = /<(button|select|summary|a|input)(?=[\s/>])/g;
+const FREE_TEXT = /^(text|number|search|password|email|url|file|hidden)$/;
+
+/** The tag that opens immediately before `index`, or "" at the start of a file. */
+function enclosingTag(src: string, index: number): string {
+  // Scanning back for a bare "<" would find the comparison in a `foo(x) < 0` inside a
+  // Tooltip's own label expression, and report a wrapped control as unwrapped.
+  for (let i = index - 1; i >= 0; i--) {
+    if (src[i] === "<" && /[A-Za-z/]/.test(src[i + 1] ?? "")) {
+      return (src.slice(i + 1).match(/^[A-Za-z][\w.]*/) ?? [""])[0]!;
+    }
+  }
+  return "";
+}
+
+function unwrapped(): string[] {
+  const misses: string[] = [];
+  for (const file of tsxFiles(WEB)) {
+    if (file.endsWith("Tooltip.tsx")) continue; // it is the mechanism, not a caller
+    const raw = readFileSync(file, "utf8");
+    const src = withoutComments(raw);
+    for (const m of src.matchAll(INTERACTIVE)) {
+      const tag = src.slice(m.index, m.index + 400);
+      if (m[1] === "input") {
+        const type = tag.match(/type="(\w+)"/);
+        if (!type || FREE_TEXT.test(type[1]!)) continue;
+      }
+      // A bare `<a>` with no href is a styling hook, not a destination.
+      if (m[1] === "a" && !/href/.test(tag)) continue;
+      if (enclosingTag(src, m.index) === "Tooltip") continue;
+      const line = raw.slice(0, m.index).split("\n").length;
+      misses.push(`${file.slice(WEB.length + 1)}:${line} <${m[1]}>`);
+    }
+  }
+  return misses;
+}
+
+test("every interactive element is wrapped in the shared Tooltip", () => {
+  const misses = unwrapped();
+  assert.deepEqual(
+    misses,
+    [],
+    `these controls give the operator no hover description - wrap each in <Tooltip label="…">:\n  ${misses.join("\n  ")}`,
+  );
+});
+
+test("nothing describes itself with a native title attribute any more", () => {
+  // The second way to do this. Left available, it comes back one control at a time, and
+  // each one is a bubble the theme does not reach and a keyboard user never sees.
+  const offenders: string[] = [];
+  for (const file of tsxFiles(WEB)) {
+    const raw = readFileSync(file, "utf8");
+    const src = withoutComments(raw);
+    // `title=` on a DOM element only. `<Section title="Needs you">` and friends are
+    // component PROPS that happen to share the name, and are none of this test's business.
+    for (const m of src.matchAll(/\stitle=/g)) {
+      const openedBy = enclosingTag(src, m.index);
+      if (openedBy && openedBy[0] === openedBy[0]!.toUpperCase()) continue;
+      // `<iframe title>` is the frame's ACCESSIBLE NAME, not a tooltip - it is what a
+      // screen reader announces the embedded document as, and it is required. Browsers
+      // do not render a bubble for it, so there is nothing here for `Tooltip` to replace.
+      if (openedBy === "iframe") continue;
+      const line = raw.slice(0, m.index).split("\n").length;
+      offenders.push(`${file.slice(WEB.length + 1)}:${line}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `use <Tooltip label="…"> instead of a native title attribute:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("the scan can actually see a missing tooltip", () => {
+  // A coverage test that cannot fail is a green light wired to nothing. These pin the two
+  // things the real scan depends on: that a bare control is caught, and that the `<` in a
+  // Tooltip's own label expression does not make a wrapped one look bare.
+  const bare = `const A = () => <div><button onClick={x}>Go</button></div>;`;
+  assert.equal(enclosingTag(bare, bare.indexOf("<button")), "div");
+
+  const wrapped =
+    `const B = () => <Tooltip label={n < 0 ? "first" : "earlier"}><button>↑</button></Tooltip>;`;
+  assert.equal(enclosingTag(wrapped, wrapped.indexOf("<button")), "Tooltip");
+});

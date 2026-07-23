@@ -4,6 +4,7 @@ import { capabilitiesFor, skillLoadingAgents, skillsAgents } from "@shared/harne
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { SkillRow } from "@shared/types.ts";
 import type { SkillsState } from "../useSkills.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 // The skills catalog, as a settings section. Rows are the `.kb-row` shape the
 // keyboard editor already uses - label, description, control - because that is what
@@ -59,9 +60,11 @@ const SKILLED_DIRS = SKILLED.map((a) => `~/${capabilitiesFor(a).skills!.homeDir.
  */
 function EnforcementBadge({ row }: { row: SkillRow }): React.JSX.Element {
   return (
-    <span className={`skill-badge skill-badge-${row.enforcement}`} title={enforcementHint(row.enforcement)}>
-      {ENFORCEMENT_LABEL[row.enforcement]}
-    </span>
+    <Tooltip label={enforcementHint(row.enforcement)}>
+      <span className={`skill-badge skill-badge-${row.enforcement}`}>
+        {ENFORCEMENT_LABEL[row.enforcement]}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -93,25 +96,26 @@ function SkillRowView({
             that opens with a blank - a caveat about nobody, which is worse than silence.
           */}
           {UNSKILLED.length > 0 && (
-            <span
-              className="skill-badge skill-badge-agent"
-              title={`${agentList(UNSKILLED)} sessions are unaffected - they have no skills directory.`}
+            <Tooltip
+              label={`${agentList(UNSKILLED)} sessions are unaffected - they have no skills directory.`}
             >
-              {agentList(SKILLED)} only
-            </span>
+              <span className="skill-badge skill-badge-agent">{agentList(SKILLED)} only</span>
+            </Tooltip>
           )}
         </span>
         <span className="kb-row-desc">{row.description}</span>
       </div>
       <div className="kb-row-controls">
         <label className="skill-switch">
-          <input
-            type="checkbox"
-            checked={row.enabled}
-            disabled={disabled}
-            onChange={(e) => onToggle(e.target.checked)}
-            aria-label={`Enable /${row.name} in every ${SKILLED_LABEL} session`}
-          />
+          <Tooltip label={`Symlink /${row.name} into every ${SKILLED_LABEL} session's skills directory`}>
+            <input
+              type="checkbox"
+              checked={row.enabled}
+              disabled={disabled}
+              onChange={(e) => onToggle(e.target.checked)}
+              aria-label={`Enable /${row.name} in every ${SKILLED_LABEL} session`}
+            />
+          </Tooltip>
         </label>
       </div>
     </div>
@@ -157,12 +161,14 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       ))}
 
       <label className="alert-row skills-master">
-        <input
-          type="checkbox"
-          checked={view?.enabled ?? false}
-          disabled={!view}
-          onChange={(e) => void update({ enabled: e.target.checked })}
-        />
+        <Tooltip label="Master switch - off means nothing is symlinked, whatever the rows below say">
+          <input
+            type="checkbox"
+            checked={view?.enabled ?? false}
+            disabled={!view}
+            onChange={(e) => void update({ enabled: e.target.checked })}
+          />
+        </Tooltip>
         Enable Mission Control skills
       </label>
 

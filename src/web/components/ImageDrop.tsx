@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { Attachment } from "@shared/attachments.ts";
 import { uploadImage } from "../lib/api.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * Dropping images onto a compose box, the way the agent CLIs take them.
@@ -197,13 +198,7 @@ export function AttachmentStrip({
   return (
     <ul className="attach-strip">
       {attachments.map((a) => (
-        <li
-          key={a.id}
-          className={`attach-chip is-${a.status}`}
-          // The failure is the whole reason the chip is still here, so it has to be
-          // legible without a hover - but the name earns the tooltip when it fits.
-          title={a.status === "error" ? a.error : a.name}
-        >
+        <li key={a.id} className={`attach-chip is-${a.status}`}>
           {a.status === "error" ? (
             // No thumbnail on a rejected drop. The file that failed is usually one
             // the browser can't paint either, so an <img> here renders as a broken-
@@ -215,15 +210,22 @@ export function AttachmentStrip({
           ) : (
             <img className="attach-thumb" src={a.previewUrl} alt="" />
           )}
-          <span className="attach-name">{a.status === "error" ? a.error : a.name}</span>
-          <button
-            type="button"
-            className="attach-remove"
-            aria-label={`Remove ${a.name}`}
-            onClick={() => onRemove(a.id)}
-          >
-            ✕
-          </button>
+          {/* The tooltip goes on the truncated text, NOT on the chip: the chip contains
+              the remove button, and a tooltip wrapping both would put two bubbles on
+              screen the moment you reached for the ✕. */}
+          <Tooltip label={a.status === "error" ? (a.error ?? a.name) : a.name}>
+            <span className="attach-name">{a.status === "error" ? a.error : a.name}</span>
+          </Tooltip>
+          <Tooltip label={`Remove ${a.name} from this message`}>
+            <button
+              type="button"
+              className="attach-remove"
+              aria-label={`Remove ${a.name}`}
+              onClick={() => onRemove(a.id)}
+            >
+              ✕
+            </button>
+          </Tooltip>
         </li>
       ))}
     </ul>

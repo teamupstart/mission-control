@@ -12,6 +12,7 @@ import { Markdown } from "./Markdown.tsx";
 import { OpenInMenu } from "./OpenInMenu.tsx";
 import { api } from "../lib/api.ts";
 import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
 const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
@@ -298,18 +299,17 @@ export function FileWorkspace({
             placeholder="Filter files…"
             aria-label="Filter session files"
           />
-          <button className="icon-btn" onClick={() => controller.refresh(session.id)} title="Refresh files" aria-label="Refresh files">↻</button>
+          <Tooltip label="Re-read this checkout's file list"><button className="icon-btn" onClick={() => controller.refresh(session.id)} aria-label="Refresh files">↻</button></Tooltip>
         </div>
         <div className="file-list" role="listbox" aria-label="Session files">
           {state?.listState === "loading" && files.length === 0 && <p className="file-empty">Loading files…</p>}
           {state?.listError && <p className="file-error">{state.listError}</p>}
           {shown.map((file) => (
+            <Tooltip key={file.path} label={file.path}>
             <button
-              key={file.path}
               role="option"
               aria-selected={selectedPath === file.path}
               className={`file-row${selectedPath === file.path ? " on" : ""}`}
-              title={file.path}
               onClick={() => choose(file.path)}
             >
               <span className="file-row-name">{file.path}</span>
@@ -317,6 +317,7 @@ export function FileWorkspace({
                 <span className={`file-row-mark is-${state.buffers[file.path]!.saveState}`} aria-hidden>●</span>
               )}
             </button>
+            </Tooltip>
           ))}
           {state?.listState === "ready" && shown.length === 0 && <p className="file-empty">No matching files.</p>}
         </div>
@@ -334,20 +335,20 @@ export function FileWorkspace({
 
       <div className="file-main">
         <header className="file-toolbar">
-          <span className="file-path mono" title={selectedPath ?? ""}>{selectedPath ?? "Select a file"}</span>
+          <Tooltip label={selectedPath ?? "No file open"}><span className="file-path mono">{selectedPath ?? "Select a file"}</span></Tooltip>
           {buffer && <span className="file-language">{buffer.document.language}</span>}
           {buffer && <span className="file-size">{formatBytes(buffer.document.size)}</span>}
           {buffer && <SaveStatus buffer={buffer} />}
           <span className="file-toolbar-spacer" />
           {previewable && (
             <div className="file-mode" role="group" aria-label="File view mode">
-              <button className={mode === "preview" ? "on" : ""} onClick={() => controller.setMode(session.id, "preview")}>Preview</button>
-              <button className={mode === "editor" ? "on" : ""} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button>
+              <Tooltip label="Render this file rather than showing its source"><button className={mode === "preview" ? "on" : ""} onClick={() => controller.setMode(session.id, "preview")}>Preview</button></Tooltip>
+              <Tooltip label={buffer.document.editable ? "Edit this file's source" : "This file is not editable"}><button className={mode === "editor" ? "on" : ""} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button></Tooltip>
             </div>
           )}
           <OpenInMenu disabled={!buffer} busy={launching || pendingOpen !== null} onChoose={openIn} />
           {!extracted && onExtract && (
-            <button className="icon-btn file-extract" onClick={() => { controller.flush(session.id); onExtract(); }} title="Extract to a movable window" aria-label="Extract files window">↗</button>
+            <Tooltip label="Extract to a movable window"><button className="icon-btn file-extract" onClick={() => { controller.flush(session.id); onExtract(); }} aria-label="Extract files window">↗</button></Tooltip>
           )}
         </header>
 
@@ -390,20 +391,20 @@ export function FileWorkspace({
         {buffer && (buffer.saveState === "failed" || buffer.saveState === "offline") && (
           <div className="file-notice">
             <span>{buffer.error ?? (buffer.saveState === "offline" ? "Waiting for the daemon to reconnect." : "The save did not complete.")}</span>
-            <button className="btn" onClick={() => controller.retry(session.id, buffer.document.path)}>Retry</button>
+            <Tooltip label="Try saving this file again"><button className="btn" onClick={() => controller.retry(session.id, buffer.document.path)}>Retry</button></Tooltip>
           </div>
         )}
         {buffer?.conflict && (
           <div className="file-notice is-conflict">
             <span>{buffer.error ?? "This file changed outside Mission Control."}</span>
-            <button className="btn" onClick={() => setComparing((value) => !value)}>{comparing ? "Back to editor" : "Compare"}</button>
-            <button className="btn" disabled={buffer.conflict.deleted || buffer.conflict.text == null} onClick={() => {
+            <Tooltip label={comparing ? "Go back to editing" : "Show your edits against the version on disk"}><button className="btn" onClick={() => setComparing((value) => !value)}>{comparing ? "Back to editor" : "Compare"}</button></Tooltip>
+            <Tooltip label={buffer.conflict.deleted || buffer.conflict.text == null ? "The file on disk is gone, so there is nothing to reload" : "Discard your edits and take the version on disk"}><button className="btn" disabled={buffer.conflict.deleted || buffer.conflict.text == null} onClick={() => {
               if (window.confirm("Discard local edits and reload the version on disk?")) controller.reloadDisk(session.id, buffer.document.path);
-            }}>Reload disk</button>
-            <button className="btn btn-danger" disabled={!buffer.conflict.revision} onClick={() => {
+            }}>Reload disk</button></Tooltip>
+            <Tooltip label="Overwrite the newer file on disk with your local edits"><button className="btn btn-danger" disabled={!buffer.conflict.revision} onClick={() => {
               if (window.confirm("Overwrite the newer file on disk with your local edits?")) controller.overwriteDisk(session.id, buffer.document.path);
-            }}>Overwrite disk</button>
-            <button className="btn" onClick={() => void navigator.clipboard.writeText(buffer.text)}>Copy local</button>
+            }}>Overwrite disk</button></Tooltip>
+            <Tooltip label="Copy your local version to the clipboard"><button className="btn" onClick={() => void navigator.clipboard.writeText(buffer.text)}>Copy local</button></Tooltip>
           </div>
         )}
       </div>

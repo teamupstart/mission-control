@@ -25,6 +25,7 @@ import {
   useImageDrop,
   type PendingAttachment,
 } from "./ImageDrop.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 
 /** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
  *  because that's the name on the window the reader is looking at. */
@@ -345,13 +346,25 @@ export function TranscriptPanel({
               }
             }}
           />
-          <button
-            className="btn btn-send"
-            disabled={!canSend || dialogOpen || sending || drop.uploading}
-            onClick={() => void send()}
+          <Tooltip
+            label={
+              !canSend
+                ? "No pane to send to"
+                : dialogOpen
+                  ? "Answer the prompt above first"
+                  : drop.uploading
+                    ? "Waiting for the attachments to finish uploading"
+                    : "Send this reply to the agent's prompt (Enter)"
+            }
           >
-            {drop.uploading ? "Uploading…" : "Send"}
-          </button>
+            <button
+              className="btn btn-send"
+              disabled={!canSend || dialogOpen || sending || drop.uploading}
+              onClick={() => void send()}
+            >
+              {drop.uploading ? "Uploading…" : "Send"}
+            </button>
+          </Tooltip>
         </div>
         {flash && <span className="action-flash">{flash}</span>}
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
@@ -413,10 +426,12 @@ function ToolChips({ tools }: { tools: ToolCall[] }): React.JSX.Element {
         // carries what the call actually touched, and the title the literal input.
         const chip = toolChip(t);
         return (
-          <span key={`${t.name}-${i}`} className="tool-chip" title={chip.title}>
-            <span className="tool-chip-name">{chip.name}</span>
-            {chip.detail && <span className="tool-chip-detail">{chip.detail}</span>}
-          </span>
+          <Tooltip key={`${t.name}-${i}`} label={chip.title}>
+            <span className="tool-chip">
+              <span className="tool-chip-name">{chip.name}</span>
+              {chip.detail && <span className="tool-chip-detail">{chip.detail}</span>}
+            </span>
+          </Tooltip>
         );
       })}
     </div>

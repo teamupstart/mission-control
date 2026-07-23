@@ -163,7 +163,9 @@ test("the overview exposes filtering and an add-source entry point", () => {
 
 test("health filters expose their pressed state", () => {
   const html = render(viewOf([mkSource()]));
-  assert.match(html, /class="is-active" aria-pressed="true">All 1<\/button>/);
-  assert.match(html, /aria-pressed="false">Healthy 0<\/button>/);
-  assert.match(html, /aria-pressed="false">Paused 1<\/button>/);
+  // `aria-describedby` sits between the class and the pressed state now that each filter
+  // says what it filters to, so match the two attributes rather than their adjacency.
+  assert.match(html, /class="is-active"[^>]*aria-pressed="true"[^>]*>All 1<\/button>/);
+  assert.match(html, /aria-pressed="false"[^>]*>Healthy 0<\/button>/);
+  assert.match(html, /aria-pressed="false"[^>]*>Paused 1<\/button>/);
 });

@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 export type WorkspaceLinkHandler = (href: string, probe?: boolean) => boolean | Promise<boolean>;
 
@@ -33,19 +34,24 @@ function WorkspaceAnchor({
     return () => { live = false; };
   }, [href]);
 
+  // Where the link actually goes, which is the one thing markdown's own rendering hides -
+  // and, for a checkout-contained link, that clicking it opens the file here rather than
+  // in a browser tab. A link this app claims and one it hands to the OS look identical.
   return (
-    <a
-      {...props}
-      href={href}
-      onClick={(event) => {
-        let shouldOpen = claimed;
-        if (!shouldOpen && href) {
-          const result = handler.current(href, true);
-          shouldOpen = typeof result === "boolean" && result;
-        }
-        if (href && shouldOpen && handler.current(href) === true) event.preventDefault();
-      }}
-    />
+    <Tooltip label={claimed ? `Open ${href} in this session's files` : (href ?? "This link has no target")}>
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          let shouldOpen = claimed;
+          if (!shouldOpen && href) {
+            const result = handler.current(href, true);
+            shouldOpen = typeof result === "boolean" && result;
+          }
+          if (href && shouldOpen && handler.current(href) === true) event.preventDefault();
+        }}
+      />
+    </Tooltip>
   );
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AlertSettings } from "../lib/alertSettings.ts";
 import { playChime, unlockAudio } from "../lib/chime.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const notifyApi = typeof Notification !== "undefined";
 
@@ -70,56 +71,73 @@ export function AlertBar({
 
   return (
     <div className="alertbar" ref={ref}>
-      <button
-        className="ghost-btn glyph-btn"
-        onClick={() => setOpen((o) => !o)}
-        title={label}
-        aria-label={label}
-      >
-        <span aria-hidden>{icon}</span>
-      </button>
+      <Tooltip label={label}>
+        <button className="ghost-btn glyph-btn" onClick={() => setOpen((o) => !o)} aria-label={label}>
+          <span aria-hidden>{icon}</span>
+        </button>
+      </Tooltip>
       {open && (
         <div className="alert-pop" role="dialog" aria-label="Alert settings">
           {perm !== "granted" && (
-            <button className="btn btn-primary alert-enable" onClick={() => void enable()}>
-              Enable desktop alerts
-            </button>
+            <Tooltip label="Ask the browser for permission to raise desktop notifications">
+              <button className="btn btn-primary alert-enable" onClick={() => void enable()}>
+                Enable desktop alerts
+              </button>
+            </Tooltip>
           )}
           {perm === "denied" && (
             <p className="alert-hint">Notifications are blocked in the browser - the sound still plays.</p>
           )}
           <label className="alert-row">
-            <input
-              type="checkbox"
-              checked={on}
-              disabled={perm !== "granted"}
-              onChange={(e) => update({ notifications: e.target.checked })}
-            />
+            <Tooltip
+              label={
+                perm === "granted"
+                  ? "Raise a desktop notification when a session needs you"
+                  : "Grant the browser's notification permission above to enable this"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={perm !== "granted"}
+                onChange={(e) => update({ notifications: e.target.checked })}
+              />
+            </Tooltip>
             Desktop notifications
           </label>
           <label className="alert-row">
-            <input
-              type="checkbox"
-              checked={settings.sound}
-              onChange={(e) => {
-                unlockAudio();
-                update({ sound: e.target.checked });
-                if (e.target.checked) playChime("info");
-              }}
-            />
+            <Tooltip label="Play a chime when a session needs you">
+              <input
+                type="checkbox"
+                checked={settings.sound}
+                onChange={(e) => {
+                  unlockAudio();
+                  update({ sound: e.target.checked });
+                  if (e.target.checked) playChime("info");
+                }}
+              />
+            </Tooltip>
             Sound
           </label>
           <label className="alert-row">
-            <input
-              type="checkbox"
-              checked={isAway}
-              disabled={away === null}
-              onChange={(e) => {
-                void setAway({ away: e.target.checked });
-                unlockAudio();
-                if (settings.sound) playChime(e.target.checked ? "attention" : "info");
-              }}
-            />
+            <Tooltip
+              label={
+                away === null
+                  ? "Waiting for the daemon to report away mode"
+                  : "Buffer the noise while you're gone - only things blocked on you interrupt, the rest waits in a digest"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={isAway}
+                disabled={away === null}
+                onChange={(e) => {
+                  void setAway({ away: e.target.checked });
+                  unlockAudio();
+                  if (settings.sound) playChime(e.target.checked ? "attention" : "info");
+                }}
+              />
+            </Tooltip>
             Away mode
           </label>
           {/* The promise "only things blocked on you get through" is only true if

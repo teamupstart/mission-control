@@ -103,7 +103,7 @@ test("the dependency picker offers both backlog tasks and active sessions", () =
   assert.match(html, /Create the schema \(ship\)/);
   assert.match(html, /<optgroup label="Active sessions">/);
   assert.match(html, /Manual investigation/);
-  assert.match(html, /Ship dependencies wait for a merged PR/);
+  assert.match(html, /Every dependency waits for its merged PR/);
 });
 
 test("a backlog card carries a focusable way into the editor, not just a click handler", () => {

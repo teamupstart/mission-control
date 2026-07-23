@@ -1910,6 +1910,7 @@ function writeTaskDependencyRewrites(
 function invalidateTaskOwnershipInTransaction(
   d: DatabaseSync,
   sessionId: string,
+  at: number,
 ): string[] {
   const rows = d
     .prepare(
@@ -1918,7 +1919,21 @@ function invalidateTaskOwnershipInTransaction(
     )
     .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
   d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
-  d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ?`).run(sessionId);
+  d.prepare(
+    `UPDATE tasks SET
+       session_id = NULL,
+       status = CASE WHEN status IN ('dispatching', 'running') THEN 'cancelled' ELSE status END,
+       worktree_path = NULL,
+       branch = NULL,
+       provider = NULL,
+       tmux_session = NULL,
+       completed_at = CASE
+         WHEN status IN ('dispatching', 'running') THEN COALESCE(completed_at, ?)
+         ELSE completed_at
+       END,
+       updated_at = MAX(updated_at, ?)
+     WHERE session_id = ?`,
+  ).run(at, at, sessionId);
   return rows.map((row) => row.task_id);
 }
 
@@ -1933,7 +1948,7 @@ export function replaceSessionWorkEpisodeWithDependencies(
   try {
     const invalidatedTaskIds = invalidateOwnershipSessionId === null
       ? []
-      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId);
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId, episode.updatedAt);
     writeSessionWorkEpisode(d, episode);
     writeTaskDependencyRewrites(d, rewrites);
     if (ownsTransaction) d.exec("COMMIT");
@@ -1948,12 +1963,15 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   replaceSessionWorkEpisodeWithDependencies(episode, []);
 }
 
-export function deleteSessionWorkEpisodeWithOwnership(sessionId: string): string[] {
+export function deleteSessionWorkEpisodeWithOwnership(
+  sessionId: string,
+  at = Date.now(),
+): string[] {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
-    const invalidatedTaskIds = invalidateTaskOwnershipInTransaction(d, sessionId);
+    const invalidatedTaskIds = invalidateTaskOwnershipInTransaction(d, sessionId, at);
     d.prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
     if (ownsTransaction) d.exec("COMMIT");
     return invalidatedTaskIds;
@@ -1992,7 +2010,7 @@ export function rebindPendingSessionWorkEpisodeWithDependencies(
     }
     const invalidatedTaskIds = invalidateOwnershipSessionId === null
       ? []
-      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId);
+      : invalidateTaskOwnershipInTransaction(d, invalidateOwnershipSessionId, now);
     const result = d
       .prepare(
         `UPDATE session_work_episodes
@@ -2257,7 +2275,7 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
-    const taskIds = invalidateTaskOwnershipInTransaction(d, sessionId);
+    const taskIds = invalidateTaskOwnershipInTransaction(d, sessionId, Date.now());
     if (ownsTransaction) d.exec("COMMIT");
     return taskIds;
   } catch (error) {

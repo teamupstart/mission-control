@@ -1385,18 +1385,18 @@ export class Registry extends EventEmitter {
     awaitingAgentRebind = false,
     rebindFromTranscriptPath: string | null = null,
     promptedAt: number | null = null,
-    dependencyRebind: "none" | "all" | "prless" = "none",
+    dependencyRebind: "none" | "all" | "session-prless" = "none",
   ): SessionWorkEpisode | null {
     const previous = sessionWorkEpisodeFor(sessionId);
     if (!agentSessionId) {
       let invalidatedTaskIds: string[] = [];
       if (invalidateOwnership) {
-        invalidatedTaskIds = deleteSessionWorkEpisodeWithOwnership(sessionId);
+        invalidatedTaskIds = deleteSessionWorkEpisodeWithOwnership(sessionId, startedAt);
       } else {
         deleteSessionWorkEpisode(sessionId);
       }
       this.prObservations.delete(sessionId);
-      this.publishEpisodeTaskChanges([], invalidatedTaskIds, sessionId);
+      this.publishEpisodeTaskChanges([], invalidatedTaskIds, sessionId, startedAt);
       this.cleanupDependencyProvenance();
       return null;
     }
@@ -1417,8 +1417,13 @@ export class Registry extends EventEmitter {
     const rebinds =
       previous !== null &&
       (dependencyRebind === "all" ||
-        (dependencyRebind === "prless" && previous.prUrl === null))
-        ? this.pendingDependencyRebinds(previous, episode, startedAt)
+        (dependencyRebind === "session-prless" && previous.prUrl === null))
+        ? this.pendingDependencyRebinds(
+            previous,
+            episode,
+            startedAt,
+            dependencyRebind === "all" ? "all" : "none",
+          )
         : [];
     const invalidatedTaskIds = replaceSessionWorkEpisodeWithDependencies(
       episode,
@@ -1426,7 +1431,7 @@ export class Registry extends EventEmitter {
       invalidateOwnership ? sessionId : null,
     );
     this.prObservations.delete(sessionId);
-    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, sessionId);
+    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, sessionId, startedAt);
     if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
   }
@@ -1539,8 +1544,10 @@ export class Registry extends EventEmitter {
     >,
     next: SessionWorkEpisode,
     at: number,
+    taskRebind: "all" | "bound" | "none" = "bound",
   ): Task[] {
     const rebinds: Task[] = [];
+    const boundTaskMatches = new Map<string, boolean>();
     for (const task of [...this.tasks.values()]) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -1553,6 +1560,17 @@ export class Registry extends EventEmitter {
           dependency.prUrl !== previous.prUrl
         ) {
           return dependency;
+        }
+        if (dependency.type === "task") {
+          if (taskRebind === "none") return dependency;
+          if (taskRebind === "bound") {
+            let matches = boundTaskMatches.get(dependency.taskId);
+            if (matches === undefined) {
+              matches = this.taskDependencyOwnsEpisode(dependency.taskId, previous);
+              boundTaskMatches.set(dependency.taskId, matches);
+            }
+            if (!matches) return dependency;
+          }
         }
         changed = true;
         return {
@@ -1569,6 +1587,24 @@ export class Registry extends EventEmitter {
     return rebinds;
   }
 
+  private taskDependencyOwnsEpisode(
+    taskId: string,
+    episode: Pick<
+      SessionWorkEpisode,
+      "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+    >,
+  ): boolean {
+    const binding = taskWorkEpisodeForTask(taskId);
+    return Boolean(
+      binding &&
+      binding.sessionId === episode.sessionId &&
+      binding.episodeId === episode.episodeId &&
+      binding.agentSessionId === episode.agentSessionId &&
+      binding.branch === episode.branch &&
+      binding.prUrl === episode.prUrl,
+    );
+  }
+
   private readonly taskDependencyRewrite = (task: Task): TaskDependencyRewrite => ({
     taskId: task.id,
     dependencies: task.dependencies,
@@ -1579,11 +1615,25 @@ export class Registry extends EventEmitter {
     rebinds: Task[],
     invalidatedTaskIds: string[],
     sessionId: string,
+    at: number,
   ): void {
     const updates = new Map(rebinds.map((task) => [task.id, task]));
     for (const taskId of invalidatedTaskIds) {
       const task = updates.get(taskId) ?? this.tasks.get(taskId);
-      if (task?.sessionId === sessionId) updates.set(taskId, { ...task, sessionId: null });
+      if (task?.sessionId === sessionId) {
+        const active = task.status === "dispatching" || task.status === "running";
+        updates.set(taskId, {
+          ...task,
+          sessionId: null,
+          status: active ? "cancelled" : task.status,
+          worktreePath: null,
+          branch: null,
+          provider: null,
+          tmuxSession: null,
+          completedAt: active ? task.completedAt ?? at : task.completedAt,
+          updatedAt: Math.max(task.updatedAt, at),
+        });
+      }
     }
     for (const task of updates.values()) {
       this.tasks.set(task.id, task);
@@ -1602,7 +1652,7 @@ export class Registry extends EventEmitter {
     next: SessionWorkEpisode,
     at: number,
   ): void {
-    for (const task of this.pendingDependencyRebinds(previous, next, at)) {
+    for (const task of this.pendingDependencyRebinds(previous, next, at, "bound")) {
       this.upsertTask(task, true);
     }
   }
@@ -1787,7 +1837,7 @@ export class Registry extends EventEmitter {
       rebindFromTranscriptPath: null,
       updatedAt: now,
     };
-    const rebinds = this.pendingDependencyRebinds(episode, next, now);
+    const rebinds = this.pendingDependencyRebinds(episode, next, now, "bound");
     let invalidatedTaskIds: string[];
     if (episode.agentSessionId !== agentSessionId) {
       const result = rebindPendingSessionWorkEpisodeWithDependencies(
@@ -1809,7 +1859,7 @@ export class Registry extends EventEmitter {
         episode.sessionId,
       );
     }
-    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId);
+    this.publishEpisodeTaskChanges(rebinds, invalidatedTaskIds, episode.sessionId, now);
     this.cleanupDependencyProvenance();
     return next;
   }
@@ -1959,7 +2009,7 @@ export class Registry extends EventEmitter {
       awaitingAgentRebind,
       session?.transcriptPath ?? null,
       null,
-      "prless",
+      "session-prless",
     );
   }
 
@@ -2962,14 +3012,6 @@ export class Registry extends EventEmitter {
     return this.tasks.get(id);
   }
 
-  /** Persist that an observed merged PR completed a task dependency target. */
-  satisfyTaskDependencies(taskId: string, at = Date.now()): void {
-    this.satisfyDependencies(
-      (dependency) => dependency.type === "task" && dependency.taskId === taskId,
-      at,
-    );
-  }
-
   private reconcileSessionDependencies(session: Session, match: PrMatch | null, at: number): void {
     for (const task of [...this.tasks.values()]) {
       let changed = false;
@@ -3007,24 +3049,6 @@ export class Registry extends EventEmitter {
       });
       if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at }, true);
     }
-  }
-
-  private satisfyDependencies(
-    matches: (dependency: Task["dependencies"][number]) => boolean,
-    at: number,
-  ): void {
-    // Snapshot before writing: `upsertTask` can prune terminal rows and resync session
-    // decorations, both of which mutate registry maps.
-    for (const task of [...this.tasks.values()]) {
-      let changed = false;
-      const dependencies = task.dependencies.map((dependency) => {
-        if (dependency.satisfiedAt !== null || !matches(dependency)) return dependency;
-        changed = true;
-        return { ...dependency, satisfiedAt: at };
-      });
-      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at }, true);
-    }
-    this.cleanupDependencyProvenance();
   }
 
   listTasks(): Task[] {

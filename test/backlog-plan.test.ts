@@ -379,7 +379,7 @@ test("an operator-declared ship dependency blocks without a Foreman plan until i
   assert.deepEqual(readyBacklog([dep, satisfied], null).map((task) => task.id), [t.id]);
 });
 
-test("a completed scout satisfies a declared dependency without a PR", () => {
+test("a completed scout remains blocked without a merged PR", () => {
   const scout = mkTask({ kind: "scout", status: "done" });
   const t = mkTask({
     dependencies: [
@@ -397,8 +397,8 @@ test("a completed scout satisfies a declared dependency without a PR", () => {
       },
     ],
   });
-  assert.deepEqual(blockersFor(t, null, [scout, t]), []);
-  assert.deepEqual(readyBacklog([scout, t], null).map((task) => task.id), [t.id]);
+  assert.equal(blockersFor(t, null, [scout, t]).length, 1);
+  assert.deepEqual(readyBacklog([scout, t], null), []);
 });
 
 // ---- ordering ------------------------------------------------------------------------

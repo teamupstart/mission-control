@@ -227,6 +227,12 @@ export class TaskManager {
         // other fields or remove dependencies without the daemon resurrecting/dropping it.
         if (!session) {
           throw new TaskDependencyError("dependency session is no longer active");
+        }
+        const episode = this.registry.workEpisodeForSession(session.id);
+        if (!session.agentSessionId || !episode || episode.awaitingAgentRebind) {
+          throw new TaskDependencyError("dependency session has no stable work identity yet");
+        } else if (!session.hooksSeen) {
+          throw new TaskDependencyError("dependency session has no observable work lifecycle");
         } else if (session.task && this.registry.getTask(session.task.id)) {
           const target = this.registry.getTask(session.task.id)!;
           const observedPr = this.observedPrFor(session, target.id);
@@ -235,7 +241,6 @@ export class TaskManager {
             existing.get(`session:${session.id}`)?.satisfiedAt;
           const previousEdge =
             existing.get(`task:${target.id}`) ?? existing.get(`session:${session.id}`);
-          const episode = this.registry.workEpisodeForSession(session.id);
           dependency = {
             type: "task",
             taskId: target.id,
@@ -247,17 +252,11 @@ export class TaskManager {
             prUrl: previousEdge?.prUrl ?? observedPr,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              target.kind === "scout" && target.status === "done"
-                ? target.completedAt ?? Date.now()
-                : observedPr && session.prState === "merged"
-                  ? Date.now()
-                  : previouslySatisfied ?? null,
+              observedPr && session.prState === "merged"
+                ? Date.now()
+                : previouslySatisfied ?? null,
           };
         } else {
-          const episode = this.registry.workEpisodeForSession(session.id);
-          if (!session.agentSessionId || !episode || episode.awaitingAgentRebind) {
-            throw new TaskDependencyError("dependency session has no stable work identity yet");
-          }
           const observedPr = this.observedPrFor(session);
           dependency = {
             type: "session",
@@ -288,6 +287,9 @@ export class TaskManager {
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
           }
+          if (activeSession && !activeSession.hooksSeen && !previousEdge) {
+            throw new TaskDependencyError("dependency task has no observable work lifecycle");
+          }
           dependency = {
             type: "task",
             taskId: target.id,
@@ -299,11 +301,9 @@ export class TaskManager {
             prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              target.kind === "scout" && target.status === "done"
-                ? target.completedAt ?? Date.now()
-                : observedPr && activeSession?.prState === "merged"
-                  ? Date.now()
-                  : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+              observedPr && activeSession?.prState === "merged"
+                ? Date.now()
+                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
           };
         }
       }
@@ -948,7 +948,6 @@ export class TaskManager {
       updatedAt: now,
     };
     this.registry.upsertTask(updated);
-    if (updated.kind === "scout") this.registry.satisfyTaskDependencies(updated.id, now);
     return updated;
   }
 

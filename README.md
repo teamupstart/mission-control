@@ -839,12 +839,13 @@ launching it yet.
 **Dependencies** can be selected from tasks already in the backlog and from active
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
 is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
-forced into the backlog. A ship task or a standalone active session completes only when
-its PR is observed **merged**; marking a ship task done or merely opening its PR does not
-release dependents. Scout tasks have no shipping PR, so **Mark done** is their completion
-signal. The board and Sitrep name what a task is waiting for, and neither manual launch,
-drag-to-assign, nor Foreman can start it early. Reopen the backlog task to add or remove
-dependencies; cycles are refused.
+forced into the backlog. Every task or standalone active session completes only when its
+PR is observed **merged**; marking a task done or merely opening its PR does not release
+dependents. Active sessions without observable hook instrumentation are not eligible
+dependencies because Mission Control cannot distinguish their next work episode from an
+earlier merged PR. The board and Sitrep name what a task is waiting for, and neither manual
+launch, drag-to-assign, nor Foreman can start it early. Reopen the backlog task to add or
+remove dependencies; cycles are refused.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can glance at

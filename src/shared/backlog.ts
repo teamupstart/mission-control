@@ -127,9 +127,6 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
       continue;
     }
     const target = byId.get(dependency.taskId);
-    // Scout work has no PR to merge. Marking it done is its completion signal; this
-    // dynamic check also covers the small window before TaskManager stamps the edge.
-    if (target?.kind === "scout" && target.status === "done") continue;
     out.push({
       taskId: dependency.taskId,
       title: target?.title ?? dependency.title,

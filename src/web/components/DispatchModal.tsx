@@ -370,7 +370,11 @@ function DispatchModal({
       });
     }
     for (const session of sessions) {
-      if (session.state === "exited" || (editing !== null && session.task?.id === editing.id)) continue;
+      if (
+        session.state === "exited" ||
+        !session.hooksSeen ||
+        (editing !== null && session.task?.id === editing.id)
+      ) continue;
       const linkedTask = session.task
         ? tasks.find((task) => task.id === session.task?.id)
         : undefined;
@@ -409,8 +413,6 @@ function DispatchModal({
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
-    const target = tasks.find((task) => task.id === dependency.taskId);
-    if (target?.kind === "scout" && target.status === "done") return false;
     return sessions.find((session) => session.task?.id === dependency.taskId)?.prState !== "merged";
   });
 
@@ -766,7 +768,7 @@ function DispatchModal({
             </optgroup>
           </select>
           <span className="field-hint">
-            Ship dependencies wait for a merged PR; scout dependencies wait until marked done.
+            Every dependency waits for its merged PR. Sessions without observable hooks cannot be selected.
             {selectedDependenciesUnmet ? " This task will stay in the backlog." : ""}
           </span>
         </label>

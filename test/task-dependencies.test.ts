@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { SessionWorkEpisode } from "../src/server/db.ts";
 import type { PrMatch } from "../src/server/registry.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
@@ -265,6 +266,30 @@ function failEpisodeMutation(sessionId: string, run: () => void): void {
   } finally {
     db.exec(`DROP TRIGGER fail_episode_mutation`);
   }
+}
+
+function addStandaloneSessionDependent(
+  registry: InstanceType<typeof Registry>,
+  id: string,
+  title: string,
+  episode: SessionWorkEpisode,
+): void {
+  registry.upsertTask(baseTask({
+    id,
+    title,
+    status: "backlog",
+    dependencies: [{
+      type: "session",
+      sessionId: episode.sessionId,
+      title,
+      episodeId: episode.episodeId,
+      agentSessionId: episode.agentSessionId,
+      branch: episode.branch,
+      prUrl: episode.prUrl,
+      selectedAt: episode.startedAt,
+      satisfiedAt: null,
+    }],
+  }));
 }
 
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
@@ -751,7 +776,7 @@ for (const [transition, suffix] of [
   ["branch change", "88"],
   ["reset", "89"],
 ] as const) {
-  test(`task dependency provenance survives a ${transition}`, async () => {
+  test(`task dependency provenance handles a ${transition}`, async () => {
     const setup = await historicalTaskSetup(suffix, transition, true);
     assert.notEqual(setup.replacement.episodeId, setup.originalEpisode.episodeId);
     const retainedEdge = setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0];
@@ -776,9 +801,12 @@ for (const [transition, suffix] of [
     assert.equal(afterEdge?.satisfiedAt, null);
     assert.equal(
       afterEdge?.type === "task" ? afterEdge.episodeId : null,
-      setup.replacement.episodeId,
+      setup.originalEpisode.episodeId,
     );
-    assert.equal(afterEdge?.type === "task" ? afterEdge.prUrl : null, null);
+    assert.equal(
+      afterEdge?.type === "task" ? afterEdge.prUrl : null,
+      setup.url,
+    );
     assert.deepEqual(
       setup.tasks.dependencyBlockers(setup.registry.getTask(setup.beforePrompt!.id)!),
       [],
@@ -802,11 +830,13 @@ for (const [transition, suffix] of [
       })]]),
       new Set(),
     );
-    assert.ok(setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0]?.satisfiedAt);
-    assert.deepEqual(
-      setup.tasks.dependencyBlockers(setup.registry.getTask(setup.afterPrompt.id)!),
-      [],
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "cancelled");
+    assert.equal(setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0]?.satisfiedAt, null);
+    assert.equal(
+      setup.tasks.dependencyBlockers(setup.registry.getTask(setup.afterPrompt.id)!).length,
+      1,
     );
+    setup.registry.removeTask(setup.afterPrompt.id);
   });
 }
 
@@ -893,13 +923,14 @@ test("task dependency provenance survives terminal eviction and restart", async 
   assert.equal(rebound?.satisfiedAt, null);
   assert.equal(
     rebound?.type === "task" ? rebound.episodeId : null,
-    setup.replacement.episodeId,
+    setup.originalEpisode.episodeId,
   );
-  assert.equal(rebound?.type === "task" ? rebound.prUrl : null, null);
+  assert.equal(rebound?.type === "task" ? rebound.prUrl : null, setup.url);
   assert.equal(
     restartedTasks.dependencyBlockers(restarted.getTask(setup.afterPrompt.id)!).length,
     1,
   );
+  restarted.removeTask(setup.afterPrompt.id);
 });
 
 test("high-fanout task merge batches provenance cleanup", () => {
@@ -977,7 +1008,7 @@ test("high-fanout task merge batches provenance cleanup", () => {
   }
 });
 
-test("reset after delayed merge rollover rebinds pending task provenance", async () => {
+test("reset after delayed merge rollover stops pending task provenance", async () => {
   const setup = await delayedTaskMergeSetup("94");
   setup.registry.reconcilePrs(
     new Map([[setup.id, prMatch({
@@ -1004,7 +1035,7 @@ test("reset after delayed merge rollover rebinds pending task provenance", async
   const reset = setup.registry.resetWorkEpisode(setup.id)!;
   assert.notEqual(reset.episodeId, rolledOver.episodeId);
   const resetEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
-  assert.equal(resetEdge?.type === "task" ? resetEdge.episodeId : null, reset.episodeId);
+  assert.equal(resetEdge?.type === "task" ? resetEdge.episodeId : null, rolledOver.episodeId);
   assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, null);
 
   const branch = `${setup.branch}-after-reset`;
@@ -1023,14 +1054,12 @@ test("reset after delayed merge rollover rebinds pending task provenance", async
     new Set(),
   );
 
-  assert.ok(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt);
-  assert.deepEqual(
-    setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!),
-    [],
-  );
+  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "cancelled");
+  assert.equal(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!).length, 1);
 });
 
-test("pending reset identity resolution rebinds task edge provenance", async () => {
+test("pending reset identity resolution leaves discarded task provenance stopped", async () => {
   const setup = await delayedTaskMergeSetup("95");
   const pending = setup.registry.resetWorkEpisode(setup.id, {
     awaitingAgentRebind: true,
@@ -1049,13 +1078,13 @@ test("pending reset identity resolution rebinds task edge provenance", async () 
   const pendingEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
   assert.equal(
     pendingEdge?.type === "task" ? pendingEdge.episodeId : null,
-    pending.episodeId,
+    setup.originalEpisode.episodeId,
   );
   assert.equal(
     pendingEdge?.type === "task" ? pendingEdge.agentSessionId : null,
     setup.agentSessionId,
   );
-  assert.equal(pendingEdge?.type === "task" ? pendingEdge.prUrl : null, null);
+  assert.equal(pendingEdge?.type === "task" ? pendingEdge.prUrl : null, setup.url);
 
   const reboundAgentSessionId = "delayed-task-episode-95-after-reset";
   setup.registry.applyHook({
@@ -1075,7 +1104,7 @@ test("pending reset identity resolution rebinds task edge provenance", async () 
   const reboundEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
   assert.equal(
     reboundEdge?.type === "task" ? reboundEdge.agentSessionId : null,
-    reboundAgentSessionId,
+    setup.agentSessionId,
   );
 
   setup.registry.reconcilePrs(
@@ -1091,11 +1120,10 @@ test("pending reset identity resolution rebinds task edge provenance", async () 
     new Set(),
   );
 
-  assert.ok(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt);
-  assert.deepEqual(
-    setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!),
-    [],
-  );
+  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "cancelled");
+  assert.equal(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!).length, 1);
+  setup.registry.removeTask(setup.dependent.id);
 });
 
 for (const [suffix, failureIndex, boundary] of [
@@ -1105,15 +1133,6 @@ for (const [suffix, failureIndex, boundary] of [
 ] as const) {
   test(`reset rebind crash point after ${boundary} rolls back`, async () => {
     const setup = await delayedTaskMergeSetup(suffix);
-    const second = setup.tasks.create({
-      ...createInput,
-      title: `Second reset crash dependent ${suffix}`,
-      backlog: true,
-      dependencies: [{
-        type: "task",
-        taskId: setup.prerequisiteId,
-      }],
-    });
     setup.registry.reconcilePrs(
       new Map([[setup.id, prMatch({
         url: setup.url,
@@ -1128,8 +1147,20 @@ for (const [suffix, failureIndex, boundary] of [
       new Set(),
     );
     const rolledOver = setup.registry.workEpisodeForSession(setup.id)!;
-    const dependents = [setup.dependent, second];
+    const dependentIds = [
+      `reset-session-crash-${suffix}-a`,
+      `reset-session-crash-${suffix}-b`,
+    ];
+    for (const dependentId of dependentIds) {
+      addStandaloneSessionDependent(
+        setup.registry,
+        dependentId,
+        `Reset session crash dependent ${dependentId}`,
+        rolledOver,
+      );
+    }
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "running");
     assert.equal(
       setup.registry.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
       rolledOver.episodeId,
@@ -1140,32 +1171,37 @@ for (const [suffix, failureIndex, boundary] of [
         setup.registry.resetWorkEpisode(setup.id);
       };
       if (failureIndex === -1) failEpisodeMutation(setup.id, reset);
-      else failDependencyRewrite(dependents[failureIndex].id, reset);
+      else failDependencyRewrite(dependentIds[failureIndex], reset);
     });
 
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "running");
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.worktreePath, setup.cwd);
     assert.equal(
       setup.registry.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
       rolledOver.episodeId,
     );
-    for (const dependent of dependents) {
-      const edge = setup.registry.getTask(dependent.id)?.dependencies[0];
-      assert.equal(edge?.type === "task" ? edge.episodeId : null, rolledOver.episodeId);
+    for (const dependentId of dependentIds) {
+      const edge = setup.registry.getTask(dependentId)?.dependencies[0];
+      assert.equal(edge?.type === "session" ? edge.episodeId : null, rolledOver.episodeId);
     }
 
     const restarted = new Registry();
     assert.equal(restarted.workEpisodeForSession(setup.id)?.episodeId, rolledOver.episodeId);
     assert.equal(restarted.getTask(setup.prerequisiteId)?.sessionId, setup.id);
+    assert.equal(restarted.getTask(setup.prerequisiteId)?.status, "running");
+    assert.equal(restarted.getTask(setup.prerequisiteId)?.worktreePath, setup.cwd);
     assert.equal(
       restarted.workEpisodeForTask(setup.prerequisiteId)?.episodeId,
       rolledOver.episodeId,
     );
-    for (const dependent of dependents) {
-      const edge = restarted.getTask(dependent.id)?.dependencies[0];
-      assert.equal(edge?.type === "task" ? edge.episodeId : null, rolledOver.episodeId);
-      assert.equal(edge?.type === "task" ? edge.agentSessionId : null, rolledOver.agentSessionId);
-      assert.equal(edge?.type === "task" ? edge.prUrl : null, null);
+    for (const dependentId of dependentIds) {
+      const edge = restarted.getTask(dependentId)?.dependencies[0];
+      assert.equal(edge?.type === "session" ? edge.episodeId : null, rolledOver.episodeId);
+      assert.equal(edge?.type === "session" ? edge.agentSessionId : null, rolledOver.agentSessionId);
+      assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
     }
+    restarted.removeTask(setup.dependent.id);
   });
 }
 
@@ -1176,19 +1212,22 @@ for (const [suffix, failureIndex, boundary] of [
 ] as const) {
   test(`identity rebind crash point after ${boundary} rolls back`, async () => {
     const setup = await delayedTaskMergeSetup(suffix);
-    const second = setup.tasks.create({
-      ...createInput,
-      title: `Second identity crash dependent ${suffix}`,
-      backlog: true,
-      dependencies: [{
-        type: "task",
-        taskId: setup.prerequisiteId,
-      }],
-    });
     const pending = setup.registry.resetWorkEpisode(setup.id, {
       awaitingAgentRebind: true,
       previousAgentSessionId: setup.agentSessionId,
     })!;
+    const dependentIds = [
+      `identity-session-crash-${suffix}-a`,
+      `identity-session-crash-${suffix}-b`,
+    ];
+    for (const dependentId of dependentIds) {
+      addStandaloneSessionDependent(
+        setup.registry,
+        dependentId,
+        `Identity session crash dependent ${dependentId}`,
+        pending,
+      );
+    }
     await pollAndReconcilePrs(
       setup.registry,
       async () => null,
@@ -1197,9 +1236,9 @@ for (const [suffix, failureIndex, boundary] of [
           ? { state: "merged", mergedAt: setup.promptAt - 1 }
           : null,
     );
-    const dependents = [setup.dependent, second];
     const reboundAgentSessionId = `delayed-task-episode-${suffix}-after-reset`;
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, null);
+    assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "cancelled");
     assert.equal(setup.registry.workEpisodeForTask(setup.prerequisiteId), null);
 
     assert.throws(() => {
@@ -1215,7 +1254,7 @@ for (const [suffix, failureIndex, boundary] of [
         });
       };
       if (failureIndex === -1) failEpisodeMutation(setup.id, rebind);
-      else failDependencyRewrite(dependents[failureIndex].id, rebind);
+      else failDependencyRewrite(dependentIds[failureIndex], rebind);
     });
 
     assert.equal(setup.registry.getTask(setup.prerequisiteId)?.sessionId, null);
@@ -1229,15 +1268,16 @@ for (const [suffix, failureIndex, boundary] of [
     assert.equal(persisted.awaitingAgentRebind, true);
     assert.equal(restarted.getTask(setup.prerequisiteId)?.sessionId, null);
     assert.equal(restarted.workEpisodeForTask(setup.prerequisiteId), null);
-    for (const dependent of dependents) {
-      const edge = restarted.getTask(dependent.id)?.dependencies[0];
-      assert.equal(edge?.type === "task" ? edge.episodeId : null, pending.episodeId);
+    for (const dependentId of dependentIds) {
+      const edge = restarted.getTask(dependentId)?.dependencies[0];
+      assert.equal(edge?.type === "session" ? edge.episodeId : null, pending.episodeId);
       assert.equal(
-        edge?.type === "task" ? edge.agentSessionId : null,
+        edge?.type === "session" ? edge.agentSessionId : null,
         setup.agentSessionId,
       );
-      assert.equal(edge?.type === "task" ? edge.prUrl : null, null);
+      assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
     }
+    restarted.removeTask(setup.dependent.id);
   });
 }
 
@@ -2060,6 +2100,10 @@ test("manual session reuse cannot complete the task from the discarded episode",
       title: "Original assigned work",
       status: "running",
       sessionId: id,
+      worktreePath: cwd,
+      branch: "feat/task-work",
+      provider: "git",
+      tmuxSession: "manual-reuse-task",
     }),
   );
   registry.bindTaskToWorkEpisode("manually-assigned", id);
@@ -2100,9 +2144,25 @@ test("manual session reuse cannot complete the task from the discarded episode",
     new Set(),
   );
 
-  assert.equal(registry.getTask("manually-assigned")?.sessionId, null);
+  const discarded = registry.getTask("manually-assigned");
+  assert.equal(discarded?.status, "cancelled");
+  assert.equal(discarded?.sessionId, null);
+  assert.equal(discarded?.worktreePath, null);
+  assert.equal(discarded?.branch, null);
+  assert.equal(discarded?.provider, null);
+  assert.equal(discarded?.tmuxSession, null);
+  assert.ok(discarded?.completedAt);
   assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+
+  const restarted = new Registry();
+  const persisted = restarted.getTask("manually-assigned");
+  assert.equal(persisted?.status, "cancelled");
+  assert.equal(persisted?.sessionId, null);
+  assert.equal(persisted?.worktreePath, null);
+  assert.equal(persisted?.branch, null);
+  assert.equal(persisted?.provider, null);
+  assert.equal(persisted?.tmuxSession, null);
 });
 
 test("a dependency follows its work episode from the default branch", () => {
@@ -2505,17 +2565,94 @@ test("a session without an agent episode cannot become a dependency", () => {
   );
 });
 
-test("completing a scout satisfies its dependents, while dependency cycles are refused", async () => {
+test("a hookless session and its active task cannot become new dependencies", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  registry.upsertTask(baseTask({ id: "scout-pre", title: "Investigate", kind: "scout", status: "running" }));
+  const id = "hookless-dependency";
+  const cwd = "/repo/hookless-dependency";
+  registry.applyDiscovery([
+    discovered(id, cwd, {
+      agent: "codex",
+      agentSessionId: "passive-hookless-episode",
+      transcriptPath: "/repo/hookless-dependency/rollout.jsonl",
+    }),
+  ]);
+
+  assert.ok(registry.workEpisodeForSession(id));
+  assert.equal(registry.getSession(id)?.hooksSeen, false);
+  assert.throws(
+    () => tasks.create({
+      ...createInput,
+      backlog: true,
+      dependencies: [{ type: "session", sessionId: id }],
+    }),
+    /no observable work lifecycle/,
+  );
+
+  registry.upsertTask(baseTask({
+    id: "hookless-active-task",
+    status: "running",
+    sessionId: id,
+    worktreePath: cwd,
+  }));
+  registry.bindTaskToWorkEpisode("hookless-active-task", id);
+  assert.throws(
+    () => tasks.create({
+      ...createInput,
+      backlog: true,
+      dependencies: [{ type: "task", taskId: "hookless-active-task" }],
+    }),
+    /no observable work lifecycle/,
+  );
+});
+
+test("a scout dependency waits for its merged PR, while dependency cycles are refused", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "scout-session";
+  const cwd = "/repo/scout-session";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/scout" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "scout-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(baseTask({
+    id: "scout-pre",
+    title: "Investigate",
+    kind: "scout",
+    status: "running",
+    sessionId: id,
+    worktreePath: cwd,
+  }));
+  registry.bindTaskToWorkEpisode("scout-pre", id);
   const dependent = tasks.create({
     ...createInput,
     backlog: true,
     dependencies: [{ type: "task", taskId: "scout-pre" }],
   });
   tasks.complete("scout-pre", "documented the answer");
+  assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+
+  const episode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url: "https://github.com/example/repo/pull/251",
+      number: 251,
+      state: "merged",
+      branch: "feat/scout",
+      agentSessionId: "scout-episode",
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+    })]]),
+    new Set(),
+  );
   assert.ok(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
 
   const a = tasks.create({ ...createInput, title: "A", backlog: true });
   const b = tasks.create({

@@ -374,8 +374,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     workQueue: null,
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
-    // summarises rather than clears). After `/new` pi mints a new session file, which the
-    // passive locate re-binds by cwd next tick - the same shape as a Claude `/clear`.
+    // summarises rather than clears). Its hookless transcript binding remains on the original
+    // process-start-correlated file, so the cleared context is not reflected in transcript views.
     clearContext: { command: "/new" },
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.

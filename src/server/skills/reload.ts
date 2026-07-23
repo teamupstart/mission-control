@@ -152,8 +152,9 @@ export function reloadNeeded(
   // a default rather than a report. `settledIdle` insists on `state === "idle"`, a claim
   // only ever made by a real source - a fresh hook OR the transcript-derived passive
   // state - so it holds for a healthy session whose hook merely lapsed (the transcript
-  // still proves it parked) while refusing the `working` rebuild default. It's the one
-  // transient gates here, which is why they aren't in `reloadOwed`.
+  // still proves it parked) while refusing the `working` rebuild default. These are the
+  // transient gates, which is why they aren't in `reloadOwed`.
+  if (!settledIdle(s, now, settleMs)) return false;
   const harness = harnessFor(s.agent);
   if (
     harness.skills?.reloadIdleSource === "transcript" &&
@@ -161,7 +162,7 @@ export function reloadNeeded(
   ) {
     return false;
   }
-  return settledIdle(s, now, settleMs);
+  return true;
 }
 
 /** A session's acked generation. Absent and 0 mean the same thing: never acked. */

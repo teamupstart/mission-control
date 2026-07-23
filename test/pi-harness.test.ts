@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
@@ -86,69 +86,69 @@ test("the project-dir munge matches pi's own session-manager encoding", () => {
   );
 });
 
-function locateSession(id: string, cwd: string, agentSessionId: string | null = null): Session {
-  return { id, cwd, agentSessionId, transcriptPath: null } as Session;
+function locateSession(
+  id: string,
+  cwd: string,
+  startedAt: number | null,
+  agentSessionId: string | null = null,
+): Session {
+  return { id, cwd, startedAt, agentSessionId, transcriptPath: null } as Session;
 }
 
-function writeSession(path: string, id: string, mtime: number): void {
+function writeSession(dir: string, id: string, createdAt: number, headerId = id): string {
+  const path = join(dir, `${new Date(createdAt).toISOString()}_${id}.jsonl`);
   writeFileSync(
     path,
-    `${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date(mtime).toISOString() })}\n`,
+    `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: headerId,
+      timestamp: new Date(createdAt).toISOString(),
+    })}\n`,
   );
-  const at = new Date(mtime);
-  utimesSync(path, at, at);
+  return path;
 }
 
-test("locate rebinds to a newer file after pi starts a new session", () => {
+test("a short-lived sibling never replaces the process-start-correlated binding", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
-  const oldPath = join(dir, "old.jsonl");
-  const newPath = join(dir, "new.jsonl");
+  const startedAt = Date.parse("2026-07-20T10:00:00.000Z");
+  const ownerId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const siblingId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
-    writeSession(oldPath, "old", 1_000);
-    const session = locateSession("pi-rebind", cwd);
-    assert.equal(locatePiTranscript(session, root), null);
+    const ownerPath = writeSession(dir, ownerId, startedAt + 500);
+    const session = locateSession("pi-owner", cwd, startedAt);
+    assert.equal(locatePiTranscript(session, root), ownerPath);
+    const siblingPath = writeSession(dir, siblingId, startedAt + 5_000);
+    assert.notEqual(siblingPath, ownerPath);
+    assert.equal(locatePiTranscript(session, root), ownerPath);
     piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), null);
-    assert.equal(locatePiTranscript(session, root), null);
-    piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), oldPath);
-    writeSession(newPath, "new", 2_000);
-    assert.equal(locatePiTranscript(session, root), null);
-    assert.equal(locatePiTranscript(session, root), null);
-    piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), null);
-    piTranscript.retain?.(new Set([session.id]));
-    assert.equal(locatePiTranscript(session, root), newPath);
+    assert.equal(locatePiTranscript(session, root), ownerPath);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("locate prefers an exact header id when multiple pi sessions share a cwd", () => {
+test("an agent session id binds the matching filename uuid immediately", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
-  const firstPath = join(dir, "first.jsonl");
-  const secondPath = join(dir, "second.jsonl");
+  const firstId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const secondId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
-    writeSession(firstPath, "first-agent", 1_000);
-    writeSession(secondPath, "second-agent", 2_000);
-    const firstUnknown = locateSession("pi-first", cwd);
-    const secondUnknown = locateSession("pi-second", cwd);
-    assert.equal(locatePiTranscript(firstUnknown, root), null);
-    assert.equal(locatePiTranscript(secondUnknown, root), null);
-    piTranscript.retain?.(new Set([firstUnknown.id, secondUnknown.id]));
-    assert.equal(
-      locatePiTranscript(locateSession("pi-first", cwd, "first-agent"), root),
-      firstPath,
+    writeSession(dir, firstId, Date.parse("2026-07-20T10:00:00.000Z"));
+    const secondPath = writeSession(
+      dir,
+      secondId,
+      Date.parse("2026-07-20T11:00:00.000Z"),
+      "different-header-id",
     );
     assert.equal(
-      locatePiTranscript(locateSession("pi-second", cwd, "second-agent"), root),
+      locatePiTranscript(locateSession("pi-exact", cwd, null, secondId), root),
       secondPath,
     );
   } finally {
@@ -157,60 +157,37 @@ test("locate prefers an exact header id when multiple pi sessions share a cwd", 
   }
 });
 
-test("two hookless sessions sharing a cwd decline from the first claim", () => {
+test("process-start correlation declines when no filename timestamp matches", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, "newest.jsonl");
+  const fileId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
-    writeSession(path, "unknown-agent", 2_000);
-    const owner = locateSession("pi-owner", cwd);
-    const sibling = locateSession("pi-sibling", cwd);
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
-    piTranscript.retain?.(new Set([owner.id, sibling.id]));
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
-    piTranscript.retain?.(new Set([owner.id, sibling.id]));
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
+    writeSession(dir, fileId, Date.parse("2026-07-20T10:00:00.000Z"));
+    const session = locateSession("pi-no-match", cwd, Date.parse("2026-07-20T11:00:00.000Z"));
+    assert.equal(locatePiTranscript(session, root), null);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("an existing sole occupant never adopts a new sibling's file", () => {
+test("process-start correlation declines when two files share its window", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
   const cwd = "/repo";
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
-  const ownerPath = join(dir, "owner.jsonl");
-  const siblingPath = join(dir, "sibling.jsonl");
+  const startedAt = Date.parse("2026-07-20T10:00:00.000Z");
+  const firstId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const secondId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
   try {
-    writeSession(ownerPath, "owner-agent", 1_000);
-    const owner = locateSession("pi-owner-existing", cwd);
-    assert.equal(locatePiTranscript(owner, root), null);
-    piTranscript.retain?.(new Set([owner.id]));
-    assert.equal(locatePiTranscript(owner, root), null);
-    piTranscript.retain?.(new Set([owner.id]));
-    assert.equal(locatePiTranscript(owner, root), ownerPath);
-
-    writeSession(siblingPath, "sibling-agent", 2_000);
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(owner, root), null);
-    piTranscript.retain?.(new Set([owner.id]));
-    assert.equal(locatePiTranscript(owner, root), null);
-
-    const sibling = locateSession("pi-sibling-new", cwd);
-    assert.equal(locatePiTranscript(sibling, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
-    piTranscript.retain?.(new Set([owner.id, sibling.id]));
-    assert.equal(locatePiTranscript(owner, root), null);
-    assert.equal(locatePiTranscript(sibling, root), null);
+    writeSession(dir, firstId, startedAt + 500);
+    const secondPath = writeSession(dir, secondId, startedAt + 1_000);
+    const session = locateSession("pi-ambiguous", cwd, startedAt);
+    assert.equal(locatePiTranscript(session, root), null);
+    rmSync(secondPath);
+    assert.equal(locatePiTranscript(session, root), null);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });

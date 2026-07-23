@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
@@ -6,7 +6,6 @@ import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
 import { piPassiveRead } from "./meta.ts";
-import { readRange } from "../../util/file-tail.ts";
 
 // Pi's session transcript: where it lives, and what one of its records means.
 //
@@ -33,7 +32,8 @@ export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
 
 interface SessionFile {
   path: string;
-  mtime: number;
+  id: string;
+  createdAt: number;
 }
 
 function sessionFiles(dir: string): SessionFile[] {
@@ -45,63 +45,43 @@ function sessionFiles(dir: string): SessionFile[] {
   }
   const files: SessionFile[] = [];
   for (const name of entries) {
-    if (!name.endsWith(".jsonl")) continue;
-    const path = join(dir, name);
-    try {
-      files.push({ path, mtime: statSync(path).mtimeMs });
-    } catch {
-      continue;
-    }
+    const match = /^(.+)_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
+    if (!match) continue;
+    const createdAt = Date.parse(match[1]!);
+    if (!Number.isFinite(createdAt)) continue;
+    files.push({ path: join(dir, name), id: match[2]!, createdAt });
   }
-  return files.sort((a, b) => b.mtime - a.mtime || b.path.localeCompare(a.path));
-}
-
-function sessionIdFromHeader(path: string): string | null {
-  try {
-    const size = statSync(path).size;
-    const text = readRange(path, 0, Math.min(size, 64 * 1024)).toString("utf8");
-    const end = text.indexOf("\n");
-    const first = end >= 0 ? text.slice(0, end) : text;
-    const record = JSON.parse(first) as Record<string, unknown>;
-    return record.type === "session" && typeof record.id === "string" ? record.id : null;
-  } catch {
-    return null;
-  }
+  return files;
 }
 
 /** A cached lookup for one session (path null = looked, none yet). */
 interface Binding {
   cwd: string;
   sessionsDir: string;
+  agentSessionId: string | null;
+  startedAt: number | null;
   path: string | null;
-  confirmedSoleOccupant: boolean;
-  candidatePath: string | null;
-  observedCandidatePath: string | null;
 }
 
 /**
  * The state lives HERE, on the spec, not in the generic poller - the rule the harness axis
- * settled: per-session bindings and occupancy stay with the harness that understands them,
+ * settled: per-session path bindings stay with the harness that understands them,
  * so the poller never grows a per-vendor map.
  */
 const bindings = new Map<string, Binding>();
-let soleOccupants = new Map<string, string | null>();
 
 function recordBinding(s: Session, sessionsDir: string, path: string | null): void {
-  const current = bindings.get(s.id);
-  if (current?.cwd === s.cwd && current.sessionsDir === sessionsDir) {
-    current.path = path;
-    return;
-  }
   bindings.set(s.id, {
     cwd: s.cwd!,
     sessionsDir,
+    agentSessionId: s.agentSessionId,
+    startedAt: s.startedAt,
     path,
-    confirmedSoleOccupant: false,
-    candidatePath: null,
-    observedCandidatePath: null,
   });
 }
+
+const START_SKEW_MS = 2_000;
+const CREATION_DELAY_MS = 15_000;
 
 export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
   if (!s.cwd) {
@@ -109,35 +89,32 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
     return null;
   }
 
-  const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
-  const newest = files[0] ?? null;
-
-  let path: string | null = null;
-  if (
-    s.agentSessionId &&
-    s.transcriptPath &&
-    sessionIdFromHeader(s.transcriptPath) === s.agentSessionId
-  ) {
-    path = s.transcriptPath;
-  }
-  if (!path && s.agentSessionId) {
-    for (const file of files) {
-      if (sessionIdFromHeader(file.path) !== s.agentSessionId) continue;
-      path = file.path;
-      break;
-    }
-  }
   const binding = bindings.get(s.id);
   if (
-    !path &&
-    newest &&
     binding?.cwd === s.cwd &&
-    binding.confirmedSoleOccupant &&
-    binding.candidatePath === newest.path
+    binding.sessionsDir === sessionsDir &&
+    binding.agentSessionId === s.agentSessionId &&
+    binding.startedAt === s.startedAt
   ) {
-    path = binding.candidatePath;
+    return binding.path;
   }
 
+  const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
+  let matches: SessionFile[];
+  if (s.agentSessionId) {
+    matches = files.filter((file) => file.id === s.agentSessionId);
+  } else if (s.startedAt !== null) {
+    const startedAt = s.startedAt;
+    matches = files.filter(
+      (file) =>
+        file.createdAt >= startedAt - START_SKEW_MS &&
+        file.createdAt <= startedAt + CREATION_DELAY_MS,
+    );
+  } else {
+    matches = [];
+  }
+
+  const path = matches.length === 1 ? matches[0]!.path : null;
   recordBinding(s, sessionsDir, path);
   return path;
 }
@@ -214,24 +191,5 @@ export const piTranscript: TranscriptSpec = {
   messages: jsonlMessages({ parse: piToMessage, narration: () => null }),
   retain: (live) => {
     for (const id of bindings.keys()) if (!live.has(id)) bindings.delete(id);
-    const next = new Map<string, string | null>();
-    for (const [id, binding] of bindings) {
-      next.set(binding.cwd, next.has(binding.cwd) ? null : id);
-    }
-    for (const [id, binding] of bindings) {
-      const sole = next.get(binding.cwd) === id;
-      const observedCandidatePath = sole
-        ? (sessionFiles(piProjectDir(binding.cwd, binding.sessionsDir))[0]?.path ?? null)
-        : null;
-      const confirmed =
-        sole &&
-        soleOccupants.get(binding.cwd) === id &&
-        observedCandidatePath !== null &&
-        observedCandidatePath === binding.observedCandidatePath;
-      binding.confirmedSoleOccupant = confirmed;
-      binding.candidatePath = confirmed ? observedCandidatePath : null;
-      binding.observedCandidatePath = observedCandidatePath;
-    }
-    soleOccupants = next;
   },
 };

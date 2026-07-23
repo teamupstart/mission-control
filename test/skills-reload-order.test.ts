@@ -189,3 +189,22 @@ test("a stale passive idle reading cannot reload without a current transcript bi
     assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), [session]);
   });
 });
+
+test("a busy passive session is rejected before transcript lookup", async () => {
+  let located = 0;
+  await withPiLocate(() => {
+    located++;
+    return "/pi/current.jsonl";
+  }, () => {
+    const session = mkSession({
+      agent: "pi",
+      agentSessionId: null,
+      hooksSeen: false,
+      state: "working",
+      lastActivity: 1,
+    });
+    const cfg = { enabled: true, skills: {}, generation: GEN, generationAt: 10 };
+    assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), []);
+    assert.equal(located, 0);
+  });
+});

@@ -1541,6 +1541,14 @@ letting pi fall through correctly. The spike is `todo/pi-harness.md`; what it fo
   after that passive settled-idle gate. Claude remains hook-gated and TUI-checked, and Codex
   remains excluded because its reload command is null.
 
+- **Hookless transcript identity is conservative, not newest-by-cwd.** pi filenames carry both
+  an ISO creation timestamp and session UUID, so a known `agentSessionId` binds exactly;
+  otherwise the adapter accepts only one filename in a narrow process-start window and caches
+  that answer for the process lifetime. This deliberately does not follow `/new`, cannot bind a
+  resumed old-timestamp session, and declines two near-simultaneous same-cwd starts. Those are
+  inherent limits without launch-scoped identity instrumentation; newest-file or live-occupancy
+  fallbacks can attribute a short-lived sibling that exited before discovery observed it.
+
 - **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
   captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no
   permission-mode footer, and its tool-approval dialog could not be captured (login-blocked,

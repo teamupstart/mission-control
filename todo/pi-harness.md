@@ -75,11 +75,15 @@ pi writes one JSON record per line to
   authority-ranked value is `"statusline"`; `"transcript"` means "our passive read of the
   JSONL", which is exactly what pi's is. No shared edit. (Codex has its own `codex-rollout`
   only because its file is not a turn log.)
-- `locate` reruns the project-directory scan on every read so `/new` is discovered. It caches
-  only per-session bindings; `retain` prunes dead bindings and confirms sole ownership only
-  when the same session owns its cwd and observes the same newest candidate across two
-  consecutive tick-boundary snapshots. `locate` may bind only that twice-stable path while
-  it remains newest.
+- **Identity correlation is conservative.** A known `agentSessionId` matches the UUID in the
+  filename directly. Otherwise `locate` accepts a file only when exactly one filename timestamp
+  falls between two seconds before and fifteen seconds after the process `startedAt`. The result,
+  including null, is cached for that process; `retain` only prunes dead bindings. No newest-file
+  or cwd-occupancy fallback exists.
+- **Hookless limits are visible absence, never guessed ownership.** `/new` is not followed
+  because its new file no longer correlates to process start; `--continue`/`--resume` files with
+  old timestamps and two near-simultaneous same-cwd starts decline. Launch-scoped identity
+  instrumentation like Codex's is what would remove those limits.
 
 ### control - REQUIRED, non-null
 
@@ -170,9 +174,9 @@ exist.
 
 `{ command: "/new" }` - **verified**: `/new` starts a fresh session in-place ("✓ New session
 started", no confirmation prompt), which is pi's equivalent of Claude's `/clear`. (pi also has
-`/compact`, which summarizes rather than clears; there is no `/clear`.) After `/new` pi mints
-a new session file, which the passive locate re-binds by cwd next tick - the same shape as a
-Claude `/clear`.
+`/compact`, which summarizes rather than clears; there is no `/clear`.) The command clears the
+live agent, but the hookless transcript view remains on its original process-start-correlated
+file; following the new file by cwd would risk attributing a sibling session.
 
 ### effort - non-null
 
@@ -259,6 +263,14 @@ lets pi fall through correctly. The couplings that remain:
    widened the parameter even though every caller supplies `LlmRunnerId`, allowing a harness
    that is not an offline provider to silently receive Claude's fallback. **Fixed** by narrowing
    the helper to `LlmRunnerId`; harness model catalogs continue to use `AgentType`.
+
+10. **A hookless transcript has no durable reset or resume identity.** Newest-file and
+    live-occupancy heuristics cannot prove ownership: a short-lived `pi --print` sibling can
+    write a persistent file without ever appearing in the live snapshot. **Fixed** by binding
+    filename UUIDs to known agent session ids, otherwise requiring one unambiguous
+    process-start timestamp match and caching that answer for the process lifetime. `/new`,
+    resumed old sessions, and near-simultaneous same-cwd starts now decline or retain the old
+    safe binding instead of guessing; launch instrumentation is the path to fuller coverage.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's
 real `discover()`: the true session cards correctly (`nameSource: tmux`, cwd, pid, and its

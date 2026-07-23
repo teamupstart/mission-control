@@ -74,7 +74,7 @@ test("teardownWorktree reports cleanup failure", async () => {
       worktreePath: "/missing/teardown-worktree",
       branch: "harness/missing",
       provider: "git",
-      tmuxSession: null,
+      homeName: null,
     }),
     /git worktree remove failed/,
   );

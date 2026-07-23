@@ -868,17 +868,14 @@ function migrate(d: DatabaseSync): void {
   // Nullable with no default: NULL is "no home yet" (a backlog task, or one whose home was
   // reclaimed), a distinct and truthful answer that `homeName ? … : …` reads directly.
   //
-  // The backfill runs EXACTLY ONCE - gated on `addColumn` having just added the column -
+  // The backfill runs EXACTLY ONCE - gated on the migration having just added the column -
   // and never again. `tmux_session` becomes a frozen fossil after this rename (no write
   // path names it), so re-running the copy on every open would RESURRECT a home name onto a
   // task that had since been reclaimed to NULL, re-aiming its teardown at a stranger. Gated
   // on the add, it copies each live name across on the one start after upgrade and then the
   // fossil is inert forever. `hasColumn` guards the pre-triage-fresh-db path where
-  // `tmux_session` never existed to copy from (the `&&` also short-circuits on a fresh db,
-  // where `home_name` is in the CREATE TABLE so nothing was added).
-  if (addColumn(d, "tasks", "home_name", "TEXT") && hasColumn(d, "tasks", "tmux_session")) {
-    d.exec(`UPDATE tasks SET home_name = tmux_session WHERE home_name IS NULL AND tmux_session IS NOT NULL;`);
-  }
+  // `tmux_session` never existed to copy from.
+  migrateTaskHomeName(d);
 
   // `fail_count` / `next_attempt_at`: the Inspector's retry backoff. Same window as
   // `foreman_episodes.resolved_by` above - `inspector_prs` has never shipped, so the
@@ -989,6 +986,21 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
       "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
         `single-flight); keeping the previous index: ${String(err)}`,
     );
+  }
+}
+
+function migrateTaskHomeName(d: DatabaseSync): void {
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    if (addColumn(d, "tasks", "home_name", "TEXT") && hasColumn(d, "tasks", "tmux_session")) {
+      d.exec(`UPDATE tasks SET home_name = tmux_session WHERE home_name IS NULL AND tmux_session IS NOT NULL;`);
+    }
+    d.exec("COMMIT;");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
+    throw err;
   }
 }
 

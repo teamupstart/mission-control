@@ -21,7 +21,7 @@ test("a cancelled in-flight dispatch retains handles when teardown fails", async
     worktreePath: "/repo/worktree",
     branch: "harness/dispatch-reset-race",
     provider: "git",
-    tmuxSession: "dispatch-reset-race",
+    homeName: "dispatch-reset-race",
   }));
   const dispatcher = new Dispatcher(registry, async () => {
     throw new Error("worktree is busy");
@@ -36,6 +36,6 @@ test("a cancelled in-flight dispatch retains handles when teardown fails", async
   assert.equal(retained?.worktreePath, "/repo/worktree");
   assert.equal(retained?.branch, "harness/dispatch-reset-race");
   assert.equal(retained?.provider, "git");
-  assert.equal(retained?.tmuxSession, "dispatch-reset-race");
+  assert.equal(retained?.homeName, "dispatch-reset-race");
   assert.match(retained?.error ?? "", /resource cleanup failed: worktree is busy/);
 });

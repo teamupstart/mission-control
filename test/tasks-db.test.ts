@@ -116,13 +116,13 @@ test("resource-holding cancelled tasks rehydrate until cleanup completes", () =>
     worktreePath: "/wt/cancelled",
     branch: "harness/cancelled",
     provider: "git",
-    tmuxSession: "cancelled-home",
+    homeName: "cancelled-home",
   }));
   const loaded = loadResourceHoldingTerminalTasks().find(
     (task) => task.id === "cancelled-resource-owner",
   );
   assert.equal(loaded?.worktreePath, "/wt/cancelled");
-  assert.equal(loaded?.tmuxSession, "cancelled-home");
+  assert.equal(loaded?.homeName, "cancelled-home");
   deleteTask("cancelled-resource-owner");
 });
 
@@ -165,7 +165,7 @@ test("prune never evicts terminal tasks that still hold resources", () => {
   const r = new Registry();
   // Oldest by updatedAt, but it holds a live worktree, so it must survive.
   r.upsertTask(mkTask({ id: "alive-fail", status: "failed", worktreePath: "/wt/alive", updatedAt: 1 }));
-  r.upsertTask(mkTask({ id: "cancelled-home", status: "cancelled", tmuxSession: "alive-home", updatedAt: 2 }));
+  r.upsertTask(mkTask({ id: "cancelled-home", status: "cancelled", homeName: "alive-home", updatedAt: 2 }));
   for (let i = 0; i < 60; i++) {
     r.upsertTask(mkTask({ id: `done-${i}`, status: "done", updatedAt: 1000 + i }));
   }

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Recurring Missions · Phased Implementation Plan</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f4f5f8;--paper:#fff;--paper2:#f8f8fb;--ink:#20232a;--muted:#626b79;--line:#dde1e8;--accent:#7652cf;--accent2:#a371f7;--good:#15805c;--warn:#a76708;--code:#f1eef9;--shadow:0 14px 36px rgba(30,34,44,.08)}
+    @media(prefers-color-scheme:dark){:root{--bg:#0a0c0f;--paper:#14181e;--paper2:#0f1217;--ink:#e7ebf1;--muted:#9aa5b5;--line:#29313b;--accent:#a371f7;--accent2:#bb93ff;--good:#35c08a;--warn:#f6a733;--code:#1d1927;--shadow:0 14px 42px rgba(0,0,0,.28)}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(900px 460px at 85% -10%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 60%),var(--bg);color:var(--ink);font:15px/1.68 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    a{color:var(--accent);text-underline-offset:3px}a:hover{color:var(--accent2)}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(16px)}.mast-inner{max-width:1380px;margin:auto;padding:26px clamp(18px,4vw,54px)}.kicker{margin:0 0 6px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase}.mast h1{margin:0;font-size:clamp(27px,4vw,46px);line-height:1.12;letter-spacing:-1.2px}.mast p{max-width:860px;margin:10px 0 0;color:var(--muted)}.badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}.badge{padding:4px 9px;border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));border-radius:999px;color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--paper));font-size:11px}
+    .layout{display:grid;grid-template-columns:220px minmax(0,980px);gap:34px;max-width:1280px;margin:0 auto;padding:28px 18px 90px}nav{position:sticky;top:18px;align-self:start;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}nav b{display:block;margin:0 0 8px;color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase}nav a{display:block;padding:5px 7px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(8px,3vw,36px) 50px;border:1px solid var(--line);border-radius:16px;background:var(--paper);box-shadow:var(--shadow)}article>h1:first-child{display:none}h2{margin:45px 0 12px;padding-top:5px;border-top:1px solid var(--line);font-size:23px;line-height:1.3;letter-spacing:-.3px}h2:first-of-type{margin-top:20px;border-top:0}h3{margin:28px 0 8px;font-size:17px;line-height:1.35}p{margin:8px 0 13px}ul,ol{padding-left:24px}li{margin:4px 0}code{padding:2px 5px;border-radius:5px;background:var(--code);color:var(--accent2);font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{max-width:100%;overflow:auto;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--paper2)}pre code{padding:0;background:none;color:var(--ink);white-space:pre}table{display:block;width:100%;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:13px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2)}
+    .flow{margin:22px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--paper2);overflow-x:auto}.flow figcaption{margin-bottom:12px;font-weight:750}.flow svg{display:block;width:100%;height:auto;min-width:850px}.flow .edge path{fill:none;stroke:var(--muted);stroke-width:1.7;marker-end:url(#phase-arrow)}.flow .planning-edge path{stroke:var(--accent);stroke-width:1.2;stroke-dasharray:5 5}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.planning rect{fill:color-mix(in srgb,var(--accent) 11%,var(--paper));stroke:var(--accent)}.flow .node.final rect{stroke:var(--good)}.flow text{fill:var(--ink);font:650 13px system-ui;text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:450}.flow text.label{fill:var(--muted);font-size:9px;font-weight:500}.flow text.planning-label{fill:var(--accent);font-size:10px;font-weight:650}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:18px}}@media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · Approved implementation sequence</p><h1>Recurring Missions: Scheduled Catalog</h1><p>Four reviewable merge units from durable recurrence and exact-once catch-up through the complete operational catalog, with every task gated on the planning artifacts.</p><div class="badges"><span class="badge">Approved</span><span class="badge">4 phases</span><span class="badge">Durable local catch-up</span><span class="badge">SSE live state</span><span class="badge">Serial merge graph</span></div></div></header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#approved-requirements-carried-forward">Approved requirements</a><a href="#repository-investigation-and-resolved-discrepancies">Investigation</a><a href="#phase-graph">Phase graph</a><a href="#concurrency-and-merge-order">Concurrency</a><a href="#cross-phase-contracts">Cross-phase contracts</a><a href="#final-verification-strategy">Verification</a><a href="#requirement-ownership-audit">Ownership audit</a><a href="#final-cross-phase-audit">Final audit</a></nav>
+    <article><h1 id="recurring-missions-scheduled-catalog-phased-implementation-plan">Recurring Missions: Scheduled Catalog — Phased Implementation Plan</h1>
+<p>Status: ready to schedule<br/>
+Source plan: <a href="plan.md"><code>plan.md</code></a><br/>
+Approved mockups: <a href="../../mockups/recurring-missions/index.html"><code>../../mockups/recurring-missions/index.html</code></a><br/>
+Scheduling receipt: <a href="scheduled-tasks.md"><code>scheduled-tasks.md</code></a><br/>
+Investigated baseline: planning checkout <code>35807b9</code>; implementation target <code>origin/main</code>
+<code>a4b9fce</code> as observed on 2026-07-23</p>
+<h2 id="approved-requirements-carried-forward">Approved requirements carried forward</h2>
+<ul>
+<li>V1 provides <strong>durable local catch-up</strong>. If Mission Control runs again, each crossed
+schedule instant is accounted for exactly once, but the UI never promises that work ran
+while the laptop was asleep or powered off.</li>
+<li>The scheduler creates an ordinary backlog task and stops there. Foreman remains the only
+autonomous dispatch path and retains its existing capacity, dependency, allowlist, and
+pane-safety gates.</li>
+<li>Recurring Missions is its own subsystem, not a <code>TASK_SOURCE_KIND</code>.</li>
+<li>Schedule revisions and occurrence history are durable and immutable enough to explain
+which template and policy produced every run.</li>
+<li>The operator gets the complete Scheduled Catalog: catalog/detail, create/edit,
+daemon-calculated preview and standby simulation, pause/resume, Run now, archive, and
+paginated history.</li>
+<li>OS-assisted wake and an always-on runner remain separate follow-up projects.</li>
+</ul>
+<h2 id="repository-investigation-and-resolved-discrepancies">Repository investigation and resolved discrepancies</h2>
+<h3 id="implement-against-the-post-planning-default-branch">Implement against the post-planning default branch</h3>
+<p>The planning checkout is detached at <code>35807b9</code>, while <code>origin/main</code> is already at
+<code>a4b9fce</code>. The default branch added durable task dependencies, the per-task autopilot
+<code>enabled</code> gate, workflow/persona managers, additional overlays, vendor-neutral task homes,
+and a larger <code>buildApp</code> constructor after this checkout was cut.</p>
+<p>Every implementation phase must start from the default branch after the planning pull
+request merges. In particular:</p>
+<ul>
+<li>preserve <code>Task.dependencies</code>, <code>Task.enabled</code>, <code>homeName</code>, and <code>terminalResourceId</code>;</li>
+<li>extend the current <code>Task</code> row mapping and upsert statement rather than copying the older
+task shape from this planning checkout;</li>
+<li>append <code>recurringMissions</code> to the then-current overlay registry instead of replacing its
+newer Files and Workflow entries;</li>
+<li>add any route dependency after the current Persona and Workflow manager arguments; and</li>
+<li>run current-main tests before treating a failure as introduced by the schedule work.</li>
+</ul>
+<p>The phase documents name contracts and responsibilities as authoritative. Line numbers and
+the exact surrounding code are discoveries to repeat after rebasing.</p>
+<h3 id="manual-runs-need-durable-trigger-identity">Manual runs need durable trigger identity</h3>
+<p>The source plan originally described <code>trigger_kind</code> as conditional, while Run now was an
+acceptance criterion in the same release. The source plan has been corrected: the
+occurrence schema includes non-null <code>trigger_kind</code> from Phase 1. Allowed persisted values
+start with <code>scheduled</code> and <code>manual</code> and are append-only.</p>
+<h3 id="v1-standby-correctness-does-not-require-electron-ipc">V1 standby correctness does not require Electron IPC</h3>
+<p>The daemon&#x27;s persisted cursor plus its bounded self-rescheduling timer is sufficient for
+correct catch-up: when Node resumes, the overdue timeout fires and enumerates crossed
+instants. V1 therefore adds no Electron <code>powerMonitor</code> bridge. This avoids an unnecessary
+second wake signal and the four-file Electron capability surface. A future notification
+may reduce latency only; it may never replace the SQLite cursor or claim ledger.</p>
+<h3 id="schedule-provenance-is-not-task-source-provenance">Schedule provenance is not task-source provenance</h3>
+<p><code>Task.source</code> remains reserved for an external <code>TaskSourceRef</code>. Phase 1 adds nullable
+<code>scheduleId</code>, <code>scheduleOccurrenceId</code>, and <code>scheduledFor</code> fields to <code>Task</code> and
+<code>TaskSummary</code>. They survive binding to a session. Phase 4 treats the resulting mark as a
+session-visible signal and covers Cards, Console detail, Board tile, and Console/Board
+rail parity as well as the Board and Sitrep backlog surfaces.</p>
+<h3 id="registry-notifications-must-not-occur-inside-rollback-capable-transactions">Registry notifications must not occur inside rollback-capable transactions</h3>
+<p><code>TaskManager.create</code> currently persists through <code>Registry.upsertTask</code>, which writes and
+then emits. The schedule claim transaction therefore cannot call it. Phase 1 owns atomic
+claim/cursor primitives; Phase 2 calls <code>TaskManager</code> only after the claim commits and uses
+a preallocated task id for crash recovery. No schedule or task event is emitted until the
+corresponding durable write has succeeded.</p>
+<h3 id="the-running-mission-control-task-graph-is-newer-than-this-checkout">The running Mission Control task graph is newer than this checkout</h3>
+<p>The current default branch contains <code>create_task</code>, durable dependency edges, and
+<code>dependsOnCurrentSession</code>. These implementation tasks use that runtime contract. All four
+tasks depend directly on the planning session so no implementation starts before these
+artifacts merge.</p>
+<h2 id="phase-graph">Phase graph</h2>
+
+<figure class="flow" aria-labelledby="phase-flow-title">
+  <figcaption id="phase-flow-title">Merge and task dependency graph</figcaption>
+  <svg viewBox="0 0 1120 255" role="img" aria-label="The planning session gates every task. Phase 1 durable foundation gates Phase 2 exact-once scheduler, which gates Phase 3 HTTP and SSE, which gates Phase 4 Scheduled Catalog UI.">
+    <defs>
+      <marker id="phase-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z"/></marker>
+    </defs>
+    <g class="edge primary-edge">
+      <path d="M210 122H278"/><path d="M478 122H520"/><path d="M720 122H762"/><path d="M962 122H1010"/>
+    </g>
+    <g class="edge planning-edge">
+      <path d="M120 84C180 22 335 27 378 83"/>
+      <path d="M120 80C250 0 545 3 620 83"/>
+      <path d="M120 76C330 -14 775 0 862 83"/>
+    </g>
+    <g class="node planning" transform="translate(20 82)"><rect width="190" height="80" rx="14"/><text x="95" y="31">Planning session</text><text class="sub" x="95" y="53">artifacts must merge first</text></g>
+    <g class="node" transform="translate(278 82)"><rect width="200" height="80" rx="14"/><text x="100" y="29">Phase 1</text><text class="sub" x="100" y="49">Durable foundation</text><text class="sub" x="100" y="65">types · recurrence · SQLite</text></g>
+    <g class="node" transform="translate(520 82)"><rect width="200" height="80" rx="14"/><text x="100" y="29">Phase 2</text><text class="sub" x="100" y="49">Exact-once scheduler</text><text class="sub" x="100" y="65">claim · recover · catch up</text></g>
+    <g class="node" transform="translate(762 82)"><rect width="200" height="80" rx="14"/><text x="100" y="29">Phase 3</text><text class="sub" x="100" y="49">HTTP + live state</text><text class="sub" x="100" y="65">zod · Registry · SSE</text></g>
+    <g class="node final" transform="translate(1010 82)"><rect width="100" height="80" rx="14"/><text x="50" y="29">Phase 4</text><text class="sub" x="50" y="49">Catalog UI</text><text class="sub" x="50" y="65">proof</text></g>
+    <text class="label" x="244" y="111">merge</text><text class="label" x="499" y="111">merge</text><text class="label" x="741" y="111">merge</text><text class="label" x="985" y="111">merge</text>
+    <text class="planning-label" x="560" y="20">Every scheduled task also carries a direct planning-session dependency</text>
+  </svg>
+  <p>The implementation is serial because each pull request consumes a contract owned by the previous one. Numbering reflects real merge prerequisites, not presentation alone.</p>
+</figure>
+<p>The planning-session edge is present on every scheduled Mission Control task. Phase edges
+below list only implementation-phase prerequisites.</p>
+<table><thead><tr><th>Phase</th><th>Name</th><th>Outcome</th><th>Direct phase prerequisites</th><th>Primary merge surface</th></tr></thead><tbody><tr><td>1</td><td><a href="phase-1-durable-schedule-foundation.md">Durable schedule foundation</a></td><td>Shared schedule model, recurrence seam, SQLite ledger, task provenance</td><td>none</td><td>shared types, package lock, DB</td></tr><tr><td>2</td><td><a href="phase-2-exact-once-scheduler.md">Exact-once scheduler and catch-up</a></td><td>Inert-until-configured daemon manager, policy engine, recovery-safe task creation</td><td>Phase 1</td><td>schedule manager, TaskManager, daemon lifecycle</td></tr><tr><td>3</td><td><a href="phase-3-http-and-live-state.md">HTTP and live-state surface</a></td><td>Validated CRUD/preview/history routes plus SSE catalog state</td><td>Phase 2</td><td>protocol, routes, Registry, EventSource, API client</td></tr><tr><td>4</td><td><a href="phase-4-scheduled-catalog-ui.md">Scheduled Catalog UI and operational proof</a></td><td>Full Mission Control UI, provenance parity, Chrome DevTools and standby proof</td><td>Phase 3</td><td>React components, App wiring, styles, UI tests/docs</td></tr></tbody></table>
+<h2 id="concurrency-and-merge-order">Concurrency and merge order</h2>
+<p>The implementation is intentionally serial. Each phase consumes a contract owned by its
+predecessor, and forcing parallel work would either duplicate schemas or create merge-order
+assumptions in high-conflict files.</p>
+<ol>
+<li>Merge Phase 1.</li>
+<li>Rebase Phase 2 onto the merged Phase 1 and merge it.</li>
+<li>Rebase Phase 3 onto the merged Phase 2 and merge it.</li>
+<li>Rebase Phase 4 onto the merged Phase 3 and merge it.</li>
+</ol>
+<p>Concurrency groups:</p>
+<ul>
+<li>Group A: Phase 1 only.</li>
+<li>Group B: Phase 2 only, after Group A.</li>
+<li>Group C: Phase 3 only, after Group B.</li>
+<li>Group D: Phase 4 only, after Group C.</li>
+</ul>
+<p>No two implementation tasks are advertised as concurrently executable. That is a design
+property, not an omission: Phase 2 consumes Phase 1&#x27;s claim API, Phase 3 consumes Phase 2&#x27;s
+manager/service interface, and Phase 4 consumes Phase 3&#x27;s wire contract.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<h3 id="persisted-identities-and-enums">Persisted identities and enums</h3>
+<ul>
+<li>Scheduled occurrence identity is <code>(schedule_id, scheduled_for)</code> with both columns
+non-null.</li>
+<li><code>trigger_kind</code> is non-null and its persisted value set is append-only.</li>
+<li><code>decision_kind</code> is non-null and records the immutable post-claim action so recovery never
+recalculates policy from a newer revision.</li>
+<li>Schedule execution, missed-run, overlap, occurrence-status, and trigger-kind arrays are
+append-only.</li>
+<li><code>executionMode</code> may parse future values, but V1 create/update schemas accept only
+<code>local-catchup</code>; <code>runnerId</code> remains null in V1.</li>
+<li>Task provenance fields are all-null for manual/external-source tasks and all-populated for
+a generated schedule task.</li>
+</ul>
+<h3 id="scheduling-ownership">Scheduling ownership</h3>
+<ul>
+<li>SQLite in the daemon is the only schedule writer.</li>
+<li>Foreman receives no schedule DB access, prompt changes, or schedule-specific route.</li>
+<li>The recurrence library calculates instants only. The persisted cursor and daemon timer
+decide when evaluation happens.</li>
+<li>Preview and the scheduler call the same recurrence and policy functions.</li>
+<li>All schedule-created tasks use <code>backlog: true</code>; no scheduler code calls dispatch,
+assign, terminal, or pane APIs.</li>
+</ul>
+<h3 id="crash-consistency">Crash consistency</h3>
+<ul>
+<li>Claim plus cursor advance is one SQLite transaction.</li>
+<li>Task creation happens only after that transaction commits.</li>
+<li>A preallocated task id makes <code>TaskManager.create</code> idempotent for recovery-safe internal
+producers without changing manual task id generation.</li>
+<li>Registry and SSE events follow successful writes and are never emitted from inside a
+rollback-capable transaction.</li>
+</ul>
+<h3 id="live-state-ownership">Live-state ownership</h3>
+<ul>
+<li>Catalog state is a top-level <code>schedules</code> collection in the existing SSE snapshot and
+<code>MissionState</code>.</li>
+<li>Occurrence history is fetched on demand and never polled.</li>
+<li>Reconnect replaces the schedule map from the snapshot, just as it does sessions,
+reviews, and tasks.</li>
+<li>The archived schedule is returned with its occurrence-history response, so a task
+provenance link can still open history after archive.</li>
+</ul>
+<h3 id="ui-and-parity">UI and parity</h3>
+<ul>
+<li>Recurring Missions is registered in <code>OVERLAY_IDS</code>; App uses the existing overlay host
+instead of a hand-maintained stand-down list.</li>
+<li>No keyboard shortcut ships in V1.</li>
+<li>The schedule editor is configuration, not a compose surface: no <code>DraftKind</code>, attachment
+state, reset nonce, or send chord.</li>
+<li>Scheduled provenance uses shared leaf rendering where session task metadata is shown and
+supplies an equivalent mark in Cards, Console detail, Board tile, and RailRow.</li>
+<li>Board backlog and Sitrep backlog both expose the schedule origin and open the same
+Scheduled Catalog selection.</li>
+</ul>
+<h2 id="final-verification-strategy">Final verification strategy</h2>
+<p>Each phase runs its own targeted tests plus typecheck. The final phase additionally runs:</p>
+<pre><code class="language-text">npm run typecheck
+npm test
+npm run build
+npm run smoke
+</code></pre>
+<p>The final browser pass uses Chrome DevTools against the development dashboard to verify:</p>
+<ul>
+<li>catalog open/close and overlay shortcut stand-down;</li>
+<li>create, preview, save paused, enable, edit, Run now, pause/resume, archive, and history;</li>
+<li>live SSE updates without a catalog poll loop;</li>
+<li>field-level failures and disconnected/reconnected state;</li>
+<li>task and session provenance links in every required layout; and</li>
+<li>responsive layout without console errors.</li>
+</ul>
+<p>Standby behavior has two proof levels:</p>
+<ol>
+<li>deterministic fake-clock tests cross restarts, forward/backward jumps, DST transitions,
+coalescing, caps, and recovery windows;</li>
+<li>a documented local dogfood run creates a paused schedule, enables it, restarts the
+daemon, performs a real laptop sleep/wake, and records the delayed occurrence in
+history.</li>
+</ol>
+<p>The real sleep/wake observation is a rollout receipt, not a reason to make an
+implementation pull request wait indefinitely for a human to close a laptop.</p>
+<h2 id="requirement-ownership-audit">Requirement ownership audit</h2>
+<table><thead><tr><th>Source-plan requirement</th><th>Owning phase</th></tr></thead><tbody><tr><td>Shared schedule types and append-only enums</td><td>Phase 1</td></tr><tr><td>Exact recurrence/DST behavior and minimum interval</td><td>Phase 1</td></tr><tr><td>Schedule, revision, occurrence tables and indexes</td><td>Phase 1</td></tr><tr><td>Task schedule provenance and migration</td><td>Phase 1</td></tr><tr><td>Atomic claim/cursor and history storage primitives</td><td>Phase 1</td></tr><tr><td>Missed/overlap policy, exact-once recovery, Run now</td><td>Phase 2</td></tr><tr><td>Self-rescheduling daemon lifecycle and outcome logging</td><td>Phase 2</td></tr><tr><td>Validated create/update/preview/enable/archive/history routes</td><td>Phase 3</td></tr><tr><td>Registry snapshot/events and browser EventSource state</td><td>Phase 3</td></tr><tr><td>Complete Scheduled Catalog and task deep links</td><td>Phase 4</td></tr><tr><td>Layout/backlog provenance parity</td><td>Phase 4</td></tr><tr><td>Chrome DevTools verification and standby dogfood runbook</td><td>Phase 4</td></tr><tr><td>OS wake adapter and always-on runner</td><td>Explicitly out of scope</td></tr></tbody></table>
+<p>Every required V1 behavior has one owning phase. Later phases consume earlier contracts
+without redefining them.</p>
+<h2 id="final-cross-phase-audit">Final cross-phase audit</h2>
+<ul>
+<li>2026-07-23: Rebased the design mentally against <code>origin/main</code> rather than the detached
+planning checkout; recorded task dependency, task home, workflow, overlay, and <code>buildApp</code>
+differences as entry criteria.</li>
+<li>2026-07-23: Moved durable identities, enums, recurrence, claim transactions, and task
+provenance into Phase 1 so no later phase has to revise persistence.</li>
+<li>2026-07-23: Phase 2&#x27;s recovery audit exposed that <code>status = claimed</code> alone cannot recover
+a pending policy skip after an edit. Added non-null <code>decision_kind</code> plus optional
+blocking/coverage references to the source and Phase 1 schema.</li>
+<li>2026-07-23: Kept scheduler policy and crash recovery together in Phase 2; splitting them
+would knowingly ship a duplicate-producing manager.</li>
+<li>2026-07-23: Kept route schemas, Registry/SSE, and the web API client in Phase 3 so the
+wire contract is complete before UI work begins.</li>
+<li>2026-07-23: Assigned all catalog screens, overlay wiring, provenance parity, docs, and
+browser validation to Phase 4, with automated standby correctness already established
+below it.</li>
+<li>2026-07-23: Confirmed the four-phase graph is serial for real contract dependencies, not
+numbering convenience, and that every task will also carry the direct planning-session
+dependency required by the phased-plan workflow.</li>
+<li>2026-07-23: The approved mockups referenced
+<code>docs/mockups/feature-lab/theme.css</code>, which is absent from implementation baseline
+<code>a4b9fce</code> and outside this artifact-only handoff. Embedded the required base theme into
+<code>scheduled-catalog.css</code> and removed that missing dependency without changing a screen or
+copying the unrelated feature-lab mockups.</li>
+</ul></article>
+  </div>
+</body>
+</html>

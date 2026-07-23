@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Recurring Missions: Scheduled Catalog · Detailed Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f4f5f8;--paper:#fff;--paper2:#f8f8fb;--ink:#20232a;--muted:#626b79;
+      --line:#dde1e8;--accent:#7652cf;--accent2:#a371f7;--code:#f1eef9;
+      --good:#15805c;--warn:#a76708;--bad:#bd3028;--shadow:0 14px 36px rgba(30,34,44,.08);
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {--bg:#0a0c0f;--paper:#14181e;--paper2:#0f1217;--ink:#e7ebf1;--muted:#9aa5b5;--line:#29313b;--accent:#a371f7;--accent2:#bb93ff;--code:#1d1927;--good:#35c08a;--warn:#f6a733;--bad:#f56a64;--shadow:0 14px 42px rgba(0,0,0,.28)}
+    }
+    *{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:radial-gradient(900px 460px at 85% -10%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 60%),var(--bg);color:var(--ink);font:15px/1.68 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    a{color:var(--accent);text-underline-offset:3px} a:hover{color:var(--accent2)}
+    .mast{border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(16px)}
+    .mast-inner{max-width:1380px;margin:auto;padding:26px clamp(18px,4vw,54px)}
+    .kicker{margin:0 0 6px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase}
+    .mast h1{margin:0;font-size:clamp(27px,4vw,46px);line-height:1.12;letter-spacing:-1.2px}.mast p{max-width:820px;margin:10px 0 0;color:var(--muted)}
+    .badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}.badge{padding:4px 9px;border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));border-radius:999px;color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--paper));font-size:11px}
+    .layout{display:grid;grid-template-columns:220px minmax(0,920px);gap:34px;max-width:1220px;margin:0 auto;padding:28px 18px 90px}
+    nav{position:sticky;top:18px;align-self:start;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--paper);box-shadow:var(--shadow)}
+    nav b{display:block;margin:0 0 8px;color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase}
+    nav a{display:block;padding:5px 7px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:12px}nav a:hover{color:var(--ink);background:var(--paper2)}
+    article{min-width:0;padding:10px clamp(8px,3vw,36px) 50px;border:1px solid var(--line);border-radius:16px;background:var(--paper);box-shadow:var(--shadow)}
+    article>h1:first-child{display:none} h2{margin:45px 0 12px;padding-top:5px;border-top:1px solid var(--line);font-size:23px;line-height:1.3;letter-spacing:-.3px}h2:first-of-type{margin-top:20px;border-top:0}h3{margin:28px 0 8px;font-size:17px;line-height:1.35}h4{margin:20px 0 6px}
+    p{margin:8px 0 13px} strong{color:var(--ink)} ul,ol{padding-left:24px}li{margin:4px 0}
+    code{padding:2px 5px;border-radius:5px;background:var(--code);color:var(--accent2);font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+    pre{max-width:100%;overflow:auto;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--paper2)}pre code{padding:0;background:none;color:var(--ink);white-space:pre}
+    blockquote{margin:18px 0;padding:9px 15px;border-left:3px solid var(--accent);background:color-mix(in srgb,var(--accent) 6%,var(--paper));color:var(--muted)}
+    table{display:block;width:100%;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:13px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--paper2)}
+    hr{border:0;border-top:1px solid var(--line)}
+    .flow{margin:22px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--paper2);overflow:hidden}.flow figcaption{margin-bottom:12px;font-weight:750}.flow svg{display:block;width:100%;height:auto;min-width:720px}.flow{overflow-x:auto}.flow .edge path{fill:none;stroke:var(--muted);stroke-width:1.7;marker-end:url(#arrow)}.flow .edge .dashed{stroke-dasharray:7 6}.flow .node rect{fill:var(--paper);stroke:var(--line);stroke-width:1.5}.flow .node.primary rect{fill:color-mix(in srgb,var(--accent) 12%,var(--paper));stroke:var(--accent)}.flow .node.db rect{stroke:var(--good)}.flow .node.optional rect{stroke:var(--warn);stroke-dasharray:5 4}.flow .node.future rect{stroke:var(--muted);stroke-dasharray:5 4}.flow text{fill:var(--ink);font:600 13px system-ui;text-anchor:middle}.flow text.sub{fill:var(--muted);font-size:10px;font-weight:450}.flow text.label{fill:var(--muted);font-size:9px;font-weight:500}.flow p{margin:11px 3px 0;color:var(--muted);font-size:12px}
+    .note{margin:16px 0;padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px;background:color-mix(in srgb,var(--accent) 7%,var(--paper))}
+    @media(max-width:860px){.layout{grid-template-columns:1fr}.layout nav{position:static;display:flex;gap:4px;overflow-x:auto}.layout nav b{display:none}.layout nav a{white-space:nowrap}article{padding-inline:18px}}
+    @media print{body{background:#fff}.mast,article,nav{box-shadow:none}.layout{display:block;max-width:none}.layout nav{display:none}article{border:0}.flow svg{min-width:0}}
+  </style>
+</head>
+<body>
+  <header class="mast"><div class="mast-inner"><p class="kicker">Mission Control · Detailed product & engineering plan</p><h1>Recurring Missions: Scheduled Catalog</h1><p>Durable recurring task templates with exact-once occurrence history, explicit standby guarantees, ordinary backlog creation, and unchanged Foreman safety boundaries.</p><div class="badges"><span class="badge">Approved</span><span class="badge">Local-first</span><span class="badge">SSE live state</span><span class="badge">SQLite exact-once ledger</span><span class="badge">Standby-aware</span></div></div></header>
+  <div class="layout">
+    <nav aria-label="Plan sections"><b>On this page</b><a href="#outcome">Outcome</a><a href="#product-contract">Product contract</a><a href="#ux">UX</a><a href="#scheduling-and-standby-modes">Standby modes</a><a href="#shared-contracts">Shared contracts</a><a href="#sqlite-design">SQLite design</a><a href="#daemon-lifecycle">Daemon lifecycle</a><a href="#http-and-sse">HTTP and SSE</a><a href="#data-and-request-flow">Data flow</a><a href="#testing">Testing</a><a href="#acceptance-criteria">Acceptance</a></nav>
+    <article><h1 id="recurring-missions-scheduled-catalog">Recurring Missions: Scheduled Catalog</h1>
+<p>Status: approved for phased implementation<br/>
+Owner: Mission Control<br/>
+Date: 2026-07-23<br/>
+Mockups: <a href="../../mockups/recurring-missions/index.html"><code>../../mockups/recurring-missions/index.html</code></a></p>
+<h2 id="approved-decisions">Approved decisions</h2>
+<p>Approved by the operator on 2026-07-23:</p>
+<ul>
+<li><strong>V1 execution guarantee:</strong> durable local catch-up. Every due instant is accounted for
+exactly once after Mission Control resumes, with actual delay visible in the catalog.
+OS-assisted wake and always-on runners remain explicit follow-up projects.</li>
+<li><strong>Implementation follow-up:</strong> create a merge-aware phased implementation plan and
+schedule dependency-linked Mission Control tasks for every phase.</li>
+</ul>
+<h2 id="outcome">Outcome</h2>
+<p>Add a first-class <strong>Scheduled Catalog</strong> where an operator can create, preview, enable,
+pause, run, revise, and audit recurring missions.</p>
+<p>Each due occurrence creates an ordinary Mission Control backlog task. It does <strong>not</strong>
+dispatch directly, provision a worktree, or type into a pane. If Foreman later takes the
+task, the existing live-mode, allowlist, dependency, agent-capacity, and pane-safety gates
+remain the only autonomous path to execution.</p>
+<p>The catalog must also be honest about laptop availability:</p>
+<ul>
+<li>The base product durably catches up after the daemon resumes, but does not claim it ran
+while the laptop was asleep.</li>
+<li>An optional OS integration may request a wake on platforms that support it, with an
+explicit capability check and catch-up fallback.</li>
+<li>A wall-clock guarantee requires an always-on execution host; a powered-off laptop cannot
+provide one.</li>
+</ul>
+<h2 id="why-this-is-a-separate-subsystem">Why this is a separate subsystem</h2>
+<p>Recurring missions resemble task sources because both can put work in the backlog, but they
+are not the same contract.</p>
+<p><code>src/shared/task-source.ts</code> defines a task source as a reader of an <strong>external system</strong>. Its
+append-only <code>TASK_SOURCE_KINDS</code>, source configuration, sweep status, external identity, and
+<code>task_source_seen</code> ledger all exist to answer “has this external item already been filed?”
+A recurring mission is internal durable state whose identity is <code>(schedule_id, scheduled_for)</code>. Adding <code>&quot;schedule&quot;</code> to <code>TASK_SOURCE_KINDS</code> would:</p>
+<ul>
+<li>make the browser and server registries lie about an external implementation;</li>
+<li>place recurring missions in Settings → Task sources instead of an operational catalog;</li>
+<li>overload <code>TaskSourceRef.externalId</code> with an internal clock instant; and</li>
+<li>lose the revision, catch-up, overlap, and occurrence lifecycle that schedules need.</li>
+</ul>
+<p>Recurring Missions therefore gets its own shared types, SQLite tables, daemon manager,
+routes, SSE events, and UI surface. Generated tasks keep <code>Task.source = null</code>; scheduled
+provenance is carried in dedicated task fields.</p>
+<h2 id="product-contract">Product contract</h2>
+<h3 id="a-schedule-is-a-durable-template">A schedule is a durable template</h3>
+<p>A schedule stores:</p>
+<ul>
+<li>a human name;</li>
+<li>a required task title and full task intent;</li>
+<li>canonical repository root;</li>
+<li>task kind, agent, priority, labels, model override, and effort override;</li>
+<li>a validated five-field cron expression;</li>
+<li>an IANA time-zone identifier;</li>
+<li>enabled/paused state;</li>
+<li>overlap policy;</li>
+<li>missed-run policy;</li>
+<li>execution mode;</li>
+<li>current revision and next due instant; and</li>
+<li>created/updated/archive timestamps.</li>
+</ul>
+<p>The title is required. A recurring run must not launch an LLM titling call every time it
+files the same work.</p>
+<p>Edits create a new immutable template revision. Existing occurrences and tasks retain the
+revision that produced them. A rename does not rewrite history.</p>
+<h3 id="an-occurrence-is-the-durable-unit-of-exactly-once-work">An occurrence is the durable unit of exactly-once work</h3>
+<p>The unique identity is:</p>
+<pre><code class="language-text">(schedule_id, scheduled_for)
+</code></pre>
+<p>Both columns are non-null. The unique index contains no nullable column, preserving SQLite
+<code>ON CONFLICT</code> semantics.</p>
+<p>An occurrence records one of these terminal outcomes:</p>
+<ul>
+<li><code>created</code>: a backlog task was created;</li>
+<li><code>coalesced</code>: a missed instant was represented by a later catch-up task;</li>
+<li><code>skipped_overlap</code>: prior generated work was still active;</li>
+<li><code>skipped_policy</code>: missed-run policy said not to create work;</li>
+<li><code>failed</code>: validation or task creation failed; or</li>
+<li><code>cancelled</code>: the schedule was archived before a claimed occurrence completed.</li>
+</ul>
+<p><code>claimed</code> is the only non-terminal occurrence state. It exists to recover a daemon crash
+between reserving an occurrence and creating its task.</p>
+<h3 id="generated-work-is-ordinary-backlog-work">Generated work is ordinary backlog work</h3>
+<p>The task is created through <code>TaskManager</code>, with:</p>
+<pre><code class="language-ts">scheduleId: string | null;
+scheduleOccurrenceId: string | null;
+scheduledFor: number | null;
+</code></pre>
+<p>All three are <code>null</code> for existing and manually created tasks. Persist them as new nullable
+columns on <code>tasks</code>, and add matching <code>addColumn</code> calls in <code>migrate()</code>; changing only the
+<code>CREATE TABLE IF NOT EXISTS</code> block would not upgrade an existing database.</p>
+<p>The catalog uses these fields to show “Scheduled by Dependency audit · Jul 27, 8:00 AM”
+and to deep-link from a generated task to run history. <code>TaskSourceRef</code> remains unchanged.</p>
+<h2 id="ux">UX</h2>
+<p>The feature is an operational overlay, not a settings category.</p>
+<p>Add a <strong>Missions</strong> button to the topbar beside Dispatch and Sitrep. The button shows an
+attention badge when any enabled schedule is failing or overdue. It opens a wide overlay
+registered as <code>OVERLAY_IDS.recurringMissions</code>; the overlay owns Escape and global shortcuts
+stand down automatically through the existing host.</p>
+<p>The mockup contains four complete screens:</p>
+<ol>
+<li><a href="../../mockups/recurring-missions/catalog.html">Catalog and detail</a></li>
+<li><a href="../../mockups/recurring-missions/editor.html">Create/edit flow</a></li>
+<li><a href="../../mockups/recurring-missions/preview.html">Occurrence preview and availability</a></li>
+<li><a href="../../mockups/recurring-missions/history.html">Run history and exact-once audit</a></li>
+</ol>
+<h3 id="catalog">Catalog</h3>
+<p>The left side is searchable and filterable by Healthy, Paused, and Attention. Each row
+shows:</p>
+<ul>
+<li>schedule name, repo, and agent;</li>
+<li>human cadence and time zone;</li>
+<li>execution mode;</li>
+<li>next due instant;</li>
+<li>last outcome; and</li>
+<li>derived health.</li>
+</ul>
+<p>The selected detail shows the template summary, exact next occurrence, overlap and missed
+run policy, execution guarantee, recent totals, Run now, Preview, Edit, Pause/Resume, and
+History.</p>
+<p>Health is derived, not hand-set:</p>
+<ul>
+<li><strong>healthy</strong>: enabled, a valid next run exists, and the most recent terminal occurrence
+succeeded or was an intentional policy skip;</li>
+<li><strong>paused</strong>: disabled by the operator;</li>
+<li><strong>attention</strong>: enabled with an invalid/missing repo, a failed occurrence, a stale
+<code>claimed</code> occurrence, or <code>nextRunAt</code> overdue beyond the scheduler grace window.</li>
+</ul>
+<h3 id="create-edit">Create/edit</h3>
+<p>The editor separates five decisions:</p>
+<ol>
+<li>task template;</li>
+<li>cadence and time zone;</li>
+<li>laptop availability;</li>
+<li>overlap and missed-run guardrails; and</li>
+<li>preview plus enable.</li>
+</ol>
+<p>The browser offers readable presets and an Advanced cron mode. Both resolve to the same
+validated five-field expression before saving. It does not accept seconds; one minute is
+the smallest wall-clock unit and one hour is the minimum allowed interval between
+successive computed runs. The minimum prevents a mistaken expression from filing 1,440
+agent tasks per day.</p>
+<p>The editor is configuration, not a compose surface: it does not add a <code>DraftKind</code>, an
+attachment box, or a send chord. Local component state survives step changes while the
+overlay remains mounted. Saving persists a revision.</p>
+<p>Two buttons make consent explicit:</p>
+<ul>
+<li><strong>Save paused</strong> stores configuration without starting the clock.</li>
+<li><strong>Save &amp; enable</strong> stores and enables only after the preview route succeeds.</li>
+</ul>
+<h3 id="preview">Preview</h3>
+<p>Preview submits an unsaved schedule definition and returns the next 10–50 instants from
+the daemon’s recurrence evaluator. The browser never implements its own date math.</p>
+<p>For each instant it displays local time, UTC time, DST offset, overlap with another
+scheduled mission, and whether the selected availability policy could be late.</p>
+<p>The same endpoint supports a non-mutating standby simulation:</p>
+<pre><code class="language-text">sleepStartedAt + resumedAt -&gt; missed instants -&gt; policy outcomes
+</code></pre>
+<p>This makes “catch up after an eight-day trip” reviewable before enablement.</p>
+<h3 id="history">History</h3>
+<p>History is paginated and fetched on demand, never polled. It lists scheduled time, claimed
+time, delay, outcome, revision, generated task, and result. Selecting an occurrence shows
+the internal audit:</p>
+<ul>
+<li>daemon resumed;</li>
+<li>occurrence claimed;</li>
+<li>task created or policy skip recorded;</li>
+<li>SSE update emitted; and</li>
+<li>Foreman dispatch, if it later happened.</li>
+</ul>
+<p>History stays after a schedule is archived. Archive removes it from the default catalog
+but never deletes generated tasks or occurrence rows.</p>
+<h2 id="scheduling-and-standby-modes">Scheduling and standby modes</h2>
+<h3 id="mode-a-local-durable-catch-up-recommended-v1">Mode A: local durable catch-up — recommended v1</h3>
+<p>This is the default and the only mode required to ship the first version.</p>
+<p>The daemon persists <code>next_run_at</code>, so process or Electron restarts lose no due instant.
+When the system sleeps, JavaScript timers pause. On resume or daemon startup, the scheduler
+enumerates due instants from persisted state and applies the selected missed-run policy.</p>
+<p>Guarantee:</p>
+<pre><code class="language-text">If Mission Control later runs again, every due instant is accounted for exactly once.
+</code></pre>
+<p>Non-guarantee:</p>
+<pre><code class="language-text">The task may be created late; no work runs while the machine is suspended or powered off.
+</code></pre>
+<p>The catalog displays the actual delay. This option requires no elevated privileges and
+works in browser development and packaged Electron builds.</p>
+<h3 id="mode-b-os-assisted-wake-optional-follow-up">Mode B: OS-assisted wake — optional follow-up</h3>
+<p>This is an adapter layer, not a change to occurrence semantics. The SQLite clock remains
+authoritative and catch-up remains the fallback.</p>
+<p>On macOS:</p>
+<ul>
+<li><code>launchd</code> <code>StartCalendarInterval</code> can run a missed calendar job after wake, but does not
+provide a general wall-clock wake guarantee.</li>
+<li><code>pmset repeat wake ...</code> can request scheduled wakes, but Apple documents it as a
+<code>sudo</code> operation and the machine’s hardware, power, lid, battery, login, and FileVault
+state still matter.</li>
+<li>Electron <code>powerSaveBlocker</code> can prevent a currently awake machine from sleeping; it
+cannot wake a suspended or powered-off machine. Holding it for hours before a mission
+would be hostile to battery life and is not the default design.</li>
+</ul>
+<p>On Windows, Task Scheduler can request wake-to-run, subject to wake timers, firmware,
+power policy, and task permissions. On Linux, a system-level <code>systemd.timer</code> can combine
+<code>Persistent=true</code> with <code>WakeSystem=true</code> when hardware and privileges allow it.</p>
+<p>Because Mission Control currently targets an Electron shell on macOS, the first adapter
+would be macOS-only and must be exposed through the four-file Electron capability contract:</p>
+<ol>
+<li><code>ipcMain.handle</code> in <code>src/main/index.ts</code>;</li>
+<li><code>contextBridge</code> in <code>src/preload/index.ts</code>;</li>
+<li>the mirrored interface in <code>src/web/mission-desktop.d.ts</code>; and</li>
+<li>a guarded browser call through <code>window.missionDesktop?</code>.</li>
+</ol>
+<p>The adapter reports capabilities before enablement:</p>
+<pre><code class="language-ts">interface WakeCapability {
+  supported: boolean;
+  installed: boolean;
+  requiresElevation: boolean;
+  reason: string | null;
+}
+</code></pre>
+<p>It never silently promotes local catch-up to “guaranteed.” Failure to install or fire a
+wake request leaves the occurrence eligible for ordinary catch-up.</p>
+<p>Official behavior references:</p>
+<ul>
+<li><a href="https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html" target="_blank" rel="noreferrer">Apple: Scheduling Timed Jobs</a></li>
+<li><a href="https://support.apple.com/guide/mac-help/schedule-your-mac-to-turn-on-or-off-mchl40376151/mac" target="_blank" rel="noreferrer">Apple: schedule a Mac to wake with pmset</a></li>
+<li><a href="https://www.electronjs.org/docs/latest/api/power-save-blocker" target="_blank" rel="noreferrer">Electron: powerSaveBlocker</a></li>
+<li><a href="https://learn.microsoft.com/en-us/windows/win32/taskschd/task-maintenence" target="_blank" rel="noreferrer">Microsoft: Task Scheduler automatic maintenance and wake</a></li>
+<li><a href="https://man7.org/linux/man-pages/man5/systemd.timer.5.html" target="_blank" rel="noreferrer">systemd.timer WakeSystem and Persistent</a></li>
+</ul>
+<h3 id="mode-c-always-on-mission-runner-only-wall-clock-guarantee">Mode C: always-on Mission runner — only wall-clock guarantee</h3>
+<p>If “run at 8:00 AM even when this laptop is off” is a hard requirement, the schedule and
+claim must be available to an always-on host. Options include a second operator-managed
+Mission daemon, a small trusted home server, or a future hosted Mission Relay.</p>
+<p>This is a larger product:</p>
+<ul>
+<li>schedule replication or a single elected scheduler;</li>
+<li>runner identity, enrollment, and revocation;</li>
+<li>encrypted credentials and repository availability on the remote host;</li>
+<li>leases with fencing tokens so two hosts cannot create the same occurrence;</li>
+<li>result and task synchronization back to the laptop; and</li>
+<li>explicit cost and trust controls.</li>
+</ul>
+<p>Do not approximate this by having two independent local SQLite databases evaluate the same
+cron. Without a shared claim authority they can both create the same task.</p>
+<p>The v1 schema includes <code>execution_mode</code> and nullable <code>runner_id</code> so this can be added
+without rewriting schedule history, but the only enabled v1 value is <code>local-catchup</code>.</p>
+<h3 id="recommended-scope">Recommended scope</h3>
+<p>Ship Mode A with the full Scheduled Catalog, exact-once occurrence ledger, visible delay,
+preview simulation, and an adapter-shaped execution mode. Treat Mode B as a platform
+enhancement after measuring demand. Treat Mode C as a separate remote-execution project.</p>
+<h2 id="shared-contracts">Shared contracts</h2>
+<p>Create <code>src/shared/schedules.ts</code>, with no <code>node:</code> imports:</p>
+<pre><code class="language-ts">export const SCHEDULE_EXECUTION_MODES = [
+  &quot;local-catchup&quot;,
+  &quot;os-wake&quot;,
+  &quot;remote-runner&quot;,
+] as const;
+
+export const SCHEDULE_OVERLAP_POLICIES = [
+  &quot;skip-active&quot;,
+  &quot;allow&quot;,
+] as const;
+
+export const SCHEDULE_MISSED_POLICIES = [
+  &quot;coalesce-latest&quot;,
+  &quot;create-all&quot;,
+  &quot;skip&quot;,
+] as const;
+
+export interface ScheduleTemplate {
+  title: string;
+  intent: string;
+  repoRoot: string;
+  kind: TaskKind;
+  agent: AgentType;
+  priority: TaskPriority | null;
+  labels: string[];
+  model: string | null;
+  effort: ThinkingLevel | null;
+}
+
+export interface MissionSchedule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  archivedAt: number | null;
+  expression: string;
+  timezone: string;
+  overlapPolicy: ScheduleOverlapPolicy;
+  missedPolicy: ScheduleMissedPolicy;
+  executionMode: ScheduleExecutionMode;
+  runnerId: string | null;
+  revision: number;
+  template: ScheduleTemplate;
+  nextRunAt: number | null;
+  lastOccurrence: ScheduleOccurrenceSummary | null;
+  health: &quot;healthy&quot; | &quot;paused&quot; | &quot;attention&quot;;
+  createdAt: number;
+  updatedAt: number;
+}
+</code></pre>
+<p>Persisted enum arrays are append-only. Older values must stay parseable.</p>
+<p>Mutating payload schemas live in <code>src/shared/protocol.ts</code> and are used through
+<code>parseBody</code>. The preview payload reuses the same schedule definition schema as create and
+update so UI preview cannot accept a value the save route later refuses.</p>
+<h2 id="sqlite-design">SQLite design</h2>
+<p>Add three new tables to <code>openDb()</code>’s existing SQL template. Do not place backticks inside
+that SQL block.</p>
+<h3 id="mission-schedules"><code>mission_schedules</code></h3>
+<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS mission_schedules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  archived_at INTEGER,
+  expression TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  overlap_policy TEXT NOT NULL,
+  missed_policy TEXT NOT NULL,
+  execution_mode TEXT NOT NULL,
+  runner_id TEXT,
+  revision INTEGER NOT NULL,
+  next_run_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+</code></pre>
+<p>The template is not duplicated on this row. <code>revision</code> points to the active immutable
+revision.</p>
+<h3 id="mission-schedule-revisions"><code>mission_schedule_revisions</code></h3>
+<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS mission_schedule_revisions (
+  schedule_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  template_json TEXT NOT NULL,
+  expression TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  overlap_policy TEXT NOT NULL,
+  missed_policy TEXT NOT NULL,
+  execution_mode TEXT NOT NULL,
+  runner_id TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (schedule_id, revision)
+);
+</code></pre>
+<p>Cadence and policy travel with the revision because they explain why a historical
+occurrence existed and what decision it made.</p>
+<h3 id="mission-schedule-occurrences"><code>mission_schedule_occurrences</code></h3>
+<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS mission_schedule_occurrences (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  schedule_revision INTEGER NOT NULL,
+  scheduled_for INTEGER NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  decision_kind TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  status TEXT NOT NULL,
+  task_id TEXT,
+  covered_by_id TEXT,
+  blocking_task_id TEXT,
+  delay_ms INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (schedule_id, scheduled_for)
+);
+</code></pre>
+<p>Indexes:</p>
+<ul>
+<li><code>(schedule_id, scheduled_for DESC)</code> for history;</li>
+<li><code>(status, claimed_at)</code> for crash recovery; and</li>
+<li><code>(task_id)</code> for task-to-occurrence lookup.</li>
+</ul>
+<p>New tables need no <code>addColumn</code> migration. The three new columns on <code>tasks</code> do.</p>
+<p><code>decision_kind</code> is the immutable intent reserved with the claim (<code>create_task</code>,
+<code>coalesced</code>, <code>skipped_overlap</code>, or <code>skipped_policy</code>). It lets startup finish a claimed row
+after a crash without recomputing policy from a schedule that may since have been edited.
+<code>blocking_task_id</code> explains an overlap skip; <code>covered_by_id</code> explains a coalesced instant.</p>
+<h2 id="recurrence-evaluator">Recurrence evaluator</h2>
+<p>Create <code>src/server/schedules/recurrence.ts</code> as the only cron/time-zone seam.</p>
+<p>Use a locked, timezone-aware parser such as <code>cron-parser</code> for calculation, not for
+scheduling callbacks. The database clock and self-rescheduling daemon loop decide when to
+evaluate; the library only answers:</p>
+<pre><code class="language-ts">validate(expression, timezone): Result
+nextAfter(expression, timezone, instant): number
+between(expression, timezone, afterExclusive, throughInclusive, limit): number[]
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>five cron fields only;</li>
+<li>validate the IANA zone using <code>Intl.DateTimeFormat</code>;</li>
+<li>reject an expression whose first two computed occurrences are less than one hour apart;</li>
+<li>DST spring-forward gaps follow the parser’s documented skip behavior;</li>
+<li>DST fall-back overlaps create one occurrence, not two;</li>
+<li>persist UTC epoch milliseconds, render in the configured time zone; and</li>
+<li>preview and scheduler call the same functions.</li>
+</ul>
+<p>Pin DST behavior with fixtures around both US transitions and a non-US zone. A dependency
+upgrade must not change those expectations silently.</p>
+<h2 id="daemon-lifecycle">Daemon lifecycle</h2>
+<p>Create <code>src/server/schedules/manager.ts</code> and start it in <code>src/server/index.ts</code> beside the
+task-source sweeper. Return a stop closure and call it during shutdown.</p>
+<p>The loop follows repository convention:</p>
+<ul>
+<li>one self-rescheduling <code>setTimeout</code>, never <code>setInterval</code>;</li>
+<li>one tick at a time;</li>
+<li><code>unref()</code> the timer;</li>
+<li>catch errors inside the tick;</li>
+<li>sleep until the earlier of the next due instant or a bounded one-minute health check;</li>
+<li>run immediately at daemon startup; and</li>
+<li>let the first resumed timer tick perform catch-up after system standby.</li>
+</ul>
+<p>V1 does not add Electron resume IPC. The persisted cursor plus the daemon&#x27;s bounded
+one-minute health tick is the complete correctness path: after the process resumes, the
+overdue timer fires and enumerates every crossed instant. A future resume notification may
+reduce catch-up latency, but if added it must follow the four-file Electron capability
+contract and remain an optimization rather than a second source of scheduling truth.</p>
+<p>The daemon stays the only SQLite writer. Foreman never reads schedule tables. It sees only
+the normal backlog tasks generated by the daemon.</p>
+<h3 id="claim-and-recovery-algorithm">Claim and recovery algorithm</h3>
+<p>For each due schedule:</p>
+<ol>
+<li>Read the active revision and enumerate due instants from persisted <code>next_run_at</code>
+through <code>now</code>.</li>
+<li>Apply missed policy and overlap policy as pure decisions.</li>
+<li>For each due instant, run a DB transaction that:
+<ul>
+<li>inserts the occurrence with <code>status = claimed</code>, its immutable <code>decision_kind</code>, a
+preallocated <code>task_id</code> when work is intended, and
+<code>ON CONFLICT(schedule_id, scheduled_for) DO NOTHING</code>;</li>
+<li>advances <code>mission_schedules.next_run_at</code>; and</li>
+<li>returns whether this process won the claim.</li>
+</ul>
+</li>
+<li>If the outcome should create work, call <code>TaskManager.create</code> with that preallocated
+task id, required title, <code>backlog: true</code>, and schedule provenance.</li>
+<li>Mark the occurrence <code>created</code>, or mark the selected skip/coalesce/failure outcome.</li>
+<li>Emit schedule and task updates only after their durable writes succeed.</li>
+</ol>
+<p><code>TaskManager.create</code> gains an internal optional <code>id</code> used only by recovery-safe producers.
+It first returns an existing task with that id instead of emitting a duplicate. Manual
+dispatch continues to mint its own UUID.</p>
+<p>If the daemon crashes:</p>
+<ul>
+<li>after claim but before task creation, startup finds <code>claimed</code> with no task and creates
+the preallocated task;</li>
+<li>after task creation but before occurrence completion, startup finds the task by id and
+marks the occurrence <code>created</code>; and</li>
+<li>after completion, the unique occurrence key makes the next tick a no-op.</li>
+</ul>
+<p>Do not emit a task into the in-memory registry from inside a DB transaction that can still
+roll back. Recovery is explicit because SSE and the Registry cannot be rolled back.</p>
+<h3 id="missed-run-semantics">Missed-run semantics</h3>
+<p><code>coalesce-latest</code> is the default:</p>
+<ul>
+<li>enumerate every missed instant;</li>
+<li>mark earlier instants <code>coalesced</code> and point <code>covered_by_id</code> at the latest;</li>
+<li>create one task for the latest instant; and</li>
+<li>show the missed count and total delay in history.</li>
+</ul>
+<p><code>create-all</code> creates one backlog task per missed instant, capped at 50 per resume. If more
+than 50 are due, create the newest 50, record older ones as <code>coalesced</code>, and show the cap
+in history. This prevents an old laptop from creating an unbounded backlog.</p>
+<p><code>skip</code> records each missed instant as <code>skipped_policy</code>.</p>
+<p>An occurrence that became due while the daemon was awake is not “missed” merely because
+Foreman leaves its generated task in the backlog. Scheduling and dispatch are separate.</p>
+<h3 id="overlap-semantics">Overlap semantics</h3>
+<p><code>skip-active</code> checks for a non-terminal task with the same <code>scheduleId</code>:</p>
+<pre><code class="language-text">backlog | dispatching | running
+</code></pre>
+<p>If found, record <code>skipped_overlap</code> and name the blocking task. <code>done</code>, <code>cancelled</code>, and
+<code>failed</code> are terminal and do not block.</p>
+<p><code>allow</code> creates the next task regardless. The default is <code>skip-active</code>.</p>
+<h3 id="run-now">Run now</h3>
+<p>Run now uses the same claim and create path, but its identity is a server-minted manual
+instant and it does not advance the cron cursor. It works while paused. History labels it
+<code>manual</code> through the occurrence table&#x27;s non-null <code>trigger_kind</code> column (<code>scheduled</code> or
+<code>manual</code>).</p>
+<h2 id="http-and-sse">HTTP and SSE</h2>
+<p>Routes:</p>
+<pre><code class="language-text">GET  /api/schedules
+POST /api/schedules/preview
+POST /api/schedules
+POST /api/schedules/:id/update
+POST /api/schedules/:id/set-enabled
+POST /api/schedules/:id/run-now
+POST /api/schedules/:id/archive
+GET  /api/schedules/:id/occurrences?before=&amp;limit=
+</code></pre>
+<p>Every mutating route has a zod schema in <code>src/shared/protocol.ts</code> and uses <code>parseBody</code>.
+Even bodyless-looking actions accept a schema such as <code>{}</code> or <code>{ enabled: boolean }</code>;
+handlers do not hand-parse JSON.</p>
+<p>Create/update resolves <code>repoRoot</code> through the same <code>resolveRepoRoot</code> used by dispatch.
+The scheduler rechecks the repository immediately before task creation because it can be
+renamed or removed after configuration. Failure records an occurrence; it does not create
+a doomed task.</p>
+<p>Add to <code>ServerEvent</code>:</p>
+<pre><code class="language-ts">| { type: &quot;schedule_upsert&quot;; schedule: MissionSchedule }
+| { type: &quot;schedule_remove&quot;; id: string }
+</code></pre>
+<p>Add <code>schedules</code> to the <code>snapshot</code> event, <code>Registry.snapshot()</code>, and <code>MissionState</code>; load
+active schedules into Registry at startup. Extend <code>src/web/useEventStream.ts</code> with both
+cases. Occurrence history is fetched when opened, but catalog state is SSE-only and never
+polls.</p>
+<p>Archiving emits <code>schedule_remove</code> for the default catalog. A direct history route still
+returns the archived schedule.</p>
+<h2 id="ui-implementation-map">UI implementation map</h2>
+<p>Add:</p>
+<ul>
+<li><code>src/web/components/RecurringMissionsPanel.tsx</code> — overlay and screen routing;</li>
+<li><code>src/web/components/schedules/ScheduleCatalog.tsx</code>;</li>
+<li><code>src/web/components/schedules/ScheduleDetail.tsx</code>;</li>
+<li><code>src/web/components/schedules/ScheduleEditor.tsx</code>;</li>
+<li><code>src/web/components/schedules/SchedulePreview.tsx</code>;</li>
+<li><code>src/web/components/schedules/ScheduleHistory.tsx</code>;</li>
+<li><code>src/web/lib/schedules.ts</code> — derived health/filter/presentation helpers; and</li>
+<li>schedule API calls and payload types in <code>src/web/lib/api.ts</code>.</li>
+</ul>
+<p>Change:</p>
+<ul>
+<li><code>App.tsx</code> to own open/selected schedule state, render the topbar trigger, and pass live
+schedules from <code>useEventStream</code>;</li>
+<li><code>Overlay.tsx</code> to register <code>recurringMissions</code>;</li>
+<li><code>styles.css</code> for the surface, using existing panel, chip, button, form, and topbar
+vocabularies; and</li>
+<li>task/backlog presentation to show scheduled provenance.</li>
+</ul>
+<p>Do not add a keyboard shortcut in v1. A later shortcut must go through <code>ActionId</code>,
+<code>ACTIONS</code>, App dispatch, KeyboardPanel group, README, and keybinding tests together.</p>
+<p>Generated-task provenance is a new task-level signal. Add its chip/mark to every backlog
+surface that renders tasks. Session layout parity does not apply until a scheduled task is
+bound to a session; after binding, the task link should remain available anywhere current
+task metadata is shown.</p>
+<h2 id="data-and-request-flow">Data and request flow</h2>
+
+<figure class="flow" aria-labelledby="flow-title">
+  <figcaption id="flow-title">Scheduled mission data and request flow</figcaption>
+  <svg viewBox="0 0 1180 440" role="img" aria-label="Scheduled Catalog sends validated mutations to daemon routes and SQLite. The schedule manager claims due occurrences and creates ordinary tasks through TaskManager. Registry and SSE update the UI. Foreman reads the backlog over HTTP and uses existing gates before dispatch.">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z"/></marker>
+      <linearGradient id="purple" x1="0" x2="1"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#a371f7"/></linearGradient>
+    </defs>
+    <g class="edge">
+      <path d="M210 110H315"/><path d="M475 110H570"/><path d="M650 150v60"/><path d="M570 260H470"/>
+      <path d="M315 260H220"/><path d="M140 220v-70"/><path d="M650 310v58H780"/><path d="M895 330v-70"/>
+      <path class="dashed" d="M980 110H845"/><path class="dashed" d="M980 390H915"/>
+    </g>
+    <g class="node primary" transform="translate(30 70)"><rect width="180" height="80" rx="14"/><text x="90" y="33">Scheduled Catalog</text><text class="sub" x="90" y="54">create · preview · history</text></g>
+    <g class="node" transform="translate(315 70)"><rect width="160" height="80" rx="14"/><text x="80" y="33">Daemon routes</text><text class="sub" x="80" y="54">zod + parseBody</text></g>
+    <g class="node db" transform="translate(570 70)"><rect width="160" height="80" rx="14"/><text x="80" y="31">SQLite</text><text class="sub" x="80" y="52">schedules · revisions</text><text class="sub" x="80" y="67">occurrences · tasks</text></g>
+    <g class="node primary" transform="translate(570 210)"><rect width="160" height="100" rx="14"/><text x="80" y="34">Schedule manager</text><text class="sub" x="80" y="56">due → claim → recover</text><text class="sub" x="80" y="74">daemon only</text></g>
+    <g class="node" transform="translate(315 220)"><rect width="155" height="80" rx="14"/><text x="77" y="33">TaskManager</text><text class="sub" x="77" y="54">ordinary backlog task</text></g>
+    <g class="node" transform="translate(30 220)"><rect width="190" height="80" rx="14"/><text x="95" y="33">Registry + SSE</text><text class="sub" x="95" y="54">one live browser channel</text></g>
+    <g class="node" transform="translate(780 290)"><rect width="135" height="80" rx="14"/><text x="67" y="33">Foreman</text><text class="sub" x="67" y="54">HTTP only · no DB</text></g>
+    <g class="node" transform="translate(780 180)"><rect width="135" height="80" rx="14"/><text x="67" y="33">Agent session</text><text class="sub" x="67" y="54">existing safe dispatch</text></g>
+    <g class="node optional" transform="translate(980 70)"><rect width="170" height="80" rx="14"/><text x="85" y="31">OS wake adapter</text><text class="sub" x="85" y="52">optional resume signal</text><text class="sub" x="85" y="67">catch-up stays fallback</text></g>
+    <g class="node future" transform="translate(980 350)"><rect width="170" height="70" rx="14"/><text x="85" y="29">Always-on runner</text><text class="sub" x="85" y="50">future shared lease</text></g>
+    <text class="label" x="232" y="100">validated mutation</text><text class="label" x="482" y="100">only writer</text>
+    <text class="label" x="660" y="188">claim</text><text class="label" x="480" y="250">create</text>
+    <text class="label" x="718" y="350">existing backlog API</text><text class="label" x="916" y="100">resume/start</text>
+  </svg>
+  <p>The scheduler’s authority ends at <code>TaskManager</code>. Foreman remains a separate, DB-free process and sees generated work only as ordinary backlog tasks.</p>
+</figure>
+<p>The critical boundary is visible in the middle: the scheduler ends at <code>TaskManager</code>.
+Foreman remains a separate HTTP-only process and schedules reach it only as ordinary tasks.</p>
+<h2 id="failure-behavior">Failure behavior</h2>
+<ul>
+<li>Invalid cron/time zone: refuse save with field-level errors.</li>
+<li>Repository invalid on create/update: refuse mutation.</li>
+<li>Repository disappears at fire time: occurrence <code>failed</code>, schedule attention.</li>
+<li>Daemon restarts: recover <code>claimed</code> occurrences by preallocated task id.</li>
+<li>SSE disconnects: browser reconnect gets schedules in the full snapshot.</li>
+<li>Recurrence parser throws: leave <code>next_run_at</code> unchanged, record health error, retry after
+backoff; never silently skip the due instant.</li>
+<li>System clock jumps forward: treat crossed instants as missed and apply policy.</li>
+<li>System clock jumps backward: persisted <code>(schedule_id, scheduled_for)</code> identity prevents
+duplicate creation.</li>
+<li>Edit races a due tick: the claim transaction reads a specific revision; that occurrence
+uses it, and later instants use the new revision.</li>
+<li>Archive races a claim: claimed work completes or is marked cancelled; no new claim starts
+after <code>archived_at</code> is set.</li>
+<li>OS wake setup fails: retain local catch-up and show capability reason.</li>
+<li>Remote runner disconnected: do not fall back to a second independent scheduler without a
+lease; mark attention and follow the configured fallback policy.</li>
+</ul>
+<h2 id="testing">Testing</h2>
+<h3 id="pure-schedule-tests">Pure schedule tests</h3>
+<ul>
+<li>cron validation and minimum interval;</li>
+<li>next-run calculation in UTC and named time zones;</li>
+<li>spring-forward skipped time and fall-back single occurrence;</li>
+<li>daily, weekly, monthly, and advanced expressions;</li>
+<li>missed-policy decisions;</li>
+<li>overlap decisions across every task status;</li>
+<li>health derivation; and</li>
+<li>preview output equals scheduler enumeration.</li>
+</ul>
+<h3 id="database-tests">Database tests</h3>
+<ul>
+<li>schedule and revision round-trip;</li>
+<li>revision increments atomically;</li>
+<li><code>(schedule_id, scheduled_for)</code> refuses duplicate claims;</li>
+<li>active-task lookup by <code>scheduleId</code>;</li>
+<li>paginated occurrence ordering;</li>
+<li>archive preserves history;</li>
+<li>nullable task provenance migrates existing DBs; and</li>
+<li>unique index columns are non-null.</li>
+</ul>
+<h3 id="manager-tests-with-a-fake-clock">Manager tests with a fake clock</h3>
+<ul>
+<li>one due instant creates one backlog task;</li>
+<li>repeated tick creates no duplicate;</li>
+<li>startup catches up after sleep;</li>
+<li>coalesce, create-all cap, and skip;</li>
+<li>prior active task causes <code>skipped_overlap</code>;</li>
+<li>crash after claim recovers the preallocated task;</li>
+<li>crash after task creation completes the occurrence;</li>
+<li>edit-versus-tick revision binding;</li>
+<li>repo disappears between save and fire;</li>
+<li>forward/backward wall-clock jumps; and</li>
+<li>stop closure prevents another tick.</li>
+</ul>
+<h3 id="http-and-protocol-tests">HTTP and protocol tests</h3>
+<ul>
+<li>every mutation rejects malformed bodies through <code>parseBody</code>;</li>
+<li>preview is non-mutating;</li>
+<li>create/update canonicalize repo roots;</li>
+<li>pause/resume recomputes next run from the correct anchor;</li>
+<li>run-now works paused and does not move the cron cursor;</li>
+<li>archive is idempotent; and</li>
+<li>history pagination refuses invalid cursors/limits.</li>
+</ul>
+<h3 id="sse-and-ui-tests">SSE and UI tests</h3>
+<ul>
+<li>snapshot includes schedules;</li>
+<li>event switch is exhaustive for schedule variants;</li>
+<li>schedule upsert/remove changes <code>MissionState</code>;</li>
+<li>overlay registry includes Recurring Missions;</li>
+<li>topbar attention badge derives from schedule health;</li>
+<li>catalog filters and selection;</li>
+<li>editor save-paused versus save-enabled;</li>
+<li>execution guarantee wording never calls local catch-up “on time”;</li>
+<li>DST/standby preview states;</li>
+<li>history links to generated task; and</li>
+<li>scheduled provenance appears on every backlog rendering surface.</li>
+</ul>
+<h3 id="electron-wake-adapter-tests-if-mode-b-is-selected">Electron wake adapter tests, if Mode B is selected</h3>
+<ul>
+<li>all four Electron capability files move together;</li>
+<li>unsupported browser build takes the explicit unavailable path;</li>
+<li>capability detection reports privilege/power limitations;</li>
+<li>install/update/remove are idempotent;</li>
+<li>next wake updates when the earliest enabled schedule changes;</li>
+<li>wake failure falls back to durable catch-up; and</li>
+<li>no <code>powerSaveBlocker</code> is held outside a narrowly bounded active run.</li>
+</ul>
+<h2 id="rollout">Rollout</h2>
+<ol>
+<li>Land shared types, tables, task provenance columns, and recurrence fixtures behind no UI.</li>
+<li>Land the manager disabled by absence of schedules; prove exact-once recovery.</li>
+<li>Add routes, snapshot/events, and API client.</li>
+<li>Add catalog, editor, preview, history, and task provenance.</li>
+<li>Add metrics/logging for due, delayed, coalesced, skipped, failed, and recovered
+occurrences.</li>
+<li>Dogfood with schedules created paused, preview them, then enable a weekly low-priority
+scout mission.</li>
+<li>Observe at least one real daemon restart and one real laptop sleep/wake before calling
+local catch-up stable.</li>
+<li>Evaluate OS-assisted wake only after those receipts make the remaining lateness visible.</li>
+</ol>
+<h2 id="acceptance-criteria">Acceptance criteria</h2>
+<ul>
+<li>An operator can create, preview, save paused, enable, edit, pause, resume, run now,
+archive, and inspect a recurring mission.</li>
+<li>Every generated task enters the ordinary backlog with schedule provenance.</li>
+<li>No schedule path directly dispatches, provisions, or types into a pane.</li>
+<li>The same schedule/instant cannot create two tasks across concurrent ticks or restarts.</li>
+<li>A daemon restart between claim and task creation recovers without duplication.</li>
+<li>A sleeping laptop produces an explicit delayed catch-up outcome after resume.</li>
+<li>The UI never promises on-time execution for a local catch-up schedule.</li>
+<li>DST behavior is previewed and pinned by tests.</li>
+<li>Existing schedules and tasks survive edits and archive with their original revision.</li>
+<li>Catalog state updates only through the existing SSE connection.</li>
+<li>Foreman remains DB-free and receives no schedule-specific code.</li>
+</ul>
+<h2 id="out-of-scope-for-the-first-release">Out of scope for the first release</h2>
+<ul>
+<li>Cloud-hosted scheduling or remote repository credentials.</li>
+<li>Multiple local daemons sharing one schedule database.</li>
+<li>Natural-language cadence parsing; presets and validated cron are deterministic.</li>
+<li>Sub-minute or high-frequency jobs.</li>
+<li>Direct dispatch from a schedule.</li>
+<li>Automatic retry of a failed generated task; retries remain task behavior.</li>
+<li>Editing already-created tasks when a schedule revision changes.</li>
+<li>Deleting occurrence history.</li>
+<li>Treating <code>powerSaveBlocker</code> as a wake mechanism.</li>
+</ul></article>
+  </div>
+</body>
+</html>

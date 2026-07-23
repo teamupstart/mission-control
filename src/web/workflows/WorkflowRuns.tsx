@@ -220,35 +220,41 @@ export function WorkflowRunView({
               {delivery.error && <p className="persona-error">{delivery.error.replaceAll("_", " ")}</p>}
               <pre>{delivery.payload}</pre>
               {delivery.state === "refused" && (
-                <button className="btn" onClick={() => void onRetryDelivery(delivery.id)}>
-                  Retry refused delivery
-                </button>
+                <Tooltip label="Retry this packet after a positive delivery refusal">
+                  <button className="btn" onClick={() => void onRetryDelivery(delivery.id)}>
+                    Retry refused delivery
+                  </button>
+                </Tooltip>
               )}
               {delivery.state === "uncertain" && (
                 <div className="workflow-delivery-recovery">
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      if (window.confirm("Confirm that you inspected the pane and the repair prompt landed?")) {
-                        void onResolveDelivery(delivery.id, "mark_delivered");
-                      }
-                    }}
-                  >
-                    Mark delivered
-                  </button>
-                  <button
-                    className="btn btn-danger"
-                    onClick={() => {
-                      const confirmation = window.prompt(
-                        "Type DISCARD AND SEND A NEW REPAIR ROUND to discard this ambiguous packet.",
-                      );
-                      if (confirmation !== null) {
-                        void onResolveDelivery(delivery.id, "discard_and_new_round", confirmation);
-                      }
-                    }}
-                  >
-                    Discard and send new round
-                  </button>
+                  <Tooltip label="Confirm the exact packet already reached the inspected pane">
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        if (window.confirm("Confirm that you inspected the pane and the repair prompt landed?")) {
+                          void onResolveDelivery(delivery.id, "mark_delivered");
+                        }
+                      }}
+                    >
+                      Mark delivered
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="Discard this ambiguous packet and create a replacement repair round">
+                    <button
+                      className="btn btn-danger"
+                      onClick={() => {
+                        const confirmation = window.prompt(
+                          "Type DISCARD AND SEND A NEW REPAIR ROUND to discard this ambiguous packet.",
+                        );
+                        if (confirmation !== null) {
+                          void onResolveDelivery(delivery.id, "discard_and_new_round", confirmation);
+                        }
+                      }}
+                    >
+                      Discard and send new round
+                    </button>
+                  </Tooltip>
                 </div>
               )}
             </article>

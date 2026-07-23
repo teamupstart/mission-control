@@ -369,7 +369,8 @@ export class WorkflowEngine {
     if (this.stopped || this.pumping) return;
     this.pumping = true;
     try {
-      const ready = this.store.listRunnableAttempts(this.now());
+      const schedulingNow = this.now();
+      const ready = this.store.listRunnableAttempts(schedulingNow);
       for (const attempt of ready) {
         if (this.scheduledAttempts.has(attempt.id)) continue;
         this.scheduledAttempts.add(attempt.id);
@@ -382,7 +383,7 @@ export class WorkflowEngine {
           });
         this.inFlight.add(promise);
       }
-      const next = this.store.listAttemptsDueAfter(this.now());
+      const next = this.store.listAttemptsDueAfter(schedulingNow);
       if (next !== null && !this.stopped) {
         if (this.wakeTimer) clearTimeout(this.wakeTimer);
         this.wakeTimer = setTimeout(() => {

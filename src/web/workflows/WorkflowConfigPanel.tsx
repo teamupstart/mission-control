@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkflowConfig } from "@shared/workflow.ts";
 import { resolveRepo } from "../lib/api.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 
 export function WorkflowConfigPanel(): React.JSX.Element {
@@ -59,9 +60,11 @@ export function WorkflowConfigPanel(): React.JSX.Element {
 
   return (
     <aside className={`workflow-config-drawer${open ? " open" : ""}`}>
-      <button className="btn btn-ghost" onClick={() => setOpen((value) => !value)}>
-        {open ? "Close Workflow settings" : "Workflow settings"}
-      </button>
+      <Tooltip label="Configure Live workflow delivery and its repository allowlist">
+        <button className="btn btn-ghost" onClick={() => setOpen((value) => !value)}>
+          {open ? "Close Workflow settings" : "Workflow settings"}
+        </button>
+      </Tooltip>
       {open && (
         <div className="workflow-config-panel">
           <h3>Live workflow delivery</h3>
@@ -72,21 +75,23 @@ export function WorkflowConfigPanel(): React.JSX.Element {
           {!config ? <p>Loading settings…</p> : (
             <>
               <label>
-                <input
-                  type="checkbox"
-                  checked={config.liveEnabled}
-                  disabled={busy}
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    if (
-                      enabled
-                      && !window.confirm(
-                        "Enable Live workflow delivery? Mission Control may paste repair prompts into sessions in the repositories below.",
-                      )
-                    ) return;
-                    void save({ ...config, liveEnabled: enabled });
-                  }}
-                />
+                <Tooltip label="Globally allow Live delivery for repositories listed below">
+                  <input
+                    type="checkbox"
+                    checked={config.liveEnabled}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      if (
+                        enabled
+                        && !window.confirm(
+                          "Enable Live workflow delivery? Mission Control may paste repair prompts into sessions in the repositories below.",
+                        )
+                      ) return;
+                      void save({ ...config, liveEnabled: enabled });
+                    }}
+                  />
+                </Tooltip>
                 Enable Live workflow delivery
               </label>
               <h4>Allowed repositories</h4>
@@ -97,16 +102,18 @@ export function WorkflowConfigPanel(): React.JSX.Element {
                     {config.repoAllowlist.map((repo) => (
                       <li key={repo}>
                         <code>{repo}</code>
-                        <button
-                          className="btn btn-ghost"
-                          disabled={busy}
-                          onClick={() => void save({
-                            ...config,
-                            repoAllowlist: config.repoAllowlist.filter((item) => item !== repo),
-                          })}
-                        >
-                          Remove
-                        </button>
+                        <Tooltip label="Remove this repository from the Live delivery allowlist">
+                          <button
+                            className="btn btn-ghost"
+                            disabled={busy}
+                            onClick={() => void save({
+                              ...config,
+                              repoAllowlist: config.repoAllowlist.filter((item) => item !== repo),
+                            })}
+                          >
+                            Remove
+                          </button>
+                        </Tooltip>
                       </li>
                     ))}
                   </ul>
@@ -121,9 +128,11 @@ export function WorkflowConfigPanel(): React.JSX.Element {
                     if (event.key === "Enter") void add();
                   }}
                 />
-                <button className="btn" disabled={busy || !path.trim()} onClick={() => void add()}>
-                  Add repository
-                </button>
+                <Tooltip label="Resolve this path and allow its repository to receive Live repairs">
+                  <button className="btn" disabled={busy || !path.trim()} onClick={() => void add()}>
+                    Add repository
+                  </button>
+                </Tooltip>
               </div>
             </>
           )}

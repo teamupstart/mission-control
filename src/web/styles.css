@@ -5205,6 +5205,15 @@ kbd {
   justify-content: space-between;
 }
 
+.workflow-config-panel li code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-config-panel li button {
+  flex: none;
+}
+
 .workflow-deliveries {
   display: grid;
   gap: 12px;

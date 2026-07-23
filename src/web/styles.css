@@ -5159,7 +5159,7 @@ kbd {
   color: var(--fg);
 }
 .workflow-canvas.is-readonly { height: 250px; min-height: 250px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
-.workflow-canvas.is-readonly > .react-flow { height: 250px; }
+.workflow-canvas.is-readonly > .react-flow { height: 250px !important; }
 .workflow-canvas .react-flow__controls button { background: var(--panel); border-color: var(--border); fill: var(--fg); }
 .workflow-canvas .react-flow__edge-text { fill: var(--muted); font-size: 9px; }
 .workflow-canvas .workflow-edge-fail path { stroke: var(--danger); }

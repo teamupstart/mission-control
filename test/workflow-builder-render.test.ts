@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
@@ -69,10 +73,35 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(detail, /offer_prepare_pr/);
 });
 
-test("published workflow graphs provide React Flow a definite height", () => {
-  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-  const rule = css.match(/\.workflow-canvas\.is-readonly\s*\{([^}]*)\}/)?.[1] ?? "";
-  assert.match(rule, /(?:^|;)\s*height:\s*250px\s*;/);
+test("published workflow nodes stay within the visible React Flow graph", () => {
+  const require = createRequire(import.meta.url);
+  const electron = require("electron") as string;
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
+  let output: string;
+  try {
+    output = execFileSync(electron, [
+      `--user-data-dir=${userData}`,
+      fileURLToPath(new URL("fixtures/workflow-graph-browser.cjs", import.meta.url)),
+      fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
+      require.resolve("@xyflow/react/dist/style.css"),
+    ], { encoding: "utf8", env, timeout: 20_000 });
+  } finally {
+    rmSync(userData, { force: true, recursive: true });
+  }
+  const { graph, root, nodes } = JSON.parse(output.trim()) as {
+    graph: DOMRect;
+    root: DOMRect;
+    nodes: DOMRect[];
+  };
+
+  assert.ok(root.height > 0, "React Flow root must have a visible height");
+  assert.ok(nodes.length > 0, "published graph must render nodes");
+  for (const node of nodes) {
+    assert.ok(node.top >= graph.top && node.bottom <= graph.bottom, "published node must remain inside the visible graph");
+    assert.ok(node.top >= root.top && node.bottom <= root.bottom, "published node must remain inside the React Flow root");
+  }
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {

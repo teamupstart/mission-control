@@ -198,16 +198,20 @@ Unlike Codex (a single unpriced `tokens_used` scalar), pi records real per-messa
 with token tiers AND dollar cost (`usage.cost.total`) in every assistant record. So
 `COST_UNSUPPORTED.pi = null` and the passive read populates token usage.
 
-### models (MODEL_CATALOG) - bare ids (FINDING: id shape assumes no provider qualifier)
+### models (MODEL_CATALOG) - provider-qualified ids (FINDING, then FIXED)
 
-pi is multi-provider and its true model ids are `provider/id` (`openai/gpt-5.5`). But
-`ModelIdSchema` (protocol.ts) is `/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/` - it **rejects `/`**,
-because Claude's and Codex's ids are single tokens (each harness IS a provider). Dispatch is
-launch-integrated, but provider-qualified model selection is outside this acceptance test, so
-the picker uses bare frontier ids that pass the schema (`gpt-5.5-pro`, `gpt-5.5`,
-`gpt-5-codex`, `gpt-5-mini`, all real from pi's model store; `gpt-5.5` is 272k, matching the
-footer). Fully supporting pi's model selection would need the id shape to admit a provider
-qualifier - recorded as a finding.
+pi is multi-provider and its true model ids are `provider/id` (`openai/gpt-5.5`), so a bare
+`gpt-5.5` would resolve against pi's DEFAULT provider (google), not OpenAI - the Inspector
+caught this on the PR. `ModelIdSchema` (protocol.ts) rejected `/`, because Claude's and Codex's
+ids are single tokens (each harness IS a provider). **Fixed** once the launch integration made a
+dispatched pi real: `ModelIdSchema` now admits `/` in the INTERIOR only
+(`/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/`), so a leading `/`, a `../` traversal, or a `-flag` still
+fails while `openai/gpt-5.5` passes and no shell metacharacter is admitted; and
+`MODEL_CATALOG.pi` carries provider-qualified ids (`openai/gpt-5.5-pro`, `openai/gpt-5.5`,
+`openai/gpt-5-codex`, `openai/gpt-5-mini`) so `--model openai/gpt-5.5` selects the intended
+model deterministically. `coreModelId` strips the provider prefix so labels and window inference
+still read `gpt-5.5`. Test: `dispatch-model.test.ts` (the catalog-passes-schema loop now
+includes pi, plus an interior-slash-yes / leading-slash-and-traversal-no case).
 
 ## The interface findings (what the acceptance test surfaced)
 
@@ -220,8 +224,9 @@ that remain:
 1. **`PermissionMode` is a closed union of Claude's mode strings.** pi has real approval modes
    that don't fit it. Handled by `permissionModes: null` (visible degradation). The one place
    the Harness axis still bakes in a Claude assumption. NOT fixed here - a legitimate null.
-2. **`ModelIdSchema` rejects `/`,** so pi's provider-scoped ids can't be expressed. Handled
-   with bare ids for the picker (dispatch out of scope). NOT fixed here.
+2. **`ModelIdSchema` rejected `/`,** so pi's provider-scoped ids could not be expressed.
+   **Fixed** (the Inspector flagged the bare-id stopgap): the schema now admits an interior
+   `/`, and `MODEL_CATALOG.pi` uses provider-qualified ids - see the models section above.
 3. **Reload readiness assumed hooks plus a readable mode line.** pi has neither but does have
    an exactly attributed passive transcript for dispatched sessions. **Fixed** by declaring
    `reloadIdleSource` on `SkillsSpec`: the reloader preserves Claude's hook and mode-line path,

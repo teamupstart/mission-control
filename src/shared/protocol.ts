@@ -419,7 +419,12 @@ const TaskDependenciesSchema = z
 export const ModelIdSchema = z
   .string()
   .max(80)
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "model id must be alphanumeric with . _ - only");
+  // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
+  // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
+  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class. No
+  // shell metacharacter is admitted, so the guarantee this schema gives the `tmux new-session`
+  // command line is unchanged. Test: `dispatch-model.test.ts`.
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
 
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of

@@ -1485,12 +1485,14 @@ the adapter's launch preparation so a native session id can bind the transcript 
 prove readiness before the first prompt is sent.
 
 The proof also found shared seams that were not yet honest: skills reload readiness needed a
-declared source, a model picker prop conflated the harness and LLM-runner axes, and terminal
-multiplexers in the process-wrapper list admitted false positives from arbitrary session names.
-Two couplings remain as explicit degradations: `PermissionMode` is still Claude's closed
-vocabulary, and `ModelIdSchema` cannot express Pi's provider-qualified ids. The spike,
-capability measurements, justified shared edits, remaining findings and regression-test
-pointers have one detailed owner: [`todo/pi-harness.md`](../../../todo/pi-harness.md).
+declared source, a model picker prop conflated the harness and LLM-runner axes, terminal
+multiplexers in the process-wrapper list admitted false positives from arbitrary session names,
+and `ModelIdSchema` could not express Pi's provider-qualified ids (fixed - it now admits an
+interior `/`, and the Pi catalog carries `openai/…` ids). One coupling remains as an explicit
+degradation: `PermissionMode` is still Claude's closed vocabulary, so Pi's approval modes read
+as `permissionModes: null`. The spike, capability measurements, justified shared edits,
+remaining findings and regression-test pointers have one detailed owner:
+[`todo/pi-harness.md`](../../../todo/pi-harness.md).
 
 ## Fixes found along the way
 

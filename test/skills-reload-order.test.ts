@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reloadOne } from "../src/server/skills/reload.ts";
+import { reloadOne, reloadOwed, reloadTargets } from "../src/server/skills/reload.ts";
 import type { ReloadDeps } from "../src/server/skills/reload.ts";
 import type { InjectResult } from "../src/server/actions.ts";
 import type { PaneModeLine } from "../src/server/discovery/pane-mode.ts";
@@ -14,17 +14,20 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const GEN = 4;
 const PRIOR = 1;
 
-function mkSession(): Session {
+function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1",
     agent: "claude",
     state: "idle",
+    cwd: "/repo",
     agentSessionId: "agent-1",
     terminals: [mkMuxHandle({ session: "w", windowName: "w", windowIndex: 0, paneId: "%1" })],
     instrumented: true,
+    hooksSeen: true,
     lastActivity: 0,
     firstSeen: 0,
     startedAt: 0,
+    ...over,
   } as unknown as Session;
 }
 
@@ -121,4 +124,32 @@ test("exactly one command is typed, and it is the literal /reload-skills", async
   });
   await reloadOne(mkSession(), GEN, PRIOR, deps);
   assert.deepEqual(typed, ["/reload-skills"]);
+});
+
+test("a passive idle pi session is owed and delivered a reload without a TUI read", async () => {
+  const session = mkSession({
+    agent: "pi",
+    agentSessionId: null,
+    hooksSeen: false,
+    state: "idle",
+    lastActivity: 1,
+  });
+  const cfg = { enabled: true, skills: {}, generation: GEN, generationAt: 10 };
+  assert.equal(reloadOwed(session, new Map(), cfg), true);
+  assert.deepEqual(reloadTargets([session], new Map(), cfg, 20, 10), [session]);
+
+  const typed: string[] = [];
+  const { deps, log } = spy({
+    readModeLine: async () => {
+      throw new Error("pi has no TUI mode line");
+    },
+    inject: async (_session, text) => {
+      typed.push(text);
+      log.push("inject");
+      return { ok: true, pasted: true, submitVerified: false };
+    },
+  });
+  assert.equal(await reloadOne(session, GEN, PRIOR, deps), true);
+  assert.deepEqual(log, [`ack:${GEN}`, "inject"]);
+  assert.deepEqual(typed, ["/reload"]);
 });

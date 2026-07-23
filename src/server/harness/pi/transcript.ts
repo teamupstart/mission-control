@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
@@ -6,6 +6,7 @@ import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
 import { piPassiveRead } from "./meta.ts";
+import { readRange } from "../../util/file-tail.ts";
 
 // Pi's session transcript: where it lives, and what one of its records means.
 //
@@ -25,54 +26,64 @@ const SESSIONS_DIR = join(homedir(), ".pi", "agent", "sessions");
  * strip a leading slash, replace `/ \ :` with `-`, wrap in `--`. Note dots are NOT replaced,
  * unlike Claude's `[/.]` - a `.treehouse` worktree keeps its dot.
  */
-export function piProjectDir(cwd: string): string {
+export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
   const safe = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-  return join(SESSIONS_DIR, safe);
+  return join(sessionsDir, safe);
 }
 
-/**
- * The newest `.jsonl` in a project dir, by mtime - the session currently being written, which
- * is the live one a card in that cwd is about. Null when the dir is absent or empty.
- *
- * mtime rather than the sortable filename timestamp because a RESUMED session is an older file
- * written recently, and "which one is live" is what a card needs. Two pi sessions sharing a
- * cwd is the ambiguous case every cwd-keyed locate has (Codex's included); newest-written is
- * the best available answer and degrades to a stale binding, never to a wrong process.
- */
-function newestSessionFile(dir: string): string | null {
-  let best: { path: string; mtime: number } | null = null;
+interface SessionFile {
+  path: string;
+  mtime: number;
+}
+
+function sessionFiles(dir: string): SessionFile[] {
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch {
-    return null;
+    return [];
   }
+  const files: SessionFile[] = [];
   for (const name of entries) {
     if (!name.endsWith(".jsonl")) continue;
     const path = join(dir, name);
-    let mtime: number;
     try {
-      mtime = statSync(path).mtimeMs;
+      files.push({ path, mtime: statSync(path).mtimeMs });
     } catch {
       continue;
     }
-    if (!best || mtime > best.mtime) best = { path, mtime };
   }
-  return best?.path ?? null;
+  return files.sort((a, b) => b.mtime - a.mtime || b.path.localeCompare(a.path));
 }
 
-/**
- * How long to wait before re-scanning the filesystem for a session's transcript. Finding the
- * file is a directory read, so - like Codex's rollout binding, and unlike Claude's two
- * `existsSync` calls - it is not something to redo every tick.
- */
-const RESCAN_MS = 30_000;
+function fileMtime(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function sessionIdFromHeader(path: string): string | null {
+  try {
+    const size = statSync(path).size;
+    const text = readRange(path, 0, Math.min(size, 64 * 1024)).toString("utf8");
+    const end = text.indexOf("\n");
+    const first = end >= 0 ? text.slice(0, end) : text;
+    const record = JSON.parse(first) as Record<string, unknown>;
+    return record.type === "session" && typeof record.id === "string" ? record.id : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A cached lookup for one session (path null = looked, none yet). */
 interface Binding {
   cwd: string;
+  agentSessionId: string | null;
   path: string | null;
-  triedAt: number;
+  newestPath: string | null;
+  newestMtime: number;
 }
 
 /**
@@ -82,22 +93,70 @@ interface Binding {
  */
 const bindings = new Map<string, Binding>();
 
-/**
- * The transcript file for a session, cached. The hook-reported `transcriptPath` wins when
- * present (pi has no hooks today, so it will not be, but a future instrumentation would set
- * it); otherwise derive the project dir from cwd and take its newest session file. A found
- * path is reused until the cwd changes; a miss is retried only every `RESCAN_MS`.
- */
-function locate(s: Session): string | null {
-  if (s.transcriptPath && existsSync(s.transcriptPath)) return s.transcriptPath;
-  if (!s.cwd) return null;
-  const now = Date.now();
-  const hit = bindings.get(s.id);
-  if (hit && hit.cwd === s.cwd && (hit.path !== null || now - hit.triedAt < RESCAN_MS)) {
-    return hit.path && existsSync(hit.path) ? hit.path : newestSessionFile(piProjectDir(s.cwd));
+function boundToOther(sessionId: string, path: string): boolean {
+  for (const [id, binding] of bindings) {
+    if (id !== sessionId && binding.path === path) return true;
   }
-  const path = newestSessionFile(piProjectDir(s.cwd));
-  bindings.set(s.id, { cwd: s.cwd, path, triedAt: now });
+  return false;
+}
+
+export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
+  if (!s.cwd) {
+    bindings.delete(s.id);
+    return null;
+  }
+
+  const transcriptMtime = s.transcriptPath ? fileMtime(s.transcriptPath) : null;
+  if (s.transcriptPath && transcriptMtime !== null) {
+    const sourceId = sessionIdFromHeader(s.transcriptPath);
+    const path =
+      (s.agentSessionId && sourceId && sourceId !== s.agentSessionId) ||
+      boundToOther(s.id, s.transcriptPath)
+        ? null
+        : s.transcriptPath;
+    bindings.set(s.id, {
+      cwd: s.cwd,
+      agentSessionId: s.agentSessionId,
+      path,
+      newestPath: s.transcriptPath,
+      newestMtime: transcriptMtime,
+    });
+    return path;
+  }
+
+  const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
+  const newest = files[0] ?? null;
+  const hit = bindings.get(s.id);
+  if (
+    hit?.path &&
+    hit.cwd === s.cwd &&
+    hit.agentSessionId === s.agentSessionId &&
+    hit.newestPath === (newest?.path ?? null) &&
+    hit.newestMtime === (newest?.mtime ?? 0) &&
+    files.some((file) => file.path === hit.path)
+  ) {
+    return hit.path;
+  }
+
+  let path: string | null = null;
+  if (newest) {
+    const identified = files.map((file) => ({ ...file, sessionId: sessionIdFromHeader(file.path) }));
+    if (s.agentSessionId) {
+      path = identified.find((file) => file.sessionId === s.agentSessionId)?.path ?? null;
+      if (!path && identified.every((file) => file.sessionId === null)) path = newest.path;
+    } else {
+      path = newest.path;
+    }
+    if (path && boundToOther(s.id, path)) path = null;
+  }
+
+  bindings.set(s.id, {
+    cwd: s.cwd,
+    agentSessionId: s.agentSessionId,
+    path,
+    newestPath: newest?.path ?? null,
+    newestMtime: newest?.mtime ?? 0,
+  });
   return path;
 }
 
@@ -165,7 +224,7 @@ export function piToMessage(o: unknown): TranscriptMessage | null {
 /** Pi's transcript capability: a located JSONL file, read as messages and as runtime meta. */
 export const piTranscript: TranscriptSpec = {
   metaSource: "transcript",
-  locate,
+  locate: locatePiTranscript,
   passiveRead: piPassiveRead,
   // pi has no TodoWrite-style progress tool, so there is no "what's happening now" one-liner
   // to surface - null degrades to showing nothing, which is the right answer for a harness

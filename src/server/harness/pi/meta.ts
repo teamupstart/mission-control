@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@shared/types.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
-import { effectiveContextWindow, isLongContext, parseContextWindowSize } from "@shared/model.ts";
+import { DEFAULT_CONTEXT_WINDOW, effectiveContextWindow, isLongContext } from "@shared/model.ts";
 import type { RuntimeMetaRead, SessionActivityRead, TranscriptPassiveRead } from "../types.ts";
 import { readTailLines } from "../../util/file-tail.ts";
 
@@ -90,6 +90,15 @@ function latestModelAndTokens(
   return modelFromChange ? { modelId: modelFromChange, tokens: null } : null;
 }
 
+export function piContextWindowSize(modelId: string | null): number {
+  const id = modelId?.toLowerCase().split("/").at(-1) ?? "";
+  if (id === "gpt-5.5-pro" || id === "gpt-5.4-pro") return 1_050_000;
+  if (id === "gpt-5.5" || id.startsWith("gpt-5.6-")) return 272_000;
+  if (id.startsWith("gpt-5")) return 400_000;
+  if (id.startsWith("gpt-4.1")) return 1_047_576;
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
 /**
  * Derive runtime metadata from a window of pi transcript lines. Pure, for testing.
  * Returns null only when nothing useful was found.
@@ -102,7 +111,7 @@ export function computePiRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
 
   if (!modelId && contextTokens === null && !thinkingLevel) return null;
 
-  const size = effectiveContextWindow(parseContextWindowSize(modelId).size, contextTokens);
+  const size = effectiveContextWindow(piContextWindowSize(modelId), contextTokens);
   const contextPct =
     contextTokens !== null ? Math.round(Math.min(100, (contextTokens / size) * 100)) : null;
   return {
@@ -112,6 +121,7 @@ export function computePiRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
     contextPct,
     longContext: isLongContext(size),
     thinkingLevel,
+    effortRevision: null,
   };
 }
 

@@ -7,13 +7,23 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Session } from "../src/shared/types.ts";
 
 import { harnessFor } from "../src/server/harness/index.ts";
-import { piProjectDir, piToMessage, piTranscript } from "../src/server/harness/pi/transcript.ts";
-import { computePiRuntimeMeta, computePiSessionActivity } from "../src/server/harness/pi/meta.ts";
+import {
+  locatePiTranscript,
+  piProjectDir,
+  piToMessage,
+  piTranscript,
+} from "../src/server/harness/pi/transcript.ts";
+import {
+  computePiRuntimeMeta,
+  computePiSessionActivity,
+  piContextWindowSize,
+} from "../src/server/harness/pi/meta.ts";
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import { COST_UNSUPPORTED } from "../src/shared/cost.ts";
 import { PI_SESSION_LINES, PI_SESSION_JSONL } from "./fixtures/pi-sessions.ts";
@@ -76,6 +86,78 @@ test("the project-dir munge matches pi's own session-manager encoding", () => {
   );
 });
 
+function locateSession(id: string, cwd: string, agentSessionId: string | null = null): Session {
+  return { id, cwd, agentSessionId, transcriptPath: null } as Session;
+}
+
+function writeSession(path: string, id: string, mtime: number): void {
+  writeFileSync(
+    path,
+    `${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date(mtime).toISOString() })}\n`,
+  );
+  const at = new Date(mtime);
+  utimesSync(path, at, at);
+}
+
+test("locate rebinds to a newer file after pi starts a new session", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const oldPath = join(dir, "old.jsonl");
+  const newPath = join(dir, "new.jsonl");
+  try {
+    writeSession(oldPath, "old", 1_000);
+    const session = locateSession("pi-rebind", cwd);
+    assert.equal(locatePiTranscript(session, root), oldPath);
+    writeSession(newPath, "new", 2_000);
+    assert.equal(locatePiTranscript(session, root), newPath);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locate prefers an exact header id when multiple pi sessions share a cwd", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const firstPath = join(dir, "first.jsonl");
+  const secondPath = join(dir, "second.jsonl");
+  try {
+    writeSession(firstPath, "first-agent", 1_000);
+    writeSession(secondPath, "second-agent", 2_000);
+    assert.equal(
+      locatePiTranscript(locateSession("pi-first", cwd, "first-agent"), root),
+      firstPath,
+    );
+    assert.equal(
+      locatePiTranscript(locateSession("pi-second", cwd, "second-agent"), root),
+      secondPath,
+    );
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("locate refuses a newest file already bound to a sibling pi session", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "newest.jsonl");
+  try {
+    writeSession(path, "unknown-agent", 2_000);
+    assert.equal(locatePiTranscript(locateSession("pi-owner", cwd), root), path);
+    assert.equal(locatePiTranscript(locateSession("pi-sibling", cwd), root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- messages: parse the verbatim capture ----
 
 test("text turns parse; thinking is dropped; the aborted turn falls out", () => {
@@ -117,6 +199,33 @@ test("runtime metadata comes off the newest PRICED turn, not the aborted one", (
   assert.equal(meta?.contextTokens, 1252);
   assert.equal(meta?.thinkingLevel, "medium");
   assert.equal(meta?.longContext, false);
+});
+
+test("pi model families use their real context windows", () => {
+  assert.equal(piContextWindowSize("gpt-5.5"), 272_000);
+  assert.equal(piContextWindowSize("openai/gpt-5.6-sol"), 272_000);
+  assert.equal(piContextWindowSize("gpt-5.5-pro"), 1_050_000);
+  assert.equal(piContextWindowSize("gpt-5.4-pro"), 1_050_000);
+  assert.equal(piContextWindowSize("gpt-5-mini"), 400_000);
+  assert.equal(piContextWindowSize("gpt-4.1-mini"), 1_047_576);
+  assert.equal(piContextWindowSize("other"), 200_000);
+});
+
+test("a 250k gpt-5.5 turn reports against 272k, not the shared fallback tier", () => {
+  const line = JSON.stringify({
+    type: "message",
+    timestamp: "2026-07-20T01:48:43.746Z",
+    message: {
+      role: "assistant",
+      model: "gpt-5.5",
+      content: [],
+      usage: { input: 250_000, cacheRead: 0, cacheWrite: 0 },
+      stopReason: "stop",
+    },
+  });
+  const meta = computePiRuntimeMeta([line]);
+  assert.equal(meta?.contextWindow, 272_000);
+  assert.equal(meta?.contextPct, 92);
 });
 
 test("idle only on a clean stop; an aborted tail reads working", () => {

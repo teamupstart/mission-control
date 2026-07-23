@@ -198,7 +198,7 @@ test("pendingReloads excludes a session with no pane - it can never be reloaded"
   assert.deepEqual(picked(sessions), []);
 });
 
-test("pendingReloads excludes a session that has never had hooks", () => {
+test("pendingReloads excludes a hook-driven session that has never had hooks", () => {
   // Nothing will ever report it idle, so `settledIdle` can never be true and no reload
   // can ever fire. `hooksSeen` is the permanent fact; counting on it keeps the number
   // honest without making a merely-quiet session vanish from the count.

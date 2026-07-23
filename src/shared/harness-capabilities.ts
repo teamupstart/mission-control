@@ -82,6 +82,7 @@ export interface SkillsSpec {
    * message is not trustworthy. Treat delivery as fire-and-forget.
    */
   reloadCommand: string | null;
+  reloadIdleSource: "hooks" | "transcript" | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -251,6 +252,7 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
  */
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
+  reloadIdleSource: "hooks",
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -299,6 +301,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // and `skillsAgents()` reads it to decide who the pane broadcast is even about.
     skills: {
       reloadCommand: null,
+      reloadIdleSource: null,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -358,6 +361,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // the third harness `skillsAgents()`'s return type had to widen for.
     skills: {
       reloadCommand: "/reload",
+      reloadIdleSource: "transcript",
       dirEnvVar: "PI_SKILLS_DIR",
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",

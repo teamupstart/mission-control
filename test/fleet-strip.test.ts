@@ -132,10 +132,11 @@ test("Codex-only usage renders the same unified estimate and cost per PR", () =>
   const html = render(f);
   assert.equal(fleetStripHasContent(f), true);
   assert.ok(html.includes("estimated cost today"));
-  assert.ok(html.includes("≈$3.25"));
+  assert.ok(html.includes("$3.25"));
   assert.ok(html.includes("tokens today"));
   assert.ok(html.includes("cost / PR"));
-  assert.ok(html.includes("≈$1.63"));
+  assert.ok(html.includes("$1.63"));
+  assert.ok(!html.includes("≈"));
 });
 
 test("unpriced usage exposes a partial estimate instead of understating the fleet", () => {
@@ -149,10 +150,10 @@ test("daily and recent cost windows report completeness independently", () => {
   const partialDay = render(fleet({ estimatedCostToday: null, estimatedBurnPerHour: 0.75 }));
   assert.ok(partialDay.includes("cost estimate"));
   assert.ok(partialDay.includes("estimated rate"));
-  assert.ok(partialDay.includes("≈$0.75"));
+  assert.ok(partialDay.includes("$0.75"));
 
   const partialHour = render(fleet({ estimatedCostToday: 3.25, estimatedBurnPerHour: null }));
-  assert.ok(partialHour.includes("≈$3.25"));
+  assert.ok(partialHour.includes("$3.25"));
   assert.ok(partialHour.includes("estimated rate"));
   assert.ok(partialHour.includes("partial"));
 });
@@ -160,12 +161,12 @@ test("daily and recent cost windows report completeness independently", () => {
 test("recent usage alone is enough to draw the independent rate window", () => {
   const f = fleet({ estimatedCostToday: 0, estimatedBurnPerHour: 0.75, tokensToday: 0, prsToday: 0 });
   assert.equal(fleetStripHasContent(f), true);
-  assert.ok(render(f).includes("≈$0.75"));
+  assert.ok(render(f).includes("$0.75"));
 });
 
 test("collapsed fleet cost preserves an unpriced daily window", () => {
   assert.equal(compactFleetCost(fleet({ estimatedCostToday: null })), "partial");
-  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 3.25 })), "≈$3.25");
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 3.25 })), "$3.25");
   assert.equal(compactFleetCost(fleet({ estimatedCostToday: 0 })), null);
 });
 
@@ -191,7 +192,7 @@ test("no PRs opened today means no cost-per-PR, rather than a division by zero",
 
 test("cost per PR divides today's unified estimate by today's proven PRs", () => {
   // $14.82 over 6 pull requests.
-  assert.ok(render(fleet({ estimatedCostToday: 14.82, prsToday: 6 })).includes("≈$2.47"));
+  assert.ok(render(fleet({ estimatedCostToday: 14.82, prsToday: 6 })).includes("$2.47"));
 });
 
 test("every figure the strip promises is on it", () => {

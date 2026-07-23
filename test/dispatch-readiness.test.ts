@@ -92,6 +92,68 @@ test("a dispatched pi launch binds its injected native session id", () => {
   assert.equal(registry.getSession("pi-launched")?.agentSessionId, bound?.agentSessionId);
 });
 
+test("the dispatcher treats the dispatched pi session file as readiness", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "pi-ready", agent: "pi", cwd: "/wt/pi-ready" }),
+  ]);
+  const discovered = registry.getSession("pi-ready") as Session;
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  let observed: [string, string, number, number] | null = null;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    waitForPiReady: async (cwd, id, timeoutMs, settleMs) => {
+      observed = [cwd, id, timeoutMs, settleMs];
+      return true;
+    },
+  });
+  const awaitReady = (
+    dispatcher as unknown as {
+      awaitReady(
+        cwd: string,
+        session: Session,
+        prepared: boolean,
+        piSessionId: string,
+      ): Promise<{ session: Session; instrumented: boolean }>;
+    }
+  ).awaitReady.bind(dispatcher);
+
+  const ready = await awaitReady("/wt/pi-ready", discovered, true, sessionId);
+  assert.deepEqual(observed?.slice(0, 2), ["/wt/pi-ready", sessionId]);
+  assert.equal(ready.session.id, "pi-ready");
+  assert.equal(ready.instrumented, true);
+});
+
+test("the dispatcher declines a pi launch whose session file never appears", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([
+    mkDiscovered({ syntheticId: "pi-unverified", agent: "pi", cwd: "/wt/pi-unverified" }),
+  ]);
+  const discovered = registry.getSession("pi-unverified") as Session;
+  const dispatcher = new Dispatcher(registry, undefined, {
+    waitForPiReady: async () => false,
+  });
+  const awaitReady = (
+    dispatcher as unknown as {
+      awaitReady(
+        cwd: string,
+        session: Session,
+        prepared: boolean,
+        piSessionId: string,
+      ): Promise<{ session: Session; instrumented: boolean }>;
+    }
+  ).awaitReady.bind(dispatcher);
+
+  await assert.rejects(
+    awaitReady(
+      "/wt/pi-unverified",
+      discovered,
+      true,
+      "019f7d35-beb8-7ae4-8b33-049e4f65cacd",
+    ),
+    /pi session file never appeared before the initial prompt/,
+  );
+});
+
 test("waitForReadySessionAtCwd does NOT resolve on discovery alone", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "boot-1" })]);

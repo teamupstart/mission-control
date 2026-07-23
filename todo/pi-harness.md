@@ -10,7 +10,9 @@ Spiked the way `codex-instrumentation.md` did: establish what the tool exposes b
 an adapter. The JSONL format is fully readable, and Mission Control dispatches pi with its
 native `--session-id` so that exact UUID binds the launched process to its file. An
 operator-started pi supplies no identity and stays on the safe discover / name / focus / type
-degradation with no attributed transcript.
+degradation with no attributed transcript. That injected UUID identifies the initial context:
+if pi creates a newer session file after `/new` or resume, the binding declines until an
+identity source establishes the replacement.
 
 ## What pi is
 
@@ -78,14 +80,19 @@ pi writes one JSON record per line to
   JSONL", which is exactly what pi's is. No shared edit. (Codex has its own `codex-rollout`
   only because its file is not a turn log.)
 - **Identity correlation is exact or absent.** `locate` binds only when `agentSessionId` equals
-  the UUID in a candidate filename. Positive exact matches are cached; misses are rescanned
-  without reading file contents. There is no timestamp, newest-file, cwd-occupancy, or
-  persistence fallback.
+  the UUID in a candidate filename. The exact file is accepted only while no strictly newer
+  session file exists in that project directory; this freshness check can only decline the
+  known file, never substitute another. A `/new`, resume, or short-lived sibling therefore
+  removes the attributed transcript rather than risking stale or foreign state. Misses and
+  freshness are rescanned without reading file contents. There is no timestamp correlation,
+  cwd-occupancy, or persistence fallback.
 - **Instrumentation is launch-scoped.** `preparePiLaunch()` injects pi's native
   `--session-id <uuid>`, and the dispatcher records that UUID on the discovered session. A
   dispatched pi therefore gets transcript, metadata, activity, goal, and safe idle reload from
   exact identity. An operator-started pi supplies no `agentSessionId`, so all five degrade to
-  visible absence rather than guessed ownership.
+  visible absence rather than guessed ownership. Dispatch also waits for the matching session
+  file to appear before sending the first prompt; a missing file is an unverified launch and
+  fails instead of falling through to blind terminal input.
 
 ### control - REQUIRED, non-null
 
@@ -254,7 +261,9 @@ that remain:
 8. **Launch identity scopes pi's reload capability.** A command existing in pi is not enough
    to authorize an autonomous keystroke. Dispatched sessions have an exact current transcript
    and can use `/reload` after settled idle; operator-started and post-`/new` sessions have no
-   current binding and are refused. Claude remains hook-gated and mode-line checked byte-for-byte.
+   current binding and are refused. A newer file invalidates the initial binding before its
+   stale idle state can authorize a reload. Claude remains hook-gated and mode-line checked
+   byte-for-byte.
 
 9. **`providerModelDefault(AgentType)` conflated the harness and runner axes.** Adding pi
    widened the parameter even though every caller supplies `LlmRunnerId`, allowing a harness
@@ -266,13 +275,16 @@ that remain:
     ordinary sibling, resume, or `/new` races. **Fixed** by exact filename UUID correlation
     only. `preparePiLaunch` supplies that UUID for dispatched sessions; operator-started
     sessions visibly lack transcript, meta, activity, goal, and live reload. This launch-scoped
-    capability, symmetric with Codex's launch-scoped hooks, is the acceptance test's most
-    valuable finding.
+    capability accepts the initial exact file only while it remains the newest, so a context
+    change declines instead of retaining stale state. Symmetric with Codex's launch-scoped
+    hooks, this is the acceptance test's most valuable finding.
 
 11. **Harness launch preparation is a documented dispatcher footprint.** Exact identity cannot
     be recovered inside a transcript adapter after launch. pi therefore adds
     `harness/pi/launch.ts`, and the dispatcher composes its returned argv and records its
-    session id just as it composes Codex's launch-scoped hook preparation. The integration is
+    session id just as it composes Codex's launch-scoped hook preparation. The matching file's
+    appearance is also pi's launch-scoped readiness proof: dispatch waits for it and refuses an
+    unverified launch rather than typing after the generic fixed delay. The integration is
     per-harness launch data, not transcript attribution special-casing.
 
 **The E2E that found #6, in full.** A live pi session in a tmux pane, run through the daemon's

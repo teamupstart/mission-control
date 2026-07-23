@@ -197,6 +197,25 @@ test("a missing exact match is retried rather than negatively cached", () => {
   }
 });
 
+test("a newer session file invalidates an exact binding without replacing it", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const newerId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  try {
+    const session = locateSession("pi-context-change", cwd, sessionId);
+    const path = writeSession(dir, sessionId, Date.parse("2026-07-20T10:00:00.000Z"));
+    assert.equal(locatePiTranscript(session, root), path);
+    writeSession(dir, newerId, Date.parse("2026-07-20T10:01:00.000Z"));
+    assert.equal(locatePiTranscript(session, root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- messages: parse the verbatim capture ----
 
 test("text turns parse; thinking is dropped; the aborted turn falls out", () => {

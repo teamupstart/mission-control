@@ -33,6 +33,7 @@ export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
 interface SessionFile {
   path: string;
   id: string;
+  createdAt: number;
 }
 
 function sessionFiles(dir: string): SessionFile[] {
@@ -44,11 +45,27 @@ function sessionFiles(dir: string): SessionFile[] {
   }
   const files: SessionFile[] = [];
   for (const name of entries) {
-    const match = /^.+_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
+    const match =
+      /^(.+)_([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(name);
     if (!match) continue;
-    files.push({ path: join(dir, name), id: match[1]! });
+    const createdAt = Date.parse(match[1]!);
+    if (Number.isNaN(createdAt)) continue;
+    files.push({ path: join(dir, name), id: match[2]!, createdAt });
   }
   return files;
+}
+
+function exactSessionFile(files: SessionFile[], agentSessionId: string): SessionFile | null {
+  const matches = files.filter((file) => file.id === agentSessionId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+export function piSessionFileForIdentity(
+  cwd: string,
+  agentSessionId: string,
+  sessionsDir = SESSIONS_DIR,
+): string | null {
+  return exactSessionFile(sessionFiles(piProjectDir(cwd, sessionsDir)), agentSessionId)?.path ?? null;
 }
 
 interface Binding {
@@ -80,18 +97,10 @@ export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): stri
     return null;
   }
 
-  const binding = bindings.get(s.id);
-  if (
-    binding?.cwd === s.cwd &&
-    binding.sessionsDir === sessionsDir &&
-    binding.agentSessionId === s.agentSessionId
-  ) {
-    return binding.path;
-  }
-
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
-  const matches = files.filter((file) => file.id === s.agentSessionId);
-  const path = matches.length === 1 ? matches[0]!.path : null;
+  const match = exactSessionFile(files, s.agentSessionId);
+  const path =
+    match && !files.some((file) => file.createdAt > match.createdAt) ? match.path : null;
   if (path) recordBinding(s, sessionsDir, s.agentSessionId, path);
   else bindings.delete(s.id);
   return path;

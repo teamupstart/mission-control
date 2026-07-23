@@ -34,6 +34,12 @@ const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
  * panel is careful about.
  */
 const RELOADED = skillsAgents();
+const HOOK_RELOADED = RELOADED.filter(
+  (a) => capabilitiesFor(a).skills?.reloadIdleSource === "hooks",
+);
+const IDENTITY_RELOADED = RELOADED.filter(
+  (a) => capabilitiesFor(a).skills?.reloadIdleSource === "transcript",
+);
 const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a));
 /**
  * Where the links actually go, read off the same `homeDir` the reconciler symlinks
@@ -131,7 +137,10 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         ))}
         , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
         ones this app never launched.
-        {RELOADED.length > 0 && ` Running ${agentList(RELOADED)} sessions pick changes up at their next idle moment.`}
+        {HOOK_RELOADED.length > 0 &&
+          ` Running ${agentList(HOOK_RELOADED)} sessions pick changes up at their next idle moment.`}
+        {IDENTITY_RELOADED.length > 0 &&
+          ` Dispatched, identity-bound ${agentList(IDENTITY_RELOADED)} sessions also reload at idle; operator-started ${agentList(IDENTITY_RELOADED)} sessions load changes on their next launch or restart.`}
         {SELF_RELOADING.length > 0 && ` Changes are picked up automatically by ${agentList(SELF_RELOADING)}.`}
       </p>
 

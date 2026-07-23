@@ -71,7 +71,8 @@ and get your decision back.
 - **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
   sessions this app never launched. Claude reloads when idle, Codex watches automatically,
-  and running Pi sessions pick changes up after a restart.
+  dispatched identity-bound Pi sessions reload when idle, and operator-started Pi sessions
+  pick changes up on their next launch or restart.
 - **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
   request Mission Control opened once the Inspector has reviewed and **published** on the
   current push with nothing outstanding, CI is green, no thread is unresolved, and it has
@@ -1894,10 +1895,10 @@ Claude session re-reads its directory only when told, so the daemon types `/relo
 into its pane when it next goes quiet. Codex declares no reload command, because it
 watches its own directory - which means a Codex session picks the change up with nothing
 typed at it at all, and is deliberately excluded from the pane broadcast rather than sent a
-slash command that would land in its composer as text. Pi also declares no reload command,
-but for a different reason: it loads skills at launch, has no watcher, and its hookless
-sessions provide no attributable idle evidence that would make an autonomous `/reload`
-keystroke safe. Restart a running Pi session to pick up changes.
+slash command that would land in its composer as text. Pi's reload is launch-scoped: a Pi
+session dispatched by Mission Control has an injected identity, so its exact transcript can
+prove idle and the daemon can safely type `/reload`; an operator-started Pi session has no
+such binding and picks changes up only on its next launch or restart.
 
 Three things worth knowing before you switch one on:
 
@@ -1917,9 +1918,10 @@ Three things worth knowing before you switch one on:
   sits on. "When relevant" means exactly that.
 - **The "N sessions will pick this up" count is about the reload nudge, not about
   reach.** It counts the sessions the daemon will type at, which is the ones whose harness
-  declares a reload command - so it excludes Codex sessions that watch automatically and Pi
-  sessions that require a restart, even though the skill is linked where both will read it.
-  Reach is the `skills` capability; the count is the `reloadCommand` one, and they are
+  declares a reload command and whose per-session readiness source is currently available.
+  It excludes Codex sessions that watch automatically and operator-started Pi sessions that
+  require a restart, while counting identity-bound dispatched Pi sessions. Reach is the
+  `skills` capability; the count is the reload-readiness contract, and they are
   deliberately different questions.
 
 ### The daemon is no longer strictly reactive
@@ -2526,8 +2528,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt when a still-live session cannot prove readiness. Used after the hook wait below times out, or immediately when that wait is skipped; an observed exit fails instead |
-| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's first hook - the only honest "I can read input" signal - before falling back to the settle above if that session is still live. An observed exit ends the wait immediately. The wait is skipped when this particular launch could never produce a hook: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt. Used after Pi's exact session file appears, after a hook wait times out, or immediately when no readiness signal exists; an observed exit fails instead |
+| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's readiness signal: the first hook for a hook-capable launch, or the injected-id session file for Pi. A missing Pi file fails the dispatch rather than allowing unverified input; hook silence falls back to the settle above if the session is still live. An observed exit ends either wait immediately. The hook wait is skipped when this particular launch could never produce one, including a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |

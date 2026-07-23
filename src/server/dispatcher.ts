@@ -16,7 +16,7 @@ import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
-import { preparePiLaunch } from "./harness/pi/launch.ts";
+import { preparePiLaunch, waitForPiLaunchReady } from "./harness/pi/launch.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -48,7 +48,10 @@ export class Dispatcher {
   constructor(
     private registry: Registry,
     private teardown: typeof teardownWorktree = teardownWorktree,
-    private deps: { inject?: typeof injectPrompt } = {},
+    private deps: {
+      inject?: typeof injectPrompt;
+      waitForPiReady?: typeof waitForPiLaunchReady;
+    } = {},
   ) {}
 
   async dispatch(taskId: string): Promise<void> {
@@ -121,7 +124,12 @@ export class Dispatcher {
 
       // Discovery only proves the process exists. Wait for the agent to prove it can
       // READ before typing at it - see `awaitReady`.
-      const ready = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
+      const ready = await this.awaitReady(
+        wt.path,
+        discovered,
+        codexLaunch.instrumented,
+        piLaunch.sessionId,
+      );
       const session = piLaunch.sessionId
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
@@ -192,9 +200,9 @@ export class Dispatcher {
    * Wait for the agent to be able to READ the prompt we're about to type.
    *
    * Discovery is a `ps` sweep: it fires when the binary is exec'd, seconds before any
-   * TUI exists. The only honest "I'm listening" signal an agent gives is its first
-   * hook, so wait for that. Returns whether we got it, because that decides whether a
-   * later silence is evidence of anything.
+   * TUI exists. A hook-capable launch proves readiness with its first hook. A pi launch
+   * proves it when the file for its injected session id appears. Returns whether the
+   * launch is instrumented, because that decides whether later silence is evidence.
    *
    * The fallback is deliberate. An agent whose hooks aren't installed will never satisfy
    * this, and refusing to dispatch to it would be a regression, so a timeout degrades
@@ -202,16 +210,39 @@ export class Dispatcher {
    * the only case that has no better option instead of applying to everything.
    *
    * "Aren't installed" and "don't exist" are different, though, and only the first is
-   * worth waiting out. A harness that declares no `hooks` capability cannot produce this
-   * signal at all, so the wait is 20 seconds of certain silence on EVERY dispatch - dead
-   * time a Codex task paid before its prompt was typed. Ask the registry rather than the
-   * session: the answer is a property of the agent, not of this particular launch.
+   * worth waiting out. A harness that declares no `hooks` and no launch-scoped readiness
+   * signal takes the fallback immediately. Ask the registry rather than the session for
+   * hook capability; pi's exact file is launch data supplied separately.
    */
   private async awaitReady(
     cwd: string,
     discovered: Session,
     hooksPrepared = true,
+    piSessionId: string | null = null,
   ): Promise<{ session: Session; instrumented: boolean }> {
+    if (piSessionId) {
+      this.requireLiveSession(discovered.id);
+      const ready = await (this.deps.waitForPiReady ?? waitForPiLaunchReady)(
+        cwd,
+        piSessionId,
+        HOOK_READY_MS,
+        SETTLE_MS,
+        {
+          isLive: () => {
+            const current = this.registry.getSession(discovered.id);
+            return !!current && current.state !== "exited";
+          },
+        },
+      );
+      if (!ready) {
+        this.requireLiveSession(discovered.id);
+        throw new Error("pi session file never appeared before the initial prompt");
+      }
+      return {
+        session: this.requireLiveSession(discovered.id),
+        instrumented: true,
+      };
+    }
     if (hooksPrepared && hooksFor(discovered.agent)) {
       const ready = await this.registry.waitForReadySessionAtCwd(
         cwd,

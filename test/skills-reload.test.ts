@@ -121,6 +121,28 @@ test("an operator-started pi session is never owed a reload from stale idle stat
   });
 });
 
+test("a pi session stops being owed a reload when its exact binding is invalidated", () => {
+  const pi = mkSession({
+    id: "pi-invalidated",
+    agent: "pi",
+    hooksSeen: false,
+    instrumented: false,
+  });
+  const transcript = HARNESSES.pi.transcript!;
+  const locate = transcript.locate;
+  let path: string | null = "/tmp/pi-bound.jsonl";
+  transcript.locate = () => path;
+  try {
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 1);
+    assert.deepEqual(picked([pi]), ["pi-invalidated"]);
+    path = null;
+    assert.equal(pendingReloads([pi], acks(), mkCfg()), 0);
+    assert.deepEqual(picked([pi]), []);
+  } finally {
+    transcript.locate = locate;
+  }
+});
+
 test("an exited session is never selected", () => {
   assert.deepEqual(picked([mkSession({ state: "exited" })]), []);
 });

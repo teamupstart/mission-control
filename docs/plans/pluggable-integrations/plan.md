@@ -1340,7 +1340,8 @@ be added without touching shared code. Phase 5 is the test:
   (`@earendil-works/pi-coding-agent`) does all four. Its session format reads back as
   conversation (`transcript.messages` non-null). A dispatched pi receives an exact native
   `--session-id`, so transcript, metadata, activity, goal, and idle reload are launch-scoped;
-  an operator-started pi supplies no identity and takes the visible no-transcript degradation.
+  its matching file also proves launch readiness before the initial prompt is sent. An
+  operator-started pi supplies no identity and takes the visible no-transcript degradation.
   The spike is `todo/pi-harness.md`; the interface findings are below.
 - ~~A **Ghostty** emulator adapter, which supports spawn and focus but **not** enumeration or
   capture - proving the capability-null path is real and not decorative.~~ **Landed, and it
@@ -1485,7 +1486,8 @@ Claude fact for a universal one. The core held: pi discovers, names, focuses, ta
 with no transcript or polling special case for pi. Launch is the one deliberate dispatcher
 footprint: `preparePiLaunch()` injects pi's native `--session-id`, parallel to Codex's
 launch-scoped hook preparation, and records it on the discovered session. Its transcript format
-then binds by exact UUID only. The spike is `todo/pi-harness.md`; what it found:
+then binds by exact UUID only, while the matching file's appearance gates initial prompt
+delivery. The spike is `todo/pi-harness.md`; what it found:
 
 - **pi is the MIRROR of Codex, which is the strongest evidence the capability matrix is
   orthogonal.** Codex declares `hooks` non-null and `transcript.messages` null; pi declares the
@@ -1536,21 +1538,27 @@ then binds by exact UUID only. The spike is `todo/pi-harness.md`; what it found:
 - **Pi reload is launch-scoped, like Codex instrumentation.** A `/reload` command existing in
   the product does not authorize Mission Control to type it autonomously. A dispatched pi has
   the exact current transcript needed to prove settled idle; an operator-started pi has no
-  binding and is neither counted nor typed into. Claude's hooks and mode-line safety gates
-  remain unchanged, and Codex still watches its directory.
+  binding and is neither counted nor typed into. If a `/new`, resume, or sibling creates a
+  newer session file, the launch binding declines before stale idle state can authorize a
+  reload. Claude's hooks and mode-line safety gates remain unchanged, and Codex still watches
+  its directory.
 
 - **Hookless transcript identity is exact or absent.** pi filenames carry a session UUID, and
-  `locate` binds only when that UUID equals a known `agentSessionId`; positive matches are
-  cached and misses are rescanned. No timestamp, newest-file, occupancy, or persistence
+  `locate` binds only when that UUID equals a known `agentSessionId`; it keeps that exact file
+  only while no strictly newer session file exists. The freshness check can decline the known
+  file but never substitute another. No timestamp correlation, occupancy, or persistence
   heuristic can prove ownership under short-lived sibling, delayed-file, resume, and `/new`
-  races. `preparePiLaunch` supplies exact identity for dispatched pi; operator-started cards
-  show no transcript, meta, activity, goal, or live reload. This launch-scoped capability and
-  honest degradation are the acceptance test's most valuable finding.
+  races. `preparePiLaunch` supplies exact identity for dispatched pi; operator-started and
+  post-context-change cards show no transcript, meta, activity, goal, or live reload. This
+  launch-scoped capability and honest degradation are the acceptance test's most valuable
+  finding.
 
 - **Harness launch preparation is a documented dispatcher integration, not an attribution
   workaround.** Identity must be chosen before pi starts, so the adapter owns
   `harness/pi/launch.ts` and the dispatcher composes its returned argv and session id just as it
-  composes Codex's launch preparation. Nothing in transcript discovery guesses ownership.
+  composes Codex's launch preparation. Dispatch waits for the exact session file to appear and
+  treats silence as an unverified launch instead of typing after a fixed delay; that same file
+  then supplies passive prompt acceptance. Nothing in transcript discovery guesses ownership.
 
 - **`tui: null`, and MEASURED.** pi's screen is readable (its footer and `/model` selector were
   captured live, cursor glyph `→` U+2192), but nothing is wired to read off it: no

@@ -1944,6 +1944,28 @@ earns two surfaces a card has nowhere to put:
   matching only backlog items correctly reads as "nothing matches".
 - **The arrow keys follow the shape** - see below.
 
+## How much conversation you see
+
+The Conversation panel opens on the session's **last 80 turns**, then streams new ones as
+the agent writes them. Reading a one-shot window elsewhere - Foreman's reviewer, the
+queue's verifier, the goal refiner - gets the opening turns plus the recent ones, with the
+middle marked elided.
+
+Those are **turn** counts, and that is the point. Transcripts are read by seeking into a
+file that is often megabytes, so every read is bounded - but the bound is how many turns to
+find, not how many bytes to look at. The difference is the whole ballgame across harnesses:
+a Claude transcript spends ~98% of its bytes on records that *are* turns, while a Codex
+rollout spends 99.7% of its on tool output and reasoning. A fixed byte window that holds a
+comfortable screen of Claude's conversation held **six turns of a twenty-six turn Codex
+session** - and because opening a card (or any reconnect, so any daemon restart) replaces
+the panel with that read, it looked exactly like a session losing its own history. The read
+now widens until it has the turns, so what you see is bounded by the count you asked for on
+either harness.
+
+Two ceilings still apply, and both are honest about themselves. A single read stops at
+16 MB, and a window that dropped the middle of a conversation says so rather than
+presenting head and tail as contiguous.
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced

@@ -47,6 +47,7 @@ export class Dispatcher {
   constructor(
     private registry: Registry,
     private teardown: typeof teardownWorktree = teardownWorktree,
+    private deps: { inject?: typeof injectPrompt } = {},
   ) {}
 
   async dispatch(taskId: string): Promise<void> {
@@ -128,7 +129,7 @@ export class Dispatcher {
       // Mode selection takes terminal I/O and can race the process exiting. Re-read at
       // the actual send boundary so a lingered session cannot type into its dead pane.
       const deliverySession = this.requireLiveSession(session.id);
-      await this.deliverIntent(deliverySession, task.intent, wt.path, instrumented);
+      await this.deliverIntent(deliverySession.id, task.intent, wt.path, instrumented);
 
       if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
@@ -201,7 +202,11 @@ export class Dispatcher {
     hooksPrepared = true,
   ): Promise<{ session: Session; instrumented: boolean }> {
     if (hooksPrepared && hooksFor(discovered.agent)) {
-      const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
+      const ready = await this.registry.waitForReadySessionAtCwd(
+        cwd,
+        discovered.id,
+        HOOK_READY_MS,
+      );
       if (ready) return { session: ready, instrumented: true };
     }
     await sleep(SETTLE_MS);
@@ -277,7 +282,7 @@ export class Dispatcher {
    * and absence of evidence is not evidence.
    */
   private async deliverIntent(
-    session: Session,
+    sessionId: string,
     intent: string,
     cwd: string,
     instrumented: boolean,
@@ -288,7 +293,8 @@ export class Dispatcher {
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
         : null;
 
-      const sent = await injectPrompt(
+      const session = this.requireLiveSession(sessionId);
+      const sent = await (this.deps.inject ?? injectPrompt)(
         session,
         intent,
         undefined,
@@ -302,8 +308,8 @@ export class Dispatcher {
 
       // Still idle after typing at it. Positive evidence the paste went nowhere - but
       // only if it's STILL idle now; a `working` we merely raced past means it landed.
-      const now = this.registry.getSession(session.id);
-      if (now && now.state !== "idle") return;
+      const now = this.requireLiveSession(sessionId);
+      if (now.state !== "idle") return;
       if (attempt >= 2) {
         throw new Error(
           "the agent never acknowledged the initial prompt (it was typed but not ingested)",

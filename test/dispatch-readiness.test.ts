@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { Session } from "@shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // "Discovered" is not "ready", and a successful tmux write is not a delivered prompt.
@@ -24,6 +25,7 @@ process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { Dispatcher } = await import("../src/server/dispatcher.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -78,14 +80,14 @@ test("waitForReadySessionAtCwd does NOT resolve on discovery alone", async () =>
   registry.applyDiscovery([mkDiscovered({ syntheticId: "boot-1" })]);
 
   // The whole fix in one assertion: a booting agent is not a ready one.
-  assert.equal(await registry.waitForReadySessionAtCwd(CWD, BRIEF_MS), null);
+  assert.equal(await registry.waitForReadySessionAtCwd(CWD, "boot-1", BRIEF_MS), null);
 });
 
 test("waitForReadySessionAtCwd resolves once the agent's first hook lands", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "boot-2" })]);
 
-  const ready = registry.waitForReadySessionAtCwd(CWD, 5000);
+  const ready = registry.waitForReadySessionAtCwd(CWD, "boot-2", 5000);
   sessionStart(registry); // the TUI is up, ~4s after exec in the real trace
   const s = await ready;
 
@@ -99,7 +101,7 @@ test("waitForReadySessionAtCwd short-circuits for an agent that is ALREADY hooke
   registry.applyDiscovery([mkDiscovered({ syntheticId: "warm-1" })]);
   sessionStart(registry);
 
-  const s = await registry.waitForReadySessionAtCwd(CWD, BRIEF_MS);
+  const s = await registry.waitForReadySessionAtCwd(CWD, "warm-1", BRIEF_MS);
   assert.equal(s?.hooksSeen, true);
 });
 
@@ -110,7 +112,7 @@ test("a null from waitForReadySessionAtCwd means no evidence, not 'not ready'", 
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "hookless-1" })]);
 
-  assert.equal(await registry.waitForReadySessionAtCwd(CWD, BRIEF_MS), null);
+  assert.equal(await registry.waitForReadySessionAtCwd(CWD, "hookless-1", BRIEF_MS), null);
   assert.equal(registry.getSession("hookless-1")?.state !== "exited", true, "it is alive and well");
 });
 
@@ -123,12 +125,69 @@ test("waitForReadySessionAtCwd stops waiting when the discovered process exits",
   registry.applyDiscovery([mkDiscovered({ syntheticId: "exited-1" })]);
 
   const startedAt = Date.now();
-  const ready = registry.waitForReadySessionAtCwd(CWD, 5000);
+  const ready = registry.waitForReadySessionAtCwd(CWD, "exited-1", 5000);
   registry.applyDiscovery([]);
 
   assert.equal(await ready, null);
   assert.ok(Date.now() - startedAt < 1000, "an observed exit should end the readiness wait");
   assert.equal(registry.getSession("exited-1")?.state, "exited", "the lingered snapshot remains visible");
+});
+
+test("waitForReadySessionAtCwd observes an exit that happened before subscription", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "already-exited" })]);
+  registry.applyDiscovery([]);
+
+  const startedAt = Date.now();
+  const ready = await registry.waitForReadySessionAtCwd(CWD, "already-exited", 5000);
+
+  assert.equal(ready, null);
+  assert.ok(Date.now() - startedAt < 1000, "an earlier exit should not spend the readiness timeout");
+});
+
+test("waitForSessionAtCwd does not accept an exited upsert", async () => {
+  const source = new Registry();
+  source.applyDiscovery([mkDiscovered({ syntheticId: "retained-exit" })]);
+  source.applyDiscovery([]);
+  const exited = source.getSession("retained-exit") as Session;
+  const registry = new Registry();
+
+  const waiting = registry.waitForSessionAtCwd(CWD, BRIEF_MS);
+  registry.emit("event", { type: "session_upsert", session: exited });
+
+  assert.equal(await waiting, null);
+});
+
+test("the dispatcher does not retry delivery through an evicted session snapshot", async () => {
+  const session = { id: "retry-exited", state: "idle" } as Session;
+  let live: Session | undefined = session;
+  let sends = 0;
+  const registry = {
+    getSession: () => live,
+    waitForPromptAcceptedAtCwd: () => Promise.resolve(false),
+  } as unknown as InstanceType<typeof Registry>;
+  const dispatcher = new Dispatcher(
+    registry,
+    undefined,
+    {
+      inject: async () => {
+        sends += 1;
+        live = undefined;
+        return { ok: true };
+      },
+    },
+  );
+  const deliverIntent = (
+    dispatcher as unknown as {
+      deliverIntent(id: string, intent: string, cwd: string, instrumented: boolean): Promise<void>;
+    }
+  ).deliverIntent.bind(dispatcher);
+
+  await assert.rejects(
+    deliverIntent(session.id, "do the work", CWD, true),
+    /agent session exited before the initial prompt could be sent/,
+  );
+  assert.equal(sends, 1);
 });
 
 test("waitForPromptAcceptedAtCwd resolves true on the working transition", async () => {

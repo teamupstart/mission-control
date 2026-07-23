@@ -3188,8 +3188,12 @@ export class Registry extends EventEmitter {
    * honest answer for an agent with no hooks installed. The caller decides what to do
    * with that; don't upgrade it to a claim here.
    */
-  waitForReadySessionAtCwd(cwd: string, timeoutMs: number): Promise<Session | null> {
-    return this.waitForSessionAtCwdMatching(cwd, timeoutMs, (s) => s.hooksSeen);
+  waitForReadySessionAtCwd(
+    cwd: string,
+    sessionId: string,
+    timeoutMs: number,
+  ): Promise<Session | null> {
+    return this.waitForSessionAtCwdMatching(cwd, timeoutMs, (s) => s.hooksSeen, sessionId);
   }
 
   /**
@@ -3226,10 +3230,16 @@ export class Registry extends EventEmitter {
     cwd: string,
     timeoutMs: number,
     ready: (s: Session) => boolean,
+    watchedId?: string,
   ): Promise<Session | null> {
-    const existing = this.firstSessionAtCwd(cwd);
+    const existing = watchedId ? this.sessions.get(watchedId) : this.firstSessionAtCwd(cwd);
+    if (
+      watchedId &&
+      (!existing || existing.cwd !== cwd || existing.state === "exited")
+    ) {
+      return Promise.resolve(null);
+    }
     if (existing && ready(existing)) return Promise.resolve(existing);
-    const watchedId = existing?.id ?? null;
     return new Promise<Session | null>((resolve) => {
       const timer = unref(
         setTimeout(() => {
@@ -3240,6 +3250,7 @@ export class Registry extends EventEmitter {
       const unsub = this.subscribe((e) => {
         if (
           e.type === "session_upsert" &&
+          watchedId !== undefined &&
           e.session.id === watchedId &&
           e.session.state === "exited"
         ) {
@@ -3251,6 +3262,8 @@ export class Registry extends EventEmitter {
         if (
           e.type === "session_upsert" &&
           e.session.cwd === cwd &&
+          e.session.state !== "exited" &&
+          (watchedId === undefined || e.session.id === watchedId) &&
           ready(e.session)
         ) {
           clearTimeout(timer);

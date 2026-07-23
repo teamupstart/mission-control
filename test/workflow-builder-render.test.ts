@@ -146,12 +146,20 @@ test("editable workflow canvas remains mounted with default node statuses", () =
     controls: string[];
     nativeTitles: number;
     attribution: boolean;
+    maxZoomDisabled: boolean;
+    maxZoomDescription: string;
+    minZoomDisabled: boolean;
+    minZoomDescription: string;
   };
   assert.deepEqual(result.errors, []);
   assert.equal(result.mounted, true);
   assert.deepEqual(result.controls, ["Zoom in", "Zoom out", "Fit the graph to view"]);
   assert.equal(result.nativeTitles, 0);
   assert.equal(result.attribution, true);
+  assert.equal(result.maxZoomDisabled, true);
+  assert.equal(result.maxZoomDescription, "Already at maximum zoom");
+  assert.equal(result.minZoomDisabled, true);
+  assert.equal(result.minZoomDescription, "Already at minimum zoom");
 });
 
 test("autosave conflict recovery offers reload and duplicate without overwriting", () => {

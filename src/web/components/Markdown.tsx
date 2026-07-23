@@ -38,7 +38,7 @@ function WorkspaceAnchor({
   // and, for a checkout-contained link, that clicking it opens the file here rather than
   // in a browser tab. A link this app claims and one it hands to the OS look identical.
   return (
-    <Tooltip label={claimed ? `Open ${href} in this session's files` : (href ?? "This link has no target")}>
+    <Tooltip label={claimed && href ? `Open ${href} in this session's files` : (href || "Blocked link")}>
       <a
         {...props}
         href={href}
@@ -96,7 +96,7 @@ export const Markdown = memo(function Markdown({
           onLinkClick ? (
             <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
           ) : (
-            <Tooltip label={href ?? "link"}>
+            <Tooltip label={href || "Blocked link"}>
               <a {...props} href={href} />
             </Tooltip>
           ),

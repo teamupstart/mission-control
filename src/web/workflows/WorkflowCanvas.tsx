@@ -12,6 +12,7 @@ import {
   type NodeChange,
   type ReactFlowInstance,
   useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import type {
   PersonaView,
@@ -33,15 +34,32 @@ const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
 
 function WorkflowControls(): React.JSX.Element {
   const { fitView, zoomIn, zoomOut } = useReactFlow();
+  const zoom = useStore((state) => state.transform[2]);
+  const minZoom = useStore((state) => state.minZoom);
+  const maxZoom = useStore((state) => state.maxZoom);
+  const minZoomReached = zoom <= minZoom;
+  const maxZoomReached = zoom >= maxZoom;
   return (
     <Controls showZoom={false} showFitView={false} showInteractive={false}>
-      <Tooltip label="Zoom in">
-        <ControlButton aria-label="Zoom in" onClick={() => void zoomIn()}>
+      <Tooltip label={maxZoomReached ? "Already at maximum zoom" : "Zoom in"}>
+        <ControlButton
+          aria-label="Zoom in"
+          disabled={maxZoomReached}
+          onClick={() => {
+            if (!maxZoomReached) void zoomIn();
+          }}
+        >
           <span aria-hidden>＋</span>
         </ControlButton>
       </Tooltip>
-      <Tooltip label="Zoom out">
-        <ControlButton aria-label="Zoom out" onClick={() => void zoomOut()}>
+      <Tooltip label={minZoomReached ? "Already at minimum zoom" : "Zoom out"}>
+        <ControlButton
+          aria-label="Zoom out"
+          disabled={minZoomReached}
+          onClick={() => {
+            if (!minZoomReached) void zoomOut();
+          }}
+        >
           <span aria-hidden>−</span>
         </ControlButton>
       </Tooltip>

@@ -97,5 +97,5 @@ test("external protocol links keep their browser href", () => {
 test("active-content protocol links receive an inert href", () => {
   const html = render("[bad](javascript:alert(1)) [data](data:text/html,x)");
   assert.equal(html.match(/href=""/g)?.length, 2);
-  assert.deepEqual(tooltipLabels(html), ["", ""]);
+  assert.deepEqual(tooltipLabels(html), ["Blocked link", "Blocked link"]);
 });

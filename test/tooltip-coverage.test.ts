@@ -64,6 +64,7 @@ const INTERACTIVE_ROLES = new Set([
   "switch",
   "tab",
 ]);
+const INTERACTIVE_COMPONENTS = new Set(["ControlButton"]);
 
 /** The tag that opens immediately before `index`, or "" at the start of a file. */
 function enclosingTag(src: string, index: number): string {
@@ -143,6 +144,7 @@ function hasValidTooltipOwner(node: ts.Node): boolean {
 
 function isInteractive(node: ts.JsxOpeningLikeElement): boolean {
   const name = tagName(node);
+  if (INTERACTIVE_COMPONENTS.has(name)) return Boolean(attribute(node, "onClick"));
   if (name === "button" || name === "select" || name === "summary") return true;
   if (name === "a") return Boolean(attribute(node, "href"));
   if (name === "input") {
@@ -263,5 +265,11 @@ test("the scan can actually see a missing tooltip", () => {
   assert.deepEqual(unwrappedInSource(nestedControls, "nested.tsx"), [
     "nested.tsx:1 <button>",
     "nested.tsx:1 <button>",
+  ]);
+
+  const componentControl =
+    `const I = () => <ControlButton onClick={zoom}>+</ControlButton>;`;
+  assert.deepEqual(unwrappedInSource(componentControl, "component.tsx"), [
+    "component.tsx:1 <ControlButton>",
   ]);
 });

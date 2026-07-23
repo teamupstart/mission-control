@@ -102,14 +102,18 @@ export interface BacklogTickInput {
  * parallelism in a state that is already degraded.
  *
  * But "executing" has to mean something we can still SEE, which is why the sessions are
- * read here. A task bound to a session that is gone is not executing anything - it is a
- * row nothing will ever move, because a `running` task is only reconciled when the
- * DAEMON restarts (`TaskManager.reconcileOnStartup`), never while it is up. Counting one
+ * read here. A task bound to a session that is gone is not executing anything. Counting one
  * turned serial mode from a degradation into a dead end: an agent whose terminal was
  * closed left a `running` row behind, that row held the count above zero for as long as
  * the daemon lived, and the fallback that exists so a broken planner "degrades to slow
  * rather than to wrong" instead scheduled nothing at all, forever. Observed exactly that
  * way - a backlog of two dozen ready items parked behind one dead row.
+ *
+ * `TaskManager.agentWentAway` now settles such a row when its session is evicted, which is
+ * the cause rather than this symptom - but this clause stays, and not merely as belt and
+ * braces. Eviction is deliberately eight seconds behind the process dying, and this fold
+ * runs on every tick inside that window; a scheduler in serial mode is exactly the reader
+ * that must not stall behind a row it can already see has no agent.
  *
  * A task with no session yet still counts: `dispatching`, or `running` with a terminal
  * home we cut, is the discovery window, and that is the one this must not launch into.

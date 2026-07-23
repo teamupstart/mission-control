@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, InspectorRailMark } from "../session-bits.tsx";
+import { AgentDot, InspectorRailMark, WorkflowRailMark } from "../session-bits.tsx";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -18,11 +19,15 @@ export function RailRow({
   selected,
   gateNeedsYou,
   onSelect,
+  workflowRun = null,
+  onOpenWorkflowRun,
 }: {
   session: Session;
   selected: boolean;
   gateNeedsYou: boolean;
   onSelect: () => void;
+  workflowRun?: WorkflowRunSummary | null;
+  onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
@@ -73,6 +78,10 @@ export function RailRow({
               is nothing outstanding. The DECISION and the tooltip are the shared ones;
               only the rendering is this terse. */}
           <InspectorRailMark session={session} />
+          <WorkflowRailMark
+            run={workflowRun}
+            onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
+          />
           <span className="rail-seen">
             {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
           </span>

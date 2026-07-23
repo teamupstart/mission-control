@@ -27,6 +27,19 @@ import type { ZodTypeAny, TypeOf } from "zod";
  */
 export type StructuredResult<T> = { kind: "ok"; value: T } | { kind: "failed"; reason: string };
 
+export interface StructuredAttemptObserver {
+  /**
+   * Return false when the owning durable operation stopped while a previous attempt
+   * was in flight. This keeps the parse retry from starting new provider work after
+   * cancellation without making provider-neutral structured calls own that lifecycle.
+   */
+  start(attempt: number, prompt: string): boolean | void;
+  finish(
+    attempt: number,
+    result: { parsed: boolean; raw: string | null; error: string | null },
+  ): void;
+}
+
 /**
  * A per-caller concurrency gate: `limit(fn)` runs `fn` once a slot is free.
  *
@@ -76,19 +89,28 @@ export async function runStructured<S extends ZodTypeAny>(
   prompt: string,
   extract: (raw: string) => TypeOf<S> | null,
   label = "The model",
+  observer?: StructuredAttemptObserver,
 ): Promise<StructuredResult<TypeOf<S>>> {
   const attempts = [
     prompt,
     `${prompt}\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.`,
   ];
-  for (const p of attempts) {
+  for (let index = 0; index < attempts.length; index++) {
+    const p = attempts[index]!;
+    const attempt = index + 1;
     let raw: string;
     try {
+      if (observer?.start(attempt, p) === false) {
+        return { kind: "failed", reason: `${label} stopped before its next attempt.` };
+      }
       raw = await run(p);
     } catch (err) {
+      const error = String(err);
+      observer?.finish(attempt, { parsed: false, raw: null, error });
       return { kind: "failed", reason: `${label} failed: ${String(err)}` };
     }
     const value = extract(raw);
+    observer?.finish(attempt, { parsed: value !== null, raw, error: null });
     if (value) return { kind: "ok", value };
   }
   return { kind: "failed", reason: `${label} could not parse a valid reply from the model.` };

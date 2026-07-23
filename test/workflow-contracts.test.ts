@@ -169,9 +169,6 @@ test("binding requests name the live session while the daemon owns durable note 
     {
       workflowVersionId: "v1",
       sessionId: "s1",
-      triggerMode: "manual",
-      deliveryMode: "preview",
-      maxRepairRounds: 5,
     },
   );
   assert.deepEqual(ReattachWorkflowBindingSchema.parse({ sessionId: "s2" }), { sessionId: "s2" });

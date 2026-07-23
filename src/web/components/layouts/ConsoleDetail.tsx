@@ -23,6 +23,7 @@ import {
   RuntimeMetaRow,
   SessionTitle,
   StateBadge,
+  WorkflowChip,
   subtitle,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
@@ -94,6 +95,7 @@ export function ConsoleDetail({
   session: Session;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
+  const workflowRun = view.workflowRunBySession?.get(session.id) ?? null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
     sessionId: session.id,
     commit: null,
@@ -202,6 +204,19 @@ export function ConsoleDetail({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
+        <WorkflowChip
+          run={workflowRun}
+          onOpen={workflowRun ? () => view.onOpenWorkflowRun?.(workflowRun.id) : undefined}
+        />
+        {!workflowRun && view.onBindWorkflow && (
+          <button
+            className="workflow-bind-chip"
+            title="Bind a published workflow version"
+            onClick={() => view.onBindWorkflow?.(session.id)}
+          >
+            ＋ workflow
+          </button>
+        )}
         <StateBadge
           session={session}
           gateNeedsYou={gateNeedsYou}

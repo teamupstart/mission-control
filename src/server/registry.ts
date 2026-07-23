@@ -48,7 +48,7 @@ import { goalLine } from "@shared/goal.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
-import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -317,6 +317,9 @@ export class Registry extends EventEmitter {
   private personas = new Map<string, PersonaView>();
   /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
   private workflowSummaries = new Map<string, WorkflowSummary>();
+  /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
+  private workflowRuns = new Map<string, WorkflowRunSummary>();
+  private workflowReset: ((noteKey: string) => void) | null = null;
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -435,6 +438,7 @@ export class Registry extends EventEmitter {
     tasks: Task[];
     personas: PersonaView[];
     workflowSummaries: WorkflowSummary[];
+    workflowRunSummaries: WorkflowRunSummary[];
     fleetCost: FleetCost | null;
   } {
     return {
@@ -443,6 +447,7 @@ export class Registry extends EventEmitter {
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
+      workflowRunSummaries: [...this.workflowRuns.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -457,6 +462,15 @@ export class Registry extends EventEmitter {
   subscribe(fn: (e: ServerEvent) => void): () => void {
     this.on("event", fn);
     return () => this.off("event", fn);
+  }
+
+  onSessionsObserved(fn: () => void): () => void {
+    if (this.sweptSessions) {
+      fn();
+      return () => {};
+    }
+    this.once("sessions_observed", fn);
+    return () => this.off("sessions_observed", fn);
   }
 
   /**
@@ -514,6 +528,27 @@ export class Registry extends EventEmitter {
     if (this.workflowSummaries.delete(id)) this.emitEvent({ type: "workflow_remove", id });
   }
 
+  initializeWorkflowRuns(runs: WorkflowRunSummary[]): void {
+    this.workflowRuns = new Map(runs.map((run) => [run.id, run]));
+  }
+
+  upsertWorkflowRun(run: WorkflowRunSummary): void {
+    this.workflowRuns.set(run.id, run);
+    this.emitEvent({ type: "workflow_run_upsert", run });
+  }
+
+  removeWorkflowRun(id: string): void {
+    if (this.workflowRuns.delete(id)) this.emitEvent({ type: "workflow_run_remove", id });
+  }
+
+  registerWorkflowReset(cleanup: (noteKey: string) => void): void {
+    this.workflowReset = cleanup;
+  }
+
+  clearWorkflowState(noteKey: string): void {
+    this.workflowReset?.(noteKey);
+  }
+
   // ---- passive discovery ----
 
   applyDiscovery(discovered: DiscoveredSession[]): void {
@@ -521,6 +556,7 @@ export class Registry extends EventEmitter {
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
     // so this is the moment the session map starts meaning anything. See `sessionsObserved`.
+    const firstSweep = !this.sweptSessions;
     this.sweptSessions = true;
 
     for (const d of discovered) {
@@ -574,6 +610,7 @@ export class Registry extends EventEmitter {
     // only here to keep a QUIET fleet honest - "today" has to roll over at midnight, and the
     // recent rate has to fall back to zero when the exports stop.
     if (now - this.lastFleetCostAt >= FLEET_COST_IDLE_INTERVAL_MS) this.recomputeFleetCost(now);
+    if (firstSweep) this.emit("sessions_observed");
   }
 
   /**

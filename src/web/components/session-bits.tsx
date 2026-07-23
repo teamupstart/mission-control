@@ -15,6 +15,7 @@ import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -67,6 +68,92 @@ export function agentAccentStyle(agent: AgentType): React.CSSProperties {
 
 export function AgentDot({ agent }: { agent: Session["agent"] }): React.JSX.Element {
   return <span className="agent-dot" style={agentAccentStyle(agent)} aria-hidden />;
+}
+
+export type WorkflowRunTone = "running" | "waiting" | "blocked" | "passed" | "failed";
+
+export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
+  if (run.status === "completed") return "passed";
+  if (run.status === "waiting_for_session") return "waiting";
+  if (run.status === "blocked") return "blocked";
+  if (run.status === "failed" || run.status === "cancelled") return "failed";
+  return "running";
+}
+
+function workflowRunLabel(run: WorkflowRunSummary): string {
+  const tone = workflowRunTone(run);
+  if (tone === "passed") return "Approved";
+  if (tone === "waiting") return "Review changes";
+  if (tone === "blocked") return "Workflow blocked";
+  if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
+  return `Preview · R${run.round}`;
+}
+
+export function WorkflowChip({
+  run,
+  onOpen,
+}: {
+  run: WorkflowRunSummary | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!run) return null;
+  return (
+    <button
+      className={`workflow-chip workflow-${workflowRunTone(run)}`}
+      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen?.();
+      }}
+    >
+      <span aria-hidden>⌁</span>
+      {workflowRunLabel(run)}
+    </button>
+  );
+}
+
+export function WorkflowTileFlag({
+  run,
+  onOpen,
+}: {
+  run: WorkflowRunSummary | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!run) return null;
+  return (
+    <button
+      className={`tile-flag tf-workflow workflow-${workflowRunTone(run)}`}
+      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen?.();
+      }}
+    >
+      ⌁ {workflowRunLabel(run)}
+    </button>
+  );
+}
+
+export function WorkflowRailMark({
+  run,
+  onOpen,
+}: {
+  run: WorkflowRunSummary | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!run) return null;
+  return (
+    <span
+      className={`rail-workflow workflow-${workflowRunTone(run)}`}
+      title={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen?.();
+      }}
+    >
+      ⌁
+    </span>
+  );
 }
 
 /**

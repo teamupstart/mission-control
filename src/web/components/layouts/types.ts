@@ -2,6 +2,7 @@ import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 
 /**
  * What every layout gets from App, which stays the single owner of session state.
@@ -83,6 +84,10 @@ export interface SessionViewProps {
   foremanAllowlist?: string[];
   inputReviewBySession: ReadonlyMap<string, string>;
   pendingReviewIds: ReadonlySet<string>;
+  /** App-owned join from compact run SSE summaries to each live session. */
+  workflowRunBySession?: ReadonlyMap<string, WorkflowRunSummary>;
+  onOpenWorkflowRun?: (runId: string) => void;
+  onBindWorkflow?: (sessionId: string) => void;
 }
 
 /**
@@ -115,5 +120,8 @@ export function cardProps(p: SessionViewProps, s: Session) {
     foremanAllowlist: p.foremanAllowlist,
     inputReviewId: p.inputReviewBySession.get(s.id) ?? null,
     pendingReviewIds: p.pendingReviewIds,
+    workflowRun: p.workflowRunBySession?.get(s.id) ?? null,
+    onOpenWorkflowRun: p.onOpenWorkflowRun,
+    onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,
   };
 }

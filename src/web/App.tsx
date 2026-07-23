@@ -45,6 +45,10 @@ import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
 import { useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
 import { AppPageShell } from "./components/AppPageShell.tsx";
+import {
+  WorkflowBindingDialog,
+  type WorkflowBindingTarget,
+} from "./workflows/WorkflowBindingDialog.tsx";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -64,7 +68,17 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
 ];
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, personas, workflowSummaries, fleetCost, connected, hasSnapshot } = useEventStream();
+  const {
+    sessions,
+    reviews,
+    tasks,
+    personas,
+    workflowSummaries,
+    workflowRunSummaries: workflowRuns,
+    fleetCost,
+    connected,
+    hasSnapshot,
+  } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
   const { route, navigate } = useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
@@ -132,6 +146,7 @@ export function App(): React.JSX.Element {
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
+  const [workflowBindingTarget, setWorkflowBindingTarget] = useState<WorkflowBindingTarget | null>(null);
   // Bumped for a session each time it's reset. The compose boxes are uncontrolled
   // (their text is parked in the draft map, not React state), so clearing the map
   // alone leaves a box that's OPEN at reset still showing the old text - the same
@@ -340,8 +355,22 @@ export function App(): React.JSX.Element {
       { sessionId: resetSessionId, close: closeReset },
       { sessionId: filesSessionId, close: closeFiles },
       { sessionId: filePickerSessionId, close: closeFilePicker },
+      {
+        sessionId: workflowBindingTarget?.sessionId ?? null,
+        close: () => setWorkflowBindingTarget(null),
+      },
     ],
-    [diffSessionId, resetSessionId, filesSessionId, filePickerSessionId, closeDiff, closeReset, closeFiles, closeFilePicker],
+    [
+      diffSessionId,
+      resetSessionId,
+      filesSessionId,
+      filePickerSessionId,
+      workflowBindingTarget,
+      closeDiff,
+      closeReset,
+      closeFiles,
+      closeFilePicker,
+    ],
   );
 
   // Which sessions have a parked no-mistakes gate that actually needs you - a
@@ -351,6 +380,15 @@ export function App(): React.JSX.Element {
     () => new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id)),
     [sessions],
   );
+  const workflowRunBySession = useMemo(() => {
+    const bySession = new Map<string, (typeof workflowRuns)[number]>();
+    for (const run of workflowRuns) {
+      if (!run.sessionId) continue;
+      const current = bySession.get(run.sessionId);
+      if (!current || run.updatedAt > current.updatedAt) bySession.set(run.sessionId, run);
+    }
+    return bySession;
+  }, [workflowRuns]);
 
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -504,6 +542,9 @@ export function App(): React.JSX.Element {
     inputReviewBySession,
     pendingReviewIds,
     onEditTask: openTaskEditor,
+    workflowRunBySession,
+    onOpenWorkflowRun: (runId) => navigate({ page: "workflows", tab: "runs", runId }),
+    onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
   };
 
   /**
@@ -968,9 +1009,27 @@ export function App(): React.JSX.Element {
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
               workflowSummaries={workflowSummaries}
+              workflowRuns={workflowRuns}
+              selectedRunId={
+                route.page === "workflows" && route.tab === "runs"
+                  ? route.runId ?? null
+                  : null
+              }
               llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
+              onRun={(runId) => navigate({ page: "workflows", tab: "runs", runId })}
+              onOpenSession={(sessionId) => {
+                navigate({ page: "fleet" });
+                setSelectedId(sessionId);
+                if (layout === "board") setBoardOpen(true);
+              }}
+              onBindVersion={(version) => setWorkflowBindingTarget({
+                workflowVersionId: version.id,
+                workflowId: version.workflowId,
+                workflowVersion: version.version,
+                bindingDefaults: version.bindingDefaults,
+              })}
               onDirtyChange={setWorkflowDirty}
             />
           )}
@@ -1143,6 +1202,16 @@ export function App(): React.JSX.Element {
                   initialCategory={settingsCategory}
                   layout={layout}
                   onLayoutChange={setLayout}
+                />
+              )}
+
+              {workflowBindingTarget && (
+                <WorkflowBindingDialog
+                  target={workflowBindingTarget}
+                  sessions={sessions}
+                  workflows={workflowSummaries}
+                  onClose={() => setWorkflowBindingTarget(null)}
+                  onRun={(runId) => navigate({ page: "workflows", tab: "runs", runId })}
                 />
               )}
             </>

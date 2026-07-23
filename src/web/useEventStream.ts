@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FleetCost, ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
-import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 
 /**
@@ -17,6 +17,7 @@ export interface MissionState {
   tasks: Task[];
   personas: PersonaView[];
   workflowSummaries: WorkflowSummary[];
+  workflowRunSummaries: WorkflowRunSummary[];
   /**
    * Fleet spend and the subscription's rate limits, for the topbar strip. A single
    * value rather than a per-session field because that is the shape of the fact: the
@@ -44,6 +45,7 @@ export function useEventStream(): MissionState {
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
   const [workflowSummaries, setWorkflowSummaries] = useState<Map<string, WorkflowSummary>>(new Map());
+  const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -75,6 +77,7 @@ export function useEventStream(): MissionState {
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
           setWorkflowSummaries(new Map(msg.workflowSummaries.map((workflow) => [workflow.id, workflow])));
+          setWorkflowRuns(new Map(msg.workflowRunSummaries.map((run) => [run.id, run])));
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
           setFleetCost(msg.fleetCost);
@@ -135,6 +138,16 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "workflow_run_upsert":
+          setWorkflowRuns((prev) => new Map(prev).set(msg.run.id, msg.run));
+          break;
+        case "workflow_run_remove":
+          setWorkflowRuns((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
@@ -170,6 +183,7 @@ export function useEventStream(): MissionState {
     tasks: [...tasks.values()],
     personas: [...personas.values()],
     workflowSummaries: [...workflowSummaries.values()],
+    workflowRunSummaries: [...workflowRuns.values()],
     fleetCost,
     connected,
     hasSnapshot,

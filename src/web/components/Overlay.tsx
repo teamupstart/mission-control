@@ -49,6 +49,7 @@ export const OVERLAY_IDS = {
   digest: "digest",
   files: "files",
   filePicker: "file-picker",
+  workflowBinding: "workflow-binding",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -38,6 +38,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 selected={s.id === props.selectedId}
                 gateNeedsYou={props.gateAlerts.has(s.id)}
                 onSelect={() => props.onSelect(s.id)}
+                workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+                onOpenWorkflowRun={props.onOpenWorkflowRun}
               />
             ))}
           </div>

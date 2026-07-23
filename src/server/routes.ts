@@ -61,6 +61,14 @@ import {
   ValidateWorkflowSchema,
   PublishWorkflowSchema,
   ArchiveWorkflowSchema,
+  ArchiveWorkflowBindingSchema,
+  CancelWorkflowRunSchema,
+  CreateWorkflowBindingSchema,
+  ReattachWorkflowBindingSchema,
+  ResubmitWorkflowSchema,
+  RetryWorkflowRunSchema,
+  SubmitWorkflowSchema,
+  UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond, TaskDependencyInput } from "@shared/protocol.ts";
@@ -162,6 +170,7 @@ import type {
   WorkflowManager,
   WorkflowMutation,
   WorkflowPublishMutation,
+  WorkflowRuntimeMutation,
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
@@ -500,6 +509,115 @@ export function buildApp(
     return result.ok
       ? c.json({ workflow: result.workflow, summary: result.summary, version: result.version, idempotent: result.idempotent })
       : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+
+  // --- Published-version bindings and durable manual Preview runs ---
+  const workflowRuntimeFailure = (
+    c: Context,
+    result: Exclude<WorkflowRuntimeMutation<unknown>, { ok: true }>,
+  ) => {
+    const status =
+      result.reason === "not_found" ? 404
+      : result.reason === "session_unavailable" ? 404
+      : result.reason === "unsupported_mode" ? 422
+      : result.reason === "stale_capture" ? 409
+      : 409;
+    return c.json({
+      error: result.message,
+      code: `workflow_${result.reason}`,
+      current: result.current ?? null,
+    }, status);
+  };
+
+  app.get("/api/workflow-bindings", (c) => {
+    const manager = workflowManager();
+    return manager
+      ? c.json(manager.bindings())
+      : c.json({ error: "Workflow manager unavailable" }, 503);
+  });
+  app.post("/api/workflow-bindings", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, CreateWorkflowBindingSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.createBinding(parsed.data);
+    return result.ok ? c.json(result.value, 201) : workflowRuntimeFailure(c, result);
+  });
+  app.patch("/api/workflow-bindings/:id", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateWorkflowBindingSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.updateBinding(c.req.param("id"), parsed.data);
+    return result.ok ? c.json(result.value) : workflowRuntimeFailure(c, result);
+  });
+  app.delete("/api/workflow-bindings/:id", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveWorkflowBindingSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.archiveBinding(c.req.param("id"));
+    return result.ok ? c.json(result.value) : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-bindings/:id/submit", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SubmitWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.submit(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-bindings/:id/reattach", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ReattachWorkflowBindingSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.reattach(c.req.param("id"), parsed.data.sessionId);
+    return result.ok ? c.json(result.value) : workflowRuntimeFailure(c, result);
+  });
+  app.get("/api/workflow-runs", (c) => {
+    const manager = workflowManager();
+    return manager
+      ? c.json(manager.runs())
+      : c.json({ error: "Workflow manager unavailable" }, 503);
+  });
+  app.get("/api/workflow-runs/:id", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const detail = manager.run(c.req.param("id"));
+    return detail ? c.json(detail) : c.json({ error: "no such workflow run" }, 404);
+  });
+  app.post("/api/workflow-runs/:id/resubmit", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, ResubmitWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.resubmit(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/retry", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, RetryWorkflowRunSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.retry(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/cancel", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, CancelWorkflowRunSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.cancel(c.req.param("id"), parsed.data.requestId);
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
   });
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));

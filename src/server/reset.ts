@@ -70,6 +70,7 @@ export async function resetSession(
     );
     registry.clearObservedSessionEffort(session.id);
     registry.clearQueue(noteKeyFor(session));
+    registry.clearWorkflowState(noteKeyFor(session));
   }
 
   return { ...r, workIdentityReady };

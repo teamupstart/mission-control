@@ -174,6 +174,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       selected={s.id === props.selectedId}
                       gateNeedsYou={props.gateAlerts.has(s.id)}
                       onSelect={() => props.onSelect(s.id)}
+                      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+                      onOpenWorkflowRun={props.onOpenWorkflowRun}
                     />
                   ))
                 ) : (
@@ -189,6 +191,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       onDropped={() => setDraggingRepo(null)}
                       onDropError={setDropError}
                       onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
+                      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+                      onOpenWorkflowRun={props.onOpenWorkflowRun}
                     />
                   ))
                 )}

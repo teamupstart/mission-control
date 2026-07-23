@@ -274,6 +274,19 @@ test("computeSessionDiff reports untracked paths relative to the TOPLEVEL, not t
   );
 });
 
+test("computeSessionDiff marks omitted untracked files as truncated", async () => {
+  const repo = mkRepo();
+  for (let index = 0; index < 101; index++) {
+    writeFileSync(join(repo, `untracked-${String(index).padStart(3, "0")}.txt`), `${index}\n`);
+  }
+
+  const result = await computeSessionDiff(repo);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.truncated, true);
+  assert.equal(result.filesChanged, 100);
+});
+
 test("computeSessionDiff fails closed when the diff command itself fails", async () => {
   // The fail-open the evidence-first design exists to eliminate: `run` reports a
   // timeout or a crash as a non-zero code with whatever stdout was flushed, so an

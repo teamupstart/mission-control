@@ -12,6 +12,7 @@ import {
   WORKFLOW_BINDING_STATES,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RUN_STATUSES,
   WORKFLOW_SOURCE_PORTS,
@@ -1923,6 +1924,112 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson> = z.lazy(() =>
   ]),
 );
 
+const WorkflowVerdictTextSchema = z.string().trim().min(1);
+export const WorkflowEvidenceRefSchema = z.object({
+  kind: z.enum(["diff", "transcript", "standard", "goal", "decision"]),
+  quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
+  path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
+  line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+});
+
+export const WorkflowRequestedChangeSchema = z.object({
+  title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
+  evidence: z
+    .array(WorkflowEvidenceRefSchema)
+    .min(1)
+    .max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
+  path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
+  line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+});
+
+export const PersonaVerdictSchema = z
+  .discriminatedUnion("verdict", [
+    z.object({
+      verdict: z.literal("pass"),
+      summary: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+      approvalDetails: z.object({
+        reason: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
+        evidence: z.array(WorkflowEvidenceRefSchema).max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
+      }),
+      confidence: z.number().finite().min(0).max(1),
+    }),
+    z.object({
+      verdict: z.literal("fail"),
+      summary: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+      requestedChanges: z
+        .array(WorkflowRequestedChangeSchema)
+        .min(1)
+        .max(WORKFLOW_EXECUTION_LIMITS.verdictChanges),
+      confidence: z.number().finite().min(0).max(1),
+    }),
+  ])
+  .refine((value) => jsonAtMost(value, WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes), {
+    message: `Persona verdict exceeds ${WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes} UTF-8 bytes`,
+  });
+
+export const WorkflowHumanDecisionSchema = z.object({
+  decision: z.string().max(16_000),
+  rationale: z.string().max(16_000).nullable(),
+  source: z.object({
+    kind: z.enum(["transcript", "review", "foreman_episode"]),
+    id: z.string().min(1).max(500),
+  }),
+});
+
+export const WorkflowContextSnapshotSchema = z.object({
+  primaryGoal: z.object({
+    rawPrompt: z.string().max(16_000),
+    refined: z.string().max(16_000).nullable(),
+    sourceNoteKey: z.string().min(1).max(1_000),
+  }),
+  humanDecisions: z.array(WorkflowHumanDecisionSchema).max(200),
+  constraints: z.array(z.string().max(4_000)).max(100),
+  acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
+  priorPersonaFeedback: z.array(z.object({
+    personaName: z.string().max(WORKFLOW_LIMITS.personaName),
+    summary: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+    requestedChanges: z.array(z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary)).max(WORKFLOW_EXECUTION_LIMITS.verdictChanges),
+  })).max(WORKFLOW_LIMITS.graphNodes),
+  session: z.object({
+    agent: z.string().min(1).max(100),
+    name: z.string().max(500),
+    cwd: z.string().max(4_000).nullable(),
+    branch: z.string().max(1_000).nullable(),
+  }),
+  evidence: z.object({
+    headSha: z.string().max(100).nullable(),
+    diffFingerprint: z.string().min(1).max(200),
+    diff: z.string(),
+    diffTruncated: z.boolean(),
+    workingTreeDirty: z.boolean(),
+    workingTreeStatus: z.array(z.string().max(2_000)).max(500),
+    workingTreeStatusTruncated: z.boolean().default(false),
+    transcript: z.array(z.object({
+      role: z.enum(["user", "assistant"]),
+      content: z.string().max(48_000),
+      timestamp: z.number().int().nonnegative().optional(),
+    })).max(100),
+    transcriptAnchor: z.number().int().nonnegative().nullable(),
+    transcriptTruncated: z.boolean(),
+    standards: z.array(z.object({
+      path: z.string().max(4_000),
+      text: z.string(),
+      truncated: z.boolean(),
+      fingerprint: z.string().min(1).max(200),
+    })).max(200),
+    standardsTruncated: z.boolean(),
+  }),
+  compaction: z.object({
+    status: z.enum(["model", "fallback"]),
+    runner: z.enum(LLM_RUNNER_IDS).nullable(),
+    model: z.string().max(500).nullable(),
+    error: z.string().max(8_000).nullable(),
+  }),
+}).refine((value) => jsonAtMost(value, WORKFLOW_EXECUTION_LIMITS.contextJsonBytes), {
+  message: `Workflow context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
+});
+
 export const CreateWorkflowSchema = z.object({
   name: WorkflowNameSchema,
   description: WorkflowDescriptionSchema.optional().default(""),
@@ -1968,15 +2075,16 @@ export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
 export const CreateWorkflowBindingSchema = z.object({
   workflowVersionId: WorkflowIdSchema,
   sessionId: z.string().min(1).max(500),
-  triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).default("manual"),
-  deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).default("preview"),
+  triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).optional(),
+  deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).optional(),
   maxRepairRounds: z
     .number()
     .int()
     .min(WORKFLOW_LIMITS.repairRoundsMin)
     .max(WORKFLOW_LIMITS.repairRoundsMax)
-    .default(DEFAULT_WORKFLOW_BINDING_DEFAULTS.maxRepairRounds),
+    .optional(),
 });
+export type CreateWorkflowBinding = z.infer<typeof CreateWorkflowBindingSchema>;
 
 export const UpdateWorkflowBindingSchema = z
   .object({
@@ -1991,32 +2099,39 @@ export const UpdateWorkflowBindingSchema = z
     state: z.enum(WORKFLOW_BINDING_STATES).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, { message: "empty binding update" });
+export type UpdateWorkflowBinding = z.infer<typeof UpdateWorkflowBindingSchema>;
+
+export const ArchiveWorkflowBindingSchema = z.object({});
 
 export const ReattachWorkflowBindingSchema = z.object({
   sessionId: z.string().min(1).max(500),
 });
+export type ReattachWorkflowBinding = z.infer<typeof ReattachWorkflowBindingSchema>;
 
 export const SubmitWorkflowSchema = z.object({
   requestId: z.string().min(1).max(200),
 });
+export type SubmitWorkflow = z.infer<typeof SubmitWorkflowSchema>;
 export const ManualWorkflowSubmitSchema = SubmitWorkflowSchema;
 
 export const ResubmitWorkflowSchema = z.object({
   requestId: z.string().min(1).max(200),
   resubmitUnchanged: z.boolean().optional().default(false),
 });
+export type ResubmitWorkflow = z.infer<typeof ResubmitWorkflowSchema>;
 
 export const RetryWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
   nodeAttemptId: WorkflowIdSchema.optional(),
 });
+export type RetryWorkflowRun = z.infer<typeof RetryWorkflowRunSchema>;
 
 export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
 });
 
-// Exported closed schemas let Phase 1's durable row parsers reject unknown values before
-// later phases start transitioning them.
+// Exported closed schemas make durable row parsers reject unknown values before constructing
+// typed runtime records.
 export const WorkflowRunStatusSchema = z.enum(WORKFLOW_RUN_STATUSES);
 export const WorkflowSubmissionModeSchema = z.enum(WORKFLOW_SUBMISSION_MODES);
 export const WorkflowSubmissionStatusSchema = z.enum(WORKFLOW_SUBMISSION_STATUSES);

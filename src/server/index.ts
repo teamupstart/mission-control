@@ -63,6 +63,7 @@ const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 const workflows = new WorkflowManager(registry, personas.store);
+workflows.start();
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
@@ -106,7 +107,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   console.log(`[mission-control] listening on ${where}`);
 });
 
-function shutdown(): void {
+async function shutdown(): Promise<void> {
   stopPoller();
   stopAgentsShadow();
   stopNomistakes();
@@ -115,8 +116,6 @@ function shutdown(): void {
   stopRuntimeMeta();
   stopUsage();
   stopGoalRefiner();
-  away.stop();
-  stopHeadlessPruner();
   // Stopping the refiner only stops it STARTING runs; one already in flight is a detached
   // process that outlives us and would go on burning tokens for a card nobody is watching.
   // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it
@@ -126,12 +125,17 @@ function shutdown(): void {
   // spawn through whichever runner is configured, so a shutdown that only knew how to kill
   // `claude -p` would leave a second provider's children running - which is the shape of
   // leak `killLiveRuns` is required (not optional) on the interface to prevent.
+  // Kill before awaiting workflow workers, or a 120s Persona timeout becomes a 120s
+  // daemon shutdown.
   killLiveLlmRuns();
+  await workflows.stop();
+  away.stop();
+  stopHeadlessPruner();
   stopPoolReaper();
   stopSkillsReloader();
   stopTaskSources();
   server.close();
   process.exit(0);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());

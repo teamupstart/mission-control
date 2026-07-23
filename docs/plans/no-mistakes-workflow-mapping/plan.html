@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapping no-mistakes gates onto workflow Personas</title>
+<style>
+  :root {
+    --bg: #fafaf8; --fg: #1c1c1e; --muted: #6b6b70; --line: #e2e2df;
+    --card: #ffffff; --accent: #7c5cff; --accent-soft: #f0ecff;
+    --judge: #7c5cff; --judge-soft: #efeaff;
+    --doing: #c47f17; --doing-soft: #fdf3e2;
+    --det: #4a7ab5; --det-soft: #e9f1fa;
+    --session: #2e9e6b; --session-soft: #e6f6ee;
+    --warn: #b4544a; --warn-soft: #fbecea;
+    --code-bg: #f1f1ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --fg: #e8e8ea; --muted: #9a9aa2; --line: #2e2e34;
+      --card: #1f1f24; --accent: #a08aff; --accent-soft: #2a2440;
+      --judge: #a08aff; --judge-soft: #2a2440;
+      --doing: #e0a94e; --doing-soft: #3a2f1a;
+      --det: #7aa8d8; --det-soft: #1d2a3a;
+      --session: #55c48f; --session-soft: #1a3328;
+      --warn: #e08078; --warn-soft: #3a2220;
+      --code-bg: #26262c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 1.25rem; margin: 2.4em 0 0.6em; padding-top: 0.8em; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 1.8em 0 0.5em; }
+  p { margin: 0.7em 0; }
+  a { color: var(--accent); }
+  .status {
+    display: inline-block; margin: 4px 0 20px; padding: 3px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); font-size: 0.82rem; font-weight: 600;
+  }
+  .verdict {
+    background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 8px; padding: 14px 18px; margin: 18px 0;
+  }
+  .gap {
+    background: var(--warn-soft); border: 1px solid var(--line); border-left: 4px solid var(--warn);
+    border-radius: 8px; padding: 12px 18px; margin: 18px 0;
+  }
+  code {
+    background: var(--code-bg); border-radius: 4px; padding: 1px 5px;
+    font: 0.86em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .scroll { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  tbody tr:nth-child(odd) td { background: color-mix(in srgb, var(--card) 55%, transparent); }
+  figure { margin: 1.6em 0; }
+  figure .scroll { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+  svg text { font: 12.5px -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--fg); }
+  svg .small { font-size: 10.5px; fill: var(--muted); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .box { stroke-width: 1.4; rx: 7; }
+  svg .b-judge { fill: var(--judge-soft); stroke: var(--judge); }
+  svg .b-doing { fill: var(--doing-soft); stroke: var(--doing); }
+  svg .b-det { fill: var(--det-soft); stroke: var(--det); }
+  svg .b-session { fill: var(--session-soft); stroke: var(--session); }
+  svg .b-neutral { fill: var(--card); stroke: var(--muted); }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .arrow-fail { stroke: var(--warn); stroke-width: 1.4; fill: none; }
+  svg .arrow-dotted { stroke: var(--muted); stroke-width: 1.3; fill: none; stroke-dasharray: 4 4; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.82rem; color: var(--muted); margin: 6px 2px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 13px; height: 13px; border-radius: 3px; display: inline-block; border: 1.4px solid; }
+  ol.decisions li, ul li { margin: 0.35em 0; }
+  .persona-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 16px; margin: 10px 0;
+  }
+  .persona-card b { color: var(--judge); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mapping no-mistakes gates onto workflow Personas</h1>
+  <span class="status">Status: approved - decisions applied 2026-07-23</span>
+
+  <h2 id="question">The question under review</h2>
+  <p>Can each no-mistakes phase become part of a templated workflow - ideally a Persona - so a
+  published Mission Control workflow does effectively what no-mistakes does today? This plan
+  breaks down every no-mistakes gate from the source
+  (<a href="https://github.com/kunchenguid/no-mistakes">kunchenguid/no-mistakes</a>,
+  <code>internal/pipeline/steps/</code>), says what each one actually is, and maps it onto the
+  workflow feature (<code>docs/plans/workflow-builder/plan.md</code>, phases 1-3 landed).</p>
+
+  <div class="verdict">
+    <p><b>Verdict: the idea is sound, with one correction.</b> No-mistakes steps have two faces:
+    a <i>judging</i> face (produce findings, park a gate) and a <i>doing</i> face (fix code,
+    rebase, push, open the PR, chase CI). The judging faces translate cleanly into Personas -
+    that is exactly what a Persona is. The doing faces must NOT become Personas: Personas are
+    deliberately tool-less, fresh-context structured LLM calls ("Persona nodes that mutate code
+    or run shell commands" is an explicit first-release non-goal), and the workflow design
+    already has the right homes for the doing faces - the Session repair loop does the fixing,
+    and the Inspector final gate (phase 5) owns the post-PR tail. Trying to make Personas
+    rebase, run tests, or push would rebuild no-mistakes inside the engine minus the safety
+    machinery no-mistakes spends most of its code on (force-with-lease anchoring,
+    head-continuity guards, PR provenance).</p>
+  </div>
+
+  <div class="gap">
+    <p>The one genuine gap if full parity is wanted: <b>deterministic command gates</b> (a
+    configured <code>commands.test</code> / <code>commands.lint</code> exit-code check). No
+    current node kind runs a command; the graph vocabulary is exactly <code>session</code>,
+    <code>persona</code>, <code>all_pass</code>, <code>end</code>. That would be a new "check
+    node" kind - a plan-level extension, not a Persona. <b>Decided: not pursued.</b> CI
+    enforces these checks at the PR head and the Inspector final gate makes them binding.</p>
+  </div>
+
+  <h2 id="machinery">How a no-mistakes run works (the machinery around the steps)</h2>
+  <p>Nine fixed steps in order: <b>intent, rebase, review, test, document, lint, push, pr,
+  ci</b> (<code>types.AllSteps()</code>). The executor runs them serially in one worktree. A
+  step returns findings - each with <code>severity</code> (error/warning/info) and an
+  <code>action</code> classification:</p>
+  <ul>
+    <li><code>ask-user</code> - challenges the author's deliberate intent or product behavior;
+      only a human may resolve it.</li>
+    <li><code>auto-fix</code> - non-functional, safely fixable without discussing intent.</li>
+    <li><code>no-op</code> - informational.</li>
+  </ul>
+  <p>Blocking findings (error/warning) park the run at an <b>approval gate</b>. The driving
+  agent responds <code>approve</code> / <code>fix --findings &lt;ids&gt;</code> /
+  <code>skip</code>; a <code>fix</code> response re-executes the step in <i>fix mode</i> (a fix
+  prompt, then re-run of the check), producing a <code>no-mistakes(step): ...</code> commit and
+  a persisted <b>round</b>. Per-step auto-fix limits let some steps self-fix before gating
+  (review's limit defaults to 0, so review always parks). Round history and the user intent are
+  fed into every later prompt. Fix commits stay on the branch; a re-run re-validates current
+  state so resolved findings do not resurface.</p>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 880 250" width="880" height="250" role="img" aria-label="The no-mistakes pipeline: nine serial steps with a gate and fix loop driven by the driving agent">
+        <defs>
+          <marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="m1f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--warn)"/>
+          </marker>
+        </defs>
+        <!-- driving agent -->
+        <rect x="330" y="12" width="220" height="34" class="box b-neutral"/>
+        <text x="440" y="33" text-anchor="middle">driving agent (axi run / respond)</text>
+        <!-- gate loop arrows -->
+        <path d="M 440 46 L 440 92" class="arrow-fail" marker-end="url(#m1f)"/>
+        <text x="447" y="72" class="small">approve / fix / skip</text>
+        <path d="M 300 110 C 300 66 360 52 388 46" class="arrow-fail" marker-end="url(#m1f)"/>
+        <text x="212" y="66" class="small">gate: blocking findings park</text>
+        <!-- steps row 1 -->
+        <rect x="14"  y="92" width="84" height="36" class="box b-det"/><text x="56"  y="114" text-anchor="middle">intent</text>
+        <rect x="112" y="92" width="84" height="36" class="box b-det"/><text x="154" y="114" text-anchor="middle">rebase</text>
+        <rect x="210" y="92" width="84" height="36" class="box b-judge"/><text x="252" y="114" text-anchor="middle">review</text>
+        <rect x="308" y="92" width="84" height="36" class="box b-doing"/><text x="350" y="114" text-anchor="middle">test</text>
+        <rect x="406" y="92" width="92" height="36" class="box b-doing"/><text x="452" y="114" text-anchor="middle">document</text>
+        <rect x="512" y="92" width="76" height="36" class="box b-doing"/><text x="550" y="114" text-anchor="middle">lint</text>
+        <rect x="602" y="92" width="76" height="36" class="box b-det"/><text x="640" y="114" text-anchor="middle">push</text>
+        <rect x="692" y="92" width="66" height="36" class="box b-det"/><text x="725" y="114" text-anchor="middle">pr</text>
+        <rect x="772" y="92" width="94" height="36" class="box b-det"/><text x="819" y="114" text-anchor="middle">ci monitor</text>
+        <!-- arrows between steps -->
+        <path d="M 98 110 L 112 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 196 110 L 210 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 294 110 L 308 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 392 110 L 406 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 498 110 L 512 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 588 110 L 602 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 678 110 L 692 110" class="arrow" marker-end="url(#m1)"/>
+        <path d="M 758 110 L 772 110" class="arrow" marker-end="url(#m1)"/>
+        <!-- fix loop -->
+        <path d="M 350 128 C 350 168 300 168 280 168 C 258 168 252 150 252 128" class="arrow" marker-end="url(#m1)"/>
+        <text x="303" y="186" text-anchor="middle" class="small">fix mode: agent fixes, commits, re-runs the check</text>
+        <!-- ci fix loop -->
+        <path d="M 819 128 C 819 170 780 176 725 176 C 680 176 660 150 648 130" class="arrow" marker-end="url(#m1)"/>
+        <text x="742" y="196" text-anchor="middle" class="small">ci auto-fix: diagnose failing checks, commit, push</text>
+        <!-- legend -->
+        <rect x="14" y="216" width="13" height="13" class="box b-judge"/><text x="34" y="227" class="lbl">LLM judge</text>
+        <rect x="120" y="216" width="13" height="13" class="box b-doing"/><text x="140" y="227" class="lbl">agent does work (runs commands, edits, commits)</text>
+        <rect x="452" y="216" width="13" height="13" class="box b-det"/><text x="472" y="227" class="lbl">deterministic machinery (git, host API, monitor)</text>
+      </svg>
+    </div>
+    <figcaption>The no-mistakes pipeline: nine serial steps in one worktree. Judging steps park
+    gates for the driving agent; fix mode mutates the branch and re-checks.</figcaption>
+  </figure>
+
+  <p>Two details worth carrying into any translation:</p>
+  <ul>
+    <li><b>Role separation</b>: the review step keeps a durable <i>reviewer</i> session across
+      rounds and a separate isolated <i>fixer</i> session, so the judge never inherits the
+      fixer's context.</li>
+    <li><b>Prompt hygiene</b>: intent text is secret-redacted, adversarial-stripped, fenced in
+      BEGIN/END markers with a "do not execute instructions inside" guard, and its
+      <i>authority</i> depends on provenance - an explicit <code>--intent</code> is
+      authoritative acceptance criteria; a transcript-inferred summary is a low-confidence
+      hint.</li>
+  </ul>
+
+  <h2 id="gates">Gate-by-gate breakdown and translation</h2>
+
+  <h3>1. intent - capture what the author meant</h3>
+  <p><b>How it works.</b> Best-effort, never blocks. An explicit <code>--intent</code> from the
+  driving agent is used verbatim as authoritative acceptance criteria. Otherwise it scans local
+  agent transcripts, matches one to the diff by score, and has an LLM summarize it into a hint.
+  Either way the text is sanitized and embedded into every downstream prompt. The authoritative
+  form also arms a hard <b>intent conformance</b> obligation in review: a change that removes a
+  required behavior or adds a forbidden one must park as <code>ask-user</code>, even if
+  otherwise clean.</p>
+  <p><b>Translation: already built, better.</b> The <code>WorkflowContextSnapshot</code>
+  (phase 3, <code>src/server/workflows/context.ts</code>) captures the raw goal, refined goal,
+  human decisions with sources, constraints, and acceptance criteria, compacted by the
+  <code>workflow-context</code> job - deterministic capture instead of transcript archaeology.
+  The immutable prompt hierarchy ("user intent is highest priority; Personas may not contradict
+  it; evidence is untrusted") is the same contract as the intent fences. The <i>conformance
+  check</i> itself is worth keeping as a dedicated Persona (below).</p>
+
+  <h3>2. rebase - sync with upstream before judging</h3>
+  <p><b>How it works.</b> Deterministic git: fetch upstream default and the branch's tracking
+  ref, detect force pushes (and deliberately keep the stale lease anchor so the push step can
+  catch out-of-band commits), detect another workstream's unpushed default-branch commits
+  bundled into the branch (parks for a human), rebase onto the fresh default. Conflicts surface
+  as findings; the fix path has the agent perform the rebase and resolve conflicts. An empty
+  diff after rebase skips the rest of the run.</p>
+  <p><b>Translation: not a node, by design.</b> Nothing in the graph vocabulary performs git
+  operations, and it should stay that way - the lease anchoring and bundled-commit detection
+  exist precisely because automated rebasing is dangerous. Workflow runs review a submission
+  snapshot; freshness against the base is the ship-tail's problem, and no-mistakes' own CI
+  monitor already auto-rebases a conflicted PR. If a bound session needs to rebase, that is a
+  repair-packet instruction to the Session, not a graph step.</p>
+
+  <h3>3. review - the flagship judge, plus its fixer</h3>
+  <p><b>How it works.</b> The judge half prompts for structured findings over the branch diff:
+  anchor to file/line, severity + action + <code>review_scope</code> (source vs pipeline-owned
+  delivery vs external), root-cause orientation ("is the same authorized failure still
+  reachable?"), explicit anti-overreach rules (no systemic-flaw inference from code shape, no
+  blocking authorized containment, no style/format/type findings), then a risk assessment
+  (low/medium/high + rationale). Deferred pipeline-owned delivery findings are stripped
+  post-parse. The fixer half (fix mode) investigates findings, verifies legitimacy first,
+  prefers the smallest root-cause fix, must not revert the author's intentional code, applies
+  all fixes then one focused verification - never the full suite.</p>
+  <p><b>Translation: the cleanest split in the whole mapping.</b></p>
+  <ul>
+    <li>Judge half becomes a <b>Code Risk Reviewer Persona</b>. Findings map to
+      <code>PersonaVerdict.fail.requestedChanges</code>; risk rationale maps to
+      <code>approvalDetails.reason</code> on pass. The action taxonomy maps to run semantics:
+      <code>ask-user</code> is preview mode's human decision, <code>auto-fix</code> is live
+      delivery of the repair packet (phase 4), <code>no-op</code> is a pass with notes.</li>
+    <li>Fixer half becomes the <b>Session repair loop</b>, already the engine's only cycle. The
+      interactive session plays the fixer role; the deterministic repair-packet template
+      carries the findings back. The role separation no-mistakes builds with two agent
+      sessions, the workflow gets architecturally: Personas are fresh-context and cannot
+      inherit the fixer's context by construction.</li>
+    <li>One honest fidelity note: no-mistakes' reviewer <i>remembers its own prior rounds</i>
+      via a durable session; workflow Personas are deliberately cold ("warm/shared Persona
+      conversations" is a non-goal) and get <code>priorPersonaFeedback</code> in the context
+      packet instead. That is a re-design, arguably safer, not a loss of the loop.</li>
+  </ul>
+
+  <h3>4. test - a command gate plus an evidence auditor</h3>
+  <p><b>How it works.</b> Two layers. If <code>commands.test</code> is configured, run it; a
+  non-zero exit is a blocking, auto-fixable gate. Then, when no command exists or user intent
+  is present, an <i>evidence agent</i> runs: demonstrate the intent working end-to-end the way
+  an end user would experience it, prefer product-level artifacts (screenshots, GIFs, CLI
+  transcripts, API responses) written into an evidence directory (optionally in-repo so
+  artifacts render on the PR), never run the full suite (remote CI owns broad regression),
+  report <code>testing_summary</code> + <code>tested</code> + <code>artifacts</code>, and file
+  missing-evidence warnings as <code>ask-user</code>. The fix path reproduces the specific
+  failure and makes the smallest root-cause fix.</p>
+  <p><b>Translation: split three ways.</b></p>
+  <ul>
+    <li>The <b>command gate</b> has no home: no node kind runs a shell command. Decided: left
+      to CI, which the Inspector final gate enforces at the PR head; no check-node kind is
+      planned.</li>
+    <li>The <b>evidence audit</b> becomes a <b>Test Evidence Auditor Persona</b>: it judges
+      whether the submission's evidence demonstrates the stated intent end-to-end, and its fail
+      verdict demands the specific evidence the Session must produce (a screenshot for a UI
+      change, a CLI transcript for a flag). A Persona cannot <i>run</i> tests - so the burden
+      of producing evidence moves to the Session, and the Persona enforces it.</li>
+    <li>The <b>fixing</b> is again the Session repair loop.</li>
+  </ul>
+
+  <h3>5. document - a housekeeping editor with a policy</h3>
+  <p><b>How it works.</b> An agent pass governed by a placement policy (every fact has exactly
+  one authoritative owner doc; consolidate, delete, or pointer rather than synchronize copies;
+  no new doc surfaces; AGENTS.md discipline; comments own local intent only) and a scope
+  discipline (touch only what this change made stale). A trusted repo-specific policy from the
+  default branch may narrow but never weaken the rules. When no lint command is configured it
+  also absorbs the lint duty in the same pass, routing findings by category. It edits docs,
+  commits them itself, and reports only what it could not resolve - any remaining doc finding
+  parks; unparsable output fails safe to an ask-user gate.</p>
+  <p><b>Translation: judge to Persona, editor to Session.</b> A <b>Documentation Steward
+  Persona</b> carries the placement policy and scope discipline as guidance and fails a
+  submission whose diff made facts stale without updating their owner docs - listing each stale
+  fact and its owner. The <i>editing</i> half is a repair-packet instruction; the Session
+  updates the docs and resubmits. The "one combined pass" cost optimization does not carry
+  over meaningfully: it existed because cold agent invocations were expensive in a serial
+  pipeline, and concurrent tool-less Personas have a different cost shape.</p>
+
+  <h3>6. lint - deterministic when configured, weak as a judge</h3>
+  <p><b>How it works.</b> With <code>commands.lint</code> configured: run it, non-zero exit
+  gates (auto-fixable). Without: consume the combined document+lint result, or run an agent
+  pass that discovers the linters, applies safe fixes itself, and reports only what remains.</p>
+  <p><b>Translation: the weakest Persona fit - recommend leaving it out.</b> A fresh-context,
+  tool-less judge cannot run a linter; all it could do is eyeball the diff for style drift,
+  which is exactly the "do NOT report styling/formatting/linting" territory the review prompt
+  excludes for good reason. Lint belongs to deterministic tooling: CI (enforced at the
+  Inspector gate) or the session's own hooks. A Lint Persona was offered as an option and
+  <b>not adopted</b>.</p>
+
+  <h3>7. push - pure delivery machinery</h3>
+  <p><b>How it works.</b> Run the format command, stage in-repo evidence, commit any leftover
+  agent changes, then force-push with a lease explicitly anchored to the last <i>observed</i>
+  remote head - so a push that would clobber an out-of-band commit fails loudly - and verify
+  via <code>ls-remote</code> that the remote equals the pushed head. A head-continuity guard
+  aborts the run if the worktree HEAD is no longer a descendant of the head the pipeline
+  recorded (a sibling worktree clobber really shipped an unreviewed tree once; the guard exists
+  because of it).</p>
+  <p><b>Translation: not a node, emphatically.</b> This is the code that makes "no mistakes"
+  true at the git layer, and the workflow design keeps the engine out of git entirely
+  ("workflow code never calls GitHub"; the Session or no-mistakes pushes). The Inspector final
+  gate consumes the <i>result</i> - an adopted PR head - rather than performing the push.</p>
+
+  <h3>8. pr - drafting plus host API</h3>
+  <p><b>How it works.</b> An agent drafts a conventional-commit title (with a real, coarse
+  scope verified against the codebase) and a "What Changed" body; deterministic sections - risk
+  line, testing summary with evidence artifacts, per-step pipeline rounds - are assembled from
+  the run's own DB and appended within a body budget. Creates or updates the PR; falls back to
+  deterministic content if the agent fails; skipped on the default branch.</p>
+  <p><b>Translation: stays with the existing wrap-up paths.</b> The workflow-builder plan
+  already resolves this: a run whose final gate needs a PR shows <code>awaiting_pr</code> and
+  offers the existing <code>/no-mistakes</code> or direct PR wrap-up action. Note the
+  provenance rule this preserves: only <code>prCreated</code> and no-mistakes' own
+  <code>pr:</code> line prove authorship, and only those reach <code>adoptPr</code> - a
+  workflow node opening PRs would need to re-earn that trust for nothing.</p>
+
+  <h3>9. ci - a monitor with a bounded fixer</h3>
+  <p><b>How it works.</b> Polls the PR's checks with a startup grace period; the idle timeout
+  re-arms whenever the base branch advances; failing checks or a merge conflict trigger an
+  agent fix armed with the failing check logs (bounded), under smallest-root-cause rules,
+  followed by commit and push; attempts are bounded and repeated failures gate. Returns
+  <code>checks-passed</code> the moment checks are green (the human merges); keeps monitoring
+  until merged/closed/timeout, and a gate reconciler clears a stale parked gate when the PR
+  merges or closes externally.</p>
+  <p><b>Translation: the Inspector final gate (phase 5), as planned.</b> The gate waits for an
+  <i>adopted</i> PR, requires the reviewed head to be current, passes on zero open findings,
+  and routes findings back to the Session under one of two published policies
+  (<code>restart_workflow</code> - rerun every Persona after repair - or
+  <code>inspector_only</code> - require a new pushed head). That is the CI step's
+  park-repair-recheck loop, transplanted onto the subsystem that already owns PR polling. The
+  CI <i>auto-fixer</i> becomes, once more, the Session repairing on delivered findings.
+  Nothing new to build beyond phase 5 itself.</p>
+
+  <h2 id="mapping">The mapping at a glance</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>no-mistakes step</th><th>Shape</th><th>Workflow home</th><th>Supported today?</th></tr></thead>
+      <tbody>
+        <tr><td>intent</td><td>Deterministic capture + LLM summary</td><td><code>WorkflowContextSnapshot</code> + prompt hierarchy; conformance survives as a Persona</td><td>Yes (phase 3)</td></tr>
+        <tr><td>rebase</td><td>Git machinery + agent conflict fixer</td><td>Outside the graph; repair-packet instruction if ever needed</td><td>Not a node, by design</td></tr>
+        <tr><td>review (judge)</td><td>LLM judge, findings + risk</td><td><b>Code Risk Reviewer Persona</b></td><td>Yes</td></tr>
+        <tr><td>review (fixer)</td><td>Pipeline-owned fix agent</td><td>Session repair loop (preview now; live in phase 4)</td><td>Preview yes; live is phase 4</td></tr>
+        <tr><td>test (command)</td><td>Deterministic exit-code gate</td><td>CI via the Inspector gate (adopted; no check node)</td><td>No</td></tr>
+        <tr><td>test (evidence)</td><td>LLM evidence gatherer</td><td><b>Test Evidence Auditor Persona</b> (judges; Session produces)</td><td>Yes</td></tr>
+        <tr><td>document</td><td>Agent editor under policy</td><td><b>Documentation Steward Persona</b> judges; Session edits</td><td>Yes</td></tr>
+        <tr><td>lint</td><td>Command gate / agent fixer</td><td>Deterministic tooling or CI; Persona fit is poor</td><td>No; Lint Persona not adopted</td></tr>
+        <tr><td>push</td><td>Git delivery machinery</td><td>Session / no-mistakes wrap-up; never the engine</td><td>Not a node, by design</td></tr>
+        <tr><td>pr</td><td>Agent drafting + host API</td><td><code>awaiting_pr</code> + existing <code>/no-mistakes</code> / PR wrap-up action</td><td>As planned (phase 5)</td></tr>
+        <tr><td>ci</td><td>Monitor + bounded fixer</td><td><b>Inspector final gate</b> + findings policies</td><td>Phase 5 (planned)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Gate-semantics dictionary, for completeness:</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>no-mistakes concept</th><th>Workflow concept</th></tr></thead>
+      <tbody>
+        <tr><td>finding <code>action: ask-user</code></td><td>Preview delivery / human decision on the run</td></tr>
+        <tr><td>finding <code>action: auto-fix</code></td><td>Live delivery of the repair packet (phase 4, allowlisted)</td></tr>
+        <tr><td>finding <code>action: no-op</code> / info</td><td>Pass verdict notes (<code>approvalDetails</code>)</td></tr>
+        <tr><td>blocking findings park a gate</td><td>Persona <code>fail</code> closes the round, returns to Session</td></tr>
+        <tr><td>fix round + <code>no-mistakes(step):</code> commit</td><td>Session repair + resubmission (new evidence fingerprint)</td></tr>
+        <tr><td>round history in prompts</td><td><code>priorPersonaFeedback</code> in the context snapshot</td></tr>
+        <tr><td>per-step auto-fix limits / rerun</td><td>Repair round cap (default 5, configurable 1-20)</td></tr>
+        <tr><td>durable reviewer session</td><td>Deliberately absent (fresh-context Personas + feedback in packet)</td></tr>
+        <tr><td><code>checks-passed</code> outcome</td><td>Persona graph success, then Inspector gate awaiting / pass</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="personas">Adopted persona set</h2>
+  <p>Four Personas, authored as seed <code>.md</code> files shipped in-repo under
+  <code>docs/personas/</code> and importable from the Personas tab (the operator imports and
+  owns their copies; SQLite stays canonical). They are distilled from the no-mistakes
+  prompts - the prompts are the tested asset here; the wording carries measured lessons, like
+  the anti-overreach rules and the full-suite prohibitions:</p>
+
+  <div class="persona-card"><b>1. Intent Conformance Judge</b> (from
+    <code>intent_prompt.go</code>): the acceptance-criteria check as a closed classification -
+    fail only when the diff removes a source-verifiable REQUIRED behavior or adds a FORBIDDEN
+    one, quoting the criterion and the contradicting hunk; never expand scope; delivery
+    outcomes are out of scope.</div>
+  <div class="persona-card"><b>2. Code Risk Reviewer</b> (from <code>review.go</code>):
+    findings anchored to file/line; root-cause reachability analysis for claimed durable
+    fixes; no systemic-flaw inference from shape; no blocking of authorized containment; no
+    style/format/type findings; concise, substantiated, full-pass enumeration.</div>
+  <div class="persona-card"><b>3. Test Evidence Auditor</b> (from <code>test.go</code>): does
+    the submission's evidence demonstrate the intent end-to-end as a user would experience it?
+    Product-level artifacts required for UI-facing changes; unit tests passing is not
+    sufficient by itself; fail verdicts name the exact missing artifact the Session must
+    produce.</div>
+  <div class="persona-card"><b>4. Documentation Steward</b> (from <code>document.go</code>):
+    the placement policy and scope discipline as judging criteria - each fact the change
+    altered has one owner doc; is the owner updated, are duplicates removed or pointered; no
+    new surfaces; report only real staleness, in the changed area.</div>
+
+  <p>A fifth, <b>Lint/Housekeeping</b>, was considered and not adopted (see step 6).</p>
+
+  <h3>The example workflow</h3>
+  <p>No-mistakes runs serially because every step may mutate the one shared worktree. Personas
+  are read-only over one immutable snapshot, so the judges parallelize - the serial pipeline
+  becomes a short fan-out:</p>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 880 300" width="880" height="300" role="img" aria-label="The translated workflow: Session submits to Intent Conformance, which fans out to three reviewer Personas, joined by all-pass, then Approved, with an optional Inspector final gate; failures return to Session">
+        <defs>
+          <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="m2f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--warn)"/>
+          </marker>
+        </defs>
+        <!-- Session -->
+        <rect x="14" y="112" width="92" height="40" class="box b-session"/>
+        <text x="60" y="136" text-anchor="middle">Session</text>
+        <!-- Intent Conformance -->
+        <rect x="150" y="112" width="132" height="40" class="box b-judge"/>
+        <text x="216" y="130" text-anchor="middle">Intent</text>
+        <text x="216" y="145" text-anchor="middle">Conformance</text>
+        <path d="M 106 132 L 150 132" class="arrow" marker-end="url(#m2)"/>
+        <text x="128" y="124" text-anchor="middle" class="small">submitted</text>
+        <!-- fan-out personas -->
+        <rect x="336" y="36" width="140" height="40" class="box b-judge"/>
+        <text x="406" y="60" text-anchor="middle">Code Risk Reviewer</text>
+        <rect x="336" y="112" width="140" height="40" class="box b-judge"/>
+        <text x="406" y="130" text-anchor="middle">Test Evidence</text>
+        <text x="406" y="145" text-anchor="middle">Auditor</text>
+        <rect x="336" y="188" width="140" height="40" class="box b-judge"/>
+        <text x="406" y="206" text-anchor="middle">Documentation</text>
+        <text x="406" y="221" text-anchor="middle">Steward</text>
+        <path d="M 282 124 C 310 110 316 70 336 58" class="arrow" marker-end="url(#m2)"/>
+        <path d="M 282 132 L 336 132" class="arrow" marker-end="url(#m2)"/>
+        <path d="M 282 140 C 310 154 316 194 336 206" class="arrow" marker-end="url(#m2)"/>
+        <text x="308" y="98" class="small">pass</text>
+        <!-- join -->
+        <rect x="524" y="112" width="104" height="40" class="box b-neutral"/>
+        <text x="576" y="136" text-anchor="middle">All-pass Join</text>
+        <path d="M 476 58 C 500 66 508 108 524 122" class="arrow" marker-end="url(#m2)"/>
+        <path d="M 476 132 L 524 132" class="arrow" marker-end="url(#m2)"/>
+        <path d="M 476 206 C 500 198 508 156 524 142" class="arrow" marker-end="url(#m2)"/>
+        <!-- approved -->
+        <rect x="672" y="112" width="96" height="40" class="box b-session"/>
+        <text x="720" y="136" text-anchor="middle">Approved</text>
+        <path d="M 628 132 L 672 132" class="arrow" marker-end="url(#m2)"/>
+        <text x="650" y="124" text-anchor="middle" class="small">pass</text>
+        <!-- failure returns -->
+        <path d="M 216 152 C 216 268 90 268 62 262 C 60 260 60 200 60 152" class="arrow-fail" marker-end="url(#m2f)"/>
+        <path d="M 576 152 C 576 282 120 286 62 268 C 58 266 60 210 60 152" class="arrow-fail" marker-end="url(#m2f)"/>
+        <text x="316" y="284" text-anchor="middle" class="small">fail: one combined repair packet returns for changes</text>
+        <!-- inspector tail -->
+        <rect x="672" y="24" width="196" height="40" class="box b-det"/>
+        <text x="770" y="42" text-anchor="middle">Inspector final gate</text>
+        <text x="770" y="57" text-anchor="middle" class="small">awaits adopted PR head</text>
+        <path d="M 720 112 L 748 64" class="arrow-dotted" marker-end="url(#m2)"/>
+        <path d="M 672 52 C 400 6 120 40 66 112" class="arrow-dotted" marker-end="url(#m2)"/>
+        <text x="330" y="18" text-anchor="middle" class="small">findings: repair, then restart_workflow reruns every Persona</text>
+      </svg>
+    </div>
+    <figcaption>The translated workflow. Intent Conformance runs first as a cheap gate; the
+    three reviewers fan out behind it; the Join aggregates one combined repair packet; the
+    Inspector final gate with restart_workflow reproduces no-mistakes' "fix commits re-validate
+    the whole branch" discipline.</figcaption>
+  </figure>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--judge-soft);border-color:var(--judge)"></span> Persona (tool-less judge)</span>
+    <span><span class="sw" style="background:var(--session-soft);border-color:var(--session)"></span> Session / terminal outcome</span>
+    <span><span class="sw" style="background:var(--det-soft);border-color:var(--det)"></span> Inspector (existing subsystem)</span>
+    <span><span class="sw" style="background:var(--card);border-color:var(--muted)"></span> Join</span>
+  </div>
+
+  <h2 id="nongoals">What this does not reproduce, on purpose</h2>
+  <ul>
+    <li><b>Pipeline-owned fix commits.</b> No-mistakes commits its own fixes
+      (<code>no-mistakes(review): ...</code>); the workflow's fixer is the bound session, and
+      its work is ordinary session commits. The audit trail moves from git history into the
+      run's submissions/attempts/receipts ledger.</li>
+    <li><b>The delivery tail as a supervised sequence.</b> push, pr, ci with auto-fix stays
+      with no-mistakes (or the session's own wrap-up); the workflow verifies the
+      <i>outcome</i> through Inspector rather than performing delivery. Running both is
+      coherent: personas gate the work, no-mistakes ships it, Inspector gates the shipped
+      head.</li>
+    <li><b>Deterministic command gates</b> - the adopted decision leaves them to CI and the
+      Inspector final gate.</li>
+  </ul>
+
+  <h2 id="decisions">Adopted decisions</h2>
+  <p>Submitted through the Mission Control dashboard review on 2026-07-23:</p>
+  <ol class="decisions">
+    <li><b>Persona set</b>: author all four - Intent Conformance Judge, Code Risk Reviewer,
+      Test Evidence Auditor, Documentation Steward. The Lint/Housekeeping option was not
+      adopted.</li>
+    <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
+      them at the PR head; the Inspector final gate makes them binding. No check-node kind is
+      planned.</li>
+    <li><b>Ship tail</b>: as planned - graph success shows <code>awaiting_pr</code> offering
+      the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
+      delivery nodes.</li>
+    <li><b>Persona texts</b>: seed <code>.md</code> files shipped in-repo
+      (<code>docs/personas/</code>), importable from the Personas tab.</li>
+    <li><b>Follow-up</b>: create a phased implementation plan with dependency-linked
+      tasks.</li>
+  </ol>
+</main>
+</body>
+</html>

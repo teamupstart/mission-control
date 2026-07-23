@@ -3229,6 +3229,7 @@ export class Registry extends EventEmitter {
   ): Promise<Session | null> {
     const existing = this.firstSessionAtCwd(cwd);
     if (existing && ready(existing)) return Promise.resolve(existing);
+    const watchedId = existing?.id ?? null;
     return new Promise<Session | null>((resolve) => {
       const timer = unref(
         setTimeout(() => {
@@ -3239,8 +3240,17 @@ export class Registry extends EventEmitter {
       const unsub = this.subscribe((e) => {
         if (
           e.type === "session_upsert" &&
+          e.session.id === watchedId &&
+          e.session.state === "exited"
+        ) {
+          clearTimeout(timer);
+          unsub();
+          resolve(null);
+          return;
+        }
+        if (
+          e.type === "session_upsert" &&
           e.session.cwd === cwd &&
-          e.session.state !== "exited" &&
           ready(e.session)
         ) {
           clearTimeout(timer);

@@ -122,14 +122,17 @@ export class Dispatcher {
 
       // Set the mode BEFORE the first prompt, so the task runs in it from the start -
       // see `applyAutoMode`.
-      await this.applyAutoMode(session, task.agent);
+      await this.applyAutoMode(this.requireLiveSession(session.id), task.agent);
       if (await this.abortIfSettled(taskId)) return;
 
-      await this.deliverIntent(session, task.intent, wt.path, instrumented);
+      // Mode selection takes terminal I/O and can race the process exiting. Re-read at
+      // the actual send boundary so a lingered session cannot type into its dead pane.
+      const deliverySession = this.requireLiveSession(session.id);
+      await this.deliverIntent(deliverySession, task.intent, wt.path, instrumented);
 
       if (await this.abortIfSettled(taskId)) return;
-      this.patch(taskId, { status: "running", sessionId: session.id });
-      this.registry.bindTaskToWorkEpisode(taskId, session.id);
+      this.patch(taskId, { status: "running", sessionId: deliverySession.id });
+      this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
     } catch (err) {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
@@ -205,9 +208,18 @@ export class Dispatcher {
     // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
     // been filled in since. Typing needs the freshest pane we have.
     return {
-      session: this.registry.getSession(discovered.id) ?? discovered,
+      session: this.requireLiveSession(discovered.id),
       instrumented: false,
     };
+  }
+
+  /** Reject a discovery snapshot that the registry is retaining only for exit visibility. */
+  private requireLiveSession(sessionId: string): Session {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      throw new Error("agent session exited before the initial prompt could be sent");
+    }
+    return session;
   }
 
   /**

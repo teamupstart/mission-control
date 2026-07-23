@@ -114,6 +114,23 @@ test("a null from waitForReadySessionAtCwd means no evidence, not 'not ready'", 
   assert.equal(registry.getSession("hookless-1")?.state !== "exited", true, "it is alive and well");
 });
 
+test("waitForReadySessionAtCwd stops waiting when the discovered process exits", async () => {
+  // The registry deliberately lingers exited sessions so the dashboard can show the
+  // transition. That retained snapshot still carries its old pane id, but it is not a
+  // dispatch target. The readiness wait must surface the exit instead of spending the
+  // full hook timeout and handing that stale pane back to the dispatcher.
+  const registry = new Registry();
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "exited-1" })]);
+
+  const startedAt = Date.now();
+  const ready = registry.waitForReadySessionAtCwd(CWD, 5000);
+  registry.applyDiscovery([]);
+
+  assert.equal(await ready, null);
+  assert.ok(Date.now() - startedAt < 1000, "an observed exit should end the readiness wait");
+  assert.equal(registry.getSession("exited-1")?.state, "exited", "the lingered snapshot remains visible");
+});
+
 test("waitForPromptAcceptedAtCwd resolves true on the working transition", async () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "accept-1" })]);

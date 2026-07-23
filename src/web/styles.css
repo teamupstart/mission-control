@@ -1339,9 +1339,9 @@ body {
   transform: rotate(180deg);
 }
 
-/* The bounded scroll region. This is what keeps the card's height a constant:
-   three fixes and forty cost the same, and an opened fix expands in here rather
-   than pushing the footer down. */
+/* The card's bounded scroll region: three fixes and forty cost the same, and an
+   opened fix expands in here rather than pushing the footer down. Detail views
+   override this cap responsively near their layout rules. */
 .nm-scrollwrap {
   position: relative;
 }

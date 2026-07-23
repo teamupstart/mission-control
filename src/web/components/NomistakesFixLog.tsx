@@ -12,8 +12,9 @@ import { relativeTime } from "../lib/format.ts";
  * reset destroys the commits it's derived from.
  *
  * Collapsed to a single rollup row by default. Open, the list is a bounded scroll
- * region: the card's height is a constant whether the branch carries three fixes
- * or forty, and opening one fix expands INSIDE the scroller rather than pushing
+ * region: grid cards keep a constant height, while Console and Board detail views
+ * give the scroller a viewport-responsive cap without consuming the transcript's
+ * minimum height. Opening one fix expands INSIDE that scroller rather than pushing
  * the footer down. Detail is fetched per fix on first open (a 22-finding fix runs
  * ~20KB of description text, which has no business on every card).
  */

@@ -269,22 +269,34 @@ async function paneWriteBlock(
  * presses named keys, and which convention those keys are rendered in - tmux's `BTab`,
  * wezterm's `\x1b[Z` - is the adapter's business and never this file's.
  */
-async function writeText(pane: BoundPane, text: string, assertBeforeWrite?: () => boolean): Promise<ActionResult> {
+async function writeText(
+  pane: BoundPane,
+  text: string,
+  assertBeforeWrite?: () => boolean,
+  beforeWrite?: PromptWriteGuard,
+): Promise<ActionResult> {
   if (!pane.write) return { ok: false, error: cannotType(pane) };
   const blocked = await paneWriteBlock(pane);
   if (blocked) return blocked;
   if (assertBeforeWrite && !assertBeforeWrite()) return { ok: false, error: "the session changed before its effort could be updated" };
+  const refused = beforeWrite?.();
+  if (refused) return { ok: false, error: refused };
   return fromTerminal(await pane.write.text(text));
 }
+
+export type PromptWriteGuard = () => string | null;
 
 async function sendKeys(
   pane: BoundPane,
   keys: readonly Key[],
   describe?: DescribeMode,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   if (!pane.write) return { ok: false, error: cannotType(pane) };
   const blocked = await paneWriteBlock(pane, describe);
   if (blocked) return blocked;
+  const refused = beforeWrite?.();
+  if (refused) return { ok: false, error: refused };
   return fromTerminal(await pane.write.keys(keys));
 }
 
@@ -300,8 +312,9 @@ export async function sendText(
   text: string,
   submit: boolean,
   deps: PaneDeps = defaultPaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
-  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit, deps));
+  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit, deps, beforeWrite));
 }
 
 /**
@@ -596,15 +609,16 @@ async function sendTextLocked(
   text: string,
   submit: boolean,
   deps: PaneDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<ActionResult> {
   const pane = deps.pane(session);
   if (!pane) return { ok: false, error: NO_HANDLE };
-  const typed = await writeText(pane, text);
+  const typed = await writeText(pane, text, undefined, beforeWrite);
   if (!typed.ok || !submit) return typed;
   // Re-probed rather than covered by the check above, exactly as the two `send-keys` calls
   // this replaced were: the mode can be entered between them, and the Enter is the half
   // that commits.
-  return sendKeys(pane, ["enter"]);
+  return sendKeys(pane, ["enter"], undefined, beforeWrite);
 }
 
 /**
@@ -870,6 +884,7 @@ export async function injectPrompt(
   session: Session,
   text: string,
   deps: InjectDeps = defaultInjectDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<InjectResult> {
   // A refusal here is `pasted: false`, and that is the contract doing its job rather
   // than a detail: the lock turns a would-be write away BEFORE any byte reaches the
@@ -878,7 +893,7 @@ export async function injectPrompt(
   return withPaneLock<InjectResult>(
     session,
     () => undelivered({ ok: false, error: PANE_BUSY }),
-    () => injectPromptLocked(session, text, deps),
+    () => injectPromptLocked(session, text, deps, beforeWrite),
   );
 }
 
@@ -886,6 +901,7 @@ async function injectPromptLocked(
   session: Session,
   text: string,
   deps: InjectDeps,
+  beforeWrite?: PromptWriteGuard,
 ): Promise<InjectResult> {
   // How this agent takes a turn. Read once, up front, rather than branched on per step:
   // the delivery below is generic over harnesses and must never name one.
@@ -913,6 +929,8 @@ async function injectPromptLocked(
   const blocked = await paneWriteBlock(pane);
   if (blocked) return undelivered(blocked);
 
+  const resourceBlock = beforeWrite?.();
+  if (resourceBlock) return undelivered({ ok: false, error: resourceBlock });
   const pasted = await paste(text);
   if (!pasted.ok) {
     // The one place `TerminalResult.outcomeUnknown` decides something, and the reason the
@@ -936,7 +954,12 @@ async function injectPromptLocked(
   // mode a person can actually clear.
   const submitted = await awaitPasteSubmitted(
     session,
-    () => sendKeys(pane, ["enter"], inModeAfterPasteError),
+    () => sendKeys(
+      pane,
+      ["enter"],
+      inModeAfterPasteError,
+      beforeWrite,
+    ),
     pastePlaceholder,
     wasPending,
     deps,

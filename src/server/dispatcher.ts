@@ -272,7 +272,12 @@ export class Dispatcher {
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
         : null;
 
-      const sent = await injectPrompt(session, intent);
+      const sent = await injectPrompt(
+        session,
+        intent,
+        undefined,
+        () => this.registry.promptResourceBlockerForSession(session.id),
+      );
       if (!sent.ok) {
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
       }

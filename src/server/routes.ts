@@ -662,7 +662,13 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await sendText(session, parsed.data.text, parsed.data.submit);
+    const r = await sendText(
+      session,
+      parsed.data.text,
+      parsed.data.submit,
+      undefined,
+      () => registry.promptResourceBlockerForSession(session.id),
+    );
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -741,7 +747,12 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
-    const r = await injectPrompt(session, parsed.data.text);
+    const r = await injectPrompt(
+      session,
+      parsed.data.text,
+      undefined,
+      () => registry.promptResourceBlockerForSession(session.id),
+    );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);

@@ -3050,16 +3050,27 @@ export class Registry extends EventEmitter {
     return [...this.tasks.values()];
   }
 
-  taskResourceOwnerForSession(sessionId: string): Task | undefined {
+  taskResourceOwnerForSession(
+    sessionId: string,
+    status?: Task["status"],
+  ): Task | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     const tmuxSession = muxHandle(session)?.session ?? null;
     return this.listTasks().find((task) =>
+      (status === undefined || task.status === status) &&
       (Boolean(task.worktreePath) || Boolean(task.tmuxSession)) &&
       (task.sessionId === sessionId ||
         (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
         (Boolean(tmuxSession) && task.tmuxSession === tmuxSession))
     );
+  }
+
+  promptResourceBlockerForSession(sessionId: string): string | null {
+    const owner = this.taskResourceOwnerForSession(sessionId, "cancelled");
+    return owner
+      ? `this session still holds resources for ${owner.title} - clean up that cancelled task before sending new work`
+      : null;
   }
 
   /** Persist + broadcast a task, and refresh any session bound to it. */

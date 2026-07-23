@@ -796,7 +796,12 @@ export class TaskManager {
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
-    const r = await inject(this.registry.getSession(s.id) ?? s, ready.intent);
+    const r = await inject(
+      this.registry.getSession(s.id) ?? s,
+      ready.intent,
+      undefined,
+      () => this.registry.promptResourceBlockerForSession(s.id),
+    );
     if (!r.ok) {
       return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
     }

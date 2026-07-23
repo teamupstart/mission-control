@@ -1,4 +1,13 @@
-import { cloneElement, useCallback, useId, useState, type ReactElement } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useCallback,
+  useId,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
 /**
@@ -21,8 +30,8 @@ import { createPortal } from "react-dom";
  * below). It flips below the trigger when there isn't room above, and slides horizontally
  * to stay on screen.
  *
- * The label is ALSO rendered, always, into a visually-hidden sibling that the trigger
- * points `aria-describedby` at. Two reasons, and both are things `title` did for free:
+ * The label is ALSO rendered, always, into a visually-hidden body-level portal that the
+ * trigger points `aria-describedby` at. Two reasons, and both are things `title` did for free:
  * a description that exists only while a pointer happens to be over the element is one
  * a screen reader can never reach, and - because this codebase renders components with
  * `renderToStaticMarkup` and has no jsdom - a label that appears only on hover cannot be
@@ -61,6 +70,21 @@ function isDisabled(props: Record<string, unknown>): boolean {
   return props.disabled === true;
 }
 
+function mergeDescription(props: Record<string, unknown>, id: string): string {
+  return [props["aria-describedby"], id].filter(Boolean).join(" ");
+}
+
+function describeLabelControls(children: ReactNode, id: string): ReactNode {
+  return Children.map(children, (child) => {
+    if (!isValidElement(child) || typeof child.type !== "string") return child;
+    if (child.type !== "input" && child.type !== "select" && child.type !== "button") return child;
+    const props = child.props as Record<string, unknown>;
+    return cloneElement(child, {
+      "aria-describedby": mergeDescription(props, id),
+    } as Partial<typeof props>);
+  });
+}
+
 export function Tooltip({
   label,
   children,
@@ -97,16 +121,22 @@ export function Tooltip({
     });
   }, []);
 
-  const props = children.props as Record<string, unknown> & {
+  const childProps = children.props as Record<string, unknown>;
+  const describedChildren =
+    children.type === "label"
+      ? describeLabelControls(childProps.children as ReactNode, id)
+      : childProps.children;
+  const describedTrigger = cloneElement(children, {
+    "aria-describedby": mergeDescription(childProps, id),
+    ...(children.type === "label" ? { children: describedChildren } : {}),
+  } as Partial<typeof childProps>);
+  const props = describedTrigger.props as Record<string, unknown> & {
     onMouseEnter?: (e: React.MouseEvent<HTMLElement>) => void;
     onMouseLeave?: (e: React.MouseEvent<HTMLElement>) => void;
     onFocus?: (e: React.FocusEvent<HTMLElement>) => void;
     onBlur?: (e: React.FocusEvent<HTMLElement>) => void;
   };
   const disabled = isDisabled(props);
-  // Chain rather than replace: a trigger that already describes itself keeps that, and
-  // gains this. Replacing silently dropped whatever the call site had set.
-  const describedBy = [props["aria-describedby"], id].filter(Boolean).join(" ");
 
   // Merge our listeners onto the child (chaining any it already has) rather than wrapping
   // it, so the trigger's own layout - e.g. flex sizing in the card header - is untouched.
@@ -119,10 +149,10 @@ export function Tooltip({
   };
   const trigger = disabled ? (
     <span className="tt-anchor" {...handlers}>
-      {cloneElement(children, { "aria-describedby": describedBy } as Partial<typeof props>)}
+      {describedTrigger}
     </span>
   ) : (
-    cloneElement(children, {
+    cloneElement(describedTrigger, {
       onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
         props.onMouseEnter?.(e);
         handlers.onMouseEnter(e);
@@ -139,21 +169,23 @@ export function Tooltip({
         props.onBlur?.(e);
         hide();
       },
-      "aria-describedby": describedBy,
     } as Partial<typeof props>)
+  );
+  const description = (
+    <span id={id} className="tt-desc">
+      {label}
+    </span>
   );
 
   return (
     <>
       {trigger}
-      <span id={id} className="tt-desc">
-        {label}
-      </span>
+      {typeof document === "undefined" ? description : createPortal(description, document.body)}
       {tip &&
         createPortal(
           <span
             ref={measure}
-            // The accessible description is the hidden sibling above; this is the paint.
+            // The accessible description is the hidden portal above; this is the paint.
             aria-hidden
             className={`tooltip tt-${tip.placement}`}
             style={{

@@ -84,14 +84,15 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           </p>
         ) : (
           runners.map((r) => (
-            <label className="alert-row" key={r.id}>
-              <Tooltip
-                label={
-                  runnerPinned
-                    ? "Pinned by an environment variable - unset it to choose here"
-                    : `Run the app's own background jobs through ${r.label}`
-                }
-              >
+            <Tooltip
+              key={r.id}
+              label={
+                runnerPinned
+                  ? "Pinned by an environment variable - unset it to choose here"
+                  : `Run the app's own background jobs through ${r.label}`
+              }
+            >
+              <label className="alert-row">
                 <input
                   type="radio"
                   name="llm-runner"
@@ -104,9 +105,9 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
                     })
                   }
                 />
-              </Tooltip>
-              <span>{r.label}</span>
-            </label>
+                <span>{r.label}</span>
+              </label>
+            </Tooltip>
           ))
         )}
         {note && <p className="foreman-model-source">{note}</p>}

@@ -385,7 +385,9 @@ export function FileWorkspace({
         {launchError && (
           <div className="file-notice">
             <span>{launchError}</span>
-            <button className="btn" onClick={() => setLaunchError(null)}>Dismiss</button>
+            <Tooltip label="Dismiss this launch error">
+              <button className="btn" onClick={() => setLaunchError(null)}>Dismiss</button>
+            </Tooltip>
           </div>
         )}
         {buffer && (buffer.saveState === "failed" || buffer.saveState === "offline") && (

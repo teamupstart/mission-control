@@ -189,10 +189,10 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
           </span>
         </div>
         <div className="kb-row-controls">
-          <label className="skill-switch">
-            <Tooltip
-              label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode, so it never stops for a permission prompt`}
-            >
+          <Tooltip
+            label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode, so it never stops for a permission prompt`}
+          >
+            <label className="skill-switch">
               <input
                 type="checkbox"
                 checked={autoMode}
@@ -200,8 +200,8 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
                 onChange={(e) => void update({ autoModeOnDispatch: e.target.checked })}
                 aria-label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode`}
               />
-            </Tooltip>
-          </label>
+            </label>
+          </Tooltip>
         </div>
       </div>
 

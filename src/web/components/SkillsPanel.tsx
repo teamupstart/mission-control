@@ -106,8 +106,8 @@ function SkillRowView({
         <span className="kb-row-desc">{row.description}</span>
       </div>
       <div className="kb-row-controls">
-        <label className="skill-switch">
-          <Tooltip label={`Symlink /${row.name} into every ${SKILLED_LABEL} session's skills directory`}>
+        <Tooltip label={`Symlink /${row.name} into every ${SKILLED_LABEL} session's skills directory`}>
+          <label className="skill-switch">
             <input
               type="checkbox"
               checked={row.enabled}
@@ -115,8 +115,8 @@ function SkillRowView({
               onChange={(e) => onToggle(e.target.checked)}
               aria-label={`Enable /${row.name} in every ${SKILLED_LABEL} session`}
             />
-          </Tooltip>
-        </label>
+          </label>
+        </Tooltip>
       </div>
     </div>
   );
@@ -160,17 +160,17 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         </p>
       ))}
 
-      <label className="alert-row skills-master">
-        <Tooltip label="Master switch - off means nothing is symlinked, whatever the rows below say">
+      <Tooltip label="Master switch - off means nothing is symlinked, whatever the rows below say">
+        <label className="alert-row skills-master">
           <input
             type="checkbox"
             checked={view?.enabled ?? false}
             disabled={!view}
             onChange={(e) => void update({ enabled: e.target.checked })}
           />
-        </Tooltip>
-        Enable Mission Control skills
-      </label>
+          Enable Mission Control skills
+        </label>
+      </Tooltip>
 
       {/* Cascade from the master switch, ForemanBar's pattern: off means nothing is
           symlinked whatever the rows say, so the rows must not look clickable. */}

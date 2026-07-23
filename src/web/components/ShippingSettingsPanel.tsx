@@ -145,17 +145,17 @@ export function ShippingSettingsPanel({
         </p>
       )}
 
-      <label className="alert-row ship-toggle">
-        <Tooltip label="Merge our pull requests automatically once CI is green and review is clean">
+      <Tooltip label="Merge our pull requests automatically once CI is green and review is clean">
+        <label className="alert-row ship-toggle">
           <input
             type="checkbox"
             checked={autoMerge}
             disabled={!config}
             onChange={(e) => void update({ autoMerge: e.target.checked })}
           />
-        </Tooltip>
-        <span>YOLO mode - merge our pull requests when they come out clean</span>
-      </label>
+          <span>YOLO mode - merge our pull requests when they come out clean</span>
+        </label>
+      </Tooltip>
 
       {/* Shown whenever it is armed, not only on the click that arms it: the risk is
           ongoing rather than momentary, and a merge is the one action here that no
@@ -217,8 +217,8 @@ export function ShippingSettingsPanel({
       <fieldset className="ship-methods">
         <legend>How to merge</legend>
         {(["squash", "merge", "rebase"] as const).map((m) => (
-          <label className="alert-row" key={m}>
-            <Tooltip label={METHOD_LABEL[m]}>
+          <Tooltip label={METHOD_LABEL[m]} key={m}>
+            <label className="alert-row">
               <input
                 type="radio"
                 name="shipping-method"
@@ -226,9 +226,9 @@ export function ShippingSettingsPanel({
                 disabled={!config}
                 onChange={() => void update({ method: m })}
               />
-            </Tooltip>
-            <span>{METHOD_LABEL[m]}</span>
-          </label>
+              <span>{METHOD_LABEL[m]}</span>
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 

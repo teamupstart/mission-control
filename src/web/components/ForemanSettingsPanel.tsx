@@ -123,8 +123,8 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
       <fieldset className="foreman-modes">
         <legend>Cheap tier</legend>
         {(["off", "shadow", "on"] as const).map((t) => (
-          <label className="alert-row" key={t}>
-            <Tooltip label={TIER_LABEL[t]}>
+          <Tooltip label={TIER_LABEL[t]} key={t}>
+            <label className="alert-row">
               <input
                 type="radio"
                 name="foreman-triage-settings"
@@ -132,9 +132,9 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
                 disabled={!config}
                 onChange={() => void update({ triage: t })}
               />
-            </Tooltip>
-            {TIER_LABEL[t]}
-          </label>
+              {TIER_LABEL[t]}
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 

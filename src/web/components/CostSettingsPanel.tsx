@@ -79,8 +79,8 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
           </span>
         </div>
         <div className="kb-row-controls">
-          <label className="skill-switch">
-            <Tooltip label="Let sessions report their token usage, so the topbar can cost the fleet">
+          <Tooltip label="Let sessions report their token usage, so the topbar can cost the fleet">
+            <label className="skill-switch">
               <input
                 type="checkbox"
                 checked={enabled}
@@ -88,8 +88,8 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
                 onChange={(e) => void update({ enabled: e.target.checked })}
                 aria-label="Export Claude Code usage telemetry to Mission Control"
               />
-            </Tooltip>
-          </label>
+            </label>
+          </Tooltip>
         </div>
       </div>
 

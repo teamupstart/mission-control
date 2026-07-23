@@ -15,7 +15,8 @@
  * control nobody thought about - exactly the one no test would mount.
  *
  * Two rules, and the second is what keeps the first honest:
- *   1. every interactive element is wrapped directly in `<Tooltip>`;
+ *   1. every interactive element routes through `<Tooltip>`, directly or through a
+ *      deliberately disjoint child when wrapping the whole control would nest triggers;
  *   2. no `title` attribute survives anywhere, so there is no second way to do this that
  *      quietly comes back.
  *
@@ -29,6 +30,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import ts from "typescript";
 
 const WEB = fileURLToPath(new URL("../src/web", import.meta.url));
 
@@ -52,9 +54,16 @@ function withoutComments(src: string): string {
     .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
 }
 
-/** Elements a human ACTS on. Free-text entry is excluded - see the file comment. */
-const INTERACTIVE = /<(button|select|summary|a|input)(?=[\s/>])/g;
 const FREE_TEXT = /^(text|number|search|password|email|url|file|hidden)$/;
+const INTERACTIVE_ROLES = new Set([
+  "button",
+  "option",
+  "menuitem",
+  "menuitemradio",
+  "menuitemcheckbox",
+  "switch",
+  "tab",
+]);
 
 /** The tag that opens immediately before `index`, or "" at the start of a file. */
 function enclosingTag(src: string, index: number): string {
@@ -68,24 +77,78 @@ function enclosingTag(src: string, index: number): string {
   return "";
 }
 
+function attribute(node: ts.JsxOpeningLikeElement, name: string): ts.JsxAttribute | undefined {
+  return node.attributes.properties.find(
+    (property): property is ts.JsxAttribute =>
+      ts.isJsxAttribute(property) && property.name.getText() === name,
+  );
+}
+
+function stringAttribute(node: ts.JsxOpeningLikeElement, name: string): string | undefined {
+  const initializer = attribute(node, name)?.initializer;
+  return initializer && ts.isStringLiteral(initializer) ? initializer.text : undefined;
+}
+
+function tagName(node: ts.JsxOpeningLikeElement): string {
+  return node.tagName.getText();
+}
+
+function hasTooltipAncestor(node: ts.Node): boolean {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (ts.isJsxElement(parent) && tagName(parent.openingElement) === "Tooltip") return true;
+  }
+  return false;
+}
+
+function hasDisjointTooltipChild(node: ts.JsxElement): boolean {
+  return node.children.some(
+    (child) => ts.isJsxElement(child) && tagName(child.openingElement) === "Tooltip",
+  );
+}
+
+function isInteractive(node: ts.JsxOpeningLikeElement): boolean {
+  const name = tagName(node);
+  if (name === "button" || name === "select" || name === "summary") return true;
+  if (name === "a") return Boolean(attribute(node, "href"));
+  if (name === "input") {
+    const type = stringAttribute(node, "type");
+    return Boolean(type && !FREE_TEXT.test(type));
+  }
+  const role = stringAttribute(node, "role");
+  return Boolean(
+    role &&
+      INTERACTIVE_ROLES.has(role) &&
+      (attribute(node, "onClick") || attribute(node, "onMouseDown")),
+  );
+}
+
+function unwrappedInSource(raw: string, file: string): string[] {
+  const source = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const misses: string[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isJsxElement(node) && isInteractive(node.openingElement)) {
+      if (!hasTooltipAncestor(node) && !hasDisjointTooltipChild(node)) {
+        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        misses.push(`${file}:${line} <${tagName(node.openingElement)}>`);
+      }
+    } else if (ts.isJsxSelfClosingElement(node) && isInteractive(node)) {
+      if (!hasTooltipAncestor(node)) {
+        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        misses.push(`${file}:${line} <${tagName(node)}>`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return misses;
+}
+
 function unwrapped(): string[] {
   const misses: string[] = [];
   for (const file of tsxFiles(WEB)) {
-    if (file.endsWith("Tooltip.tsx")) continue; // it is the mechanism, not a caller
-    const raw = readFileSync(file, "utf8");
-    const src = withoutComments(raw);
-    for (const m of src.matchAll(INTERACTIVE)) {
-      const tag = src.slice(m.index, m.index + 400);
-      if (m[1] === "input") {
-        const type = tag.match(/type="(\w+)"/);
-        if (!type || FREE_TEXT.test(type[1]!)) continue;
-      }
-      // A bare `<a>` with no href is a styling hook, not a destination.
-      if (m[1] === "a" && !/href/.test(tag)) continue;
-      if (enclosingTag(src, m.index) === "Tooltip") continue;
-      const line = raw.slice(0, m.index).split("\n").length;
-      misses.push(`${file.slice(WEB.length + 1)}:${line} <${m[1]}>`);
-    }
+    if (file.endsWith("Tooltip.tsx")) continue;
+    const relative = file.slice(WEB.length + 1);
+    misses.push(...unwrappedInSource(readFileSync(file, "utf8"), relative));
   }
   return misses;
 }
@@ -136,4 +199,20 @@ test("the scan can actually see a missing tooltip", () => {
   const wrapped =
     `const B = () => <Tooltip label={n < 0 ? "first" : "earlier"}><button>↑</button></Tooltip>;`;
   assert.equal(enclosingTag(wrapped, wrapped.indexOf("<button")), "Tooltip");
+
+  const roleControl =
+    `const C = () => <ul><li role="option" onMouseDown={choose}>repo</li></ul>;`;
+  assert.deepEqual(unwrappedInSource(roleControl, "role.tsx"), ["role.tsx:1 <li>"]);
+
+  const wrappedRole =
+    `const D = () => <ul><Tooltip label="repo"><li role="option" onMouseDown={choose}>repo</li></Tooltip></ul>;`;
+  assert.deepEqual(unwrappedInSource(wrappedRole, "wrapped-role.tsx"), []);
+
+  const wrappedRow =
+    `const E = () => <Tooltip label="mode"><label><input type="radio" /></label></Tooltip>;`;
+  assert.deepEqual(unwrappedInSource(wrappedRow, "wrapped-row.tsx"), []);
+
+  const disjoint =
+    `const F = () => <button><Tooltip label="open"><span>Name</span></Tooltip></button>;`;
+  assert.deepEqual(unwrappedInSource(disjoint, "disjoint.tsx"), []);
 });

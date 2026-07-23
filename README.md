@@ -2137,8 +2137,8 @@ control it belongs to.
 Two details worth knowing:
 
 - **Disabled controls keep their tooltip**, which is where it matters most - a dead Send
-  says "No pane to send to" rather than leaving you to guess. Browsers dispatch no mouse
-  events at all over a disabled control, so those triggers get a hover anchor beside them.
+  says "No pane to send to" rather than leaving you to guess. Directly disabled triggers
+  get a hover anchor; controls disabled by a fieldset put the hover target on their row.
 - **Every label is also a real accessible description**, wired to its control with
   `aria-describedby`, so a screen reader reaches the same sentence a pointer does.
 

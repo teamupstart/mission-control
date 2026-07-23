@@ -189,47 +189,47 @@ export function ForemanPopover({
 
   return (
     <div className="alert-pop foreman-pop" role="dialog" aria-label="Foreman settings">
-      <label className="alert-row">
-        <Tooltip label="Let Foreman watch sessions and answer them for you">
+      <Tooltip label="Let Foreman watch sessions and answer them for you">
+        <label className="alert-row">
           <input
             type="checkbox"
             checked={enabled}
             onChange={(e) => void update({ enabled: e.target.checked })}
           />
-        </Tooltip>
-        Enable Foreman
-      </label>
+          Enable Foreman
+        </label>
+      </Tooltip>
 
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Mode</legend>
         {(["dry-run", "semi-auto", "live"] as const).map((m) => (
-          <label className="alert-row" key={m}>
-            <Tooltip label={MODE_HINT[m]}>
+          <Tooltip label={MODE_HINT[m]} key={m}>
+            <label className="alert-row">
               <input
                 type="radio"
                 name="foreman-mode"
                 checked={mode === m}
                 onChange={() => void update({ mode: m })}
               />
-            </Tooltip>
-            {m === "dry-run" && "Dry-run - draft only, never send"}
-            {m === "semi-auto" && "Semi-auto - draft + one-click send"}
-            {m === "live" && "Live - send on my behalf"}
-          </label>
+              {m === "dry-run" && "Dry-run - draft only, never send"}
+              {m === "semi-auto" && "Semi-auto - draft + one-click send"}
+              {m === "live" && "Live - send on my behalf"}
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 
-      <label className="alert-row">
-        <Tooltip label="Let Foreman clear read-only permission prompts without asking you">
+      <Tooltip label="Let Foreman clear read-only permission prompts without asking you">
+        <label className="alert-row">
           <input
             type="checkbox"
             checked={config.autoApproveAccess}
             disabled={!enabled}
             onChange={(e) => void update({ autoApproveAccess: e.target.checked })}
           />
-        </Tooltip>
-        Auto-approve non-destructive access
-      </label>
+          Auto-approve non-destructive access
+        </label>
+      </Tooltip>
 
       {/*
         The queue's two policy knobs. Timings (settle, pickup, lease) are
@@ -266,16 +266,16 @@ export function ForemanPopover({
       */}
       <fieldset className="foreman-knobs" disabled={!enabled}>
         <legend>Backlog</legend>
-        <label className="alert-row">
-          <Tooltip label="Let Foreman hand backlog tasks to idle agents on its own">
+        <Tooltip label="Let Foreman hand backlog tasks to idle agents on its own">
+          <label className="alert-row">
             <input
               type="checkbox"
               checked={config.autoBacklog}
               onChange={(e) => void update({ autoBacklog: e.target.checked })}
             />
-          </Tooltip>
-          Auto-schedule the backlog
-        </label>
+            Auto-schedule the backlog
+          </label>
+        </Tooltip>
         <NumberSetting
           value={config.maxSessions}
           min={1}
@@ -288,7 +288,8 @@ export function ForemanPopover({
           the board's own drag-onto-an-agent gesture is unaffected either way, and a knob
           that looked like it governed both would be lying about the one place it applies.
         */}
-        <label className="alert-row">
+        <Tooltip label="Hold an agent back from new work while its pull request is still open">
+          <label className="alert-row">
           {/*
             `!== false`, not the value itself: a web build newer than the daemon it is
             talking to gets no such key, and `undefined` would render an unticked box over
@@ -297,15 +298,14 @@ export function ForemanPopover({
             picked up while the panel swears the guard is off. The daemon parses through
             the schema, so the field is only ever absent, never false-by-omission.
           */}
-          <Tooltip label="Hold an agent back from new work while its pull request is still open">
             <input
               type="checkbox"
               checked={config.backlogRespectOpenPrs !== false}
               onChange={(e) => void update({ backlogRespectOpenPrs: e.target.checked })}
             />
-          </Tooltip>
-          Open PRs keep an idle agent off the backlog
-        </label>
+            Open PRs keep an idle agent off the backlog
+          </label>
+        </Tooltip>
         {enabled && config.autoBacklog && config.backlogRespectOpenPrs === false && (
           <p className="alert-hint dim">
             An agent whose PR is still open can be handed the next task - its checkout is
@@ -347,23 +347,24 @@ export function ForemanPopover({
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Trigger on</legend>
         {(["drain", "prompted"] as const).map((t) => (
-          <label className="alert-row" key={t}>
-            <Tooltip
-              label={
-                t === "drain"
-                  ? "Wrap up once every queued item has finished"
-                  : "Wrap up once the work you prompted for is verifiably done"
-              }
-            >
+          <Tooltip
+            key={t}
+            label={
+              t === "drain"
+                ? "Wrap up once every queued item has finished"
+                : "Wrap up once the work you prompted for is verifiably done"
+            }
+          >
+            <label className="alert-row">
               <input
                 type="checkbox"
                 checked={wrapupTriggerOn(triggers, t)}
                 onChange={(e) => void update({ wrapupTriggers: toggleTrigger(triggers, t, e.target.checked) })}
               />
-            </Tooltip>
-            {t === "drain" && "Queue drain - every queued item finished"}
-            {t === "prompted" && "Prompted work complete - you asked, the agent finished"}
-          </label>
+              {t === "drain" && "Queue drain - every queued item finished"}
+              {t === "prompted" && "Prompted work complete - you asked, the agent finished"}
+            </label>
+          </Tooltip>
         ))}
         {enabled && wrapupTriggerOn(triggers, "prompted") && (
           <p className="alert-hint dim">Verified against your prompt before it acts.</p>
@@ -372,19 +373,19 @@ export function ForemanPopover({
         <fieldset className="foreman-wrapup-action" disabled={triggers.length === 0}>
           <legend>Then</legend>
           {(["ask", "no-mistakes", "pr"] as const).map((w) => (
-            <label className="alert-row" key={w}>
-              <Tooltip label={WRAPUP_HINT[w]}>
+            <Tooltip label={WRAPUP_HINT[w]} key={w}>
+              <label className="alert-row">
                 <input
                   type="radio"
                   name="foreman-wrapup"
                   checked={wrapup === w}
                   onChange={() => void update({ wrapup: w })}
                 />
-              </Tooltip>
-              {w === "ask" && "Ask me - show the Ship it? card"}
-              {w === "no-mistakes" && "Run /no-mistakes automatically"}
-              {w === "pr" && "Straight to PR - skip no-mistakes; commit, push, open a PR, then green CI"}
-            </label>
+                {w === "ask" && "Ask me - show the Ship it? card"}
+                {w === "no-mistakes" && "Run /no-mistakes automatically"}
+                {w === "pr" && "Straight to PR - skip no-mistakes; commit, push, open a PR, then green CI"}
+              </label>
+            </Tooltip>
           ))}
         </fieldset>
 

@@ -55,7 +55,6 @@ export function RailRow({
   if (costIsNotable(session.cost)) marks.push("≈$");
 
   return (
-    <Tooltip label={`${session.name || "(unnamed)"} - ${st.label}`}>
     <button
       ref={ref}
       className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
@@ -63,7 +62,9 @@ export function RailRow({
       onClick={onSelect}
     >
       <AgentDot agent={session.agent} />
-      <span className="rail-name">{session.name || "(unnamed)"}</span>
+      <Tooltip label={`${session.name || "(unnamed)"} - ${st.label}`}>
+        <span className="rail-name">{session.name || "(unnamed)"}</span>
+      </Tooltip>
       <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
       {/* Two lines, never four: the state, then everything else on one line. Given a
           line each, the marks and the PR chip made a row as tall as three, and a rail
@@ -90,6 +91,5 @@ export function RailRow({
         </span>
       </span>
     </button>
-    </Tooltip>
   );
 }

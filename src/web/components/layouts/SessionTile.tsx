@@ -117,7 +117,7 @@ export function SessionTile({
 
           So the open action is split. The pointer half lives on the tile root above:
           clicks land on whatever content you aimed at and bubble up, which keeps the
-          `title` tooltips on the model, effort, context meter and gate diamonds
+          shared tooltips on the model, effort, context meter and gate diamonds
           hoverable. This stretched button is the keyboard half - focusable, labelled,
           Enter/Space-activatable, which a bare div with onClick would not be. It takes
           no pointer events, so it can never swallow a click meant for the content. The
@@ -143,7 +143,9 @@ export function SessionTile({
 
       <span className="tile-head">
         <AgentDot agent={session.agent} />
-        <span className="tile-name">{session.name || "(unnamed)"}</span>
+        <Tooltip label={`Open ${session.name || "unnamed session"}`}>
+          <span className="tile-name">{session.name || "(unnamed)"}</span>
+        </Tooltip>
         {session.nomistakesGated && !session.nomistakes && (
           <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
             <span className="gated" aria-hidden>

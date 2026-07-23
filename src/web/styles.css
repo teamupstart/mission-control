@@ -5572,7 +5572,9 @@ kbd {
   padding: 8px;
 }
 .workflow-library-list > button,
-.workflow-version-list > button {
+.workflow-library-list > .tt-anchor > button,
+.workflow-version-list > button,
+.workflow-version-list > .tt-anchor > button {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -5587,12 +5589,16 @@ kbd {
   cursor: pointer;
 }
 .workflow-library-list > button.active,
-.workflow-version-list > button.active {
+.workflow-library-list > .tt-anchor > button.active,
+.workflow-version-list > button.active,
+.workflow-version-list > .tt-anchor > button.active {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
   background: color-mix(in oklab, var(--working) 11%, var(--panel));
 }
 .workflow-library-list span,
 .workflow-version-list span { font-size: 10px; color: var(--dim); }
+.workflow-library-list > .tt-anchor,
+.workflow-version-list > .tt-anchor { font: inherit; color: inherit; }
 .workflow-show-archived { display: flex; align-items: center; gap: 6px; padding: 7px 9px; font-size: 10.5px; color: var(--dim); }
 .workflow-palette {
   display: flex;
@@ -8713,7 +8719,7 @@ kbd {
    is a link, and a link cannot live inside one. So the open action is a transparent
    button stretched over the tile, kept there purely to be focusable and labelled for
    the keyboard. It takes no pointer events: mouse clicks hit the content and bubble to
-   the tile root, which leaves every `title` underneath it hoverable. */
+   the tile root, which leaves every tooltip trigger underneath it hoverable. */
 .tile-open {
   position: absolute;
   inset: 0;

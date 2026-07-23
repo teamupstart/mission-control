@@ -126,29 +126,30 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         </p>
       )}
 
-      <label className="alert-row inspector-toggle">
-        <Tooltip label="Review the pull requests Mission Control opened, and comment on them">
+      <Tooltip label="Review the pull requests Mission Control opened, and comment on them">
+        <label className="alert-row inspector-toggle">
           <input
             type="checkbox"
             checked={enabled}
             disabled={!config}
             onChange={(e) => void update({ enabled: e.target.checked })}
           />
-        </Tooltip>
-        <span>Run the Inspector</span>
-      </label>
+          <span>Run the Inspector</span>
+        </label>
+      </Tooltip>
 
       <fieldset className="inspector-modes">
         <legend>Mode</legend>
         {(["dry-run", "live"] as const).map((m) => (
-          <label className="alert-row" key={m}>
-            <Tooltip
-              label={
-                m === "live"
-                  ? "Post the Inspector's findings to GitHub as review comments"
-                  : "Compute findings and show them here, but post nothing to GitHub"
-              }
-            >
+          <Tooltip
+            key={m}
+            label={
+              m === "live"
+                ? "Post the Inspector's findings to GitHub as review comments"
+                : "Compute findings and show them here, but post nothing to GitHub"
+            }
+          >
+            <label className="alert-row">
               <input
                 type="radio"
                 name="inspector-mode"
@@ -156,9 +157,9 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
                 disabled={!config}
                 onChange={() => void update({ mode: m })}
               />
-            </Tooltip>
-            <span>{MODE_LABEL[m]}</span>
-          </label>
+              <span>{MODE_LABEL[m]}</span>
+            </label>
+          </Tooltip>
         ))}
       </fieldset>
 

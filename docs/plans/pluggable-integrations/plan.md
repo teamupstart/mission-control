@@ -831,8 +831,8 @@ rename. Four deltas, each forced by something real:
   `git worktree remove --force` on a task whose home does not resolve - so an `addColumn` that
   left `home_name` NULL would read every running task as home-less and reclaim its checkout
   out from under the agent. `migrate()` copies `tmux_session` across on the one start after
-  upgrade. `db.ts:585`'s house pattern applies: the old column is left in place (SQLite drops
-  are the expensive migration) and simply stops being named by any write.
+  upgrade. `db.ts`'s migration house pattern applies: the old column is left in place
+  (SQLite drops are the expensive migration) and simply stops being named by any write.
 - **The backfill is gated on `addColumn` having just added the column, and runs EXACTLY
   once.** After the rename `tmux_session` is a frozen fossil - no write path names it - so a
   copy that re-ran on every open would RESURRECT a dead name onto a task since reclaimed to

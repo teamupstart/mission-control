@@ -94,8 +94,8 @@ export interface BacklogTickInput {
  * Tasks that are executing right now, however they got there, for serial mode.
  *
  * Deliberately wider than "the ones autopilot launched": a task assigned to a session
- * and a task holding a tmux session of ours are indistinguishable on the row today,
- * and `dispatching` covers the window between the dispatch POST answering and the tmux
+ * and a task holding a terminal home of ours are indistinguishable on the row today,
+ * and `dispatching` covers the window between the dispatch POST answering and the home
  * spawn - the exact window a sub-second next tick would otherwise launch into. Serial
  * mode exists because we could NOT read the dependencies, so pausing behind a human's
  * in-flight task too is the conservative reading, and the cheap one: it costs some

@@ -121,7 +121,7 @@ function describeResetLoss(c: AssignResetConfirm): string {
 
 /**
  * Owns the task lifecycle: create/queue, kick off dispatch, cancel (tearing down
- * the live session + tmux + optional worktree), complete with an outcome, and
+ * the live session + terminal home + optional worktree), complete with an outcome, and
  * remove from the list. The registry is the single store; this class is the
  * policy layer routes call into - the task analog of ReviewManager.
  */
@@ -132,7 +132,7 @@ export class TaskManager {
    *
    * A backlogged untitled task is on the board - and dispatchable - the instant `create`
    * returns, while its title is still being decided. Dispatching in that window would cut
-   * the branch and the tmux session from the heuristic title and then rename only the card,
+   * the branch and terminal home name from the heuristic title and then rename only the card,
    * which is the exact mismatch the awaited-titling ordering exists to prevent. `dispatch`
    * awaits this first, so an early click waits a beat and gets the model's title instead.
    * Held here rather than checked at the route so the invariant holds on every path.
@@ -446,7 +446,7 @@ export class TaskManager {
     }
     if (backlog) return;
     // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
-    // now would strand a worktree and a tmux session behind a card that says "cancelled".
+    // now would strand a worktree and a terminal home behind a card that says "cancelled".
     if ((this.registry.getTask(id) ?? cur).status !== "dispatching") return;
     void this.dispatcher.dispatch(id);
   }
@@ -457,9 +457,9 @@ export class TaskManager {
    * worktree means its agent may still be running; the user should Cancel it first
    * (which reclaims the tree) rather than dispatch a second agent onto it.
    *
-   * Waits out any in-flight titling first: the branch and the tmux session are cut from
-   * `task.title` and can never be renamed afterwards, so dispatching mid-titling would
-   * name them after the heuristic title and leave the card disagreeing with both.
+   * Waits out any in-flight titling first: the branch and initial terminal home name are cut
+   * from `task.title`, and later title edits do not propagate to them. Dispatching
+   * mid-titling would name them after the heuristic title and leave the card disagreeing.
    */
   async dispatch(id: string, options: DispatchOptions = {}): Promise<Task | null> {
     await this.titling.get(id);
@@ -486,10 +486,10 @@ export class TaskManager {
    * priority picker.
    *
    * The status guard applies to the PROVISIONING fields only, and that split is the
-   * whole rule. The moment a task dispatches, its title is baked into a git branch and a
-   * tmux session name that nothing downstream can rename (see `autoTitleThenDispatch`),
-   * and its intent has already been typed at an agent - so an edit to those after that
-   * point would change the card and nothing else, which is worse than a refusal. Every
+   * whole rule. The moment a task dispatches, its title has supplied a git branch and an
+   * initial terminal home name (see `autoTitleThenDispatch`), and its intent has already
+   * been typed at an agent. A title edit after that point would change the card without
+   * propagating to those resources, which is worse than a refusal. Every
    * other status is a conflict the caller shows, not retries.
    *
    * Dependencies share that guard because changing them can change whether launch is
@@ -827,7 +827,7 @@ export class TaskManager {
     // whether the task is running, so it must not sit in front of anything that does.
     await this.renameForTask(
       // Re-read for the same reason the task is: the reset detached the checkout and the
-      // injection took a round trip, and `rename` targets the tmux session BY NAME.
+      // injection took a round trip, and `rename` targets the terminal home BY NAME.
       this.registry.getSession(s.id) ?? s,
       this.registry.getTask(t.id) ?? cur,
       doRename,
@@ -852,11 +852,11 @@ export class TaskManager {
    * task that an agent is already working on back to the backlog, to be handed to a second
    * agent. So every refusal below is a silent no-op that leaves the old name standing.
    *
-   * The fallback name exists for one reason: tmux session names are unique, so a rename
-   * onto a name a live session already holds fails, and `validateSessionNameAgainstTasks`
-   * refuses a name a task's teardown still aims at (taking it would point that task's
-   * `tmux kill-session` at this agent). Both are answered the same way `spawnUniquely`
-   * answers them - retry once under a name the task id makes unique.
+   * The fallback name exists for one reason: a rename onto a name a live terminal home
+   * already holds fails, and `validateSessionNameAgainstTasks` refuses a name a task's
+   * teardown still aims at (taking it would point that task's `killHome` at this agent).
+   * Both are answered the same way `spawnUniquely` answers them - retry once under a name
+   * the task id makes unique.
    */
   private async renameForTask(
     s: Session,
@@ -864,7 +864,7 @@ export class TaskManager {
     doRename: NonNullable<AssignOptions["rename"]>,
   ): Promise<void> {
     // This session's OWN backend spells the name, not the one a fresh dispatch would land
-    // on: the two can differ (an operator's tmux session on a machine where a dispatch
+    // on: the two can differ (an operator's multiplexer session on a machine where a dispatch
     // would open a tab), and sanitizing for the wrong one strips characters this rename
     // could have kept - or keeps ones it cannot.
     const label = nameRulesFor(s).sanitize(t.title);

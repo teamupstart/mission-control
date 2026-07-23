@@ -870,7 +870,7 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // Rename the session's tmux session / wezterm tab; discovery reads the new name
+  // Rename the session's terminal handle; discovery reads the new name
   // back onto the card, and the registry echoes it immediately so it doesn't lag a
   // poll. A name the backing handle can't accept, or one a task's teardown still
   // aims at, is a 400 the editor can show; a shelled-out failure a 500.

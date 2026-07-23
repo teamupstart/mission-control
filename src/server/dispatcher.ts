@@ -36,7 +36,7 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached tmux session there, wait for passive discovery and readiness to
+ * agent in a detached terminal home there, wait for passive discovery and readiness to
  * bind that exact live session, then inject the task as its first prompt.
  *
  * Every step patches the task through the registry so progress streams to the UI
@@ -65,7 +65,7 @@ export class Dispatcher {
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
-      // The branch and worktree take the git-safe slug; the tmux session (which is what
+      // The branch and worktree take the git-safe slug; the terminal home (which is what
       // the card is named after) takes the human-readable label, so an untitled dispatch
       // reads like a heading instead of `add-a-dark-mode-toggle`.
       const slug = slugify(task.title);
@@ -269,7 +269,7 @@ export class Dispatcher {
    * Each attempt resolves the session id again at the send boundary, so a retained
    * exited snapshot can never lend its old pane to an initial send or retry.
    *
-   * `injectPrompt` succeeding means tmux accepted the write, NOT that the agent read
+   * `injectPrompt` succeeding means the terminal accepted the write, NOT that the agent read
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
    * it is what let a task sit `running` for 13 minutes against a session whose first
    * prompt was pasted 647ms before its TUI existed. So on an instrumented session we

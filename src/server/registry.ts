@@ -1088,8 +1088,8 @@ export class Registry extends EventEmitter {
    * started before the rename can briefly show the old name, then self-heals.
    *
    * Renaming a multiplexer session renames it for every card hosted on it:
-   * `correlate` groups agents by tty, so two agents in two windows of one tmux
-   * session are two cards sharing that handle's `session`. All of them are
+   * `correlate` groups agents by tty, so two agents in two panes of one multiplexer
+   * home are two cards sharing that handle's `session`. All of them are
    * re-pointed, or a sibling's Focus would attach by a name that no longer resolves
    * until the next sweep. A sibling named by that same backend (`nameSource`) takes
    * the new display name too - its title just IS the session name.
@@ -1102,7 +1102,7 @@ export class Registry extends EventEmitter {
    * SQLite. The old name alone is too weak a key: it is unique only among LIVE
    * sessions, while `homeName` is a historical record and a multiplexer frees a dead
    * session's name for immediate reuse. So the task must also hold the worktree of
-   * a session actually on this tmux session (the `cwd` join `activeTaskForCwd`
+   * a session actually on this terminal home (the `cwd` join `activeTaskForCwd`
    * uses) - otherwise a long-dead task that merely recorded a since-reused name
    * would be re-pointed onto a live session and later kill it. `sessionId` can't be
    * the key: the dispatcher only sets it on the success path, so a failed-but-alive

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phased Plan"
+  short_description: "Turn plans into merge-aware implementation phases"
+  default_prompt: "Use $phased-plan to investigate this plan, write compatible implementation phases, and schedule their dependent tasks."

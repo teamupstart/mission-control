@@ -249,6 +249,37 @@ test("the shipped html-plans skill is a real, loadable Claude skill", () => {
   // And it has a body: a skill whose file is only frontmatter teaches nothing.
   const text = readFileSync(new URL("../skills/html-plans/SKILL.md", import.meta.url), "utf8");
   assert.ok(text.split("---")[2]!.trim().length > 200);
+  assert.match(text, /implementation-follow-up/);
+  assert.match(text, /Create phased implementation plan/);
+  assert.match(text, /Invoke the `phased-plan` skill/);
+});
+
+test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "phased-plan");
+  assert.ok(skill, "phased-plan should be in the catalog");
+  assert.equal(skill.name, "phased-plan");
+  assert.equal(skill.category, "planning");
+  assert.equal(skill.enforcement, "triggered");
+  assert.match(skill.description, /existing.*plan/i);
+
+  const text = readFileSync(new URL("../skills/phased-plan/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /Re-read the source plan/);
+  assert.match(text, /Edit any earlier phase/);
+  assert.match(text, /create_task/);
+  assert.match(text, /dependsOnTaskIds/);
+  assert.match(text, /Do not flatten\s+the graph into a serial chain/);
+  assert.match(text, /embed the complete phase Markdown/);
+
+  const mcp = readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
+  const start = mcp.indexOf('"create_task"');
+  const end = mcp.indexOf("// This is the replacement", start);
+  assert.ok(start >= 0 && end > start, "create_task should be registered before request_input");
+  const tool = mcp.slice(start, end);
+  assert.match(tool, /backlog: true/);
+  assert.match(tool, /kind: "ship"/);
+  assert.match(tool, /dependsOnTaskIds\.map/);
+  assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
+  assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
 });
 
 test("the shipped pull-request skill is a real, triggered Mission Control skill", () => {

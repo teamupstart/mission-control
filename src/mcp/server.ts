@@ -156,6 +156,59 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "create_task",
+  {
+    title: "Schedule an implementation task",
+    description:
+      "Create one ship task in the Mission Control backlog for the current repository. " +
+      "The task uses the default agent, model, and reasoning effort. Pass direct prerequisite " +
+      "task ids to create durable dependency edges; unfinished prerequisites keep the new task " +
+      "backlogged until their pull requests merge. Returns the new task id for later calls.",
+    inputSchema: {
+      title: z.string().min(1).max(200).describe("Specific task title shown on the backlog card"),
+      intent: z
+        .string()
+        .min(1)
+        .describe("Complete implementation instructions, including the plan and phase file paths"),
+      dependsOnTaskIds: z
+        .array(z.string().min(1))
+        .max(50)
+        .default([])
+        .describe("Ids of direct prerequisite tasks returned by earlier create_task calls"),
+    },
+  },
+  async ({ title, intent, dependsOnTaskIds }) => {
+    try {
+      const res = await http("/api/tasks", "POST", {
+        repoRoot: process.cwd(),
+        title,
+        intent,
+        kind: "ship",
+        backlog: true,
+        dependencies: dependsOnTaskIds.map((taskId) => ({ type: "task", taskId })),
+      });
+      if (!res.ok) return textResult(`Could not create task (${res.status}): ${await res.text()}`, true);
+
+      const task = (await res.json()) as { id: string; title: string; status: string };
+      return textResult(
+        JSON.stringify(
+          {
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            dependsOnTaskIds,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 // This is the replacement for Claude's built-in `AskUserQuestion`, which dispatched sessions
 // have taken away from them (see `src/server/ask-channel.ts`). It therefore has to cover what
 // the built-in covered: a question with discrete options, answered by clicking one. `options`

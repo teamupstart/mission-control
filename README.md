@@ -733,12 +733,15 @@ registration and no `-s user|project` to choose between. A harness with no MCP c
 would be reported as such rather than silently skipped.)
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
-exposes five tools:
+exposes six tools:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
+- `create_task(title, intent, dependsOnTaskIds?)` - add a ship task for the current repo to
+  the backlog with the default agent/model/effort, returning its id so later tasks can carry
+  durable dependency edges
 - `request_input(question, options?)` - ask a question and **block** for the answer.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box
@@ -1707,6 +1710,12 @@ never reimplements it.
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Its reviewer-ready description contract lives in
 [`skills/pull-request/SKILL.md`](skills/pull-request/SKILL.md).
+
+The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
+merge-aware phase documents beside it, and schedules one dependency-linked backlog task per
+phase. The HTML Plans review always offers this as its final selectable follow-up; choosing it
+passes the approved plan and submitted decisions into
+[`skills/phased-plan/SKILL.md`](skills/phased-plan/SKILL.md).
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`

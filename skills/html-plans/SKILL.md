@@ -41,7 +41,50 @@ the interactive path below instead of asking in prose.
    markdown; do this for every plan, including the ones that then go on to the interactive
    decisions below.
 
-## When the plan needs a decision: ask with selectable options
+## Always: offer a phased implementation follow-up
+
+Every root plan review ends with one explicit next-step decision in the Mission Control dashboard.
+Append this as the **last** entry in the `decisions` passed to `request_plan_decisions`, after any
+choices about the plan itself:
+
+```json
+{
+  "id": "implementation-follow-up",
+  "question": "What should happen after this plan is finalized?",
+  "options": [
+    {
+      "id": "phased-plan",
+      "label": "Create phased implementation plan",
+      "detail": "Investigate the repository, write merge-aware phase plans, and schedule dependency-linked tasks.",
+      "recommended": true
+    },
+    {
+      "id": "stop",
+      "label": "Stop after this plan",
+      "detail": "Keep the approved plan without creating implementation phases or tasks."
+    }
+  ]
+}
+```
+
+Call `request_plan_decisions` even when this is the only decision. It is the selectable action at the
+bottom of the rendered dashboard review; do not replace it with a prose offer after sharing the plan.
+
+When the returned response says **Create phased implementation plan** (the `phased-plan` option):
+
+1. Apply every submitted plan choice to `plan.md`, removing resolved alternatives and recording the
+   adopted decisions.
+2. Regenerate and reopen `plan.html`, so the phased plan reads the approved source rather than a
+   pre-decision draft.
+3. Invoke the `phased-plan` skill with the absolute `plan.md` path and the complete submitted decision
+   response. Let that skill investigate, write phases beside the source, and create the dependent
+   implementation tasks.
+
+When the skill is already producing `phase-*.md` artifacts, do not add another follow-up prompt to
+each derived phase. The root plan's submitted choice already authorized that work, and recursively
+phasing a phase has no stopping point.
+
+## When the plan has other decisions: ask with selectable options
 
 If the plan has open choices - which approach, which scope, which of several trade-offs -
 do not bury the question in prose and hope for a reply. Present the choices as options the
@@ -51,7 +94,8 @@ Call the Mission Control MCP tool **`request_plan_decisions`**. It shows the pla
 dashboard with your decision points rendered as radio buttons (choose one) or checkboxes
 (choose many) plus a Submit button, **blocks until the human submits**, and returns their
 selections as the tool result. You do not need to know your session id or post anything
-yourself - the dashboard binds the answer straight back to this session.
+yourself - the dashboard binds the answer straight back to this session. Append the phased
+implementation follow-up above after these plan-specific decisions.
 
 Arguments:
 
@@ -91,13 +135,22 @@ Example:
       ],
       "multiSelect": true,
       "allowOther": true
+    },
+    {
+      "id": "implementation-follow-up",
+      "question": "What should happen after this plan is finalized?",
+      "options": [
+        { "id": "phased-plan", "label": "Create phased implementation plan", "recommended": true },
+        { "id": "stop", "label": "Stop after this plan" }
+      ]
     }
   ]
 }
 ```
 
 Still emit `plan.html` as above - the static page is the skimmable copy; the interactive
-decisions live in the dashboard. Proceed only on the selections the tool returns.
+decisions live in the dashboard. Proceed only on the selections the tool returns, and resolve
+those selections into the source before invoking `phased-plan`.
 
 ## When the plan changes a flow: draw it
 
@@ -131,3 +184,5 @@ function, a field added to a payload, an internal helper - which prose covers fi
   A diagram of something prose already makes clear is noise that hides the one that matters.
 - Don't ask an open-ended prose question when the answer is a choice between options -
   that's what `request_plan_decisions` is for. Reserve free text for genuinely open asks.
+- Don't offer the phased implementation follow-up in prose or omit it because the plan has no
+  other open choices. It is always the last selectable decision on a root plan review.

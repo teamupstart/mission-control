@@ -42,4 +42,8 @@ test("explicit inline diff requests refetch and focus the reader", () => {
   assert.match(viewer, /fetchSessionDiff\([\s\S]*?\[session\.id, commit, requestNonce\]/);
   assert.match(viewer, /contentRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(viewer, /onKeyDown=\{inline \? \(e\) => onViewerKey\(e\.nativeEvent\)/);
+  assert.match(
+    viewer,
+    /if \(!next && !previous\) return;\s*e\.preventDefault\(\);\s*if \(files\.length === 0\) return;/,
+  );
 });

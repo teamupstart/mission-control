@@ -119,12 +119,14 @@ function DiffViewerContent({
   // on every render.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
+      const next = e.key === "ArrowDown" || e.key === "j";
+      const previous = e.key === "ArrowUp" || e.key === "k";
+      if (!next && !previous) return;
+      e.preventDefault();
       if (files.length === 0) return;
-      if (e.key === "ArrowDown" || e.key === "j") {
-        e.preventDefault();
+      if (next) {
         setSelected((i) => Math.min(files.length - 1, i + 1));
-      } else if (e.key === "ArrowUp" || e.key === "k") {
-        e.preventDefault();
+      } else {
         setSelected((i) => Math.max(0, i - 1));
       }
     },

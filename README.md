@@ -1819,7 +1819,11 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
   Gate / Diff / Files** - because a split pane has room a card doesn't: the conversation is
   permanent, and the sections that share a card's height in the grid get a tab each. The
-  **Board** drills into that same detail when you open a card.
+  **Board** drills into that same detail when you open a card. In Console and Board, the
+  Diff tab contains the complete checkout diff reader; the footer action, <kbd>d</kbd>, and
+  a no-mistakes fix's **View diff** all reveal it in place. Opening the tab itself shows the
+  whole-checkout diff, while **View diff** shows that one fix commit. Cards keep the diff in
+  a modal viewer.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
   the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
@@ -1831,7 +1835,9 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   on screen permanently instead of on a bar that floats over them.
 - **Selecting is opening in the console**: click a rail row to switch sessions. Once a
   detail is open, <kbd>↑</kbd>/<kbd>↓</kbd> scroll its active Conversation or Files reader
-  instead of changing the selection, and <kbd>Esc</kbd> deselects, emptying the pane.
+  instead of changing the selection. In the focused inline Diff reader they move through
+  its file list instead; that navigation stays scoped to the reader. <kbd>Esc</kbd>
+  deselects, emptying the pane.
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
@@ -1890,14 +1896,14 @@ works in every layout:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; <kbd>↑</kbd>/<kbd>↓</kbd> scroll the selected session's active Conversation or Files reader in **Console**; along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; <kbd>↑</kbd>/<kbd>↓</kbd> scroll the selected session's active Conversation or Files reader in **Console**, or move through files while its inline Diff reader is focused; along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**) or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
-| <kbd>d</kbd> | Open the selected session's diff | Selected session |
+| <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |

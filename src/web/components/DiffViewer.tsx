@@ -112,11 +112,11 @@ function DiffViewerContent({
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;
 
-  // Escape belongs to the Overlay (App suppresses grid keys while one is open, so the
-  // overlay layer closes itself). The file navigation is this viewer's own: ↑/↓ and j/k
-  // walk the list without leaving the keyboard. Handed to Overlay so it only fires while
-  // this viewer is the topmost overlay, and memoised so the listener isn't re-subscribed
-  // on every render.
+  // Escape belongs to the Overlay in Cards (App suppresses grid keys while one is open,
+  // so the overlay layer closes itself). File navigation is this reader's own: ↑/↓
+  // and j/k walk the list without leaving the keyboard. The modal hands it to Overlay;
+  // the inline reader attaches it to its focusable region, keeping those keys scoped to
+  // the embedded reader instead of changing the Console or Board selection.
   const onViewerKey = useCallback(
     (e: KeyboardEvent) => {
       const next = e.key === "ArrowDown" || e.key === "j";

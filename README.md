@@ -798,7 +798,10 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    tmux session with a second **shell pane split beside it** in the same worktree, so a
    terminal for ad-hoc git/build/inspection is one attach away; on a machine with no
    multiplexer it opens a terminal tab in that worktree instead, and
-3. injects your task as its first prompt once passive discovery binds the session.
+3. waits for that exact discovered session to become ready (falling back to a brief settle
+   when hooks cannot report readiness), verifies it is still live, and injects your task as
+   its first prompt. If the agent exits during startup, dispatch fails instead of sending
+   the prompt to a retained snapshot of its dead pane.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without

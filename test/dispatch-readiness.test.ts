@@ -173,7 +173,7 @@ test("the dispatcher does not retry delivery through an evicted session snapshot
       inject: async () => {
         sends += 1;
         live = undefined;
-        return { ok: true };
+        return { ok: true, pasted: true, submitVerified: true };
       },
     },
   );

@@ -3175,7 +3175,8 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Resolve a session at `cwd` that has proven it can read input, or null on timeout.
+   * Resolve the named session at `cwd` once it has proven it can read input. Returns
+   * null if that session is missing, exits while watched, or reaches the timeout.
    *
    * The proof is `hooksSeen`: a hook fired, which means the agent booted far enough to
    * run one - so its input loop exists. Nothing weaker works. Discovery only sees a
@@ -3184,9 +3185,9 @@ export class Registry extends EventEmitter {
    * dispatched task's opening prompt was silently swallowed; the task sat `running`
    * against an empty session).
    *
-   * Null does NOT mean "not ready" - it means "no evidence either way", which is the
-   * honest answer for an agent with no hooks installed. The caller decides what to do
-   * with that; don't upgrade it to a claim here.
+   * For a session that is still live, timeout does NOT mean "not ready" - it means "no
+   * evidence either way", which is the honest answer for an agent with no hooks installed.
+   * A caller that needs to distinguish that silence from exit must re-read `sessionId`.
    */
   waitForReadySessionAtCwd(
     cwd: string,
@@ -3225,7 +3226,11 @@ export class Registry extends EventEmitter {
     });
   }
 
-  /** Shared wait: an existing match short-circuits, else the next `session_upsert` that fits. */
+  /**
+   * Shared wait: an existing match short-circuits, else the next `session_upsert` that
+   * fits. A watched id must already name a live session at this cwd, and its exit ends
+   * the wait rather than allowing another process at the same cwd to satisfy it.
+   */
   private waitForSessionAtCwdMatching(
     cwd: string,
     timeoutMs: number,

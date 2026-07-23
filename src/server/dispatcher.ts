@@ -36,8 +36,8 @@ const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached tmux session there, wait for passive discovery to bind the
- * session (by worktree cwd), then inject the task as its first prompt.
+ * agent in a detached tmux session there, wait for passive discovery and readiness to
+ * bind that exact live session, then inject the task as its first prompt.
  *
  * Every step patches the task through the registry so progress streams to the UI
  * over SSE. `dispatch` never throws - a failure lands the task in `failed` with a
@@ -261,6 +261,8 @@ export class Dispatcher {
 
   /**
    * Type the intent and - when we can - confirm the agent actually took it.
+   * Each attempt resolves the session id again at the send boundary, so a retained
+   * exited snapshot can never lend its old pane to an initial send or retry.
    *
    * `injectPrompt` succeeding means tmux accepted the write, NOT that the agent read
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting

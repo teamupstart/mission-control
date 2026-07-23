@@ -86,6 +86,7 @@ function DiffViewerContent({
 
   useEffect(() => {
     let alive = true;
+    setDiff(null);
     setLoading(true);
     void fetchSessionDiff(session.id, commit ?? undefined).then((d) => {
       if (alive) {

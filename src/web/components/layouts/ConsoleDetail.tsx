@@ -33,6 +33,12 @@ import { InlineDiffViewer } from "../DiffViewer.tsx";
 
 type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
+type DiffSelection = {
+  sessionId: string;
+  commit: string | null;
+  requestNonce: number | undefined;
+};
+
 /**
  * This session's Foreman episodes, refetched whenever its note moves.
  *
@@ -88,7 +94,11 @@ export function ConsoleDetail({
   session: Session;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
-  const [diffCommit, setDiffCommit] = useState<string | null>(null);
+  const [diffSelection, setDiffSelection] = useState<DiffSelection>({
+    sessionId: session.id,
+    commit: null,
+    requestNonce: undefined,
+  });
   const [hasReply, setHasReply] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const transcriptRef = useRef<TranscriptHandle>(null);
@@ -105,15 +115,6 @@ export function ConsoleDetail({
   useEffect(() => {
     if (view.fileTabRequest?.sessionId === session.id) setTab("files");
   }, [view.fileTabRequest, session.id]);
-
-  // ConsoleView and BoardView key this detail by session today, but the selected fix is
-  // still session-scoped state. Clear it explicitly when the detail is ever reused for
-  // another session, rather than letting that session inherit a commit from the last one.
-  // The diff-request effect below runs afterward and restores a commit only when it was
-  // explicitly requested for this session.
-  useEffect(() => {
-    setDiffCommit(null);
-  }, [session.id]);
 
   useEffect(() => {
     const scroll = (direction: -1 | 1): void => {
@@ -135,7 +136,11 @@ export function ConsoleDetail({
   useEffect(() => {
     const request = view.diffTabRequest;
     if (request?.sessionId !== session.id) return;
-    setDiffCommit(request.commit);
+    setDiffSelection({
+      sessionId: session.id,
+      commit: request.commit,
+      requestNonce: request.nonce,
+    });
     setTab("diff");
   }, [view.diffTabRequest, session.id]);
 
@@ -258,7 +263,13 @@ export function ConsoleDetail({
               setTab(t.id);
               // The tab itself is the whole-checkout view. A fix-specific diff only
               // persists while it is the explicit destination of a fix-log action.
-              if (t.id === "diff") setDiffCommit(null);
+              if (t.id === "diff") {
+                setDiffSelection({
+                  sessionId: session.id,
+                  commit: null,
+                  requestNonce: undefined,
+                });
+              }
             }}
           >
             {t.label}
@@ -378,11 +389,9 @@ export function ConsoleDetail({
           session.cwd ? (
             <InlineDiffViewer
               session={session}
-              commit={diffCommit}
+              commit={diffSelection.sessionId === session.id ? diffSelection.commit : null}
               requestNonce={
-                view.diffTabRequest?.sessionId === session.id
-                  ? view.diffTabRequest.nonce
-                  : undefined
+                diffSelection.sessionId === session.id ? diffSelection.requestNonce : undefined
               }
             />
           ) : (

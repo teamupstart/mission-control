@@ -28,9 +28,14 @@ test("Console and Board route diff opens to their shared detail tab", () => {
 
   assert.match(app, /if \(layout === "grid"\)[\s\S]*?setDiffSessionId\(sessionId\)/);
   assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\);[\s\S]*?setDiffTabRequest/);
-  assert.match(detail, /view\.diffTabRequest[\s\S]*?setTab\("diff"\)/);
-  assert.match(detail, /<InlineDiffViewer[\s\S]*?requestNonce=\{[\s\S]*?diffTabRequest\.nonce/);
-  assert.match(detail, /useEffect\(\(\) => \{\s*setDiffCommit\(null\);\s*\}, \[session\.id\]\)/);
+  assert.match(
+    detail,
+    /setDiffSelection\(\{\s*sessionId: session\.id,\s*commit: request\.commit,\s*requestNonce: request\.nonce,\s*\}\);[\s\S]*?setTab\("diff"\)/,
+  );
+  assert.match(
+    detail,
+    /commit=\{diffSelection\.sessionId === session\.id \? diffSelection\.commit : null\}[\s\S]*?requestNonce=\{[\s\S]*?diffSelection\.requestNonce/,
+  );
   assert.doesNotMatch(detail, /Open the diff viewer/);
 });
 
@@ -40,7 +45,10 @@ test("explicit inline diff requests refetch and focus the reader", () => {
     "utf8",
   );
 
-  assert.match(viewer, /fetchSessionDiff\([\s\S]*?\[session\.id, commit, requestNonce\]/);
+  assert.match(
+    viewer,
+    /setDiff\(null\);\s*setLoading\(true\);[\s\S]*?fetchSessionDiff\([\s\S]*?\[session\.id, commit, requestNonce\]/,
+  );
   assert.match(viewer, /contentRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(viewer, /onKeyDown=\{inline \? \(e\) => onViewerKey\(e\.nativeEvent\)/);
   assert.match(

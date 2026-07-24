@@ -7,7 +7,11 @@ import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import type { HarnessesConfig } from "../src/shared/protocol.ts";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "../src/shared/types.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
-import { autoModeAgents, autoModeUnsupportedWhy } from "../src/shared/harness-capabilities.ts";
+import {
+  HARNESS_CAPABILITIES,
+  autoModeAgents,
+  autoModeUnsupportedWhy,
+} from "../src/shared/harness-capabilities.ts";
 
 /** Who the switch reaches, from the same declaration the panel reads. */
 const AUTO = autoModeAgents();
@@ -92,6 +96,27 @@ test("the auto-mode row makes no promise about harnesses it doesn't reach", () =
   // It used to say "Codex support comes later" - a commitment this panel is in no
   // position to make on a vendor's behalf, and one nothing would ever come back to.
   assert.doesNotMatch(render({ autoModeOnDispatch: false }), /comes later|coming soon/i);
+});
+
+test("auto mode support requires a launch-argument renderer", () => {
+  const modes = HARNESS_CAPABILITIES.claude.permissionModes!;
+  const launchArgs = modes.launchArgs;
+  modes.launchArgs = null;
+  try {
+    assert.equal(autoModeAgents().includes("claude"), false);
+    assert.match(autoModeUnsupportedWhy("claude") ?? "", /no launch-argument renderer/i);
+    assert.match(autoModeUnsupportedWhy("claude") ?? "", /human changing an existing session/i);
+  } finally {
+    modes.launchArgs = launchArgs;
+  }
+});
+
+test("the auto-mode row describes launch flags rather than a post-launch walk", () => {
+  const html = render({ autoModeOnDispatch: true });
+  assert.match(html, /launch(?:es)? directly in/i);
+  assert.match(html, /launch flag/i);
+  assert.match(html, /folder-trust dialog hides the mode footer/i);
+  assert.doesNotMatch(html, /switched to.*once (?:it(?:&#x27;)?s )?ready/i);
 });
 
 test("an enabled setting renders the switch checked", () => {

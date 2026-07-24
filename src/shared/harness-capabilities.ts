@@ -586,8 +586,8 @@ export function skillsAgents(): AgentType[] {
 }
 
 /**
- * The agents "auto mode on dispatch" actually reaches - the ones that both have
- * permission modes and name one meaning "proceed autonomously".
+ * The agents "auto mode on dispatch" actually reaches - the ones that name a mode
+ * meaning "proceed autonomously" and can render it as launch arguments.
  *
  * A setting whose switch reaches only some of the grid has to say which some, and the
  * settings panel used to answer that with the literal words "claude only" and "Codex
@@ -595,17 +595,20 @@ export function skillsAgents(): AgentType[] {
  * that nothing would fail to catch.
  */
 export function autoModeAgents(): AgentType[] {
-  return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].permissionModes?.onDispatch);
+  return AGENT_TYPES.filter((a) => {
+    const modes = HARNESS_CAPABILITIES[a].permissionModes;
+    return !!modes?.onDispatch && !!modes.launchArgs;
+  });
 }
 
 /**
- * Why "auto mode on dispatch" does not drive this harness through a mode CYCLE, or null
- * when it does.
+ * Why "auto mode on dispatch" cannot arm this harness at launch, or null when it can.
  *
- * Two different absences, said differently, because they are different facts: a harness
- * with no permission modes at all has nothing to switch, while one that HAS modes but
- * names no `onDispatch` has nothing that would mean "proceed without asking". Rolling
- * both into one sentence would make the second read as the first.
+ * Three different absences, said differently, because they are different facts: a
+ * harness with no permission modes at all has nothing to arm, one that HAS modes but
+ * names no `onDispatch` has nothing that would mean "proceed without asking", and one
+ * with that mode but no launch renderer can support only human-driven live-session
+ * changes. Rolling them into one sentence would misstate the declared capability.
  *
  * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
@@ -617,8 +620,10 @@ export function autoModeAgents(): AgentType[] {
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
   const modes = HARNESS_CAPABILITIES[agent].permissionModes;
   const who = AGENT_IDENTITY[agent].label;
-  if (!modes) return `${who} has no permission modes to switch, so nothing is typed at it after launch.`;
+  if (!modes) return `${who} has no permission modes to arm with a launch flag.`;
   if (!modes.onDispatch)
-    return `${who} has permission modes but none that mean "proceed without asking", so nothing is typed at it after launch.`;
+    return `${who} has permission modes but none that mean "proceed without asking", so no mode is armed at launch.`;
+  if (!modes.launchArgs)
+    return `${who} has an autonomous permission mode but no launch-argument renderer, so Mission Control cannot arm it at launch; its live TUI walk is reserved for a human changing an existing session.`;
   return null;
 }

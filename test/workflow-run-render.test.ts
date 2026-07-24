@@ -314,7 +314,7 @@ test("Inspector final gate renders provenance, heads, policies, findings, action
     prKey: "owner/repo#91",
     prUrl: "https://github.com/owner/repo/pull/91",
     targetHeadSha: "new-head",
-    failedHeadSha: "old-head",
+    failedHeadSha: "new-head",
     enteredAt: 8,
     lastObservedAt: 9,
     observedHeadSha: "new-head",
@@ -432,6 +432,7 @@ test("Inspector final gate renders provenance, heads, policies, findings, action
   assert.match(html, /Preserve provenance/);
   assert.match(html, /Legacy finding: detail was not persisted/);
   assert.match(html, /Persona review bypassed for Inspector repair/);
+  assert.match(html, /audited repair submission moved from old-head to new-head/);
   assert.match(html, /Recheck Inspector/);
   assert.match(html, /Restart full workflow/);
   assert.match(html, /Open Inspector settings/);

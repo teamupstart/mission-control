@@ -155,6 +155,13 @@ export function WorkflowRunView({
   const version = detail.version;
   const inspectorGate = detail.inspectorGate;
   const inspectorOnly = latest?.mode === "inspector_only";
+  const bypassSourceHead = inspectorOnly
+    && latest.context !== null
+    && typeof latest.context === "object"
+    && !Array.isArray(latest.context)
+    && typeof latest.context.failedHeadSha === "string"
+    ? latest.context.failedHeadSha
+    : null;
   const completionClaims = detail.events.flatMap((event) => {
     if (
       event.kind !== "workflow_completion_claimed"
@@ -262,7 +269,7 @@ export function WorkflowRunView({
       {inspectorOnly && (
         <p className="workflow-inspector-bypass" role="status">
           <strong>Persona review bypassed for Inspector repair</strong>
-          {" "}The audited repair submission moved from {inspectorGate?.state.failedHeadSha?.slice(0, 12) ?? "an earlier head"} to{" "}
+          {" "}The audited repair submission moved from {bypassSourceHead?.slice(0, 12) ?? "an earlier head"} to{" "}
           {latest.prHeadSha?.slice(0, 12) ?? "a newly observed head"} without Persona attempts.
         </p>
       )}

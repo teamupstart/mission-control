@@ -202,6 +202,48 @@ Written from `harness/codex/launch.ts` it pointed four levels above the bundle, 
 failed, and every packaged build silently launched Codex uninstrumented - the designed
 fallback firing for a reason that is not the designed one.
 
+**Launch-scoped MCP is declared ONCE, in `src/server/mission-mcp.ts`.** One descriptor -
+`mcpServerPath()` plus a runtime and its env - rendered into whichever launch grammar the
+harness speaks: Claude's `--mcp-config` JSON file (written atomically, still at
+`<state>/ask-channel/mcp.json` because renaming it would orphan the file every installed
+argv already points at) and Codex's three `-c mcp_servers.mission-control.*` TOML
+overrides. All three of Codex's keys or none: a `command` with no `args`, or an Electron
+runtime with no `ELECTRON_RUN_AS_NODE`, is a server that looks registered and never starts.
+`MISSION_MCP_TOOLS` is the tool vocabulary a caller REQUIRES by name, and a name that does
+not match what `src/mcp/server.ts` publishes pre-approves nothing while looking as if it
+did - `mission-mcp.test.ts` scrapes that file's `registerTool` calls and fails on drift.
+`askChannelArgs` consumes the descriptor and stays all-four-or-none; a required tool widens
+its `--allowed-tools` rather than adding a second registration. None of this touches what
+`claude mcp add` / `codex mcp add` wrote machine-wide (`src/main/integrations.ts`), and none
+of it reaches a session an operator started. Test: `mission-mcp.test.ts`.
+
+**A dispatch may pin its input commit, and that is mechanism with no policy in it.**
+`TaskDispatchOptions` (`src/server/dispatcher.ts`) is ephemeral and server-only - nothing on
+it is persisted on a Task, because a caller that needs a relaunch to make the same request
+has to hold that request in its own durable state anyway. `verifyPinnedBase` takes FULL
+commit ids only: a ref name resolves fine and means something different an hour later, which
+is the drift a pin exists to remove. Both providers converge on that commit - the git
+fallback cuts from it instead of `HEAD`, a pool lease is hard-reset to it after
+`pinLeasedWorktree` proves the tree belongs to this repository - and both then re-read `HEAD`
+to prove it took. A pinned provisioning failure unwinds what it created (return the lease,
+tear down the worktree) before throwing, because it throws before the Dispatcher records the
+path and nothing downstream could ever find it. Test: `dispatch-pinned-base.test.ts`,
+`dispatcher-cleanup.test.ts`.
+
+**A worktree is captured through a TEMPORARY index, never the real one.**
+`src/server/git/ensemble-snapshot.ts`: `read-tree` / `add -A` / `write-tree` / `commit-tree`
+under `GIT_INDEX_FILE`, then one ref under `refs/mission-control/ensembles/<uuid>/<uuid>`.
+That is what leaves the member's staged/unstaged split, HEAD, branch and working tree
+byte-identical - a capture that committed through the real index would silently rewrite the
+staging area of an agent that is still working. Ref components are validated as generated
+UUIDs before they reach `update-ref`. `resetWorktreeToCommit` is the ONE owner of "hard
+reset, then `clean -fd` and never `-fdx`", shared by pinned provisioning and artifact
+restore: `-x` would delete the ignored warm dependencies a pooled tree exists to keep.
+Diffs are `baseSha..snapshotSha` DIRECTLY, never through a merge-base walk, because a member
+may amend or rebase and the snapshot is still an exact artifact; truncation reports its
+omitted byte count, and a patch too large to buffer is refused rather than given an invented
+one. Test: `ensemble-snapshot.test.ts`.
+
 **`applyHook`'s attribution guard compares against `discoveredIdentity`, and nothing else.**
 That map (`src/server/registry.ts`) holds what PASSIVE DISCOVERY read off the live process -
 the rollout an exact pid holds open - which a hook cannot contradict. `Session.agentSessionId`

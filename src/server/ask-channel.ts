@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { randomBytes } from "node:crypto";
-import { basename, join } from "node:path";
 import type { AgentType } from "@shared/types.ts";
-import { STATE_DIR, mcpServerPath } from "./config.ts";
-import { run } from "./util/exec.ts";
+import { mcpServerPath } from "./config.ts";
+import {
+  claudeMissionMcpArgs,
+  missionMcpDescriptor,
+  missionMcpPaths,
+  missionMcpToolName,
+  type MissionMcpRequirement,
+} from "./mission-mcp.ts";
 
 // The ask channel: how a dispatched agent asks its human a question.
 //
@@ -48,15 +51,21 @@ import { run } from "./util/exec.ts";
 // spawn that takes the built-in away supplies the replacement, so no machine state can have
 // one without the other. User-scope registration still serves human-started sessions; it is
 // just no longer what this rests on.
+//
+// WHICH server that registration points at is not decided here - `mission-mcp.ts` owns the
+// bundle path, the runtime, the env and the server name, because Codex's launch needs the
+// same answer in a completely different grammar and two copies of it is how one of them
+// ends up pointed at a stale path nobody notices.
 
-/** The subdirectory holding the one file the spawn argv points at. */
-const CHANNEL_DIR = join(STATE_DIR, "ask-channel");
-const MCP_CONFIG_PATH = join(CHANNEL_DIR, "mcp.json");
-
-/** What the MCP server is registered as, and therefore the prefix its tools carry. */
-const SERVER_NAME = "mission-control";
-/** The fully-qualified tool name, as Claude namespaces an MCP tool. */
-export const ASK_TOOL = `mcp__${SERVER_NAME}__request_input`;
+/**
+ * The fully-qualified tool name, as Claude namespaces an MCP tool.
+ *
+ * Derived from the shared descriptor's server name rather than spelled again: the
+ * pre-approval below only covers a tool whose name matches what the registration
+ * produces, and a mismatch is silent - the agent stops on a permission prompt for a tool
+ * we thought we had waved through.
+ */
+export const ASK_TOOL = missionMcpToolName("request_input");
 /** The built-in this replaces. */
 export const DISALLOWED_TOOL = "AskUserQuestion";
 
@@ -117,73 +126,6 @@ assumption than ask, that is fine - say which assumption you made and keep going
 not fine is stopping to ask where no one can hear you.`;
 
 /**
- * How to launch the MCP server bundle: a runtime and any env it needs.
- *
- * The daemon runs either under a real `node` (dev, `npm start`) or inside an Electron
- * `utilityProcess`, where `process.execPath` is the Electron binary and needs
- * `ELECTRON_RUN_AS_NODE=1` to behave like node. Same problem `integrations.ts` solves for
- * `claude mcp add`, solved the same way and for the same reason: Claude Code launches this
- * bundle as an EXTERNAL process, so it needs a concrete, absolute runtime rather than
- * whatever happens to be on the spawned shell's PATH.
- */
-interface McpRuntime {
-  command: string;
-  env: Record<string, string>;
-}
-
-/** Resolved once per daemon lifetime - it cannot change while we run, and it may shell out. */
-let cachedRuntime: McpRuntime | undefined;
-
-async function resolveMcpRuntime(): Promise<McpRuntime> {
-  if (cachedRuntime) return cachedRuntime;
-  // Already a real node (dev, or a daemon started directly): use it, no subprocess needed.
-  if (/^node(\.exe)?$/.test(basename(process.execPath))) {
-    return (cachedRuntime = { command: process.execPath, env: {} });
-  }
-  const which = await run("which", ["node"]);
-  const found = which.stdout.trim().split("\n")[0];
-  if (which.code === 0 && found && existsSync(found)) {
-    return (cachedRuntime = { command: found, env: {} });
-  }
-  // No system node - run the Electron binary in node mode, exactly as integrations.ts does.
-  return (cachedRuntime = {
-    command: process.execPath,
-    env: { ELECTRON_RUN_AS_NODE: "1" },
-  });
-}
-
-/**
- * Write `file` only when its content would change, and ATOMICALLY when it does.
- *
- * The skip is an optimisation; the atomicity is not. This path is what the spawn argv
- * points at, so a plain `writeFileSync` over it can be read half-written by a `claude` that
- * a concurrent dispatch started moments earlier. A truncated `mcp.json` means no
- * `request_input` while `--disallowed-tools` still applies - arm B exactly, the one state
- * this module exists to prevent. Temp file in the SAME directory (so the rename cannot cross
- * a filesystem) then `renameSync`, which is atomic: a reader sees the old file or the new one.
- */
-function writeIfChanged(path: string, content: string): void {
-  try {
-    if (readFileSync(path, "utf8") === content) return;
-  } catch {
-    // Missing or unreadable: fall through and write it.
-  }
-  // Unique per writer, so two dispatches racing cannot share a temp file and interleave.
-  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  try {
-    writeFileSync(tmp, content);
-    renameSync(tmp, path);
-  } catch (err) {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      // Best effort - the throw below is what the caller acts on.
-    }
-    throw err;
-  }
-}
-
-/**
  * Build the argv fragment that routes a dispatched session's questions to the dashboard.
  *
  * ALL FOUR FLAGS OR NONE. That is the entire contract of this function, and the reason it
@@ -211,41 +153,40 @@ function writeIfChanged(path: string, content: string): void {
  * construction; failing to set it up is never a reason to fail the task.
  *
  * Claude-only: these are Claude's flags, and codex has no equivalent.
+ *
+ * `require` widens WHAT is pre-approved, never how many registrations there are. Claude
+ * already gets the Mission MCP server on every dispatch - that is what supplies
+ * `request_input` - so a caller that needs another of our tools (Phase 4's ensemble
+ * submission, say) is asking for one more name on the SAME `--allowed-tools`, not a second
+ * `--mcp-config`. Passing it as one comma-separated value rather than several argv words:
+ * `claude --help` documents the flag as "comma or space-separated", and one word cannot be
+ * mistaken for the start of the next flag's value by a variadic parser.
  */
-export async function askChannelArgs(agent: AgentType): Promise<string[]> {
+export async function askChannelArgs(
+  agent: AgentType,
+  require: MissionMcpRequirement | null = null,
+): Promise<string[]> {
   if (agent !== "claude") return [];
 
   try {
-    const server = mcpServerPath();
-    if (!existsSync(server)) {
+    const descriptor = await missionMcpDescriptor();
+    if (!descriptor) {
       console.warn(
-        `[mission-control] MCP server bundle not found at ${server} - dispatched sessions will ` +
+        `[mission-control] MCP server bundle not found at ${mcpServerPath()} - dispatched sessions will ` +
           `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
           `Disallowing it without a replacement would leave the agent no way to ask at all.`,
       );
       return [];
     }
 
-    const runtime = await resolveMcpRuntime();
-    mkdirSync(CHANNEL_DIR, { recursive: true });
-    writeIfChanged(
-      MCP_CONFIG_PATH,
-      JSON.stringify(
-        {
-          mcpServers: {
-            [SERVER_NAME]: { command: runtime.command, args: [server], env: runtime.env },
-          },
-        },
-        null,
-        2,
-      ),
-    );
+    // Deduplicated and ask-first, so the common case is byte-identical to what a dispatch
+    // without a requirement passes.
+    const allowed = [...new Set([ASK_TOOL, ...(require?.tools ?? []).map(missionMcpToolName)])];
 
     return [
-      "--mcp-config",
-      MCP_CONFIG_PATH,
+      ...claudeMissionMcpArgs(descriptor),
       "--allowed-tools",
-      ASK_TOOL,
+      allowed.join(","),
       "--disallowed-tools",
       DISALLOWED_TOOL,
       "--append-system-prompt",
@@ -261,8 +202,11 @@ export async function askChannelArgs(agent: AgentType): Promise<string[]> {
   }
 }
 
-/** The path the argv points at - for tests and for anyone debugging a dispatched session. */
-export const askChannelPaths = { dir: CHANNEL_DIR, mcpConfig: MCP_CONFIG_PATH };
+/**
+ * The path the argv points at - for tests and for anyone debugging a dispatched session.
+ * One file, owned by `mission-mcp.ts`; this is the ask channel's name for it.
+ */
+export const askChannelPaths = { dir: missionMcpPaths.dir, mcpConfig: missionMcpPaths.config };
 
 /** The redirect appended to a dispatched agent's system prompt - exported for tests. */
 export const askChannelPrompt = REDIRECT_PROMPT;

@@ -92,7 +92,7 @@ test("every harness answers the hooks question - claude and codex push, pi does 
   assert.equal(codexHooks.scope, "launch");
 });
 
-test("Codex launch overrides contain command handlers, not inert matcher fields", () => {
+test("Codex launch overrides contain command handlers, not inert matcher fields", async () => {
   // Codex's hook schema is event -> matcher group -> hook handler. The former launch argv
   // stopped one level early at `{command=[node, bridge, event]}`. Its TOML was accepted,
   // but there was no `hooks` array and therefore no handler to run: in particular no
@@ -100,14 +100,17 @@ test("Codex launch overrides contain command handlers, not inert matcher fields"
   const bridge = join(home, "bridge with a ' quote.mjs");
   writeFileSync(bridge, "");
   process.env.MISSION_CODEX_HOOK = bridge;
-  let prepared: ReturnType<typeof prepareCodexLaunch>;
+  let prepared: Awaited<ReturnType<typeof prepareCodexLaunch>>;
   try {
-    prepared = prepareCodexLaunch(false);
+    // No Mission MCP requirement, so the hook overrides are still the whole of the argv -
+    // which is what the exact indexing below depends on.
+    prepared = await prepareCodexLaunch(false);
   } finally {
     delete process.env.MISSION_CODEX_HOOK;
   }
 
   assert.equal(prepared.instrumented, true);
+  assert.equal(prepared.missionMcp, false, "nobody asked for it, so nothing registered it");
   assert.equal(prepared.args.at(-1), "--dangerously-bypass-hook-trust");
   const configArgs = prepared.args.slice(0, -1);
   assert.equal(configArgs.length, CODEX_HOOK_EVENTS.length * 2);

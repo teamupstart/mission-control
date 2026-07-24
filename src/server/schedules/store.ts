@@ -860,6 +860,16 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
       return { outcome: "schedule_changed" as const };
     }
 
+    const coveredById =
+      input.coveredById !== null &&
+      d
+        .prepare(
+          `SELECT 1 FROM mission_schedule_occurrences
+            WHERE id = ? AND schedule_id = ?`,
+        )
+        .get(input.coveredById, input.scheduleId)
+        ? input.coveredById
+        : null;
     const info = d
       .prepare(
         `INSERT INTO mission_schedule_occurrences (
@@ -878,7 +888,7 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
         input.decisionKind,
         input.claimedAt,
         input.taskId,
-        input.coveredById,
+        coveredById,
         input.blockingTaskId,
         input.delayMs,
         input.claimedAt,
@@ -939,7 +949,6 @@ export interface FinishOccurrenceInput {
   finishedAt: number;
   /** Set when the created task's id differs from the preallocated one. Rarely needed. */
   taskId?: string | null;
-  coveredById?: string | null;
   error?: string | null;
 }
 
@@ -957,16 +966,46 @@ export function finishOccurrence(input: FinishOccurrenceInput): ScheduleOccurren
     `UPDATE mission_schedule_occurrences
         SET status = ?, finished_at = ?,
             task_id = COALESCE(?, task_id),
-            covered_by_id = COALESCE(?, covered_by_id),
             error = ?
       WHERE id = ? AND status = 'claimed'`,
   ).run(
     input.status,
     input.finishedAt,
     input.taskId ?? null,
-    input.coveredById ?? null,
     input.error ?? null,
     input.id,
   );
   return getOccurrence(input.id);
+}
+
+/**
+ * Attach coalesced rows only after their covering occurrence exists durably.
+ *
+ * The existence check and update share one transaction so a missing cover leaves the
+ * dependent rows null rather than persisting an id that no occurrence owns.
+ */
+export function recordOccurrenceCoverage(
+  coveredById: string,
+  occurrenceIds: string[],
+): number {
+  if (occurrenceIds.length === 0) return 0;
+  const d = openDb();
+  return inTransaction(d, () => {
+    const covering = d
+      .prepare(`SELECT schedule_id FROM mission_schedule_occurrences WHERE id = ?`)
+      .get(coveredById) as { schedule_id: string } | undefined;
+    if (!covering) return 0;
+    const placeholders = occurrenceIds.map(() => "?").join(",");
+    const info = d
+      .prepare(
+        `UPDATE mission_schedule_occurrences
+            SET covered_by_id = ?
+          WHERE schedule_id = ?
+            AND id IN (${placeholders})
+            AND decision_kind = 'coalesced'
+            AND covered_by_id IS NULL`,
+      )
+      .run(coveredById, covering.schedule_id, ...occurrenceIds);
+    return Number(info.changes);
+  });
 }

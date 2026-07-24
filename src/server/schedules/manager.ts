@@ -369,14 +369,20 @@ export class ScheduleManager {
     const prepared = await this.prepareDefinition(input, at);
     if (!prepared.ok) return prepared;
 
-    const nextRunAt = current.enabled
-      ? this.firstRunAfter(prepared.definition, at)
+    const committedAt = this.now();
+    const fresh = store.getSchedule(id, committedAt);
+    if (!fresh) return refuse("name", `no schedule ${id}`);
+    if (fresh.archivedAt !== null)
+      return refuse("name", "this schedule is archived");
+
+    const nextRunAt = fresh.enabled
+      ? this.firstRunAfter(prepared.definition, committedAt)
       : null;
     const schedule = store.updateSchedule(
       id,
       prepared.definition,
       nextRunAt,
-      at,
+      committedAt,
     );
     if (!schedule) return refuse("name", `no schedule ${id}`);
     this.notifySchedule(schedule);
@@ -699,13 +705,13 @@ export class ScheduleManager {
       });
     }
 
-    // Occurrence ids for the whole plan up front, so a coalesced instant can name the run
-    // that covers it in the very transaction that reserves it.
     const occurrenceIds = plan.map(() => this.uuid());
     // Tasks this pass has already filed. Read before the DB for the `skip-active` check
     // because it is the authority on what THIS tick did, whatever a query may or may not
     // see of a write made moments ago.
     let createdThisTick: string | null = null;
+    const pendingCoverage = new Map<number, string[]>();
+    let durableStateChanged = false;
 
     for (const [index, entry] of plan.entries()) {
       summary.due++;
@@ -731,10 +737,7 @@ export class ScheduleManager {
         triggerKind: "scheduled",
         decisionKind,
         taskId: decisionKind === "create_task" ? this.uuid() : null,
-        coveredById:
-          entry.coveredByIndex === null
-            ? null
-            : (occurrenceIds[entry.coveredByIndex] ?? null),
+        coveredById: null,
         blockingTaskId: overlap?.blockingTaskId ?? null,
         claimedAt: now,
         delayMs,
@@ -755,7 +758,28 @@ export class ScheduleManager {
         // enumerate them again from the cursor and decide afresh.
         summary.lost++;
         this.log("schedule-changed", { schedule: schedule.id, at: entry.at });
+        if (durableStateChanged) {
+          const latest = store.getSchedule(schedule.id, this.now());
+          if (latest) this.notifySchedule(latest);
+        }
         return;
+      }
+      durableStateChanged = true;
+      if (
+        entry.coveredByIndex !== null &&
+        claim.occurrence.decisionKind === "coalesced"
+      ) {
+        const dependents = pendingCoverage.get(entry.coveredByIndex) ?? [];
+        dependents.push(claim.occurrence.id);
+        pendingCoverage.set(entry.coveredByIndex, dependents);
+      }
+      const dependents = pendingCoverage.get(index);
+      if (
+        dependents &&
+        dependents.length > 0 &&
+        claim.occurrence.decisionKind === decisionKind
+      ) {
+        store.recordOccurrenceCoverage(claim.occurrence.id, dependents);
       }
       if (claim.outcome === "already_exists") {
         summary.lost++;

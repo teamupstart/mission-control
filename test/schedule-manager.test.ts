@@ -28,6 +28,7 @@ const store = await import("../src/server/schedules/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { ScheduleManager } = await import("../src/server/schedules/manager.ts");
+const { recurrence } = await import("../src/server/schedules/recurrence.ts");
 const { SCHEDULE_CATCHUP_CREATE_CAP } = await import("../src/shared/schedules.ts");
 type CreateScheduleInput = import("../src/server/schedules/manager.ts").CreateScheduleInput;
 type ScheduleManagerDeps = import("../src/server/schedules/manager.ts").ScheduleManagerDeps;
@@ -265,6 +266,45 @@ test("coalesce-latest judges a catch-up larger than one recurrence page only onc
   assert.equal(summary.coalesced, 599);
   assert.equal(tasksFor(created.id)[0]?.scheduledFor, firstHour + 599 * HOUR);
   assert.equal(allOccurrencesFor(created.id).length, 600);
+});
+
+test("a stopped catch-up never persists coverage for an occurrence that does not exist", async () => {
+  let scheduleId = "";
+  let armed = false;
+  const coverAt = NINE + 2 * DAY;
+  const h = harness("coverage-crash", {
+    recurrence: {
+      validate: (...args) => recurrence.validate(...args),
+      nextAfter: (...args) => {
+        if (armed && args[2] === coverAt) {
+          armed = false;
+          store.archiveSchedule(scheduleId, coverAt + 5_000);
+        }
+        return recurrence.nextAfter(...args);
+      },
+      between: (...args) => recurrence.between(...args),
+      preview: (...args) => recurrence.preview(...args),
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+  scheduleId = created.id;
+  armed = true;
+  h.clock.now = coverAt + 5_000;
+
+  const summary = await h.manager.tick();
+
+  assert.equal(summary.coalesced, 2);
+  assert.equal(summary.lost, 1);
+  assert.equal(tasksFor(created.id).length, 0);
+  const history = allOccurrencesFor(created.id);
+  assert.equal(history.length, 2);
+  assert.ok(history.every((row) => row.coveredById === null));
+  assert.ok(
+    history.every(
+      (row) => row.coveredById === null || store.getOccurrence(row.coveredById) !== null,
+    ),
+  );
+  assert.deepEqual(h.removed, [created.id]);
 });
 
 test("skip records every crossed instant and files nothing", async () => {
@@ -1038,4 +1078,78 @@ test("editing a live schedule recomputes the cursor from the edit, not the old c
   // And the cadence it replaced does not fire once more on the way out.
   h.clock.now = NINE + 60_000;
   assert.equal((await h.manager.tick()).due, 0);
+});
+
+test("an edit uses the enabled state that remains after repository validation", async () => {
+  let blockUpdate = false;
+  let releaseUpdate!: () => void;
+  let updateStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    updateStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const h = harness("edit-resume-race", {
+    resolveRepoRoot: async (path) => {
+      if (blockUpdate) {
+        updateStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition({ enabled: false }))).schedule;
+  h.clock.now = NINE - 30 * 60_000;
+  blockUpdate = true;
+  const editing = h.manager.update(created.id, {
+    ...definition(),
+    expression: "0 17 * * *",
+  });
+  await started;
+  h.clock.now = NINE + DAY + HOUR;
+  const resumed = ok(await h.manager.setEnabled(created.id, true)).schedule;
+  assert.equal(resumed.nextRunAt, NINE + 2 * DAY);
+  releaseUpdate();
+
+  const edited = ok(await editing).schedule;
+  assert.equal(edited.enabled, true);
+  assert.equal(edited.nextRunAt, Date.parse("2026-07-24T17:00:00Z"));
+});
+
+test("an edit cannot commit after the schedule is archived during validation", async () => {
+  let blockUpdate = false;
+  let releaseUpdate!: () => void;
+  let updateStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    updateStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const h = harness("edit-archive-race", {
+    resolveRepoRoot: async (path) => {
+      if (blockUpdate) {
+        updateStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+  blockUpdate = true;
+  const editing = h.manager.update(created.id, {
+    ...definition(),
+    expression: "0 17 * * *",
+  });
+  await started;
+  await h.manager.archive(created.id);
+  releaseUpdate();
+
+  const result = await editing;
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.error.message, "this schedule is archived");
+  const archived = store.getSchedule(created.id)!;
+  assert.equal(archived.revision, 1);
+  assert.notEqual(archived.archivedAt, null);
 });

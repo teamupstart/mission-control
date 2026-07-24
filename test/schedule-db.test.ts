@@ -717,7 +717,7 @@ test("Run now claims without moving the cron cursor", () => {
   assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, T0 + HOUR, "cron cursor untouched");
 });
 
-test("the claim carries its immutable decision and its coverage reference", () => {
+test("coverage stays null until its covering occurrence exists durably", () => {
   const s = mkSchedule();
   const claim = store.claimOccurrence({
     occurrenceId: uid("occ"),
@@ -737,10 +737,30 @@ test("the claim carries its immutable decision and its coverage reference", () =
   assert.ok(claim.outcome === "claimed");
   if (claim.outcome !== "claimed") return;
   assert.equal(claim.occurrence.decisionKind, "coalesced");
-  assert.equal(claim.occurrence.coveredById, "occ-later");
+  assert.equal(claim.occurrence.coveredById, null);
   assert.equal(claim.occurrence.taskId, null);
   assert.equal(claim.occurrence.delayMs, 8 * HOUR);
   assert.equal(claim.occurrence.status, "claimed");
+
+  const cover = store.claimOccurrence({
+    occurrenceId: uid("cover"),
+    scheduleId: s.id,
+    scheduleRevision: 1,
+    scheduledFor: T0 + 2 * HOUR,
+    triggerKind: "scheduled",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + 9 * HOUR,
+    delayMs: 7 * HOUR,
+    advanceCursor: true,
+    nextRunAt: T0 + 10 * HOUR,
+  });
+  assert.ok(cover.outcome === "claimed");
+  if (cover.outcome !== "claimed") return;
+  assert.equal(store.recordOccurrenceCoverage(cover.occurrence.id, [claim.occurrence.id]), 1);
+  assert.equal(store.getOccurrence(claim.occurrence.id)?.coveredById, cover.occurrence.id);
 });
 
 // ---- finishing and recovery ----

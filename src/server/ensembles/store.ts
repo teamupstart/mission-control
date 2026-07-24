@@ -122,7 +122,7 @@ function parseShape<T>(table: EnsembleTable, schema: z.ZodType<T>, value: unknow
  * Parse a JSON column, or throw naming the column.
  *
  * Throws rather than degrading because these columns are the run's own state - a stage's
- * input, an artifact's locator - and a silently-empty one would let a later phase act as if
+ * input, an artifact's locator - and a silently-empty one would let the runtime act as if
  * the stage had no subjects. The one column that degrades instead is `compiled_plan_json`,
  * below, because a plan from the future is an expected condition rather than corruption.
  */
@@ -1025,8 +1025,7 @@ export class EnsembleStore {
   /**
    * Every run that has not reached a terminal state.
    *
-   * The restart query. Phase 3 does not EXECUTE it - there is nothing yet to resume - but it
-   * is the read every later recovery pass starts from, and the terminal set it filters on is
+   * The restart query every recovery pass starts from. The terminal set it filters on is
    * derived from the status tuple rather than written out again here.
    */
   listNonTerminalRuns(): EnsembleRun[] {

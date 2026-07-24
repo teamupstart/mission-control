@@ -234,13 +234,13 @@ export type EnsembleOutcomeKind = (typeof ENSEMBLE_OUTCOME_KINDS)[number];
 // ---- bounds ----
 
 /**
- * Every durable text/JSON cap in one place, so a store, a compiler and a later route cannot
+ * Every durable text/JSON cap in one place, so stores, compilers and routes cannot
  * disagree about what "bounded" means. Byte caps are UTF-8 bytes, not code units.
  */
 export const ENSEMBLE_LIMITS = {
   title: 200,
   intent: 20_000,
-  /** One member's declarative prompt appendix. Fencing and evidence land in later phases. */
+  /** One member's declarative appendix, rendered into its bounded launch prompt. */
   rolePrompt: 8_000,
   roleKey: 120,
   roleLabel: 120,
@@ -605,7 +605,7 @@ export interface EnsembleRun {
 /**
  * A run this build can execute.
  *
- * The type every later phase's engine works in. Reaching it costs one call to
+ * The type the engine works in. Reaching it costs one call to
  * `ensembleIsRunnable`, and that call is the fail-closed gate: there is no other way to get
  * a non-null plan out of an `EnsembleRun`.
  */
@@ -820,7 +820,7 @@ export interface EnsembleSummary {
   completedAt: number | null;
 }
 
-/** Everything one run is, for the HTTP detail read a later phase serves. */
+/** Everything one run is, returned by its bounded HTTP detail read. */
 export interface EnsembleRunDetail {
   run: EnsembleRun;
   members: EnsembleMember[];

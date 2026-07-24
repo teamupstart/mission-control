@@ -2412,9 +2412,9 @@ export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATE
 // The durable half of `@shared/ensemble.ts`. Row parsers in `src/server/ensembles/store.ts`
 // classify every TEXT enum and validate every JSON column before a typed record exists:
 // unknown enums degrade to null for version skew, while malformed JSON fails at ONE boundary
-// rather than surfacing as an undefined three call sites later. No route consumes them yet -
-// Phase 3 launches nothing - but the shapes are fixed now because they are what a later route,
-// the MCP submission tool and the dashboard all have to agree with.
+// rather than surfacing as an undefined three call sites later. The store, read routes, MCP
+// submission tool and eventual dashboard all consume these shapes rather than inventing a
+// second wire vocabulary.
 
 /** Recursive, JSON-only durable payload validation. */
 export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>

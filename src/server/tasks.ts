@@ -88,14 +88,15 @@ export interface TaskScheduleProvenance {
 
 /**
  * What an INTERNAL, durable producer supplies that no human caller may: a task id it
- * chose itself, plus schedule provenance when the scheduler is the producer.
+ * chose itself, plus schedule provenance only when the scheduler is the producer. Ensemble
+ * ownership stays normalized in `ensemble_members`; copying it onto Task would create a
+ * second source of truth.
  *
- * The id is the whole mechanism behind exactly-once. The scheduler reserves an occurrence
- * and the id of the task it is going to create in ONE transaction, then creates the task.
- * A crash between those two leaves a claimed occurrence naming a task that does not exist,
- * and recovery finishes the job by calling this again with the same id. Which only works
- * if a second call with an id that already exists is a no-op rather than a second task -
- * see `create`.
+ * The id is the whole mechanism behind retry-safe creation. The scheduler reserves an
+ * occurrence and task id in one transaction; the ensemble engine persists a member attempt
+ * and task id before creating the Task. Recovery repeats the same call, which returns an
+ * existing Task only when its owning inputs still match and otherwise fails closed - see
+ * `create`.
  *
  * Deliberately a second argument rather than fields on `CreateTaskInput`: every ordinary
  * caller parses a request body into that type, and an id accepted there would be an id an
@@ -770,25 +771,22 @@ export class TaskManager {
    * instant it is dispatched, not after a subprocess. It appears under the heuristic title,
    * which `autoTitleThenDispatch` replaces over SSE a beat later.
    *
-   * `internal` is the durable producer's door - today the Recurring Missions scheduler,
-   * and any future writer that has to survive its own crash. It makes this call idempotent
-   * on a caller-chosen id, which is the property the exactly-once ledger is built on. See
-   * `InternalCreateOptions`. Omitting it is every other caller, and their behaviour here is
-   * unchanged: fresh UUID, model titling when the title is blank, dispatch when it is not.
+   * `internal` is the durable producer's door - today the Recurring Missions scheduler and
+   * the ensemble engine. It makes this call idempotent on a caller-chosen id, which is the
+   * property both recovery paths are built on. See `InternalCreateOptions`. Omitting it is
+   * every other caller, and their behaviour here is unchanged: fresh UUID, model titling
+   * when the title is blank, dispatch when it is not.
    */
   create(input: CreateTaskInput, internal?: InternalCreateOptions): Task {
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     const id = internal?.id ?? randomUUID();
     if (internal) {
-      // Two rules, and the difference between them is the difference between recovering
-      // and corrupting. An id that already carries THIS occurrence's provenance is the
-      // crash window closing: the task was persisted before the process died, so this
-      // call has nothing left to do and must not re-emit, re-title or re-dispatch it. An
-      // id that exists carrying anything else is not a retry at all - the scheduler
-      // reserved an id that belongs to somebody else's task - and writing over it would
-      // rewrite a stranger's work as a recurring mission. Fail closed and let the
-      // occurrence record `failed`, which is visible, rather than "succeeding" quietly.
+      // Two producer-specific identity checks, with the same recovery rule. A scheduled id
+      // must carry THIS occurrence's provenance; an ensemble id must still carry the exact
+      // member Task inputs its attempt reserved. A match closes the crash window without
+      // re-emitting, re-titling or re-dispatching. Anything else means the id belongs to a
+      // different Task, so fail closed rather than adopt and rewrite a stranger's work.
       const existing = getDurableTask(id);
       if (existing) {
         if (internal.schedule) {
@@ -816,13 +814,10 @@ export class TaskManager {
         }
         return existing;
       }
-      // Both are the scheduler's own contract, asserted at the one place that could break
-      // it rather than trusted at each call site. A schedule files backlog work and stops:
-      // Foreman remains the only autonomous dispatch path, and a `backlog: false` reaching
-      // here would hand a recurring mission a worktree and a terminal with no capacity,
-      // allowlist or pane-safety gate having been consulted. The title is the other half -
-      // a blank one takes the model-titling path below, which would spend an LLM call on
-      // every single run to derive the same string from the same intent.
+      // Shared contract for every durable producer, asserted here rather than trusted at
+      // each call site: first persist a named ordinary backlog Task. The scheduler stops
+      // there; the ensemble engine separately dispatches through TaskManager only after the
+      // complete wave exists. A blank title would also put model titling on a recovery path.
       if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }

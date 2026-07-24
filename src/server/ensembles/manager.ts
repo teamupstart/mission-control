@@ -50,14 +50,14 @@ import {
 } from "./strategies/index.ts";
 
 /**
- * Validation, compilation and the compact projection - and nothing that launches.
+ * Validation, compilation, strategy-neutral execution and the compact projection.
  *
- * This is the whole daemon-facing boundary for ensembles as of this phase. It can compile a
- * request into an immutable plan and persist the run and its roster, and it can publish the
- * compact summaries the browser's live state receives. It cannot dispatch a task, provision
- * a worktree, capture an artifact, run an evaluator or finalize anything: those are later
- * phases, and NOTHING routes to `create` yet, so a half-built orchestration cannot be reached
- * by a user.
+ * This is the daemon-facing boundary for ensembles. It compiles and persists immutable plans,
+ * preflights and pins launch inputs, delegates ordinary Task lifecycle through the injected
+ * gateway, captures submissions through artifact adapters, recovers non-terminal runs, and
+ * publishes the compact summaries the browser's live state receives. Production deliberately
+ * exposes no CREATE route yet: review, decision and finalization drivers park until their
+ * implementations land, so a half-built Best-of-N orchestration cannot be reached by a user.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog
@@ -218,9 +218,8 @@ export class EnsembleManager {
   /**
    * Runs a restart would have to reconcile.
    *
-   * Exposed, not executed. Phase 3 launches nothing, so there is nothing in flight to
-   * resume; this is the read the recovery pass starts from, and having it here means the
-   * later phase adds a caller rather than a second definition of "not finished".
+   * This is the single definition of "not finished" the startup recovery pass consumes;
+   * keeping it on the manager prevents a caller from re-encoding the terminal-status set.
    */
   nonTerminalRuns(): EnsembleRun[] {
     return this.store.listNonTerminalRuns();

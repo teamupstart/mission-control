@@ -47,7 +47,8 @@ import {
   resolveLiveSession,
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
-import { decideReviewFollowup } from "./review-followup.ts";
+import { advanceFollowupMark, decideReviewFollowup } from "./review-followup.ts";
+import type { FollowupMark } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -660,7 +661,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 }
 
 /**
- * Session id -> the PR-scoped feedback signature we last nudged it about.
+ * Session id -> what we have already relayed about its current PR (see `FollowupMark`).
  *
  * In-memory, like `recentlyActed` and the failure trackers, and justified the same way:
  * the lease guarantees a single worker, so this is the only reader/writer, and the cost
@@ -671,15 +672,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
  * not a repeated pull request. Pruned to the live session set each pass so it cannot grow
  * without bound.
  */
-const reviewNudged = new Map<string, string>();
-
-function storeReviewSignature(id: string, sig: string | null): void {
-  if (!sig) {
-    reviewNudged.delete(id);
-    return;
-  }
-  reviewNudged.set(id, sig);
-}
+const reviewNudged = new Map<string, FollowupMark>();
 
 /**
  * The review follow-through pass: nudge each parked session whose OPEN pull request
@@ -717,13 +710,26 @@ async function runReviewFollowup(
 
   const now = Date.now();
   for (const session of sessions) {
+    // No open PR: forget any prior mark - a merged/closed PR is done, and a later new PR
+    // starts fresh. Everything below is scoped to an open PR the mark can be keyed to.
+    if (session.prState !== "open" || !session.prUrl) {
+      reviewNudged.delete(session.id);
+      continue;
+    }
+
+    // Fold this pass's observation (a CI recovery, or a new PR) into the mark and PERSIST
+    // it, for EVERY open-PR session - not only the one about to be nudged - because that
+    // recovery is what re-arms CI once the session parks. See `advanceFollowupMark`.
+    const mark = advanceFollowupMark(reviewNudged.get(session.id) ?? null, session);
+    reviewNudged.set(session.id, mark);
+
     const decision = decideReviewFollowup({
       session,
       // The real fleet, not a one-element list: `reportBucket` needs it to tell a gate
       // this session is driving from one that needs a human.
       bucket: reportBucket(session, sessions),
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
-      lastSig: reviewNudged.get(session.id) ?? null,
+      mark,
       cfg: { enabled: cfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now,
     });
@@ -737,16 +743,22 @@ async function runReviewFollowup(
 
     const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
     if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) continue;
-    const freshLastSig =
+
+    // Re-observe against the fresh snapshot, carrying the mark across an id re-mint. This
+    // is what stops the freshness recheck from discarding a recovery the first read saw.
+    const priorMark =
       reviewNudged.get(fresh.id) ??
       (fresh.id !== session.id ? reviewNudged.get(session.id) : undefined) ??
       null;
+    const freshMark = advanceFollowupMark(priorMark, fresh);
+    if (fresh.id !== session.id) reviewNudged.delete(session.id);
+    reviewNudged.set(fresh.id, freshMark);
 
     const freshDecision = decideReviewFollowup({
       session: fresh,
       bucket: reportBucket(fresh, freshSessions),
       mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
-      lastSig: freshLastSig,
+      mark: freshMark,
       cfg: { enabled: freshCfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now: Date.now(),
     });
@@ -755,20 +767,19 @@ async function runReviewFollowup(
     // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
     // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
     // stamp, because a lost response must not become a second nudge; a delivery the
-    // daemon reports as refused clears it to retry on a later pass.
-    if (fresh.id !== session.id) reviewNudged.delete(session.id);
-    storeReviewSignature(fresh.id, freshDecision.sig);
+    // daemon reports as refused restores the pre-nudge mark to retry on a later pass.
+    reviewNudged.set(fresh.id, freshDecision.mark);
     try {
       await client.inject(fresh.id, freshDecision.payload);
     } catch (err) {
       // Only a delivery the daemon POSITIVELY reported as undelivered frees this session:
-      // its previous marker is restored so it re-nudges, and it is NOT claimed, so the
+      // its previous mark is restored so it re-nudges, and it is NOT claimed, so the
       // target loop may act on it now. Any other failure - a lost response, an unrecognised
       // throw - is treated as "may have reached the composer" (the same conservative
-      // reading `queue-apply`'s `mayHaveLanded` makes): keep the marker and claim the pane,
+      // reading `queue-apply`'s `mayHaveLanded` makes): keep the mark and claim the pane,
       // so nothing types a wrap-up on top of a follow-up that might already be sitting there.
       const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
-      if (confirmedUndelivered) storeReviewSignature(fresh.id, freshLastSig);
+      if (confirmedUndelivered) reviewNudged.set(fresh.id, freshMark);
       else {
         nudged.add(session.id);
         nudged.add(fresh.id);

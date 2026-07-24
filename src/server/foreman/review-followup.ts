@@ -38,7 +38,11 @@ export interface ReviewFollowupInput {
   bucket: ReportBucket;
   /** Whether Foreman is cleared to type here (live + allowlisted) - the same gate a send passes. */
   mayActLive: boolean;
-  lastSig: string | null;
+  /**
+   * What we have already nudged THIS session about on its current PR, advanced by
+   * `advanceFollowupMark` for this pass's observation. Null when we have never nudged it.
+   */
+  mark: FollowupMark | null;
   cfg: ReviewFollowupConfig;
   now: number;
 }
@@ -46,8 +50,52 @@ export interface ReviewFollowupInput {
 export type ReviewFollowupDecision =
   /** Not a candidate. `why` is for the tests/log - every skip is explicable. */
   | { kind: "skip"; why: string }
-  /** Type the follow-up. Carries the signature to stamp and the exact payload to inject. */
-  | { kind: "nudge"; sig: string; reason: string; payload: string };
+  /** Type the follow-up. Carries the mark to stamp on delivery and the exact payload. */
+  | { kind: "nudge"; mark: FollowupMark; reason: string; payload: string };
+
+/**
+ * What we have already relayed to a session about its CURRENT PR, so we neither nag an
+ * unchanged state nor miss a genuinely new one. In-memory only.
+ *
+ * The two feedback sources have different "newness" clocks, and one signature string
+ * cannot track both (that was the bug the Inspector caught): findings are keyed by the
+ * Inspector ROUND, which advances with every push, while a CI failure is an EPISODE that
+ * can recur on the same round (a flaky rerun, a re-triggered check) and so needs its own
+ * observed-recovery bit. Keyed alongside `prKey` so a new PR on the same session resets
+ * everything.
+ */
+export interface FollowupMark {
+  /** The PR this mark is about. A different PR key resets the other two fields. */
+  prKey: string;
+  /** The Inspector round we last nudged POSTED findings for, or null if never. */
+  findingsRound: number | null;
+  /** Whether we have nudged for the CURRENT CI-failing episode; re-armed on recovery. */
+  ciNudged: boolean;
+}
+
+/** The PR a mark is keyed to. Prefers the Inspector's key, falls back to the PR number. */
+function prKeyOf(s: Session): string {
+  return s.inspector?.prKey ?? (s.prNumber !== null ? `#${s.prNumber}` : "pr");
+}
+
+/**
+ * Fold this pass's observation into the mark: reset it on a new PR, and RE-ARM CI when the
+ * checks are no longer failing, so a later failure counts as a fresh episode.
+ *
+ * Pure, and called every pass for EVERY open-PR session - not only the ones about to be
+ * nudged - because that is the whole fix: a CI recovery seen while the session was working
+ * (or while Foreman was dry-run) has to be remembered so the next failure re-arms once the
+ * session parks. Without a PR head sha on the snapshot this observed-recovery bit is the
+ * only thing that can tell a re-failure from the one we already relayed.
+ */
+export function advanceFollowupMark(prev: FollowupMark | null, s: Session): FollowupMark {
+  const prKey = prKeyOf(s);
+  const base: FollowupMark =
+    prev && prev.prKey === prKey ? prev : { prKey, findingsRound: null, ciNudged: false };
+  // CI is no longer failing: whatever episode we may have nudged is over. Re-arm it.
+  if (base.ciNudged && s.prChecks !== "failing") return { ...base, ciNudged: false };
+  return base;
+}
 
 /** What is actionable on this session's PR right now. */
 interface Feedback {
@@ -62,13 +110,6 @@ function feedbackState(s: Session): Feedback {
   return { findings, ciFailing: s.prChecks === "failing" };
 }
 
-export function reviewFollowupSignature(s: Session): string {
-  const fb = feedbackState(s);
-  const prKey = s.inspector?.prKey ?? (s.prNumber !== null ? `#${s.prNumber}` : "pr");
-  const round = s.inspector?.round ?? 0;
-  return `${prKey}:r${round}:${fb.findings ? "F" : "-"}${fb.ciFailing ? "C" : "-"}`;
-}
-
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
  * return and the order is the policy.
@@ -78,7 +119,7 @@ export function reviewFollowupSignature(s: Session): string {
  * dealt with - and there is no model call here to catch a mistake the gates let through.
  */
 export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowupDecision {
-  const { session: s, bucket, mayActLive, lastSig, cfg, now } = input;
+  const { session: s, bucket, mayActLive, mark, cfg, now } = input;
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
@@ -131,13 +172,27 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   //    simply holds.
   if (!mayActLive) return skip("dry-run or off-allowlist - won't type");
 
-  // Inspector rounds normally advance with every push that can change CI, so one PR-scoped
-  // signature follows the real feedback cadence. A CI-only flaky rerun may re-nudge or miss
-  // once; that bounded tradeoff is preferable to a separate CI-episode state machine.
-  const sig = reviewFollowupSignature(s);
-  if (lastSig === sig) return skip("already nudged this round of feedback");
+  // Is anything here NEW since we last nudged? The two sources are judged on their own
+  // clocks (see `FollowupMark`): findings by the Inspector round, CI by whether the
+  // current failing episode has been relayed. `mark` has already had this pass's recovery
+  // folded in by `advanceFollowupMark`, so a re-failure after a recovery reads as new.
+  const prKey = prKeyOf(s);
+  const cur: FollowupMark = mark && mark.prKey === prKey
+    ? mark
+    : { prKey, findingsRound: null, ciNudged: false };
+  const round = s.inspector?.round ?? 0;
+  const findingsNew = fb.findings && cur.findingsRound !== round;
+  const ciNew = fb.ciFailing && !cur.ciNudged;
+  if (!findingsNew && !ciNew) return skip("already nudged this round of feedback");
 
-  return { kind: "nudge", sig, reason: describe(s, fb), payload: buildPayload(s, fb) };
+  // Stamp both currently-open dimensions as relayed. The payload covers everything open,
+  // so once it lands the agent has heard about both - not only whichever one was new.
+  const next: FollowupMark = {
+    prKey,
+    findingsRound: fb.findings ? round : cur.findingsRound,
+    ciNudged: cur.ciNudged || fb.ciFailing,
+  };
+  return { kind: "nudge", mark: next, reason: describe(s, fb), payload: buildPayload(s, fb) };
 }
 
 function skip(why: string): ReviewFollowupDecision {

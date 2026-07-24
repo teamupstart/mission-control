@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  advanceFollowupMark,
   buildPayload,
   decideReviewFollowup,
-  reviewFollowupSignature,
 } from "../src/server/foreman/review-followup.ts";
-import type { ReviewFollowupInput } from "../src/server/foreman/review-followup.ts";
+import type {
+  FollowupMark,
+  ReviewFollowupInput,
+} from "../src/server/foreman/review-followup.ts";
 import type { InspectorSummary, Session, SessionQueueSummary } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
 
@@ -115,7 +118,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     session,
     bucket: "idle",
     mayActLive: true,
-    lastSig: null,
+    mark: null,
     cfg: { enabled: true, settleMs: SETTLE },
     now: NOW,
     ...over,
@@ -252,18 +255,24 @@ test("typing is a live act - dry-run or off-allowlist holds", () => {
   assert.match((d as { why: string }).why, /won't type/);
 });
 
-// ---- the once-per-feedback guard ----
+// ---- the once-per-feedback guard (the mark) ----
+
+/** Fold the observation for a fresh session, exactly as the worker does each pass. */
+function observe(session: Session, prev: FollowupMark | null = null): FollowupMark {
+  return advanceFollowupMark(prev, session);
+}
 
 test("the same feedback state, already nudged, stays quiet", () => {
   const session = mkSession({ inspector: inspector({ open: 2, round: 1 }) });
   const first = decide({ session });
   assert.equal(first.kind, "nudge");
   if (first.kind !== "nudge") return;
-  const again = decide({ session, lastSig: first.sig });
+  // Feed the stamped mark back through the pass's observation: nothing changed.
+  const again = decide({ session, mark: observe(session, first.mark) });
   assert.deepEqual(again, { kind: "skip", why: "already nudged this round of feedback" });
 });
 
-test("a later PR cannot collide with the prior PR at the same round", () => {
+test("a later PR resets the mark - no collision with the prior PR at the same round", () => {
   const firstSession = mkSession({ inspector: inspector({ open: 2, round: 1 }) });
   const first = decide({ session: firstSession });
   assert.equal(first.kind, "nudge");
@@ -279,22 +288,9 @@ test("a later PR cannot collide with the prior PR at the same round", () => {
       round: 1,
     }),
   });
-  const next = decide({ session: nextSession, lastSig: first.sig });
+  // Same session id, new PR: advanceFollowupMark resets the mark to the new prKey.
+  const next = decide({ session: nextSession, mark: observe(nextSession, first.mark) });
   assert.equal(next.kind, "nudge");
-  if (next.kind !== "nudge") return;
-  assert.notEqual(next.sig, first.sig);
-});
-
-test("the signature scopes current feedback to the PR and Inspector round", () => {
-  const session = mkSession({
-    inspector: inspector({ open: 1, round: 3 }),
-    prChecks: "failing",
-  });
-  assert.equal(reviewFollowupSignature(session), "owner/repo#7:r3:FC");
-  assert.equal(
-    reviewFollowupSignature(mkSession({ inspector: null, prChecks: "failing" })),
-    "#7:r0:-C",
-  );
 });
 
 test("a new Inspector round with posted findings re-arms the nudge", () => {
@@ -305,10 +301,46 @@ test("a new Inspector round with posted findings re-arms the nudge", () => {
 
   // Agent pushed, the Inspector reviewed again and still found two things: new round.
   const round2 = mkSession({ inspector: inspector({ open: 2, round: 2 }) });
-  const d2 = decide({ session: round2, lastSig: d1.sig });
+  const d2 = decide({ session: round2, mark: observe(round2, d1.mark) });
   assert.equal(d2.kind, "nudge");
-  if (d2.kind !== "nudge") return;
-  assert.notEqual(d2.sig, d1.sig);
+});
+
+test("CI clearing does not redundantly re-nudge open findings", () => {
+  // Nudge findings + failing CI, then CI goes green while the same findings stay open at
+  // the same round. The findings were already relayed; there is nothing new to say.
+  const both = mkSession({ inspector: inspector({ open: 1, round: 1 }), prChecks: "failing" });
+  const d1 = decide({ session: both });
+  assert.equal(d1.kind, "nudge");
+  if (d1.kind !== "nudge") return;
+
+  const ciGreen = mkSession({ inspector: inspector({ open: 1, round: 1 }), prChecks: "passing" });
+  const d2 = decide({ session: ciGreen, mark: observe(ciGreen, d1.mark) });
+  assert.deepEqual(d2, { kind: "skip", why: "already nudged this round of feedback" });
+});
+
+test("CI that recovers and fails again re-arms, even on the same Inspector round", () => {
+  // The Inspector's finding: a CI-only nudge must re-arm after checks recover and fail
+  // again, without waiting for a new Inspector round.
+  const round = { open: 0, round: 1 };
+  const failing1 = mkSession({ inspector: inspector(round), prChecks: "failing" });
+  const d1 = decide({ session: failing1 });
+  assert.equal(d1.kind, "nudge");
+  if (d1.kind !== "nudge") return;
+
+  // Checks recover (still same round) - observed each pass even though nothing is nudged.
+  const passing = mkSession({ inspector: inspector(round), prChecks: "passing" });
+  const markAfterRecovery = observe(passing, d1.mark);
+  assert.equal(markAfterRecovery.ciNudged, false, "recovery re-arms the CI episode");
+  assert.equal(
+    decide({ session: passing, mark: markAfterRecovery }).kind,
+    "skip",
+    "a green PR is not actionable",
+  );
+
+  // A fresh failure on the same round is a new episode - nudge again.
+  const failing2 = mkSession({ inspector: inspector(round), prChecks: "failing" });
+  const d2 = decide({ session: failing2, mark: observe(failing2, markAfterRecovery) });
+  assert.equal(d2.kind, "nudge");
 });
 
 // ---- the payload ----

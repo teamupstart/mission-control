@@ -2146,9 +2146,10 @@ The nudge is typed into the session's pane, so it carries the usual gates and on
 - it only **types** in **live** mode on an **allowlisted** repo, exactly like the automated
   wrap-up actions - dry-run leaves the parked PR for you;
 - it fires only at a **settled-idle** session, so it never interrupts one already working the
-  fixes, and **at most once per Inspector round and feedback mix**, so a PR that's being
-  handled isn't nagged (a later Inspector round, or the appearance of the other feedback
-  kind, re-arms it);
+  fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
+  Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
+  recover, a later failure counts as new (so a red CI is never permanently silenced, and a
+  CI that merely goes green does not re-nudge the comments already relayed);
 - it stands down while a **no-mistakes run is still in progress** (that pipeline already
   follows the PR through CI and the merge), while the session **needs you**, and while it has a
   live **work queue** (the drain trigger owns that checkout);

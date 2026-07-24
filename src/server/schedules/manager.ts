@@ -25,6 +25,7 @@ import type { TaskRepoRoot } from "../repos.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
 import { TaskIdCollisionError } from "../tasks.ts";
+import { getTask as getDurableTask } from "../db.ts";
 import type { Task } from "@shared/types.ts";
 import { recurrence as defaultRecurrence } from "./recurrence.ts";
 import type { RecurrenceEvaluator } from "./recurrence.ts";
@@ -83,7 +84,7 @@ const SCHEDULE_CATCHUP_ACCOUNTING_MAX = 10_000;
 // ---- what the manager needs from the rest of the daemon ----
 
 /**
- * The task manager, narrowed to the two calls a scheduler may make.
+ * The task manager, narrowed to the one call a scheduler may make.
  *
  * Narrow on purpose: handed the whole `TaskManager`, this module could dispatch, and the
  * only thing stopping it would be that nobody wrote the line. The interface is the
@@ -91,7 +92,6 @@ const SCHEDULE_CATCHUP_ACCOUNTING_MAX = 10_000;
  */
 export interface ScheduleTaskCreator {
   create(input: CreateTaskInput, internal: InternalCreateOptions): Task;
-  get(id: string): Task | undefined;
 }
 
 /** One structured operational line. Bounded fields only - never the task's intent. */
@@ -997,14 +997,16 @@ export class ScheduleManager {
     scope: "open" | "stale" = "stale",
   ): Promise<ScheduleRecoverySummary> {
     const summary = emptyRecovery();
+    const affectedScheduleIds = new Set<string>();
     const claims =
       scope === "open" ? store.listOpenClaims() : store.listStaleClaims(now);
     for (const occurrence of claims) {
       summary.claims++;
       try {
-        await this.withScheduleLock(occurrence.scheduleId, () =>
+        const wrote = await this.withScheduleLock(occurrence.scheduleId, () =>
           this.recoverOne(occurrence, now, summary),
         );
+        if (wrote) affectedScheduleIds.add(occurrence.scheduleId);
       } catch (err) {
         summary.failed++;
         this.log("recovery-error", {
@@ -1012,6 +1014,10 @@ export class ScheduleManager {
           error: describe(err),
         });
       }
+    }
+    for (const scheduleId of affectedScheduleIds) {
+      const schedule = store.getSchedule(scheduleId, now);
+      if (schedule) this.notifySchedule(schedule);
     }
     if (summary.claims > 0) {
       this.log("recovered", {
@@ -1031,17 +1037,14 @@ export class ScheduleManager {
     occurrence: ScheduleOccurrence,
     now: number,
     summary: ScheduleRecoverySummary,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (occurrence.decisionKind === null) {
       // A decision this build has never heard of. There is no safe repair: finishing it
       // would invent an outcome, and acting on it would act on a policy we cannot read.
       // Left claimed, which is what `stale-claim` health is for.
       summary.unreadable++;
-      return;
+      return false;
     }
-
-    const schedule = store.getSchedule(occurrence.scheduleId, now);
-    const archived = schedule === null || schedule.archivedAt !== null;
 
     if (occurrence.decisionKind !== "create_task") {
       const done = store.finishOccurrence({
@@ -1050,17 +1053,18 @@ export class ScheduleManager {
         finishedAt: now,
       });
       if (done) summary.finishedTerminal++;
-      return;
+      return done !== null;
     }
 
     const taskId = occurrence.taskId;
     if (!taskId) {
       summary.failed++;
-      this.fail(occurrence, "the reservation carried no task id", now);
-      return;
+      return (
+        this.fail(occurrence, "the reservation carried no task id", now).status === "failed"
+      );
     }
 
-    const existing = this.tasks.get(taskId);
+    const existing = getDurableTask(taskId);
     if (existing) {
       if (
         existing.scheduleId !== occurrence.scheduleId ||
@@ -1075,7 +1079,7 @@ export class ScheduleManager {
           `task ${taskId} exists but was filed by something else`,
           now,
         );
-        return;
+        return true;
       }
       // The crash landed after the task was persisted. Nothing to create; close the row.
       store.finishOccurrence({
@@ -1085,9 +1089,11 @@ export class ScheduleManager {
         taskId: existing.id,
       });
       summary.recoveredAfterTask++;
-      return;
+      return true;
     }
 
+    const schedule = store.getSchedule(occurrence.scheduleId, now);
+    const archived = schedule === null || schedule.archivedAt !== null;
     if (archived) {
       // Archived before the work existed, so it never will. `cancelled` says that, where
       // `failed` would claim something went wrong.
@@ -1097,7 +1103,7 @@ export class ScheduleManager {
         finishedAt: now,
       });
       summary.cancelled++;
-      return;
+      return true;
     }
 
     // The revision AS CLAIMED, never the schedule's current one.
@@ -1112,7 +1118,7 @@ export class ScheduleManager {
         "the settings this run was claimed under cannot be read",
         now,
       );
-      return;
+      return true;
     }
 
     const settled = await this.settle(
@@ -1122,9 +1128,9 @@ export class ScheduleManager {
       now,
     );
     if (settled.status === "created") summary.recoveredBeforeTask++;
+    else if (settled.status === "cancelled") summary.cancelled++;
     else summary.failed++;
-    const after = store.getSchedule(occurrence.scheduleId, now);
-    if (after) this.notifySchedule(after);
+    return true;
   }
 
   private notifySchedule(schedule: MissionSchedule): void {

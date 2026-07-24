@@ -468,6 +468,7 @@ test("a crash between the claim and the task creates it on the reserved id", asy
   assert.equal(filed[0]?.id, `${created.id}-crash-task`);
   assert.equal(filed[0]?.scheduleOccurrenceId, occurrence.id);
   assert.equal(store.getOccurrence(occurrence.id)?.status, "created");
+  assert.equal(h.notified.length, 2);
 
   // Idempotent: run recovery again and nothing changes.
   const again = await h.manager.recover(h.clock.now, "open");
@@ -508,6 +509,39 @@ test("a crash after the task was persisted only closes the ledger row", async ()
   assert.equal(tasksFor(created.id).length, 1, "not a second task");
   assert.equal(db.getTask(task.id)?.updatedAt, task.updatedAt, "and the first was not rewritten");
   assert.equal(store.getOccurrence(occurrence.id)?.status, "created");
+  assert.equal(h.notified.length, 2);
+});
+
+test("recovery finds a matching durable task outside the Registry cache", async () => {
+  const h = harness("durable-recovery");
+  const created = ok(await h.manager.create(definition())).schedule;
+  const occurrence = crashMidTick(created.id, NINE);
+  const seed = tasks.create({
+    repoRoot: REPO,
+    intent: "Unrelated seed task",
+    title: "Seed",
+    kind: "ship",
+    agent: "claude",
+    backlog: true,
+  });
+  db.upsertTask({
+    ...seed,
+    id: occurrence.taskId!,
+    scheduleId: created.id,
+    scheduleOccurrenceId: occurrence.id,
+    scheduledFor: occurrence.scheduledFor,
+  });
+  assert.equal(registry.getTask(occurrence.taskId!), undefined);
+
+  h.clock.now = NINE + 30_000;
+  await h.manager.archive(created.id);
+  h.clock.now = NINE + 60_000;
+  const summary = await h.manager.recover(h.clock.now, "open");
+
+  assert.equal(summary.recoveredAfterTask, 1);
+  assert.equal(summary.cancelled, 0);
+  assert.equal(store.getOccurrence(occurrence.id)?.status, "created");
+  assert.deepEqual(h.removed, [created.id, created.id]);
 });
 
 test("recovery refuses a reserved id that belongs to somebody else's task", async () => {
@@ -535,6 +569,7 @@ test("recovery refuses a reserved id that belongs to somebody else's task", asyn
   assert.equal(after.scheduleId, null);
   assert.equal(after.title, "Human work");
   assert.equal(after.updatedAt, stranger.updatedAt);
+  assert.equal(h.notified.length, 2);
 });
 
 test("recovery finishes a run under the revision it was CLAIMED under, not today's", async () => {
@@ -582,6 +617,7 @@ test("archiving before the task exists cancels the run and leaves the history st
   // Archive deletes nothing: the run is still readable by id.
   assert.equal(occurrencesFor(created.id).length, 1);
   assert.equal(store.getSchedule(created.id)?.archivedAt, NINE + 30_000);
+  assert.deepEqual(h.removed, [created.id, created.id]);
 
   // And an archived schedule never comes due again.
   h.clock.now = NINE + 2 * DAY;
@@ -591,17 +627,60 @@ test("archiving before the task exists cancels the run and leaves the history st
 test("a terminal decision left claimed by a crash is closed as itself", async () => {
   const h = harness("terminal-claim");
   const created = ok(await h.manager.create(definition())).schedule;
-  const occurrence = crashMidTick(created.id, NINE, {
+  const first = crashMidTick(created.id, NINE, {
+    decisionKind: "skipped_policy",
+    taskId: null,
+  });
+  const second = crashMidTick(created.id, NINE + DAY, {
+    occurrenceId: `${created.id}-second-terminal`,
     decisionKind: "skipped_policy",
     taskId: null,
   });
 
-  h.clock.now = NINE + 60_000;
+  h.clock.now = NINE + DAY + 60_000;
   const summary = await h.manager.recover(h.clock.now, "open");
 
-  assert.equal(summary.finishedTerminal, 1);
-  assert.equal(store.getOccurrence(occurrence.id)?.status, "skipped_policy");
+  assert.equal(summary.finishedTerminal, 2);
+  assert.equal(store.getOccurrence(first.id)?.status, "skipped_policy");
+  assert.equal(store.getOccurrence(second.id)?.status, "skipped_policy");
   assert.equal(tasksFor(created.id).length, 0);
+  assert.equal(h.notified.length, 2);
+});
+
+test("recovery counts an archive during repository validation as cancelled", async () => {
+  let blockFire = false;
+  let releaseFire!: () => void;
+  let fireStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    fireStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseFire = resolve;
+  });
+  const h = harness("recovery-archive-race", {
+    resolveRepoRoot: async (path) => {
+      if (blockFire) {
+        fireStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+  const occurrence = crashMidTick(created.id, NINE);
+
+  blockFire = true;
+  h.clock.now = NINE + 60_000;
+  const recovery = h.manager.recover(h.clock.now, "open");
+  await started;
+  await h.manager.archive(created.id);
+  releaseFire();
+  const summary = await recovery;
+
+  assert.equal(summary.cancelled, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(store.getOccurrence(occurrence.id)?.status, "cancelled");
+  assert.deepEqual(h.removed, [created.id, created.id]);
 });
 
 // ---- Run now ----

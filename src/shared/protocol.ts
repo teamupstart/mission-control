@@ -29,6 +29,27 @@ import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
 } from "./workflow.ts";
 import type { WorkflowJson } from "./workflow.ts";
+import {
+  ENSEMBLE_ARTIFACT_KINDS,
+  ENSEMBLE_ARTIFACT_STATUSES,
+  ENSEMBLE_ATTEMPT_STATUSES,
+  ENSEMBLE_DECISION_ACTORS,
+  ENSEMBLE_DECISION_STATUSES,
+  ENSEMBLE_DRIVER_KEYS,
+  ENSEMBLE_EVALUATION_STATUSES,
+  ENSEMBLE_HARD_LIMITS,
+  ENSEMBLE_LIMITS,
+  ENSEMBLE_LLM_CALL_STATES,
+  ENSEMBLE_LLM_PURPOSES,
+  ENSEMBLE_MEMBER_STATUSES,
+  ENSEMBLE_PLAN_VERSION,
+  ENSEMBLE_SOURCE_KINDS,
+  ENSEMBLE_STAGE_DRIVER_KINDS,
+  ENSEMBLE_STAGE_STATUSES,
+  ENSEMBLE_STATUSES,
+  ENSEMBLE_STRATEGY_IDS,
+} from "./ensemble.ts";
+import type { EnsembleJson } from "./ensemble.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -2344,3 +2365,341 @@ export const WorkflowRunStatusSchema = z.enum(WORKFLOW_RUN_STATUSES);
 export const WorkflowSubmissionModeSchema = z.enum(WORKFLOW_SUBMISSION_MODES);
 export const WorkflowSubmissionStatusSchema = z.enum(WORKFLOW_SUBMISSION_STATUSES);
 export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATES);
+
+// ---- multi-agent ensembles ----
+//
+// The durable half of `@shared/ensemble.ts`. Row parsers in `src/server/ensembles/store.ts`
+// validate every TEXT enum and JSON column through these before a typed record exists, so a
+// blob written by another build fails at ONE boundary rather than surfacing as an undefined
+// three call sites later. No route consumes them yet - Phase 3 launches nothing - but the
+// shapes are fixed now because they are what a later route, the MCP submission tool and the
+// dashboard all have to agree with.
+
+/** Recursive, JSON-only durable payload validation. */
+export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(EnsembleJsonSchema),
+    z.record(z.string(), EnsembleJsonSchema),
+  ]),
+);
+
+export const EnsembleStatusSchema = z.enum(ENSEMBLE_STATUSES);
+export const EnsembleMemberStatusSchema = z.enum(ENSEMBLE_MEMBER_STATUSES);
+export const EnsembleAttemptStatusSchema = z.enum(ENSEMBLE_ATTEMPT_STATUSES);
+export const EnsembleArtifactKindSchema = z.enum(ENSEMBLE_ARTIFACT_KINDS);
+export const EnsembleArtifactStatusSchema = z.enum(ENSEMBLE_ARTIFACT_STATUSES);
+export const EnsembleStageDriverKindSchema = z.enum(ENSEMBLE_STAGE_DRIVER_KINDS);
+export const EnsembleStageStatusSchema = z.enum(ENSEMBLE_STAGE_STATUSES);
+export const EnsembleEvaluationStatusSchema = z.enum(ENSEMBLE_EVALUATION_STATUSES);
+export const EnsembleDecisionStatusSchema = z.enum(ENSEMBLE_DECISION_STATUSES);
+export const EnsembleDecisionActorSchema = z.enum(ENSEMBLE_DECISION_ACTORS);
+export const EnsembleLlmPurposeSchema = z.enum(ENSEMBLE_LLM_PURPOSES);
+export const EnsembleLlmCallStateSchema = z.enum(ENSEMBLE_LLM_CALL_STATES);
+export const EnsembleSourceKindSchema = z.enum(ENSEMBLE_SOURCE_KINDS);
+export const EnsembleStrategyIdSchema = z.enum(ENSEMBLE_STRATEGY_IDS);
+export const EnsembleDriverKeySchema = z.enum(ENSEMBLE_DRIVER_KEYS);
+
+/**
+ * The opaque `id@version` key a compiled plan persists.
+ *
+ * Deliberately a bounded STRING and not `EnsembleStrategyIdSchema`: this is the field that
+ * lets a run written by a newer build load at all. Creation validates the id against the
+ * exhaustive catalog; a plan read back off disk validates only that the key is bounded and
+ * well-formed, and an id nobody recognises becomes a visible "this build cannot run it"
+ * rather than a parse failure that hides the run entirely.
+ */
+const VERSIONED_KEY = /^[a-z][a-z0-9_]*@[1-9][0-9]{0,4}$/;
+
+export const EnsembleStrategyKeySchema = z
+  .string()
+  .min(3)
+  .max(ENSEMBLE_LIMITS.strategyKey)
+  .regex(VERSIONED_KEY, "strategy key must be id@version");
+
+/**
+ * A stage's driver key as PERSISTED - bounded and well-formed, not checked against the
+ * drivers this build ships.
+ *
+ * Same argument as `EnsembleStrategyKeySchema`: a plan naming `comparative_review@2` must
+ * stay readable on a build that only has `@1`, so an operator can see what the run was
+ * going to do and cancel it. `knownDriverKey` is where "readable" stops and "executable"
+ * begins, and `EnsembleDriverKeySchema` above is what a COMPILER's output is checked
+ * against, where naming a driver that does not exist is a bug rather than a version skew.
+ */
+export const EnsembleDriverKeyRefSchema = z
+  .string()
+  .min(3)
+  .max(ENSEMBLE_LIMITS.strategyKey)
+  .regex(VERSIONED_KEY, "driver key must be id@version");
+
+const ensembleId = z.string().min(1).max(200);
+const ensembleStageId = z.string().min(1).max(ENSEMBLE_LIMITS.stageId);
+const ensembleRoleKey = z.string().min(1).max(ENSEMBLE_LIMITS.roleKey);
+
+export const EnsembleBudgetSchema = z.object({
+  maxMembers: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  maxConcurrentMembers: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxConcurrentMembers),
+  maxWaves: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxWaves),
+  maxStageAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts),
+  deadlineMs: z.number().int().positive().nullable(),
+});
+
+export const EnsembleInformationPolicySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("isolated") }),
+]);
+
+export const EnsembleMemberInputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run_base") }),
+]);
+
+export const EnsembleRoleSpecSchema = z.object({
+  key: ensembleRoleKey,
+  label: z.string().min(1).max(ENSEMBLE_LIMITS.roleLabel),
+  ordinal: z.number().int().positive(),
+  wave: z.number().int().positive(),
+  agent: z.enum(AGENT_TYPES).nullable(),
+  model: ModelIdSchema.nullable(),
+  effort: EffortLevelSchema.nullable(),
+  approach: z.string().max(ENSEMBLE_LIMITS.approach).nullable(),
+  promptTemplate: z.string().max(ENSEMBLE_LIMITS.rolePrompt),
+  requiredArtifacts: z.array(EnsembleArtifactKindSchema).max(ENSEMBLE_ARTIFACT_KINDS.length),
+  input: EnsembleMemberInputSchema,
+});
+
+export const EnsembleBarrierSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({
+    kind: z.literal("members_settled"),
+    roleKeys: z.array(ensembleRoleKey).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    minEligible: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    requiredArtifacts: z.array(EnsembleArtifactKindSchema).max(ENSEMBLE_ARTIFACT_KINDS.length),
+  }),
+  z.object({
+    kind: z.literal("stages_succeeded"),
+    stageIds: z.array(ensembleStageId).min(1).max(50),
+  }),
+  z.object({ kind: z.literal("human_decision") }),
+]);
+
+export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("builtin"), rubricId: z.string().min(1).max(120) }),
+  z.object({
+    kind: z.literal("persona"),
+    personaId: z.string().min(1).max(200),
+    revision: z.number().int().positive(),
+  }),
+]);
+
+export const EnsembleEvaluatorPolicySchema = z.object({
+  kind: z.literal("comparative_llm"),
+  guidance: EnsembleEvaluatorGuidanceSchema,
+  runner: z.enum(LLM_RUNNER_IDS).nullable(),
+  model: ModelIdSchema.nullable(),
+  anonymizeSubjects: z.boolean(),
+  materialBudgetBytes: z.number().int().positive(),
+});
+
+export const EnsembleSubjectPolicySchema = z.object({
+  kind: z.literal("ready_artifacts"),
+  artifactKind: EnsembleArtifactKindSchema,
+  minSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  maxSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+});
+
+export const EnsembleDecisionPolicySchema = z.object({
+  kind: z.literal("select_one"),
+  eligibleArtifactKind: EnsembleArtifactKindSchema,
+  minEligibleSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+});
+
+/**
+ * `requiresHumanDecision` is `z.literal(true)`, matching the wire type and
+ * `WorkflowCaptureExpectationSchema.requireCleanWorktree`: this finalization resets a branch
+ * and reaps worktrees, so there is no valid plan that turns the confirmation off.
+ */
+export const EnsembleFinalizationPolicySchema = z.object({
+  kind: z.literal("select_one"),
+  requiresHumanDecision: z.literal(true),
+  loserPolicy: z.literal("reap_worktrees"),
+});
+
+const ensembleStageBase = {
+  id: ensembleStageId,
+  ordinal: z.number().int().positive(),
+  label: z.string().min(1).max(ENSEMBLE_LIMITS.stageLabel),
+  driverKey: EnsembleDriverKeyRefSchema,
+  dependsOn: z.array(ensembleStageId).max(50),
+  barrier: EnsembleBarrierSpecSchema,
+  maxAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts),
+};
+
+export const EnsembleStageSpecSchema = z.discriminatedUnion("driverKind", [
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("member"),
+    wave: z.number().int().positive(),
+    roleKeys: z.array(ensembleRoleKey).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("review"),
+    evaluator: EnsembleEvaluatorPolicySchema,
+    subjects: EnsembleSubjectPolicySchema,
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("decision"),
+    decision: EnsembleDecisionPolicySchema,
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("finalize"),
+    finalization: EnsembleFinalizationPolicySchema,
+  }),
+]);
+
+/**
+ * The immutable plan a run executes for its whole life.
+ *
+ * `planVersion` is pinned to exactly what this build understands. A snapshot from the future
+ * fails HERE, which is what turns it into a visible unreadable run rather than a plan
+ * half-read through today's field names.
+ */
+export const CompiledEnsemblePlanSchema = z
+  .object({
+    planVersion: z.literal(ENSEMBLE_PLAN_VERSION),
+    strategyKey: EnsembleStrategyKeySchema,
+    budget: EnsembleBudgetSchema,
+    information: EnsembleInformationPolicySchema,
+    roles: z.array(EnsembleRoleSpecSchema).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    stages: z.array(EnsembleStageSpecSchema).min(1).max(50),
+  })
+  // Structural integrity, checked once here rather than in each compiler and again in the
+  // engine: a stage naming a role or a dependency that does not exist is a plan that would
+  // block forever at a barrier nothing can satisfy, and it would do so only at runtime.
+  .superRefine((plan, ctx) => {
+    const roleKeys = new Set(plan.roles.map((role) => role.key));
+    if (roleKeys.size !== plan.roles.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["roles"], message: "role keys must be unique" });
+    }
+    if (plan.roles.length > plan.budget.maxMembers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["budget", "maxMembers"],
+        message: "the compiled roster is larger than the plan's own hard member cap",
+      });
+    }
+    const stageIds = new Set(plan.stages.map((stage) => stage.id));
+    if (stageIds.size !== plan.stages.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["stages"], message: "stage ids must be unique" });
+    }
+    plan.stages.forEach((stage, index) => {
+      for (const dependency of stage.dependsOn) {
+        if (!stageIds.has(dependency)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "dependsOn"],
+            message: `stage ${stage.id} depends on unknown stage ${dependency}`,
+          });
+        }
+      }
+      const named =
+        stage.driverKind === "member"
+          ? stage.roleKeys
+          : stage.barrier.kind === "members_settled"
+            ? stage.barrier.roleKeys
+            : [];
+      for (const key of named) {
+        if (!roleKeys.has(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index],
+            message: `stage ${stage.id} names unknown role ${key}`,
+          });
+        }
+      }
+      if (stage.barrier.kind === "stages_succeeded") {
+        for (const dependency of stage.barrier.stageIds) {
+          if (!stageIds.has(dependency)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["stages", index, "barrier"],
+              message: `stage ${stage.id} waits on unknown stage ${dependency}`,
+            });
+          }
+        }
+      }
+    });
+  });
+
+export const EnsembleOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("selected"),
+    memberIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    materializedTaskId: ensembleId.nullable(),
+  }),
+  z.object({
+    kind: z.literal("synthesized"),
+    memberId: ensembleId,
+    artifactId: ensembleId,
+    materializedTaskId: ensembleId.nullable(),
+  }),
+  z.object({
+    kind: z.literal("retained"),
+    memberIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+  z.object({
+    kind: z.literal("no_consensus"),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    reason: z.string().max(ENSEMBLE_LIMITS.rationale),
+  }),
+]);
+
+/**
+ * What a caller asks for.
+ *
+ * `strategyConfig` stays `unknown` here on purpose: the generic envelope must not know what
+ * a roster is, and the chosen strategy's own schema is the only thing that can validate it.
+ * The daemon re-parses it through the descriptor at creation, which is the one place the
+ * config's type is known - the same split `TaskSourceInstanceSchema` makes.
+ */
+export const EnsembleCreateInputSchema = z.object({
+  sourceKey: z.string().min(1).max(ENSEMBLE_LIMITS.sourceKey),
+  sourceKind: EnsembleSourceKindSchema.default("manual"),
+  sourceId: z.string().min(1).max(ENSEMBLE_LIMITS.sourceId).nullable().default(null),
+  title: z.string().trim().min(1).max(ENSEMBLE_LIMITS.title),
+  intent: z.string().min(1).max(ENSEMBLE_LIMITS.intent),
+  repoRoot: z.string().min(1),
+  strategyId: EnsembleStrategyIdSchema,
+  /** Absent means "this build's current version for that strategy". */
+  strategyVersion: z.number().int().positive().optional(),
+  strategyConfig: z.unknown().default({}),
+});
+export type EnsembleCreateBody = z.infer<typeof EnsembleCreateInputSchema>;
+
+/**
+ * The generic operator authorities over one run.
+ *
+ * One discriminated union behind one future route rather than a route family per verb: a
+ * strategy composed only from existing primitives must add nothing here, so a proposal that
+ * needs a new member is evidence of a new primitive rather than a new strategy.
+ */
+export const EnsembleActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("retry_stage"), stageId: ensembleStageId }),
+  z.object({ kind: z.literal("withdraw_member"), memberId: ensembleId }),
+  z.object({
+    kind: z.literal("decide"),
+    selection: EnsembleJsonSchema,
+    rationale: z.string().max(ENSEMBLE_LIMITS.rationale).default(""),
+  }),
+  z.object({ kind: z.literal("resolve_finalization") }),
+  z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
+  z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
+]);
+export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;

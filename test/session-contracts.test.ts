@@ -110,6 +110,7 @@ test("schedule provenance rides inside Session.task, and a change to it still em
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,
+    ensemble: null,
   };
   assert.equal(sessionEqual(mkSession({ task: summary }), mkSession({ task: summary })), true);
   assert.equal(
@@ -117,6 +118,34 @@ test("schedule provenance rides inside Session.task, and a change to it still em
       mkSession({ task: summary }),
       mkSession({
         task: { ...summary, scheduleId: "sch-1", scheduleOccurrenceId: "occ-1", scheduledFor: 5 },
+      }),
+    ),
+    false,
+  );
+  // Ensemble membership rides on the same nested summary, and for the same reason: it needs
+  // no `SESSION_FIELD_COMPARATORS` entry of its own, and `byJson` on `task` is what makes a
+  // member's state change reach the card at all. A comparator narrowed to a field list would
+  // draw "candidate 1 of 3" once and never update it again.
+  assert.equal(
+    sessionEqual(
+      mkSession({ task: summary }),
+      mkSession({
+        task: {
+          ...summary,
+          ensemble: {
+            runId: "run-1",
+            strategyId: "best_of_n",
+            strategyLabel: "Best of N",
+            memberId: "member-1",
+            ordinal: 1,
+            wave: 1,
+            role: "candidate-1",
+            launchedMembers: 3,
+            maxMembers: 3,
+            status: "active",
+            resultLabel: null,
+          },
+        },
       }),
     ),
     false,
@@ -299,6 +328,10 @@ const PERSONA_UPSERT_HANDLER = `        case "persona_upsert":
           setPersonas((prev) => new Map(prev).set(msg.persona.id, msg.persona));
           break;
 `;
+const ENSEMBLE_UPSERT_HANDLER = `        case "ensemble_upsert":
+          setEnsembles((prev) => new Map(prev).set(msg.ensemble.id, msg.ensemble));
+          break;
+`;
 
 /**
  * Matched on error CODES plus the identifiers involved, never on diagnostic
@@ -434,5 +467,19 @@ test("the Persona upsert cannot fall out of the exhaustive event-stream switch",
     out,
     UNHANDLED_EVENT,
     `removing the Persona upsert handler should break the exhaustiveness check, got:\n${out}`,
+  );
+});
+
+test("the ensemble upsert cannot fall out of the exhaustive event-stream switch", () => {
+  // The ensemble collection is the newest top-level one, and it arrives on the same single
+  // SSE stream as everything else. A branch dropped from this switch is silent: the daemon
+  // emits, nothing throws, and the group simply never appears.
+  const out = typecheckWithPatch((dir) =>
+    edit(dir, "src/web/useEventStream.ts", ENSEMBLE_UPSERT_HANDLER, ""),
+  );
+  assert.match(
+    out,
+    UNHANDLED_EVENT,
+    `removing the ensemble upsert handler should break the exhaustiveness check, got:\n${out}`,
   );
 });

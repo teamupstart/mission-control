@@ -83,6 +83,14 @@ export function openDb(): DatabaseSync {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
+  // SQLite parses REFERENCES clauses whatever this says and enforces them only when it is
+  // on, so declaring a foreign key without this line is a comment that looks like a
+  // constraint. It is safe to switch on for the whole file because the ensemble family
+  // below is the ONLY one that declares a foreign key - every other table in here relates
+  // by convention, and turning the pragma on cannot retroactively constrain a relation the
+  // schema never declared. A new REFERENCES clause on an older table therefore becomes
+  // live the moment it is written, which is the point.
+  db.exec("PRAGMA foreign_keys = ON;");
   db.exec(`
     CREATE TABLE IF NOT EXISTS reviews (
       id          TEXT PRIMARY KEY,
@@ -849,6 +857,274 @@ export function openDb(): DatabaseSync {
     -- A generated task deep-links back to the run that filed it.
     CREATE INDEX IF NOT EXISTS idx_mission_occurrences_task
       ON mission_schedule_occurrences(task_id);
+
+    -- ---- multi-agent ensembles ----
+    --
+    -- One family, generic on purpose. Nothing below says candidate, judge, diff or winner:
+    -- Best-of-N is a strategy that COMPILES into these rows, and a tournament, a critique
+    -- round or a synthesis has to persist through the same ones. A strategy that needed a
+    -- column here would be introducing a new primitive, not a new strategy.
+    --
+    -- This is the one table family in this file that declares FOREIGN KEYs, and they are
+    -- live: the pragma above is on. A member row whose run does not exist is unreachable
+    -- garbage - nothing can render it, cancel it or clean up after it - so the constraint
+    -- is worth more than the freedom to write one. Deletion cascades DOWNWARD from a run
+    -- only; nothing here references tasks, because ensemble history has to outlive the task
+    -- cleanup that reaps a worktree.
+    --
+    -- Every TEXT primary key below says NOT NULL explicitly, for the reason spelled out on
+    -- workflow_binding_claims: a non-STRICT rowid table does NOT imply it, so PRIMARY KEY
+    -- alone would admit several NULL ids and lose the identity the whole family joins on.
+    CREATE TABLE IF NOT EXISTS ensemble_runs (
+      id                   TEXT NOT NULL PRIMARY KEY,
+      -- Who asked. source_key is the caller's idempotency key: a create request that lost
+      -- its response, or was retried after a restart, derives the same key and gets the same
+      -- run back instead of launching another N agents. Both columns are NOT NULL because
+      -- SQLite treats NULLs as DISTINCT inside a unique index, so a nullable half would let
+      -- the row multiply on exactly the retry it exists to absorb.
+      source_kind          TEXT NOT NULL,
+      source_key           TEXT NOT NULL,
+      -- Display identity of the external record. NULL, not empty string: an operator-created
+      -- ensemble genuinely has no external record, and this column is in no uniqueness key,
+      -- so there is nothing an empty-string normalization would buy.
+      source_id            TEXT,
+      -- id and version separately, plus the id@version key the compiled plan carries. The
+      -- key is what a newer build's run is still identifiable by when strategy_id names
+      -- nothing this build has.
+      strategy_id          TEXT NOT NULL,
+      strategy_version     INTEGER NOT NULL,
+      strategy_key         TEXT NOT NULL,
+      strategy_label       TEXT NOT NULL,
+      title                TEXT NOT NULL,
+      intent               TEXT NOT NULL,
+      repo_root            TEXT NOT NULL,
+      -- Informational. base_sha is the fact that matters, and it is NULL until the launch
+      -- runtime resolves and pins one full commit - a phase this schema deliberately
+      -- precedes. Comparison between members is meaningless if their starting points differ.
+      base_branch          TEXT,
+      base_sha             TEXT,
+      -- The immutable compiled plan and the validated config it came from. A run executes
+      -- THIS for its whole life; recovery never recompiles with current defaults, because a
+      -- compiler whose defaults moved would silently re-aim a run that is already launched.
+      compiled_plan_json   TEXT NOT NULL,
+      strategy_config_json TEXT NOT NULL,
+      status               TEXT NOT NULL,
+      active_stage_id      TEXT,
+      outcome_json         TEXT,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      error                TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_runs_source
+      ON ensemble_runs(source_kind, source_key);
+    -- Restart reconciliation asks "which runs are not terminal?" once per start.
+    CREATE INDEX IF NOT EXISTS idx_ensemble_runs_status
+      ON ensemble_runs(status, updated_at);
+
+    -- One logical member per compiled role. Created with the run, before any process exists,
+    -- because every member of a wave has to be durable before the first task in that wave is
+    -- dispatched - otherwise a crash mid-launch leaves agents nothing owns.
+    --
+    -- Deliberately holds no score, rank or winner flag. Those belong to an evaluation or the
+    -- terminal outcome: one artifact may be judged in several panels, pairs or rounds, and a
+    -- column here could only hold the last of them.
+    CREATE TABLE IF NOT EXISTS ensemble_members (
+      id                  TEXT NOT NULL PRIMARY KEY,
+      run_id              TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      role_key            TEXT NOT NULL,
+      role_label          TEXT NOT NULL,
+      ordinal             INTEGER NOT NULL,
+      wave                INTEGER NOT NULL,
+      -- Empty string means "no task yet", and unlike source_id above this one IS in a
+      -- uniqueness key, which is why it is normalized rather than nullable. The partial
+      -- index enforces at most one member per task while leaving every unlaunched member
+      -- free to share the empty value.
+      task_id             TEXT NOT NULL DEFAULT '',
+      status              TEXT NOT NULL,
+      selected_attempt_id TEXT,
+      result_label        TEXT,
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL,
+      error               TEXT,
+      UNIQUE (run_id, ordinal),
+      UNIQUE (run_id, role_key)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_members_task
+      ON ensemble_members(task_id) WHERE task_id <> '';
+
+    -- One launch of one member. A retry appends an attempt; it never rewrites the member,
+    -- so what was tried and what it was pinned to stays readable afterwards.
+    CREATE TABLE IF NOT EXISTS ensemble_attempts (
+      id               TEXT NOT NULL PRIMARY KEY,
+      run_id           TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      member_id        TEXT NOT NULL REFERENCES ensemble_members(id) ON DELETE CASCADE,
+      attempt          INTEGER NOT NULL,
+      task_id          TEXT,
+      session_id       TEXT,
+      -- Launch facts as RESOLVED, not as requested: requested_model records what was asked
+      -- for and observed_model what the harness reported, and reading one as the other is
+      -- how a comparison credits a model that never ran.
+      agent            TEXT,
+      requested_model  TEXT,
+      requested_effort TEXT,
+      observed_model   TEXT,
+      base_sha         TEXT,
+      worktree_path    TEXT,
+      branch           TEXT,
+      status           TEXT NOT NULL,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      started_at       INTEGER,
+      finished_at      INTEGER,
+      error            TEXT,
+      UNIQUE (member_id, attempt)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ensemble_attempts_run
+      ON ensemble_attempts(run_id, member_id);
+
+    -- Immutable submitted evidence. LOCATORS and digests only - a ref, a commit id, a path -
+    -- never the bytes. A full patch belongs in Git, which already stores it exactly once and
+    -- can hand it back on demand; storing it here would put megabytes into a row that a
+    -- detail read has to page and an SSE summary must never carry.
+    CREATE TABLE IF NOT EXISTS ensemble_artifacts (
+      id             TEXT NOT NULL PRIMARY KEY,
+      run_id         TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      -- Attempt ownership, or the empty string for an artifact the RUN owns (a synthesis
+      -- input, an evaluation record) that belongs to no single attempt. Normalized rather
+      -- than nullable because it is half of the uniqueness key below.
+      attempt_id     TEXT NOT NULL DEFAULT '',
+      kind           TEXT NOT NULL,
+      format_version INTEGER NOT NULL,
+      attempt        INTEGER NOT NULL,
+      status         TEXT NOT NULL,
+      locator_json   TEXT NOT NULL,
+      digest         TEXT NOT NULL,
+      metadata_json  TEXT NOT NULL,
+      -- Stable per-capture key, so a repeated submission returns the artifact it already
+      -- made rather than a second row describing the same commit.
+      operation_key  TEXT NOT NULL,
+      created_at     INTEGER NOT NULL,
+      ready_at       INTEGER,
+      error          TEXT,
+      UNIQUE (run_id, attempt_id, kind, attempt)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_artifacts_operation
+      ON ensemble_artifacts(operation_key);
+    CREATE INDEX IF NOT EXISTS idx_ensemble_artifacts_status
+      ON ensemble_artifacts(run_id, status);
+
+    -- One attempt at one compiled stage. command_key is persisted BEFORE the side effect it
+    -- authorizes, which is what makes a crash mid-wave replayable: the same command derives
+    -- the same key, collides, and does not launch a second set of agents.
+    CREATE TABLE IF NOT EXISTS ensemble_stage_attempts (
+      id          TEXT NOT NULL PRIMARY KEY,
+      run_id      TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      stage_id    TEXT NOT NULL,
+      driver_kind TEXT NOT NULL,
+      -- The exact id@version the plan named, not whatever this build considers current for
+      -- that stage kind. A driver version removed while a non-terminal run still names it is
+      -- a startup health error, never permission to invoke the latest one.
+      driver_key  TEXT NOT NULL,
+      attempt     INTEGER NOT NULL,
+      command_key TEXT NOT NULL,
+      status      TEXT NOT NULL,
+      input_json  TEXT NOT NULL,
+      output_json TEXT,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      started_at  INTEGER,
+      finished_at INTEGER,
+      error       TEXT,
+      UNIQUE (run_id, stage_id, attempt)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_stage_attempts_command
+      ON ensemble_stage_attempts(command_key);
+
+    -- What a review stage decided, and about exactly which artifacts. input_fingerprint is
+    -- the digest of the bounded evidence actually presented, so a retry can prove it judged
+    -- the same thing rather than a re-materialized approximation of it.
+    CREATE TABLE IF NOT EXISTS ensemble_evaluations (
+      id                TEXT NOT NULL PRIMARY KEY,
+      run_id            TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      stage_attempt_id  TEXT NOT NULL REFERENCES ensemble_stage_attempts(id) ON DELETE CASCADE,
+      attempt           INTEGER NOT NULL,
+      method            TEXT NOT NULL,
+      -- What actually ran, resolved at attempt time. Empty string means "not resolved yet",
+      -- never "unknown provider".
+      runner_id         TEXT NOT NULL DEFAULT '',
+      model_id          TEXT NOT NULL DEFAULT '',
+      input_fingerprint TEXT NOT NULL,
+      subjects_json     TEXT NOT NULL,
+      result_json       TEXT,
+      status            TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      finished_at       INTEGER,
+      error             TEXT,
+      UNIQUE (stage_attempt_id, attempt)
+    );
+
+    -- Model calls the ENSEMBLE made - never the member agents' own work, whose cost is
+    -- session telemetry. cost_usd stays nullable and authoritative-only: a provider that
+    -- does not report a cost gets NULL, and reading that as zero is how a total quietly
+    -- understates itself.
+    CREATE TABLE IF NOT EXISTS ensemble_llm_calls (
+      id               TEXT NOT NULL PRIMARY KEY,
+      run_id           TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      stage_attempt_id TEXT,
+      evaluation_id    TEXT,
+      purpose          TEXT NOT NULL,
+      runner_id        TEXT NOT NULL,
+      model_id         TEXT NOT NULL,
+      attempt          INTEGER NOT NULL,
+      state            TEXT NOT NULL,
+      started_at       INTEGER NOT NULL,
+      finished_at      INTEGER,
+      duration_ms      INTEGER,
+      input_bytes      INTEGER NOT NULL DEFAULT 0,
+      output_bytes     INTEGER NOT NULL DEFAULT 0,
+      cost_usd         REAL,
+      error_code       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ensemble_llm_calls_run
+      ON ensemble_llm_calls(run_id, started_at);
+
+    -- The operator-visible audit trail. Append-only and bounded: what changed, not why an
+    -- agent said it did. operation_key is UNIQUE so a replayed transition writes one row.
+    CREATE TABLE IF NOT EXISTS ensemble_events (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id        TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      ts            INTEGER NOT NULL,
+      event_kind    TEXT NOT NULL,
+      payload_json  TEXT NOT NULL,
+      operation_key TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ensemble_events_run
+      ON ensemble_events(run_id, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_events_operation
+      ON ensemble_events(operation_key);
+
+    -- What a person chose. Versioned rather than updated, so history explains a promotion
+    -- under the evidence that was on screen when it was made. An LLM ranking is evidence and
+    -- reaches this table only as the rationale beside a human actor.
+    CREATE TABLE IF NOT EXISTS ensemble_decisions (
+      id                            TEXT NOT NULL PRIMARY KEY,
+      run_id                        TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      version                       INTEGER NOT NULL,
+      actor                         TEXT NOT NULL,
+      actor_id                      TEXT,
+      status                        TEXT NOT NULL,
+      selection_json                TEXT NOT NULL,
+      rationale                     TEXT NOT NULL DEFAULT '',
+      finalization_stage_attempt_id TEXT,
+      operation_key                 TEXT NOT NULL,
+      created_at                    INTEGER NOT NULL,
+      updated_at                    INTEGER NOT NULL,
+      UNIQUE (run_id, version)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_decisions_operation
+      ON ensemble_decisions(operation_key);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);

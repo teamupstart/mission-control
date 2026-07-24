@@ -1,0 +1,701 @@
+import { after, beforeEach, test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { ENSEMBLE_PLAN_VERSION, type CompiledEnsemblePlan } from "../src/shared/ensemble.ts";
+
+/**
+ * What is at stake: this store is the durable memory of work that spends real money on an
+ * operator's machine. Four failures it has to make impossible, all of them silent:
+ *
+ *  1. A create retry that launches a second group of N agents.
+ *  2. A stale worker writing a status backwards over a decision an operator already made.
+ *  3. A replayed capture or command producing a second artifact, a second stage attempt or
+ *     a doubled audit trail after a restart.
+ *  4. A row written by a NEWER build vanishing from the list instead of loading as one this
+ *     build refuses to run - a run nobody can see is a run nobody can cancel.
+ */
+
+const home = mkdtempSync(join(tmpdir(), "mission-ensemble-store-"));
+process.env.HARNESS_HOME = join(home, "state");
+
+const { openDb } = await import("../src/server/db.ts");
+const { EnsembleStore, EnsembleRowError, clearEnsembleTables } = await import(
+  "../src/server/ensembles/store.ts"
+);
+
+const db = openDb();
+after(() => rmSync(home, { recursive: true, force: true }));
+beforeEach(() => clearEnsembleTables(db));
+
+function plan(over: Partial<CompiledEnsemblePlan> = {}): CompiledEnsemblePlan {
+  return {
+    planVersion: ENSEMBLE_PLAN_VERSION,
+    strategyKey: "best_of_n@1",
+    budget: { maxMembers: 3, maxConcurrentMembers: 2, maxWaves: 1, maxStageAttempts: 2, deadlineMs: null },
+    information: { kind: "isolated" },
+    roles: [1, 2].map((ordinal) => ({
+      key: `candidate-${ordinal}`,
+      label: `Candidate ${ordinal}`,
+      ordinal,
+      wave: 1,
+      agent: null,
+      model: null,
+      effort: null,
+      approach: null,
+      promptTemplate: "work alone",
+      requiredArtifacts: ["commit" as const],
+      input: { kind: "run_base" as const },
+    })),
+    stages: [
+      {
+        id: "stage-1",
+        ordinal: 1,
+        label: "Candidates",
+        driverKind: "member",
+        driverKey: "member_wave@1",
+        dependsOn: [],
+        barrier: { kind: "none" },
+        maxAttempts: 1,
+        wave: 1,
+        roleKeys: ["candidate-1", "candidate-2"],
+      },
+    ],
+    ...over,
+  };
+}
+
+function insert(store: InstanceType<typeof EnsembleStore>, sourceKey = "manual:1", now = 100) {
+  return store.createRun(
+    {
+      sourceKind: "manual",
+      sourceKey,
+      sourceId: null,
+      strategyId: "best_of_n",
+      strategyVersion: 1,
+      strategyKey: "best_of_n@1",
+      strategyLabel: "Best of N",
+      title: "Try two approaches",
+      intent: "Implement the feature",
+      repoRoot: "/repo",
+      baseBranch: null,
+      baseSha: null,
+      plan: plan(),
+      strategyConfig: { members: [{}, {}] },
+      status: "planning",
+      members: [
+        { roleKey: "candidate-1", roleLabel: "Candidate 1", ordinal: 1, wave: 1 },
+        { roleKey: "candidate-2", roleLabel: "Candidate 2", ordinal: 2, wave: 1 },
+      ],
+    },
+    now,
+  );
+}
+
+// ---- creation ----
+
+test("a run and its whole roster are created together", () => {
+  const store = new EnsembleStore(db);
+  const write = insert(store);
+  assert.equal(write.created, true);
+  assert.equal(write.members.length, 2);
+  assert.deepEqual(
+    write.members.map((member) => [member.roleKey, member.ordinal, member.status, member.taskId]),
+    [
+      ["candidate-1", 1, "pending", null],
+      ["candidate-2", 2, "pending", null],
+    ],
+  );
+  assert.equal(write.run.status, "planning");
+  // No base until the launch runtime pins one, and the record says so rather than holding a
+  // plausible HEAD nothing verified.
+  assert.equal(write.run.baseSha, null);
+});
+
+test("a partial roster is impossible: a failing member insert takes the run with it", () => {
+  const store = new EnsembleStore(db);
+  assert.throws(() =>
+    store.createRun(
+      {
+        sourceKind: "manual",
+        sourceKey: "manual:bad",
+        sourceId: null,
+        strategyId: "best_of_n",
+        strategyVersion: 1,
+        strategyKey: "best_of_n@1",
+        strategyLabel: "Best of N",
+        title: "T",
+        intent: "I",
+        repoRoot: "/repo",
+        baseBranch: null,
+        baseSha: null,
+        plan: plan(),
+        strategyConfig: {},
+        status: "planning",
+        // Two members claiming ordinal 1. The UNIQUE index refuses the second, and the
+        // transaction must take the first and the run with it.
+        members: [
+          { roleKey: "candidate-1", roleLabel: "C1", ordinal: 1, wave: 1 },
+          { roleKey: "candidate-2", roleLabel: "C2", ordinal: 1, wave: 1 },
+        ],
+      },
+      100,
+    ),
+  );
+  assert.equal(store.runBySource("manual", "manual:bad"), null);
+  assert.equal(store.listRuns().length, 0);
+});
+
+test("the same source key returns the run it already made, and never a second one", () => {
+  const store = new EnsembleStore(db);
+  const first = insert(store, "manual:same");
+  const retry = insert(store, "manual:same", 500);
+  assert.equal(retry.created, false);
+  assert.equal(retry.run.id, first.run.id);
+  assert.equal(retry.members.length, 2);
+  assert.equal(store.listRuns().length, 1);
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS count FROM ensemble_members`).get() as { count: number }).count,
+    2,
+  );
+});
+
+test("two different source keys are two different runs", () => {
+  const store = new EnsembleStore(db);
+  insert(store, "manual:a");
+  insert(store, "manual:b");
+  assert.equal(store.listRuns().length, 2);
+});
+
+// ---- compare and set ----
+
+test("a status only moves from a state the caller said it expected", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+
+  const ok = store.setRunStatus(run.id, ["planning"], "running", { activeStageId: "stage-1" }, 200);
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.equal(ok.value.activeStageId, "stage-1");
+
+  // The stale worker: it still believes the run is planning, and its write must not land.
+  const stale = store.setRunStatus(run.id, ["planning"], "waiting", {}, 300);
+  assert.equal(stale.ok, false);
+  if (!stale.ok) {
+    assert.equal(stale.reason, "precondition_failed");
+    assert.equal(stale.current?.status, "running");
+  }
+  assert.equal(store.getRun(run.id)?.status, "running");
+});
+
+test("a cancelled run cannot be resurrected by a completion that was already in flight", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  store.setRunStatus(run.id, ["planning"], "cancelled", { completedAt: 400 }, 400);
+  const late = store.setRunStatus(run.id, ["running", "waiting", "evaluating"], "completed", {}, 500);
+  assert.equal(late.ok, false);
+  assert.equal(store.getRun(run.id)?.status, "cancelled");
+});
+
+test("a transition against a run that is gone says so rather than silently doing nothing", () => {
+  const store = new EnsembleStore(db);
+  const missing = store.setRunStatus("no-such-run", ["planning"], "running");
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.reason, "not_found");
+});
+
+test("a member transition takes the same precondition, and normalizes its task binding", () => {
+  const store = new EnsembleStore(db);
+  const { members } = insert(store);
+  const member = members[0]!;
+  const launched = store.setMemberStatus(member.id, ["pending"], "launching", { taskId: "task-1" }, 200);
+  assert.equal(launched.ok, true);
+  if (launched.ok) assert.equal(launched.value.taskId, "task-1");
+  assert.equal(store.setMemberStatus(member.id, ["pending"], "active").ok, false);
+
+  const cleared = store.setMemberStatus(member.id, ["launching"], "failed", { taskId: null });
+  assert.equal(cleared.ok, true);
+  if (cleared.ok) assert.equal(cleared.value.taskId, null);
+  // Two unlaunched members must be able to coexist: the partial unique index is written
+  // against the empty string, so a null here would defeat it.
+  assert.equal(store.setMemberStatus(members[1]!.id, ["pending"], "failed", { taskId: null }).ok, true);
+});
+
+// ---- idempotent appends ----
+
+test("attempt numbers start at one and a repeat of the same number is one row", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const member = members[0]!;
+  assert.equal(store.nextAttemptNumber(member.id), 1);
+
+  const first = store.insertAttempt({
+    runId: run.id,
+    memberId: member.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: null,
+    agent: "claude",
+    requestedModel: "claude-opus-4-8",
+    requestedEffort: "high",
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "launching",
+  });
+  const replay = store.insertAttempt({
+    runId: run.id,
+    memberId: member.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: null,
+    agent: "claude",
+    requestedModel: "claude-opus-4-8",
+    requestedEffort: "high",
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "launching",
+  });
+  assert.equal(replay.id, first.id);
+  assert.equal(store.nextAttemptNumber(member.id), 2);
+  assert.equal(store.listAttempts(run.id).length, 1);
+  assert.equal(first.agent, "claude");
+  assert.equal(first.requestedEffort, "high");
+});
+
+test("an artifact is keyed by the operation that captured it, not by its contents", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const attempt = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "running",
+  });
+  const capture = {
+    runId: run.id,
+    attemptId: attempt.id,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready" as const,
+    locator: { commit: "a".repeat(40), ref: "refs/mission-control/ensembles/x/y" },
+    digest: "sha256:abc",
+    metadata: { filesChanged: 3 },
+    operationKey: `submit:${attempt.id}:1`,
+    readyAt: 300,
+  };
+  const first = store.recordArtifact(capture);
+  const replay = store.recordArtifact({ ...capture, digest: "sha256:different" });
+  assert.equal(replay.id, first.id);
+  assert.equal(replay.digest, "sha256:abc", "a replay must not rewrite an immutable artifact");
+  assert.equal(store.listArtifacts(run.id).length, 1);
+  assert.deepEqual(first.locator, capture.locator);
+
+  // A genuinely new capture is a new attempt, and gets its own row.
+  const second = store.recordArtifact({ ...capture, attempt: 2, operationKey: `submit:${attempt.id}:2` });
+  assert.notEqual(second.id, first.id);
+  assert.equal(store.listArtifacts(run.id).length, 2);
+});
+
+test("a command key is spent once, however many times the daemon replays it", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const command = {
+    runId: run.id,
+    stageId: "stage-1",
+    driverKind: "member",
+    driverKey: "member_wave@1",
+    attempt: 1,
+    commandKey: `${run.id}:stage-1:1`,
+    status: "running" as const,
+    input: { roleKeys: ["candidate-1", "candidate-2"] },
+  };
+  const first = store.startStageAttempt(command);
+  const replay = store.startStageAttempt(command);
+  assert.equal(replay.id, first.id);
+  assert.equal(store.listStageAttempts(run.id).length, 1);
+  assert.equal(store.stageAttemptByCommand(command.commandKey)?.id, first.id);
+
+  const finished = store.finishStageAttempt(first.id, "succeeded", { output: { launched: 2 } });
+  assert.equal(finished?.status, "succeeded");
+  assert.ok(finished?.finishedAt);
+  assert.deepEqual(finished?.output, { launched: 2 });
+});
+
+test("an evaluation is one row per stage attempt and attempt number, and reports what ran", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const stage = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-2",
+    driverKind: "review",
+    driverKey: "comparative_review@1",
+    attempt: 1,
+    commandKey: `${run.id}:stage-2:1`,
+    status: "running",
+    input: {},
+  });
+  const input = {
+    runId: run.id,
+    stageAttemptId: stage.id,
+    attempt: 1,
+    method: "comparative_llm",
+    runnerId: null,
+    modelId: null,
+    inputFingerprint: "sha256:packet",
+    subjectArtifactIds: ["art-1", "art-2"],
+    status: "running" as const,
+  };
+  const first = store.recordEvaluation(input);
+  assert.equal(store.recordEvaluation(input).id, first.id);
+  // Not resolved yet is null on the record, never a plausible provider name.
+  assert.equal(first.runnerId, null);
+
+  const done = store.finishEvaluation(first.id, "succeeded", {
+    runnerId: "claude",
+    modelId: "claude-opus-4-8",
+    result: { recommendedArtifactId: "art-1" },
+  });
+  assert.equal(done?.runnerId, "claude");
+  assert.deepEqual(done?.subjectArtifactIds, ["art-1", "art-2"]);
+});
+
+test("a model call's unknown cost stays null, because unknown is not zero", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const call = store.startLlmCall({
+    runId: run.id,
+    stageAttemptId: null,
+    evaluationId: null,
+    purpose: "comparative_review",
+    runnerId: "claude",
+    modelId: "claude-opus-4-8",
+    attempt: 1,
+    state: "running",
+    startedAt: 100,
+  });
+  const done = store.finishLlmCall(call.id, "succeeded", {
+    finishedAt: 200,
+    durationMs: 100,
+    inputBytes: 10,
+    outputBytes: 20,
+    costUsd: null,
+    errorCode: null,
+  });
+  assert.equal(done?.costUsd, null);
+  assert.equal(done?.state, "succeeded");
+});
+
+test("a decision is versioned, supersedes its predecessor, and is spent once", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const first = store.recordDecision({
+    runId: run.id,
+    actor: "human",
+    actorId: null,
+    selection: { memberId: members[0]!.id },
+    rationale: "clearer diff",
+    operationKey: `${run.id}:decide:1`,
+  });
+  assert.equal(first.version, 1);
+  assert.equal(first.status, "recorded");
+
+  // The click that records a decision is the click that starts reaping loser worktrees.
+  assert.equal(store.recordDecision({
+    runId: run.id,
+    actor: "human",
+    actorId: null,
+    selection: { memberId: members[0]!.id },
+    rationale: "clearer diff",
+    operationKey: `${run.id}:decide:1`,
+  }).id, first.id);
+
+  const second = store.recordDecision({
+    runId: run.id,
+    actor: "human",
+    actorId: null,
+    selection: { memberId: members[1]!.id },
+    rationale: "changed my mind",
+    operationKey: `${run.id}:decide:2`,
+  });
+  assert.equal(second.version, 2);
+  const decisions = store.listDecisions(run.id);
+  assert.equal(decisions[0]?.status, "superseded");
+  assert.equal(decisions[1]?.status, "recorded");
+
+  const applied = store.applyDecision(second.id, "stage-attempt-1");
+  assert.equal(applied.ok, true);
+  assert.equal(store.applyDecision(second.id, "stage-attempt-1").ok, false);
+});
+
+test("a replayed audit record does not double the timeline an operator reads", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const event = { runId: run.id, kind: "run_created", payload: { members: 2 }, operationKey: `${run.id}:created` };
+  const first = store.appendEvent(event);
+  const replay = store.appendEvent(event);
+  assert.equal(replay?.id, first?.id);
+  assert.equal(store.listEvents(run.id).length, 1);
+});
+
+// ---- reads ----
+
+test("a detail read returns every record the run owns", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const attempt = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: "sess-1",
+    agent: "claude",
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: "b".repeat(40),
+    worktreePath: "/wt",
+    branch: "mancej/x",
+    status: "running",
+  });
+  store.recordArtifact({
+    runId: run.id,
+    attemptId: attempt.id,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready",
+    locator: { commit: "c".repeat(40) },
+    digest: "sha256:1",
+    metadata: {},
+    operationKey: "op-artifact",
+    readyAt: 200,
+  });
+  const stage = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-1",
+    driverKind: "member",
+    driverKey: "member_wave@1",
+    attempt: 1,
+    commandKey: "op-stage",
+    status: "succeeded",
+    input: {},
+  });
+  store.recordEvaluation({
+    runId: run.id,
+    stageAttemptId: stage.id,
+    attempt: 1,
+    method: "comparative_llm",
+    runnerId: "claude",
+    modelId: "m",
+    inputFingerprint: "f",
+    subjectArtifactIds: [],
+    status: "queued",
+  });
+  store.recordDecision({
+    runId: run.id,
+    actor: "human",
+    actorId: null,
+    selection: {},
+    rationale: "",
+    operationKey: "op-decide",
+  });
+  store.appendEvent({ runId: run.id, kind: "created", payload: {}, operationKey: "op-event" });
+
+  const detail = store.detail(run.id);
+  assert.ok(detail);
+  assert.equal(detail.run.id, run.id);
+  assert.equal(detail.members.length, 2);
+  assert.equal(detail.attempts.length, 1);
+  assert.equal(detail.artifacts.length, 1);
+  assert.equal(detail.stageAttempts.length, 1);
+  assert.equal(detail.evaluations.length, 1);
+  assert.equal(detail.decisions.length, 1);
+  assert.equal(detail.events.length, 1);
+  // The plan survives the round trip exactly - it is the thing recovery executes.
+  assert.deepEqual(detail.run.plan, plan());
+  assert.equal(store.detail("no-such-run"), null);
+});
+
+test("the compact summary counts progress without loading the run's children", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  let summary = store.summary(run.id);
+  assert.ok(summary);
+  assert.equal(summary.memberCount, 2);
+  assert.equal(summary.launchedMembers, 0);
+  assert.equal(summary.readyArtifacts, 0);
+  assert.equal(summary.maxMembers, 3, "the plan's own cap, not the roster length");
+  assert.equal(summary.attention, false);
+
+  store.setMemberStatus(members[0]!.id, ["pending"], "launching", { taskId: "task-1" });
+  const attempt = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "running",
+  });
+  store.recordArtifact({
+    runId: run.id,
+    attemptId: attempt.id,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready",
+    locator: {},
+    digest: "d",
+    metadata: {},
+    operationKey: "op-1",
+    readyAt: 1,
+  });
+  summary = store.summary(run.id);
+  assert.equal(summary?.launchedMembers, 1);
+  assert.equal(summary?.readyArtifacts, 1);
+
+  store.setRunStatus(run.id, ["planning"], "awaiting_decision");
+  assert.equal(store.summary(run.id)?.attention, true, "a run waiting on a person needs attention");
+});
+
+test("a completed run reports the member its outcome selected", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  store.setRunStatus(run.id, ["planning"], "completed", {
+    outcome: { kind: "selected", memberIds: [members[1]!.id], artifactIds: ["art-1"], materializedTaskId: null },
+    completedAt: 900,
+  });
+  const summary = store.summary(run.id);
+  assert.equal(summary?.selectedMemberId, members[1]!.id);
+  assert.equal(summary?.outcomeKind, "selected");
+  assert.equal(summary?.completedAt, 900);
+});
+
+test("the task projection names the member, its place in the roster, and nothing more", () => {
+  const store = new EnsembleStore(db);
+  const { members } = insert(store);
+  assert.equal(store.taskLink("task-9"), null);
+  store.setMemberStatus(members[1]!.id, ["pending"], "active", {
+    taskId: "task-9",
+    resultLabel: "rank 1",
+  });
+  const link = store.taskLink("task-9");
+  assert.deepEqual(link, {
+    runId: members[1]!.runId,
+    strategyId: "best_of_n",
+    strategyLabel: "Best of N",
+    memberId: members[1]!.id,
+    ordinal: 2,
+    wave: 1,
+    role: "candidate-2",
+    launchedMembers: 1,
+    maxMembers: 3,
+    status: "active",
+    resultLabel: "rank 1",
+  });
+  assert.deepEqual(store.listTaskLinks(), [{ taskId: "task-9", link }]);
+});
+
+// ---- restart and version skew ----
+
+test("the restart query returns exactly the runs that have not finished", () => {
+  const store = new EnsembleStore(db);
+  const running = insert(store, "manual:running").run;
+  const done = insert(store, "manual:done").run;
+  const cancelled = insert(store, "manual:cancelled").run;
+  store.setRunStatus(running.id, ["planning"], "running");
+  store.setRunStatus(done.id, ["planning"], "completed", { completedAt: 1 });
+  store.setRunStatus(cancelled.id, ["planning"], "cancelled", { completedAt: 1 });
+
+  assert.deepEqual(
+    store.listNonTerminalRuns().map((run) => run.id),
+    [running.id],
+  );
+});
+
+test("a run written by a newer build loads, and says exactly why it will not run here", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  db.prepare(`UPDATE ensemble_runs SET strategy_id = 'tournament', strategy_key = 'tournament@2' WHERE id = ?`).run(
+    run.id,
+  );
+  const loaded = store.getRun(run.id);
+  assert.ok(loaded, "a run nobody can see is a run nobody can cancel");
+  assert.equal(loaded.strategyId, null);
+  assert.equal(loaded.strategyKey, "tournament@2");
+  assert.ok(loaded.unreadable);
+  assert.ok(loaded.unreadable.fields.includes("strategy_id"));
+  assert.equal(store.summary(run.id)?.attention, true);
+  assert.equal(store.listNonTerminalRuns().some((r) => r.id === run.id), true);
+});
+
+test("a plan needing a driver this build does not ship stays readable and is still refused", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const future = plan({
+    stages: [{ ...plan().stages[0]!, driverKey: "member_wave@9" } as CompiledEnsemblePlan["stages"][number]],
+  });
+  db.prepare(`UPDATE ensemble_runs SET compiled_plan_json = ? WHERE id = ?`).run(
+    JSON.stringify(future),
+    run.id,
+  );
+  const loaded = store.getRun(run.id);
+  assert.ok(loaded?.plan, "the operator still has to be able to see what it was going to do");
+  assert.equal(loaded.plan.stages[0]?.driverKey, "member_wave@9");
+  assert.ok(loaded.unreadable?.reason.includes("member_wave@9"));
+});
+
+test("a plan whose shape this build cannot parse degrades that run and no other", () => {
+  const store = new EnsembleStore(db);
+  const broken = insert(store, "manual:broken").run;
+  const healthy = insert(store, "manual:healthy").run;
+  db.prepare(`UPDATE ensemble_runs SET compiled_plan_json = 'not json' WHERE id = ?`).run(broken.id);
+
+  const summaries = store.listSummaries();
+  assert.equal(summaries.length, 2, "one bad row must not take the whole list down");
+  assert.equal(summaries.find((s) => s.id === broken.id)?.unreadable !== null, true);
+  assert.equal(summaries.find((s) => s.id === healthy.id)?.unreadable, null);
+  assert.equal(store.getRun(broken.id)?.plan, null);
+});
+
+test("a corrupt JSON column that is the run's own state throws, naming the table and row", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  db.prepare(`UPDATE ensemble_runs SET strategy_config_json = '{' WHERE id = ?`).run(run.id);
+  assert.throws(() => store.getRun(run.id), EnsembleRowError);
+});
+
+test("deleting a run takes its whole history with it and leaves the others alone", () => {
+  const store = new EnsembleStore(db);
+  const doomed = insert(store, "manual:doomed").run;
+  const kept = insert(store, "manual:kept").run;
+  store.appendEvent({ runId: doomed.id, kind: "created", payload: {}, operationKey: "op-doomed" });
+
+  assert.equal(store.deleteRun(doomed.id), true);
+  assert.equal(store.deleteRun(doomed.id), false);
+  assert.equal(store.getRun(doomed.id), null);
+  assert.equal(store.listEvents(doomed.id).length, 0);
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS count FROM ensemble_members WHERE run_id = ?`).get(doomed.id) as {
+      count: number;
+    }).count,
+    0,
+  );
+  assert.equal(store.listMembers(kept.id).length, 2);
+});

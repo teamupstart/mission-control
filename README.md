@@ -1288,6 +1288,49 @@ Two more properties, both deliberate:
   dies mid-run either finds the task already filed (and just closes the ledger) or files it
   on the id it reserved. Neither path can produce a second task.
 
+## Multi-agent ensembles (foundation only, so far)
+
+An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
+under one versioned *strategy*, plus the group-level facts a single task cannot express: one
+pinned base commit, member roles, immutable submitted artifacts, a comparison, a human
+decision, and a terminal outcome. The first strategy is **Best of N** - two to five agents
+implement the same task alone from the same commit, one tool-less comparison ranks what they
+submitted, and you confirm the winner.
+
+**Nothing is operable yet.** What has landed is the durable contract the rest is built on:
+the shared vocabulary, a versioned strategy descriptor and compiler, the Best-of-N compiler,
+nine SQLite tables with a daemon-owned store, and a compact projection on the existing
+[live channel](#how-it-works). There is no create route, no MCP tool, no engine and no UI,
+so with no way to create an ensemble the tables stay empty and the product behaves exactly
+as before. The plan is
+[`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
+
+Four decisions are worth knowing now, because everything later is built on them:
+
+- **Every member is an ordinary task.** Ensembles add no second dispatcher, worktree
+  provisioner or cancellation path; the group owns what a task cannot own, and nothing else.
+  A member task carries its ensemble on its existing task chip, so cards, console and board
+  can all show which candidate a session is.
+- **A model recommends; it never promotes.** The comparison is advisory and runs without
+  tools. Anything destructive - resetting a branch to a chosen snapshot, reaping the losing
+  worktrees - waits for an explicit human confirmation, and the compiled plan carries that
+  requirement as a type the schema will not let a strategy opt out of.
+- **A run executes the plan it was created with.** Its strategy, version and compiled plan
+  are snapshotted at creation, so a strategy whose defaults change later cannot silently
+  re-aim work that is already running. A run written by a *newer* build still loads and can
+  still be cancelled - it reports which piece this build does not have, and refuses to run
+  rather than substituting something adjacent.
+- **Members will not push or open pull requests.** Publishing happens after a winner is
+  chosen, through the normal [shipping](#shipping-yolo-mode) flow, so an ensemble never
+  leaves N branches and N pull requests behind. Note the isolation between members is
+  behavioural, not a sandbox: they share one Git repository and a local agent can find its
+  siblings if it goes looking.
+
+Ensembles are deliberately separate from [Workflows](#workflows-and-personas). A workflow
+reviews exactly one session; an ensemble is the selection stage over several. They compose
+at promotion - a confirmed winner can be handed to a published workflow version - and that
+handoff crosses the same server-owned boundary any external result does.
+
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live

@@ -35,6 +35,7 @@ import type {
   InspectorSummary,
   InspectionUpdated,
 } from "@shared/types.ts";
+import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type {
   HookIngest,
   OtlpMetrics,
@@ -330,6 +331,16 @@ export class Registry extends EventEmitter {
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
   private workflowRuns = new Map<string, WorkflowRunSummary>();
+  /** Compact ensemble projections only. Members, artifacts and evaluations stay on HTTP. */
+  private ensembles = new Map<string, EnsembleSummary>();
+  /**
+   * How a task finds out it is an ensemble member.
+   *
+   * Registered by the daemon rather than imported, so nothing in here has to know what an
+   * ensemble store is - the same seam `registerWorkflowReset` uses. Null until the manager
+   * is constructed, which is also every build and test that has no ensembles at all.
+   */
+  private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** A terminal side effect must not cross the asynchronous reset boundary. */
   private resettingSessionIds = new Set<string>();
@@ -452,6 +463,7 @@ export class Registry extends EventEmitter {
     personas: PersonaView[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
+    ensembleSummaries: EnsembleSummary[];
     fleetCost: FleetCost | null;
   } {
     return {
@@ -461,6 +473,7 @@ export class Registry extends EventEmitter {
       personas: [...this.personas.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
+      ensembleSummaries: [...this.ensembles.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -628,6 +641,35 @@ export class Registry extends EventEmitter {
 
   removeWorkflowRun(id: string): void {
     if (this.workflowRuns.delete(id)) this.emitEvent({ type: "workflow_run_remove", id });
+  }
+
+  // ---- ensemble catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializeEnsembles(summaries: EnsembleSummary[]): void {
+    this.ensembles = new Map(summaries.map((summary) => [summary.id, summary]));
+  }
+
+  upsertEnsemble(summary: EnsembleSummary): void {
+    this.ensembles.set(summary.id, summary);
+    this.emitEvent({ type: "ensemble_upsert", ensemble: summary });
+  }
+
+  removeEnsemble(id: string): void {
+    if (this.ensembles.delete(id)) this.emitEvent({ type: "ensemble_remove", id });
+  }
+
+  /**
+   * Teach the registry how to say which ensemble member a task is.
+   *
+   * A registered lookup rather than an import, so this file keeps no dependency on the
+   * ensemble store and the projection stays one in-memory map read - `taskSummaryFor` runs
+   * for every session on every discovery sweep, and a SQLite query there would be a query
+   * per session per 1.5 seconds for a feature most operators are not using.
+   */
+  registerEnsembleProjection(lookup: (taskId: string) => TaskEnsembleLink | null): void {
+    this.ensembleProjection = lookup;
+    for (const id of this.sessions.keys()) this.resyncSessionTask(id);
   }
 
   registerWorkflowReset(cleanup: (noteKey: string) => void): void {
@@ -3558,6 +3600,11 @@ export class Registry extends EventEmitter {
           scheduleId: t.scheduleId,
           scheduleOccurrenceId: t.scheduleOccurrenceId,
           scheduledFor: t.scheduledFor,
+          // Null in every build with no ensembles, and in every build where nothing has
+          // registered the projection - which is the whole product until a member is
+          // launched. The join lives on the daemon side of one seam rather than on
+          // `Session`, so it needs no comparator: `task` is already compared by JSON.
+          ensemble: this.ensembleProjection?.(t.id) ?? null,
         }
       : null;
   }

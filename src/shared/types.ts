@@ -2,6 +2,9 @@
 // and the web UI (src/web). Keep this the single source of truth for anything
 // that crosses the SSE / HTTP boundary.
 
+// Type-only both ways: `ensemble.ts` needs `AgentType`/`ThinkingLevel` from here. Both
+// imports are erased at emit (verbatimModuleSyntax), so there is no runtime cycle.
+import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
@@ -1258,6 +1261,16 @@ export interface TaskSummary {
   scheduleId: string | null;
   scheduleOccurrenceId: string | null;
   scheduledFor: number | null;
+  /**
+   * Which ensemble member this task is, or null for ordinary work.
+   *
+   * Here rather than on `Session` deliberately, and the phase plan calls it out: a
+   * top-level session field would need its own `SESSION_FIELD_COMPARATORS` entry and would
+   * be a second denormalized copy of group state, while `Session.task` is already compared
+   * structurally by `byJson`. Populated by the daemon's task projection, which joins the
+   * task to its member row; nothing in the browser derives it.
+   */
+  ensemble: TaskEnsembleLink | null;
 }
 
 // ---- no-mistakes surfacing ----
@@ -1824,6 +1837,12 @@ export type ServerEvent =
       workflowSummaries: WorkflowSummary[];
       workflowRunSummaries: WorkflowRunSummary[];
       /**
+       * Compact ensemble projections only. Members, artifacts, evaluations, stage output and
+       * patches stay on HTTP: this collection must stay bounded when a later strategy runs
+       * a large roster or generates pairwise evaluations.
+       */
+      ensembleSummaries: EnsembleSummary[];
+      /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
@@ -1842,6 +1861,8 @@ export type ServerEvent =
   | { type: "workflow_remove"; id: WorkflowId }
   | { type: "workflow_run_upsert"; run: WorkflowRunSummary }
   | { type: "workflow_run_remove"; id: WorkflowRunId }
+  | { type: "ensemble_upsert"; ensemble: EnsembleSummary }
+  | { type: "ensemble_remove"; id: string }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

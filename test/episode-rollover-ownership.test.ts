@@ -163,12 +163,18 @@ test("the barrier still blocks a session sitting in a genuinely cancelled task's
   // The operator cancelled the task and its teardown failed, so the resources remain
   // tracked and the session predates the cancellation. Nothing may be typed at it.
   const liveSession = session();
-  const episodeStartedAt = registry.workEpisodeForSession(SID)!.startedAt;
+  //
+  // Taken from the episode rather than from a fresh `Date.now()`, and that is not tidiness:
+  // an episode starts at wall-clock time and this line runs microseconds later, so the two
+  // readings land in the same MILLISECOND often enough to matter. `outcomePrecedesSessionWork`
+  // compares them with `>=`, so an equal pair reads as a rollover - the barrier stands down
+  // and this test fails for a reason that has nothing to do with what it is testing.
+  const episode = registry.workEpisodeForSession(SID)!;
   registry.upsertTask({
     ...registry.getTask(TASK)!,
     status: "cancelled",
     sessionId: null,
-    completedAt: episodeStartedAt + 1,
+    completedAt: episode.startedAt + 1,
   });
 
   const result = await sendText(liveSession, "more work", true, deps, guard);

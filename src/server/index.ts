@@ -37,6 +37,7 @@ import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
+import { EnsembleManager } from "./ensembles/manager.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 
 openDb();
@@ -75,6 +76,21 @@ const workflows = new WorkflowManager(registry, personas.store, {
   reviewScheduler,
 });
 workflows.start();
+// Constructed for exactly two effects, both read-only: the registry's ensemble collection is
+// populated from persisted rows so a reconnect snapshot is truthful, and the task projection
+// is registered so a member's session card could name its group. Nothing here starts work -
+// there is no route into `create`, no engine, and no launch path until later phases - so on
+// every existing machine these tables are empty and the product behaves exactly as before.
+//
+// Its Persona resolver is the manager's own store, so a comparison configured against a
+// Persona pins that Persona's exact revision at creation instead of re-reading a Markdown
+// file that may since have been edited.
+new EnsembleManager(registry, undefined, {
+  resolvePersona: (personaId) => {
+    const persona = personas.store.getPersona(personaId);
+    return persona ? { id: persona.id, revision: persona.revision } : null;
+  },
+});
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);

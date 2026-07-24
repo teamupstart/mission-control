@@ -17,6 +17,7 @@ import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsPage } from "./components/SettingsPage.tsx";
 import { DEFAULT_SETTINGS_CATEGORY } from "./lib/settings-registry.ts";
+import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
@@ -71,6 +72,25 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["kill", "requestKill"],
 ];
 
+/**
+ * What the worst-of settings dot on the gear is telling you, so its meaning reaches the
+ * button's tooltip and label rather than living in the colour alone.
+ */
+function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null {
+  switch (tone) {
+    case "failing":
+      return "a task source failed its last sweep";
+    case "armed":
+      return "YOLO mode is armed";
+    case "live":
+      return "the Inspector is live";
+    // Foreman's purple never reaches the gear; the gear ranks only settingsStatus facts.
+    case "foreman":
+    case null:
+      return null;
+  }
+}
+
 export function App(): React.JSX.Element {
   const {
     sessions,
@@ -80,6 +100,7 @@ export function App(): React.JSX.Element {
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
     fleetCost,
+    settingsStatus,
     connected,
     hasSnapshot,
   } = useEventStream();
@@ -105,6 +126,10 @@ export function App(): React.JSX.Element {
   // leave the strip showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
+  // The worst subsystem status, inherited by the topbar gear from the settings rail dots.
+  // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
+  const gearDot = settingsGearDot(settingsStatus);
+  const gearPhrase = gearDotPhrase(gearDot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
@@ -1015,7 +1040,9 @@ export function App(): React.JSX.Element {
               label={
                 route.page === "settings"
                   ? "Return to the fleet of running sessions"
-                  : "Settings (⌘,)"
+                  : gearPhrase
+                    ? `Settings (⌘,) - ${gearPhrase}`
+                    : "Settings (⌘,)"
               }
             >
               <button
@@ -1031,10 +1058,21 @@ export function App(): React.JSX.Element {
                 // button's does. No `aria-pressed` beside it: a toggle button that
                 // renames itself and reports a pressed state announces the same fact
                 // twice, and the second telling contradicts the first ("Return to Fleet,
-                // pressed").
-                aria-label={route.page === "settings" ? "Return to Fleet" : "Settings"}
+                // pressed"). The worst-status phrase rides the label so the dot's meaning
+                // is not carried by colour alone.
+                aria-label={
+                  route.page === "settings"
+                    ? "Return to Fleet"
+                    : gearPhrase
+                      ? `Settings - ${gearPhrase}`
+                      : "Settings"
+                }
               >
                 <span aria-hidden>⚙</span>
+                {/* The gear inherits the worst rail dot, so a subsystem needing attention
+                    is visible without opening Settings. Purely visual - the phrase above
+                    carries it to assistive tech. */}
+                {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
               </button>
             </Tooltip>
             <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
@@ -1115,6 +1153,7 @@ export function App(): React.JSX.Element {
               llm={llm}
               layout={layout}
               onLayoutChange={setLayout}
+              settingsStatus={settingsStatus}
             />
           )}
           fleet={(

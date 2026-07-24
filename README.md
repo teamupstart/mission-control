@@ -2387,6 +2387,16 @@ issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A 
 a category this build does not have falls back to Display rather than a blank pane - the one
 browser-scoped category, so a stale link can never open a panel that acts on GitHub.
 
+**Status dots** on the rail say what each subsystem is doing without opening it, and they
+move over the live channel - no polling, and right whenever the app is open, not only while
+a panel is on screen. **Inspector** is green when it is switched on and live (reviews post
+to GitHub); **Shipping** is amber when YOLO mode is armed; **Task sources** is red when a
+source failed its last sweep; **Foreman** is purple when the auto-responder is on. The
+topbar ⚙ **gear inherits the worst of them** - red over amber over green - so a subsystem
+that needs you shows from the fleet; the gear's tooltip names what the dot means. Before the
+first status arrives (a cold tab, a reconnect) the dots stay dark rather than claim an
+all-clear.
+
 ## Layout (cards, console, or board)
 
 The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)

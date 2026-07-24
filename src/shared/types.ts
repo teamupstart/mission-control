@@ -1825,6 +1825,27 @@ export interface LlmStatus {
   runners: LlmProviderView[];
 }
 
+/**
+ * The small status tuple the Settings rail dots and the topbar gear read, carried on the
+ * live channel so the dots are right whenever the app is open - not only while the panel
+ * that computes each fact happens to be polling.
+ *
+ * Deliberately tiny and denormalized: it holds the few facts the dots need and nothing a
+ * panel already fetches. Foreman is NOT here on purpose - App owns `ForemanState`, so the
+ * Foreman dot derives from that rather than being shipped twice and left to disagree.
+ *
+ * APPEND fields rather than reshaping this. An older dashboard still in flight holds the
+ * last value it read, so a rename orphans it while an addition is free.
+ */
+export interface SettingsStatus {
+  /** The Inspector's two switches the dots care about; its allowlist is not a dot fact. */
+  inspector: { enabled: boolean; mode: "dry-run" | "live" };
+  /** YOLO mode's master switch. Armed is an amber dot; the soak/method are not dot facts. */
+  shipping: { autoMerge: boolean };
+  /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
+  taskSources: { failing: number };
+}
+
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
@@ -1848,6 +1869,12 @@ export type ServerEvent =
        * something - up to a whole export interval of a dashboard that looks broken.
        */
       fleetCost: FleetCost | null;
+      /**
+       * The settings status tuple at connect time, so the rail dots and gear are right
+       * from the first render rather than blank until the next config write happens to
+       * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
+       */
+      settingsStatus: SettingsStatus;
     }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
@@ -1868,7 +1895,13 @@ export type ServerEvent =
    * not a per-session field: the rate limits are account-global, so hanging them off each
    * session would ship the same numbers N times and invite N places to disagree.
    */
-  | { type: "cost_fleet"; fleet: FleetCost };
+  | { type: "cost_fleet"; fleet: FleetCost }
+  /**
+   * The settings status tuple, emitted whenever a config write or a task-source sweep
+   * changed it. Reduced into `MissionState.settingsStatus`, which is the ONE client-side
+   * source of these facts: the rail dots and the topbar gear read it, never a re-poll.
+   */
+  | { type: "settings_status"; status: SettingsStatus };
 
 // ---- session transcript (expanded card) ----
 

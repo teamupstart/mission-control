@@ -34,6 +34,7 @@ import type {
   InspectorInspection,
   InspectorSummary,
   InspectionUpdated,
+  SettingsStatus,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type {
@@ -59,6 +60,7 @@ import {
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead, SessionActivityRead } from "./harness/types.ts";
+import { settingsStatus } from "./settings-status.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
@@ -440,6 +442,8 @@ export class Registry extends EventEmitter {
   /** Last fleet figures emitted, so an unchanged recompute doesn't wake every browser. */
   private lastFleetCost: FleetCost | null = null;
   private lastFleetCostAt = 0;
+  /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
+  private lastSettingsStatus: SettingsStatus | null = null;
 
   constructor() {
     super();
@@ -465,6 +469,7 @@ export class Registry extends EventEmitter {
     workflowRunSummaries: WorkflowRunSummary[];
     ensembleSummaries: EnsembleSummary[];
     fleetCost: FleetCost | null;
+    settingsStatus: SettingsStatus;
   } {
     return {
       sessions: [...this.sessions.values()],
@@ -478,7 +483,32 @@ export class Registry extends EventEmitter {
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
       fleetCost: this.fleetCostNow(),
+      // Composed fresh for the same reason: the rail dots and gear must be right on the
+      // first render, not blank until the next config write happens to change something.
+      settingsStatus: settingsStatus(),
     };
+  }
+
+  /**
+   * Emit the settings status tuple, dropping a frame that restates the last one.
+   *
+   * The suppression mirrors `recomputeFleetCost`: `publishSettingsStatus` recomposes on
+   * every config write and after every sweep, so without this an operator toggling one
+   * source's interval would push an identical tuple to every open dashboard. The compare
+   * is a shallow field walk - the shape is three small scalars, so `byJson` would be the
+   * same answer at more cost.
+   */
+  emitSettingsStatus(status: SettingsStatus): void {
+    const prev = this.lastSettingsStatus;
+    const same =
+      prev != null &&
+      prev.inspector.enabled === status.inspector.enabled &&
+      prev.inspector.mode === status.inspector.mode &&
+      prev.shipping.autoMerge === status.shipping.autoMerge &&
+      prev.taskSources.failing === status.taskSources.failing;
+    this.lastSettingsStatus = status;
+    if (same) return;
+    this.emitEvent({ type: "settings_status", status });
   }
 
   getSession(id: string): Session | undefined {

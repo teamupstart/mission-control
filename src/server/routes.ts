@@ -120,6 +120,7 @@ import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { getInspectorConfig, inspectorModel, setInspectorConfig } from "./inspector/config.ts";
 import { getLlmConfig, llmStatus, setLlmConfig } from "./llm/config.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
+import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -1885,6 +1886,9 @@ export function buildApp(
     // was in force, indefinitely. This chip's whole job is that distinction.
     registry.refreshInspections();
     registry.inspectorConfigChanged();
+    // The rail dots and gear read Inspector enabled+mode off the live channel, so a write
+    // that could move either has to push the new tuple (dropped downstream if unchanged).
+    publishSettingsStatus(registry);
     return c.json(next);
   });
   // The ledger, newest first. This is what makes dry-run legible: without somewhere to
@@ -1931,7 +1935,10 @@ export function buildApp(
   app.put("/api/shipping/config", async (c) => {
     const parsed = await parseBody(c, ShippingConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setShippingConfig(parsed.data));
+    const next = setShippingConfig(parsed.data);
+    // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
+    publishSettingsStatus(registry);
+    return c.json(next);
   });
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
@@ -1979,6 +1986,10 @@ export function buildApp(
     const before = getTaskSourcesConfig();
     setTaskSourcesConfig({ sources });
     noteTaskSourceConfigChange(before.sources, sources);
+    // Removing a failing source, or pausing one, changes the failing count the red dot
+    // reads. `noteTaskSourceConfigChange` has already cleared health for a just-paused
+    // source, so this recompose sees the new count.
+    publishSettingsStatus(registry);
     return c.json(taskSourcesView());
   });
 
@@ -1992,7 +2003,11 @@ export function buildApp(
   app.post("/api/task-sources/:id/sweep", async (c) => {
     const inst = taskSourceById(c.req.param("id"));
     if (!inst) return c.json({ error: "no such task source" }, 404);
-    return c.json(await sweepOnce(inst, tasks));
+    const report = await sweepOnce(inst, tasks);
+    // A hand sweep records or clears this source's `lastError`, which is exactly what the
+    // red dot counts. The background loop pushes the same way via its `onSwept` hook.
+    publishSettingsStatus(registry);
+    return c.json(report);
   });
 
   // "Is this actually going to work?" - the question an empty sweep cannot answer.

@@ -448,7 +448,7 @@ test("unbinding an inferred completion releases its reopening provenance", () =>
   assert.equal(provenance.autoCompleted.size, 0);
 });
 
-test("reopening happens once - a second idle turn concludes it again, cleanly", () => {
+test("a reopened task stays running when its next idle turn is on an unmerged episode", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-recycle");
   merge(f);

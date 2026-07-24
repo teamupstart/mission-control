@@ -28,9 +28,9 @@ export interface RunResult {
   code: number | null;
   /**
    * The child DIED rather than answering, so whether the command had any EFFECT is
-   * unknown. Distinct from every other non-zero exit, where the command ran to
-   * completion and reported its own failure - a caller writing to a remote has to be
-   * able to tell "it was refused" from "we never found out".
+   * unknown. A false value covers both a command-reported failure and a positive pre-spawn
+   * refusal such as E2BIG, where no child existed and no effect was possible - a caller
+   * writing to a remote has to be able to tell "it was refused" from "we never found out".
    *
    * Named for the conclusion rather than the cause on purpose. Our own `timeoutMs` is
    * one way to get here; the OOM killer, a container stop and an operator's `pkill` are

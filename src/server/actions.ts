@@ -181,9 +181,9 @@ export async function withPaneLockWait<T>(
  * writes through the adapters bought. Two things it can now express that an `Exec` could
  * not:
  *
- *   - A test wanting real argv still gets it: `bindSession(session, fakeExec)` builds the
- *     genuine adapter on a fake subprocess, so `-- Enter` versus `\x1b[Z` is asserted
- *     against the code that emits it.
+ *   - A test wanting real subprocess calls still gets them:
+ *     `bindSession(session, fakeExec)` builds the genuine adapter on a fake subprocess, so
+ *     arguments and stdin are asserted against the code that emits them.
  *   - A test wanting a backend nobody has written yet supplies a `BoundPane` literal. The
  *     capability nulls - no `write`, no `paste`, no `mode` - are where a new backend
  *     degrades, and every one of them is now reachable before that backend exists rather

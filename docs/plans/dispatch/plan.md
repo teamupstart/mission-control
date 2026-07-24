@@ -28,8 +28,9 @@ watches.
   and `ps`, so a dispatched agent is discovered with no extra plumbing (~1.5s poll).
 - **Naming is free**: a session's name is its tmux session name
   (`correlate.ts`), so naming the tmux session after the task gives the card a good title.
-- **Sending is solved**: `src/server/actions.ts#sendText` already types into a session's
-  pane via `tmux send-keys`. We reuse it verbatim to inject the initial prompt.
+- **Sending is solved**: `src/server/actions.ts#injectPrompt` already delivers one prompt
+  through the session's terminal adapter. The current transport contract is owned by
+  `AGENTS.md` and `src/server/terminal/`.
 - **Focus is solved**: `actions.ts#focus` already knows how to surface a detached tmux
   session in a wezterm tab (`spawnWeztermTab(["tmux","attach",...])`). So a dispatched
   headless session is one click from being visible.
@@ -199,15 +200,15 @@ error sets the task `failed` with a reason):
 4. **Wait for readiness**: subscribe to the registry (or poll `snapshot()`) until a session
    with `cwd === worktreePath` appears (proves the pane + agent booted), then a short settle
    delay so the agent's input box is ready. Cap the wait (e.g. 20s); on timeout -> `failed`.
-5. **Inject the prompt**: `sendText(session, task.intent, submit=true)` - reuses `actions.ts`.
+5. **Inject the prompt**: `injectPrompt(session, task.intent)` - reuses `actions.ts`.
 6. **Bind + promote**: set `sessionId`, status `running`, `dispatchedAt`; emit.
 
 Notes:
 - Correlation is by **worktree path** (`cwd`), unique per task -> unambiguous binding with
   zero env plumbing. Discovery attaches the summary; the dispatcher owns the state
   transition (no registry->manager cycle).
-- `send-keys` after a readiness check (not a blind sleep) is the robust way to seed the
-  first prompt without depending on hooks or on agent-specific launch flags.
+- Adapter delivery after a readiness check (not a blind sleep) seeds the first prompt
+  without depending on hooks or agent-specific launch flags.
 
 ### `src/server/routes.ts` (localhost-only, like the other actions)
 - `POST /api/tasks` - body `DispatchSchema`. `queue:true` -> create `queued` (backlog only).

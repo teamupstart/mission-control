@@ -82,10 +82,9 @@ observers (`gh pr list` in `pr.ts`, `axi status` in `nomistakes.ts`), each with 
 (`axi respond`). The only way to make a session *act* is to type into its pane, so the wrap-up is a
 gated send, not an API call.
 
-Delivery must use `injectPrompt`: it preserves a multi-line intent as one bracketed-paste
-submission, while `sendText` types embedded newlines and can submit the prompt in pieces. The
-current terminal transport contract is owned by `AGENTS.md` and the adapters in
-`src/server/terminal/`.
+Delivery must use `injectPrompt` so a multi-line intent remains one submission. The current
+terminal transport contract is owned by `AGENTS.md` and `src/server/terminal/`; this
+historical plan does not duplicate it.
 
 ---
 

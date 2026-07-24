@@ -206,15 +206,22 @@ The same declaration decides how a session is **typed into and read**. A reply, 
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
 the backend holding the innermost pane, which renders them in its own convention - tmux
 takes key names, WezTerm takes escape sequences - so nothing above that layer knows which
-terminal it is talking to. Everything you send arrives as written, including a message
-that begins with a dash, and **however long it is**: the text is piped to the backend on
-stdin rather than passed on its command line, so a prompt carrying a whole plan or phase
-document is delivered as one submission. It used to travel as a command-line argument,
-which put a limit on it that belonged to the terminal rather than to anything here - tmux
-caps a command at roughly 16KB and refuses past that with `command too long`, so a
-dispatch whose task was a phase document created its worktree, launched its agent, and
-then died at delivery with an empty composer. A backend that cannot be typed into at all
-refuses and names itself, rather than reporting that the session has no terminal.
+terminal it is talking to. Everything you send through tmux or WezTerm arrives as
+written, including a message that begins with a dash, and **however long it is**: those
+backends pipe the text on stdin rather than pass it on their command line, so a prompt
+carrying a whole plan or phase document is delivered as one submission. It used to travel
+as a command-line argument, which put a limit on it that belonged to the terminal rather
+than to anything here - tmux caps a command at roughly 16KB and refuses past that with
+`command too long`, so a dispatch whose task was a phase document created its worktree,
+launched its agent, and then died at delivery with an empty composer. cmux and Ghostty
+still pass the payload on their command line and retain the OS's `ARG_MAX` ceiling - about
+1MB on macOS, far above tmux's limit but still a ceiling. Neither has a stdin form in the
+CLI this backend drives: cmux's `rpc` and `send` take the body as an argument, and Ghostty
+is driven through `osascript -e`. Neither could be pointed at a running install to verify a
+change, so the repo's rule for declaring backend behaviour leaves both untouched. Reaching
+that ceiling is now an ordinary reported refusal rather than a crash. A backend that
+cannot be typed into at all refuses and names itself, rather than reporting that the
+session has no terminal.
 
 The same declaration decides a session's **lifecycle** - Focus, Rename, Kill, and where a
 dispatched agent is launched in the first place. Focus is the clearest case, because it is

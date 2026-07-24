@@ -160,14 +160,18 @@ export class Dispatcher {
       // block, so "did this launch get our MCP server" has two sources - but the question is
       // asked of the ARGV that actually reaches the child rather than of the agent id,
       // because that is the only reading a builder which failed halfway cannot contradict.
-      // Not fatal: this layer is mechanism, and whether a session without those tools is
-      // still worth launching is the caller's policy, not the Dispatcher's.
+      // Passing `missionMcp` IS the caller declaring those tools REQUIRED, so a launch that could
+      // not carry them is a failure of that launch, not a session worth starting crippled: an
+      // ensemble member that cannot reach `submit_ensemble_result` would run to completion and then
+      // be unable to signal it is ready. Fail here, before the agent spawns, so the worktree is torn
+      // down for a clean retry rather than left holding an agent that can never submit. A dispatch
+      // that passes no `missionMcp` is unaffected - this is effectively ensemble-scoped.
       const missionMcpRegistered = codexLaunch.missionMcp || askArgs.includes("--mcp-config");
       if (missionMcp && !missionMcpRegistered) {
-        console.warn(
-          `[mission-control] task ${taskId} asked for the Mission MCP tools ` +
-            `${missionMcp.tools.join(", ")}, but its ${task.agent} launch could not carry them - ` +
-            `it will run without them (is the MCP bundle built?).`,
+        throw new Error(
+          `the launch could not carry the required Mission MCP tools ` +
+            `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
+            `session could not submit its result`,
         );
       }
 

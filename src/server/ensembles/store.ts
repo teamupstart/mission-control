@@ -1337,6 +1337,34 @@ export class EnsembleStore {
     });
   }
 
+  /**
+   * Force a run to `cancelled` from ANY non-terminal status - including one this build cannot read.
+   *
+   * `setRunStatus` gates on a KNOWN expected status, which a version-skewed run written by a newer
+   * build can never match, so its still-linked member Tasks could be orphaned with no way to cancel
+   * the run. This gates by EXCLUSION of the terminal statuses instead: it matches an unreadable
+   * status without pretending to read it, and still refuses to overwrite a run that already reached
+   * a terminal state, so it cannot resurrect or re-cancel a settled run. Returns whether it changed
+   * a row.
+   */
+  forceCancelRun(id: string, reason: string | null, now = Date.now()): boolean {
+    const placeholders = ENSEMBLE_TERMINAL_STATUSES.map(() => "?").join(",");
+    return (
+      this.db
+        .prepare(
+          `UPDATE ensemble_runs SET status = 'cancelled', error = ?, completed_at = ?, updated_at = ?
+             WHERE id = ? AND status NOT IN (${placeholders})`,
+        )
+        .run(
+          boundedOrNull(reason, ENSEMBLE_LIMITS.errorText),
+          now,
+          now,
+          id,
+          ...ENSEMBLE_TERMINAL_STATUSES,
+        ).changes > 0
+    );
+  }
+
   /** The same compare-and-set discipline for one member. */
   setMemberStatus(
     id: string,

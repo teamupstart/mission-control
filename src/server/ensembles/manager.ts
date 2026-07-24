@@ -21,9 +21,8 @@ import {
 import type { Registry } from "../registry.ts";
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
-import { MODEL_CATALOG } from "@shared/model.ts";
 import { agentBinPresent } from "../dispatcher.ts";
-import { resolveDispatchEffort, resolveDispatchModel } from "../harnesses.ts";
+import { resolveDispatchEffort } from "../harnesses.ts";
 import { harnessFor } from "../harness/index.ts";
 import { missionMcpDescriptor } from "../mission-mcp.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
@@ -449,13 +448,11 @@ export class EnsembleManager {
     for (const [index, role] of plan.roles.entries()) {
       const agent = role.agent ?? AGENT_TYPES[0];
       agents.add(agent);
-      const model = resolveDispatchModel(agent, role.model);
-      if (model !== null && !MODEL_CATALOG[agent].some((choice) => choice.id === model)) {
-        return {
-          ok: false,
-          issues: [{ path: `roles.${index}.model`, message: `model ${model} is not supported by ${agent}` }],
-        };
-      }
+      // Model is deliberately NOT validated against MODEL_CATALOG: that catalog is documented
+      // incomplete, and ordinary dispatch preserves a valid off-catalog model id rather than
+      // rejecting it. Preflight matches that - it refuses only DEMONSTRABLE harness
+      // incompatibilities (effort below, and a missing binary), never a model the catalog merely
+      // does not list, which would silently strip the off-catalog support dispatch already gives.
       const effort = resolveDispatchEffort(agent, role.effort);
       if (effort !== null && !supportsEffort(agent, effort)) {
         return {

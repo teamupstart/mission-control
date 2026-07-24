@@ -350,11 +350,13 @@ test("preflight validates the resolved harness and mandatory submission capabili
   assert.equal((await callPreflight(manager, defaulted)).ok, true);
   assert.deepEqual(checked, ["claude"]);
 
-  const mismatched = singleWavePlan(1);
-  mismatched.roles[0]!.model = "gpt-5.6-sol";
-  const modelResult = await callPreflight(manager, mismatched);
-  assert.equal(modelResult.ok, false);
-  assert.match(modelResult.issues?.[0]?.message ?? "", /not supported by claude/);
+  // An off-catalog model id is ACCEPTED, exactly as ordinary dispatch preserves it: MODEL_CATALOG
+  // is documented incomplete, so preflight must not reject a valid model it merely does not list -
+  // that would silently strip the off-catalog support dispatch already gives. Only demonstrable
+  // harness incompatibilities (effort, a missing binary) and a missing submission tool are refused.
+  const offCatalog = singleWavePlan(1);
+  offCatalog.roles[0]!.model = "claude-opus-4-8-preview-2027";
+  assert.equal((await callPreflight(manager, offCatalog)).ok, true);
 
   const toolLess = singleWavePlan(1);
   toolLess.roles[0]!.agent = "pi";

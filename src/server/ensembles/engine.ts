@@ -268,9 +268,28 @@ export class EnsembleEngine {
     return this.withRunLock(runId, async () => {
       const state = this.loadRaw(runId);
       if (!state) return false;
-      if (state.run.status === null) return false;
-      if (ensembleIsTerminal(state.run.status)) return state.run.status === "cancelled";
-      return this.cancelLocked(state, reason);
+      if (state.run.status !== null) {
+        if (ensembleIsTerminal(state.run.status)) return state.run.status === "cancelled";
+        return this.cancelLocked(state, reason);
+      }
+      // A run whose status this build cannot read - a version skew, written by a newer build - is
+      // still cancellable: its member Tasks are still linked and must not be orphaned. The two-phase
+      // cancelling->cancelled path needs a readable status, so instead tear the Tasks down and force
+      // the run terminal by exclusion of the terminal states. This honours the generic cancel
+      // contract the README promises for version-skewed runs.
+      const now = this.now();
+      let settled = true;
+      for (const member of state.members) {
+        settled = (await this.tearDownMember(state, member, "withdrawn", now)) && settled;
+      }
+      if (!settled) {
+        this.publish(runId);
+        return false;
+      }
+      const cancelled = this.store.forceCancelRun(runId, reason, now);
+      this.event(runId, "run_cancelled", { reason, unreadable: true }, `run_cancelled:${runId}`);
+      this.publish(runId);
+      return cancelled;
     });
   }
 
@@ -418,28 +437,15 @@ export class EnsembleEngine {
       const state = this.load(runId);
       if (!state || ensembleIsTerminal(state.run.status)) return false;
       const stage = state.run.plan.stages.find((s) => s.id === stageId);
-      if (!stage || stage.driverKind !== "member" || !this.driverMatches(stage)) return false;
-      const latest = this.latestStageAttempt(state, stageId);
-      if (!latest || latest.status !== "failed" || latest.attempt >= stage.maxAttempts) return false;
-      const now = this.now();
-      const attempt = latest.attempt + 1;
-      this.store.startStageAttempt(
-        {
-          runId,
-          stageId,
-          driverKind: stage.driverKind,
-          driverKey: stage.driverKey,
-          attempt,
-          commandKey: `stage-retry:${runId}:${stageId}:${attempt}`,
-          status: "running",
-          input: { command: "retry_stage", stageId } as EnsembleJson,
-        },
-        now,
-      );
-      this.event(runId, "stage_retried", { stageId, attempt }, `stage_retried:${runId}:${stageId}:${attempt}`);
-      await this.advanceLocked(runId);
-      this.publish(runId);
-      return true;
+      if (!stage) return false;
+      // No stage is retryable as a WHOLE this phase, so this refuses rather than record a running
+      // stage attempt that `serviceMemberStage` would then mark succeeded without doing any work.
+      // A failed MEMBER is retried per-member through `retryMember`, which appends a fresh attempt
+      // with a new number; reopening a member STAGE would have to do the same for every failed
+      // member, because relaunching one through the wave path collides with its existing attempt
+      // number. The review, decision and finalize drivers are recognized but not executable this
+      // phase, so their stages have nothing to re-run either. Phase 6 gives this a real body.
+      return false;
     });
   }
 

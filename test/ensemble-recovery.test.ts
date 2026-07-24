@@ -358,6 +358,23 @@ test("cancelRun cancels every live member Task through its owner and keeps refs"
   assert.deepEqual([...gateway.cancelled].sort(), gateway.dispatched.map((d) => d.taskId).sort());
 });
 
+test("a version-skewed run whose status this build cannot read is still cancellable", async () => {
+  const { store, gateway, engine } = makeEngine();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  const liveTask = gateway.dispatched[0]!.taskId;
+  gateway.running(liveTask, `/wt/${liveTask}`);
+  await engine.wake(run.id);
+  // Simulate a status written by a NEWER build that this one cannot read: the enum parses to null.
+  db.prepare(`UPDATE ensemble_runs SET status = ? WHERE id = ?`).run("some_future_status", run.id);
+  assert.equal(store.getRun(run.id)!.status, null, "the status is unreadable to this build");
+
+  const cancelled = await engine.cancelRun(run.id, "operator stopped an unreadable run");
+  assert.equal(cancelled, true, "the generic cancel contract still holds for a version-skewed run");
+  assert.equal(store.getRun(run.id)!.status, "cancelled");
+  assert.ok(gateway.cancelled.includes(liveTask), "its still-linked member Task was torn down, not orphaned");
+});
+
 test("cancelRun also cancels submitted members whose Tasks are still live", async () => {
   const { store, gateway, engine } = makeEngine();
   const { run } = store.createRun(runInsert(singleWavePlan(2)));

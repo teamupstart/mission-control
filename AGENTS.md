@@ -8,8 +8,8 @@ how to run it, read `README.md`.
 
 ## IMPORTANT
 
-NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead always fix the inspector 
-issues, push the code, monitor the CI / PR for new inspector comments, and repeat until all inspector concerns are fixed.
+NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead, always fix the inspector 
+issues, resolve merge any conflicts, push the code, monitor the CI / PR for new inspector comments or conflicts, and repeat, conflicts, and repeat it's green.
 
 ## Architecture
 

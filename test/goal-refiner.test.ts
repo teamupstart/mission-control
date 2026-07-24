@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -21,11 +21,20 @@ process.env.MISSION_HOME = home;
 // Switching a file the script reads sidesteps that entirely.
 const bin = mkdtempSync(join(tmpdir(), "fake-claude-"));
 const modeFile = join(bin, "mode");
+/**
+ * Every prompt the fake has been handed, one run per `RUN_DELIM`-terminated record.
+ *
+ * The refiner's floor is a statement about how many SUBPROCESSES a burst costs, and this is
+ * the only place that count exists: the registry shows the last run's result, which cannot
+ * tell one refine from three that overwrote each other. See `runsAsking`.
+ */
+const runLog = join(bin, "runs");
+const RUN_DELIM = "##MISSION-RUN-END##";
 const fake = join(bin, "claude.sh");
 writeFileSync(
   fake,
   `#!/bin/sh
-cat > /dev/null
+{ cat; printf '\\n%s\\n' '${RUN_DELIM}'; } >> ${runLog}
 # Every reply is printed as a %s ARGUMENT, never as the printf format. A format string
 # processes escapes, and POSIX leaves \\" undefined: bash (macOS /bin/sh) drops the
 # backslash while dash (Ubuntu /bin/sh) keeps it, so a formatted reply is valid JSON on
@@ -99,6 +108,22 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
   return { agent: "claude", sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
+}
+
+/**
+ * How many headless runs have asked about one of `prompts`, by reading what the fake was
+ * actually handed on stdin.
+ *
+ * Filtered by the instruction each run carried rather than counted outright: the log spans
+ * the whole file, and a run from an earlier test appending late would otherwise show up as
+ * this test's second spawn. Every test's prompts are its own, so naming them is exact.
+ */
+function runsAsking(...prompts: string[]): number {
+  if (!existsSync(runLog)) return 0;
+  return readFileSync(runLog, "utf8")
+    .split(RUN_DELIM)
+    .map((run) => run.match(/## The human's most recent instruction\n(.*)/)?.[1])
+    .filter((ask) => ask !== undefined && prompts.includes(ask)).length;
 }
 
 /** Poll until `fn` is true, or fail. Beats a fixed sleep: the loop is async by nature. */
@@ -213,32 +238,48 @@ test("a new prompt gets a fresh attempt after an earlier one failed", async () =
 test("a burst of prompts costs one refinement, not one per prompt", async () => {
   // The cadence floor (Q1). A session answering rapid-fire instructions must not fork a
   // subprocess per prompt - cost is governed by cadence alone, since there is no kill switch.
+  //
+  // Asserted by COUNTING SPAWNS, which is the invariant, rather than by checking that nothing
+  // had refined a fraction of a floor after the first one landed. That earlier shape was a
+  // race and flaked on CI: the floor is stamped when the slot is CLAIMED, before the
+  // subprocess starts, while the wait below returns only once that subprocess has exited - so
+  // on a loaded runner most of the 300ms floor is already spent by the time the burst is
+  // fired, and a second refine inside the sleep is the product working correctly. The number
+  // of runs a burst costs holds however the wall clock falls.
   const { r, s, env } = withSession("r6", "%36");
   const stop = startGoalRefiner(r);
   try {
     r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "first" }));
     await until(() => r.getGoal(s.id)?.source === "model", "the first refine");
+    assert.equal(runsAsking("first"), 1, "precondition: the first ask cost exactly one run");
 
-    // Three more instructions, well inside the floor. Tier 1 re-stamps "heuristic" on each,
-    // so each one is due - and the floor is the only thing holding them.
+    // Three more instructions, in one turn so no poll tick can interleave. Tier 1 re-stamps
+    // "heuristic" on each, so each one is due - and the floor is the only thing holding them.
     for (const p of ["second", "third", "fourth"]) {
       r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: p }));
     }
-    await new Promise((res) => setTimeout(res, FLOOR_MS / 3));
-    assert.equal(r.getGoal(s.id)?.source, "heuristic", "a prompt inside the floor was refined");
-    assert.equal(r.getGoal(s.id)?.text, "fourth", "the card should still track the latest ask");
+    // Tier 1 stamps synchronously on ingest, so these are facts about the burst rather than
+    // observations that have to beat a timer.
+    assert.equal(r.getGoal(s.id)?.text, "fourth", "the card should track the latest ask at once");
+    assert.equal(r.getGoal(s.id)?.source, "heuristic", "and drop back until a refine lands");
 
-    // Past the floor, the LATEST prompt gets summarised - the earlier ones collapsed into it
-    // rather than queueing a call each.
+    // The LATEST prompt gets summarised, and the earlier ones collapse into it rather than
+    // queueing a call each - whenever the floor happens to expire.
     await until(
-      () => r.getGoal(s.id)?.source === "model",
+      () => runsAsking("second", "third", "fourth") > 0,
       "the burst to collapse into one refine",
-      // Same derivation as the retry above: one floor to wait out, then a real spawn. The
-      // assertion is that the burst collapses into ONE refine, and that is proved by the
-      // `heuristic` check above, never by how tight this ceiling is.
+      // One floor to wait out, then a real spawn. This is a ceiling on a starved machine,
+      // never the assertion: what the burst cost is the equality below.
       FLOOR_MS * 2 + RUN_TIMEOUT_MS,
     );
-    assert.equal(r.getGoal(s.id)?.prompt, "fourth");
+    assert.equal(
+      runsAsking("second", "third", "fourth"),
+      1,
+      "three prompts inside the floor cost ONE refinement",
+    );
+    // The spawn is already in flight by here, so its own per-run ceiling is the bound.
+    await until(() => r.getGoal(s.id)?.source === "model", "that refine to land", RUN_TIMEOUT_MS);
+    assert.equal(r.getGoal(s.id)?.prompt, "fourth", "and it summarised the newest ask");
   } finally {
     stop();
   }

@@ -453,6 +453,23 @@ test("a human completion supersedes an earlier reversible idle completion", () =
   assert.equal(t.outcome, "verified and completed by hand");
 });
 
+test("unbinding an inferred completion releases its reopening provenance", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-unbound-completion");
+  merge(f);
+  const provenance = f.tasks as unknown as {
+    autoCompleted: Map<string, string>;
+  };
+  assert.equal(provenance.autoCompleted.size, 1);
+  const completed = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...completed,
+    sessionId: null,
+    updatedAt: completed.updatedAt + 1,
+  });
+  assert.equal(provenance.autoCompleted.size, 0);
+});
+
 test("reopening happens once - a second idle turn concludes it again, cleanly", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-recycle");

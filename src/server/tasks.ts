@@ -204,7 +204,7 @@ export class TaskManager {
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
-  private autoCompleted = new Set<string>();
+  private autoCompleted = new Map<string, string>();
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -233,6 +233,15 @@ export class TaskManager {
     // by one sweep and rediscovered by the next never reaches it.
     registry.subscribe((e) => {
       if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+      if (e.type === "task_remove") this.autoCompleted.delete(e.id);
+      if (
+        e.type === "task_upsert" &&
+        this.autoCompleted.has(e.task.id) &&
+        (e.task.status !== "done" ||
+          e.task.sessionId !== this.autoCompleted.get(e.task.id))
+      ) {
+        this.autoCompleted.delete(e.task.id);
+      }
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
@@ -331,7 +340,7 @@ export class TaskManager {
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
     this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
-    this.autoCompleted.add(t.id);
+    this.autoCompleted.set(t.id, s.id);
   }
 
   /**

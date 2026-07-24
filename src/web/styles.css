@@ -2788,6 +2788,20 @@ body {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* The foot variant's Complete. Same green-against-red reasoning as `.act-complete`. */
+.btn-complete {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+}
+.btn-complete:hover:not(:disabled) {
+  color: var(--idle) !important;
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--idle) 12%, var(--panel-2)) !important;
+}
+.btn-complete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 /* Reset is destructive-but-recoverable-adjacent: a cautionary amber ghost that
    reads as "careful" without competing with the red Kill next to it. */
 .btn-reset {
@@ -4515,6 +4529,115 @@ kbd {
   padding: 14px 18px;
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);
+}
+
+/* ---- complete-and-close / kill confirms ---- */
+/* Both share the reset dialog's measure and rhythm - they are the same kind of
+   object (a per-session confirm), and three widths would read as three designs. */
+.complete-modal,
+.kill-modal {
+  width: min(520px, 100%);
+}
+.complete-body,
+.kill-body {
+  padding: 16px 18px 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.complete-lead,
+.kill-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.complete-lead .agent-dot,
+.kill-lead .agent-dot {
+  flex: none;
+}
+.complete-name,
+.kill-name {
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.complete-task,
+.kill-what {
+  margin: 0 0 12px;
+}
+.complete-field {
+  display: block;
+  margin: 0 0 14px;
+}
+.complete-field > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.complete-outcome {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--fg);
+  font: inherit;
+}
+.complete-outcome:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+}
+.complete-satisfy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 6px;
+  cursor: pointer;
+}
+.complete-satisfy input {
+  margin-top: 2px;
+  flex: none;
+}
+/* The consequence line under the checkbox. Muted because it explains rather than
+   warns - the warning case is the open-PR wording, which the component swaps in. */
+.complete-satisfy-why {
+  margin: 0 0 10px 24px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.complete-dependents {
+  margin: 0 0 12px;
+  padding-left: 38px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.complete-more {
+  opacity: 0.75;
+}
+.complete-none {
+  margin: 0;
+  color: var(--muted);
+}
+.complete-error,
+.kill-error {
+  margin: 8px 0 0;
+  color: #e5877f;
+}
+/* Killing a session that carries a task strands everything declared behind it, and
+   that is the one thing this dialog exists to say out loud. */
+.kill-task-warn {
+  margin: 0;
+  color: var(--attention);
+}
+.complete-body code,
+.kill-body code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-size: 12px;
 }
 
 /* ---- reset-to-origin confirm ---- */
@@ -8424,6 +8547,21 @@ kbd {
   color: var(--purple);
   border-color: color-mix(in oklab, var(--purple) 60%, var(--border));
   background: color-mix(in oklab, var(--purple) 13%, var(--panel-2));
+}
+/* Complete is the constructive end of a session, so it reads green against the red
+   Kill it sits beside - the two are deliberately adjacent and must not look alike. */
+.act-complete {
+  color: color-mix(in oklab, var(--idle) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--idle) 36%, var(--border));
+}
+.act-complete:hover:not(:disabled) {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 60%, var(--border));
+  background: color-mix(in oklab, var(--idle) 13%, var(--panel-2));
+}
+.act-complete:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .act-reset {
   color: color-mix(in oklab, var(--attention) 82%, var(--fg));

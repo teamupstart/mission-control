@@ -9,6 +9,8 @@ import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
+import { CompleteModal } from "./components/CompleteModal.tsx";
+import { KillModal } from "./components/KillModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
@@ -65,6 +67,7 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["focus", "focusPane"],
   ["queue", "toggleQueue"],
   ["mode", "cycleMode"],
+  ["complete", "requestComplete"],
   ["kill", "requestKill"],
 ];
 
@@ -142,6 +145,8 @@ export function App(): React.JSX.Element {
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
+  const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [workflowBindingTarget, setWorkflowBindingTarget] = useState<WorkflowBindingTarget | null>(null);
   // Bumped for a session each time it's reset. The compose boxes are uncontrolled
   // (their text is parked in the draft map, not React state), so clearing the map
@@ -286,6 +291,8 @@ export function App(): React.JSX.Element {
     setDiffCommit(null);
   }, []);
   const closeReset = useCallback(() => setResetSessionId(null), []);
+  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeKill = useCallback(() => setKillSessionId(null), []);
   const closeFiles = useCallback(() => {
     if (filesSessionId) files.flush(filesSessionId);
     setFilesSessionId(null);
@@ -352,6 +359,8 @@ export function App(): React.JSX.Element {
     () => [
       { sessionId: diffSessionId, close: closeDiff },
       { sessionId: resetSessionId, close: closeReset },
+      { sessionId: completeSessionId, close: closeComplete },
+      { sessionId: killSessionId, close: closeKill },
       { sessionId: filesSessionId, close: closeFiles },
       { sessionId: filePickerSessionId, close: closeFilePicker },
       {
@@ -362,11 +371,15 @@ export function App(): React.JSX.Element {
     [
       diffSessionId,
       resetSessionId,
+      completeSessionId,
+      killSessionId,
       filesSessionId,
       filePickerSessionId,
       workflowBindingTarget,
       closeDiff,
       closeReset,
+      closeComplete,
+      closeKill,
       closeFiles,
       closeFilePicker,
     ],
@@ -486,6 +499,10 @@ export function App(): React.JSX.Element {
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
+  const completeSession = completeSessionId
+    ? sessions.find((s) => s.id === completeSessionId) ?? null
+    : null;
+  const killSession = killSessionId ? sessions.find((s) => s.id === killSessionId) ?? null : null;
   const filesSession = filesSessionId ? sessions.find((s) => s.id === filesSessionId) ?? null : null;
   const filePickerSession = filePickerSessionId
     ? sessions.find((s) => s.id === filePickerSessionId) ?? null
@@ -527,6 +544,8 @@ export function App(): React.JSX.Element {
     diffTabRequest,
     files,
     onReset: setResetSessionId,
+    onComplete: setCompleteSessionId,
+    onKill: setKillSessionId,
     onKilled,
     resetNonces,
     registerEl,
@@ -1051,10 +1070,13 @@ export function App(): React.JSX.Element {
                 setSelectedId(sessionId);
                 if (layout === "board") setBoardOpen(true);
               }}
-              onOpenInspectorSettings={() => {
-                setSettingsCategory("inspector");
-                setSettingsOpen(true);
-              }}
+              onOpenInspectorSettings={() =>
+                // Settings is a PAGE now (#207), so this navigates rather than opening a
+                // modal. #206 added this callback against the old modal API and #207
+                // removed that API; the two merged cleanly into a main that does not
+                // compile, because neither touched the other's lines.
+                navigate({ page: "settings", category: "inspector" })
+              }
               onBindVersion={(version) => setWorkflowBindingTarget({
                 workflowVersionId: version.id,
                 workflowId: version.workflowId,
@@ -1130,6 +1152,28 @@ export function App(): React.JSX.Element {
             ).length}
             onReset={() => onSessionReset(resetSession.id)}
             onClose={() => setResetSessionId(null)}
+          />
+        )}
+
+        {completeSession && (
+          <CompleteModal
+            session={completeSession}
+            tasks={tasks}
+            onCompleted={() => onKilled(completeSession.id)}
+            onClose={closeComplete}
+          />
+        )}
+
+        {killSession && (
+          <KillModal
+            session={killSession}
+            onKilled={() => onKilled(killSession.id)}
+            // Offered only where there is something to complete, so the dialog never
+            // points at a door that opens on "nothing to mark done".
+            onComplete={
+              killSession.task ? () => setCompleteSessionId(killSession.id) : undefined
+            }
+            onClose={closeKill}
           />
         )}
 

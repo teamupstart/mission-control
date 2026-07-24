@@ -185,6 +185,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("q")),
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
+    chordFromEvent(key("c")),
     chordFromEvent(key("k")),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
@@ -211,6 +212,24 @@ test("reset is a first-class action defaulting to Ctrl+R on the selected card", 
   assert.equal(chordFromEvent(key("r", { ctrl: true })), "ctrl+r");
   assert.equal(chordFromEvent(key("R", { ctrl: true })), "ctrl+r");
   assert.equal(formatChord(reset.defaultBinding), "⌃R");
+});
+
+test("complete is a first-class action defaulting to c, and sits just before kill", () => {
+  // The pair is the point. Kill was for a long time the only way to end a session, so
+  // an operator who had FINISHED the work still reached for it - and the task settled
+  // as failed, blocking everything declared to wait on it. Complete is the other door,
+  // and the ordering here is what puts it next to Kill in the settings panel (array
+  // order is panel order) rather than somewhere else in the list.
+  const complete = ACTIONS.find((a) => a.id === "complete");
+  assert.ok(complete, "complete missing from the customizable registry");
+  assert.equal(complete.defaultBinding, "c");
+  assert.equal(complete.group, "selection");
+  assert.equal(chordFromEvent(key("c")), "c");
+  assert.equal(formatChord(complete.defaultBinding), "c");
+  assert.equal(
+    ACTIONS.findIndex((a) => a.id === "complete") + 1,
+    ACTIONS.findIndex((a) => a.id === "kill"),
+  );
 });
 
 // ---- the override store ----

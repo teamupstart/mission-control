@@ -62,11 +62,18 @@ export interface SessionViewProps {
   fileTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   onReset: (id: string) => void;
+  /** Open the complete-and-close confirm for this session (app-level modal). */
+  onComplete: (id: string) => void;
+  /** Open the kill confirm for this session (app-level modal). */
+  onKill: (id: string) => void;
   /**
    * A kill landed on this session. The detail it was ordered from is now a dead
    * transcript, so App closes it: the board reverses its drill-in, the console empties
    * its pane, the grid leaves focus mode. Not driven by the session disappearing - it
    * lingers ~8s as `exited` first, which is the whole delay this removes.
+   *
+   * Fired by the confirm dialogs, both of which end the session - Complete closes it
+   * once the outcome is recorded, exactly as Kill does.
    */
   onKilled: (id: string) => void;
   /** Per-session counter bumped on each reset, so a card can remount its (uncontrolled)
@@ -108,6 +115,8 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenFiles: () => p.onOpenFiles(s.id),
     onOpenFile: ((href: string, probe?: boolean) => p.onOpenFile(s.id, href, probe)) satisfies WorkspaceLinkHandler,
     onReset: () => p.onReset(s.id),
+    onComplete: () => p.onComplete(s.id),
+    onKill: () => p.onKill(s.id),
     onKilled: () => p.onKilled(s.id),
     resetNonce: p.resetNonces[s.id] ?? 0,
     registerEl: p.registerEl,

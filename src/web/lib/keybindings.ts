@@ -30,6 +30,7 @@ export type ActionId =
   | "queue"
   | "mode"
   | "rename"
+  | "complete"
   | "kill"
   | "reset";
 
@@ -129,6 +130,17 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Rename session",
     description: "Rename the selected session's terminal home (Shift+R).",
     defaultBinding: "shift+r",
+    group: "selection",
+  },
+  {
+    // Sits immediately before Kill, in both this list and the panel it orders, because
+    // the pair is the point: they are the two ways a session ends, and the whole reason
+    // Complete exists is that Kill was the only one. An operator who finished the work
+    // and reached for the nearest button got a task nothing could ever satisfy.
+    id: "complete",
+    label: "Complete task",
+    description: "Mark the selected session's task done and close the session.",
+    defaultBinding: "c",
     group: "selection",
   },
   {

@@ -142,6 +142,16 @@ export interface PrOpened {
   repoRoot: string | null;
 }
 
+/** A task whose work landed: the PR of the episode it was bound to merged. */
+export interface TaskPrMerged {
+  taskId: string;
+  sessionId: string;
+  /** The episode that merged. Compared later against the session's current one. */
+  episodeId: string;
+  url: string;
+  mergedAt: number;
+}
+
 /** An open-or-merged PR the poller matched to a session's current branch. */
 export type PrMatch = {
   url: string;
@@ -503,6 +513,28 @@ export class Registry extends EventEmitter {
   onPrOpened(fn: (e: PrOpened) => void): () => void {
     this.on("pr_opened", fn);
     return () => this.off("pr_opened", fn);
+  }
+
+  /**
+   * Fired when the pull request a TASK's work episode produced was observed merged.
+   *
+   * Emitted from `reconcileWorkEpisodeMerge`, which is the one place both merge
+   * observers converge: the per-session PR poller and the dependency-PR poller. That
+   * matters more than it looks. Hanging this off YOLO mode's `maybeMerge` instead would
+   * cover only the merges Mission Control performs, leaving a PR the OPERATOR merged to
+   * strand its task exactly as before - and YOLO is off by default, so the fix would
+   * ship dark. Hanging it off `Session.prState` would not work at all: this function
+   * clears the match on merge, so the session never durably reads `merged`.
+   *
+   * NOT "the task is over". The merge is one half of that answer and the agent having
+   * finished its episode is the other, which only `TaskManager` can weigh - see
+   * `settleMergedTask`. What is announced here is the merge, once.
+   *
+   * Listeners must not throw; this runs inside the PR poller's reconciliation.
+   */
+  onTaskPrMerged(fn: (e: TaskPrMerged) => void): () => void {
+    this.on("task_pr_merged", fn);
+    return () => this.off("task_pr_merged", fn);
   }
 
   /** Internal Inspector-to-workflow wakeup. This is deliberately not browser SSE. */
@@ -1982,6 +2014,23 @@ export class Registry extends EventEmitter {
       current.episodeId !== target.episodeId
     ) {
       this.rebindPendingDependencies(target, current, current.startedAt);
+    }
+    // The work this task was dispatched for has landed. Announced rather than acted on
+    // here: the Registry is the store, and settling a task (and possibly ending its
+    // session) is `TaskManager`'s to decide - the same split `session_remove` makes.
+    //
+    // `rolledOver` is only the ROLLOVER WE CAN SEE FROM HERE - one already recorded when
+    // the merge was observed. The prompt that continues a task usually arrives after
+    // this, so the listener re-checks `episodeId` against the session's current one
+    // before acting. See `TaskManager.settleMergedTask`.
+    if (activeTaskId !== null && !rolledOver) {
+      this.emit("task_pr_merged", {
+        taskId: activeTaskId,
+        sessionId: target.sessionId,
+        episodeId: target.episodeId,
+        url: target.prUrl,
+        mergedAt,
+      } satisfies TaskPrMerged);
     }
     return rolledOver;
   }

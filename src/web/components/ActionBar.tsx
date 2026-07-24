@@ -18,16 +18,22 @@ export interface ActionBarHandle {
   focusPane: () => void;
   toggleQueue: () => void;
   cycleMode: () => void;
+  requestComplete: () => void;
   requestKill: () => void;
   cancel: () => void;
 }
 
 /**
  * Per-session controls: focus its pane, send a message into its prompt, show its
- * work queue, reset its checkout, or terminate it. "Send" puts a cursor in this
- * card's one compose box; "Queue" toggles the work-queue panel; "Reset" (only with
- * a working dir) opens an app-level confirm; "Kill" requires a second confirming
- * click so a stray click can't take down a session.
+ * work queue, reset its checkout, complete its task, or terminate it. "Send" puts a
+ * cursor in this card's one compose box; "Queue" toggles the work-queue panel.
+ *
+ * "Reset", "Complete" and "Kill" all open an APP-LEVEL confirm rather than deciding
+ * anything here. Kill used to arm itself in place on a first click; it moved out for
+ * the reason `KillModal` documents - the consequence worth stating (a task settling as
+ * failed, and the Complete that avoids it) does not fit on a button that turns red.
+ * Keeping all three on one mechanism also means one overlay registration each, so
+ * Escape and the backdrop behave identically across them.
  */
 export function ActionBar({
   session,
@@ -37,7 +43,8 @@ export function ActionBar({
   onFocusReply,
   registerActions,
   onReset,
-  onKilled,
+  onComplete,
+  onKill,
   variant = "card",
   onDiff,
   onFiles,
@@ -74,15 +81,17 @@ export function ActionBar({
   /** Open the reset-to-origin confirm (app-level modal). Absent = no reset control. */
   onReset?: () => void;
   /**
-   * The kill landed. Fires only on success, so a refused kill leaves the screen exactly
-   * where it was, with the reason on it. App uses this to close whatever detail the kill
-   * was ordered from - see `onKilled` in `layouts/types.ts`.
+   * Open the complete-and-close confirm (app-level modal). Absent = no complete control.
+   * The button is drawn but disabled when this session carries no task, because "there
+   * is nothing to mark done" is worth saying once, in a tooltip, rather than leaving the
+   * operator to wonder why the affordance they were told about is missing.
    */
-  onKilled?: () => void;
+  onComplete?: () => void;
+  /** Open the kill confirm (app-level modal). Absent = no kill control. */
+  onKill?: () => void;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [composing, setComposing] = useState(false);
-  const [confirmKill, setConfirmKill] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -95,6 +104,15 @@ export function ActionBar({
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
   const openQueued = session.queue?.openCount ?? 0;
+
+  // Written once and used by both variants, so the two rows cannot drift into telling
+  // different stories about the same click.
+  const completeLabel = session.task
+    ? `Record an outcome for "${session.task.title}" and close this session (${formatChord(bindings.complete)})`
+    : "This session has no Mission Control task to complete";
+  const killLabel = killsMux
+    ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first`
+    : "Terminates the agent process - confirms first";
 
   async function run(label: string, fn: () => Promise<{ ok: boolean; error?: string }>) {
     setBusy(label);
@@ -120,18 +138,8 @@ export function ActionBar({
     }
   }
 
-  async function doKill() {
-    const r = await run("kill", () => api.kill(session.id));
-    setConfirmKill(false);
-    // Killed, so this session's detail is about to be a dead transcript with no controls -
-    // and it stays in the list for the exit linger, long enough to feel stuck. Tell App the
-    // moment the kill lands so it can put the overview back.
-    if (r.ok) onKilled?.();
-  }
-
   function startSend() {
     if (!canSend) return;
-    setConfirmKill(false);
     // An expanded card already has a compose box - the transcript's reply. Send means
     // "let me type", not "give me another box", so put the cursor in that one. Only a
     // collapsed card, with no transcript panel mounted at all, opens our own.
@@ -158,18 +166,23 @@ export function ActionBar({
     void run("mode", () => api.cycleMode(session.id));
   }
 
-  // First press arms the confirm; a second press commits - mirrors the mouse flow.
-  function requestKill() {
-    if (confirmKill) void doKill();
-    else {
-      setComposing(false);
-      setConfirmKill(true);
-    }
+  // Both open their dialog rather than acting: the confirm lives in the modal, which
+  // owns its own Escape, so the chord and the button reach the identical flow.
+  function requestComplete() {
+    setComposing(false);
+    onComplete?.();
   }
 
+  function requestKill() {
+    setComposing(false);
+    onKill?.();
+  }
+
+  // Escape's job here is now only the compose box. The dialogs are overlays and peel
+  // themselves off first - App stands down while any is open (`overlays.anyOpen`), so
+  // clearing their state from here would be reaching across that boundary.
   function cancel() {
     setComposing(false);
-    setConfirmKill(false);
   }
 
   function toggleQueue() {
@@ -178,8 +191,12 @@ export function ActionBar({
 
   // Register a stable handle that always calls the latest closures, so App can
   // drive this bar by keyboard without re-registering on every render.
-  const latest = useRef({ startSend, focusPane, toggleQueue, cycleMode, requestKill, cancel });
-  latest.current = { startSend, focusPane, toggleQueue, cycleMode, requestKill, cancel };
+  const latest = useRef({
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel,
+  });
+  latest.current = {
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel,
+  };
   useEffect(() => {
     if (!registerActions) return;
     const handle: ActionBarHandle = {
@@ -187,6 +204,7 @@ export function ActionBar({
       focusPane: () => latest.current.focusPane(),
       toggleQueue: () => latest.current.toggleQueue(),
       cycleMode: () => latest.current.cycleMode(),
+      requestComplete: () => latest.current.requestComplete(),
       requestKill: () => latest.current.requestKill(),
       cancel: () => latest.current.cancel(),
     };
@@ -250,29 +268,21 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
-          {confirmKill ? (
-            <Tooltip
-              label={
-                killsMux
-                  ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}"`
-                  : "Terminates the agent process"
-              }
-            >
-              <button className="act act-danger" onClick={() => void doKill()}>
-                confirm kill
-              </button>
-            </Tooltip>
-          ) : (
-            <Tooltip label="Terminate this agent - asks for a confirming click first">
-              <button className="act act-danger" onClick={() => setConfirmKill(true)}>
-                <kbd>{formatChord(bindings.kill)}</kbd> kill
+          {onComplete && (
+            <Tooltip label={completeLabel}>
+              <button
+                className="act act-complete"
+                onClick={requestComplete}
+                disabled={!session.task}
+              >
+                <kbd>{formatChord(bindings.complete)}</kbd> complete
               </button>
             </Tooltip>
           )}
-          {confirmKill && (
-            <Tooltip label="Leave the agent running">
-              <button className="act" onClick={() => setConfirmKill(false)}>
-                cancel
+          {onKill && (
+            <Tooltip label={killLabel}>
+              <button className="act act-danger" onClick={requestKill}>
+                <kbd>{formatChord(bindings.kill)}</kbd> kill
               </button>
             </Tooltip>
           )}
@@ -320,29 +330,17 @@ export function ActionBar({
             </Tooltip>
           )}
           <span className="actions-spacer" />
-          {confirmKill ? (
-            <Tooltip
-              label={
-                killsMux
-                  ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" (all its windows and panes)`
-                  : "Terminates the agent process"
-              }
-            >
-              <button className="btn btn-danger" onClick={() => void doKill()}>
-                Confirm kill
-              </button>
-            </Tooltip>
-          ) : (
-            <Tooltip label="Terminate this agent - asks for a confirming click first">
-              <button className="btn btn-danger-ghost" onClick={() => setConfirmKill(true)}>
-                Kill
+          {onComplete && (
+            <Tooltip label={completeLabel}>
+              <button className="btn btn-complete" onClick={requestComplete} disabled={!session.task}>
+                Complete
               </button>
             </Tooltip>
           )}
-          {confirmKill && (
-            <Tooltip label="Leave the agent running">
-              <button className="btn btn-ghost" onClick={() => setConfirmKill(false)}>
-                Cancel
+          {onKill && (
+            <Tooltip label={killLabel}>
+              <button className="btn btn-danger-ghost" onClick={requestKill}>
+                Kill
               </button>
             </Tooltip>
           )}

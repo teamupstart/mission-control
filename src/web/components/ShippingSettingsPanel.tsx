@@ -82,6 +82,7 @@ export function ShippingSettingsPanel({
   const soakMinutes = config?.soakMinutes ?? 10;
   const method = config?.method ?? "squash";
   const allowlist = config?.repoAllowlist ?? [];
+  const closeAfterMerge = config?.closeSessionAfterMerge ?? false;
   // Same stale-closure guard as the Foreman and Inspector panels: `add` does a server
   // round-trip while the config polls underneath it, so the write must extend whatever is
   // in force when it lands rather than what was on screen when the button was clicked.
@@ -227,6 +228,34 @@ export function ShippingSettingsPanel({
           </Tooltip>
         ))}
       </fieldset>
+
+      {/* Deliberately NOT nested inside the `autoMerge` conditional above, unlike the
+          warnings. This fires on ANY merge of a task's pull request, including one the
+          operator performed on GitHub themselves, so hiding it behind YOLO mode would
+          make a live setting invisible to everyone who merges by hand. */}
+      <div className="ship-after-merge">
+        <p className="settings-group-label">When a task's pull request merges</p>
+        <p className="settings-hint">
+          Its task is marked done either way - that is what lets the backlog autopilot use
+          the agent again, and it is not optional. This decides whether the agent stays.
+        </p>
+        <Tooltip label="Kill the agent once its work lands, and free its checkout when nothing would be lost">
+          <label className="alert-row ship-toggle">
+            <input
+              type="checkbox"
+              checked={closeAfterMerge}
+              disabled={!config}
+              onChange={(e) => void update({ closeSessionAfterMerge: e.target.checked })}
+            />
+            <span>Close the session after merge - frees a slot for a new backlog task</span>
+          </label>
+        </Tooltip>
+        <p className="settings-hint">
+          {closeAfterMerge
+            ? "A finished agent otherwise counts against the fleet ceiling for as long as it lives. Its checkout is reclaimed only when it holds no uncommitted or untracked files; otherwise it is kept for Clean up."
+            : "The agent stays, keeping its checkout and its context, and the autopilot may hand it the next task in place - no worktree to provision, but it carries the last task's context into the next one."}
+        </p>
+      </div>
 
       <div className="foreman-repos" data-anchor="shipping/merge-repos">
         <p className="settings-group-label">Repositories that may merge themselves</p>

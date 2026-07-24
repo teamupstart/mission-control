@@ -497,10 +497,28 @@ export const SetSessionEffortSchema = z.object({
 });
 export type SetSessionEffortInput = z.infer<typeof SetSessionEffortSchema>;
 
-/** Close a task with a human-recorded outcome (the `/stow` intent -> result loop). */
+/**
+ * Close a task with a human-recorded outcome (the `/stow` intent -> result loop).
+ *
+ * `satisfyDependents` is the operator asserting that this task's work is genuinely in
+ * place, so the tasks declared to wait on it may start. It defaults to FALSE, and that
+ * default is the whole safety story: a declared dependency is otherwise satisfied only
+ * by a MERGED PR, because a dependent cuts a fresh worktree from the default branch and
+ * therefore does not contain unmerged prerequisite work. Completion alone is weaker
+ * evidence than a merge and must not silently stand in for one.
+ *
+ * What it buys is the exit that was missing. Work that will never produce a merged PR -
+ * a scout that only had to answer a question, a session killed after its change landed
+ * by another route - could satisfy nothing, and `blockersIn` states declared blockers
+ * cannot be manually overridden. So the graph had no way out: observed as a 17-item
+ * backlog with `ready: 0` in which every chain rooted in a cancelled task. This is that
+ * way out, and it is deliberately an explicit, confirmed act rather than a side effect
+ * of any status change.
+ */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),
   outcomeUrl: z.string().url().optional(),
+  satisfyDependents: z.boolean().optional().default(false),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
@@ -1127,6 +1145,27 @@ export const ShippingConfigSchema = z.object({
    * folding them would mean switching the Inspector on in a repo silently armed this.
    */
   repoAllowlist: z.array(z.string().min(1)).default([]),
+  /**
+   * End a task's session once its pull request merges, freeing a fleet slot.
+   *
+   * The pairing with the rest of this object is deliberate but LOOSE, and the asymmetry
+   * is the point. Settling a merged task is unconditional and lives outside this config
+   * entirely (`TaskManager.settleMergedTask`) because a stranded `running` row is a bug
+   * however the merge happened. This flag only decides what becomes of the AGENT, which
+   * is a genuine preference rather than a defect.
+   *
+   * Off by default. On, a merge kills the session and reclaims its worktree, so the next
+   * dispatch cuts a fresh checkout: `activeAgentCount` counts live sessions whole, so an
+   * agent that finished otherwise holds a slot against `maxSessions` indefinitely.
+   *
+   * Off is NOT "nothing happens". The task still settles, which is what makes that agent
+   * pass `agentIsFree`, so the backlog autopilot may hand it the next task in the same
+   * checkout - no worktree to provision and no process to start. The real trade is
+   * context: a reused agent carries the last task's window into the next one, while a
+   * closed one costs a full provision cycle to replace. Neither is free, which is why
+   * this is a switch and not a hard-coded answer.
+   */
+  closeSessionAfterMerge: z.boolean().default(false),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 

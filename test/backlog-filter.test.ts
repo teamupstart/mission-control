@@ -45,6 +45,8 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
+    onComplete: () => {},
+    onKill: () => {},
     onKilled: () => {},
     resetNonces: {},
     registerEl: () => {},

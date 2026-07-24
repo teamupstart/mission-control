@@ -2447,7 +2447,8 @@ works in every layout:
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
-| <kbd>k</kbd> | Kill the selected session | Selected session |
+| <kbd>c</kbd> | Complete the selected session's task - record an outcome, then close the session (confirms first). Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
+| <kbd>k</kbd> | Kill the selected session (confirms first) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 
 Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
@@ -2680,6 +2681,44 @@ Shipping → Where each pull request stands** carries the current reason per PR:
 still running, three open findings, not on the allowlist. When GitHub refuses the merge
 outright - a branch protection rule this app cannot see - its own message is shown there
 verbatim, because that is the only account you get of a rule nothing here can read.
+
+### When a task's pull request merges
+
+A task whose pull request merged ends as **done**, with that pull request as its outcome,
+instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
+yourself on GitHub lands its task exactly the same way.
+
+It matters because `failed` means "ended with no outcome recorded", and a failed task
+reports as a *stopped* blocker - so every task declared to wait on it deadlocks behind
+work that actually shipped. A task left unsettled costs more than a stale row, too: a live
+session counts against the `maxSessions` ceiling, *and* the backlog autopilot refuses to
+hand work to an agent that still has a non-terminal task bound to it, so a finished agent
+both occupies a slot and is ineligible to use it.
+
+**The merge alone does not end the task.** An agent routinely lands an intermediate pull
+request and carries on, and you might merge, read the diff for a minute, and only then
+tell it to continue - so no delay after the merge is long enough to rule more work out.
+The merge is recorded when it happens, and the task is concluded only once its agent has
+**finished the episode**: idle, nothing queued, and not rolled onto new work. An agent
+that is mid-turn is left alone whatever its pull request did.
+
+An agent that was given **new work after its merge** and then vanished mid-flight still
+fails, rather than reporting the earlier merge as its outcome: that later work never
+landed, and saying otherwise would claim a success for it.
+
+What happens to the agent is yours to choose, in **Settings → Shipping**:
+
+| Close the session after merge | What happens |
+|---|---|
+| **off** (default) | The agent stays, with its checkout and its context. Its task lands whenever that agent does finish and go away |
+| **on** | Landing the pull request ends the session, which frees a fleet slot for a fresh dispatch and lands the task through the same path. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+
+An agent that is still **working** is never closed mid-turn, even with the switch on: the
+merge is recorded either way, so its task lands correctly whenever it does finish.
+
+The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
+nothing about files still sitting unsaved in that checkout, and reclaiming runs
+`git worktree remove --force`. Anything that could be lost stays behind a human click.
 
 ## no-mistakes
 

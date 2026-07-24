@@ -17,7 +17,7 @@ import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
-import type { Registry } from "./registry.ts";
+import type { Registry, TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
   deriveTitle,
@@ -36,7 +36,12 @@ import {
   validateSessionNameAgainstTasks,
   type ActionResult,
 } from "./actions.ts";
+import {
+  historicalTaskWorkEpisodeBindingsForTask,
+  taskWorkEpisodeForTask,
+} from "./db.ts";
 import { resetSession } from "./reset.ts";
+import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
@@ -188,7 +193,6 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
-
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -214,6 +218,9 @@ export class TaskManager {
     // by one sweep and rediscovered by the next never reaches it.
     registry.subscribe((e) => {
       if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+      // The other end of a merged task's life, for an agent that is still here. See
+      // `settleIfEpisodeFinished`.
+      if (e.type === "session_upsert") this.settleIfEpisodeFinished(e.session);
     });
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
@@ -222,6 +229,148 @@ export class TaskManager {
     // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
     // it never had resources of ours - was skipped by it on every restart, forever.
     registry.onSessionsObserved(() => this.reconcileTasksWithNoLiveSession());
+
+    // The other way a task ends: its work landed. See `settleMergedTask`.
+    registry.onTaskPrMerged((e) => void this.settleMergedTask(e));
+  }
+
+  /**
+   * A task's pull request merged. End its agent, if the operator asked for that.
+   *
+   * Note what this does NOT do: complete the task. That was the first design and it was
+   * wrong for a reason worth recording, because it looks right and passes its own tests.
+   * A merge is not proof the task is over - an agent routinely lands an intermediate pull
+   * request and carries on - and no check made when the merge is OBSERVED can see a
+   * prompt that has not arrived yet. Deferring the check by a timer only moves the
+   * guess: an operator who merges, reads the diff for a minute, and then tells the agent
+   * to continue outruns any fixed window, and their task is already terminal.
+   *
+   * So completion moved to the one boundary a later prompt cannot outrun - the agent
+   * actually going away - and reads the merge from the durable record rather than from a
+   * clock. See `agentWentAway`.
+   *
+   * What is left here is the disposition of the agent, which is a preference and is
+   * behind a switch. `closeSessionAfterMerge` means "this agent's job was that pull
+   * request", so landing it ends the session; the completion then happens through
+   * `agentWentAway` like any other. A session still WORKING is left alone even so: the
+   * merge is durably recorded either way, so whenever that agent does finish its task
+   * settles correctly, and we never kill an agent mid-turn to satisfy a setting.
+   *
+   * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
+   * where a throw would abandon the rest of the sweep.
+   */
+  private async settleMergedTask(e: TaskPrMerged): Promise<void> {
+    try {
+      const t = this.registry.getTask(e.taskId);
+      if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
+      const session = this.registry.getSession(e.sessionId);
+      // The common ordering, and the one a `session_upsert` listener alone misses: the
+      // agent finished its turn BEFORE the poller noticed the merge. Nothing further is
+      // guaranteed to touch that session, so the same finished-episode question has to be
+      // asked here too or the task stays running for ever. Both callers land on one
+      // predicate rather than two that could drift.
+      if (session) this.settleIfEpisodeFinished(session);
+      if (!getShippingConfig().closeSessionAfterMerge) return;
+      if (session?.state === "working") return;
+      await this.closeMergedSession(e);
+    } catch (error) {
+      console.error("[merge] closing merged session failed:", e.taskId, error);
+    }
+  }
+
+  /**
+   * Land a merged task whose agent is still here but has finished the episode.
+   *
+   * The counterpart to `agentWentAway`, and the reason both exist: waiting for the agent
+   * to go away is unimpeachable but it never arrives for the ordinary case, where an
+   * agent ships its pull request and then sits idle forever. That session keeps a
+   * `running` task, so `agentIsFree` refuses it and the backlog cannot reuse the agent -
+   * which is the whole problem this change is about, left in place by the safe half of
+   * the fix.
+   *
+   * So the episode is concluded on EVIDENCE that it finished, never on a clock:
+   *
+   *  - the agent is idle, so its turn is over rather than merely paused;
+   *  - its work queue is empty, so nothing pending is about to continue this task;
+   *  - the merged episode is still its CURRENT one, so it has not already rolled onto
+   *    new work (which `agentWentAway` deliberately reports as a failure);
+   *  - and a merge is durably recorded against that binding.
+   *
+   * A prompt arriving after all four hold is new work following a task that genuinely
+   * shipped, not a continuation of it - and because the agent goes `working` the instant
+   * it lands, the autopilot cannot have taken the agent in between either.
+   */
+  private settleIfEpisodeFinished(s: Session): void {
+    if (s.state !== "idle") return;
+    if (s.queue && s.queue.openCount > 0) return;
+    const t = this.registry.listTasks().find(
+      (task) => task.sessionId === s.id && (task.status === "running" || task.status === "dispatching"),
+    );
+    if (!t) return;
+    const binding = taskWorkEpisodeForTask(t.id);
+    if (!binding?.mergedAt || !binding.prUrl) return;
+    // Rolled onto new work since the merge - not ours to conclude. See `mergedPrFor`.
+    const current = this.registry.workEpisodeForSession(s.id);
+    if (current && current.episodeId !== binding.episodeId) return;
+    this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+  }
+
+  /**
+   * The pull request this task's work episode produced, if one was observed merged.
+   *
+   * Read from `task_work_episode_bindings`, which `markWorkEpisodeMerged` stamps at the
+   * moment the merge is seen. That is the durable acknowledgement the settle needs: it
+   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a
+   * timer it is a FACT rather than an inference.
+   *
+   * The CURRENT binding only, deliberately, and the rejected alternative is the
+   * interesting half. Walking historical bindings too would let a task whose episode
+   * rolled over after its merge still report `done` - but a rollover means the agent was
+   * given more work, and an agent that then vanishes mid-flight left that work unlanded.
+   * Reporting the earlier merge would claim a success for it. So a task is `done` only
+   * when the work its agent was ACTUALLY on when it went away is the work that merged;
+   * anything else stays `failed`, which is the honest answer and the recoverable one.
+   */
+  private mergedPrFor(taskId: string): string | null {
+    const binding = taskWorkEpisodeForTask(taskId);
+    return binding?.mergedAt !== null && binding?.prUrl ? binding.prUrl : null;
+  }
+
+  /**
+   * End the agent of a task that just merged, and reclaim its checkout if that is safe.
+   *
+   * Two separate judgements, and only the second is conditional. Killing is safe by
+   * construction here - the work is on the default branch - so it is unconditional once
+   * the operator has switched this on.
+   *
+   * Reclaiming is not. A merge proves the COMMITTED work landed; it says nothing about
+   * uncommitted edits or untracked files still sitting in that checkout, and `reclaim`
+   * runs `git worktree remove --force` over them. So the tree is freed only when the same
+   * `resetWouldDestroyWork` probe the assign path consults says there is nothing to lose,
+   * and otherwise kept - the row stays visible with Clean up on it, exactly as a killed
+   * session's does. That is the house rule holding: freeing a tree is the operator's call
+   * whenever anything could be lost by it.
+   */
+  private async closeMergedSession(e: TaskPrMerged): Promise<void> {
+    const session = this.registry.getSession(e.sessionId);
+    if (!session) {
+      // No agent to stop - the tree is still ours to free, and nothing can be dirtying
+      // it any more.
+      await this.reclaim(e.taskId);
+      return;
+    }
+    // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
+    // the reason readable in the log even when the kill races the process away.
+    const holding = await resetWouldDestroyWork(session);
+    await kill(session);
+    if (holding !== null) {
+      console.log(
+        `[merge] task ${e.taskId}: session closed, checkout kept - ${holding}. ` +
+          "Clean up on the task row frees it.",
+      );
+      return;
+    }
+    await this.reclaim(e.taskId);
   }
 
   list(): Task[] {
@@ -272,6 +421,18 @@ export class TaskManager {
    */
   private agentWentAway(t: Task): void {
     if (t.status !== "running" && t.status !== "dispatching") return;
+    // The agent is gone AND its work landed, which is the one combination that means the
+    // task finished rather than merely stopped. This is the boundary a later prompt
+    // cannot outrun: while an agent is still being given work it is still here, so
+    // nothing reaches this line; once it is gone, no prompt is coming. `failed` below
+    // says "ended with no outcome recorded", and a merged pull request IS the outcome -
+    // reporting it as a failure would strand every task declared to wait on this one
+    // behind a `stopped` blocker, for work that shipped.
+    const merged = this.mergedPrFor(t.id);
+    if (merged) {
+      this.complete(t.id, `merged ${merged}`, merged);
+      return;
+    }
     const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
     const now = Date.now();
     this.registry.upsertTask({
@@ -1124,8 +1285,18 @@ export class TaskManager {
    * Record a task's outcome. Deliberately does NOT tear down the worktree/agent -
    * "Mark done" annotates a result, it must not silently discard unpushed work.
    * The tree is freed later by an explicit, confirmed `reclaim` (or `remove`).
+   *
+   * `satisfyDependents` additionally closes the operator-declared edges pointing HERE.
+   * Off by default, and that default is load-bearing - see `CompleteTaskSchema` for why
+   * a merge is ordinarily the only thing that satisfies a declared dependency, and what
+   * this exists to rescue. Callers that pass nothing behave exactly as before.
    */
-  complete(id: string, outcome: string, outcomeUrl?: string): Task | null {
+  complete(
+    id: string,
+    outcome: string,
+    outcomeUrl?: string,
+    satisfyDependents = false,
+  ): Task | null {
     const t = this.registry.getTask(id);
     if (!t) return null;
     const now = Date.now();
@@ -1139,7 +1310,42 @@ export class TaskManager {
       updatedAt: now,
     };
     this.registry.upsertTask(updated);
+    if (satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
     return updated;
+  }
+
+  /**
+   * Stamp `satisfiedAt` on every unsatisfied declared edge aimed at `taskId`.
+   *
+   * Written on the EDGE rather than inferred from the target's status, which is the
+   * same reason `TaskDependency.satisfiedAt` is persisted at all: terminal task rows are
+   * eventually pruned, so a completion that lives only in the target's row stops being
+   * readable once that row is gone, and every dependent silently re-blocks. One
+   * timestamp per edge survives that.
+   *
+   * Task edges only. `resolveDependencies` normalizes a session reference to a task
+   * reference whenever that session carries a task row, so a surviving `session` edge is
+   * by construction operator-started work with no task to complete - nothing this call
+   * could be about.
+   */
+  private satisfyDeclaredEdgesTo(taskId: string, at: number): void {
+    for (const task of this.registry.listTasks()) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (
+          dependency.type !== "task" ||
+          dependency.taskId !== taskId ||
+          dependency.satisfiedAt !== null
+        ) {
+          return dependency;
+        }
+        changed = true;
+        return { ...dependency, satisfiedAt: at };
+      });
+      if (changed) {
+        this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
+      }
+    }
   }
 
   /**

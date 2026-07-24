@@ -470,7 +470,8 @@ export function ConsoleDetail({
             onDiff={() => view.onOpenDiff(session.id)}
             registerActions={view.registerActions}
             onReset={() => view.onReset(session.id)}
-            onKilled={() => view.onKilled(session.id)}
+            onComplete={() => view.onComplete(session.id)}
+            onKill={() => view.onKill(session.id)}
           />
         )}
       </footer>

@@ -17,7 +17,13 @@ import type { InspectorConfig } from "../src/shared/protocol.ts";
 // automation. Effects never run here, so nothing fetches.
 
 const SHIPPING: ShippingState = {
-  config: { autoMerge: true, soakMinutes: 5, method: "squash", repoAllowlist: ["/repo"] },
+  config: {
+    autoMerge: true,
+    soakMinutes: 5,
+    method: "squash",
+    repoAllowlist: ["/repo"],
+    closeSessionAfterMerge: false,
+  },
   inspections: [],
   update: async () => {},
   error: null,

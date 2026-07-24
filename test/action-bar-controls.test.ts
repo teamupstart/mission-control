@@ -43,6 +43,11 @@ function render(props: Record<string, unknown>): string {
       session: mkSession(),
       onReset: () => {},
       onToggleQueue: () => {},
+      // Complete and Kill open app-level dialogs, so like Reset they are drawn only
+      // where the caller supplied a way to open one. Every real call site does, and
+      // `kill-returns-to-overview.test.ts` is what holds them to it.
+      onComplete: () => {},
+      onKill: () => {},
       ...props,
     }),
   );
@@ -54,7 +59,7 @@ test("an expanded card keeps every control a collapsed one has", () => {
   // its transcript is carrying the reply box - the state the old `!expanded` gate used
   // to blank this row on.
   const html = render({ hasReply: true });
-  for (const label of ["Send", "Focus", "Queue", "Reset", "Kill"]) {
+  for (const label of ["Send", "Focus", "Queue", "Reset", "Complete", "Kill"]) {
     assert.match(html, new RegExp(`>${label}`), `expanded card lost ${label}: ${html}`);
   }
 });

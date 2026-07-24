@@ -194,10 +194,84 @@ export class TaskManager {
             t.status === "cancelled"));
       if (needsReconcile) void this.reconcileOnStartup(t);
     }
+
+    // A bound session can also go away while the daemon is UP: the (k) kill, a terminal
+    // the operator closed, an agent that exited by itself. Registry emits `session_remove`
+    // only from its eviction timer, which is the durable answer - a session marked exited
+    // by one sweep and rediscovered by the next never reaches it.
+    registry.subscribe((e) => {
+      if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+    });
+
+    // And one that went away while the daemon was DOWN is in no map at all until discovery
+    // rebuilds it, so the same reconciliation waits for the first completed sweep. This is
+    // the half the startup loop above cannot reach: it only visits a task still holding a
+    // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
+    // it never had resources of ours - was skipped by it on every restart, forever.
+    registry.onSessionsObserved(() => this.reconcileTasksWithNoLiveSession());
   }
 
   list(): Task[] {
     return this.registry.listTasks();
+  }
+
+  /**
+   * Settle every task bound to a session that is gone for good.
+   *
+   * A `running` task used to be reconciled ONLY on a daemon restart, so until this existed
+   * a killed session left a row claiming to be executing - and holding a worktree and a
+   * terminal home that nothing would ever offer to reclaim. The Foreman already had to
+   * defend against exactly that (`inFlightTasks` re-reads the session list because such a
+   * row "is a row nothing will ever move"), which treated the symptom at one reader while
+   * every other reader - the board, the report, `agentIsFree` - still believed the row.
+   */
+  private reconcileTasksBoundTo(sessionId: string): void {
+    for (const t of this.registry.listTasks()) {
+      if (t.sessionId === sessionId) this.agentWentAway(t);
+    }
+  }
+
+  /** The same reconciliation for a restart: whatever the first completed sweep did not find. */
+  private reconcileTasksWithNoLiveSession(): void {
+    for (const t of this.registry.listTasks()) {
+      if (t.sessionId && !this.registry.getSession(t.sessionId)) this.agentWentAway(t);
+    }
+  }
+
+  /**
+   * Mark one task's agent gone, KEEPING everything it holds.
+   *
+   * Deliberately not a teardown, and the asymmetry with `reconcileOnStartup` is the point:
+   * that path reclaims because a row nobody can see leaks invisibly, while this one makes
+   * the row visible the moment it happens - failed, resources intact, one confirmed Clean
+   * up away from being freed. Tearing down here would run `git worktree remove --force`
+   * seconds after a mis-aimed (k), which is the one thing `complete` already refuses to do
+   * ("Mark done must not discard work"). Freeing a tree is the operator's call; saying the
+   * agent is gone is ours.
+   *
+   * `failed` is the least-wrong of the three terminal states, and the sentence is careful
+   * not to overclaim what it means. An agent that finished cleanly and exited is
+   * indistinguishable here from one that crashed - the only thing observed is that the
+   * session went away with no outcome recorded, so that is what it says. It is also the
+   * status `reconcileOnStartup` already reaches for in the same situation, and the one
+   * whose row carries the affordances this state wants: Retry when the tree is gone,
+   * Clean up when it is not.
+   */
+  private agentWentAway(t: Task): void {
+    if (t.status !== "running" && t.status !== "dispatching") return;
+    const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
+    const now = Date.now();
+    this.registry.upsertTask({
+      ...t,
+      status: "failed",
+      error: holdsResources
+        ? "the agent's session ended with no outcome recorded - its worktree was kept; Clean up or re-dispatch it"
+        : "the agent's session ended with no outcome recorded",
+      // A synthetic id carries the pid and the process start time, so this one can never
+      // name a running agent again.
+      sessionId: null,
+      updatedAt: now,
+    });
   }
 
   get(id: string): Task | undefined {

@@ -131,6 +131,29 @@ message log. Anything else you add that is session-scoped and survives prompts, 
 The server-side cleanup has one owner, `resetSession` (`src/server/reset.ts`) - route a new
 reset caller through it, never copy the cleanup into a handler.
 
+## A session going away
+
+`session_remove` is the durable signal, and the ONLY one: Registry emits it from its eviction
+timer, 8s after a completed sweep stopped seeing the process, so a session marked `exited` by
+one sweep and rediscovered by the next never reaches it. Anything keyed to `state === "exited"`
+instead fires on that hiccup. Two subscribers today - `WorkflowManager` orphans its bindings,
+`TaskManager.reconcileTasksBoundTo` settles the task that session was running - and a third
+piece of durable state bound to a session belongs here rather than in a poller of its own.
+
+**Each has a restart twin, and both halves are needed.** Sessions are rebuilt from the process
+table, so nothing bound to one is reconcilable until the first completed sweep says what is out
+there; `registry.onSessionsObserved` is that moment (`reconcileTasksWithNoLiveSession`,
+`reconcileBindingsAfterDiscovery`). The startup loop in `TaskManager`'s constructor is NOT that
+twin - it visits only tasks still holding a worktree or home, so an assigned task, which owns
+neither, was invisible to it on every restart and stayed `running` forever.
+
+**Settling is not tearing down.** `agentWentAway` marks the task `failed` and KEEPS its
+worktree, branch and home for the operator's confirmed Clean up (`reclaim`). The asymmetry with
+`reconcileOnStartup`, which does reclaim, is the point: that path is collecting rows nobody can
+see, this one makes the row visible the instant it happens. `git worktree remove --force`
+belongs behind a human click here, the same rule `complete` states ("Mark done must not discard
+work"). Test: `task-session-orphan.test.ts`.
+
 ## Overlays
 
 Register in `OVERLAY_IDS` and the host (`src/web/components/Overlay.tsx` - `OverlayHost`,

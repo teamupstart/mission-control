@@ -529,7 +529,8 @@ declares for itself (terracotta for Claude Code, green for Codex, blue for Pi).
 Claude and Codex sessions carry a **permission mode** chip. Claude offers `manual`, `accept
 edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for sessions
 that enable them; <kbd>⇧</kbd><kbd>Tab</kbd> still cycles those modes. Codex offers its
-native `ask`, `approve`, `full access`, and `read only` profiles through `/permissions`.
+native **Ask for approval**, **Approve for me**, **Full Access**, and **Read Only** profiles
+through `/permissions`.
 Clicking either chip opens the same dashboard picker and drives the harness's own control.
 Like the thinking badge, it appears on Cards, in Console detail, and on Board tiles, so
 triaging from the board does not mean opening a session to change its permissions. Before

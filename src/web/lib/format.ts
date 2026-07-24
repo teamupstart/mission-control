@@ -286,8 +286,8 @@ export function permissionModeDisplay(mode: PermissionMode | null): PermissionMo
 }
 
 /**
- * The modes the picker offers for an agent, in that harness's own Shift+Tab cycle order -
- * the list reads in the same order as the keystroke it replaces.
+ * The modes the picker offers for an agent, in that harness's native control order: the
+ * Shift+Tab cycle for Claude or the `/permissions` menu for Codex.
  *
  * Empty for a harness with no `permissionModes` capability, which is also what makes the
  * picker draw nothing: one declaration (`@shared/harness-capabilities.ts`) answers both

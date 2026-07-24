@@ -293,7 +293,7 @@ interface HookOverlay {
   transcriptPath: string | null;
   state: SessionState;
   activity: string | null;
-  /** Last-known Claude permission mode; sticky across events that omit it. */
+  /** Last-known harness permission mode; sticky across events that omit it. */
   permissionMode: PermissionMode | null;
   lastActivity: number;
   updatedAt: number;
@@ -1091,8 +1091,8 @@ export class Registry extends EventEmitter {
 
     // Permission mode is sticky: events that omit it keep the last known value
     // (from this pane's prior overlay) rather than clearing the card's chip. Only from
-    // an overlay this same harness left - a mode is a Shift+Tab state Claude owns, and
-    // carrying one across an agent change would be a chip nothing can clear.
+    // an overlay this same harness left - mode vocabularies and controls are harness-owned,
+    // and carrying one across an agent change would be a chip nothing can clear.
     const prior = key ? this.overlays.get(key) : undefined;
     const priorOverlay = prior?.agent === evt.agent ? prior : undefined;
     const permissionMode =

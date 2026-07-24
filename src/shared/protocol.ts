@@ -131,9 +131,9 @@ export const HookIngestSchema = z.object({
   message: z.string().optional(),
   source: z.string().optional(),
   reason: z.string().optional(),
-  // Claude's current permission mode (the Shift+Tab state). Left as a free string
-  // on the wire - the registry normalizes it to a known PermissionMode - so a mode
-  // a newer Claude adds never fails hook ingest, it just doesn't render yet.
+  // The harness's current permission mode, when its hook reports one. Left as a free
+  // string on the wire - the registry normalizes it to a known PermissionMode - so a
+  // mode a newer harness adds never fails hook ingest, it just doesn't render yet.
   permissionMode: z.string().optional(),
   // A GitHub PR URL the hook sniffed out of a PostToolUse tool result (e.g. the
   // link `gh pr create` prints). Optimistically decorates the session's card;

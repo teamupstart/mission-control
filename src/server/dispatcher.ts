@@ -74,9 +74,9 @@ export interface TaskDispatchOptions {
  * Empty in three cases, each correct rather than a fallback: the setting is off; the
  * harness has no `onDispatch` mode to arm (Codex names none here - its autonomous launch
  * is a widened sandbox built in `prepareCodexLaunch`, not a permission mode); or the
- * harness has such a mode but can only reach it by walking its TUI after launch
+ * harness has such a mode but can only reach it through its live TUI after launch
  * (`launchArgs: null`), in which case dispatch declines rather than typing at it - the
- * walk is reserved for a human swapping a LIVE session's mode from the card.
+ * live control is reserved for a human swapping a LIVE session's mode from the card.
  *
  * This replaced the post-launch `setPermissionMode` walk on the dispatch path: the walk
  * read the mode off the pane footer, which a fresh session's folder-trust dialog hides,
@@ -159,8 +159,8 @@ export class Dispatcher {
       // which a fresh session's folder-trust dialog hides, so it gave up and the session
       // ran in its default mode. The flag sets the mode whether or not the footer is
       // readable, and is scoped to sessions WE launch by construction. Codex is reached by
-      // its own launch builder below (widened sandbox), so this is empty for it; the walk
-      // stays only for a human swapping a live session's mode from the card.
+      // its own launch builder below (widened sandbox), so this is empty for it; live TUI
+      // control stays only for a human swapping an existing session's mode from the card.
       const modeArgs = dispatchPermissionModeArgs(task.agent);
       // Which of OUR tools this launch has to be able to call, if the caller said. Passed to
       // each harness's launch builder as a requirement, never as flags - see `mission-mcp.ts`.

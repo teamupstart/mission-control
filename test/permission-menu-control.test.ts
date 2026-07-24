@@ -4,7 +4,11 @@ import { setPermissionMode, type PaneDeps } from "../src/server/actions.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
 import { mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
-import { CODEX_COMMAND_APPROVAL, CODEX_PERMISSIONS_PICKER } from "./fixtures/codex-panes.ts";
+import {
+  CODEX_COMMAND_APPROVAL,
+  CODEX_FULL_ACCESS_CONFIRMATION,
+  CODEX_PERMISSIONS_PICKER,
+} from "./fixtures/codex-panes.ts";
 
 const EMPTY_COMPOSER = `
 › Ask Codex to do anything
@@ -17,6 +21,10 @@ const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 function driven(start: string): { deps: PaneDeps; did: string[] } {
   let screen = start;
   const did: string[] = [];
+  const pickerAt = (number: number): string =>
+    CODEX_PERMISSIONS_PICKER
+      .replace(/^› (\d+)\./m, "  $1.")
+      .replace(new RegExp(`^  ${number}\\.`, "m"), `› ${number}.`);
   const pane: BoundPane = {
     kind: "multiplexer",
     backend: "tmux",
@@ -33,7 +41,14 @@ function driven(start: string): { deps: PaneDeps; did: string[] } {
       keys: async (keys: readonly Key[]) => {
         did.push(`keys:${keys.join(",")}`);
         if (keys[0] === "enter" && screen.includes("/permissions")) screen = CODEX_PERMISSIONS_PICKER;
-        else if (keys[0] === "enter" && screen === CODEX_PERMISSIONS_PICKER) screen = EMPTY_COMPOSER;
+        else if (keys[0] === "down" && screen.includes("Update Model Permissions")) {
+          const selected = Number(/^› (\d+)\./m.exec(screen)?.[1] ?? "1");
+          screen = pickerAt(Math.min(4, selected + 1));
+        } else if (keys[0] === "enter" && screen.includes("Update Model Permissions")) {
+          screen = /^› 3\./m.test(screen) ? CODEX_FULL_ACCESS_CONFIRMATION : EMPTY_COMPOSER;
+        } else if (keys[0] === "enter" && screen.includes("Enable full access?")) {
+          screen = EMPTY_COMPOSER;
+        }
         return ok();
       },
       paste: async () => ok(),
@@ -79,4 +94,20 @@ test("Codex permission selection verifies the command before opening its native 
 
   assert.deepEqual(result, { ok: true, mode: "askForApproval" });
   assert.deepEqual(h.did, ["text:/permissions", "keys:enter", "keys:enter"]);
+});
+
+test("Codex Full Access selection confirms the native second gate", async () => {
+  const h = driven(EMPTY_COMPOSER);
+
+  const result = await setPermissionMode(session(), "fullAccess", h.deps);
+
+  assert.deepEqual(result, { ok: true, mode: "fullAccess" });
+  assert.deepEqual(h.did, [
+    "text:/permissions",
+    "keys:enter",
+    "keys:down",
+    "keys:down",
+    "keys:enter",
+    "keys:enter",
+  ]);
 });

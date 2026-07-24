@@ -649,7 +649,7 @@ function panelHarnesses() {
         h("div", { class: "hcard-head" },
           h("span", { class: "adot" }), h("b", null, a.label),
           h("span", { style: "flex:1" }),
-          id === "codex" ? h("span", { class: "badge" }, "no permission modes") : (state.autoMode ? h("span", { class: "badge" }, "auto mode ready") : null)),
+          id === "codex" ? h("span", { class: "badge" }, "live picker only") : (state.autoMode ? h("span", { class: "badge" }, "auto mode ready") : null)),
         h("div", { class: "hcard-grid" },
           h("label", null, "Model"),
           sel(MODELS[id], cfg.model, (v) => { cfg.model = v; render(); }, "mono"),

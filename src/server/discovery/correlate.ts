@@ -50,10 +50,11 @@ export interface DiscoveredSession {
   agentSessionId?: string | null;
   transcriptPath?: string | null;
   /**
-   * Claude's live permission mode, read off the pane by `annotatePaneState`.
-   * Undefined when we couldn't read it (a Codex session, no pane handle, or a
-   * dialog covering Claude's mode line) - the registry then keeps whatever a hook
-   * last reported rather than treating "unknown" as "changed".
+   * A cycle-controlled harness's live permission mode, read off the pane by
+   * `annotatePaneState`. Undefined when we couldn't read it (a menu-controlled Codex
+   * session, no pane handle, or a dialog covering the mode line) - the registry then
+   * keeps whatever another source last reported rather than treating "unknown" as
+   * "changed".
    */
   permissionMode?: PermissionMode;
   /**

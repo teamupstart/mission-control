@@ -313,11 +313,10 @@ function retractByline(rowId: number): void {
 /**
  * Why this session's permission mode cannot be driven, or null when it can be.
  *
- * The refusal is a CAPABILITY answer, not an agent-id one: both mode routes walk the
- * Shift+Tab cycle and read the result back off a footer line, and a harness that renders
- * no such line has nothing for the walk to verify against - so it is refused here rather
- * than left to time out having typed Shift+Tab into somebody's editor. Named from
- * `AGENT_IDENTITY` so a fourth harness gets a true sentence instead of inheriting "Claude".
+ * The refusal is a CAPABILITY answer, not an agent-id one: a harness may expose a verified
+ * footer cycle or a verified native picker, while one declaring neither is refused before
+ * any terminal input. Named from `AGENT_IDENTITY` so a fourth harness gets a true sentence
+ * instead of inheriting "Claude".
  */
 function noPermissionModes(session: Session): string | null {
   if (harnessFor(session.agent).permissionModes) return null;

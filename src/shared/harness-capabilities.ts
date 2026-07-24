@@ -652,9 +652,10 @@ export function autoModeAgents(): AgentType[] {
  * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
  * `--sandbox workspace-write --ask-for-approval on-request` at launch. The switch reaches
- * Codex; what it does not reach is a `--permission-mode` flag, because Codex has no such
- * mode. A panel promising "unaffected" over a session launched with a widened sandbox is a
- * consent failure, not a copy nit.
+ * Codex; what it does not reach is a `--permission-mode` launch flag, because Codex
+ * expresses the same posture through separate sandbox and approval flags. A panel
+ * promising "unaffected" over a session launched with a widened sandbox is a consent
+ * failure, not a copy nit.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
   const modes = HARNESS_CAPABILITIES[agent].permissionModes;

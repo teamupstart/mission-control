@@ -478,10 +478,10 @@ export type ControlSpec =
 /**
  * Reading the agent's own permission-mode footer off a pane.
  *
- * Null on `TuiSpec` means the agent has no permission-mode notion at all - not that we
- * failed to read one. The distinction is the whole point: an unread footer falls back to
- * the hook-reported mode, while a harness that has no modes must never have a mode chip
- * invented for it, and the Shift+Tab walk that drives one must never be pointed at it.
+ * Null on `TuiSpec` means the pane has no permission-mode footer grammar - not that the
+ * harness has no permission modes. The capability and its live control are declared
+ * separately in `PermissionModeSpec`: Codex, for example, reads modes from its rollout
+ * and drives its native menu without exposing a footer cycle here.
  */
 export interface ModeLineSpec {
   /**
@@ -592,7 +592,7 @@ export interface TuiSpec {
    * cursor has already left.
    */
   repaintTimeoutMs: number;
-  /** Reading the permission-mode footer, or null when the agent has no modes. */
+  /** Reading the permission-mode footer, or null when the pane exposes no mode line. */
   modeLine: ModeLineSpec | null;
   /** Reading an option dialog, or null when the agent renders none we can read. */
   dialog: DialogSpec | null;

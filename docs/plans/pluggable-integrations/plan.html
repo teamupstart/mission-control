@@ -250,7 +250,9 @@
 </ul>
 <p>Two things the migration commits will carry that a reader of their diffs must not mistake for a pure move:</p>
 <ul>
-<li><strong>The adapters terminate flag parsing; the inline call sites do not.</strong> <code>send-keys</code>, <code>new-session</code> and <code>wezterm send-text</code> all parse their trailing arguments as options, so a reply beginning with a dash (<code>-v is what broke it</code>) dies in the arg parser and never reaches the pane. Verified on tmux 3.6b and wezterm&rsquo;s clap parser; both fixed by <code>--</code>, and the terminator changes nothing about how what follows is read.</li>
+<li><strong>Adapter payloads do not enter flag parsing.</strong> The current transport
+contract is owned by <code>AGENTS.md</code> and <code>src/server/terminal/</code>; this
+rendered historical plan does not duplicate it.</li>
 <li><strong>Every wezterm command in the adapter goes through <code>cli --no-auto-start</code> with <code>weztermEnv()</code>.</strong> The writes in <code>actions.ts</code> and the captures in <code>discovery/pane-capture.ts</code> use neither, so they inherit <code>WEZTERM_UNIX_SOCKET</code> while the pane ids they are given came from <code>listWeztermPanes</code>, which drops it. Routing them through the adapter puts commands and ids on the same mux.</li>
 </ul>
 

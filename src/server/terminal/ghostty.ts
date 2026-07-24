@@ -187,20 +187,17 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
    * the app bundle, which only exists on macOS.
    */
   /**
-   * **The script - payload and all - is one argv entry, so this backend's ceiling is
-   * `ARG_MAX`** (1MB on macOS). `typeLiterally` builds a single `tell` block holding every
-   * line of the body, so a large write is a large argument, exactly the shape that made tmux
-   * refuse a dispatch past ~16KB (see `viaBuffer` in `tmux.ts`).
+   * **The script - payload and all - is one argv entry, so this backend retains the
+   * operating system's `ARG_MAX` ceiling.** `typeLiterally` builds a single `tell` block
+   * holding every line of the body.
    *
    * Left on `-e` deliberately. `osascript` does read a script from stdin when given neither
    * `-e` nor a file - verified on this machine - so the transport swap is available and
    * cheap. What is NOT available is evidence that Ghostty still behaves after it: the app was
    * not running where this was measured, and driving it needs an Automation permission grant
    * that only a human at the keyboard can give. This file's own rule is that a claim about a
-   * backend is worth what the capture behind it is worth, and "probably identical" is the
-   * kind of claim `HARNESSES.codex.tui` exists to warn about. The limit is sixty times
-   * tmux's and past any prompt seen in practice, so the honest move is to write down where
-   * the cliff is rather than to move it blind.
+   * backend is worth what the capture behind it is worth, so the ceiling remains documented
+   * instead of moving without verification.
    *
    * The failure MODE is fixed even though the limit is not: `run` (`util/exec.ts`) used to
    * let `spawn`'s synchronous E2BIG escape as a promise rejection, and now reports it as an

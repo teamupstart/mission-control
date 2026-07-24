@@ -138,20 +138,10 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
   /**
    * Write `text` to a pane, literally or as a bracketed paste.
    *
-   * **The payload goes on STDIN, never in argv**, which is the same correction tmux's
-   * adapter needed and for a limit one layer further out. `send-text` used to take the body
-   * as a trailing argument, so the ceiling was the OS's `ARG_MAX` - 1MB on this machine -
-   * and past it `execFile` throws E2BIG before any process exists. That is far above tmux's
-   * own ~16KB command limit, which is why this backend was not the one that broke a
-   * dispatch, but it is the same defect and it has the same fix.
-   *
-   * Measured against the wezterm in `/Applications/WezTerm.app` (20240203-110809-5046fc22),
-   * driving a throwaway pane spawned for the purpose: the two forms deliver byte-identical
-   * output for a hostile payload (UTF-8, ESC, tab, CR, LF, a leading dash), the argv form
-   * carries 1,000,000 bytes and dies at 2,000,000, and the stdin form carries both. This is
-   * a documented input mode rather than an accident - `wezterm cli send-text --help` on that
-   * binary says of its positional argument: "The text to send. If omitted, will read the
-   * text from stdin".
+   * The payload goes on stdin, never in argv. `wezterm cli send-text` documents that an
+   * omitted positional argument is read from stdin, and a real pane verified that the
+   * stdin and argv forms deliver the same bytes for UTF-8, escapes, tabs, CR, LF, and a
+   * leading dash.
    *
    * Dropping the payload also retires the `--` terminator, and that is a strengthening
    * rather than a loss. The terminator was there because wezterm's clap parser reads a body

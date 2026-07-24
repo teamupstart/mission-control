@@ -82,11 +82,10 @@ observers (`gh pr list` in `pr.ts`, `axi status` in `nomistakes.ts`), each with 
 (`axi respond`). The only way to make a session *act* is to type into its pane, so the wrap-up is a
 gated send, not an API call.
 
-Delivery must use `injectPrompt` (`actions.ts:74`) - `set-buffer` + `paste-buffer -p -d` (bracketed
-paste) + explicit Enter. `sendText` (`actions.ts:36`) is literal `send-keys -l`, so **every embedded
-newline submits** - it cannot deliver a multi-line intent or a bulleted gap list at all.
-`injectPrompt` is not exposed over HTTP today (`routes.ts:177` wires only `sendText`), so a new
-endpoint is on the critical path.
+Delivery must use `injectPrompt`: it preserves a multi-line intent as one bracketed-paste
+submission, while `sendText` types embedded newlines and can submit the prompt in pieces. The
+current terminal transport contract is owned by `AGENTS.md` and the adapters in
+`src/server/terminal/`.
 
 ---
 

@@ -72,11 +72,9 @@ the only real termination guarantee. Hardened in §3.3, but not presented as a p
 observers (<code>gh pr list</code> in <code>pr.ts</code>, <code>axi status</code> in <code>nomistakes.ts</code>), each with exactly one write
 (<code>axi respond</code>). The only way to make a session <em>act</em> is to type into its pane, so the wrap-up is a
 gated send, not an API call.</p>
-<p>Delivery must use <code>injectPrompt</code> (<code>actions.ts:74</code>) - <code>set-buffer</code> + <code>paste-buffer -p -d</code> (bracketed
-paste) + explicit Enter. <code>sendText</code> (<code>actions.ts:36</code>) is literal <code>send-keys -l</code>, so <strong>every embedded
-newline submits</strong> - it cannot deliver a multi-line intent or a bulleted gap list at all.
-<code>injectPrompt</code> is not exposed over HTTP today (<code>routes.ts:177</code> wires only <code>sendText</code>), so a new
-endpoint is on the critical path.</p>
+<p>Delivery must use <code>injectPrompt</code> so a multi-line intent remains one submission.
+The current terminal transport contract is owned by <code>AGENTS.md</code> and
+<code>src/server/terminal/</code>; this rendered historical plan does not duplicate it.</p>
 <hr/>
 <h2>§0. Prerequisites: standalone fixes, landed first as separate commits</h2>
 <p>Both bugfixes are latent today, independent of this feature.</p>

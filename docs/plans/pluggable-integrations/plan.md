@@ -359,11 +359,9 @@ Three refinements the sketch above did not have, each forced by the existing cod
 Two things the migration commits will carry that a reader of their diffs must not mistake
 for a pure move:
 
-- **The adapters terminate flag parsing; the inline call sites do not.** `send-keys`,
-  `new-session` and `wezterm send-text` all parse their trailing arguments as options, so a
-  reply beginning with a dash (`-v is what broke it`) dies in the arg parser and never
-  reaches the pane. Verified on tmux 3.6b and wezterm's clap parser; both fixed by `--`, and
-  the terminator changes nothing about how what follows is read.
+- **Adapter payloads do not enter flag parsing.** Human- and model-authored text now travels
+  on stdin; commands whose values genuinely remain arguments still terminate option parsing.
+  The current transport contract is owned by `AGENTS.md` and `src/server/terminal/`.
 - **Every wezterm command in the adapter goes through `cli --no-auto-start` with
   `weztermEnv()`.** The writes in `actions.ts` and the captures in `discovery/pane-capture.ts`
   use neither, so they inherit `WEZTERM_UNIX_SOCKET` while the pane ids they are given came

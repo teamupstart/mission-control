@@ -270,24 +270,16 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
    * Put `text` in this pane's buffer and hand it to the pane - the shape BOTH write verbs
    * take, differing only in the flag that says whether it is being typed or pasted.
    *
-   * **The payload rides on stdin, and that is the whole point of this helper.** tmux limits
-   * the total length of a COMMAND, well under the OS's own argv ceiling: measured against
-   * 3.6b, a 16,000-byte payload passed as an argument is accepted and 20,000 is refused with
-   * `command too long`, exit 1. Both verbs used to do exactly that - `set-buffer -b <buf> --
-   * <text>` and `send-keys -l -- <text>` - so any prompt past ~16KB was undeliverable, which
-   * is how a dispatch carrying a phase document reached `failed` with its worktree and its
-   * agent already up and nothing in the composer. `load-buffer -b <buf> -` reads the payload
-   * from stdin instead and has no such limit: verified on the same tmux, 200,000 bytes in
-   * and 200,000 bytes out at the far end of a real pane.
+   * The payload rides on stdin because tmux imposes its own command-length limit below the
+   * operating system's argv ceiling. `load-buffer -b <buf> -` avoids that limit and was
+   * verified with 200,000 bytes against tmux 3.6b.
    *
    * The refusal was at least LOUD - `paste-buffer` never ran, so nothing partial reached the
    * pane - and that property is kept: `load-buffer` failing returns before the paste, so a
    * caller reading `ok: false` still knows the composer was not touched.
    *
-   * Two commands rather than one is not a regression to weigh: it is what `paste` already
-   * did, and the alternative for `text` was chunking `send-keys` into sub-16KB pieces, which
-   * trades one atomic refusal for N partial deliveries with no way to say which prefix
-   * landed.
+   * Chunking `send-keys` is not equivalent: it trades one atomic refusal for partial
+   * delivery with no way to identify the prefix that landed.
    */
   const viaBuffer = async (
     t: MuxTarget,
@@ -339,12 +331,8 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       /**
        * Type `text` literally, where a newline SUBMITS - `PaneWrite.text`'s contract.
        *
-       * `send-keys -l -- <text>` is the obvious spelling and the one this used to use. It
-       * is also size-limited (see `viaBuffer`), and tmux offers no stdin form for it: the
-       * 3.6b synopsis is `send-keys [-FHKlMRX] … [key ...]`, with the keys as arguments and
-       * nowhere for a payload to come from. So the buffer is the only unbounded way to put
-       * literal bytes in a pane, and the work-queue delivery that reaches this verb had the
-       * same ~16KB cliff as the dispatch that reaches `paste`.
+       * tmux offers no stdin form for `send-keys -l`, so the buffer is the only way to keep
+       * literal payload bytes out of the size-limited command.
        *
        * **`-r` is what keeps this `text` rather than `paste`, and it is two claims, both
        * measured** against tmux 3.6b at the far end of a real pane holding a byte recorder:

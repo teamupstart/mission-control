@@ -572,27 +572,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   The seam for all of it is `PaneDeps.pane`, so a test drives the real adapter on a fake
   subprocess (real argv) or a hand-built pane (capability nulls no shipped backend declares
   yet).
-  **A PAYLOAD goes on stdin (`TerminalExec`'s `input`), never in argv**, and the difference
-  is a shipped defect rather than a preference: argv is size-limited, and the limit is the
-  TERMINAL's, not the OS's. tmux caps a whole command near 16KB - measured on 3.6b, 16,000
-  bytes accepted and 20,000 refused with `command too long` - so `set-buffer -b <buf> --
-  <text>` and `send-keys -l -- <text>` made any prompt past a phase document undeliverable,
-  and the dispatch died at delivery with its worktree and agent already up.
-  Both tmux verbs are `load-buffer -b <buf> -` now, differing only in the flag on the
-  `paste-buffer` behind them: `-p` brackets (that is `paste`), `-r` keeps LF as LF (that is
-  `text`, byte-identical to the `send-keys -l` it replaced, verified against a recorder with
-  bracketed-paste mode ON - without `-r` every newline becomes a CR, and omitting `-p` is
-  what keeps the markers out even when the app has requested that mode). An empty payload
-  short-circuits, because `load-buffer` with empty stdin creates no buffer and the paste
-  behind it fails `no buffer`. wezterm's `send-text` reads stdin when its positional
-  argument is omitted, which also retires the `--` terminator there - a body that is not an
-  argument cannot be parsed as flags. `send-keys` keeps its argv because key NAMES are a
-  bounded vocabulary, never a payload.
-  cmux (`rpc`) and ghostty (`osascript -e`) have no stdin form and keep an `ARG_MAX`
-  ceiling; what makes that survivable is that `run` (`util/exec.ts`) now resolves `spawn`'s
-  SYNCHRONOUS E2BIG instead of letting it reject - with `outcomeUnknown: false`, since no
-  process existed, so nothing was written and a caller may retry. Whenever an adapter grows
-  a verb carrying text a human or a model wrote, it pipes it. Tests: `exec-outcome.test.ts`,
+  **A PAYLOAD goes on stdin through `TerminalExec.input`, never in argv.** tmux and WezTerm
+  pipe all human- or model-authored text; bounded key names remain arguments. The current
+  cmux and Ghostty mechanisms are documented exceptions that still have an `ARG_MAX` ceiling,
+  so `run` must turn a synchronous spawn refusal into `outcomeUnknown: false`: no process
+  existed and nothing was written. The adapter comments own the backend-specific transport
+  and flag invariants. Tests: `exec-outcome.test.ts`,
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
   `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`,
   `terminal-host-join.test.ts`, `terminal-ghostty.test.ts`.

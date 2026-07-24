@@ -41,9 +41,9 @@ The one genuinely new thing is **the daemon typing into panes unprompted**. See 
 
 ## Verified behaviour (tested, not assumed)
 
-Tested end-to-end against `claude 2.1.211` in a real tmux pane, using `injectPrompt`'s exact
-`set-buffer` / `paste-buffer -p` / `send-keys Enter` sequence. A session was booted **without**
-the skill, the symlink added **after** it reached its prompt, then `/reload-skills` injected:
+Tested end-to-end against `claude 2.1.211` in a real tmux pane through `injectPrompt`. A session
+was booted **without** the skill, the symlink added **after** it reached its prompt, then
+`/reload-skills` injected:
 
 ```
 ❯ /reload-skills

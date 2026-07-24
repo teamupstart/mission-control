@@ -1117,8 +1117,11 @@ side by side and a sentence restating what a dispatch of that harness will actua
 While **Auto mode on dispatch** is enabled, cards it reaches show **auto mode on**; an
 excluded harness instead shows **no auto mode**, with the reason available on the badge.
 The cards derive from the harness list, so a new harness lights up here as one more card
-with no layout change and no stylesheet edit. The master toggle sits above them and puts
-every dispatched session it reaches into its most autonomous permission mode once ready.
+with no layout change and no stylesheet edit. The master toggle sits above them and
+**launches** every dispatched session it reaches directly in its most autonomous permission
+mode - Claude with `--permission-mode auto`, Codex with a widened sandbox its own launch
+builder applies. The mode is on the launch argv, not typed in afterwards, so it holds even
+when a fresh worktree's folder-trust dialog is still covering the session's mode-line footer.
 
 ### Default model
 

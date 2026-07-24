@@ -19,6 +19,9 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { ensemblePayload } = await import("../src/shared/ensemble.ts");
 const {
   FakeGateway,
   stubAdapters,
@@ -26,6 +29,7 @@ const {
   twoWavePlan,
   reviewPlan,
   runInsert,
+  gitRepo,
 } = await import("./ensemble-fixture.ts");
 
 const db = openDb();
@@ -176,7 +180,7 @@ test("a test strategy runs two waves, the second pinned to the first wave's arti
 
 test("retrying a failed member appends an attempt and reuses the logical member", async () => {
   const { store, gateway, engine } = harness();
-  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  const { run } = store.createRun(runInsert(singleWavePlan(2, { maxMembers: 3 })));
   await engine.launch(run.id);
   const failTask = gateway.dispatched[0]!.taskId;
   const memberId = store.listAttempts(run.id).find((a) => a.taskId === failTask)!.memberId;
@@ -198,6 +202,87 @@ test("retrying a failed member appends an attempt and reuses the logical member"
     attempts.map((a) => a.attempt).sort(),
     [1, 2],
   );
+});
+
+test("member retry refuses before Task creation when the lifetime launch budget is spent", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  const taskId = gateway.dispatched[0]!.taskId;
+  const memberId = store.listAttempts(run.id).find((attempt) => attempt.taskId === taskId)!.memberId;
+  gateway.fail(taskId);
+  await engine.wake(run.id);
+  gateway.vanish(taskId);
+  assert.equal(await engine.retryMember(run.id, memberId), false);
+  assert.equal(gateway.created.length, 2);
+});
+
+test("a mismatched stage driver fails visibly before creating a Task", async () => {
+  const { store, gateway, engine } = harness();
+  const plan = singleWavePlan(1);
+  plan.stages[0]!.driverKey = "human_decision@1";
+  const { run } = store.createRun(runInsert(plan));
+  await engine.launch(run.id);
+  assert.equal(store.getRun(run.id)!.status, "failed");
+  assert.match(store.getRun(run.id)!.error ?? "", /incompatible driver/);
+  assert.equal(gateway.created.length, 0);
+  assert.equal(store.listStageAttempts(run.id).length, 0);
+});
+
+test("a durable human decision lets a finalize stage park in finalizing", async () => {
+  const { store, engine } = harness();
+  const plan = singleWavePlan(1);
+  plan.stages = [
+    {
+      id: "stage-finalize",
+      ordinal: 1,
+      label: "Promotion",
+      driverKind: "finalize",
+      driverKey: "select_one_finalize@1",
+      dependsOn: [],
+      barrier: { kind: "human_decision" },
+      maxAttempts: 1,
+      finalization: {
+        kind: "select_one",
+        requiresHumanDecision: true,
+        loserPolicy: "reap_worktrees",
+      },
+    },
+  ];
+  const { run } = store.createRun(runInsert(plan));
+  store.recordDecision({
+    runId: run.id,
+    actor: "human",
+    actorId: null,
+    selection: ensemblePayload({ memberId: store.listMembers(run.id)[0]!.id }),
+    rationale: "chosen",
+    operationKey: `decision:${run.id}`,
+  });
+  await engine.launch(run.id);
+  assert.equal(store.getRun(run.id)!.status, "finalizing");
+  assert.equal(store.listStageAttempts(run.id).length, 0);
+});
+
+test("stage retry refuses drivers that are not executable in this phase", async () => {
+  const { store, engine } = harness();
+  const plan = reviewPlan(2, 2);
+  const review = plan.stages[1]!;
+  store.createRun(runInsert(plan));
+  const run = store.listNonTerminalRuns()[0]!;
+  store.startStageAttempt({
+    runId: run.id,
+    stageId: review.id,
+    driverKind: review.driverKind,
+    driverKey: review.driverKey,
+    attempt: 1,
+    commandKey: `failed:${run.id}`,
+    status: "running",
+    input: {},
+  });
+  const attempt = store.listStageAttempts(run.id)[0]!;
+  store.finishStageAttempt(attempt.id, ["running"], "failed", { error: "failed" });
+  assert.equal(await engine.retryStage(run.id, review.id), false);
+  assert.equal(store.listStageAttempts(run.id).length, 1);
 });
 
 test("a duplicate launch does not create a second wave (command-key idempotency)", async () => {
@@ -241,4 +326,41 @@ test("a run past its wall-clock deadline fails rather than parking forever", asy
   await engine.launch(run.id);
   assert.equal(store.getRun(run.id)!.status, "failed");
   assert.match(store.getRun(run.id)!.error ?? "", /deadline/i);
+});
+
+test("preflight validates the resolved harness and mandatory submission capability", async () => {
+  const { path } = gitRepo();
+  const checked: string[] = [];
+  const manager = new EnsembleManager(new Registry(), new EnsembleStore(db), {
+    agentBinPresent: async (agent) => {
+      checked.push(agent);
+      return true;
+    },
+    missionMcpAvailable: async () => true,
+  });
+  const callPreflight = (
+    subject: InstanceType<typeof EnsembleManager>,
+    plan: ReturnType<typeof singleWavePlan>,
+  ) => (subject as unknown as {
+    preflight(value: ReturnType<typeof singleWavePlan>, repoRoot: string): Promise<{ ok: boolean; issues?: Array<{ message: string }> }>;
+  }).preflight(plan, path);
+
+  const defaulted = singleWavePlan(1);
+  defaulted.roles[0]!.model = "claude-opus-4-8";
+  assert.equal((await callPreflight(manager, defaulted)).ok, true);
+  assert.deepEqual(checked, ["claude"]);
+
+  const mismatched = singleWavePlan(1);
+  mismatched.roles[0]!.model = "gpt-5.6-sol";
+  const modelResult = await callPreflight(manager, mismatched);
+  assert.equal(modelResult.ok, false);
+  assert.match(modelResult.issues?.[0]?.message ?? "", /not supported by claude/);
+
+  const toolLess = singleWavePlan(1);
+  toolLess.roles[0]!.agent = "pi";
+  toolLess.roles[0]!.model = "openai/gpt-5.5";
+  const toolResult = await callPreflight(manager, toolLess);
+  assert.equal(toolResult.ok, false);
+  assert.match(toolResult.issues?.[0]?.message ?? "", /submission tool/);
+  manager.stop();
 });

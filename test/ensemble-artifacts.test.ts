@@ -64,6 +64,26 @@ test("verify fails once the private ref no longer resolves to its commit", async
   assert.equal(await gitSnapshotAdapter.verify(captured.locator, { repoPath: path }), false);
 });
 
+test("recover reconstructs evidence from a deterministic ref left by capture", async () => {
+  const { path, baseSha } = gitRepo();
+  writeFileSync(join(path, "recovered.txt"), "durable\n");
+  const captured = await gitSnapshotAdapter.capture({
+    runId: UUID_A,
+    artifactId: UUID_B,
+    worktreePath: path,
+    baseSha,
+  });
+  const recovered = await gitSnapshotAdapter.recover({
+    runId: UUID_A,
+    artifactId: UUID_B,
+    repoPath: path,
+    baseSha,
+  });
+  assert.ok(recovered);
+  assert.deepEqual(recovered?.locator, captured.locator);
+  assert.equal(recovered?.fingerprint, captured.fingerprint);
+});
+
 test("materialize re-derives the exact diff on demand from the immutable commit", async () => {
   const { path, baseSha } = gitRepo();
   writeFileSync(join(path, "README.md"), "base\nchanged\n");

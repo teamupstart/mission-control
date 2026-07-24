@@ -88,7 +88,7 @@ export interface TaskScheduleProvenance {
 
 /**
  * What an INTERNAL, durable producer supplies that no human caller may: a task id it
- * chose itself, and the schedule occurrence that justifies it.
+ * chose itself, plus schedule provenance when the scheduler is the producer.
  *
  * The id is the whole mechanism behind exactly-once. The scheduler reserves an occurrence
  * and the id of the task it is going to create in ONE transaction, then creates the task.
@@ -101,11 +101,15 @@ export interface TaskScheduleProvenance {
  * caller parses a request body into that type, and an id accepted there would be an id an
  * HTTP client could choose.
  */
-export interface InternalCreateOptions {
-  /** Preallocated, and reserved durably before this call. */
-  id: string;
-  schedule: TaskScheduleProvenance;
-}
+export type InternalCreateOptions =
+  | {
+      id: string;
+      schedule: TaskScheduleProvenance;
+    }
+  | {
+      id: string;
+      schedule?: undefined;
+    };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
 export class TaskIdCollisionError extends Error {}
@@ -787,15 +791,28 @@ export class TaskManager {
       // occurrence record `failed`, which is visible, rather than "succeeding" quietly.
       const existing = getDurableTask(id);
       if (existing) {
-        const p = internal.schedule;
-        if (
-          existing.scheduleId !== p.scheduleId ||
-          existing.scheduleOccurrenceId !== p.scheduleOccurrenceId ||
-          existing.scheduledFor !== p.scheduledFor
+        if (internal.schedule) {
+          const p = internal.schedule;
+          if (
+            existing.scheduleId !== p.scheduleId ||
+            existing.scheduleOccurrenceId !== p.scheduleOccurrenceId ||
+            existing.scheduledFor !== p.scheduledFor
+          ) {
+            throw new TaskIdCollisionError(
+              `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,
+            );
+          }
+        } else if (
+          existing.repoRoot !== input.repoRoot ||
+          existing.intent !== input.intent ||
+          existing.title !== explicitTitle ||
+          existing.kind !== input.kind ||
+          existing.agent !== input.agent ||
+          existing.model !== (input.model ?? null) ||
+          existing.effort !== (input.effort ?? null) ||
+          existing.scheduleId !== null
         ) {
-          throw new TaskIdCollisionError(
-            `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,
-          );
+          throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
         }
         return existing;
       }
@@ -806,8 +823,8 @@ export class TaskManager {
       // allowlist or pane-safety gate having been consulted. The title is the other half -
       // a blank one takes the model-titling path below, which would spend an LLM call on
       // every single run to derive the same string from the same intent.
-      if (!input.backlog) throw new Error(`schedule-created task ${id} must be backlog`);
-      if (!explicitTitle) throw new Error(`schedule-created task ${id} must carry a title`);
+      if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
+      if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
@@ -842,9 +859,9 @@ export class TaskManager {
       // Null for every human or external caller - the dispatch form, an MCP tool, a task
       // source sweep - none of which has an occurrence to point at. All three arrive
       // together or not at all, from the scheduler's internal producer above.
-      scheduleId: internal?.schedule.scheduleId ?? null,
-      scheduleOccurrenceId: internal?.schedule.scheduleOccurrenceId ?? null,
-      scheduledFor: internal?.schedule.scheduledFor ?? null,
+      scheduleId: internal?.schedule?.scheduleId ?? null,
+      scheduleOccurrenceId: internal?.schedule?.scheduleOccurrenceId ?? null,
+      scheduledFor: internal?.schedule?.scheduledFor ?? null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,

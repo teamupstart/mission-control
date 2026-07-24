@@ -1487,6 +1487,78 @@ export class EnsembleStore {
     });
   }
 
+  reserveAttempt(
+    input: EnsembleAttemptInsert & { taskId: string },
+    expectedMemberStatuses: readonly EnsembleMemberStatus[],
+    now = Date.now(),
+  ): EnsembleAttempt {
+    const attempt = this.inTransaction(() => {
+      const existing = this.db
+        .prepare(`SELECT * FROM ensemble_attempts WHERE member_id = ? AND attempt = ?`)
+        .get(input.memberId, input.attempt) as unknown;
+      if (existing) {
+        const current = rowToAttempt(existing);
+        if (
+          current.runId !== input.runId ||
+          current.taskId !== input.taskId ||
+          current.baseSha !== input.baseSha ||
+          current.agent !== input.agent
+        ) {
+          identityConflict("attempt identity", `${input.memberId}:${input.attempt}`);
+        }
+        return current;
+      }
+      const member = this.getMember(input.memberId);
+      if (
+        !member ||
+        member.runId !== input.runId ||
+        member.status === null ||
+        !expectedMemberStatuses.includes(member.status)
+      ) {
+        throw new Error(`ensemble member ${input.memberId} cannot reserve attempt ${input.attempt}`);
+      }
+      const id = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO ensemble_attempts (id, run_id, member_id, attempt, task_id, session_id,
+             agent, requested_model, requested_effort, observed_model, base_sha, worktree_path,
+             branch, status, created_at, updated_at, started_at, finished_at, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+        )
+        .run(
+          id,
+          input.runId,
+          input.memberId,
+          input.attempt,
+          input.taskId,
+          input.sessionId,
+          input.agent,
+          input.requestedModel,
+          input.requestedEffort,
+          input.baseSha,
+          input.worktreePath,
+          input.branch,
+          input.status,
+          now,
+          now,
+        );
+      const placeholders = expectedMemberStatuses.map(() => "?").join(",");
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_members
+             SET status = 'launching', task_id = ?, selected_attempt_id = NULL,
+                 error = NULL, updated_at = ?
+             WHERE id = ? AND run_id = ? AND status IN (${placeholders})`,
+        )
+        .run(input.taskId, now, input.memberId, input.runId, ...expectedMemberStatuses).changes;
+      if (changed !== 1) throw new Error(`ensemble member ${input.memberId} changed during attempt reservation`);
+      const row = this.db.prepare(`SELECT * FROM ensemble_attempts WHERE id = ?`).get(id) as unknown;
+      return rowToAttempt(row);
+    });
+    this.notifyTaskLinksChanged();
+    return attempt;
+  }
+
   setAttemptStatus(
     id: string,
     expected: readonly EnsembleAttemptStatus[],
@@ -1700,6 +1772,114 @@ export class EnsembleStore {
       return row
         ? { ok: true, value: rowToArtifact(row) }
         : { ok: false, reason: "not_found", current: null };
+    });
+  }
+
+  completeSubmission(
+    input: {
+      runId: string;
+      memberId: string;
+      attemptId: string;
+      artifactId: string;
+      locator?: EnsembleJson;
+      digest?: string;
+      metadata?: EnsembleJson;
+      readyAt: number;
+    },
+    now = Date.now(),
+  ): EnsembleTransition<EnsembleArtifact> {
+    const transition = this.inTransaction((): EnsembleTransition<EnsembleArtifact> => {
+      const artifactRow = this.db
+        .prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`)
+        .get(input.artifactId) as unknown;
+      if (!artifactRow) return { ok: false, reason: "not_found", current: null };
+      let artifact = rowToArtifact(artifactRow);
+      if (
+        artifact.runId !== input.runId ||
+        artifact.attemptId !== input.attemptId ||
+        (artifact.status !== "capturing" && artifact.status !== "ready")
+      ) {
+        return { ok: false, reason: "precondition_failed", current: artifact };
+      }
+      const memberRow = this.db
+        .prepare(`SELECT * FROM ensemble_members WHERE id = ? AND run_id = ?`)
+        .get(input.memberId, input.runId) as unknown;
+      const attemptRow = this.db
+        .prepare(`SELECT * FROM ensemble_attempts WHERE id = ? AND member_id = ? AND run_id = ?`)
+        .get(input.attemptId, input.memberId, input.runId) as unknown;
+      if (!memberRow || !attemptRow) {
+        throw new Error(`submission ownership is inconsistent for artifact ${input.artifactId}`);
+      }
+      const member = rowToMember(memberRow);
+      const attempt = rowToAttempt(attemptRow);
+      if (
+        !(
+          (member.status === "launching" || member.status === "active") ||
+          (member.status === "submitted" && member.selectedAttemptId === input.attemptId)
+        ) ||
+        !(attempt.status === "launching" || attempt.status === "running" || attempt.status === "submitted")
+      ) {
+        return { ok: false, reason: "precondition_failed", current: artifact };
+      }
+      if (artifact.status === "capturing") {
+        if (input.locator === undefined || input.digest === undefined || input.metadata === undefined) {
+          throw new Error("completing a captured artifact requires its locator, digest and metadata");
+        }
+        const changed = this.db
+          .prepare(
+            `UPDATE ensemble_artifacts
+               SET status = 'ready', locator_json = ?, digest = ?, metadata_json = ?,
+                   ready_at = ?, error = NULL
+               WHERE id = ? AND status = 'capturing'`,
+          )
+          .run(
+            serializedJson(input.locator, ENSEMBLE_LIMITS.artifactLocatorJsonBytes, "artifact locator"),
+            input.digest,
+            serializedJson(input.metadata, ENSEMBLE_LIMITS.artifactMetadataJsonBytes, "artifact metadata"),
+            input.readyAt,
+            input.artifactId,
+          ).changes;
+        if (changed !== 1) return { ok: false, reason: "precondition_failed", current: artifact };
+      }
+      if (member.status !== "submitted") {
+        this.db
+          .prepare(
+            `UPDATE ensemble_members
+               SET status = 'submitted', selected_attempt_id = ?, updated_at = ?
+               WHERE id = ? AND status IN ('launching', 'active')`,
+          )
+          .run(input.attemptId, now, input.memberId);
+      }
+      if (attempt.status !== "submitted") {
+        this.db
+          .prepare(
+            `UPDATE ensemble_attempts
+               SET status = 'submitted', finished_at = ?, updated_at = ?
+               WHERE id = ? AND status IN ('launching', 'running')`,
+          )
+          .run(input.readyAt, now, input.attemptId);
+      }
+      const updated = this.db
+        .prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`)
+        .get(input.artifactId) as unknown;
+      artifact = rowToArtifact(updated);
+      return { ok: true, value: artifact };
+    });
+    if (transition.ok) this.notifyTaskLinksChanged();
+    return transition;
+  }
+
+  invalidateReadyArtifact(id: string, error: string): EnsembleTransition<EnsembleArtifact> {
+    return this.inTransaction(() => {
+      const before = this.db.prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`).get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToArtifact(before);
+      const changed = this.db
+        .prepare(`UPDATE ensemble_artifacts SET status = 'failed', error = ? WHERE id = ? AND status = 'ready'`)
+        .run(bounded(error, ENSEMBLE_LIMITS.errorText), id).changes;
+      if (changed !== 1) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db.prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`).get(id) as unknown;
+      return { ok: true, value: rowToArtifact(row) };
     });
   }
 

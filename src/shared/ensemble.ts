@@ -110,6 +110,7 @@ export const ENSEMBLE_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "cancelling",
 ] as const;
 export type EnsembleStatus = (typeof ENSEMBLE_STATUSES)[number];
 
@@ -945,5 +946,5 @@ export function ensembleNeedsAttention(input: {
 }): boolean {
   if (input.unreadable !== null) return true;
   if (input.status === null) return true;
-  return input.status === "failed" || input.status === "awaiting_decision";
+  return input.status === "failed" || input.status === "awaiting_decision" || input.status === "cancelling";
 }

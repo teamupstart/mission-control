@@ -19,8 +19,13 @@ import {
   type EnsembleSubmissionClaims,
 } from "@shared/protocol.ts";
 import type { Registry } from "../registry.ts";
-import type { AgentType } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
+import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { MODEL_CATALOG } from "@shared/model.ts";
 import { agentBinPresent } from "../dispatcher.ts";
+import { resolveDispatchEffort, resolveDispatchModel } from "../harnesses.ts";
+import { harnessFor } from "../harness/index.ts";
+import { missionMcpDescriptor } from "../mission-mcp.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import { run } from "../util/exec.ts";
 import {
@@ -34,6 +39,7 @@ import {
   type EnsembleTaskGateway,
 } from "./engine.ts";
 import type { ArtifactAdapterRegistry } from "./artifacts/index.ts";
+import { ARTIFACT_ADAPTERS } from "./artifacts/index.ts";
 import {
   descriptorFor,
   ensembleStrategyCatalog,
@@ -104,6 +110,8 @@ export interface EnsembleManagerOptions {
   tasks?: EnsembleTaskGateway;
   /** Artifact adapters, for tests that drive capture against a fake instead of real Git. */
   adapters?: ArtifactAdapterRegistry;
+  agentBinPresent?: (agent: AgentType) => Promise<boolean>;
+  missionMcpAvailable?: () => Promise<boolean>;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
 }
@@ -112,6 +120,9 @@ export class EnsembleManager {
   private readonly catalog: StrategyCatalog;
   private readonly resolvePersona: (personaId: string) => { id: string; revision: number } | null;
   private readonly engine: EnsembleEngine | null;
+  private readonly adapters: ArtifactAdapterRegistry;
+  private readonly hasAgentBin: (agent: AgentType) => Promise<boolean>;
+  private readonly hasMissionMcp: () => Promise<boolean>;
   private readonly now: () => number;
   private unsubscribe: (() => void) | null = null;
 
@@ -132,6 +143,9 @@ export class EnsembleManager {
     this.catalog = options.catalog ?? ensembleStrategyCatalog;
     this.resolvePersona = options.resolvePersona ?? (() => null);
     this.now = options.now ?? (() => Date.now());
+    this.adapters = options.adapters ?? ARTIFACT_ADAPTERS;
+    this.hasAgentBin = options.agentBinPresent ?? agentBinPresent;
+    this.hasMissionMcp = options.missionMcpAvailable ?? (async () => (await missionMcpDescriptor()) !== null);
     // The engine exists only when a Task gateway was wired in. It calls back into `publish` after
     // every step, so the two are constructed together with the manager holding the reference.
     this.engine = options.tasks
@@ -433,11 +447,48 @@ export class EnsembleManager {
     const baseBranch = branchRun.code === 0 && branch && branch !== "HEAD" ? branch : null;
 
     const agents = new Set<AgentType>();
-    for (const role of plan.roles) if (role.agent !== null) agents.add(role.agent);
+    for (const [index, role] of plan.roles.entries()) {
+      const agent = role.agent ?? AGENT_TYPES[0];
+      agents.add(agent);
+      const model = resolveDispatchModel(agent, role.model);
+      if (model !== null && !MODEL_CATALOG[agent].some((choice) => choice.id === model)) {
+        return {
+          ok: false,
+          issues: [{ path: `roles.${index}.model`, message: `model ${model} is not supported by ${agent}` }],
+        };
+      }
+      const effort = resolveDispatchEffort(agent, role.effort);
+      if (effort !== null && !supportsEffort(agent, effort)) {
+        return {
+          ok: false,
+          issues: [{ path: `roles.${index}.effort`, message: `reasoning effort ${effort} is not supported by ${agent}` }],
+        };
+      }
+      for (const kind of role.requiredArtifacts) {
+        if (kind !== "commit" || this.adapters[kind] === null) {
+          return {
+            ok: false,
+            issues: [{ path: `roles.${index}.requiredArtifacts`, message: `artifact ${kind} cannot be submitted by this runtime` }],
+          };
+        }
+      }
+      if (harnessFor(agent).mcp === null) {
+        return {
+          ok: false,
+          issues: [{ path: `roles.${index}.agent`, message: `${agent} cannot carry the required submission tool` }],
+        };
+      }
+    }
     for (const agent of agents) {
-      if (!(await agentBinPresent(agent))) {
+      if (!(await this.hasAgentBin(agent))) {
         return { ok: false, issues: [{ path: "strategyConfig", message: `the ${agent} binary is not installed` }] };
       }
+    }
+    if (!(await this.hasMissionMcp())) {
+      return {
+        ok: false,
+        issues: [{ path: "strategyConfig", message: "the Mission MCP bundle required for member submission is unavailable" }],
+      };
     }
     return { ok: true, value: { repoRoot: canonical, baseSha, baseBranch } };
   }

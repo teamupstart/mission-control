@@ -61,10 +61,10 @@ export function gitRepo(): { path: string; baseSha: string } {
  * durable Task state, never trust the dispatch call" the engine is built around.
  */
 export class FakeGateway implements EnsembleTaskGateway {
-  private seq = 0;
   readonly created: Array<MemberTaskRequest & { taskId: string }> = [];
   readonly dispatched: MemberDispatchRequest[] = [];
   readonly cancelled: string[] = [];
+  readonly cancelFailures = new Set<string>();
   /** Every create/dispatch in order, so a test can prove a whole wave existed before a dispatch. */
   readonly log: string[] = [];
   private readonly state = new Map<
@@ -72,12 +72,12 @@ export class FakeGateway implements EnsembleTaskGateway {
     { status: TaskGatewayStatus; worktreePath: string | null; sessionId: string | null }
   >();
 
-  create(request: MemberTaskRequest): { taskId: string; agent: "claude" | "codex" | "pi" } {
-    const taskId = `task-${++this.seq}`;
+  create(request: MemberTaskRequest): void {
+    const taskId = request.taskId;
+    if (this.state.has(taskId)) return;
     this.created.push({ ...request, taskId });
     this.log.push(`create:${taskId}`);
     this.state.set(taskId, { status: "backlog", worktreePath: null, sessionId: null });
-    return { taskId, agent: request.agent ?? "claude" };
   }
 
   dispatch(request: MemberDispatchRequest): void {
@@ -88,6 +88,7 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
 
   async cancel(taskId: string): Promise<void> {
+    if (this.cancelFailures.has(taskId)) throw new Error(`cannot cancel ${taskId}`);
     this.cancelled.push(taskId);
     const t = this.state.get(taskId);
     if (t) t.status = "cancelled";
@@ -118,6 +119,9 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
   vanish(taskId: string): void {
     this.state.delete(taskId);
+  }
+  failCancel(taskId: string): void {
+    this.cancelFailures.add(taskId);
   }
   /** The most recent task id created for a given member id. */
   taskFor(memberOrdinalTitle: string): string | undefined {
@@ -152,6 +156,9 @@ export function stubAdapters(): ArtifactAdapterRegistry {
         observed: { filesChanged: 1, insertions: 1, deletions: 0, dirty: true },
       };
     },
+    async recover() {
+      return null;
+    },
     async materialize() {
       return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0 };
     },
@@ -172,6 +179,9 @@ export function failingAdapters(): ArtifactAdapterRegistry {
       formatVersion: 1,
       async capture() {
         throw new Error("stub capture failure");
+      },
+      async recover() {
+        return null;
       },
       async materialize() {
         return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0 };

@@ -43,6 +43,14 @@ export interface ArtifactCaptureInput {
   maxPatchBytes?: number;
 }
 
+export interface ArtifactRecoveryInput {
+  runId: string;
+  artifactId: string;
+  repoPath: string;
+  baseSha: string;
+  maxPatchBytes?: number;
+}
+
 /** Bounded, on-demand evidence for one ready artifact - re-derived, never stored. */
 export interface ArtifactMaterialization {
   files: Array<{
@@ -67,6 +75,7 @@ export interface ArtifactAdapter {
   formatVersion: number;
   /** Turn a member's worktree into an immutable artifact WITHOUT disturbing it. */
   capture(input: ArtifactCaptureInput): Promise<CapturedArtifact>;
+  recover(input: ArtifactRecoveryInput): Promise<CapturedArtifact | null>;
   /** Re-derive bounded evidence from a ready locator. Reads the immutable artifact, never a live worktree. */
   materialize(
     locator: ArtifactLocator,

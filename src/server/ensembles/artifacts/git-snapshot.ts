@@ -3,6 +3,7 @@ import { run } from "../../util/exec.ts";
 import {
   DEFAULT_MAX_PATCH_BYTES,
   captureWorktreeSnapshot,
+  ensembleSnapshotRef,
   materializeSnapshotDiff,
   resolveEnsembleRef,
   restoreSnapshotIntoWorktree,
@@ -12,6 +13,7 @@ import type {
   ArtifactCaptureInput,
   ArtifactLocator,
   ArtifactMaterialization,
+  ArtifactRecoveryInput,
   CapturedArtifact,
 } from "./types.ts";
 
@@ -121,6 +123,51 @@ async function capture(input: ArtifactCaptureInput): Promise<CapturedArtifact> {
   return { locator, fingerprint: snapshot.treeSha, observed };
 }
 
+async function recover(input: ArtifactRecoveryInput): Promise<CapturedArtifact | null> {
+  const ref = ensembleSnapshotRef(input.runId, input.artifactId);
+  const snapshotSha = await resolveEnsembleRef(input.repoPath, ref);
+  if (!snapshotSha) return null;
+  const shape = await run("git", ["-C", input.repoPath, "show", "-s", "--format=%T%n%P", snapshotSha]);
+  if (shape.code !== 0) return null;
+  const [treeSha, parents = ""] = shape.stdout.trim().split("\n");
+  const parentSha = parents.split(" ").filter(Boolean)[0] ?? null;
+  if (!treeSha || !SHA.test(treeSha) || (parentSha !== null && !SHA.test(parentSha))) return null;
+  const diff = await materializeSnapshotDiff({
+    repoPath: input.repoPath,
+    baseSha: input.baseSha,
+    snapshotSha,
+    maxPatchBytes: input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES,
+  });
+  const dirty = await computeDirty(input.repoPath, parentSha, treeSha);
+  const locator: GitSnapshotLocator = {
+    kind: "git_snapshot",
+    formatVersion: FORMAT_VERSION,
+    ref,
+    snapshotSha,
+    baseSha: input.baseSha,
+    parentSha,
+    treeSha,
+  };
+  return {
+    locator,
+    fingerprint: treeSha,
+    observed: {
+      headSha: parentSha,
+      baseSha: input.baseSha,
+      snapshotSha,
+      treeSha,
+      ref,
+      dirty,
+      filesChanged: diff.filesChanged,
+      insertions: diff.insertions,
+      deletions: diff.deletions,
+      binaryFiles: diff.files.filter((file) => file.binary).length,
+      patchTruncated: diff.truncated,
+      patchOmittedBytes: diff.omittedBytes,
+    },
+  };
+}
+
 async function materialize(
   locator: ArtifactLocator,
   input: { repoPath: string; maxPatchBytes?: number },
@@ -162,6 +209,7 @@ export const gitSnapshotAdapter: ArtifactAdapter = {
   kind: "commit",
   formatVersion: FORMAT_VERSION,
   capture,
+  recover,
   materialize,
   verify,
   restore,

@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  ENSEMBLE_DRIVER_KEYS,
   ensembleIsRunnable,
   ensembleIsTerminal,
   type CompiledEnsemblePlan,
@@ -13,9 +14,11 @@ import {
   type EnsembleStageAttempt,
   type EnsembleStageSpec,
   type EnsembleStatus,
+  type EnsembleRun,
+  type EnsembleStageDriverKind,
   type RunnableEnsembleRun,
 } from "@shared/ensemble.ts";
-import type { AgentType, ThinkingLevel } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import type { EnsembleSubmissionClaims } from "@shared/protocol.ts";
 import { EnsembleStore } from "./store.ts";
 import { artifactAdapterFor, type ArtifactAdapterRegistry } from "./artifacts/index.ts";
@@ -45,15 +48,16 @@ import { buildMemberPrompt } from "./member-prompt.ts";
 
 // ---- injected seams ----
 
-/** One member Task's launch request. The gateway resolves a null agent to the daemon default. */
+/** One member Task's launch request, including its preallocated durable identity. */
 export interface MemberTaskRequest {
+  taskId: string;
   runId: string;
   memberId: string;
   repoRoot: string;
   /** The full first prompt, already assembled from the ordinary intent plus the ensemble appendix. */
   intent: string;
   title: string;
-  agent: AgentType | null;
+  agent: AgentType;
   model: string | null;
   effort: ThinkingLevel | null;
 }
@@ -75,8 +79,8 @@ export interface MemberDispatchRequest {
  * owner is TaskManager; the engine only asks.
  */
 export interface EnsembleTaskGateway {
-  /** Create ONE backlog member Task and return its durable id and resolved agent. Never dispatches. */
-  create(request: MemberTaskRequest): { taskId: string; agent: AgentType };
+  /** Create ONE backlog member Task at its preallocated durable id. Never dispatches. */
+  create(request: MemberTaskRequest): void;
   /** Dispatch a created member Task with its pinned base and the ensemble submission tool. */
   dispatch(request: MemberDispatchRequest): void;
   /** Cancel a member Task through its owner. Tears the agent down; keeps the record and worktree. */
@@ -147,6 +151,13 @@ const OCCUPYING_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching",
 
 /** A member that can still be handed a submission. */
 const SUBMITTABLE_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching", "active"];
+const LIVE_TASK_STATUSES: readonly TaskGatewayStatus[] = ["backlog", "dispatching", "running"];
+const DRIVER_KEYS_BY_KIND = {
+  member: ["member_wave@1"],
+  review: ["artifact_barrier@1", "comparative_review@1"],
+  decision: ["human_decision@1"],
+  finalize: ["select_one_finalize@1"],
+} as const satisfies Record<EnsembleStageDriverKind, readonly (typeof ENSEMBLE_DRIVER_KEYS)[number][]>;
 
 function isSettled(status: EnsembleMemberStatus | null): boolean {
   return status !== null && SETTLED_MEMBER_STATUSES.includes(status);
@@ -154,7 +165,7 @@ function isSettled(status: EnsembleMemberStatus | null): boolean {
 
 /** A run's status while it still accepts new observations and submissions. */
 function runIsAccepting(status: EnsembleStatus): boolean {
-  return !ensembleIsTerminal(status);
+  return !ensembleIsTerminal(status) && status !== "cancelling";
 }
 
 /** Every non-terminal run status, the compare-and-set precondition for a status move. */
@@ -165,10 +176,19 @@ const NON_TERMINAL_RUN_STATUSES: readonly EnsembleStatus[] = [
   "evaluating",
   "awaiting_decision",
   "finalizing",
+  "cancelling",
 ];
 
 interface RunState {
   run: RunnableEnsembleRun;
+  members: EnsembleMember[];
+  attempts: EnsembleAttempt[];
+  artifacts: EnsembleArtifact[];
+  stageAttempts: EnsembleStageAttempt[];
+}
+
+interface RawRunState {
+  run: EnsembleRun;
   members: EnsembleMember[];
   attempts: EnsembleAttempt[];
   artifacts: EnsembleArtifact[];
@@ -246,18 +266,31 @@ export class EnsembleEngine {
    */
   async cancelRun(runId: string, reason: string | null): Promise<boolean> {
     return this.withRunLock(runId, async () => {
-      const state = this.load(runId);
+      const state = this.loadRaw(runId);
       if (!state) return false;
+      if (state.run.status === null) return false;
       if (ensembleIsTerminal(state.run.status)) return state.run.status === "cancelled";
-      const now = this.now();
-      for (const member of state.members) {
-        await this.tearDownMember(state, member, "withdrawn", now);
-      }
-      this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "cancelled", { error: reason, completedAt: now }, now);
-      this.event(runId, "run_cancelled", { reason }, `run_cancelled:${runId}`);
-      this.publish(runId);
-      return true;
+      return this.cancelLocked(state, reason);
     });
+  }
+
+  private async cancelLocked(state: RawRunState, reason: string | null): Promise<boolean> {
+    const now = this.now();
+    if (state.run.status !== "cancelling") {
+      this.store.setRunStatus(state.run.id, NON_TERMINAL_RUN_STATUSES, "cancelling", { error: reason }, now);
+    }
+    let settled = true;
+    for (const member of state.members) {
+      settled = (await this.tearDownMember(state, member, "withdrawn", now)) && settled;
+    }
+    if (!settled) {
+      this.publish(state.run.id);
+      return false;
+    }
+    this.store.setRunStatus(state.run.id, ["cancelling"], "cancelled", { error: reason, completedAt: now }, now);
+    this.event(state.run.id, "run_cancelled", { reason }, `run_cancelled:${state.run.id}`);
+    this.publish(state.run.id);
+    return true;
   }
 
   /** Withdraw one member: stop it from launching or submitting, cancel it if live, recompute barriers. */
@@ -268,7 +301,10 @@ export class EnsembleEngine {
       const member = state.members.find((m) => m.id === memberId);
       if (!member || isSettled(member.status)) return false;
       const now = this.now();
-      await this.tearDownMember(state, member, "withdrawn", now, reason);
+      if (!(await this.tearDownMember(state, member, "withdrawn", now, reason))) {
+        this.publish(runId);
+        return false;
+      }
       this.event(runId, "member_withdrawn", { memberId, reason }, `member_withdrawn:${memberId}`);
       await this.advanceLocked(runId);
       this.publish(runId);
@@ -278,25 +314,33 @@ export class EnsembleEngine {
 
   /** Cancel a member's live Task (if any) and set its terminal member status, keeping its record. */
   private async tearDownMember(
-    state: RunState,
+    state: Pick<RawRunState, "attempts">,
     member: EnsembleMember,
     terminal: Extract<EnsembleMemberStatus, "withdrawn" | "failed">,
     now: number,
     reason: string | null = null,
-  ): Promise<void> {
-    if (isSettled(member.status)) return;
-    if (member.taskId && OCCUPYING_MEMBER_STATUSES.includes(member.status ?? "pending")) {
+  ): Promise<boolean> {
+    const taskStatus = member.taskId ? this.tasks.status(member.taskId) : null;
+    if (member.taskId && taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
       try {
         await this.tasks.cancel(member.taskId);
       } catch (err) {
-        this.log("warn", { event: "ensemble_member_cancel_failed", runId: member.runId, memberId: member.id, error: String(err) });
+        const detail = err instanceof Error ? err.message : String(err);
+        this.log("warn", { event: "ensemble_member_cancel_failed", runId: member.runId, memberId: member.id, error: detail });
+        if (member.status === "pending" || member.status === "launching" || member.status === "active") {
+          this.store.setMemberStatus(member.id, [member.status], member.status, { error: detail }, now);
+        }
+        return false;
       }
       const attempt = this.latestAttempt(state, member.id);
       if (attempt) {
         this.store.setAttemptStatus(attempt.id, ["pending", "launching", "running"], "cancelled", { finishedAt: now }, now);
       }
     }
-    this.store.setMemberStatus(member.id, ["pending", "launching", "active"], terminal, { error: reason }, now);
+    if (member.status === "pending" || member.status === "launching" || member.status === "active") {
+      this.store.setMemberStatus(member.id, [member.status], terminal, { error: reason }, now);
+    }
+    return true;
   }
 
   /**
@@ -315,6 +359,7 @@ export class EnsembleEngine {
       const prior = this.latestAttempt(state, member.id);
       if (!prior || prior.status !== "failed") return false;
       if (prior.taskId && this.tasks.worktreePath(prior.taskId)) return false; // worktree not yet reclaimed
+      if (state.attempts.length >= state.run.plan.budget.maxMembers) return false;
       const role = state.run.plan.roles.find((r) => r.key === member.roleKey);
       if (!role) return false;
       const now = this.now();
@@ -329,35 +374,37 @@ export class EnsembleEngine {
         baseSha: input.baseSha,
         parentLabels: input.parentLabels,
       });
-      const created = this.tasks.create({
-        runId: state.run.id,
-        memberId: member.id,
-        repoRoot: state.run.repoRoot,
-        intent: prompt,
-        title: `${state.run.title} - ${role.label}`,
-        agent: role.agent,
-        model: role.model,
-        effort: role.effort,
-      });
-      this.store.insertAttempt(
+      const taskId = randomUUID();
+      const agent = role.agent ?? AGENT_TYPES[0];
+      this.store.reserveAttempt(
         {
           runId: state.run.id,
           memberId: member.id,
           attempt: attemptNumber,
-          taskId: created.taskId,
+          taskId,
           sessionId: null,
-          agent: created.agent,
+          agent,
           requestedModel: role.model,
           requestedEffort: role.effort,
           baseSha: input.baseSha,
           worktreePath: null,
           branch: null,
-          status: "launching",
+          status: "pending",
         },
+        ["failed"],
         now,
       );
-      this.store.setMemberStatus(member.id, ["failed"], "launching", { taskId: created.taskId, error: null }, now);
-      this.tasks.dispatch({ taskId: created.taskId, baseSha: input.baseSha, model: role.model, effort: role.effort });
+      this.tasks.create({
+        taskId,
+        runId: state.run.id,
+        memberId: member.id,
+        repoRoot: state.run.repoRoot,
+        intent: prompt,
+        title: `${state.run.title} - ${role.label}`,
+        agent,
+        model: role.model,
+        effort: role.effort,
+      });
       this.event(runId, "member_retried", { memberId, attempt: attemptNumber }, `member_retried:${member.id}:${attemptNumber}`);
       await this.advanceLocked(runId);
       this.publish(runId);
@@ -371,7 +418,7 @@ export class EnsembleEngine {
       const state = this.load(runId);
       if (!state || ensembleIsTerminal(state.run.status)) return false;
       const stage = state.run.plan.stages.find((s) => s.id === stageId);
-      if (!stage) return false;
+      if (!stage || stage.driverKind !== "member" || !this.driverMatches(stage)) return false;
       const latest = this.latestStageAttempt(state, stageId);
       if (!latest || latest.status !== "failed" || latest.attempt >= stage.maxAttempts) return false;
       const now = this.now();
@@ -384,7 +431,7 @@ export class EnsembleEngine {
           driverKey: stage.driverKey,
           attempt,
           commandKey: `stage-retry:${runId}:${stageId}:${attempt}`,
-          status: "queued",
+          status: "running",
           input: { command: "retry_stage", stageId } as EnsembleJson,
         },
         now,
@@ -412,7 +459,7 @@ export class EnsembleEngine {
       const adapter = this.adapterFor("commit");
       if (!adapter) return { ok: false, detail: "no adapter for commit artifacts" };
       const attempt = this.store.listAttempts(runId).find((a) => a.id === artifact.attemptId);
-      const worktree = attempt?.worktreePath ?? (attempt?.taskId ? this.tasks.worktreePath(attempt.taskId) : null);
+      const worktree = attempt ? this.ownedWorktree(attempt) : null;
       if (!worktree) return { ok: false, detail: "the member has no live worktree to restore into" };
       const verified = await adapter.verify(artifact.locator, { repoPath: worktree });
       if (!verified) return { ok: false, detail: "the artifact's private ref no longer resolves to its commit" };
@@ -434,22 +481,94 @@ export class EnsembleEngine {
    */
   async recover(runId: string): Promise<void> {
     await this.withRunLock(runId, async () => {
-      const state = this.load(runId);
-      if (!state || ensembleIsTerminal(state.run.status)) return;
-      const now = this.now();
-      // A capture interrupted by the crash left a `capturing` row and possibly an orphan ref. Fail
-      // the row so the member (still active) can submit again; the ref is harmless if leaked.
-      for (const artifact of state.artifacts) {
-        if (artifact.status === "capturing") {
-          this.store.setArtifactStatus(artifact.id, "failed", { error: "capture interrupted by a restart" }, now);
-        }
+      const raw = this.loadRaw(runId);
+      if (!raw || raw.run.status === null || ensembleIsTerminal(raw.run.status)) return;
+      if (raw.run.status === "cancelling") {
+        await this.cancelLocked(raw, raw.run.error);
+        return;
       }
-      // A member left `launching` with a task that never became live gets re-dispatched; its attempt
-      // is still `pending`, so `launchReadyMembers` picks it up on the advance below.
-      for (const member of state.members) {
+      const state = this.load(runId);
+      if (!state) return;
+      const now = this.now();
+      for (const artifact of state.artifacts) {
+        if (artifact.status !== "capturing" || artifact.kind !== "commit" || artifact.attemptId === null) continue;
+        const attempt = state.attempts.find((candidate) => candidate.id === artifact.attemptId);
+        const member = attempt ? state.members.find((candidate) => candidate.id === attempt.memberId) : null;
+        const adapter = this.adapterFor("commit");
+        const baseSha = attempt?.baseSha ?? state.run.baseSha;
+        let captured = null;
+        try {
+          captured =
+            adapter && baseSha
+              ? await adapter.recover({
+                  runId,
+                  artifactId: artifact.id,
+                  repoPath: state.run.repoRoot,
+                  baseSha,
+                })
+              : null;
+        } catch (err) {
+          this.log("warn", { event: "ensemble_capture_recovery_failed", runId, artifactId: artifact.id, error: String(err) });
+        }
+        if (captured && attempt && member) {
+          const completed = this.store.completeSubmission(
+            {
+              runId,
+              memberId: member.id,
+              attemptId: attempt.id,
+              artifactId: artifact.id,
+              locator: captured.locator,
+              digest: captured.fingerprint,
+              metadata: recoveredMetadata(artifact.metadata, captured.observed, now),
+              readyAt: now,
+            },
+            now,
+          );
+          if (completed.ok) {
+            this.event(runId, "member_submitted", { memberId: member.id, artifactId: artifact.id, source: "recovery" }, `member_submitted:${attempt.id}`);
+            continue;
+          }
+        }
+        this.store.setArtifactStatus(artifact.id, "failed", { error: "capture interrupted before its private ref was durable" }, now);
+      }
+
+      const afterCapture = this.load(runId);
+      if (!afterCapture) return;
+      for (const artifact of afterCapture.artifacts) {
+        if (artifact.status !== "ready" || artifact.kind !== "commit") continue;
+        const adapter = this.adapterFor("commit");
+        let verified = false;
+        try {
+          verified = adapter ? await adapter.verify(artifact.locator, { repoPath: afterCapture.run.repoRoot }) : false;
+        } catch {
+          verified = false;
+        }
+        if (!verified) {
+          this.store.invalidateReadyArtifact(artifact.id, "the artifact's private ref no longer resolves to its recorded commit");
+          continue;
+        }
+        if (artifact.attemptId === null) continue;
+        const attempt = afterCapture.attempts.find((candidate) => candidate.id === artifact.attemptId);
+        const member = attempt ? afterCapture.members.find((candidate) => candidate.id === attempt.memberId) : null;
+        if (!attempt || !member) continue;
+        this.store.completeSubmission(
+          {
+            runId,
+            memberId: member.id,
+            attemptId: attempt.id,
+            artifactId: artifact.id,
+            readyAt: artifact.readyAt ?? now,
+          },
+          now,
+        );
+      }
+
+      const reconciledState = this.load(runId);
+      if (!reconciledState) return;
+      for (const member of reconciledState.members) {
         if (member.status !== "launching" || member.taskId === null) continue;
         const taskStatus = this.tasks.status(member.taskId);
-        const attempt = this.latestAttempt(state, member.id);
+        const attempt = this.latestAttempt(reconciledState, member.id);
         if (attempt && attempt.status === "launching" && (taskStatus === "backlog" || taskStatus === null)) {
           // Dispatch was lost across the restart: reset the attempt to pending so it dispatches again.
           if (taskStatus === "backlog" && attempt.taskId) {
@@ -477,6 +596,18 @@ export class EnsembleEngine {
     };
   }
 
+  private loadRaw(runId: string): RawRunState | null {
+    const run = this.store.getRun(runId);
+    if (!run) return null;
+    return {
+      run,
+      members: this.store.listMembers(runId),
+      attempts: this.store.listAttempts(runId),
+      artifacts: this.store.listArtifacts(runId),
+      stageAttempts: this.store.listStageAttempts(runId),
+    };
+  }
+
   /**
    * The one recompute-and-act loop, run under the lock.
    *
@@ -494,6 +625,10 @@ export class EnsembleEngine {
       if (!state) return;
       const { run, plan } = { run: state.run, plan: state.run.plan };
       if (ensembleIsTerminal(run.status)) {
+        if (published) this.publish(runId);
+        return;
+      }
+      if (run.status === "cancelling") {
         if (published) this.publish(runId);
         return;
       }
@@ -528,6 +663,10 @@ export class EnsembleEngine {
   private async step(state: RunState, plan: CompiledEnsemblePlan): Promise<"progressed" | "stopped" | "published"> {
     const stages = [...plan.stages].sort((a, b) => a.ordinal - b.ordinal);
     for (const stage of stages) {
+      if (!this.driverMatches(stage)) {
+        this.failRun(state.run.id, `stage ${stage.id} pairs ${stage.driverKind} with incompatible driver ${stage.driverKey}`);
+        return "published";
+      }
       const status = this.stageStatus(state, stage);
       if (status === "succeeded") continue;
       if (status === "failed") {
@@ -564,7 +703,7 @@ export class EnsembleEngine {
 
   // ---- member reconciliation from Task state ----
 
-  private latestAttempt(state: RunState, memberId: string): EnsembleAttempt | null {
+  private latestAttempt(state: Pick<RawRunState, "attempts">, memberId: string): EnsembleAttempt | null {
     let latest: EnsembleAttempt | null = null;
     for (const attempt of state.attempts) {
       if (attempt.memberId !== memberId) continue;
@@ -583,6 +722,9 @@ export class EnsembleEngine {
       }
       const attempt = this.latestAttempt(state, member.id);
       const taskStatus = this.tasks.status(member.taskId);
+      if (attempt?.status === "pending" && (taskStatus === null || taskStatus === "backlog")) {
+        continue;
+      }
       if (taskStatus === "running" && member.status === "launching") {
         this.store.setMemberStatus(member.id, ["launching"], "active", {}, now);
         if (attempt) {
@@ -711,9 +853,9 @@ export class EnsembleEngine {
           return stage ? this.stageStatus(state, stage) === "succeeded" : false;
         });
       case "human_decision":
-        // A human decision is a later phase; nothing a model returns may satisfy it, so it never
-        // becomes true here. The run parks in front of the finalize stage until then.
-        return false;
+        return this.store.listDecisions(state.run.id).some(
+          (decision) => decision.status === "recorded" || decision.status === "applied",
+        );
     }
   }
 
@@ -736,6 +878,10 @@ export class EnsembleEngine {
   }
 
   // ---- starting and servicing stages ----
+
+  private driverMatches(stage: EnsembleStageSpec): boolean {
+    return (DRIVER_KEYS_BY_KIND[stage.driverKind] as readonly string[]).includes(stage.driverKey);
+  }
 
   private async startStage(state: RunState, stage: EnsembleStageSpec): Promise<"progressed" | "stopped" | "published"> {
     if (stage.driverKind === "member") {
@@ -812,26 +958,16 @@ export class EnsembleEngine {
       baseSha: input.baseSha,
       parentLabels: input.parentLabels,
     });
-    const created = this.tasks.create({
-      runId: run.id,
-      memberId: member.id,
-      repoRoot: run.repoRoot,
-      intent: prompt,
-      title: `${run.title} - ${role.label}`,
-      agent: role.agent,
-      model: role.model,
-      effort: role.effort,
-    });
-    // Task id and attempt persisted BEFORE any dispatch: a worktree side effect must never precede
-    // the row that would let a restart find it.
-    this.store.insertAttempt(
+    const taskId = randomUUID();
+    const agent = role.agent ?? AGENT_TYPES[0];
+    this.store.reserveAttempt(
       {
         runId: run.id,
         memberId: member.id,
         attempt: 1,
-        taskId: created.taskId,
+        taskId,
         sessionId: null,
-        agent: created.agent,
+        agent,
         requestedModel: role.model,
         requestedEffort: role.effort,
         baseSha: input.baseSha,
@@ -839,10 +975,48 @@ export class EnsembleEngine {
         branch: null,
         status: "pending",
       },
+      ["pending"],
       now,
     );
-    this.store.setMemberStatus(member.id, ["pending"], "launching", { taskId: created.taskId }, now);
-    this.event(run.id, "member_created", { memberId: member.id, taskId: created.taskId }, `member_created:${member.id}`);
+    this.tasks.create({
+      taskId,
+      runId: run.id,
+      memberId: member.id,
+      repoRoot: run.repoRoot,
+      intent: prompt,
+      title: `${run.title} - ${role.label}`,
+      agent,
+      model: role.model,
+      effort: role.effort,
+    });
+    this.event(run.id, "member_created", { memberId: member.id, taskId }, `member_created:${member.id}`);
+  }
+
+  private ensureMemberTask(state: RunState, member: EnsembleMember): void {
+    const attempt = this.latestAttempt(state, member.id);
+    const role = state.run.plan.roles.find((candidate) => candidate.key === member.roleKey);
+    if (!attempt || !attempt.taskId || !attempt.baseSha || !role) return;
+    const input = this.resolveMemberInput(state.run, role, this.now());
+    if (!input.ok) return;
+    const prompt = buildMemberPrompt({
+      runId: state.run.id,
+      intent: state.run.intent,
+      role,
+      totalMembers: state.run.plan.roles.length,
+      baseSha: attempt.baseSha,
+      parentLabels: input.parentLabels,
+    });
+    this.tasks.create({
+      taskId: attempt.taskId,
+      runId: state.run.id,
+      memberId: member.id,
+      repoRoot: state.run.repoRoot,
+      intent: prompt,
+      title: `${state.run.title} - ${role.label}`,
+      agent: attempt.agent ?? role.agent ?? AGENT_TYPES[0],
+      model: attempt.requestedModel,
+      effort: attempt.requestedEffort,
+    });
   }
 
   /** Resolve where a member's checkout starts, from its compiled input policy. */
@@ -901,7 +1075,7 @@ export class EnsembleEngine {
     let occupied = state.members.filter(
       (m) => OCCUPYING_MEMBER_STATUSES.includes(m.status ?? "pending") && this.attemptDispatched(state, m),
     ).length;
-    const launchedTotal = state.members.filter((m) => m.status !== "pending").length;
+    const launchedTotal = state.attempts.length;
     for (const member of state.members) {
       if (!roleSet.has(member.roleKey)) continue;
       if (member.status !== "launching") continue;
@@ -933,7 +1107,17 @@ export class EnsembleEngine {
   /** A running member stage: launch what it can, and succeed once its whole wave has settled. */
   private async serviceMemberStage(state: RunState, stage: EnsembleStageSpec): Promise<"progressed" | "stopped" | "published"> {
     if (stage.driverKind !== "member") return "stopped";
-    const members = this.membersForRoles(state, stage.roleKeys);
+    for (const roleKey of stage.roleKeys) {
+      const member = state.members.find((candidate) => candidate.roleKey === roleKey);
+      if (member?.status === "pending" && member.taskId === null) this.createMember(state.run, member, this.now());
+    }
+    let current = this.load(state.run.id) ?? state;
+    for (const member of this.membersForRoles(current, stage.roleKeys)) {
+      const attempt = this.latestAttempt(current, member.id);
+      if (member.status === "launching" && attempt?.status === "pending") this.ensureMemberTask(current, member);
+    }
+    current = this.load(state.run.id) ?? current;
+    const members = this.membersForRoles(current, stage.roleKeys);
     const allSettled = members.length > 0 && members.every((member) => isSettled(member.status));
     if (allSettled) {
       const attempt = this.latestStageAttempt(state, stage.id);
@@ -941,7 +1125,7 @@ export class EnsembleEngine {
       this.event(state.run.id, "stage_succeeded", { stageId: stage.id }, `stage_succeeded:${attempt?.id ?? stage.id}`);
       return "progressed";
     }
-    await this.launchReadyMembers(state, stage as EnsembleStageSpec & { driverKind: "member"; roleKeys: string[] });
+    await this.launchReadyMembers(current, stage as EnsembleStageSpec & { driverKind: "member"; roleKeys: string[] });
     this.setRunStatus(state.run.id, "running", { activeStageId: stage.id });
     return "published";
   }
@@ -956,6 +1140,12 @@ export class EnsembleEngine {
       if (!best || attempt.attempt > best.attempt) best = attempt;
     }
     return best;
+  }
+
+  private ownedWorktree(attempt: EnsembleAttempt): string | null {
+    if (!attempt.taskId || !attempt.worktreePath) return null;
+    const current = this.tasks.worktreePath(attempt.taskId);
+    return current === attempt.worktreePath ? current : null;
   }
 
   private readyCommitFor(state: RunState, member: EnsembleMember): EnsembleArtifact | null {
@@ -975,6 +1165,10 @@ export class EnsembleEngine {
     if (!runIsAccepting(state.run.status)) {
       return { ok: false, reason: "run_not_accepting", detail: `run is ${state.run.status}` };
     }
+    if (this.enforceDeadline(state)) {
+      this.publish(input.runId);
+      return { ok: false, reason: "run_not_accepting", detail: "the run's wall-clock deadline has passed" };
+    }
     const member = state.members.find((m) => m.id === input.memberId);
     if (!member) return { ok: false, reason: "no_member", detail: "no such member in this run" };
 
@@ -983,6 +1177,18 @@ export class EnsembleEngine {
     if (existing) {
       const priorDigest = readClaimsDigest(existing);
       if (priorDigest !== null && priorDigest === digest) {
+        const attempt = existing.attemptId
+          ? state.attempts.find((candidate) => candidate.id === existing.attemptId)
+          : null;
+        if (attempt) {
+          this.store.completeSubmission({
+            runId: input.runId,
+            memberId: member.id,
+            attemptId: attempt.id,
+            artifactId: existing.id,
+            readyAt: existing.readyAt ?? this.now(),
+          });
+        }
         return { ok: true, artifact: existing, replayed: true };
       }
       return { ok: false, reason: "already_submitted", detail: "this member has already submitted a different result" };
@@ -993,7 +1199,7 @@ export class EnsembleEngine {
     const attempt = this.activeAttemptFor(state, member);
     if (!attempt) return { ok: false, reason: "no_attempt", detail: "member has no active launch attempt" };
 
-    const worktree = attempt.worktreePath ?? this.tasks.worktreePath(attempt.taskId ?? "");
+    const worktree = this.ownedWorktree(attempt);
     if (!worktree) return { ok: false, reason: "no_worktree", detail: "member has no live worktree to capture" };
     if (input.requireWorktree !== null && input.requireWorktree !== worktree) {
       return { ok: false, reason: "wrong_cwd", detail: "the calling session is not in this member's worktree" };
@@ -1005,11 +1211,6 @@ export class EnsembleEngine {
     if (!adapter) return { ok: false, reason: "capture_failed", detail: "no adapter for commit artifacts" };
 
     const now = this.now();
-    // Record the worktree path onto the attempt now that we know it, so a later read and a restart
-    // both see where this member's work lived - even after its Task is torn down.
-    if (attempt.worktreePath !== worktree && (attempt.status === "launching" || attempt.status === "running")) {
-      this.store.setAttemptStatus(attempt.id, [attempt.status], attempt.status, { worktreePath: worktree }, now);
-    }
     const captureAttempt = this.store.nextArtifactAttempt(input.runId, attempt.id, "commit");
     const capturing = this.store.recordArtifact(
       {
@@ -1046,10 +1247,12 @@ export class EnsembleEngine {
     }
 
     const readyAt = this.now();
-    const readied = this.store.setArtifactStatus(
-      capturing.id,
-      "ready",
+    const completed = this.store.completeSubmission(
       {
+        runId: input.runId,
+        memberId: member.id,
+        attemptId: attempt.id,
+        artifactId: capturing.id,
         locator: captured.locator,
         digest: captured.fingerprint,
         metadata: {
@@ -1063,9 +1266,12 @@ export class EnsembleEngine {
       },
       readyAt,
     );
-    // Artifact first, THEN the member is submitted and the barrier woken - never the other way.
-    this.store.setMemberStatus(member.id, ["active", "launching"], "submitted", { selectedAttemptId: attempt.id }, readyAt);
-    this.store.setAttemptStatus(attempt.id, ["launching", "running"], "submitted", { finishedAt: readyAt }, readyAt);
+    if (!completed.ok) {
+      const detail = "the captured artifact could not be finalized against its active member";
+      this.event(input.runId, "capture_failed", { memberId: member.id, detail }, `capture_failed:${capturing.id}:finalize`);
+      this.publish(input.runId);
+      return { ok: false, reason: "capture_failed", detail };
+    }
     this.event(
       input.runId,
       "member_submitted",
@@ -1074,8 +1280,7 @@ export class EnsembleEngine {
     );
 
     await this.advanceLocked(input.runId);
-    const artifact = readied.ok ? readied.value : this.store.listArtifacts(input.runId).find((a) => a.id === capturing.id)!;
-    return { ok: true, artifact, replayed: false };
+    return { ok: true, artifact: completed.value, replayed: false };
   }
 
   // ---- terminal transitions ----
@@ -1167,4 +1372,9 @@ function readClaimsDigest(artifact: EnsembleArtifact): string | null {
     return metadata.claimsDigest;
   }
   return null;
+}
+
+function recoveredMetadata(metadata: EnsembleJson, observed: EnsembleJson, capturedAt: number): EnsembleJson {
+  const prior = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+  return { ...prior, observed, capturedAt };
 }

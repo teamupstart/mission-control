@@ -6,6 +6,7 @@ export type {
   ArtifactAdapter,
   ArtifactAdapterRegistry,
   ArtifactCaptureInput,
+  ArtifactRecoveryInput,
   ArtifactMaterialization,
   ArtifactLocator,
   CapturedArtifact,

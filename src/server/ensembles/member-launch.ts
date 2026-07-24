@@ -1,4 +1,3 @@
-import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import type { TaskManager } from "../tasks.ts";
 import type { EnsembleTaskGateway, MemberDispatchRequest, MemberTaskRequest, TaskGatewayStatus } from "./engine.ts";
@@ -23,23 +22,19 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     private readonly registry: Registry,
   ) {}
 
-  create(request: MemberTaskRequest): { taskId: string; agent: AgentType } {
-    // A null role agent means "the daemon's default at launch"; the primary harness is that
-    // default. Named off the shared tuple rather than as a literal so no vendor string lives here.
-    const agent: AgentType = request.agent ?? AGENT_TYPES[0];
-    const task = this.tasks.create({
+  create(request: MemberTaskRequest): void {
+    this.tasks.create({
       repoRoot: request.repoRoot,
       intent: request.intent,
       title: request.title,
       // A member implements and is compared; it is an ordinary implementation task, so it takes the
       // same kind a dispatched implementation does. It never opens a PR - its prompt forbids that.
       kind: "ship",
-      agent,
+      agent: request.agent,
       model: request.model ?? undefined,
       effort: request.effort ?? undefined,
       backlog: true,
-    });
-    return { taskId: task.id, agent };
+    }, { id: request.taskId });
   }
 
   dispatch(request: MemberDispatchRequest): void {

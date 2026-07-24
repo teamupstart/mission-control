@@ -24,7 +24,7 @@ const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
 const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { FakeGateway, failingAdapters, singleWavePlan, runInsert, gitRepo } = await import("./ensemble-fixture.ts");
+const { FakeGateway, failingAdapters, stubAdapters, singleWavePlan, runInsert, gitRepo } = await import("./ensemble-fixture.ts");
 const { ARTIFACT_ADAPTERS } = await import("../src/server/ensembles/artifacts/index.ts");
 
 const db = openDb();
@@ -59,7 +59,12 @@ function seedActiveMember(store: InstanceType<typeof EnsembleStore>, worktree: s
 }
 
 function engineWith(store: InstanceType<typeof EnsembleStore>, adapters = ARTIFACT_ADAPTERS) {
-  return new EnsembleEngine({ store, tasks: new FakeGateway(), publish: () => {}, adapters });
+  const gateway = new FakeGateway();
+  const run = store.listNonTerminalRuns()[0];
+  for (const attempt of run ? store.listAttempts(run.id) : []) {
+    if (attempt.taskId && attempt.worktreePath) gateway.running(attempt.taskId, attempt.worktreePath);
+  }
+  return new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters });
 }
 
 const CLAIMS = { summary: "implemented it", checks: ["npm test"], testEvidence: null };
@@ -121,6 +126,59 @@ test("a submission from the wrong worktree is refused", async () => {
   if (!result.ok) assert.equal(result.reason, "wrong_cwd");
 });
 
+test("a historical worktree path is refused when the Task no longer owns it", async () => {
+  const { path, baseSha } = gitRepo();
+  const store = new EnsembleStore(db);
+  const { run, member } = seedActiveMember(store, path, baseSha);
+  const gateway = new FakeGateway();
+  gateway.running("seeded-task", "/reused/by/another/task");
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: stubAdapters() });
+  const result = await engine.submit({
+    runId: run.id,
+    memberId: member.id,
+    claims: CLAIMS,
+    source: "operator",
+    requireWorktree: null,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "no_worktree");
+  assert.equal(store.listArtifacts(run.id).length, 0);
+});
+
+test("a late submission fails the run before artifact capture", async () => {
+  let clock = 0;
+  const { path, baseSha } = gitRepo();
+  const store = new EnsembleStore(db);
+  const plan = singleWavePlan(2, { deadlineMs: 100 });
+  const { run, member } = seedActiveMember(store, path, baseSha);
+  db.prepare(`UPDATE ensemble_runs SET compiled_plan_json = ?, created_at = 0 WHERE id = ?`)
+    .run(JSON.stringify(plan), run.id);
+  const gateway = new FakeGateway();
+  gateway.running("seeded-task", path);
+  let captures = 0;
+  const adapters = stubAdapters();
+  const original = adapters.commit!;
+  adapters.commit = {
+    ...original,
+    async capture(input) {
+      captures += 1;
+      return original.capture(input);
+    },
+  };
+  clock = 1000;
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters, now: () => clock });
+  const result = await engine.submit({
+    runId: run.id,
+    memberId: member.id,
+    claims: CLAIMS,
+    source: "mcp",
+    requireWorktree: path,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(captures, 0);
+  assert.equal(store.getRun(run.id)!.status, "failed");
+});
+
 test("a withdrawn member cannot submit", async () => {
   const { path, baseSha } = gitRepo();
   const store = new EnsembleStore(db);
@@ -170,7 +228,8 @@ function attributionFixture(agent: "claude" | "codex") {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const store = new EnsembleStore(db);
-  const manager = new EnsembleManager(registry, store, { tasks: new FakeGateway() });
+  const gateway = new FakeGateway();
+  const manager = new EnsembleManager(registry, store, { tasks: gateway });
 
   registry.applyDiscovery([discovered(path, agent, 500)]);
   const session = registry.snapshot().sessions.find((s) => s.cwd === path)!;
@@ -178,6 +237,7 @@ function attributionFixture(agent: "claude" | "codex") {
   registry.upsertTask({ ...task, status: "running", worktreePath: path, sessionId: session.id });
 
   const { member } = seedActiveMember(store, path, baseSha, task.id);
+  gateway.running(task.id, path);
   return { manager, registry, store, path, session, task, member };
 }
 
@@ -231,8 +291,10 @@ test("the manual fallback captures identically but labels its provenance operato
   writeFileSync(join(path, "m.ts"), "export const z = 3;\n");
   const registry = new Registry();
   const store = new EnsembleStore(db);
-  const manager = new EnsembleManager(registry, store, { tasks: new FakeGateway() });
+  const gateway = new FakeGateway();
+  const manager = new EnsembleManager(registry, store, { tasks: gateway });
   const { run, member } = seedActiveMember(store, path, baseSha);
+  gateway.running("seeded-task", path);
 
   const result = await manager.submitManual(run.id, member.id, CLAIMS);
   assert.equal(result.ok, true, JSON.stringify(result));

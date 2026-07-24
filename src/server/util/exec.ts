@@ -62,6 +62,8 @@ export function stubRun(partial: Pick<RunResult, "stdout" | "stderr" | "code">):
  * Run a command and capture stdout. Never throws on a non-zero exit or a
  * missing binary - discovery must degrade gracefully when wezterm/tmux aren't
  * running. Callers inspect `code` / empty stdout instead.
+ *
+ * "Never throws" includes the argv being too big to spawn at all: see `E2BIG` below.
  */
 export function run(
   bin: string,
@@ -90,48 +92,76 @@ export function run(
   } = {},
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = execFile(
-      bin,
-      args,
-      {
-        timeout: opts.timeoutMs ?? 4000,
-        maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
-        windowsHide: true,
-        cwd: opts.cwd,
-        env: opts.env,
-      },
-      (err, stdout, stderr) => {
-        const code =
-          err && typeof (err as { code?: unknown }).code === "number"
-            ? ((err as { code: number }).code as number)
-            : err
-              ? 1
-              : 0;
-        // An overflow otherwise arrives as a bare non-zero exit with the truncated
-        // OUTPUT in stderr's place, which reads to a caller as "the command failed and
-        // said this" - so it gets retried forever instead of recognised as too big to
-        // buffer. Naming it is what lets a caller stop.
-        const overflowed =
-          !!err &&
-          ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
-            /maxBuffer/i.test(err.message ?? ""));
-        // `killed` alone is not enough: Node sets it only when NODE killed the child,
-        // so a process the OOM killer or an operator took out arrives with
-        // `killed: false` and a `signal`, and would otherwise read as an ordinary
-        // refusal. Every death-by-signal is the same conclusion - the command never
-        // reported its own exit, so we do not know whether it did its work.
-        const e = err as { killed?: unknown; signal?: unknown } | null;
-        const outcomeUnknown =
-          !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
-        resolve({
-          stdout: stdout ?? "",
-          stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
-          code,
-          outcomeUnknown,
-          overflowed,
-        });
-      },
-    );
+    let child: ReturnType<typeof execFile>;
+    try {
+      child = execFile(
+        bin,
+        args,
+        {
+          timeout: opts.timeoutMs ?? 4000,
+          maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
+          windowsHide: true,
+          cwd: opts.cwd,
+          env: opts.env,
+        },
+        (err, stdout, stderr) => {
+          const code =
+            err && typeof (err as { code?: unknown }).code === "number"
+              ? ((err as { code: number }).code as number)
+              : err
+                ? 1
+                : 0;
+          // An overflow otherwise arrives as a bare non-zero exit with the truncated
+          // OUTPUT in stderr's place, which reads to a caller as "the command failed and
+          // said this" - so it gets retried forever instead of recognised as too big to
+          // buffer. Naming it is what lets a caller stop.
+          const overflowed =
+            !!err &&
+            ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+              /maxBuffer/i.test(err.message ?? ""));
+          // `killed` alone is not enough: Node sets it only when NODE killed the child,
+          // so a process the OOM killer or an operator took out arrives with
+          // `killed: false` and a `signal`, and would otherwise read as an ordinary
+          // refusal. Every death-by-signal is the same conclusion - the command never
+          // reported its own exit, so we do not know whether it did its work.
+          const e = err as { killed?: unknown; signal?: unknown } | null;
+          const outcomeUnknown =
+            !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
+          resolve({
+            stdout: stdout ?? "",
+            stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
+            code,
+            outcomeUnknown,
+            overflowed,
+          });
+        },
+      );
+    } catch (err) {
+      // `execFile` reports a non-existent binary through the CALLBACK, but an argv the
+      // kernel will not take is thrown SYNCHRONOUSLY out of `spawn` - and a throw inside
+      // this executor rejects the promise, which is the one thing this function promises
+      // never to do. Measured: 3MB of argv on macOS (`ARG_MAX` 1MB) throws E2BIG here.
+      //
+      // Every payload we can pipe now goes to `input` instead, so this is the backstop for
+      // the backends that have no stdin form (cmux's `rpc`, ghostty's `osascript -e`) and
+      // for any argv nobody expected to grow. It resolves rather than rejects because a
+      // caller reading `code` must not have to also hold a try/catch to find out that the
+      // command was too big to run.
+      //
+      // `outcomeUnknown: false` is the load-bearing part, and it is a fact rather than a
+      // default: the throw happened INSTEAD of a process, so nothing ran and nothing was
+      // written. That is the one direction a caller may safely retry from - see the field's
+      // own doc, and `injectPrompt`, which re-pastes only on a refusal it knows delivered
+      // nothing.
+      resolve({
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        code: 1,
+        outcomeUnknown: false,
+        overflowed: false,
+      });
+      return;
+    }
     if (opts.input !== undefined) {
       // An unhandled `error` on stdin THROWS rather than rejecting, taking the caller's
       // process down instead of failing this one run - and a child that exits before

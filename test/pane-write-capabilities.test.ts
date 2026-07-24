@@ -217,6 +217,56 @@ test("a nested session is typed into at its innermost pane, never at the tab sho
   assert.ok(argv.some((a) => a.includes("paste-buffer")), "the multiplexer took the paste");
 });
 
+test("a prompt past tmux's command limit still reaches the composer", async () => {
+  // The bug, from the end a dispatch experiences it. `injectPrompt` is what hands a task's
+  // intent to its freshly launched agent, and for a prompt of any size it used to hand the
+  // whole thing to `tmux set-buffer -b <buf> -- <text>`. tmux caps total command length far
+  // below the OS's argv ceiling - measured against 3.6b, 16,000 bytes accepted, 20,000
+  // refused with `command too long`, exit 1 - so a task whose intent was a phase document
+  // provisioned its worktree, launched its agent, and then died at delivery with an empty
+  // composer and no way forward but Focus or Cancel.
+  //
+  // Driven through the REAL adapters on a recording subprocess, so what is asserted is the
+  // argv the daemon would actually have spawned. Both backends are checked because both had
+  // the defect, differing only in where the ceiling sits.
+  const prompt = `## Phase 1\n\n${"Implement the thing. ".repeat(3000)}`;
+  assert.ok(prompt.length > 20_000, "the payload must be past the limit this is about");
+
+  for (const [name, session] of [
+    ["tmux", tmuxSession()],
+    ["wezterm", weztermSession()],
+  ] as const) {
+    const spawned: { argv: string[]; input?: string }[] = [];
+    const deps: InjectDeps & PaneDeps = {
+      pane: (s) =>
+        bindSession(s, async (bin, args, opts) => {
+          spawned.push({ argv: [bin, ...args], input: opts?.input });
+          return stubRun({ stdout: "", stderr: "", code: 0 });
+        }),
+      capture: async () => "",
+      sleep: async () => {},
+    };
+
+    const r = await injectPrompt(session, prompt, deps);
+    assert.equal(r.ok, true, `${name}: the prompt must deliver`);
+    assert.equal(r.pasted, true, `${name}: and land in the composer`);
+
+    // The whole point: the payload travelled, and it travelled on stdin.
+    assert.ok(
+      spawned.some((c) => c.input === prompt),
+      `${name}: the prompt was never piped to anything`,
+    );
+    for (const call of spawned) {
+      for (const arg of call.argv) {
+        assert.ok(
+          !arg.includes("Implement the thing."),
+          `${name}: the prompt was passed as an argument, which is what tmux refuses`,
+        );
+      }
+    }
+  }
+});
+
 test("a backend with no mode concept is never probed for one", async () => {
   // A probe that always answers "not in a mode" and a backend that has no such state are
   // the same behaviour and different claims - and the first costs a subprocess per write.

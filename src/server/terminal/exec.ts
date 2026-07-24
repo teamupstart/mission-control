@@ -34,7 +34,32 @@ import type { TerminalResult } from "./types.ts";
 export type TerminalExec = (
   bin: string,
   args: string[],
-  opts?: { timeoutMs?: number; env?: NodeJS.ProcessEnv },
+  opts?: {
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    /**
+     * Text for the child's stdin - the only place a PAYLOAD may travel, as opposed to the
+     * flags and targets that make up the rest of an adapter's argv.
+     *
+     * `run` (`util/exec.ts`) has taken this from the beginning, and its doc comment
+     * already said argv "is both size-limited and the wrong place for text a model
+     * wrote". This type was the layer that dropped it, so every adapter shared a contract
+     * through which no payload could be piped, and each one put the prompt on the command
+     * line because that was the only slot on offer.
+     *
+     * That is not a theoretical limit. tmux enforces its own ceiling on total command
+     * length well below the OS's: measured against 3.6b, `set-buffer -b <buf> -- <text>`
+     * takes 16,000 bytes and refuses 20,000 with `command too long`, which is how a
+     * dispatch carrying a phase document died at prompt delivery with the worktree and the
+     * agent already up. The OS limit is the same defect further out - `ARG_MAX` is 1MB on
+     * this machine, and past it `execFile` throws E2BIG before a process exists.
+     *
+     * So this is not a convenience for one adapter. It is the difference between a backend
+     * that can carry an arbitrary prompt and one with a cliff in it, and a new adapter
+     * should reach for it for any text that came from a human or a model.
+     */
+    input?: string;
+  },
 ) => Promise<RunResult>;
 
 export const defaultExec: TerminalExec = run;

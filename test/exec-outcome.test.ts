@@ -109,3 +109,27 @@ test("an overflow on a write is never a refusal, whatever the flags say", () => 
     "the response overflowed, not the request - it may well have landed",
   );
 });
+
+// An argv the kernel will not accept is thrown SYNCHRONOUSLY out of `spawn`, not handed to
+// the callback the way a missing binary is - so it escaped this function as a promise
+// REJECTION, which is the one thing `run` documents that it never does. Every caller here
+// reads `code` instead of holding a try/catch, so the throw did not degrade into a failed
+// command, it took down whatever was awaiting it.
+//
+// That is the same family as the bug this landed with: a payload on argv has a ceiling, and
+// past it the write does not fail, it explodes. tmux's ceiling is its own ~16KB command
+// limit and is fixed by piping the payload; the backends with no stdin form (cmux's `rpc`,
+// ghostty's `osascript -e`) still have the OS's `ARG_MAX` under them, and this is what makes
+// reaching it an ordinary refusal they can report.
+test("an argv too large to spawn is a refusal, not a throw", async () => {
+  // Comfortably past `ARG_MAX`, which is 1MB on macOS and 2MB on common Linux configs.
+  const res = await run(process.execPath, ["-e", "0", "x".repeat(8 * 1024 * 1024)]);
+
+  assert.notEqual(res.code, 0, "it must report failure");
+  assert.match(res.stderr, /E2BIG/, "and say why, so an operator sees more than a bare exit");
+  // The load-bearing half. Nothing spawned, so nothing ran and nothing was written - which
+  // is the one direction a caller may safely retry from. Reported as an unknown outcome,
+  // `injectPrompt` would refuse to re-send a prompt that never left this process.
+  assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
+  assert.equal(res.overflowed, false, "that flag is about stdout, not argv");
+});

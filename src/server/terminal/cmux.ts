@@ -279,6 +279,23 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
    * lifecycle verbs answer with a REF on stdout where the method answers with the UUID that
    * is still valid a tick later.
    *
+   * **The payload rides in argv here, and unlike tmux's and wezterm's it has nowhere else to
+   * go.** Both of those grew a stdin form when the ~16KB tmux command limit turned out to be
+   * killing dispatches carrying a phase document (see `viaBuffer` in `tmux.ts`). cmux offers
+   * no equivalent: `cmux rpc <method> [json-params]` and `cmux send [flags] [--] <text>` both
+   * take their body as an argument, and neither help output on the installed 0.64.20 mentions
+   * stdin. So this backend's ceiling is the OS's `ARG_MAX` - 1MB on macOS - about sixty times
+   * tmux's limit and past any prompt seen in practice, but a cliff all the same.
+   *
+   * It is deliberately NOT worked around here. The cmux app was not running on the machine
+   * where the rest of this change was measured, so a chunking scheme or a temp-file dance
+   * could not be pointed at a real install, and this file's own rule is that a claim about a
+   * backend is worth what the capture behind it is worth. What DID change is the landing:
+   * `run` (`util/exec.ts`) used to let `spawn`'s synchronous E2BIG escape as a promise
+   * REJECTION, so an oversized write here crashed a caller instead of failing one; it now
+   * resolves as an ordinary refusal with `outcomeUnknown: false`, which is the accurate
+   * report - no process ran, so nothing reached the pane and the caller may retry.
+   *
    * The trade is that a socket method takes its params UNVALIDATED. cmux does not reject an
    * unrecognized key, it falls back to the caller's default target - `{"surface":<id>}`
    * instead of `{"surface_id":<id>}` reports success having typed into a completely

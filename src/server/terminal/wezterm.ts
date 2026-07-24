@@ -118,9 +118,10 @@ export function parsePanes(stdout: string): EmulatorPane[] {
 export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
   const bin = () => resolveBin(WEZTERM_BIN);
   /** Every `wezterm cli` call: live default mux, no auto-start, inherited socket dropped. */
-  const cli = (args: string[], opts: { timeoutMs?: number } = {}) =>
+  const cli = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
     exec(bin(), ["cli", "--no-auto-start", ...args], { ...opts, env: binEnv(WEZTERM_BIN) });
-  const cmd = async (args: string[], fail: string) => toResult(await cli(args), fail);
+  const cmd = async (args: string[], fail: string, opts: { input?: string } = {}) =>
+    toResult(await cli(args, opts), fail);
 
   /**
    * Returns [] when wezterm isn't running or the CLI isn't reachable - the product works
@@ -134,16 +135,37 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     return res.code === 0 ? parsePanes(res.stdout) : [];
   };
 
+  /**
+   * Write `text` to a pane, literally or as a bracketed paste.
+   *
+   * **The payload goes on STDIN, never in argv**, which is the same correction tmux's
+   * adapter needed and for a limit one layer further out. `send-text` used to take the body
+   * as a trailing argument, so the ceiling was the OS's `ARG_MAX` - 1MB on this machine -
+   * and past it `execFile` throws E2BIG before any process exists. That is far above tmux's
+   * own ~16KB command limit, which is why this backend was not the one that broke a
+   * dispatch, but it is the same defect and it has the same fix.
+   *
+   * Measured against the wezterm in `/Applications/WezTerm.app` (20240203-110809-5046fc22),
+   * driving a throwaway pane spawned for the purpose: the two forms deliver byte-identical
+   * output for a hostile payload (UTF-8, ESC, tab, CR, LF, a leading dash), the argv form
+   * carries 1,000,000 bytes and dies at 2,000,000, and the stdin form carries both. This is
+   * a documented input mode rather than an accident - `wezterm cli send-text --help` on that
+   * binary says of its positional argument: "The text to send. If omitted, will read the
+   * text from stdin".
+   *
+   * Dropping the payload also retires the `--` terminator, and that is a strengthening
+   * rather than a loss. The terminator was there because wezterm's clap parser reads a body
+   * starting with a dash ("-v is what broke it") as an option bundle; text that is not an
+   * argument cannot be parsed as one, so the hazard is gone by construction instead of by
+   * remembering a flag.
+   */
   const sendText = (target: EmulatorTarget, text: string, literal: boolean, fail: string) =>
     cmd(
       // Omitting `--no-paste` is what makes wezterm send the text as a bracketed paste, so
       // the flag is the difference between typing and pasting rather than a formality.
-      //
-      // `--` ends flag parsing. wezterm's CLI is clap-based, so a body starting with a dash
-      // ("-v is what broke it") is otherwise read as an option bundle and the write fails
-      // with a usage dump instead of being typed.
-      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : []), "--", text],
+      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : [])],
       fail,
+      { input: text },
     );
 
   /**

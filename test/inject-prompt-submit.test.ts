@@ -47,8 +47,18 @@ const tmuxSession = (paneId = "%1"): Session =>
 const weztermSession = (): Session =>
   ({ id: "s2", agent: "claude", terminals: [mkEmuHandle({ paneId: "7", tabId: "0", windowId: "0", tabTitle: "" })] }) as Session;
 
-/** One entry per thing the delivery did, in order, so the sequence itself is assertable. */
-type Event = { kind: "exec"; argv: string } | { kind: "sleep"; ms: number } | { kind: "capture" };
+/**
+ * One entry per thing the delivery did, in order, so the sequence itself is assertable.
+ *
+ * `input` is the child's stdin, and an exec event is not fully described without it: the
+ * adapters pipe every payload rather than passing it as an argument (see `viaBuffer` in
+ * `tmux.ts`), so wezterm's submit keystroke - an escape sequence, which is a payload as far
+ * as `send-text` is concerned - is no longer visible in argv at all.
+ */
+type Event =
+  | { kind: "exec"; argv: string; input?: string }
+  | { kind: "sleep"; ms: number }
+  | { kind: "capture" };
 
 /**
  * A recording stand-in for the pane, which shows the collapsed paste until
@@ -68,10 +78,11 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
       // backend actually emits - which is what makes "pasted exactly once" a claim about
       // tmux commands rather than about a stand-in nobody ships.
       pane: (session) =>
-        bindSession(session, async (bin, args) => {
+        bindSession(session, async (bin, args, opts) => {
           const argv = [bin, ...args].join(" ");
-          events.push({ kind: "exec", argv });
-          if (isEnter(argv)) entersSeen++;
+          const event = { kind: "exec", argv, input: opts?.input } as const;
+          events.push(event);
+          if (isEnter(event)) entersSeen++;
           return stubRun({ stdout: "", stderr: "", code: 0 });
         }),
       capture: async () => {
@@ -86,19 +97,29 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
   };
 }
 
+type Exec = Extract<Event, { kind: "exec" }>;
+
 /**
  * Both handles submit with a keystroke of their own shape - a tmux key NAME, a wezterm
  * escape SEQUENCE - which is the whole reason the delivery path names a `Key` and lets the
- * adapter render it. The `--` in both is the adapters' flag terminator, so a prompt
- * beginning with a dash reaches the pane instead of the arg parser.
+ * adapter render it.
+ *
+ * They are read from different places now, and that asymmetry is the interface working
+ * rather than a wart. tmux's key names stay on argv because they are a bounded vocabulary
+ * and `send-keys` is how you press a key; wezterm has only `send-text`, so its CR is a
+ * PAYLOAD, and payloads moved to stdin when argv turned out to have a ceiling low enough to
+ * kill a dispatch. Matching wezterm's Enter on argv silently stopped matching anything -
+ * every count below would have read zero while the Enter was being sent perfectly well.
  */
-const isEnter = (argv: string): boolean =>
-  /send-keys .* -- Enter$/.test(argv) || argv.includes("--no-paste -- \r");
+const isEnter = (e: Exec): boolean =>
+  /send-keys .* -- Enter$/.test(e.argv) || (e.argv.includes("--no-paste") && e.input === "\r");
 
-const argvs = (events: Event[]): string[] =>
-  events.filter((e): e is Extract<Event, { kind: "exec" }> => e.kind === "exec").map((e) => e.argv);
+const execs = (events: Event[]): Exec[] =>
+  events.filter((e): e is Exec => e.kind === "exec");
 
-const enters = (events: Event[]): number => argvs(events).filter(isEnter).length;
+const argvs = (events: Event[]): string[] => execs(events).map((e) => e.argv);
+
+const enters = (events: Event[]): number => execs(events).filter(isEnter).length;
 const pastes = (events: Event[]): number => argvs(events).filter((a) => a.includes("paste-buffer")).length;
 
 // ---- the regression: the Enter must not land inside the coalescing window ----
@@ -262,10 +283,10 @@ test("wezterm settles before its Enter too", async () => {
   const { deps, events } = harness();
   const r = await injectPrompt(weztermSession(), "a\nb", deps);
   assert.equal(r.ok, true);
-  const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
-  const sleepAt = kinds.indexOf("sleep");
-  const enterAt = kinds.findIndex((k) => typeof k === "string" && k.includes("--no-paste -- \r"));
-  assert.ok(sleepAt >= 0 && enterAt > sleepAt, "wezterm must settle before submitting");
+  const sleepAt = events.findIndex((e) => e.kind === "sleep");
+  const enterAt = events.findIndex((e) => e.kind === "exec" && isEnter(e));
+  assert.ok(sleepAt >= 0, "it must settle at all");
+  assert.ok(enterAt > sleepAt, "wezterm must settle before submitting");
 });
 
 test("a session with no pane is refused before any of this", async () => {

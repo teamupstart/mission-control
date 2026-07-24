@@ -186,6 +186,7 @@ export function ConsoleDetail({
       ],
     [queueCount, gateNeedsYou],
   );
+  const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
   return (
     <div className={`cdetail tone-${st.tone}`}>
@@ -318,7 +319,10 @@ export function ConsoleDetail({
         )}
       </div>
 
-      <div className="detail-body">
+      {/* The reader pane. `tabIndex=-1` so Tab from the rail can land focus HERE - the
+          conversation window the operator reads and the vertical arrows scroll - and its
+          ring frames just this body, not the header/tabs/footer chrome around it. */}
+      <div className="detail-body" tabIndex={-1} aria-label={`${tabLabel} pane`}>
         {tab === "conversation" && (
           // Fills the body and pins the reply box: the leading bits stay put and the
           // transcript scrolls inside itself, rather than the whole tab scrolling the

@@ -8734,9 +8734,10 @@ kbd {
   background: var(--panel);
   outline-color: color-mix(in oklab, var(--select) 40%, transparent);
 }
-.console[data-zone="detail"] .console-detail {
-  outline: 2px solid color-mix(in oklab, var(--select) 45%, transparent);
+.console[data-zone="detail"] .detail-body {
+  outline: 2px solid var(--select);
   outline-offset: -2px;
+  border-radius: 4px;
 }
 .rail-row.tone-attention::before {
   box-shadow: 0 0 12px var(--attention);

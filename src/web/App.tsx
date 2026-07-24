@@ -267,7 +267,12 @@ export function App(): React.JSX.Element {
   }, []);
 
   const focusConsoleDetail = useCallback(() => {
-    document.querySelector<HTMLElement>(".console-detail")?.focus({ preventScroll: true });
+    // Land on the reader body - the conversation pane the vertical arrows scroll - not the
+    // whole detail section. That is what "Tab selects the conversation window" means: the
+    // ring frames what is being read, and a later native Tab steps into the transcript and
+    // reply box rather than the session title up in the header chrome.
+    const detail = document.querySelector<HTMLElement>(".console-detail");
+    (detail?.querySelector<HTMLElement>(".detail-body") ?? detail)?.focus({ preventScroll: true });
   }, []);
 
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {

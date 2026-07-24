@@ -83,7 +83,9 @@ test("the rail hands its focus zone to the console via a data attribute", () => 
     createElement(ConsoleView, props({ sessions: [session], selectedId: session.id, consoleZone: "detail" })),
   );
   assert.match(detailFocused, /class="console" data-zone="detail"/);
-  assert.match(detailFocused, /class="console-detail" tabindex="-1"/);
+  // The reader body is the focusable target - Tab lands on the conversation pane, not the
+  // whole section, so its ring frames what is read and a stray Tab does not hit the header.
+  assert.match(detailFocused, /class="detail-body" tabindex="-1"/);
 });
 
 test("with nothing open the zone is the rail, whatever App last held", () => {
@@ -127,7 +129,8 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   const consoleView = source("components/layouts/ConsoleView.tsx");
   const railRow = source("components/layouts/RailRow.tsx");
   assert.match(app, /setConsoleZone\("rail"\);[\s\S]*\[visibleSelectedId, layout\]/);
-  assert.match(app, /querySelector<HTMLElement>\("\.console-detail"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  // Tab lands focus on the reader body (the conversation pane), not the section shell.
+  assert.match(app, /querySelector<HTMLElement>\("\.detail-body"\)[\s\S]*\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(app, /cardEls\.current\.get\(id\)\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);

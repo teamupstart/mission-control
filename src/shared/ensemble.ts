@@ -534,6 +534,17 @@ export type EnsembleJson =
   | EnsembleJson[]
   | { [key: string]: EnsembleJson };
 
+export const ENSEMBLE_PAYLOAD_VERSION = 1 as const;
+
+export interface EnsemblePayloadEnvelope {
+  payloadVersion: typeof ENSEMBLE_PAYLOAD_VERSION;
+  body: EnsembleJson;
+}
+
+export function ensemblePayload(body: EnsembleJson): EnsemblePayloadEnvelope {
+  return { payloadVersion: ENSEMBLE_PAYLOAD_VERSION, body };
+}
+
 export type EnsembleOutcome =
   | { kind: "selected"; memberIds: string[]; artifactIds: string[]; materializedTaskId: string | null }
   | { kind: "synthesized"; memberId: string; artifactId: string; materializedTaskId: string | null }
@@ -700,7 +711,7 @@ export interface EnsembleEvaluation {
   inputFingerprint: string;
   /** The artifact ids judged, in the order they were presented. */
   subjectArtifactIds: string[];
-  result: EnsembleJson | null;
+  result: EnsemblePayloadEnvelope | null;
   status: EnsembleEvaluationStatus | null;
   error: string | null;
   createdAt: number;
@@ -737,7 +748,7 @@ export interface EnsembleDecision {
   actorId: string | null;
   status: EnsembleDecisionStatus | null;
   /** What was chosen, in the finalization policy's own vocabulary. */
-  selection: EnsembleJson;
+  selection: EnsemblePayloadEnvelope;
   rationale: string;
   /** The finalize stage attempt that executed it, once one has. */
   finalizationStageAttemptId: string | null;

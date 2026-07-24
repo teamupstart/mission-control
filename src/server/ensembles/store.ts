@@ -35,9 +35,11 @@ import {
   type EnsembleJson,
   type EnsembleLlmCall,
   type EnsembleLlmCallState,
+  type EnsembleLlmPurpose,
   type EnsembleMember,
   type EnsembleMemberStatus,
   type EnsembleOutcome,
+  type EnsemblePayloadEnvelope,
   type EnsembleRun,
   type EnsembleRunDetail,
   type EnsembleSourceKind,
@@ -53,6 +55,7 @@ import {
   CompiledEnsemblePlanSchema,
   EnsembleJsonSchema,
   EnsembleOutcomeSchema,
+  EnsemblePayloadEnvelopeSchema,
 } from "@shared/protocol.ts";
 import { AGENT_TYPES, THINKING_LEVELS, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { openDb } from "../db.ts";
@@ -330,6 +333,7 @@ const LlmCallRowSchema = z.object({
   runner_id: z.string(),
   model_id: z.string(),
   attempt: integer,
+  operation_key: z.string(),
   state: z.string(),
   started_at: integer,
   finished_at: integer.nullable(),
@@ -648,7 +652,7 @@ function rowToEvaluation(value: unknown): EnsembleEvaluation {
       row.id,
       "result_json",
       row.result_json,
-      EnsembleJsonSchema,
+      EnsemblePayloadEnvelopeSchema,
     ),
     status: readEnsembleEnum(ENSEMBLE_EVALUATION_STATUSES, row.status),
     error: row.error,
@@ -705,7 +709,7 @@ function rowToDecision(value: unknown): EnsembleDecision {
       row.id,
       "selection_json",
       row.selection_json,
-      EnsembleJsonSchema,
+      EnsemblePayloadEnvelopeSchema,
     ),
     rationale: row.rationale,
     finalizationStageAttemptId: row.finalization_stage_attempt_id,
@@ -815,10 +819,11 @@ export interface EnsembleLlmCallInsert {
   runId: string;
   stageAttemptId: string | null;
   evaluationId: string | null;
-  purpose: string;
+  purpose: EnsembleLlmPurpose;
   runnerId: string;
   modelId: string;
   attempt: number;
+  operationKey: string;
   state: EnsembleLlmCallState;
   startedAt: number;
 }
@@ -827,7 +832,7 @@ export interface EnsembleDecisionInsert {
   runId: string;
   actor: EnsembleDecisionActor;
   actorId: string | null;
-  selection: EnsembleJson;
+  selection: EnsemblePayloadEnvelope;
   rationale: string;
   operationKey: string;
 }
@@ -863,7 +868,7 @@ function boundedOrNull(value: string | null, max: number): string | null {
 }
 
 function serializedJson(
-  value: EnsembleJson | CompiledEnsemblePlan,
+  value: EnsembleJson | EnsemblePayloadEnvelope | CompiledEnsemblePlan,
   maxBytes: number,
   field: string,
 ): string {
@@ -1755,7 +1760,7 @@ export class EnsembleStore {
     patch: {
       runnerId?: string | null;
       modelId?: string | null;
-      result?: EnsembleJson | null;
+      result?: EnsemblePayloadEnvelope | null;
       error?: string | null;
     } = {},
     now = Date.now(),
@@ -1815,28 +1820,54 @@ export class EnsembleStore {
 
   /** Opened BEFORE the call, so an interrupted one is still on the ledger afterwards. */
   startLlmCall(input: EnsembleLlmCallInsert): EnsembleLlmCall {
-    const id = randomUUID();
-    this.db
-      .prepare(
-        `INSERT INTO ensemble_llm_calls (id, run_id, stage_attempt_id, evaluation_id, purpose,
-           runner_id, model_id, attempt, state, started_at, finished_at, duration_ms,
-           input_bytes, output_bytes, cost_usd, error_code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, NULL, NULL)`,
-      )
-      .run(
-        id,
-        input.runId,
-        input.stageAttemptId,
-        input.evaluationId,
-        input.purpose,
-        input.runnerId,
-        input.modelId,
-        input.attempt,
-        input.state,
-        input.startedAt,
-      );
-    const row = this.db.prepare(`SELECT * FROM ensemble_llm_calls WHERE id = ?`).get(id) as unknown;
-    return rowToLlmCall(row);
+    const operationKey = identityKey(
+      input.operationKey,
+      ENSEMBLE_LIMITS.operationKey,
+      "operation key",
+    );
+    return this.inTransaction(() => {
+      const existing = this.db
+        .prepare(`SELECT * FROM ensemble_llm_calls WHERE operation_key = ?`)
+        .get(operationKey) as unknown;
+      if (existing) {
+        const call = rowToLlmCall(existing);
+        if (
+          call.runId !== input.runId ||
+          call.stageAttemptId !== input.stageAttemptId ||
+          call.evaluationId !== input.evaluationId ||
+          call.purpose !== input.purpose ||
+          call.runnerId !== input.runnerId ||
+          call.modelId !== input.modelId ||
+          call.attempt !== input.attempt
+        ) {
+          identityConflict("operation key", operationKey);
+        }
+        return call;
+      }
+      const id = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO ensemble_llm_calls (id, run_id, stage_attempt_id, evaluation_id, purpose,
+             runner_id, model_id, attempt, operation_key, state, started_at, finished_at,
+             duration_ms, input_bytes, output_bytes, cost_usd, error_code)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, NULL, NULL)`,
+        )
+        .run(
+          id,
+          input.runId,
+          input.stageAttemptId,
+          input.evaluationId,
+          input.purpose,
+          input.runnerId,
+          input.modelId,
+          input.attempt,
+          operationKey,
+          input.state,
+          input.startedAt,
+        );
+      const row = this.db.prepare(`SELECT * FROM ensemble_llm_calls WHERE id = ?`).get(id) as unknown;
+      return rowToLlmCall(row);
+    });
   }
 
   finishLlmCall(

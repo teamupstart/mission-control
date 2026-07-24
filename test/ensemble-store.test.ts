@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   ENSEMBLE_LIMITS,
   ENSEMBLE_PLAN_VERSION,
+  ensemblePayload,
   ensembleIsRunnable,
   type CompiledEnsemblePlan,
 } from "../src/shared/ensemble.ts";
@@ -498,14 +499,20 @@ test("an evaluation is one row per stage attempt and attempt number, and reports
   const done = store.finishEvaluation(first.id, ["running"], "succeeded", {
     runnerId: "claude",
     modelId: "claude-opus-4-8",
-    result: { recommendedArtifactId: "art-1" },
+    result: ensemblePayload({ recommendedArtifactId: "art-1" }),
   });
   assert.equal(done.ok, true);
   if (!done.ok) return;
   assert.equal(done.value.runnerId, "claude");
   assert.deepEqual(done.value.subjectArtifactIds, ["art-1", "art-2"]);
+  assert.deepEqual(done.value.result, ensemblePayload({ recommendedArtifactId: "art-1" }));
   assert.equal(store.finishEvaluation(first.id, ["running"], "failed").ok, false);
   assert.equal(store.finishEvaluation(first.id, ["succeeded"], "running").ok, false);
+  db.prepare(`UPDATE ensemble_evaluations SET result_json = ? WHERE id = ?`).run(
+    JSON.stringify({ payloadVersion: 2, body: { recommendedArtifactId: "art-2" } }),
+    first.id,
+  );
+  assert.throws(() => store.listEvaluations(run.id), EnsembleRowError);
 });
 
 test("idempotency keys cannot resolve to records owned by another run", () => {
@@ -610,7 +617,7 @@ test("idempotency keys cannot resolve to records owned by another run", () => {
     runId: firstRun.run.id,
     actor: "human" as const,
     actorId: null,
-    selection: {},
+    selection: ensemblePayload({}),
     rationale: "",
     operationKey: "shared-decision-operation",
   };
@@ -631,6 +638,24 @@ test("idempotency keys cannot resolve to records owned by another run", () => {
     () => store.appendEvent({ ...event, runId: secondRun.run.id }),
     /operation key/,
   );
+
+  const llmCall = {
+    runId: firstRun.run.id,
+    stageAttemptId: null,
+    evaluationId: null,
+    purpose: "comparative_review" as const,
+    runnerId: "claude",
+    modelId: "claude-opus-4-8",
+    attempt: 1,
+    operationKey: "shared-llm-operation",
+    state: "running" as const,
+    startedAt: 100,
+  };
+  store.startLlmCall(llmCall);
+  assert.throws(
+    () => store.startLlmCall({ ...llmCall, runId: secondRun.run.id }),
+    /operation key/,
+  );
 });
 
 test("a model call's unknown cost stays null, because unknown is not zero", () => {
@@ -644,9 +669,25 @@ test("a model call's unknown cost stays null, because unknown is not zero", () =
     runnerId: "claude",
     modelId: "claude-opus-4-8",
     attempt: 1,
+    operationKey: `${run.id}:comparative_review:1`,
     state: "running",
     startedAt: 100,
   });
+  const replay = store.startLlmCall({
+    runId: run.id,
+    stageAttemptId: null,
+    evaluationId: null,
+    purpose: "comparative_review",
+    runnerId: "claude",
+    modelId: "claude-opus-4-8",
+    attempt: 1,
+    operationKey: `${run.id}:comparative_review:1`,
+    state: "running",
+    startedAt: 150,
+  });
+  assert.equal(replay.id, call.id);
+  assert.equal(replay.startedAt, 100);
+  assert.equal(store.listLlmCalls(run.id).length, 1);
   const done = store.finishLlmCall(call.id, ["running"], "succeeded", {
     finishedAt: 200,
     durationMs: 100,
@@ -725,7 +766,7 @@ test("a decision is versioned, supersedes its predecessor, and is spent once", (
     runId: run.id,
     actor: "human",
     actorId: null,
-    selection: { memberId: members[0]!.id },
+    selection: ensemblePayload({ memberId: members[0]!.id }),
     rationale: "clearer diff",
     operationKey: `${run.id}:decide:1`,
   });
@@ -737,7 +778,7 @@ test("a decision is versioned, supersedes its predecessor, and is spent once", (
     runId: run.id,
     actor: "human",
     actorId: null,
-    selection: { memberId: members[0]!.id },
+    selection: ensemblePayload({ memberId: members[0]!.id }),
     rationale: "clearer diff",
     operationKey: `${run.id}:decide:1`,
   }).id, first.id);
@@ -746,7 +787,7 @@ test("a decision is versioned, supersedes its predecessor, and is spent once", (
     runId: run.id,
     actor: "human",
     actorId: null,
-    selection: { memberId: members[1]!.id },
+    selection: ensemblePayload({ memberId: members[1]!.id }),
     rationale: "changed my mind",
     operationKey: `${run.id}:decide:2`,
   });
@@ -768,6 +809,11 @@ test("a decision is versioned, supersedes its predecessor, and is spent once", (
   const applied = store.applyDecision(second.id, finalization.id);
   assert.equal(applied.ok, true);
   assert.equal(store.applyDecision(second.id, finalization.id).ok, false);
+  db.prepare(`UPDATE ensemble_decisions SET selection_json = ? WHERE id = ?`).run(
+    JSON.stringify({ payloadVersion: 2, body: { memberId: members[0]!.id } }),
+    second.id,
+  );
+  assert.throws(() => store.listDecisions(run.id), EnsembleRowError);
 });
 
 test("a replayed audit record does not double the timeline an operator reads", () => {
@@ -837,7 +883,7 @@ test("a detail read returns every record the run owns", () => {
     runId: run.id,
     actor: "human",
     actorId: null,
-    selection: {},
+    selection: ensemblePayload({}),
     rationale: "",
     operationKey: "op-decide",
   });

@@ -1,9 +1,12 @@
 import {
   ENSEMBLE_LIMITS,
   ENSEMBLE_SOURCE_KINDS,
+  ensemblePayload,
   ensembleStrategyKey,
   readEnsembleEnum,
   type EnsembleCreateInput,
+  type EnsembleDecision,
+  type EnsembleJson,
   type EnsembleRun,
   type EnsembleRunDetail,
   type EnsembleSummary,
@@ -11,7 +14,11 @@ import {
 } from "@shared/ensemble.ts";
 import { EnsembleCreateInputSchema } from "@shared/protocol.ts";
 import type { Registry } from "../registry.ts";
-import { EnsembleStore, type EnsembleMemberInsert } from "./store.ts";
+import {
+  EnsembleStore,
+  type EnsembleDecisionInsert,
+  type EnsembleMemberInsert,
+} from "./store.ts";
 import {
   descriptorFor,
   ensembleStrategyCatalog,
@@ -107,6 +114,16 @@ export class EnsembleManager {
 
   detail(id: string): EnsembleRunDetail | null {
     return this.store.detail(id);
+  }
+
+  recordDecision(
+    input: Omit<EnsembleDecisionInsert, "selection"> & { selection: EnsembleJson },
+    now = Date.now(),
+  ): EnsembleDecision {
+    return this.store.recordDecision(
+      { ...input, selection: ensemblePayload(input.selection) },
+      now,
+    );
   }
 
   /**

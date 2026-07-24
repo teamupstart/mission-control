@@ -174,6 +174,29 @@ test("an idempotent create republishes the same run rather than adding a second 
   assert.equal(registry.snapshot().ensembleSummaries.length, 1);
 });
 
+test("the manager wraps raw decision input in the durable payload envelope", () => {
+  const manager = new EnsembleManager(new Registry(), new EnsembleStore(db));
+  const created = manager.create({ ...request, sourceKey: "manual:decision" }, 100);
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const decision = manager.recordDecision(
+    {
+      runId: created.run.id,
+      actor: "human",
+      actorId: null,
+      selection: { memberId: manager.store.listMembers(created.run.id)[0]!.id },
+      rationale: "best evidence",
+      operationKey: `${created.run.id}:decision:1`,
+    },
+    200,
+  );
+  assert.deepEqual(decision.selection, {
+    payloadVersion: 1,
+    body: { memberId: manager.store.listMembers(created.run.id)[0]!.id },
+  });
+});
+
 test("a source-key retry resolves before mutable compilation prerequisites", () => {
   const store = new EnsembleStore(db);
   const firstManager = new EnsembleManager(new Registry(), store, {

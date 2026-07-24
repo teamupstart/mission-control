@@ -1084,6 +1084,7 @@ export function openDb(): DatabaseSync {
       runner_id        TEXT NOT NULL,
       model_id         TEXT NOT NULL,
       attempt          INTEGER NOT NULL,
+      operation_key    TEXT NOT NULL,
       state            TEXT NOT NULL,
       started_at       INTEGER NOT NULL,
       finished_at      INTEGER,
@@ -1099,6 +1100,8 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_ensemble_llm_calls_run
       ON ensemble_llm_calls(run_id, started_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_llm_calls_operation
+      ON ensemble_llm_calls(operation_key);
 
     -- The operator-visible audit trail. Append-only and bounded: what changed, not why an
     -- agent said it did. operation_key is UNIQUE so a replayed transition writes one row.

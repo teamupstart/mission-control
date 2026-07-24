@@ -166,6 +166,7 @@ test("the source claim, the roster, and every operation key are unique", () => {
   assert.ok(
     uniqueIndexes("ensemble_evaluations").some((c) => c.join(",") === "stage_attempt_id,attempt"),
   );
+  assert.ok(uniqueIndexes("ensemble_llm_calls").some((c) => c.join(",") === "operation_key"));
   assert.ok(uniqueIndexes("ensemble_decisions").some((c) => c.join(",") === "run_id,version"));
   assert.ok(uniqueIndexes("ensemble_decisions").some((c) => c.join(",") === "operation_key"));
   assert.ok(uniqueIndexes("ensemble_events").some((c) => c.join(",") === "operation_key"));

@@ -8,6 +8,7 @@ import {
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_MEMBER_STATUSES,
+  ENSEMBLE_PAYLOAD_VERSION,
   ENSEMBLE_PLAN_VERSION,
   ENSEMBLE_SOURCE_KINDS,
   ENSEMBLE_STATUSES,
@@ -29,6 +30,7 @@ import {
   EnsembleActionSchema,
   EnsembleCreateInputSchema,
   EnsembleEventSchema,
+  EnsemblePayloadEnvelopeSchema,
   EnsembleRunDetailSchema,
   EnsembleSummarySchema,
 } from "../src/shared/protocol.ts";
@@ -385,6 +387,22 @@ test("summary, detail, and event wire schemas match their shared contracts", () 
     events: [event],
   };
   assert.deepEqual(EnsembleRunDetailSchema.parse(detail), detail);
+});
+
+test("strategy-owned payload envelopes accept only this build's version", () => {
+  const payload = {
+    payloadVersion: ENSEMBLE_PAYLOAD_VERSION,
+    body: { recommendedArtifactId: "artifact-1" },
+  };
+  assert.deepEqual(EnsemblePayloadEnvelopeSchema.parse(payload), payload);
+  assert.equal(
+    EnsemblePayloadEnvelopeSchema.safeParse({ ...payload, payloadVersion: 2 }).success,
+    false,
+  );
+  assert.equal(
+    EnsemblePayloadEnvelopeSchema.safeParse({ body: payload.body }).success,
+    false,
+  );
 });
 
 // ---- create input and actions ----

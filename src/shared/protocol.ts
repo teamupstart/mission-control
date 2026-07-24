@@ -43,6 +43,7 @@ import {
   ENSEMBLE_LLM_PURPOSES,
   ENSEMBLE_MEMBER_STATUSES,
   ENSEMBLE_OUTCOME_KINDS,
+  ENSEMBLE_PAYLOAD_VERSION,
   ENSEMBLE_PLAN_VERSION,
   ENSEMBLE_SOURCE_KINDS,
   ENSEMBLE_STAGE_DRIVER_KINDS,
@@ -59,6 +60,7 @@ import type {
   EnsembleJson,
   EnsembleLlmCall,
   EnsembleMember,
+  EnsemblePayloadEnvelope,
   EnsembleRun,
   EnsembleRunDetail,
   EnsembleStageAttempt,
@@ -2402,6 +2404,11 @@ export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
   ]),
 );
 
+export const EnsemblePayloadEnvelopeSchema: z.ZodType<EnsemblePayloadEnvelope> = z.object({
+  payloadVersion: z.literal(ENSEMBLE_PAYLOAD_VERSION),
+  body: EnsembleJsonSchema,
+});
+
 export const EnsembleStatusSchema = z.enum(ENSEMBLE_STATUSES);
 export const EnsembleMemberStatusSchema = z.enum(ENSEMBLE_MEMBER_STATUSES);
 export const EnsembleAttemptStatusSchema = z.enum(ENSEMBLE_ATTEMPT_STATUSES);
@@ -2907,7 +2914,7 @@ export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation> = z.object(
   modelId: z.string().nullable(),
   inputFingerprint: z.string(),
   subjectArtifactIds: z.array(z.string()),
-  result: EnsembleJsonSchema.nullable(),
+  result: EnsemblePayloadEnvelopeSchema.nullable(),
   status: EnsembleEvaluationStatusSchema.nullable(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
@@ -2941,7 +2948,7 @@ export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision> = z.object({
   actor: EnsembleDecisionActorSchema.nullable(),
   actorId: z.string().nullable(),
   status: EnsembleDecisionStatusSchema.nullable(),
-  selection: EnsembleJsonSchema,
+  selection: EnsemblePayloadEnvelopeSchema,
   rationale: z.string(),
   finalizationStageAttemptId: z.string().nullable(),
   createdAt: z.number().int(),

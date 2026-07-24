@@ -1109,10 +1109,21 @@ changed at any point in a task's life, including while its agent is running
 card, rail and tile each have their own mark vocabulary and adding a fourth signal to all
 three is its own change.
 
+### Harness cards
+
+**Settings → Harnesses** draws **one card per harness** - Claude Code, Codex, Pi - each in
+the harness's own accent, holding that harness's default **model** and default **effort**
+side by side, a capability badge (whether auto mode reaches it, and the reason on the card
+when it does not), and a sentence restating what a dispatch of that harness will actually
+do. The cards derive from the harness list, so a new harness lights up here as one more
+card with no layout change and no stylesheet edit. Above them sits the one master toggle,
+**Auto mode on dispatch**, which puts every dispatched session it reaches into its most
+autonomous permission mode once ready.
+
 ### Default model
 
-**Settings → Harnesses → Default model** sets the model each harness launches on when a
-dispatch doesn't name one - one row per harness, because a Claude model id is not
+**Each card's model select** sets the model that harness launches on when a
+dispatch doesn't name one - one per harness, because a Claude model id is not
 something Codex can run. The dispatch form starts on it, so choosing well here is usually
 the last time you have to think about models; the per-task picker is for the exceptions.
 
@@ -1135,8 +1146,8 @@ dropped.
 
 ### Default effort
 
-**Settings → Harnesses → Default effort** sets the reasoning level each harness starts
-with when a dispatch does not name one. Each harness has its own row. Claude Code and Pi
+**Each card's effort select** sets the reasoning level that harness starts
+with when a dispatch does not name one. Claude Code and Pi
 offer `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`, `medium`, `high`,
 and `xhigh`.
 

@@ -262,26 +262,20 @@ export class TaskManager {
   }
 
   /**
-   * A task's pull request merged. End its agent, if the operator asked for that.
+   * A task's pull request merged. Settle it if its episode appears finished, and end its
+   * agent if the operator asked for that.
    *
-   * Note what this does NOT do: complete the task. That was the first design and it was
-   * wrong for a reason worth recording, because it looks right and passes its own tests.
-   * A merge is not proof the task is over - an agent routinely lands an intermediate pull
-   * request and carries on - and no check made when the merge is OBSERVED can see a
-   * prompt that has not arrived yet. Deferring the check by a timer only moves the
-   * guess: an operator who merges, reads the diff for a minute, and then tells the agent
-   * to continue outruns any fixed window, and their task is already terminal.
+   * A merge is not proof the task is over: an agent may be mid-turn or roll onto more
+   * work, and no timer can rule out a prompt that has not arrived yet. An idle, empty,
+   * still-current episode is enough to conclude provisionally; `reopenIfWorkResumed`
+   * reverses that inference if the agent contradicts it by working again. A working
+   * session is left alone, while a session that later disappears settles through
+   * `agentWentAway`.
    *
-   * So completion moved to the one boundary a later prompt cannot outrun - the agent
-   * actually going away - and reads the merge from the durable record rather than from a
-   * clock. See `agentWentAway`.
-   *
-   * What is left here is the disposition of the agent, which is a preference and is
-   * behind a switch. `closeSessionAfterMerge` means "this agent's job was that pull
-   * request", so landing it ends the session; the completion then happens through
-   * `agentWentAway` like any other. A session still WORKING is left alone even so: the
-   * merge is durably recorded either way, so whenever that agent does finish its task
-   * settles correctly, and we never kill an agent mid-turn to satisfy a setting.
+   * The disposition of the agent remains a separate preference. With
+   * `closeSessionAfterMerge` enabled, an idle merged session is closed only if it still
+   * matches this task and episode after the asynchronous checkout-safety probe. Work
+   * resuming during that probe cancels the close.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
@@ -404,9 +398,11 @@ export class TaskManager {
   /**
    * End the agent of a task that just merged, and reclaim its checkout if that is safe.
    *
-   * Two separate judgements, and only the second is conditional. Killing is safe by
-   * construction here - the work is on the default branch - so it is unconditional once
-   * the operator has switched this on.
+   * Two separate judgements. Killing is allowed only while the session is still idle and
+   * still owns this task and merged episode. The checkout-safety probe awaits filesystem
+   * work, so all three facts are re-read afterwards; a follow-up prompt during the probe
+   * reopens an inferred completion and cancels the close instead of killing a working
+   * agent.
    *
    * Reclaiming is not. A merge proves the COMMITTED work landed; it says nothing about
    * uncommitted edits or untracked files still sitting in that checkout, and `reclaim`

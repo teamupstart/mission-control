@@ -17,32 +17,10 @@ const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
- * A task whose work SHIPPED has to end as `done`, not as `failed`.
- *
- * Nothing used to end a task on merge at all - `maybeMerge` retires its own ledger row
- * and returns, and no poller touched the task - so a shipped task sat `running` until
- * its agent went away and then settled as `failed`, "ended with no outcome recorded".
- * That is wrong twice: the outcome exists (it is the pull request), and `failed` reports
- * as a `stopped` blocker, so every task declared to wait on it deadlocks behind work that
- * actually landed.
- *
- * The interesting part is WHEN it may be concluded, and two wrong answers were tried
- * before this one. Completing when the merge is observed - or a fixed delay afterwards -
- * treats a timeout as proof the episode ended, and it is not: an agent routinely lands an
- * intermediate pull request and carries on, and an operator can merge, read the diff for
- * a minute, and only then say continue. Any fixed window is outrunnable. But waiting only
- * for the agent to EXIT never fires for the ordinary case, where an agent ships and then
- * sits idle forever - leaving exactly the stall this change exists to remove.
- *
- * So the merge is recorded durably when it happens, and the task is concluded on evidence
- * that the episode FINISHED: the agent idle, its queue empty, no rollover onto new work.
- * Nothing is counted. A prompt after all of that is new work following a task that
- * genuinely shipped, and because the agent goes `working` the moment it lands, the
- * autopilot cannot have taken the agent in between either.
- *
- * Both ends are pinned below - the idle-but-live agent and the one that went away - along
- * with the two that must NOT conclude: mid-turn, and rolled onto later work that never
- * landed.
+ * Regression coverage for merged-task settlement. README's "When a task's pull request
+ * merges" section owns the user-facing behavior; these cases pin its local mechanics:
+ * idle completion is reversible, working and rolled-over episodes stay running, and a
+ * departed agent settles from only its current work-episode binding.
  */
 
 const PR = "https://github.com/example/repo/pull/77";

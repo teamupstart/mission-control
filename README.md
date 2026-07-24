@@ -2698,9 +2698,9 @@ both occupies a slot and is ineligible to use it.
 **The merge alone does not end the task.** An agent routinely lands an intermediate pull
 request and carries on, and you might merge, read the diff for a minute, and only then
 tell it to continue - so no delay after the merge is long enough to rule more work out.
-The merge is recorded when it happens, and the task is concluded only once its agent has
-**finished the episode**: idle, nothing queued, and not rolled onto new work. An agent
-that is mid-turn is left alone whatever its pull request did.
+The merge is recorded when it happens, and the task is first concluded once its agent
+**appears to have finished the episode**: idle, nothing queued, and not rolled onto new
+work. An agent that is mid-turn is left alone whatever its pull request did.
 
 An agent that was given **new work after its merge** and then vanished mid-flight still
 fails, rather than reporting the earlier merge as its outcome: that later work never
@@ -2709,14 +2709,16 @@ landed, and saying otherwise would claim a success for it.
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
 that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to
 running and drops the outcome. Only conclusions Mission Control drew from idleness are
-undone this way - an outcome you recorded yourself is never overwritten.
+undone this way - an outcome you recorded yourself is never overwritten. This correction
+is deliberately limited to the current daemon run; after a restart, a completed task
+stays done.
 
 What happens to the agent is yours to choose, in **Settings → Shipping**:
 
 | Close the session after merge | What happens |
 |---|---|
-| **off** (default) | The agent stays, with its checkout and its context. Its task lands whenever that agent does finish and go away |
-| **on** | Landing the pull request ends the session, which frees a fleet slot for a fresh dispatch and lands the task through the same path. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+| **off** (default) | The agent stays, with its checkout and its context. Once idle, its merged task lands; a later follow-up reopens it |
+| **on** | If the agent is idle when the merge is observed, its session ends, freeing a fleet slot for a fresh dispatch. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
 
 An agent that is still **working** is never closed mid-turn, even with the switch on: the
 merge is recorded either way, so its task lands correctly whenever it does finish.

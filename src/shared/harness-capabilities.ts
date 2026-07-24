@@ -59,6 +59,7 @@ export interface PermissionModeSpec {
     | {
         kind: "menu";
         command: string;
+        composerReady(paneText: string): boolean;
         labels: Partial<Record<PermissionMode, string>>;
         confirmations?: Partial<Record<PermissionMode, string>>;
       };
@@ -388,6 +389,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       liveControl: {
         kind: "menu",
         command: "/permissions",
+        composerReady: codexComposerReady,
         labels: {
           askForApproval: "Ask for approval",
           approveForMe: "Approve for me",

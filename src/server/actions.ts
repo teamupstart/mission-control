@@ -1161,7 +1161,11 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
  *     this means the target isn't in it - and, because it's a loop, walking it
  *     fully has landed us back where we started. Nothing to undo.
  */
-export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
+export async function setPermissionMode(
+  session: Session,
+  target: PermissionMode,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<ModeResult> {
   const permissionModes = harnessFor(session.agent).permissionModes;
   if (!permissionModes) return { ok: false, error: NO_MODES, mode: null };
   if (!permissionModes.pickable.includes(target)) {
@@ -1173,7 +1177,7 @@ export async function setPermissionMode(session: Session, target: PermissionMode
     return withPaneLock<ModeResult>(
       session,
       () => ({ ok: false, error: PANE_BUSY }),
-      () => selectPermissionMenuModeLocked(session, target, liveControl, defaultPaneDeps),
+      () => selectPermissionMenuModeLocked(session, target, liveControl, deps),
     );
   }
   if (!modeLineSpecFor(session.agent)) return { ok: false, error: NO_MODES, mode: null };
@@ -1236,8 +1240,28 @@ async function selectPermissionMenuModeLocked(
 ): Promise<ModeResult> {
   const label = control.labels[target];
   if (!label) return { ok: false, error: `${target} has no menu label for this agent`, mode: session.permissionMode };
-  const opened = await sendTextLocked(session, control.command, true, deps);
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE, mode: session.permissionMode };
+  const before = await deps.capture(session);
+  if (!before || readPaneDialog(session, before) || !control.composerReady(before)) {
+    return {
+      ok: false,
+      error: "the agent's empty composer is not ready; no permission mode was changed",
+      mode: session.permissionMode,
+    };
+  }
+  const opened = await writeText(pane, control.command);
   if (!opened.ok) return { ...opened, mode: session.permissionMode };
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, control.command) || readPaneDialog(session, pending)) {
+    return {
+      ok: false,
+      error: "the permissions command could not be verified in the composer; no permission mode was changed",
+      mode: session.permissionMode,
+    };
+  }
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return { ...submitted, mode: session.permissionMode };
   const dialog = await awaitPermissionMenu(session, label, deps);
   if (!dialog) {
     return {

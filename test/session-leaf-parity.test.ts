@@ -50,6 +50,7 @@ function insp(over: Partial<NonNullable<Session["inspector"]>> = {}): Session["i
     url: "https://example.test/pr/7",
     mode: "live",
     open: 1,
+    postedOpen: 1,
     round: 1,
     lastReviewedAt: 1_700_000_000_000,
     failed: false,

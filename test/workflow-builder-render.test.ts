@@ -16,6 +16,11 @@ import {
   WorkflowLoadError,
   workflowSelectionRestore,
 } from "../src/web/workflows/WorkflowLibrary.tsx";
+import {
+  clearRequestedWorkflowVersion,
+  readRequestedWorkflowVersion,
+  requestWorkflowVersionOpen,
+} from "../src/web/workflows/workflowSelection.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import {
   WORKFLOW_LIMITS,
@@ -164,7 +169,12 @@ test("editable workflow canvas remains mounted with default node statuses", () =
   };
   assert.deepEqual(result.errors, []);
   assert.equal(result.mounted, true);
-  assert.deepEqual(result.controls, ["Zoom in", "Zoom out", "Fit the graph to view"]);
+  assert.deepEqual(result.controls, [
+    "Zoom in",
+    "Zoom out",
+    "Fit the graph to view",
+    "Reset canvas zoom",
+  ]);
   assert.equal(result.nativeTitles, 0);
   assert.equal(result.attribution, true);
   assert.equal(result.maxZoomDisabled, true);
@@ -224,12 +234,53 @@ test("workflow detail load failures remain visible without a loaded workflow", (
   assert.match(html, /Retry/);
 });
 
-test("last workflow restoration runs once and cannot reopen an archived selection", () => {
+test("last workflow restoration excludes archived history unless a version link requested it", () => {
   const active = [{
     id: "workflow-1", name: "Review", description: "", draftRevision: 1,
     currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
     errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
   }];
+  const archived = { ...active[0]!, id: "workflow-archived", archivedAt: 2 };
   assert.equal(workflowSelectionRestore(false, null, active, "workflow-1"), "workflow-1");
   assert.equal(workflowSelectionRestore(true, null, active, "workflow-1"), undefined);
+  assert.equal(
+    workflowSelectionRestore(false, null, active, "workflow-archived", [...active, archived]),
+    "workflow-1",
+  );
+  assert.equal(
+    workflowSelectionRestore(
+      false,
+      null,
+      active,
+      "workflow-archived",
+      [...active, archived],
+      "workflow-archived",
+    ),
+    "workflow-archived",
+  );
+});
+
+test("Open version carries one bounded request across the Runs-to-builder route", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const priorLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const priorSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage });
+  try {
+    requestWorkflowVersionOpen("workflow-1", 7);
+    assert.equal(readRequestedWorkflowVersion("workflow-1"), 7);
+    assert.equal(readRequestedWorkflowVersion("another-workflow"), null);
+    clearRequestedWorkflowVersion();
+    assert.equal(readRequestedWorkflowVersion("workflow-1"), null);
+  } finally {
+    if (priorLocal) Object.defineProperty(globalThis, "localStorage", priorLocal);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+    if (priorSession) Object.defineProperty(globalThis, "sessionStorage", priorSession);
+    else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  }
 });

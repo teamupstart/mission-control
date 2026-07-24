@@ -397,11 +397,26 @@ export interface WorkflowCaptureExpectation {
 export interface WorkflowConfig {
   liveEnabled: boolean;
   repoAllowlist: string[];
+  retention: WorkflowRetentionConfig;
+}
+
+export interface WorkflowRetentionConfig {
+  /** Remove raw evidence from eligible terminal runs after this many days. */
+  rawEvidenceDays: number;
+  /** Remove the complete eligible run family after this many days. */
+  completedRunDays: number;
+  /** Always retain this many newest completed or cancelled run families. */
+  maxCompletedRuns: number;
 }
 
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   liveEnabled: false,
   repoAllowlist: [],
+  retention: {
+    rawEvidenceDays: 30,
+    completedRunDays: 180,
+    maxCompletedRuns: 1_000,
+  },
 };
 
 export interface WorkflowCompletionClaim {
@@ -519,6 +534,7 @@ export interface WorkflowRun {
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;
+  evidencePrunedAt?: number | null;
 }
 
 export interface WorkflowSubmission {
@@ -582,6 +598,7 @@ export interface WorkflowDelivery {
   createdAt: number;
   updatedAt: number;
   deliveredAt: number | null;
+  payloadPrunedAt?: number | null;
 }
 
 export interface WorkflowLlmCall {
@@ -668,6 +685,16 @@ export interface WorkflowContextSnapshot {
     transcriptTruncated: boolean;
     standards: WorkflowStandardsDocument[];
     standardsTruncated: boolean;
+    retention?:
+      | { state: "full" }
+      | {
+          state: "pruned";
+          prunedAt: number;
+          diffBytes: number;
+          workingTreeStatusEntries: number;
+          transcriptMessages: number;
+          standardsDocuments: number;
+        };
   };
   compaction: {
     status: "model" | "fallback";
@@ -728,6 +755,8 @@ export interface WorkflowRunSummary {
   gatePrNumber: number | null;
   gateHeadShort: string | null;
   reviewPosture: InspectorPosture | null;
+  uncertainDeliveryCount?: number;
+  refusedDeliveryCount?: number;
   updatedAt: number;
 }
 
@@ -747,15 +776,58 @@ export interface WorkflowRunDetail {
   binding: WorkflowBinding;
   version: WorkflowVersion | null;
   run: WorkflowRun;
+  contextState: "captured" | "not_captured" | "corrupt";
   submissions: WorkflowSubmission[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];
   events: WorkflowEvent[];
+  eventCount?: number;
+  nextEventAfter?: number | null;
+  llmCalls?: WorkflowLlmCall[];
+  llmCallCount?: number;
+  nextLlmCallAfter?: string | null;
   /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
    */
   externalSource?: WorkflowExternalSource | null;
   inspectorGate: WorkflowInspectorGateDetail | null;
+}
+
+export interface WorkflowRunPage {
+  items: WorkflowRunSummary[];
+  nextCursor: string | null;
+}
+
+export interface WorkflowEventPage {
+  items: WorkflowEvent[];
+  nextAfter: number | null;
+}
+
+export interface WorkflowLlmCallPage {
+  items: WorkflowLlmCall[];
+  nextAfter: string | null;
+}
+
+export interface WorkflowStatus {
+  activeRuns: number;
+  queuedPersonaCalls: number;
+  runningPersonaCalls: number;
+  waitingDeliveries: number;
+  uncertainDeliveries: number;
+  inspectorGates: number;
+  lastRecoveryAt: number | null;
+  lastRetentionAt: number | null;
+  lastRetentionError: string | null;
+  retainedRunCount: number;
+  lastRetentionCompacted: number;
+  lastRetentionDeleted: number;
+}
+
+export interface WorkflowExportEnvelope<T> {
+  schemaVersion: 1;
+  exportedAt: number;
+  kind: "workflow_run" | "workflow_version";
+  data: T;
 }

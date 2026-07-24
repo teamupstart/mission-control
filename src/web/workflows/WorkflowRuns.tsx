@@ -5,14 +5,48 @@ import type {
   WorkflowContextSnapshot,
   WorkflowExternalSource,
   WorkflowRunDetail,
+  WorkflowRunPage,
   WorkflowRunSummary,
+  WorkflowEventPage,
+  WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
+import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
+}
+
+export function workflowRunLoadError(caught: unknown): string {
+  if (
+    caught instanceof WorkflowApiError
+    && caught.body?.code === "workflow_run_corrupt"
+  ) {
+    return "This workflow run has malformed durable data. Check daemon logs or restore it from backup.";
+  }
+  if (caught instanceof WorkflowApiError && caught.status === 404) {
+    return "This workflow run is no longer retained. Select another run from history.";
+  }
+  return caught instanceof Error ? caught.message : "Could not load workflow run";
+}
+
+export function workflowCallCost(
+  calls: NonNullable<WorkflowRunDetail["llmCalls"]>,
+  totalCount: number,
+  nextAfter: string | null | undefined,
+): number | null {
+  if (
+    calls.length === 0
+    || calls.length !== totalCount
+    || nextAfter != null
+    || calls.some((call) => call.costUsd === null)
+  ) {
+    return null;
+  }
+  return calls.reduce((total, call) => total + (call.costUsd ?? 0), 0);
 }
 
 const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
@@ -129,6 +163,8 @@ export function WorkflowRunView({
   onRestartFull = async () => {},
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
+  onLoadEvents = async () => {},
+  onLoadCalls = async () => {},
 }: {
   detail: WorkflowRunDetail;
   onResubmit: (unchanged: boolean) => Promise<void>;
@@ -146,11 +182,15 @@ export function WorkflowRunView({
     resolution: "mark_delivered" | "discard_and_new_round",
     confirmation?: string,
   ) => Promise<void>;
+  onLoadEvents?: () => Promise<void>;
+  onLoadCalls?: () => Promise<void>;
 }): React.JSX.Element {
   const latest = detail.submissions.at(-1) ?? null;
   const latestFull = [...detail.submissions].reverse().find((submission) =>
     submission.mode === "full_workflow") ?? null;
-  const context = latestFull?.context as unknown as WorkflowContextSnapshot | null;
+  const context = detail.contextState === "captured"
+    ? latestFull?.context as unknown as WorkflowContextSnapshot | null
+    : null;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const version = detail.version;
   const inspectorGate = detail.inspectorGate;
@@ -178,8 +218,49 @@ export function WorkflowRunView({
     ) return [];
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
+  const calls = detail.llmCalls ?? [];
+  const feedbackAvailable = detail.deliveries.some((delivery) => delivery.payload.length > 0)
+    || detail.attempts.some((attempt) => attempt.verdict);
+  const totalCost = workflowCallCost(
+    calls,
+    detail.llmCallCount ?? calls.length,
+    detail.nextLlmCallAfter,
+  );
+  const roundBySubmission = new Map(detail.submissions.map((submission) => [
+    submission.id,
+    submission.round,
+  ]));
+  const timelineByRound = new Map<number, typeof detail.events>();
+  const uncertainDeliveries = detail.deliveries.filter((delivery) => delivery.state === "uncertain");
+  const uncertainIds = uncertainDeliveries.map((delivery) => delivery.id).sort().join(",");
+  const previousUncertainIds = useRef("");
+  const [uncertainAnnouncement, setUncertainAnnouncement] = useState("");
+  useEffect(() => {
+    if (uncertainIds && uncertainIds !== previousUncertainIds.current) {
+      setUncertainAnnouncement(
+        `${uncertainDeliveries.length} workflow delivery outcome${uncertainDeliveries.length === 1 ? " is" : "s are"} uncertain`,
+      );
+    }
+    previousUncertainIds.current = uncertainIds;
+  }, [uncertainDeliveries.length, uncertainIds]);
+  let timelineRound = 0;
+  for (const event of [...detail.events].sort((a, b) => a.id - b.id)) {
+    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? event.payload
+      : null;
+    const submissionId = payload && typeof payload.submissionId === "string"
+      ? payload.submissionId
+      : null;
+    const payloadRound = payload && typeof payload.round === "number" ? payload.round : null;
+    timelineRound = payloadRound
+      ?? (submissionId ? roundBySubmission.get(submissionId) ?? timelineRound : timelineRound);
+    const group = timelineByRound.get(timelineRound) ?? [];
+    group.push(event);
+    timelineByRound.set(timelineRound, group);
+  }
   return (
     <section className="workflow-run-detail">
+      <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <header className="workflow-run-detail-head">
         <div>
           <p className="workflow-eyebrow">
@@ -191,14 +272,98 @@ export function WorkflowRunView({
           <small>Started {when(detail.run.startedAt)} · updated {when(detail.run.updatedAt)}</small>
         </div>
         <span className={`workflow-run-state wrs-${detail.run.status}`}>{detail.run.status.replaceAll("_", " ")}</span>
-        <Tooltip label="Jump to the session this run is reviewing">
-          <button className="btn btn-ghost" onClick={onOpenSession}>Open session</button>
+        <Tooltip label={detail.summary.sessionId
+          ? "Jump to the session this run is reviewing"
+          : "The bound session is no longer available"}>
+          <button
+            className="btn btn-ghost"
+            disabled={!detail.summary.sessionId}
+            onClick={onOpenSession}
+          >
+            Open session
+          </button>
         </Tooltip>
-        {(detail.deliveries.length > 0 || detail.attempts.some((attempt) => attempt.verdict)) && (
-          <Tooltip label="Copy every reviewer verdict to the clipboard">
-            <button className="btn btn-ghost" onClick={() => void onCopyFeedback()}>Copy feedback</button>
+        <Tooltip label="Copy this durable workflow run id">
+          <button
+            className="btn btn-ghost"
+            onClick={() => void navigator.clipboard.writeText(detail.run.id)}
+          >
+            Copy run id
+          </button>
+        </Tooltip>
+        <Tooltip label="Download this run's complete retained audit history as JSON">
+          <a
+            className="btn btn-ghost"
+            href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
+            download={`workflow-run-${detail.run.id}.json`}
+          >
+            Export run
+          </a>
+        </Tooltip>
+        <Tooltip label={version
+          ? `Open immutable workflow version ${version.version}`
+          : "The immutable published version is missing or corrupt"}>
+          <button
+            className="btn btn-ghost"
+            disabled={!version}
+            onClick={() => {
+              if (!version) return;
+              requestWorkflowVersionOpen(version.workflowId, version.version);
+              window.location.hash = "#/workflows";
+            }}
+          >
+            Open version
+          </button>
+        </Tooltip>
+        {version ? (
+          <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
+            <a
+              className="btn btn-ghost"
+              href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
+              download={`workflow-version-${version.version}.json`}
+            >
+              Export version
+            </a>
+          </Tooltip>
+        ) : (
+          <Tooltip label="The immutable published version is missing or corrupt">
+            <button
+              className="btn btn-ghost"
+              disabled
+            >
+              Export version
+            </button>
           </Tooltip>
         )}
+        {inspectorGate?.state.prUrl ? (
+          <Tooltip label="Open this run's adopted pull request in a new tab">
+            <a
+              className="btn btn-ghost"
+              href={inspectorGate.state.prUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              Open PR
+            </a>
+          </Tooltip>
+        ) : (
+          <Tooltip label="This run has no adopted pull request">
+            <button className="btn btn-ghost" disabled>Open PR</button>
+          </Tooltip>
+        )}
+        <Tooltip label={feedbackAvailable
+          ? "Copy every reviewer verdict to the clipboard"
+          : detail.deliveries.some((delivery) => delivery.payloadPrunedAt != null)
+            ? "Raw delivery feedback was pruned and no Persona verdict remains"
+            : "No workflow feedback has been recorded yet"}>
+          <button
+            className="btn btn-ghost"
+            disabled={!feedbackAvailable}
+            onClick={() => void onCopyFeedback()}
+          >
+            Copy feedback
+          </button>
+        </Tooltip>
         {detail.run.status === "waiting_for_session" && (
           <>
             <Tooltip label="Re-read the session's current diff and run the review again">
@@ -369,7 +534,12 @@ export function WorkflowRunView({
                 <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
               </dl>
               {delivery.error && <p className="persona-error">{delivery.error.replaceAll("_", " ")}</p>}
-              <pre>{delivery.payload}</pre>
+              {delivery.payloadPrunedAt ? (
+                <p className="workflow-pruned-badge">
+                  Payload pruned {when(delivery.payloadPrunedAt)}. SHA-256 and transition
+                  metadata remain available.
+                </p>
+              ) : <pre>{delivery.payload}</pre>}
               {delivery.state === "refused" && (
                 <Tooltip label="Retry this packet after a positive delivery refusal">
                   <button className="btn" onClick={() => void onRetryDelivery(delivery.id)}>
@@ -426,6 +596,20 @@ export function WorkflowRunView({
         </p>
       )}
 
+      {detail.contextState === "not_captured" && (
+        <section className="workflow-run-context">
+          <h4>Intent and evidence not captured</h4>
+          <p>This submission stopped before its immutable context snapshot was recorded.</p>
+        </section>
+      )}
+      {detail.contextState === "corrupt" && (
+        <section className="workflow-run-context">
+          <h4>Captured intent and evidence are corrupt</h4>
+          <p className="persona-error" role="alert">
+            The durable context does not match its submission mode. Check daemon logs or restore it from backup.
+          </p>
+        </section>
+      )}
       {context && (
         <section className="workflow-run-context">
           <header>
@@ -433,6 +617,11 @@ export function WorkflowRunView({
             <span className={`workflow-compaction-${context.compaction.status}`}>
               {context.compaction.status === "model" ? "Context compacted" : "Deterministic fallback"}
             </span>
+            {context.evidence.retention?.state === "pruned" && (
+              <span className="workflow-pruned-badge">
+                Raw evidence pruned {when(context.evidence.retention.prunedAt)}
+              </span>
+            )}
           </header>
           <h5>Original goal</h5>
           <pre>{context.primaryGoal.rawPrompt || "(No captured goal)"}</pre>
@@ -476,13 +665,73 @@ export function WorkflowRunView({
               <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
             </dl>
-            {context.evidence.workingTreeStatus.length > 0 && (
+            {context.evidence.retention?.state === "pruned" ? (
+              <p>
+                Raw diff, transcript, status paths, and standards bodies were pruned.
+                Fingerprints, counts, caps, HEAD, branch, decisions, constraints, verdicts,
+                and audit history remain.
+              </p>
+            ) : context.evidence.workingTreeStatus.length > 0 && (
               <pre>{context.evidence.workingTreeStatus.join("\n")}</pre>
             )}
-            <pre>{context.evidence.diff || "(No diff)"}</pre>
+            {context.evidence.retention?.state !== "pruned" && (
+              <pre>{context.evidence.diff || "(No diff)"}</pre>
+            )}
           </details>
         </section>
       )}
+
+      <section className="workflow-model-calls">
+        <header>
+          <h4>Workflow-owned model calls</h4>
+          <strong>
+            {totalCost === null
+              ? "Cost unavailable from this runner"
+              : `$${totalCost.toFixed(4)}`}
+          </strong>
+        </header>
+        {calls.length === 0 ? (
+          <p>No workflow-owned model calls are recorded for this run.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Purpose</th>
+                <th>Runner / model</th>
+                <th>Attempt</th>
+                <th>State</th>
+                <th>Failure class</th>
+                <th>Duration</th>
+                <th>Input</th>
+                <th>Output</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calls.map((call) => (
+                <tr key={call.id}>
+                  <td>{call.purpose.replaceAll("_", " ")}</td>
+                  <td>{call.runner} / {call.model}</td>
+                  <td>{call.attempt}</td>
+                  <td>{call.state}</td>
+                  <td>{call.errorCode ?? "none"}</td>
+                  <td>{call.durationMs === null ? "unavailable" : `${call.durationMs} ms`}</td>
+                  <td>{call.inputBytes} B</td>
+                  <td>{call.outputBytes} B</td>
+                  <td>{call.costUsd === null ? "unavailable" : `$${call.costUsd.toFixed(4)}`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {detail.nextLlmCallAfter && (
+          <Tooltip label="Load the next page of durable model-call accounting">
+            <button className="btn btn-ghost" onClick={() => void onLoadCalls()}>
+              Load more model calls
+            </button>
+          </Tooltip>
+        )}
+      </section>
 
       <section className="workflow-verdicts">
         <h4>Persona verdicts</h4>
@@ -496,7 +745,7 @@ export function WorkflowRunView({
           {detail.attempts.filter((attempt) => attempt.persona).map((attempt) => (
             <p key={`attempt:${attempt.id}`}>
               <strong>{attempt.persona?.name}</strong>
-              {" "}attempt {attempt.attempt} · {attempt.state}
+              {" "}revision {attempt.persona?.sourceRevision} · attempt {attempt.attempt} · {attempt.state}
               {attempt.runner && attempt.model ? ` · ${attempt.runner}/${attempt.model}` : ""}
               {attempt.error ? ` · ${attempt.error}` : ""}
             </p>
@@ -527,15 +776,29 @@ export function WorkflowRunView({
 
       <section className="workflow-run-timeline">
         <h4>Timeline</h4>
-        <ol>
-          {detail.events.map((event) => (
-            <li key={event.id}>
-              <time>{when(event.timestamp)}</time>
-              <strong>{event.kind.replaceAll("_", " ")}</strong>
-              <code>{JSON.stringify(event.payload)}</code>
-            </li>
+        {[...timelineByRound.entries()]
+          .sort(([roundA], [roundB]) => roundA - roundB)
+          .map(([round, events]) => (
+            <section key={round} className="workflow-timeline-round">
+              <h5>{round === 0 ? "Run-level events" : `Repair round ${round}`}</h5>
+              <ol>
+                {[...events].sort((a, b) => a.id - b.id).map((event) => (
+                  <li key={event.id}>
+                    <time>{when(event.timestamp)}</time>
+                    <strong>{event.kind.replaceAll("_", " ")}</strong>
+                    <code>{JSON.stringify(event.payload)}</code>
+                  </li>
+                ))}
+              </ol>
+            </section>
           ))}
-        </ol>
+        {detail.nextEventAfter && (
+          <Tooltip label="Load the next page of durable workflow events">
+            <button className="btn btn-ghost" onClick={() => void onLoadEvents()}>
+              Load more events ({detail.events.length} of {detail.eventCount ?? detail.events.length})
+            </button>
+          </Tooltip>
+        )}
       </section>
     </section>
   );
@@ -544,23 +807,103 @@ export function WorkflowRunView({
 export function WorkflowRuns({
   runs,
   selectedRunId,
+  filters,
   onSelectRun,
+  onFilters = () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
 }: {
   runs: WorkflowRunSummary[];
   selectedRunId: string | null;
+  filters?: WorkflowRunFilters;
   onSelectRun: (id: string) => void;
+  onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
 }): React.JSX.Element {
-  const ordered = useMemo(() => [...runs].sort((a, b) => b.updatedAt - a.updatedAt), [runs]);
+  const [history, setHistory] = useState<WorkflowRunSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [listLoading, setListLoading] = useState(true);
   const [detail, setDetail] = useState<WorkflowRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const filterKey = JSON.stringify(filters ?? {});
+  const ordered = useMemo(
+    () => [...history].sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)),
+    [history],
+  );
   const loadGeneration = useRef(0);
+  const listGeneration = useRef(0);
+  const selectedIndex = useRef(0);
   const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
+  const listPage = async (cursor: string | null, append: boolean): Promise<void> => {
+    const generation = ++listGeneration.current;
+    setListLoading(true);
+    if (!append) setListError(null);
+    const params = new URLSearchParams({ limit: "50" });
+    if (cursor) params.set("cursor", cursor);
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.workflowId) params.set("workflowId", filters.workflowId);
+    if (filters?.session) params.set("session", filters.session);
+    try {
+      const page = await workflowRequest<WorkflowRunPage>(`/api/workflow-runs?${params}`);
+      if (generation !== listGeneration.current) return;
+      setHistory((current) => append
+        ? [...new Map([...current, ...page.items].map((run) => [run.id, run])).values()]
+        : page.items);
+      setNextCursor(page.nextCursor);
+    } catch (caught) {
+      if (generation === listGeneration.current) {
+        setListError(caught instanceof Error ? caught.message : "Could not load workflow runs");
+      }
+    } finally {
+      if (generation === listGeneration.current) setListLoading(false);
+    }
+  };
+  useEffect(() => {
+    setHistory([]);
+    setNextCursor(null);
+    void listPage(null, false);
+    return () => { listGeneration.current++; };
+  }, [filterKey]);
+
+  useEffect(() => {
+    const live = new Map(runs.map((run) => [run.id, run]));
+    setHistory((current) => {
+      const reconciled = current
+        .filter((run) => live.has(run.id))
+        .map((run) => live.get(run.id) ?? run);
+      for (const run of runs) {
+        if (reconciled.some((item) => item.id === run.id)) continue;
+        const matches = (!filters?.status || run.status === filters.status)
+          && (!filters?.workflowId || run.workflowId === filters.workflowId)
+          && (!filters?.session || run.sessionId === filters.session || run.noteKey === filters.session);
+        if (
+          matches
+          && !["completed", "cancelled", "failed"].includes(run.status)
+        ) reconciled.unshift(run);
+      }
+      return reconciled;
+    });
+  }, [runs, filterKey]);
+  useEffect(() => {
+    const index = selectedRunId
+      ? ordered.findIndex((run) => run.id === selectedRunId)
+      : -1;
+    if (index >= 0) selectedIndex.current = index;
+  }, [ordered, selectedRunId]);
+  useEffect(() => {
+    if (
+      !selectedRunId
+      || detail?.run.id !== selectedRunId
+      || runs.some((run) => run.id === selectedRunId)
+      || ordered.some((run) => run.id === selectedRunId)
+      || ordered.length === 0
+    ) return;
+    onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
+  }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
   const load = (clear = false): void => {
     const generation = ++loadGeneration.current;
     if (clear) setDetail(null);
@@ -569,14 +912,16 @@ export function WorkflowRuns({
       return;
     }
     setError(null);
-    void workflowRequest<WorkflowRunDetail>(`/api/workflow-runs/${selected}`)
+    void workflowRequest<WorkflowRunDetail>(
+      `/api/workflow-runs/${encodeURIComponent(selected)}`,
+    )
       .then((next) => {
         if (loadGeneration.current === generation) setDetail(next);
       })
       .catch((caught) => {
         if (loadGeneration.current !== generation) return;
         setDetail(null);
-        setError(caught instanceof Error ? caught.message : "Could not load workflow run");
+        setError(workflowRunLoadError(caught));
       });
   };
   useEffect(() => {
@@ -625,8 +970,9 @@ export function WorkflowRuns({
 
   const copyFeedback = async (): Promise<void> => {
     if (!detail) return;
-    const delivery = detail.deliveries.at(-1);
-    const text = delivery?.payload ?? detail.attempts.flatMap((attempt) => {
+    const deliveryPayload = [...detail.deliveries].reverse()
+      .find((delivery) => delivery.payload.length > 0)?.payload;
+    const text = deliveryPayload ?? detail.attempts.flatMap((attempt) => {
       const verdict = attempt.verdict as unknown as PersonaVerdict | null;
       if (!verdict || !attempt.persona) return [];
       if (verdict.verdict === "pass") {
@@ -645,7 +991,49 @@ export function WorkflowRuns({
     }
   };
 
-  if (ordered.length === 0) {
+  const loadMoreEvents = async (): Promise<void> => {
+    const current = detail;
+    if (!current?.nextEventAfter) return;
+    try {
+      const page = await workflowRequest<WorkflowEventPage>(
+        `/api/workflow-runs/${encodeURIComponent(current.run.id)}/events?after=${current.nextEventAfter}&limit=200`,
+      );
+      setDetail((value) => value?.run.id === current.run.id
+        ? {
+            ...value,
+            events: [...value.events, ...page.items],
+            nextEventAfter: page.nextAfter,
+          }
+        : value);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load more workflow events");
+    }
+  };
+
+  const loadMoreCalls = async (): Promise<void> => {
+    const current = detail;
+    if (!current?.nextLlmCallAfter) return;
+    try {
+      const page = await workflowRequest<WorkflowLlmCallPage>(
+        `/api/workflow-runs/${encodeURIComponent(current.run.id)}/calls?after=${encodeURIComponent(current.nextLlmCallAfter)}&limit=200`,
+      );
+      setDetail((value) => value?.run.id === current.run.id
+        ? {
+            ...value,
+            llmCalls: [...(value.llmCalls ?? []), ...page.items],
+            nextLlmCallAfter: page.nextAfter,
+          }
+        : value);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load more workflow model calls");
+    }
+  };
+
+  if (ordered.length === 0 && listLoading) {
+    return <section className="workflow-empty" aria-live="polite"><p>Loading workflow runs…</p></section>;
+  }
+
+  if (ordered.length === 0 && !filters && !selectedRunId && !listError) {
     return (
       <section className="workflow-empty">
         <span className="workflow-empty-mark" aria-hidden>↻</span>
@@ -658,6 +1046,69 @@ export function WorkflowRuns({
   return (
     <section className="workflow-runs">
       <aside className="workflow-run-list">
+        {listError && <p className="persona-error" role="alert">{listError}</p>}
+        <form
+          className="workflow-run-filters"
+          onSubmit={(event) => event.preventDefault()}
+          aria-label="Filter workflow runs"
+        >
+          <label>
+            State
+            <Tooltip label="Limit history to runs in one current state">
+              <select
+                value={filters?.status ?? ""}
+                onChange={(event) => onFilters({
+                  ...filters,
+                  status: event.target.value
+                    ? event.target.value as WorkflowRunSummary["status"]
+                    : undefined,
+                })}
+              >
+                <option value="">All states</option>
+                {[
+                  "capturing", "running", "waiting_for_session", "waiting_for_pr",
+                  "waiting_for_inspector", "waiting_for_new_head", "blocked",
+                  "completed", "cancelled", "failed",
+                ].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
+              </select>
+            </Tooltip>
+          </label>
+          <label>
+            Workflow id
+            <input
+              maxLength={200}
+              value={filters?.workflowId ?? ""}
+              onChange={(event) => onFilters({
+                ...filters,
+                workflowId: event.target.value || undefined,
+              })}
+            />
+          </label>
+          <label>
+            Session
+            <input
+              maxLength={200}
+              value={filters?.session ?? ""}
+              onChange={(event) => onFilters({
+                ...filters,
+                session: event.target.value || undefined,
+              })}
+            />
+          </label>
+          {filters && (
+            <Tooltip label="Show Workflow history without state, workflow, or session filters">
+              <button className="btn btn-ghost" onClick={() => onFilters(undefined)}>
+                Clear filters
+              </button>
+            </Tooltip>
+          )}
+        </form>
+        {ordered.length === 0 && (
+          <div className="workflow-run-empty-filter">
+            <strong>No runs match these filters.</strong>
+            <p>Clear a filter or wait for a matching run.</p>
+          </div>
+        )}
         {ordered.map((run) => (
           <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${run.status.replaceAll("_", " ")}`}>
             <button
@@ -677,10 +1128,25 @@ export function WorkflowRuns({
             </button>
           </Tooltip>
         ))}
+        {nextCursor && (
+          <Tooltip label="Load the next page of Workflow run history">
+            <button
+              className="btn btn-ghost workflow-run-load-more"
+              disabled={listLoading}
+              onClick={() => void listPage(nextCursor, true)}
+            >
+              {listLoading ? "Loading…" : "Load more runs"}
+            </button>
+          </Tooltip>
+        )}
       </aside>
       <div className="workflow-run-reader">
         {error && <p className="persona-error" role="alert">{error}</p>}
-        {!detail && !error && <p>Loading run…</p>}
+        {!detail && !error && selected
+          ? <p>Loading run…</p>
+          : !detail && !error
+            ? <p>Select a workflow run to inspect its audit history.</p>
+            : null}
         {detail && (
           <WorkflowRunView
             detail={detail}
@@ -697,6 +1163,8 @@ export function WorkflowRuns({
               });
             }}
             onCopyFeedback={copyFeedback}
+            onLoadEvents={loadMoreEvents}
+            onLoadCalls={loadMoreCalls}
             onPreparePr={async () => {
               await mutate(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
                 requestId: crypto.randomUUID(),

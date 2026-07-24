@@ -35,11 +35,16 @@ export function WorkflowProperties({
   const removeSelection = (): void => {
     if (!selection) return;
     if (selection.kind === "edge") {
+      if (!window.confirm("Delete this connection?")) return;
       onUpdate({ draft: { ...workflow.draft, edges: workflow.draft.edges.filter((edge) => edge.id !== selection.id) } });
       return;
     }
+    if (selection.kind === "multi") return;
     const node = workflow.draft.nodes.find((candidate) => candidate.id === selection.id);
     if (!node || node.kind === "session") return;
+    const edgeCount = workflow.draft.edges.filter((edge) =>
+      edge.source === selection.id || edge.target === selection.id).length;
+    if (!window.confirm(`Delete this node and ${edgeCount} connected edge${edgeCount === 1 ? "" : "s"}?`)) return;
     onUpdate({
       draft: {
         nodes: workflow.draft.nodes.filter((candidate) => candidate.id !== selection.id),
@@ -86,6 +91,12 @@ export function WorkflowProperties({
               <button className="btn btn-danger" onClick={removeSelection}>Delete edge</button>
             </Tooltip>
           )}
+        </section>
+      ) : selection?.kind === "multi" ? (
+        <section>
+          <p className="workflow-eyebrow">Multiple selection</p>
+          <h3>{selection.nodeIds.length} nodes · {selection.edgeIds.length} edges</h3>
+          <p>Use Delete from the canvas to remove this selection with one confirmation.</p>
         </section>
       ) : (
         <section className="workflow-policy-fields">
@@ -136,6 +147,39 @@ export function WorkflowProperties({
           )}
         </section>
       )}
+      <section className="workflow-edge-list" aria-label="Workflow connections">
+        <h4>Connections · {workflow.draft.edges.length}</h4>
+        {workflow.draft.edges.length === 0 ? <p>No connections yet.</p> : (
+          <ul>
+            {workflow.draft.edges.map((edge) => (
+              <li key={edge.id}>
+                <span tabIndex={0}>
+                  {edge.source} ({edge.sourcePort}) → {edge.target} ({edge.targetPort})
+                </span>
+                {!readOnly && (
+                  <Tooltip label={`Remove the ${edge.sourcePort} connection from ${edge.source} to ${edge.target}`}>
+                    <button
+                      className="btn btn-ghost"
+                      aria-label={`Remove ${edge.sourcePort} connection from ${edge.source} to ${edge.target}`}
+                      onClick={() => {
+                        if (!window.confirm("Delete this connection?")) return;
+                        onUpdate({
+                          draft: {
+                            ...workflow.draft,
+                            edges: workflow.draft.edges.filter((candidate) => candidate.id !== edge.id),
+                          },
+                        });
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </Tooltip>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section className="workflow-validation">
         <h4>Validation · {diagnostics.filter((item) => item.severity === "error").length} errors</h4>
         {diagnostics.length === 0 ? <p className="workflow-valid">Ready to publish.</p> : (

@@ -182,8 +182,9 @@ import type {
   WorkflowRuntimeMutation,
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "@shared/workflow.ts";
 import { getWorkflowConfig, setWorkflowConfig } from "./workflows/config.ts";
+import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -445,6 +446,12 @@ export function buildApp(
     return c.json(manager.list(raw === "true"));
   });
   app.get("/api/workflows/config", (c) => c.json(getWorkflowConfig()));
+  app.get("/api/workflows/status", (c) => {
+    const manager = workflowManager();
+    return manager
+      ? c.json(manager.status())
+      : c.json({ error: "Workflow manager unavailable" }, 503);
+  });
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
@@ -476,6 +483,18 @@ export function buildApp(
     }
     const version = manager.version(c.req.param("id"), versionNumber);
     return version ? c.json(version) : c.json({ error: "no such workflow version" }, 404);
+  });
+  app.get("/api/workflows/:id/versions/:version/export", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const versionNumber = Number(c.req.param("version"));
+    if (!Number.isSafeInteger(versionNumber) || versionNumber < 1) {
+      return c.json({ error: "version must be a positive integer" }, 400);
+    }
+    const exported = manager.exportVersion(c.req.param("id"), versionNumber);
+    if (!exported) return c.json({ error: "no such workflow version" }, 404);
+    c.header("Content-Disposition", `attachment; filename="workflow-version-${versionNumber}.json"`);
+    return c.json(exported);
   });
   app.get("/api/workflows/:id", (c) => {
     const manager = workflowManager();
@@ -595,15 +614,88 @@ export function buildApp(
   });
   app.get("/api/workflow-runs", (c) => {
     const manager = workflowManager();
-    return manager
-      ? c.json(manager.runs())
-      : c.json({ error: "Workflow manager unavailable" }, 503);
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      return c.json({ error: "limit must be an integer from 1 through 200" }, 400);
+    }
+    const rawCursor = c.req.query("cursor");
+    if (rawCursor && rawCursor.length > 512) {
+      return c.json({ error: "cursor is invalid" }, 400);
+    }
+    const cursor = rawCursor ? decodeWorkflowRunCursor(rawCursor) : null;
+    if (rawCursor && !cursor) return c.json({ error: "cursor is invalid" }, 400);
+    const rawStatus = c.req.query("status");
+    if (rawStatus && !(WORKFLOW_RUN_STATUSES as readonly string[]).includes(rawStatus)) {
+      return c.json({ error: "status is invalid" }, 400);
+    }
+    const workflowId = c.req.query("workflowId") || undefined;
+    const session = c.req.query("session") || undefined;
+    if ((workflowId?.length ?? 0) > 200 || (session?.length ?? 0) > 200) {
+      return c.json({ error: "filter is too long" }, 400);
+    }
+    return c.json(manager.runPage({
+      limit,
+      cursor,
+      status: rawStatus as (typeof WORKFLOW_RUN_STATUSES)[number] | undefined,
+      workflowId,
+      session,
+    }));
+  });
+  app.get("/api/workflow-runs/:id/events", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const rawAfter = c.req.query("after");
+    const after = rawAfter === undefined ? 0 : Number(rawAfter);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 200 : Number(rawLimit);
+    if (!Number.isSafeInteger(after) || after < 0) {
+      return c.json({ error: "after must be a non-negative event id" }, 400);
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      return c.json({ error: "limit must be an integer from 1 through 200" }, 400);
+    }
+    const page = manager.events(c.req.param("id"), after, limit);
+    return page ? c.json(page) : c.json({ error: "no such workflow run" }, 404);
+  });
+  app.get("/api/workflow-runs/:id/calls", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 200 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      return c.json({ error: "limit must be an integer from 1 through 200" }, 400);
+    }
+    const after = c.req.query("after") || null;
+    if ((after?.length ?? 0) > 200) {
+      return c.json({ error: "after is invalid" }, 400);
+    }
+    const page = manager.llmCalls(c.req.param("id"), after, limit);
+    return page ? c.json(page) : c.json({ error: "no such workflow run" }, 404);
+  });
+  app.get("/api/workflow-runs/:id/export", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const exported = manager.exportRun(c.req.param("id"));
+    if (!exported) return c.json({ error: "no such workflow run" }, 404);
+    c.header("Content-Disposition", `attachment; filename="workflow-run-${c.req.param("id")}.json"`);
+    return c.json(exported);
   });
   app.get("/api/workflow-runs/:id", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const detail = manager.run(c.req.param("id"));
-    return detail ? c.json(detail) : c.json({ error: "no such workflow run" }, 404);
+    const result = manager.run(c.req.param("id"));
+    if (result.kind === "found") return c.json(result.detail);
+    return result.kind === "corrupt"
+      ? c.json({
+          error: "workflow run data is malformed",
+          code: "workflow_run_corrupt",
+        }, 500)
+      : c.json({
+          error: "no such workflow run",
+          code: "workflow_run_not_found",
+        }, 404);
   });
   app.post("/api/workflow-runs/:id/resubmit", async (c) => {
     const manager = workflowManager();

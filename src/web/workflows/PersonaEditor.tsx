@@ -4,6 +4,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import type { ResolvedModel } from "@shared/model-choice.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import {
+  WORKFLOW_LIMITS,
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
 } from "@shared/workflow.ts";
@@ -131,18 +132,23 @@ export function PersonaEditorStatus({
   archived,
   onReload,
   onDuplicate,
+  onDownload = () => {},
 }: {
   dirty: boolean;
   conflict: PersonaView | null;
   archived: boolean;
   onReload: () => void;
   onDuplicate: () => void;
+  onDownload?: () => void;
 }): React.JSX.Element | null {
   if (archived) return <p className="persona-state archived">Archived - this Persona is read-only.</p>;
   if (conflict) {
     return (
       <div className="persona-state conflict" role="alert">
         <span>A newer revision exists. Your local Markdown has not been changed.</span>
+        <Tooltip label="Download the exact local Markdown before resolving this conflict">
+          <button className="btn" onClick={onDownload}>Download local draft</button>
+        </Tooltip>
         <Tooltip label="Discard your unsaved edits and load the newer revision">
           <button className="btn" onClick={onReload}>Reload latest</button>
         </Tooltip>
@@ -238,6 +244,10 @@ export function PersonaEditor({
 
   async function save(asDuplicate = false): Promise<void> {
     if (archived || saving || (persona !== null && !dirty && !asDuplicate)) return;
+    if (exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes) {
+      setError(`Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`);
+      return;
+    }
     const submittedDraft = draftRef.current;
     const submittedGeneration = editGeneration.current;
     const updateBody = persona ? personaUpdatePatch(persona, submittedDraft, loadedRevision!) : null;
@@ -342,8 +352,8 @@ export function PersonaEditor({
           <h3>{draft.name || "Untitled Persona"}</h3>
         </div>
         <div className="persona-actions">
-          <Tooltip label={readOnly ? "This Persona is archived and cannot be edited" : persona !== null && !dirty ? "No unsaved changes" : "Save this Persona as a new revision"}>
-            <button className="btn" disabled={readOnly || saving || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+          <Tooltip label={readOnly ? "This Persona is archived and cannot be edited" : exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? "Guidance is over the UTF-8 byte limit" : persona !== null && !dirty ? "No unsaved changes" : "Save this Persona as a new revision"}>
+            <button className="btn" disabled={readOnly || saving || exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
           </Tooltip>
           <Tooltip label="Copy this Persona's guidance markdown to the clipboard">
             <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>{copied ? "Copied ✓" : "Copy Markdown"}</button>
@@ -370,6 +380,7 @@ export function PersonaEditor({
         archived={archived}
         onReload={reload}
         onDuplicate={() => void save(true)}
+        onDownload={downloadMarkdown}
       />
       {error && <p className="persona-error" role="alert">{error}</p>}
 
@@ -401,7 +412,7 @@ export function PersonaEditor({
           </Tooltip>
         </label>
         <div className="persona-effective" aria-label="Effective Persona model">
-          <span>Effective</span>
+          <span>{draft.runner || draft.model ? "Effective after overrides" : "Effective from app defaults"}</span>
           <strong>{effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}</strong>
           <code>{effectiveModel?.id ?? "resolves after save"}</code>
           {persona?.execution.runner.unknown && <small>Unknown stored provider “{persona.execution.runner.unknown}” fell back.</small>}
@@ -433,7 +444,12 @@ export function PersonaEditor({
       </div>
       <section className="persona-split">
         <div className="persona-pane persona-edit-pane" data-mobile-active={narrowPane === "edit"}>
-          <header><span>Markdown</span><small>{exactBytes.toLocaleString()} bytes</small></header>
+          <header>
+            <span>Markdown</span>
+            <small className={exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? "is-over-limit" : ""}>
+              {exactBytes.toLocaleString()} / {WORKFLOW_LIMITS.personaGuidanceBytes.toLocaleString()} UTF-8 bytes
+            </small>
+          </header>
           <div aria-label={`Editor for ${markdownPath(draft.name)}`}>
             <FileEditor
               path={markdownPath(draft.name)}

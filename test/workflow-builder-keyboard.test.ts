@@ -1,0 +1,88 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import {
+  autoLayoutWorkflow,
+  nextRovingNodeId,
+} from "../src/web/workflows/WorkflowCanvas.tsx";
+import type { WorkflowDraftGraph } from "../src/shared/workflow.ts";
+
+const canvasSource = readFileSync(
+  new URL("../src/web/workflows/WorkflowCanvas.tsx", import.meta.url),
+  "utf8",
+);
+const librarySource = readFileSync(
+  new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url),
+  "utf8",
+);
+const draftSource = readFileSync(
+  new URL("../src/web/workflows/useWorkflowDraft.ts", import.meta.url),
+  "utf8",
+);
+
+const graph: WorkflowDraftGraph = {
+  nodes: [
+    { id: "session", kind: "session", position: { x: 500, y: 500 } },
+    { id: "persona", kind: "persona", personaId: "p", position: { x: -50, y: 700 } },
+    { id: "end", kind: "end", outcome: "Complete", position: { x: 10, y: 10 } },
+  ],
+  edges: [
+    { id: "start", source: "session", sourcePort: "submitted", target: "persona", targetPort: "activate" },
+    { id: "pass", source: "persona", sourcePort: "pass", target: "end", targetPort: "terminal" },
+  ],
+};
+
+test("auto-layout changes positions only and keeps the single Session semantic identity", () => {
+  const laidOut = autoLayoutWorkflow(graph);
+  assert.deepEqual(laidOut.edges, graph.edges);
+  assert.deepEqual(laidOut.nodes.map(({ position: _position, ...node }) => node), graph.nodes.map(({
+    position: _position,
+    ...node
+  }) => node));
+  assert.equal(laidOut.nodes.filter((node) => node.kind === "session").length, 1);
+  assert.ok(laidOut.nodes.every((node) =>
+    Number.isFinite(node.position.x) && Number.isFinite(node.position.y)));
+});
+
+test("keyboard editing covers move, connect, confirmed delete, undo, redo, and duplicate", () => {
+  assert.match(librarySource, /onClick=\{\(\) => addNode\("persona"\)\}/);
+  assert.match(canvasSource, /focusable: node\.id === focusNodeId/);
+  assert.match(canvasSource, /onFocusCapture/);
+  assert.match(canvasSource, /event\.key === "Tab"/);
+  assert.match(canvasSource, /window\.requestAnimationFrame\(focusNext\)/);
+  assert.match(canvasSource, /ArrowLeft/);
+  assert.match(canvasSource, /const gridUnits = event\.shiftKey \? 10 : 1/);
+  assert.match(canvasSource, /GRID_SIZE \* gridUnits/);
+  assert.match(canvasSource, /onKeyboardConnect/);
+  assert.match(canvasSource, /deleteKeyCode=\{null\}/);
+  assert.match(
+    librarySource,
+    /connectionAllowed\(source, connectSourcePort, target, connectTargetPort\)/,
+  );
+  for (const id of [
+    "workflow-connect-source",
+    "workflow-connect-target",
+  ]) {
+    assert.match(librarySource, new RegExp(id));
+  }
+  assert.match(librarySource, /value=\{connectSourcePort\}/);
+  assert.match(canvasSource, /setFocusNodeId\(selection\.id\)/);
+  assert.match(librarySource, /value=\{connectTargetPort\}/);
+  assert.match(librarySource, /Delete \$\{removable\.size\} node/);
+  assert.match(librarySource, /event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(librarySource, /if \(event\.shiftKey\) draft\.redo\(\)/);
+  assert.match(librarySource, /node\.kind !== "session"/);
+  assert.match(draftSource, /slice\(-49\)/);
+  assert.match(canvasSource, /workflow-alignment-guide is-vertical/);
+  assert.match(canvasSource, /workflow-alignment-guide is-horizontal/);
+});
+
+test("roving node focus advances in graph order and exits at either boundary", () => {
+  const ids = ["session", "persona", "end"];
+  assert.equal(nextRovingNodeId(ids, "session", false), "persona");
+  assert.equal(nextRovingNodeId(ids, "persona", false), "end");
+  assert.equal(nextRovingNodeId(ids, "end", false), null);
+  assert.equal(nextRovingNodeId(ids, "end", true), "persona");
+  assert.equal(nextRovingNodeId(ids, "session", true), null);
+  assert.equal(nextRovingNodeId(ids, "missing", false), null);
+});

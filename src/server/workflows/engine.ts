@@ -23,6 +23,7 @@ import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
+import { workflowLog } from "./log.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 const PERSONA_TIMEOUT_MS = 120_000;
@@ -402,7 +403,11 @@ export class WorkflowEngine {
         if (this.scheduledAttempts.has(attempt.id)) continue;
         this.scheduledAttempts.add(attempt.id);
         const promise = this.limit(() => this.runAttempt(attempt))
-          .catch((error) => console.error(`[workflow] attempt ${attempt.id}: ${String(error)}`))
+          .catch((error) => workflowLog("error", {
+            event: "attempt_failed",
+            call: attempt.id,
+            error: error instanceof Error ? error.name : "unknown",
+          }))
           .finally(() => {
             this.inFlight.delete(promise);
             this.scheduledAttempts.delete(attempt.id);

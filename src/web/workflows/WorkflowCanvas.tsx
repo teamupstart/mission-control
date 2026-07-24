@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Background,
   ControlButton,
   Controls,
+  MiniMap,
   ReactFlow,
+  ViewportPortal,
   applyEdgeChanges,
   applyNodeChanges,
   type Connection,
@@ -14,6 +24,7 @@ import {
   useReactFlow,
   useStore,
 } from "@xyflow/react";
+import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type {
   PersonaView,
   PublishedWorkflowNode,
@@ -28,12 +39,44 @@ import { connectionAllowed } from "@shared/workflow-graph.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
 
-export type WorkflowSelection = { kind: "node" | "edge"; id: string } | null;
+export type WorkflowSelection =
+  | { kind: "node" | "edge"; id: string }
+  | { kind: "multi"; nodeIds: string[]; edgeIds: string[] }
+  | null;
+
+export interface WorkflowCanvasHandle {
+  viewportCenter: () => { x: number; y: number };
+  fit: () => void;
+}
 
 const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
+const GRID_SIZE = 18;
+const ALIGNMENT_TOLERANCE = 6;
+
+function boundedCoordinate(value: number): number {
+  return Math.max(
+    -WORKFLOW_LIMITS.canvasCoordinateAbs,
+    Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, value),
+  );
+}
+
+export function nextRovingNodeId(
+  nodeIds: readonly string[],
+  currentId: string,
+  backwards: boolean,
+): string | null {
+  const currentIndex = nodeIds.indexOf(currentId);
+  if (currentIndex < 0) return null;
+  const nextIndex = currentIndex + (backwards ? -1 : 1);
+  return nodeIds[nextIndex] ?? null;
+}
+
+function fitDuration(): number {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 180;
+}
 
 function WorkflowControls(): React.JSX.Element {
-  const { fitView, zoomIn, zoomOut } = useReactFlow();
+  const { fitView, setViewport, zoomIn, zoomOut } = useReactFlow();
   const zoom = useStore((state) => state.transform[2]);
   const minZoom = useStore((state) => state.minZoom);
   const maxZoom = useStore((state) => state.maxZoom);
@@ -68,6 +111,14 @@ function WorkflowControls(): React.JSX.Element {
           <span aria-hidden>□</span>
         </ControlButton>
       </Tooltip>
+      <Tooltip label="Reset the canvas to 100% zoom">
+        <ControlButton
+          aria-label="Reset canvas zoom"
+          onClick={() => void setViewport({ x: 0, y: 0, zoom: 1 })}
+        >
+          <span aria-hidden>1:1</span>
+        </ControlButton>
+      </Tooltip>
     </Controls>
   );
 }
@@ -81,13 +132,18 @@ function canvasNodes(
   personas: readonly PersonaView[],
   readOnly: boolean,
   nodeStatuses: Readonly<Record<string, string>>,
+  focusNodeId: string | null,
 ): WorkflowCanvasNode[] {
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
   const incoming = new Map<string, Set<string>>();
+  const outgoing = new Map<string, Set<string>>();
   for (const edge of graph.edges) {
     const predecessors = incoming.get(edge.target) ?? new Set<string>();
     predecessors.add(edge.source);
     incoming.set(edge.target, predecessors);
+    const successors = outgoing.get(edge.source) ?? new Set<string>();
+    successors.add(edge.target);
+    outgoing.set(edge.source, successors);
   }
   return graph.nodes.map((node) => {
     let label = "Session";
@@ -113,8 +169,18 @@ function canvasNodes(
       deletable: !readOnly && node.kind !== "session",
       draggable: !readOnly,
       selectable: true,
+      focusable: node.id === focusNodeId,
+      ariaLabel: `${node.kind === "all_pass" ? "All-pass Join" : node.kind} node, ${label}, ${incoming.get(node.id)?.size ?? 0} incoming connections, ${outgoing.get(node.id)?.size ?? 0} outgoing connections`,
       className: nodeStatuses[node.id] ? `workflow-runtime-${nodeStatuses[node.id]}` : undefined,
-      data: { kind: node.kind, label, subtitle, readOnly, runtimeStatus: nodeStatuses[node.id] ?? null },
+      data: {
+        kind: node.kind,
+        label,
+        subtitle,
+        readOnly,
+        runtimeStatus: nodeStatuses[node.id] ?? null,
+        incomingCount: incoming.get(node.id)?.size ?? 0,
+        outgoingCount: outgoing.get(node.id)?.size ?? 0,
+      },
     };
   });
 }
@@ -147,35 +213,124 @@ export function reconcileCanvasNodes(
   });
 }
 
-export function WorkflowCanvas({
-  graph,
-  personas,
-  readOnly = false,
-  onChange,
-  onSelection,
-  onDropNode,
-  nodeStatuses = EMPTY_NODE_STATUSES,
-}: {
+export function reconcileCanvasEdges(
+  current: readonly Edge[],
+  projected: readonly Edge[],
+): Edge[] {
+  const currentById = new Map(current.map((edge) => [edge.id, edge]));
+  return projected.map((edge) => {
+    const previous = currentById.get(edge.id);
+    return previous ? { ...edge, selected: previous.selected } : edge;
+  });
+}
+
+/** Deterministic visual-only layout. Node and edge identities and semantics stay unchanged. */
+export function autoLayoutWorkflow(graph: WorkflowDraftGraph): WorkflowDraftGraph {
+  const layer = new Map<string, number>();
+  const incoming = new Map(graph.nodes.map((node) => [node.id, 0]));
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  // A fail edge back to the one Session node is a repair loop, not a forward layout
+  // dependency. Counting it made Kahn's walk revisit Session and place it after its
+  // reviewers in every valid workflow.
+  const layoutEdges = graph.edges.filter((edge) => byId.get(edge.target)?.kind !== "session");
+  for (const edge of layoutEdges) {
+    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
+  }
+  const ready = graph.nodes.filter((node) => (incoming.get(node.id) ?? 0) === 0).map((node) => node.id);
+  for (const node of graph.nodes) if (node.kind === "session" && !ready.includes(node.id)) ready.unshift(node.id);
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  for (const edge of layoutEdges) {
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+  }
+  while (ready.length > 0) {
+    const id = ready.shift()!;
+    const currentLayer = layer.get(id) ?? 0;
+    layer.set(id, currentLayer);
+    for (const edge of outgoing.get(id) ?? []) {
+      layer.set(edge.target, Math.max(layer.get(edge.target) ?? 0, currentLayer + 1));
+      incoming.set(edge.target, (incoming.get(edge.target) ?? 1) - 1);
+      if (incoming.get(edge.target) === 0) ready.push(edge.target);
+    }
+  }
+  const fallbackLayer = Math.max(0, ...layer.values()) + 1;
+  const rows = new Map<number, number>();
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const column = layer.get(node.id) ?? fallbackLayer;
+      const row = rows.get(column) ?? 0;
+      rows.set(column, row + 1);
+      return {
+        ...node,
+        position: { x: 60 + column * 280, y: 60 + row * 170 },
+      };
+    }),
+  };
+}
+
+export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   graph: WorkflowDraftGraph | PublishedWorkflowGraph;
   personas: PersonaView[];
   readOnly?: boolean;
   onChange?: (graph: WorkflowDraftGraph) => void;
   onSelection?: (selection: WorkflowSelection) => void;
   onDropNode?: (kind: "persona" | "all_pass" | "end", personaId: string | null, position: { x: number; y: number }) => void;
+  onDeleteSelection?: (nodeIds: string[], edgeIds: string[]) => void;
+  onKeyboardConnect?: (sourceNodeId: string) => void;
+  onAnnounce?: (message: string) => void;
   nodeStatuses?: Readonly<Record<string, string>>;
-}): React.JSX.Element {
+}>(function WorkflowCanvas({
+  graph,
+  personas,
+  readOnly = false,
+  onChange,
+  onSelection,
+  onDropNode,
+  onDeleteSelection,
+  onKeyboardConnect,
+  onAnnounce,
+  nodeStatuses = EMPTY_NODE_STATUSES,
+}, forwardedRef): React.JSX.Element {
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const projectedNodes = useMemo(
-    () => canvasNodes(graph, personas, readOnly, nodeStatuses),
-    [graph, personas, readOnly, nodeStatuses],
+    () => canvasNodes(graph, personas, readOnly, nodeStatuses, focusNodeId),
+    [graph, personas, readOnly, nodeStatuses, focusNodeId],
   );
   const [nodes, setNodes] = useState(projectedNodes);
-  const edges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);
+  const projectedEdges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);
+  const [edges, setEdges] = useState(projectedEdges);
+  const [alignmentGuide, setAlignmentGuide] = useState<{ x: number | null; y: number | null }>({
+    x: null,
+    y: null,
+  });
   const draft = graph as WorkflowDraftGraph;
   const instance = useRef<ReactFlowInstance<WorkflowCanvasNode, Edge> | null>(null);
+  const canvas = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setNodes((current) => reconcileCanvasNodes(current, projectedNodes));
   }, [projectedNodes]);
+  useEffect(() => {
+    setEdges((current) => reconcileCanvasEdges(current, projectedEdges));
+  }, [projectedEdges]);
+  useEffect(() => {
+    if (!graph.nodes.some((node) => node.id === focusNodeId)) {
+      setFocusNodeId(graph.nodes[0]?.id ?? null);
+    }
+  }, [focusNodeId, graph.nodes]);
+
+  useImperativeHandle(forwardedRef, () => ({
+    viewportCenter: () => {
+      const flow = instance.current;
+      const bounds = canvas.current?.getBoundingClientRect();
+      if (!flow || !bounds) return { x: 240, y: 140 };
+      return flow.screenToFlowPosition({
+        x: bounds.left + bounds.width / 2,
+        y: bounds.top + bounds.height / 2,
+      });
+    },
+    fit: () => { void instance.current?.fitView({ duration: fitDuration() }); },
+  }), []);
 
   const validConnection = useCallback((connection: Edge | Connection): boolean => {
     const source = draft.nodes.find((node) => node.id === connection.source);
@@ -188,23 +343,59 @@ export function WorkflowCanvas({
     ));
   }, [draft.nodes]);
 
-  const changeNodes = (changes: NodeChange<WorkflowCanvasNode>[]): void => {
-    const next = applyNodeChanges(changes, nodes);
-    setNodes(next);
+  const commitNodePositions = (next: readonly WorkflowCanvasNode[]): void => {
     if (readOnly || !onChange) return;
     const byId = new Map(next.map((node) => [node.id, node]));
     const kept = draft.nodes
       .filter((node) => byId.has(node.id) || node.kind === "session")
-      .map((node) => ({ ...node, position: byId.get(node.id)?.position ?? node.position })) as WorkflowDraftNode[];
+      .map((node) => ({
+        ...node,
+        position: {
+          x: boundedCoordinate(byId.get(node.id)?.position.x ?? node.position.x),
+          y: boundedCoordinate(byId.get(node.id)?.position.y ?? node.position.y),
+        },
+      })) as WorkflowDraftNode[];
     const keptIds = new Set(kept.map((node) => node.id));
-    onChange({ nodes: kept, edges: draft.edges.filter((edge) => keptIds.has(edge.source) && keptIds.has(edge.target)) });
+    onChange({
+      nodes: kept,
+      edges: draft.edges.filter((edge) => keptIds.has(edge.source) && keptIds.has(edge.target)),
+    });
+  };
+
+  const changeNodes = (changes: NodeChange<WorkflowCanvasNode>[]): void => {
+    const next = applyNodeChanges(changes, nodes);
+    setNodes(next);
+    // Selection, measurement and each intermediate pointer frame are local canvas
+    // state. Commit one history entry at drag stop, or immediately for a removal.
+    if (changes.some((change) => change.type === "remove")) commitNodePositions(next);
   };
 
   const changeEdges = (changes: EdgeChange[]): void => {
-    if (readOnly || !onChange) return;
     const next = applyEdgeChanges(changes, edges);
+    setEdges(next);
+    if (readOnly || !onChange) return;
+    if (!changes.some((change) => change.type === "remove")) return;
     const kept = new Set(next.map((edge) => edge.id));
     onChange({ ...draft, edges: draft.edges.filter((edge) => kept.has(edge.id)) });
+  };
+
+  const alignedPosition = (
+    id: string,
+    position: { x: number; y: number },
+  ): { position: { x: number; y: number }; x: number | null; y: number | null } => {
+    const peers = nodes.filter((node) => node.id !== id);
+    const alignedX = peers.find((node) =>
+      Math.abs(node.position.x - position.x) <= ALIGNMENT_TOLERANCE)?.position.x ?? null;
+    const alignedY = peers.find((node) =>
+      Math.abs(node.position.y - position.y) <= ALIGNMENT_TOLERANCE)?.position.y ?? null;
+    return {
+      position: {
+        x: boundedCoordinate(alignedX ?? position.x),
+        y: boundedCoordinate(alignedY ?? position.y),
+      },
+      x: alignedX,
+      y: alignedY,
+    };
   };
 
   const connect = (connection: Connection): void => {
@@ -222,23 +413,153 @@ export function WorkflowCanvas({
   };
 
   return (
-    <div className={`workflow-canvas${readOnly ? " is-readonly" : ""}`} aria-label={readOnly ? "Published workflow graph" : "Workflow graph editor"}>
+    <div
+      ref={canvas}
+      className={`workflow-canvas${readOnly ? " is-readonly" : ""}`}
+      aria-label={readOnly ? "Published workflow graph" : "Workflow graph editor"}
+      onFocusCapture={(event) => {
+        const target = event.target instanceof Element
+          ? event.target.closest<HTMLElement>(".react-flow__node[data-id]")
+          : null;
+        const id = target?.dataset.id;
+        if (!id || !graph.nodes.some((node) => node.id === id)) return;
+        setFocusNodeId(id);
+        setNodes((current) => {
+          const alreadySelected = current.every((node) => Boolean(node.selected) === (node.id === id));
+          return alreadySelected
+            ? current
+            : current.map((node) => ({ ...node, selected: node.id === id }));
+        });
+        onSelection?.({ kind: "node", id });
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          const activeNode = event.target instanceof Element
+            ? event.target.closest<HTMLElement>(".react-flow__node[data-id]")
+            : null;
+          const currentId = activeNode?.dataset.id;
+          const nextId = currentId
+            ? nextRovingNodeId(graph.nodes.map((node) => node.id), currentId, event.shiftKey)
+            : null;
+          if (nextId) {
+            event.preventDefault();
+            setFocusNodeId(nextId);
+            const focusNext = (): void => {
+              const nextElement = [...(canvas.current?.querySelectorAll<HTMLElement>(".react-flow__node[data-id]") ?? [])]
+                .find((node) => node.dataset.id === nextId);
+              if (!nextElement) return;
+              // React Flow applies the persisted roving tab stop on the next render.
+              // Make this synchronous so the same Tab press can transfer focus now.
+              nextElement.tabIndex = 0;
+              nextElement.focus();
+            };
+            focusNext();
+            // Selection changes can make React Flow replace the focused wrapper.
+            // Restore focus to the persisted roving target after that render.
+            window.requestAnimationFrame(focusNext);
+          }
+          return;
+        }
+        if (readOnly || !onChange) return;
+        const selectedNodes = nodes.filter((node) => node.selected);
+        const selectedEdges = edges.filter((edge) => edge.selected);
+        if (
+          (event.key === "Delete" || event.key === "Backspace")
+          && (selectedNodes.length > 0 || selectedEdges.length > 0)
+        ) {
+          event.preventDefault();
+          onDeleteSelection?.(
+            selectedNodes.map((node) => node.id),
+            selectedEdges.map((edge) => edge.id),
+          );
+          return;
+        }
+        if (event.key.toLowerCase() === "c" && selectedNodes.length === 1) {
+          event.preventDefault();
+          onKeyboardConnect?.(selectedNodes[0]!.id);
+          return;
+        }
+        const movement = {
+          ArrowLeft: { x: -1, y: 0 },
+          ArrowRight: { x: 1, y: 0 },
+          ArrowUp: { x: 0, y: -1 },
+          ArrowDown: { x: 0, y: 1 },
+        }[event.key];
+        if (!movement || selectedNodes.length === 0) return;
+        event.preventDefault();
+        const gridUnits = event.shiftKey ? 10 : 1;
+        const amount = GRID_SIZE * gridUnits;
+        const selectedIds = new Set(selectedNodes.map((node) => node.id));
+        const nextGraph: WorkflowDraftGraph = {
+          ...draft,
+          nodes: draft.nodes.map((node) => selectedIds.has(node.id)
+            ? {
+                ...node,
+                position: {
+                  x: boundedCoordinate(node.position.x + movement.x * amount),
+                  y: boundedCoordinate(node.position.y + movement.y * amount),
+                },
+              }
+            : node),
+        };
+        onChange(nextGraph);
+        onAnnounce?.(`Moved ${selectedNodes.length} node${selectedNodes.length === 1 ? "" : "s"} ${event.key.replace("Arrow", "").toLowerCase()} ${gridUnits} grid unit${gridUnits === 1 ? "" : "s"}`);
+      }}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={WORKFLOW_NODE_TYPES}
         onNodesChange={changeNodes}
         onEdgesChange={changeEdges}
+        onNodeDrag={(_event, node) => {
+          const aligned = alignedPosition(node.id, node.position);
+          setAlignmentGuide({ x: aligned.x, y: aligned.y });
+        }}
+        onNodeDragStop={(_event, node) => {
+          const aligned = alignedPosition(node.id, node.position);
+          const next = nodes.map((candidate) => candidate.id === node.id
+            ? { ...candidate, position: aligned.position }
+            : candidate);
+          setNodes(next);
+          setAlignmentGuide({ x: null, y: null });
+          commitNodePositions(next);
+        }}
         onConnect={connect}
         isValidConnection={validConnection}
         onSelectionChange={({ nodes: selectedNodes, edges: selectedEdges }) => {
-          onSelection?.(selectedNodes[0]
-            ? { kind: "node", id: selectedNodes[0].id }
-            : selectedEdges[0] ? { kind: "edge", id: selectedEdges[0].id } : null);
+          const selection = selectedNodes.length + selectedEdges.length > 1
+            ? {
+                kind: "multi" as const,
+                nodeIds: selectedNodes.map((node) => node.id),
+                edgeIds: selectedEdges.map((edge) => edge.id),
+              }
+            : selectedNodes[0]
+              ? { kind: "node" as const, id: selectedNodes[0].id }
+              : selectedEdges[0]
+                ? { kind: "edge" as const, id: selectedEdges[0].id }
+                : null;
+          onSelection?.(selection);
+          if (selection?.kind === "node") {
+            setFocusNodeId(selection.id);
+            const selectedNode = nodes.find((node) => node.id === selection.id);
+            if (selectedNode) onAnnounce?.(selectedNode.ariaLabel ?? `${selectedNode.data.label} node selected`);
+          } else if (selection?.kind === "multi") {
+            setFocusNodeId(selection.nodeIds[0] ?? focusNodeId);
+            onAnnounce?.(`${selection.nodeIds.length} nodes and ${selection.edgeIds.length} edges selected`);
+          }
         }}
         nodesConnectable={!readOnly}
         elementsSelectable
         fitView
+        snapToGrid={!readOnly}
+        snapGrid={[GRID_SIZE, GRID_SIZE]}
+        nodeExtent={[
+          [-WORKFLOW_LIMITS.canvasCoordinateAbs, -WORKFLOW_LIMITS.canvasCoordinateAbs],
+          [WORKFLOW_LIMITS.canvasCoordinateAbs, WORKFLOW_LIMITS.canvasCoordinateAbs],
+        ]}
+        deleteKeyCode={null}
+        multiSelectionKeyCode={["Meta", "Control"]}
         minZoom={0.2}
         maxZoom={2}
         onInit={(flow) => { instance.current = flow; }}
@@ -264,8 +585,30 @@ export function WorkflowCanvas({
       >
         {/* React Flow's free-tier license requires its generated attribution link. */}
         <Background gap={18} size={1} />
+        <ViewportPortal>
+          {alignmentGuide.x !== null && (
+            <span
+              className="workflow-alignment-guide is-vertical"
+              style={{ left: alignmentGuide.x }}
+              aria-hidden
+            />
+          )}
+          {alignmentGuide.y !== null && (
+            <span
+              className="workflow-alignment-guide is-horizontal"
+              style={{ top: alignmentGuide.y }}
+              aria-hidden
+            />
+          )}
+        </ViewportPortal>
         <WorkflowControls />
+        <MiniMap
+          pannable
+          zoomable
+          ariaLabel="Workflow minimap"
+          nodeColor={(node) => node.className?.includes("fail") ? "#d34f4f" : "#76849b"}
+        />
       </ReactFlow>
     </div>
   );
-}
+});

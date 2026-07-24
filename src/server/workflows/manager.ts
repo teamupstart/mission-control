@@ -27,6 +27,11 @@ import type {
   WorkflowRun,
   WorkflowRunDetail,
   WorkflowRunSummary,
+  WorkflowRunPage,
+  WorkflowEventPage,
+  WorkflowLlmCallPage,
+  WorkflowExportEnvelope,
+  WorkflowStatus,
   WorkflowSubmission,
   WorkflowSummary,
   WorkflowValidationResult,
@@ -97,6 +102,8 @@ import {
 import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
+import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
+import { workflowLog } from "./log.ts";
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -171,6 +178,8 @@ export interface WorkflowManagerOptions {
    * dependency this boundary exists to prevent. Returns one sentence for a human, or null.
    */
   externalBindingEligibility?: ExternalBindingEligibility;
+  retentionIntervalMs?: number;
+  runRetention?: typeof runWorkflowRetention;
 }
 
 function runIsTerminal(run: WorkflowRun): boolean {
@@ -248,6 +257,13 @@ export class WorkflowManager {
   private readonly inject: typeof injectPrompt;
   private readonly rememberInjection: typeof recordInjection;
   private readonly schedule: ReviewScheduler;
+  private retentionTimer: ReturnType<typeof setInterval> | null = null;
+  private retentionRunning = false;
+  private lastRecoveryAt: number | null = null;
+  private lastRetentionAt: number | null = null;
+  private lastRetentionError: string | null = null;
+  private lastRetentionCompacted = 0;
+  private lastRetentionDeleted = 0;
 
   constructor(
     private readonly registry: Registry,
@@ -341,13 +357,13 @@ export class WorkflowManager {
     if (this.registry.sessionsObserved()) {
       this.recoverWaitingDeliveries();
       this.reconcileBindingsAfterDiscovery();
-      this.engine.start();
+      this.startEngineAndMaintenance();
     } else if (!this.discoveryUnsubscribe) {
       this.discoveryUnsubscribe = this.registry.onSessionsObserved(() => {
         this.discoveryUnsubscribe = null;
         this.recoverWaitingDeliveries();
         this.reconcileBindingsAfterDiscovery();
-        this.engine.start();
+        this.startEngineAndMaintenance();
       });
     }
   }
@@ -359,6 +375,8 @@ export class WorkflowManager {
     this.discoveryUnsubscribe = null;
     this.inspectionUnsubscribe?.();
     this.inspectionUnsubscribe = null;
+    if (this.retentionTimer) clearInterval(this.retentionTimer);
+    this.retentionTimer = null;
     await this.engine.stop();
     await Promise.allSettled([...this.deliveryTasks]);
   }
@@ -449,9 +467,63 @@ export class WorkflowManager {
     return this.store.listRunSummaries();
   }
 
-  run(id: string): WorkflowRunDetail | null {
-    const detail = this.store.runDetail(id);
-    if (!detail) return null;
+  runPage(input: {
+    limit: number;
+    cursor: { updatedAt: number; id: string } | null;
+    status?: WorkflowRun["status"];
+    workflowId?: string;
+    session?: string;
+  }): WorkflowRunPage {
+    return this.store.listRunSummaryPage(input);
+  }
+
+  events(runId: string, after: number, limit: number): WorkflowEventPage | null {
+    return this.store.getRun(runId) ? this.store.listEventPage(runId, after, limit) : null;
+  }
+
+  llmCalls(runId: string, after: string | null, limit: number): WorkflowLlmCallPage | null {
+    return this.store.getRun(runId) ? this.store.listLlmCallPage(runId, after, limit) : null;
+  }
+
+  status(): WorkflowStatus {
+    return {
+      ...this.store.workflowStatusCounts(),
+      lastRecoveryAt: this.lastRecoveryAt,
+      lastRetentionAt: this.lastRetentionAt,
+      lastRetentionError: this.lastRetentionError,
+      lastRetentionCompacted: this.lastRetentionCompacted,
+      lastRetentionDeleted: this.lastRetentionDeleted,
+    };
+  }
+
+  exportRun(id: string, now = Date.now()): WorkflowExportEnvelope<WorkflowRunDetail> | null {
+    const detail = this.store.runExportDetail(id);
+    return detail
+      ? { schemaVersion: 1, exportedAt: now, kind: "workflow_run", data: this.decorateRun(detail) }
+      : null;
+  }
+
+  exportVersion(
+    id: string,
+    version: number,
+    now = Date.now(),
+  ): WorkflowExportEnvelope<WorkflowVersion> | null {
+    const data = this.store.getWorkflowVersion(id, version);
+    return data
+      ? { schemaVersion: 1, exportedAt: now, kind: "workflow_version", data }
+      : null;
+  }
+
+  run(id: string):
+    | { kind: "found"; detail: WorkflowRunDetail }
+    | { kind: "missing" | "corrupt" } {
+    const result = this.store.runDetailResult(id);
+    return result.kind === "found"
+      ? { kind: "found", detail: this.decorateRun(result.detail) }
+      : result;
+  }
+
+  private decorateRun(detail: WorkflowRunDetail): WorkflowRunDetail {
     const state = this.gateState(detail.run);
     if (!state) return detail;
     const inspection = state.prKey
@@ -2734,6 +2806,57 @@ export class WorkflowManager {
       if (!updated) continue;
       const run = this.store.activeRunForBinding(updated.id);
       if (run) this.publishRun(run.id);
+    }
+  }
+
+  private startEngineAndMaintenance(): void {
+    this.engine.start();
+    this.lastRecoveryAt = Date.now();
+    workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
+    void this.sweepRetention();
+    if (this.retentionTimer) return;
+    this.retentionTimer = setInterval(
+      () => void this.sweepRetention(),
+      this.options.retentionIntervalMs ?? WORKFLOW_RETENTION_INTERVAL_MS,
+    );
+    this.retentionTimer.unref?.();
+  }
+
+  private async sweepRetention(): Promise<void> {
+    if (this.retentionRunning) return;
+    this.retentionRunning = true;
+    try {
+      const result = (this.options.runRetention ?? runWorkflowRetention)(
+        this.store,
+        getWorkflowConfig().retention,
+      );
+      this.lastRetentionAt = Date.now();
+      this.lastRetentionError = result.failedRunCount > 0
+        ? "retention_partial_failure"
+        : null;
+      this.lastRetentionCompacted = result.compactedRunIds.length;
+      this.lastRetentionDeleted = result.deletedRunIds.length;
+      for (const id of result.compactedRunIds) this.publishRun(id);
+      for (const id of result.deletedRunIds) this.registry.removeWorkflowRun(id);
+      workflowLog(result.failedRunCount > 0 ? "error" : "info", {
+        event: result.failedRunCount > 0
+          ? "retention_partial_failure"
+          : "retention_complete",
+        compacted: result.compactedRunIds.length,
+        deleted: result.deletedRunIds.length,
+        failed: result.failedRunCount,
+      });
+    } catch (error) {
+      this.lastRetentionAt = Date.now();
+      this.lastRetentionError = "retention_failed";
+      this.lastRetentionCompacted = 0;
+      this.lastRetentionDeleted = 0;
+      workflowLog("error", {
+        event: "retention_failed",
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    } finally {
+      this.retentionRunning = false;
     }
   }
 

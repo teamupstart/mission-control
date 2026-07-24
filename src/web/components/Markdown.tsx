@@ -97,7 +97,12 @@ export const Markdown = memo(function Markdown({
             <WorkspaceAnchor {...props} href={href} onLink={onLinkClick} />
           ) : (
             <Tooltip label={href || "Blocked link"}>
-              <a {...props} href={href} />
+              <a
+                {...props}
+                href={href}
+                target={href?.startsWith("http") ? "_blank" : undefined}
+                rel={href?.startsWith("http") ? "noreferrer noopener" : undefined}
+              />
             </Tooltip>
           ),
       }}

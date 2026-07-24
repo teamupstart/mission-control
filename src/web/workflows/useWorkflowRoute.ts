@@ -4,6 +4,7 @@ import {
   isSettingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
+import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
 // dashboard has - fleet, Workflows, Settings - is a variant of `MissionRoute` here, and
@@ -11,9 +12,14 @@ import {
 // to "which page is showing", and the dirty-draft gate below only guards one of them.
 
 export type WorkflowTab = "workflows" | "personas" | "runs";
+export interface WorkflowRunFilters {
+  status?: WorkflowRunStatus;
+  workflowId?: string;
+  session?: string;
+}
 export type MissionRoute =
   | { page: "fleet" }
-  | { page: "workflows"; tab: WorkflowTab; runId?: string }
+  | { page: "workflows"; tab: WorkflowTab; runId?: string; filters?: WorkflowRunFilters }
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
@@ -35,17 +41,38 @@ function segment(raw: string): string | null {
 }
 
 export function parseMissionRoute(hash: string): MissionRoute {
-  const path = hash.replace(/^#/, "").replace(/\/+$/, "");
+  const withoutHash = hash.replace(/^#/, "");
+  const [rawPath, rawQuery = ""] = withoutHash.split("?", 2);
+  const path = rawPath!.replace(/\/+$/, "");
+  const params = new URLSearchParams(rawQuery);
+  const rawStatus = params.get("status");
+  const filters: WorkflowRunFilters = {
+    ...(rawStatus && (WORKFLOW_RUN_STATUSES as readonly string[]).includes(rawStatus)
+      ? { status: rawStatus as WorkflowRunStatus }
+      : {}),
+    ...(params.get("workflowId") ? { workflowId: params.get("workflowId")! } : {}),
+    ...(params.get("session") ? { session: params.get("session")! } : {}),
+  };
+  const withFilters = Object.keys(filters).length > 0 ? filters : undefined;
   if (path === "/workflows") {
     return { page: "workflows", tab: "workflows" };
   }
-  if (path === "/workflows/runs") return { page: "workflows", tab: "runs" };
+  if (path === "/workflows/runs") {
+    return { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
+  }
   const run = /^\/workflows\/runs\/([^/]+)$/.exec(path);
   if (run) {
     // An id nothing can decode names no run, so it lands on the runs list - the same
     // place an id that names a deleted run lands.
     const runId = segment(run[1]!);
-    return runId ? { page: "workflows", tab: "runs", runId } : { page: "workflows", tab: "runs" };
+    return runId
+      ? {
+          page: "workflows",
+          tab: "runs",
+          runId,
+          ...(withFilters ? { filters: withFilters } : {}),
+        }
+      : { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
   }
   if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
@@ -68,7 +95,17 @@ export function missionRouteHash(route: MissionRoute): string {
   // Always spelled out with its category, so every settings link is a deep link and
   // back/forward steps between categories rather than collapsing them into one entry.
   if (route.page === "settings") return `#/settings/${route.category}`;
-  if (route.tab === "runs" && route.runId) return `#/workflows/runs/${encodeURIComponent(route.runId)}`;
+  if (route.tab === "runs") {
+    const path = route.runId
+      ? `#/workflows/runs/${encodeURIComponent(route.runId)}`
+      : "#/workflows/runs";
+    const params = new URLSearchParams();
+    if (route.filters?.status) params.set("status", route.filters.status);
+    if (route.filters?.workflowId) params.set("workflowId", route.filters.workflowId);
+    if (route.filters?.session) params.set("session", route.filters.session);
+    const query = params.toString();
+    return query ? `${path}?${query}` : path;
+  }
   return route.tab === "workflows" ? "#/workflows" : `#/workflows/${route.tab}`;
 }
 

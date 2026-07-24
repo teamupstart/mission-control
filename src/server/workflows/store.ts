@@ -13,6 +13,8 @@ import {
   WorkflowNodeAttemptStateSchema,
   WorkflowRunStatusSchema,
   WorkflowInspectorGateStateSchema,
+  WorkflowContextSnapshotSchema,
+  WorkflowInspectorOnlyContextSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
@@ -47,7 +49,11 @@ import type {
   WorkflowNodeAttempt,
   WorkflowRun,
   WorkflowRunDetail,
+  WorkflowRunPage,
   WorkflowRunSummary,
+  WorkflowEventPage,
+  WorkflowLlmCallPage,
+  WorkflowContextSnapshot,
   WorkflowSubmission,
   WorkflowVersion,
   WorkflowVersionMetadata,
@@ -60,6 +66,7 @@ import { openDb } from "../db.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
+import { workflowLog } from "./log.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -73,6 +80,32 @@ const nullableText = text.nullable();
 const nullableInteger = integer.nullable();
 const boundedCode = text.max(200);
 const utf8 = new TextEncoder();
+const DEFAULT_DETAIL_PAGE_SIZE = 200;
+export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
+
+type RunCursor = { updatedAt: number; id: string };
+
+export function encodeWorkflowRunCursor(cursor: RunCursor): string {
+  return Buffer.from(JSON.stringify([cursor.updatedAt, cursor.id]), "utf8").toString("base64url");
+}
+
+export function decodeWorkflowRunCursor(raw: string): RunCursor | null {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+    if (
+      !Array.isArray(value)
+      || value.length !== 2
+      || !Number.isSafeInteger(value[0])
+      || Number(value[0]) < 0
+      || typeof value[1] !== "string"
+      || value[1].length === 0
+      || value[1].length > 500
+    ) return null;
+    return { updatedAt: value[0] as number, id: value[1] };
+  } catch {
+    return null;
+  }
+}
 
 function inspectorGateState(run: WorkflowRun): WorkflowInspectorGateState | null {
   const parsed = WorkflowInspectorGateStateSchema.safeParse(run.gateState);
@@ -374,6 +407,7 @@ const WorkflowRunRowSchema = z.object({
   started_at: integer,
   updated_at: integer,
   completed_at: nullableInteger,
+  evidence_pruned_at: nullableInteger.optional().default(null),
 });
 
 export function parseWorkflowRunRow(value: unknown): WorkflowRun {
@@ -400,6 +434,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
+    evidencePrunedAt: row.evidence_pruned_at ?? null,
   };
 }
 
@@ -559,6 +594,7 @@ const WorkflowDeliveryRowSchema = z.object({
   created_at: integer,
   updated_at: integer,
   delivered_at: nullableInteger,
+  payload_pruned_at: nullableInteger.optional().default(null),
 });
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
@@ -580,6 +616,7 @@ export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deliveredAt: row.delivered_at,
+    payloadPrunedAt: row.payload_pruned_at ?? null,
   };
 }
 
@@ -670,7 +707,66 @@ export function parseWorkflowBindingClaimRow(value: unknown): WorkflowBindingCla
 }
 
 function diagnose(error: unknown): void {
-  console.error(`[workflow] skipping malformed durable row: ${String(error)}`);
+  workflowLog("error", {
+    event: "malformed_durable_row",
+    error: error instanceof WorkflowRowError ? error.table : "unknown",
+  });
+}
+
+function readFullWorkflowContext(
+  context: WorkflowJson,
+  status: WorkflowSubmission["status"] | string,
+):
+  | { kind: "captured"; context: WorkflowContextSnapshot }
+  | { kind: "not_captured" | "corrupt" } {
+  const parsed = WorkflowContextSnapshotSchema.safeParse(context);
+  if (parsed.success) return { kind: "captured", context: parsed.data };
+  if (
+    context !== null
+    && typeof context === "object"
+    && !Array.isArray(context)
+    && Object.keys(context).length === 0
+    && ["capturing", "cancelled", "failed"].includes(status)
+  ) {
+    return { kind: "not_captured" };
+  }
+  return { kind: "corrupt" };
+}
+
+function runContextState(
+  submissions: WorkflowSubmission[],
+): WorkflowRunDetail["contextState"] {
+  let latestFull: WorkflowRunDetail["contextState"] | null = null;
+  for (const submission of submissions) {
+    if (submission.mode === "inspector_only") {
+      if (!WorkflowInspectorOnlyContextSchema.safeParse(submission.context).success) {
+        diagnose(new WorkflowRowError(
+          "workflow_submissions",
+          submission.id,
+          "context_json is not a valid Inspector-only context",
+        ));
+        return "corrupt";
+      }
+      continue;
+    }
+    const context = readFullWorkflowContext(submission.context, submission.status);
+    if (context.kind === "corrupt") {
+      diagnose(new WorkflowRowError(
+        "workflow_submissions",
+        submission.id,
+        "context_json is not a captured workflow context",
+      ));
+      return "corrupt";
+    }
+    latestFull = context.kind;
+  }
+  if (latestFull) return latestFull;
+  diagnose(new WorkflowRowError(
+    "workflow_submissions",
+    "(missing)",
+    "run has no full-workflow submission",
+  ));
+  return "corrupt";
 }
 
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
@@ -800,6 +896,12 @@ export interface WorkflowExternalClaimInput {
   /** Used only when the claim is new. An existing claim keeps the binding it already owns. */
   binding: WorkflowBindingInsert;
   now: number;
+}
+
+export interface WorkflowRetentionResult {
+  compactedRunIds: string[];
+  deletedRunIds: string[];
+  failedRunCount: number;
 }
 
 export type WorkflowExternalClaimResult =
@@ -1451,14 +1553,18 @@ export class WorkflowStore {
     const rows = this.db.prepare(
       `SELECT r.*, b.note_key, b.session_id,
               d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
-              COALESCE(MAX(s.round), 0) AS current_round
+              COALESCE(MAX(s.round), 0) AS current_round,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
          FROM workflow_runs r
          JOIN workflow_bindings b ON b.id = r.binding_id
          LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
          LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
          LEFT JOIN workflow_submissions s ON s.run_id = r.id
         GROUP BY r.id
-        ORDER BY r.updated_at DESC, r.id ASC`,
+        ORDER BY r.updated_at DESC, r.id DESC`,
     ).all() as unknown as Array<Record<string, unknown>>;
     return rows.flatMap((row) => {
       const summary = this.runSummaryFromRow(row);
@@ -1466,11 +1572,79 @@ export class WorkflowStore {
     });
   }
 
+  listRunSummaryPage(input: {
+    limit: number;
+    cursor: RunCursor | null;
+    status?: WorkflowRun["status"];
+    workflowId?: string;
+    session?: string;
+  }): WorkflowRunPage {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (input.cursor) {
+      where.push(`(r.updated_at < ? OR (r.updated_at = ? AND r.id < ?))`);
+      params.push(input.cursor.updatedAt, input.cursor.updatedAt, input.cursor.id);
+    }
+    if (input.status) {
+      where.push(`r.status = ?`);
+      params.push(input.status);
+    }
+    if (input.workflowId) {
+      where.push(`d.id = ?`);
+      params.push(input.workflowId);
+    }
+    if (input.session) {
+      where.push(`(b.session_id = ? OR b.note_key = ?)`);
+      params.push(input.session, input.session);
+    }
+    params.push(input.limit + 1);
+    const rows = this.db.prepare(
+      `SELECT r.*, b.note_key, b.session_id,
+              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
+              COALESCE(MAX(s.round), 0) AS current_round,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
+         FROM workflow_runs r
+         JOIN workflow_bindings b ON b.id = r.binding_id
+         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
+         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
+         LEFT JOIN workflow_submissions s ON s.run_id = r.id
+        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+        GROUP BY r.id
+        ORDER BY r.updated_at DESC, r.id DESC
+        LIMIT ?`,
+    ).all(...params) as unknown as Array<Record<string, unknown>>;
+    const pageRows = rows.slice(0, input.limit);
+    const items = pageRows.flatMap((row) => {
+      const summary = this.runSummaryFromRow(row);
+      return summary ? [summary] : [];
+    });
+    const hasMore = rows.length > input.limit;
+    const last = pageRows.at(-1);
+    const lastUpdatedAt = Number(last?.updated_at);
+    const lastId = typeof last?.id === "string" ? last.id : null;
+    return {
+      items,
+      // Advance by the durable row, even if its nested JSON was malformed and the
+      // summary mapper skipped it. One bad row may shorten this page, but it cannot
+      // pin the cursor or hide every valid row after it.
+      nextCursor: hasMore && Number.isSafeInteger(lastUpdatedAt) && lastId
+        ? encodeWorkflowRunCursor({ updatedAt: lastUpdatedAt, id: lastId })
+        : null,
+    };
+  }
+
   runSummary(id: string): WorkflowRunSummary | null {
     const row = this.db.prepare(
       `SELECT r.*, b.note_key, b.session_id,
               d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
-              COALESCE(MAX(s.round), 0) AS current_round
+              COALESCE(MAX(s.round), 0) AS current_round,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
+              (SELECT COUNT(*) FROM workflow_deliveries wd
+                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
          FROM workflow_runs r
          JOIN workflow_bindings b ON b.id = r.binding_id
          LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
@@ -1531,6 +1705,8 @@ export class WorkflowStore {
         gatePrNumber: Number.isInteger(gatePrNumber) ? gatePrNumber : null,
         gateHeadShort: (gateState?.targetHeadSha ?? gateState?.observedHeadSha)?.slice(0, 8) ?? null,
         reviewPosture: gateState?.reviewPosture ?? null,
+        uncertainDeliveryCount: Number(row.uncertain_delivery_count ?? 0),
+        refusedDeliveryCount: Number(row.refused_delivery_count ?? 0),
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -2820,6 +2996,7 @@ export class WorkflowStore {
       `INSERT INTO workflow_events (run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?)`,
     ).run(runId, now, kind, JSON.stringify(payload));
     const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
+    workflowLog("info", { run: runId, event: kind });
     return parseWorkflowEventRow(row);
   }
 
@@ -2827,6 +3004,61 @@ export class WorkflowStore {
     return (this.db.prepare(
       `SELECT * FROM workflow_events WHERE run_id = ? ORDER BY id ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowEventRow);
+  }
+
+  listEventPage(runId: string, after = 0, limit = DEFAULT_DETAIL_PAGE_SIZE): WorkflowEventPage {
+    const rows = (this.db.prepare(
+      `SELECT * FROM workflow_events
+        WHERE run_id = ? AND id > ?
+        ORDER BY id ASC
+        LIMIT ?`,
+    ).all(runId, after, limit + 1) as unknown[]).map(parseWorkflowEventRow);
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    return {
+      items,
+      nextAfter: hasMore ? items.at(-1)?.id ?? null : null,
+    };
+  }
+
+  listLlmCallPage(
+    runId: string,
+    after: string | null = null,
+    limit = DEFAULT_DETAIL_PAGE_SIZE,
+  ): WorkflowLlmCallPage {
+    const rows = (after
+      ? this.db.prepare(
+          `SELECT c.* FROM workflow_llm_calls c
+            WHERE c.run_id = ?
+              AND (
+                c.started_at > COALESCE((
+                  SELECT started_at FROM workflow_llm_calls
+                   WHERE id = ? AND run_id = ?
+                ), -1)
+                OR (
+                  c.started_at = COALESCE((
+                    SELECT started_at FROM workflow_llm_calls
+                     WHERE id = ? AND run_id = ?
+                  ), -1)
+                  AND c.id > ?
+                )
+              )
+            ORDER BY c.started_at ASC, c.id ASC
+            LIMIT ?`,
+        ).all(runId, after, runId, after, runId, after, limit + 1)
+      : this.db.prepare(
+          `SELECT * FROM workflow_llm_calls
+            WHERE run_id = ?
+            ORDER BY started_at ASC, id ASC
+            LIMIT ?`,
+        ).all(runId, limit + 1)) as unknown[];
+    const parsed = rows.map(parseWorkflowLlmCallRow);
+    const hasMore = parsed.length > limit;
+    const items = parsed.slice(0, limit);
+    return {
+      items,
+      nextAfter: hasMore ? items.at(-1)?.id ?? null : null,
+    };
   }
 
   insertLlmCall(call: WorkflowLlmCall): void {
@@ -2841,6 +3073,17 @@ export class WorkflowStore {
       call.runner, call.model, call.attempt, call.state, call.startedAt, call.finishedAt,
       call.durationMs, call.inputBytes, call.outputBytes, call.costUsd, call.errorCode,
     );
+    workflowLog("info", {
+      run: call.runId,
+      submission: call.submissionId,
+      event: "model_call_started",
+      call: call.id,
+      purpose: call.purpose,
+      runner: call.runner,
+      model: call.model,
+      attempt: call.attempt,
+      input_bytes: call.inputBytes,
+    });
   }
 
   finishLlmCall(
@@ -2850,12 +3093,35 @@ export class WorkflowStore {
     errorCode: string | null,
     now = Date.now(),
   ): void {
-    this.db.prepare(
+    const updated = this.db.prepare(
       `UPDATE workflow_llm_calls
           SET state = ?, finished_at = ?, duration_ms = ? - started_at,
               output_bytes = ?, error_code = ?
-        WHERE id = ? AND state = 'running'`,
-    ).run(state, now, now, outputBytes, errorCode, id);
+        WHERE id = ? AND state = 'running'
+        RETURNING run_id, submission_id, runner_id, model_id, duration_ms`,
+    ).get(state, now, now, outputBytes, errorCode, id) as {
+      run_id: string;
+      submission_id: string;
+      runner_id: string;
+      model_id: string;
+      duration_ms: number;
+    } | undefined;
+    // A cancellation or restart can settle the row while the provider callback is
+    // still unwinding. Do not log the later callback as if it replaced that durable
+    // outcome.
+    if (!updated) return;
+    workflowLog(state === "succeeded" ? "info" : "warn", {
+      run: updated.run_id,
+      submission: updated.submission_id,
+      event: "model_call_finished",
+      call: id,
+      runner: updated.runner_id,
+      model: updated.model_id,
+      state,
+      duration_ms: updated.duration_ms,
+      output_bytes: outputBytes,
+      error: errorCode,
+    });
   }
 
   interruptRunningLlmCalls(runId: string, now = Date.now()): void {
@@ -2867,6 +3133,310 @@ export class WorkflowStore {
     ).run(now, now, runId);
   }
 
+  runRetention(input: {
+    rawEvidenceBefore: number;
+    completedRunsBefore: number;
+    maxCompletedRuns: number;
+    now: number;
+  }): WorkflowRetentionResult {
+    const compactedRunIds = (this.db.prepare(
+      `SELECT r.id FROM workflow_runs r
+        WHERE r.status IN ('completed', 'cancelled')
+          AND r.completed_at IS NOT NULL
+          AND r.completed_at <= ?
+          AND r.evidence_pruned_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_deliveries d
+             WHERE d.run_id = r.id AND d.state = 'uncertain'
+          )
+        ORDER BY r.completed_at ASC, r.id ASC
+        LIMIT ?`,
+    ).all(
+      input.rawEvidenceBefore,
+      WORKFLOW_RETENTION_BATCH_SIZE,
+    ) as Array<{ id: string }>).map((row) => row.id);
+
+    const compacted: string[] = [];
+    const failedRunIds = new Set<string>();
+    for (const runId of compactedRunIds) {
+      let didCompact = false;
+      try {
+        didCompact = transaction(this.db, () => {
+          const run = this.getRun(runId);
+          if (!run) {
+            const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(runId);
+            if (exists) {
+              throw new WorkflowRowError("workflow_runs", runId, "row is malformed");
+            }
+            return false;
+          }
+          if (
+            !["completed", "cancelled"].includes(run.status)
+            || run.evidencePrunedAt != null
+            || run.completedAt === null
+            || run.completedAt > input.rawEvidenceBefore
+          ) return false;
+          const uncertain = this.db.prepare(
+            `SELECT 1 FROM workflow_deliveries
+              WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
+          ).get(runId);
+          if (uncertain) return false;
+
+          const rows = this.db.prepare(
+            `SELECT id, mode, status, context_json FROM workflow_submissions
+              WHERE run_id = ? ORDER BY round ASC, id ASC`,
+          ).all(runId) as Array<{
+            id: string;
+            mode: string;
+            status: string;
+            context_json: string;
+          }>;
+          let diffBytes = 0;
+          let statusEntries = 0;
+          let transcriptMessages = 0;
+          let standardsDocuments = 0;
+          const updates: Array<{ id: string; context: WorkflowContextSnapshot }> = [];
+          for (const row of rows) {
+            if (row.mode !== "full_workflow") continue;
+            const context = parseJson(
+              "workflow_submissions",
+              row.id,
+              "context_json",
+              row.context_json,
+              WorkflowJsonSchema,
+              WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+            );
+            const fullContext = readFullWorkflowContext(context, row.status);
+            if (fullContext.kind === "not_captured") continue;
+            if (fullContext.kind !== "captured") {
+              throw new WorkflowRowError(
+                "workflow_submissions",
+                row.id,
+                "context_json is not a captured workflow context",
+              );
+            }
+            const parsed = fullContext.context;
+            if (parsed.evidence.retention?.state === "pruned") continue;
+            diffBytes += utf8.encode(parsed.evidence.diff).byteLength;
+            statusEntries += parsed.evidence.workingTreeStatus.length;
+            transcriptMessages += parsed.evidence.transcript.length;
+            standardsDocuments += parsed.evidence.standards.length;
+            parsed.evidence = {
+              ...parsed.evidence,
+              diff: "",
+              workingTreeStatus: [],
+              transcript: [],
+              standards: parsed.evidence.standards.map((document) => ({ ...document, text: "" })),
+              retention: {
+                state: "pruned",
+                prunedAt: input.now,
+                diffBytes: utf8.encode(parsed.evidence.diff).byteLength,
+                workingTreeStatusEntries: parsed.evidence.workingTreeStatus.length,
+                transcriptMessages: parsed.evidence.transcript.length,
+                standardsDocuments: parsed.evidence.standards.length,
+              },
+            };
+            updates.push({ id: row.id, context: parsed });
+          }
+
+          this.appendEvent(runId, "evidence_pruned", {
+            submissions: updates.length,
+            diffBytes,
+            workingTreeStatusEntries: statusEntries,
+            transcriptMessages,
+            standardsDocuments,
+          }, input.now);
+          const updateSubmission = this.db.prepare(
+            `UPDATE workflow_submissions
+                SET context_json = ?, evidence_json = ?, updated_at = ?
+              WHERE id = ?`,
+          );
+          for (const update of updates) {
+            updateSubmission.run(
+              JSON.stringify(update.context),
+              JSON.stringify(update.context.evidence),
+              input.now,
+              update.id,
+            );
+          }
+          this.db.prepare(
+            `UPDATE workflow_deliveries
+                SET payload = '', payload_pruned_at = ?,
+                    error = CASE
+                      WHEN error IS NULL THEN NULL
+                      WHEN length(error) <= 100
+                           AND error NOT GLOB '*[^a-zA-Z0-9_:-]*' THEN error
+                      ELSE 'delivery_error'
+                    END
+              WHERE run_id = ?
+                AND state IN ('delivered', 'refused')
+                AND payload_pruned_at IS NULL`,
+          ).run(input.now, runId);
+          this.db.prepare(
+            `UPDATE workflow_runs
+                SET evidence_pruned_at = ?, updated_at = ?
+              WHERE id = ?`,
+          ).run(input.now, input.now, runId);
+          return true;
+        });
+      } catch (error) {
+        diagnose(error);
+        failedRunIds.add(runId);
+      }
+      if (didCompact) compacted.push(runId);
+    }
+
+    const deletableRunIds = (this.db.prepare(
+      `WITH ranked AS (
+         SELECT r.id, r.completed_at,
+                ROW_NUMBER() OVER (
+                  ORDER BY r.completed_at DESC, r.id DESC
+                ) AS newest_position
+           FROM workflow_runs r
+          WHERE r.status IN ('completed', 'cancelled')
+            AND r.completed_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_deliveries d
+               WHERE d.run_id = r.id AND d.state = 'uncertain'
+            )
+       )
+       SELECT id FROM ranked
+        WHERE completed_at <= ? AND newest_position > ?
+        ORDER BY completed_at ASC, id ASC
+        LIMIT ?`,
+    ).all(
+      input.completedRunsBefore,
+      input.maxCompletedRuns,
+      WORKFLOW_RETENTION_BATCH_SIZE,
+    ) as Array<{ id: string }>)
+      .map((row) => row.id);
+
+    const deleted: string[] = [];
+    for (const runId of deletableRunIds) {
+      let didDelete = false;
+      try {
+        didDelete = transaction(this.db, () => {
+          const run = this.getRun(runId);
+          if (!run) {
+            const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(runId);
+            if (exists) {
+              throw new WorkflowRowError("workflow_runs", runId, "row is malformed");
+            }
+            return false;
+          }
+          if (
+            !["completed", "cancelled"].includes(run.status)
+            || run.completedAt === null
+            || run.completedAt > input.completedRunsBefore
+          ) return false;
+          const uncertain = this.db.prepare(
+            `SELECT 1 FROM workflow_deliveries
+              WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
+          ).get(runId);
+          if (uncertain) return false;
+          this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
+          this.db.prepare(
+            `DELETE FROM workflow_edge_receipts
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              )`,
+          ).run(runId);
+          this.db.prepare(
+            `DELETE FROM workflow_node_attempts
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              )`,
+          ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
+          return true;
+        });
+      } catch (error) {
+        diagnose(error);
+        failedRunIds.add(runId);
+      }
+      if (didDelete) deleted.push(runId);
+    }
+    return {
+      compactedRunIds: compacted,
+      deletedRunIds: deleted,
+      failedRunCount: failedRunIds.size,
+    };
+  }
+
+  workflowStatusCounts(): {
+    activeRuns: number;
+    queuedPersonaCalls: number;
+    runningPersonaCalls: number;
+    waitingDeliveries: number;
+    uncertainDeliveries: number;
+    inspectorGates: number;
+    retainedRunCount: number;
+  } {
+    const scalar = (sql: string): number => Number(
+      (this.db.prepare(sql).get() as { count: number }).count,
+    );
+    const inspectorGates = (this.db.prepare(
+      `SELECT * FROM workflow_runs
+        WHERE gate_state_json IS NOT NULL
+          AND status IN (
+            'waiting_for_pr', 'waiting_for_inspector',
+            'waiting_for_new_head', 'blocked'
+          )`,
+    ).all() as unknown[]).reduce<number>((count, row) => {
+      try {
+        return inspectorGateState(parseWorkflowRunRow(row)) ? count + 1 : count;
+      } catch (error) {
+        diagnose(error);
+        return count;
+      }
+    }, 0);
+    return {
+      activeRuns: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_runs
+          WHERE status NOT IN ('completed', 'cancelled', 'failed')`,
+      ),
+      queuedPersonaCalls: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_node_attempts
+          WHERE state = 'queued' AND persona_snapshot_json IS NOT NULL`,
+      ),
+      runningPersonaCalls: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_llm_calls
+          WHERE state = 'running' AND purpose = 'persona_review'`,
+      ),
+      waitingDeliveries: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_deliveries
+          WHERE state IN ('prepared', 'sending')`,
+      ),
+      uncertainDeliveries: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_deliveries WHERE state = 'uncertain'`,
+      ),
+      inspectorGates,
+      retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
+    };
+  }
+
+  runExportDetail(id: string): WorkflowRunDetail | null {
+    const detail = this.runDetail(id);
+    if (!detail) return null;
+    const llmCalls = (this.db.prepare(
+      `SELECT * FROM workflow_llm_calls
+        WHERE run_id = ? ORDER BY started_at ASC, id ASC`,
+    ).all(id) as unknown[]).map(parseWorkflowLlmCallRow);
+    const events = this.listEvents(id);
+    return {
+      ...detail,
+      events,
+      eventCount: events.length,
+      nextEventAfter: null,
+      llmCalls,
+      llmCallCount: llmCalls.length,
+      nextLlmCallAfter: null,
+    };
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -2875,19 +3445,49 @@ export class WorkflowStore {
     const version = this.getWorkflowVersionById(run.workflowVersionId);
     if (!binding) return null;
     const submissions = this.listSubmissions(id);
+    const events = this.listEventPage(id);
+    const llmCalls = this.listLlmCallPage(id);
+    const eventCountRow = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM workflow_events WHERE run_id = ?`,
+    ).get(id) as { count: number };
+    const llmCallCountRow = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM workflow_llm_calls WHERE run_id = ?`,
+    ).get(id) as { count: number };
+    const eventCount = Number(eventCountRow.count);
+    const llmCallCount = Number(llmCallCountRow.count);
     return {
       summary,
       binding,
       version,
       run,
+      contextState: runContextState(submissions),
       submissions,
       attempts: submissions.flatMap((submission) => this.listAttempts(submission.id)),
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
       deliveries: this.listDeliveries(id),
-      events: this.listEvents(id),
+      events: events.items,
+      eventCount,
+      nextEventAfter: events.nextAfter,
+      llmCalls: llmCalls.items,
+      llmCallCount,
+      nextLlmCallAfter: llmCalls.nextAfter,
       externalSource: this.externalSourceForRun(run, binding.id),
       inspectorGate: null,
     };
+  }
+
+  runDetailResult(id: string):
+    | { kind: "found"; detail: WorkflowRunDetail }
+    | { kind: "missing" | "corrupt" } {
+    const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(id);
+    if (!exists) return { kind: "missing" };
+    try {
+      const detail = this.runDetail(id);
+      return detail ? { kind: "found", detail } : { kind: "corrupt" };
+    } catch (error) {
+      diagnose(error);
+      return { kind: "corrupt" };
+    }
   }
 
   /**

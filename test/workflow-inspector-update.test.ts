@@ -259,10 +259,11 @@ test("three concurrent gate wakeups serialize on one run", async () => {
   await manager.stop();
 });
 
-test("workflow integration subscribes to Inspector and introduces no timer or poller", () => {
+test("workflow integration subscribes to Inspector and introduces no Inspector poller", () => {
   const manager = readFileSync(new URL("../src/server/workflows/manager.ts", import.meta.url), "utf8");
   assert.match(manager, /onInspectionUpdated/);
-  assert.doesNotMatch(manager, /setInterval|INSPECTOR_POLL_MS|fetchPr|gh pr/);
+  assert.doesNotMatch(manager, /INSPECTOR_POLL_MS|fetchPr|gh pr/);
+  assert.match(manager, /setInterval\([\s\S]*sweepRetention/);
   const index = readFileSync(new URL("../src/server/index.ts", import.meta.url), "utf8");
   assert.match(index, /startInspector\(registry,\s*\{[\s\S]*workflowGatePending/);
   const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");

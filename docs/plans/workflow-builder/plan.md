@@ -1,6 +1,6 @@
 # Plan: Persona-driven workflow builder
 
-Status: **implementation-ready**
+Status: **implemented**
 
 ## Outcome
 

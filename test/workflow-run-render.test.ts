@@ -6,7 +6,9 @@ import type { WorkflowRunDetail } from "../src/shared/workflow.ts";
 import {
   WorkflowRunView,
   workflowNodeStatuses,
+  workflowRunLoadError,
 } from "../src/web/workflows/WorkflowRuns.tsx";
+import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
@@ -94,6 +96,7 @@ const detail: WorkflowRunDetail = {
     updatedAt: 10,
     completedAt: null,
   },
+  contextState: "captured",
   submissions: [{
     id: "submission",
     runId: "run",
@@ -207,6 +210,62 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.doesNotMatch(html, />Send</);
   // A manually started run carries no provenance line at all rather than an empty one.
   assert.doesNotMatch(html, /Started by/);
+});
+
+test("run detail distinguishes malformed durable data from expired history", () => {
+  const corrupt = workflowRunLoadError(new WorkflowApiError(
+    "workflow run data is malformed",
+    500,
+    { code: "workflow_run_corrupt" },
+  ));
+  const expired = workflowRunLoadError(new WorkflowApiError(
+    "no such workflow run",
+    404,
+    { code: "workflow_run_not_found" },
+  ));
+  assert.match(corrupt, /malformed durable data/);
+  assert.match(corrupt, /restore it from backup/);
+  assert.match(expired, /no longer retained/);
+  assert.notEqual(corrupt, expired);
+});
+
+test("run detail renders not-captured and corrupt context states safely", () => {
+  const notCaptured = renderToStaticMarkup(
+    createElement(WorkflowRunView, {
+      detail: {
+        ...detail,
+        contextState: "not_captured",
+        submissions: [{
+          ...detail.submissions[0]!,
+          context: {},
+          status: "cancelled",
+        }],
+      },
+      onResubmit: async () => {},
+      onRetry: async () => {},
+      onCancel: async () => {},
+    }),
+  );
+  assert.match(notCaptured, /Intent and evidence not captured/);
+  assert.doesNotMatch(notCaptured, /Captured intent and evidence<\/h4>/);
+
+  const corrupt = renderToStaticMarkup(
+    createElement(WorkflowRunView, {
+      detail: {
+        ...detail,
+        contextState: "corrupt",
+        submissions: [{
+          ...detail.submissions[0]!,
+          context: { compaction: {} },
+        }],
+      },
+      onResubmit: async () => {},
+      onRetry: async () => {},
+      onCancel: async () => {},
+    }),
+  );
+  assert.match(corrupt, /Captured intent and evidence are corrupt/);
+  assert.match(corrupt, /restore it from backup/);
 });
 
 test("external provenance renders as text, not as a link to a route that does not exist", () => {

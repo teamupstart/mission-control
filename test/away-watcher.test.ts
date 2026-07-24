@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
+import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
 // how it survives the moment of return. Real db for the config (as
@@ -72,14 +73,56 @@ function mkSession(over: Partial<Session> = {}): Session {
 }
 
 /** A registry stand-in whose snapshot the test drives. */
-function fakeRegistry(sessions: Session[] = [], tasks: Task[] = []) {
-  const state = { sessions, tasks };
+function fakeRegistry(
+  sessions: Session[] = [],
+  tasks: Task[] = [],
+  workflowRuns: WorkflowRunSummary[] = [],
+) {
+  const state = { sessions, tasks, workflowRuns };
   return {
-    src: { snapshot: () => ({ sessions: state.sessions, tasks: state.tasks }) },
-    set(next: Session[], nextTasks: Task[] = state.tasks) {
+    src: {
+      snapshot: () => ({
+        sessions: state.sessions,
+        tasks: state.tasks,
+        workflowRunSummaries: state.workflowRuns,
+      }),
+    },
+    set(
+      next: Session[],
+      nextTasks: Task[] = state.tasks,
+      nextWorkflowRuns: WorkflowRunSummary[] = state.workflowRuns,
+    ) {
       state.sessions = next;
       state.tasks = nextTasks;
+      state.workflowRuns = nextWorkflowRuns;
     },
+  };
+}
+
+function workflowRun(over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary {
+  return {
+    id: "run",
+    bindingId: "binding",
+    workflowId: "workflow",
+    workflowName: "Review",
+    workflowVersion: 1,
+    sessionId: "session",
+    noteKey: "note",
+    status: "running",
+    phase: "persona_review",
+    round: 1,
+    maxRepairRounds: 5,
+    activePersonaNames: [],
+    failedPersonaCount: 0,
+    bypassedPersonaReview: false,
+    gate: "none",
+    gatePrNumber: null,
+    gateHeadShort: null,
+    reviewPosture: null,
+    uncertainDeliveryCount: 0,
+    refusedDeliveryCount: 0,
+    updatedAt: 1,
+    ...over,
   };
 }
 
@@ -124,6 +167,25 @@ test("a session finishing while away lands in the buffer", () => {
   const events = w.buffer()?.events ?? [];
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "idle");
+  w.stop();
+});
+
+test("workflow transitions use the same away window and coalesce stable ids", () => {
+  const running = workflowRun();
+  const completed = workflowRun({ status: "completed", phase: "complete", updatedAt: 2 });
+  const reg = fakeRegistry([], [], [running]);
+  const w = startAwayWatcher(reg.src, () => 1_000);
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+
+  reg.set([], [], [completed]);
+  w.tick();
+  w.tick();
+
+  const events = w.buffer()?.events ?? [];
+  assert.deepEqual(events.map((event) => event.key), ["workflow:run:completed"]);
+  assert.equal(events[0]?.count, 1);
+  assert.equal(rollupLine(w.buffer()!), "1 workflow update");
   w.stop();
 });
 

@@ -23,6 +23,7 @@ import {
 } from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
+import type { WorkflowRunSummary } from "./workflow.ts";
 
 export type AlertKind =
   | "needs-input"
@@ -32,7 +33,8 @@ export type AlertKind =
   | "task-failed"
   | "idle"
   | "stuck"
-  | "foreman";
+  | "foreman"
+  | "workflow";
 export type AlertSeverity = "attention" | "info";
 
 export interface Alert {
@@ -42,6 +44,7 @@ export interface Alert {
   title: string;
   body: string;
   sessionId: string | null;
+  workflowRunId?: string | null;
   severity: AlertSeverity;
 }
 
@@ -55,6 +58,7 @@ export interface AlertScope {
    * before that read lands simply carries no stalls and emits no `stuck` alerts.
    */
   stalls?: Stall[];
+  workflowRuns?: WorkflowRunSummary[];
 }
 
 /**
@@ -302,6 +306,96 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     }
   }
 
+  const previousRuns = new Map((prev.workflowRuns ?? []).map((run) => [run.id, run]));
+  for (const run of next.workflowRuns ?? []) {
+    const beforeRun = previousRuns.get(run.id);
+    const beforeUncertain = beforeRun?.uncertainDeliveryCount ?? 0;
+    const uncertain = run.uncertainDeliveryCount ?? 0;
+    let transition: {
+      className: string;
+      title: string;
+      body: string;
+      severity: AlertSeverity;
+    } | null = null;
+
+    if (uncertain > beforeUncertain) {
+      transition = {
+        className: "uncertain",
+        title: `${run.workflowName} delivery is uncertain`,
+        body: "Confirm whether the packet arrived before choosing a resolution.",
+        severity: "attention",
+      };
+    } else if (
+      run.status === "blocked"
+      && run.phase === "inspector_disabled"
+      && (
+        beforeRun?.status !== "blocked"
+        || beforeRun.phase !== "inspector_disabled"
+      )
+    ) {
+      transition = {
+        className: "inspector-enablement",
+        title: `${run.workflowName} needs Inspector enabled`,
+        body: "Enable Inspector for the repository to continue.",
+        severity: "attention",
+      };
+    } else if (
+      (run.status === "blocked" || run.status === "failed")
+      && run.status !== beforeRun?.status
+    ) {
+      transition = {
+        className: run.status,
+        title: `${run.workflowName} ${run.status}`,
+        body: run.phase.replaceAll("_", " "),
+        severity: "attention",
+      };
+    } else if (
+      run.status === "waiting_for_session"
+      && run.status !== beforeRun?.status
+    ) {
+      transition = {
+        className: "manual-resubmit",
+        title: `${run.workflowName} needs a manual resubmit`,
+        body: run.phase.replaceAll("_", " "),
+        severity: "attention",
+      };
+    } else if (run.gate === "waiting_pr" && beforeRun?.gate !== "waiting_pr") {
+      transition = {
+        className: "missing-pr",
+        title: `${run.workflowName} needs a pull request`,
+        body: "Open or adopt the intended pull request to continue.",
+        severity: "attention",
+      };
+    } else if (run.status === "completed" && beforeRun?.status !== "completed") {
+      transition = {
+        className: "completed",
+        title: `${run.workflowName} completed`,
+        body: `Run ${run.id}`,
+        severity: "info",
+      };
+    } else if (
+      ["capturing", "running", "waiting_for_inspector"].includes(run.status)
+      && beforeRun?.status === "blocked"
+    ) {
+      transition = {
+        className: "resumed",
+        title: `${run.workflowName} resumed`,
+        body: run.phase.replaceAll("_", " "),
+        severity: "info",
+      };
+    }
+    if (!transition) continue;
+    alerts.push({
+      id: `workflow:${run.id}:${transition.className}`,
+      kind: "workflow",
+      title: transition.title,
+      body: transition.body,
+      sessionId: run.sessionId,
+      workflowRunId: run.id,
+      severity: transition.severity,
+    });
+  }
+
   return alerts;
 }
 
@@ -320,7 +414,9 @@ export function batchSeverity(alerts: Alert[]): AlertSeverity {
 /** Whether anything is worth reporting, so a quiet digest can be skipped. */
 export function hasReportable(scope: AlertScope): boolean {
   for (const s of scope.sessions) if (reportBucket(s) !== "exited") return true;
-  return scope.tasks.some((t) => t.status === "backlog");
+  return scope.tasks.some((t) => t.status === "backlog")
+    || (scope.workflowRuns ?? []).some((run) =>
+      !["completed", "cancelled", "failed"].includes(run.status));
 }
 
 /** Compact scope digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
@@ -339,5 +435,9 @@ export function digestLine(scope: AlertScope): string {
   if (backlog > 0) parts.push(`${backlog} in backlog`);
   const stuck = (scope.stalls ?? []).length;
   if (stuck > 0) parts.push(`${stuck} stuck`);
+  const workflowAttention = (scope.workflowRuns ?? []).filter((run) =>
+    ["blocked", "failed", "waiting_for_session", "waiting_for_pr"].includes(run.status)
+    || (run.uncertainDeliveryCount ?? 0) > 0).length;
+  if (workflowAttention > 0) parts.push(`${workflowAttention} workflow attention`);
   return parts.join(" · ");
 }

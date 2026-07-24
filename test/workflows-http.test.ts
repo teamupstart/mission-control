@@ -28,7 +28,7 @@ function fixture() {
     ...init,
     headers: { host: "127.0.0.1:7317", "content-type": "application/json", ...init?.headers },
   });
-  return { request, registry };
+  return { request, registry, store };
 }
 
 async function seedValid(request: ReturnType<typeof fixture>["request"]) {
@@ -108,4 +108,148 @@ test("workflow summaries are bounded SSE projections, not graph blobs", async ()
   assert.equal(summary.errorCount, 0);
   assert.equal("draft" in summary, false);
   assert.equal("guidanceMarkdown" in summary, false);
+});
+
+test("workflow history query bounds reject malformed cursors, ranges, and oversized filters", async () => {
+  const { request } = fixture();
+  assert.equal((await request("/api/workflow-runs?cursor=not-opaque")).status, 400);
+  assert.equal((await request(`/api/workflow-runs?cursor=${"x".repeat(513)}`)).status, 400);
+  assert.equal((await request("/api/workflow-runs?limit=201")).status, 400);
+  assert.equal((await request("/api/workflow-runs?status=unknown")).status, 400);
+  assert.equal((await request(`/api/workflow-runs?session=${"x".repeat(201)}`)).status, 400);
+  assert.equal((await request("/api/workflow-runs/missing/events?after=-1")).status, 400);
+  assert.equal((await request("/api/workflow-runs/missing/events?limit=201")).status, 400);
+  assert.equal((await request(`/api/workflow-runs/missing/calls?after=${"x".repeat(201)}`)).status, 400);
+});
+
+test("run detail distinguishes malformed durable rows from expired history", async () => {
+  const { request, store } = fixture();
+  const valid = await seedValid(request);
+  const publishedResponse = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  const published = await publishedResponse.json() as { version: { id: string } };
+  const binding = store.insertBinding({
+    id: "corrupt-binding",
+    workflowVersionId: published.version.id,
+    noteKey: "corrupt-note",
+    sessionId: "corrupt-session",
+    sessionAgent: "codex",
+    sessionName: "Corrupt worker",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission({
+    id: "corrupt-run",
+    binding,
+    triggerSource: "manual",
+    triggerKey: "corrupt-run-trigger",
+    now: 2,
+  }, {
+    id: "corrupt-submission",
+    triggerSource: "manual",
+    triggerKey: "corrupt-submission-trigger",
+    context: {},
+    evidence: {},
+    now: 2,
+  });
+
+  const notCaptured = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(notCaptured.status, 200);
+  assert.equal(
+    (await notCaptured.json() as { contextState: string }).contextState,
+    "not_captured",
+  );
+
+  db.prepare(
+    `UPDATE workflow_submissions
+        SET context_json = '{"compaction":{}}'
+      WHERE id = 'corrupt-submission'`,
+  ).run();
+  const corruptContext = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(corruptContext.status, 200);
+  assert.equal(
+    (await corruptContext.json() as { contextState: string }).contextState,
+    "corrupt",
+  );
+
+  db.prepare(
+    `UPDATE workflow_runs SET gate_state_json = '{' WHERE id = 'corrupt-run'`,
+  ).run();
+
+  const corrupt = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(corrupt.status, 500);
+  assert.equal(
+    (await corrupt.json() as { code: string }).code,
+    "workflow_run_corrupt",
+  );
+
+  const missing = await request("/api/workflow-runs/expired-run");
+  assert.equal(missing.status, 404);
+  assert.equal(
+    (await missing.json() as { code: string }).code,
+    "workflow_run_not_found",
+  );
+});
+
+test("version exports use a browser-download filename and immutable schema envelope", async () => {
+  const { request, store } = fixture();
+  const valid = await seedValid(request);
+  const publishedResponse = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  const published = await publishedResponse.json() as { version: { id: string } };
+  const response = await request(`/api/workflows/${valid.workflow.id}/versions/1/export`);
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("content-disposition"),
+    'attachment; filename="workflow-version-1.json"',
+  );
+  const body = await response.json() as { schemaVersion: number; kind: string };
+  assert.deepEqual(body, {
+    ...body,
+    schemaVersion: 1,
+    kind: "workflow_version",
+  });
+
+  const binding = store.insertBinding({
+    id: "browser-binding",
+    workflowVersionId: published.version.id,
+    noteKey: "browser-note",
+    sessionId: "browser-session",
+    sessionAgent: "codex",
+    sessionName: "Browser worker",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission({
+    id: "browser-run",
+    binding,
+    triggerSource: "manual",
+    triggerKey: "browser-run-trigger",
+    now: 2,
+  }, {
+    id: "browser-submission",
+    triggerSource: "manual",
+    triggerKey: "browser-submission-trigger",
+    context: {},
+    evidence: {},
+    now: 2,
+  });
+  const runResponse = await request("/api/workflow-runs/browser-run/export");
+  assert.equal(runResponse.status, 200);
+  assert.equal(
+    runResponse.headers.get("content-disposition"),
+    'attachment; filename="workflow-run-browser-run.json"',
+  );
 });

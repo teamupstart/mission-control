@@ -171,10 +171,12 @@ test("tally counts by kind", () => {
       mkAlert({ id: "idle:a" }),
       mkAlert({ id: "idle:b" }),
       mkAlert({ id: "stuck:c:silent-working", kind: "stuck" }),
+      mkAlert({ id: "workflow:run:completed", kind: "workflow" }),
     ],
     100,
   );
-  assert.deepEqual(tally(buf), { idle: 2, stuck: 1 });
+  assert.deepEqual(tally(buf), { idle: 2, stuck: 1, workflow: 1 });
+  assert.match(rollupLine(buf), /1 workflow update/);
 });
 
 test("the rollup reads as a summary, with stuck leading", () => {

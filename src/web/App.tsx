@@ -91,7 +91,10 @@ export function App(): React.JSX.Element {
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
   const stalls = useStalls();
-  const alertScope = useMemo(() => ({ sessions, tasks, stalls }), [sessions, tasks, stalls]);
+  const alertScope = useMemo(
+    () => ({ sessions, tasks, stalls, workflowRuns }),
+    [sessions, tasks, stalls, workflowRuns],
+  );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
@@ -1061,22 +1064,38 @@ export function App(): React.JSX.Element {
                   ? route.runId ?? null
                   : null
               }
+              runFilters={
+                route.page === "workflows" && route.tab === "runs"
+                  ? route.filters
+                  : undefined
+              }
               llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
-              onRun={(runId) => navigate({ page: "workflows", tab: "runs", runId })}
+              onRun={(runId) => navigate({
+                page: "workflows",
+                tab: "runs",
+                runId,
+                ...(route.page === "workflows" && route.tab === "runs" && route.filters
+                  ? { filters: route.filters }
+                  : {}),
+              })}
+              onRunFilters={(filters) => navigate({
+                page: "workflows",
+                tab: "runs",
+                ...(route.page === "workflows" && route.tab === "runs" && route.runId
+                  ? { runId: route.runId }
+                  : {}),
+                filters,
+              })}
               onOpenSession={(sessionId) => {
                 navigate({ page: "fleet" });
                 setSelectedId(sessionId);
                 if (layout === "board") setBoardOpen(true);
               }}
-              onOpenInspectorSettings={() =>
-                // Settings is a PAGE now (#207), so this navigates rather than opening a
-                // modal. #206 added this callback against the old modal API and #207
-                // removed that API; the two merged cleanly into a main that does not
-                // compile, because neither touched the other's lines.
-                navigate({ page: "settings", category: "inspector" })
-              }
+              onOpenInspectorSettings={() => {
+                navigate({ page: "settings", category: "inspector" });
+              }}
               onBindVersion={(version) => setWorkflowBindingTarget({
                 workflowVersionId: version.id,
                 workflowId: version.workflowId,

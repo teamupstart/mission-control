@@ -699,6 +699,11 @@ export type PersonaPatch = Omit<UpdatePersona, "expectedRevision" | "name"> & {
   normalizedName?: string;
 };
 
+type WorkflowDeliveryInsert = Pick<
+  WorkflowDelivery,
+  "id" | "runId" | "submissionId" | "kind" | "sessionId" | "noteKey" | "payload" | "payloadSha256"
+>;
+
 export type PersonaStoreWrite =
   | { ok: true; persona: Persona }
   | {
@@ -1934,6 +1939,44 @@ export class WorkflowStore {
     return Number(changed.changes) === 1 ? this.mustRun(input.runId) : null;
   }
 
+  transitionInspectorFindingsWithDelivery(input: {
+    runId: string;
+    expectedState: WorkflowInspectorGateState;
+    state: WorkflowInspectorGateState;
+    status: Extract<WorkflowRun["status"], "waiting_for_new_head" | "waiting_for_session">;
+    findingEvent: WorkflowJson;
+    delivery: WorkflowDeliveryInsert;
+    deliveryEvent: WorkflowJson;
+    now: number;
+  }): { run: WorkflowRun; delivery: WorkflowDelivery; idempotent: boolean } | null {
+    return transaction(this.db, () => {
+      const run = this.updateInspectorGate({
+        runId: input.runId,
+        expectedState: input.expectedState,
+        state: input.state,
+        status: input.status,
+        phase: "inspector_findings",
+        now: input.now,
+      });
+      if (!run) return null;
+      this.appendEvent(input.runId, "inspector_findings", input.findingEvent, input.now);
+      const existing = this.deliveryForPacket(
+        input.delivery.submissionId,
+        input.delivery.kind,
+        input.delivery.payloadSha256,
+      );
+      const delivery = existing ?? this.insertDeliveryInTransaction(input.delivery, input.now);
+      if (!existing) {
+        this.appendEvent(input.runId, "inspector_feedback_prepared", input.deliveryEvent, input.now);
+      }
+      return {
+        run: this.mustRun(input.runId),
+        delivery,
+        idempotent: existing !== null,
+      };
+    });
+  }
+
   createInspectorOnlySubmission(input: {
     id: string;
     runId: string;
@@ -2389,34 +2432,38 @@ export class WorkflowStore {
   }
 
   prepareDelivery(
-    input: Pick<
-      WorkflowDelivery,
-      "id" | "runId" | "submissionId" | "kind" | "sessionId" | "noteKey" | "payload" | "payloadSha256"
-    >,
+    input: WorkflowDeliveryInsert,
     now = Date.now(),
   ): { delivery: WorkflowDelivery; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.deliveryForPacket(input.submissionId, input.kind, input.payloadSha256);
       if (existing) return { delivery: existing, idempotent: true };
-      this.db.prepare(
-        `INSERT INTO workflow_deliveries (
-           id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256,
-           state, error, created_at, updated_at, delivered_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
-      ).run(
-        input.id,
-        input.runId,
-        input.submissionId,
-        input.kind,
-        input.sessionId,
-        input.noteKey,
-        input.payload,
-        input.payloadSha256,
-        now,
-        now,
-      );
-      return { delivery: this.mustDelivery(input.id), idempotent: false };
+      return {
+        delivery: this.insertDeliveryInTransaction(input, now),
+        idempotent: false,
+      };
     });
+  }
+
+  private insertDeliveryInTransaction(input: WorkflowDeliveryInsert, now: number): WorkflowDelivery {
+    this.db.prepare(
+      `INSERT INTO workflow_deliveries (
+         id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256,
+         state, error, created_at, updated_at, delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
+    ).run(
+      input.id,
+      input.runId,
+      input.submissionId,
+      input.kind,
+      input.sessionId,
+      input.noteKey,
+      input.payload,
+      input.payloadSha256,
+      now,
+      now,
+    );
+    return this.mustDelivery(input.id);
   }
 
   /**

@@ -410,3 +410,94 @@ test("current-head findings prepare one frozen packet and zero findings complete
   assert.equal(state.waitReason, null);
   await clean.manager.stop();
 });
+
+test("finding state and its immutable repair packet share one crash-safe transaction", async () => {
+  const seeded = await seed();
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const nextState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["atomic-finding"],
+  };
+  seeded.store.prepareDelivery({
+    id: "atomic-delivery-collision",
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "persona_feedback",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "existing packet",
+    payloadSha256: "existing-packet",
+  }, seeded.now);
+
+  assert.throws(() => seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: nextState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["atomic-finding"] },
+    delivery: {
+      id: "atomic-delivery-collision",
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "repair packet",
+      payloadSha256: "repair-packet",
+    },
+    deliveryEvent: {
+      deliveryId: "atomic-delivery-collision",
+      payloadSha256: "repair-packet",
+    },
+    now: seeded.now + 1,
+  }), /UNIQUE constraint failed/);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, before.status);
+  assert.deepEqual(seeded.store.getRun(seeded.ids.run)?.gateState, before.gateState);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).some((event) => event.kind === "inspector_findings"),
+    false,
+  );
+  assert.equal(
+    seeded.store.listDeliveries(seeded.ids.run).some((delivery) => delivery.kind === "inspector_feedback"),
+    false,
+  );
+
+  const committed = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: nextState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["atomic-finding"] },
+    delivery: {
+      id: "atomic-inspector-delivery",
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "repair packet",
+      payloadSha256: "repair-packet",
+    },
+    deliveryEvent: {
+      deliveryId: "atomic-inspector-delivery",
+      payloadSha256: "repair-packet",
+    },
+    now: seeded.now + 2,
+  });
+  assert.ok(committed);
+  assert.equal(committed.run.status, "waiting_for_session");
+  assert.equal(committed.delivery.kind, "inspector_feedback");
+  assert.deepEqual(committed.run.gateState, nextState);
+  assert.deepEqual(
+    seeded.store.listEvents(seeded.ids.run)
+      .filter((event) => event.kind.startsWith("inspector_"))
+      .slice(-2)
+      .map((event) => event.kind),
+    ["inspector_findings", "inspector_feedback_prepared"],
+  );
+});

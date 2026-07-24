@@ -155,10 +155,22 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
     maxAttempts: config.evaluator.maxAttempts,
     evaluator: {
       kind: "comparative_llm",
+      // The persona case carries the whole resolved snapshot - name, guidance text and
+      // runner/model overrides - not just an id and a revision, because recovery executes
+      // THIS plan and must never reload the live Persona. The resolver has already truncated
+      // the guidance text to fit the plan's byte cap.
       guidance:
         context.persona === null
           ? { kind: "builtin", rubricId: BEST_OF_N_BUILTIN_RUBRIC }
-          : { kind: "persona", personaId: context.persona.id, revision: context.persona.revision },
+          : {
+              kind: "persona",
+              personaId: context.persona.id,
+              revision: context.persona.revision,
+              name: context.persona.name,
+              guidanceMarkdown: context.persona.guidanceMarkdown,
+              runner: context.persona.runner,
+              model: context.persona.model,
+            },
       runner: config.evaluator.runner,
       model: config.evaluator.model,
       anonymizeSubjects: config.evaluator.anonymizeSubjects,

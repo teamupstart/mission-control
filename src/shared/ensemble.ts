@@ -265,6 +265,16 @@ export const ENSEMBLE_LIMITS = {
   rationale: 8_000,
   errorText: 4_000,
   resultLabel: 60,
+  /**
+   * The comparative reviewer's guidance text, as SNAPSHOTTED into the compiled plan.
+   *
+   * Smaller than a Workflow Persona's own `personaGuidanceBytes` (100 KiB) on purpose: this
+   * text lives INSIDE the compiled plan, which has its own `compiledPlanJsonBytes` ceiling,
+   * so a Persona snapshotted here is truncated to this many UTF-8 bytes before persistence
+   * rather than being allowed to burst the plan. The truncation is disclosed where it
+   * happens; it is not a silent clip.
+   */
+  reviewGuidanceBytes: 80_000,
   /** Page size reserved for the later HTTP detail surface. */
   detailPageSize: 200,
   /** One member submission's own bounded, member-authored content. */
@@ -412,10 +422,49 @@ export interface EnsembleSubjectPolicy {
   maxSubjects: number;
 }
 
-/** Where the comparative reviewer's guidance comes from, snapshotted at creation. */
+/**
+ * Where the comparative reviewer's guidance comes from, snapshotted at creation.
+ *
+ * The persona case carries the FULL guidance text, not just an id and a revision, and that
+ * is load-bearing: it is embedded in the compiled plan, and recovery executes the compiled
+ * plan rather than reloading the live Persona. An operator who edits or archives the Persona
+ * after creation must not silently re-aim a run already judging against the text they chose,
+ * exactly as a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
+ * versioned rubric id whose text is owned by the strategy that named it; a new rubric is a
+ * new id beside the old one, so an old plan naming `best_of_n_v1` keeps its exact rubric.
+ */
 export type EnsembleEvaluatorGuidance =
   | { kind: "builtin"; rubricId: string }
-  | { kind: "persona"; personaId: string; revision: number };
+  | {
+      kind: "persona";
+      personaId: string;
+      revision: number;
+      /** The Persona's display name at the pinned revision, for labelling the guidance. */
+      name: string;
+      /** The exact guidance bytes at the pinned revision. Recovery reads THIS, never the live Persona. */
+      guidanceMarkdown: string;
+      /** The Persona's runner override at the pinned revision, or null for the app runner. */
+      runner: LlmRunnerId | null;
+      /** The Persona's model override at the pinned revision, or null for the ladder. */
+      model: string | null;
+    };
+
+/**
+ * A Persona resolved to an exact, immutable snapshot at ensemble creation.
+ *
+ * This is what a review-guidance resolver hands the compiler, and what the compiler pins into
+ * the `persona` guidance case above. `id` here is the source Persona's id; the guidance case
+ * spells it `personaId`. Resolving one reads SQLite, so it happens OUTSIDE the pure compiler -
+ * the same reason the launch runtime, not the compiler, pins a base commit.
+ */
+export interface EnsembleReviewPersona {
+  id: string;
+  revision: number;
+  name: string;
+  guidanceMarkdown: string;
+  runner: LlmRunnerId | null;
+  model: string | null;
+}
 
 /**
  * How a review stage judges. A union so a deterministic gate, a pairwise scheduler or a

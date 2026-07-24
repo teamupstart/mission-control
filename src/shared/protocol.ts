@@ -2564,6 +2564,17 @@ export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     personaId: z.string().min(1).max(200),
     revision: z.number().int().positive(),
+    name: z.string().min(1).max(200),
+    // The pinned guidance bytes. Bounded to `reviewGuidanceBytes` rather than the Persona's
+    // own 100 KiB ceiling because this text lives inside the byte-capped compiled plan; the
+    // resolver truncates to this bound before the plan is ever validated.
+    guidanceMarkdown: z
+      .string()
+      .refine((value) => utf8AtMost(value, ENSEMBLE_LIMITS.reviewGuidanceBytes), {
+        message: `guidance exceeds ${ENSEMBLE_LIMITS.reviewGuidanceBytes} UTF-8 bytes`,
+      }),
+    runner: z.enum(LLM_RUNNER_IDS).nullable(),
+    model: ModelIdSchema.nullable(),
   }),
 ]);
 

@@ -41,6 +41,10 @@ test("the shipped model for each background job is pinned", () => {
   assert.equal(LLM_JOB_SPECS.goal.fallback, "claude-haiku-4-5");
   assert.equal(LLM_JOB_SPECS["away-digest"].fallback, "claude-haiku-4-5");
   assert.equal(LLM_JOB_SPECS["workflow-context"].fallback, "claude-haiku-4-5");
+  // The ensemble comparison is a review, but its untuned default is still the cheap tier every
+  // other job ships - a comparison the operator has not tuned must not silently spend the priciest
+  // one. A judging Persona's own model, or a Settings value, is what replaces it.
+  assert.equal(LLM_JOB_SPECS["ensemble-comparison"].fallback, "claude-haiku-4-5");
 });
 
 test("each job reads the same env var it always did", () => {
@@ -50,6 +54,7 @@ test("each job reads the same env var it always did", () => {
   assert.equal(LLM_JOB_SPECS.goal.envKey, "GOAL_MODEL");
   assert.equal(LLM_JOB_SPECS["away-digest"].envKey, "AWAY_DIGEST_MODEL");
   assert.equal(LLM_JOB_SPECS["workflow-context"].envKey, "WORKFLOW_CONTEXT_MODEL");
+  assert.equal(LLM_JOB_SPECS["ensemble-comparison"].envKey, "ENSEMBLE_COMPARISON_MODEL");
 });
 
 test("the env name the panel PRINTS is the one the daemon looks up", () => {

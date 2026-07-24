@@ -34,7 +34,13 @@ import type { LlmRunnerId } from "./llm.ts";
  * orphans it. The stored key stops matching a declared job, the job silently falls back to
  * its shipped default, and that is indistinguishable from never having set it.
  */
-export const LLM_JOB_IDS = ["task-title", "goal", "away-digest", "workflow-context"] as const;
+export const LLM_JOB_IDS = [
+  "task-title",
+  "goal",
+  "away-digest",
+  "workflow-context",
+  "ensemble-comparison",
+] as const;
 
 export type LlmJobId = (typeof LLM_JOB_IDS)[number];
 
@@ -90,6 +96,19 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
     fallback: "claude-haiku-4-5",
     label: "Workflow context",
     blurb: "Compacts user goals, decisions, and rationale for Persona review.",
+  },
+  // The one job that is a REVIEW rather than housekeeping, and it sits here for the reason
+  // the header gives: it resolves through the same config -> env -> shipped-default ladder so
+  // an operator's Settings edit lands on the next comparison, not the next restart. The
+  // shipped tier is deliberately the cheap one every other job uses - a comparison the
+  // operator has not tuned should not silently spend the priciest tier - and it is exactly
+  // what a judging Persona's own model override, or a Settings value, replaces.
+  "ensemble-comparison": {
+    envKey: "ENSEMBLE_COMPARISON_MODEL",
+    envVar: "MISSION_ENSEMBLE_COMPARISON_MODEL",
+    fallback: "claude-haiku-4-5",
+    label: "Ensemble comparison",
+    blurb: "Ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model wins.",
   },
 };
 

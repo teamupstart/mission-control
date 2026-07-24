@@ -57,6 +57,27 @@ test("an unknown category falls back to the default panel, not to a blank one", 
   assert.deepEqual(parseMissionRoute("#/settings/shipping/extra"), { page: "fleet" });
 });
 
+// A hash nothing can decode is the SAME answer as one nobody recognises, and getting that
+// wrong is not a wrong panel, it is an uncaught `URIError`: `decodeURIComponent("%")`
+// throws, and this function is called from a `useState` initializer and a `hashchange`
+// listener, where a throw leaves the app on no route at all. Anyone can paste such a link.
+test("a hash no decoder can read falls back instead of throwing", () => {
+  for (const bad of ["#/settings/%", "#/settings/%E0%A4%A", "#/settings/%%"]) {
+    assert.deepEqual(
+      parseMissionRoute(bad),
+      { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+      `${bad} should fall back`,
+    );
+  }
+  // The same defect one line up in the same parser: an undecodable run id names no run,
+  // so it lands on the runs list rather than throwing.
+  assert.deepEqual(parseMissionRoute("#/workflows/runs/%"), { page: "workflows", tab: "runs" });
+  assert.deepEqual(parseMissionRoute("#/workflows/runs/%E0%A4%A"), {
+    page: "workflows",
+    tab: "runs",
+  });
+});
+
 test("the fleet and workflows routes are untouched by the new page", () => {
   assert.deepEqual(parseMissionRoute("#/fleet"), { page: "fleet" });
   assert.deepEqual(parseMissionRoute("#/workflows"), { page: "workflows", tab: "workflows" });

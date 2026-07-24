@@ -1005,8 +1005,12 @@ export function App(): React.JSX.Element {
                       : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
                   )
                 }
+                // The label changes with what the click will do, the way the Workflows
+                // button's does. No `aria-pressed` beside it: a toggle button that
+                // renames itself and reports a pressed state announces the same fact
+                // twice, and the second telling contradicts the first ("Return to Fleet,
+                // pressed").
                 aria-label={route.page === "settings" ? "Return to Fleet" : "Settings"}
-                aria-pressed={route.page === "settings"}
               >
                 <span aria-hidden>⚙</span>
               </button>

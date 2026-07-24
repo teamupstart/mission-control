@@ -16,6 +16,24 @@ export type MissionRoute =
   | { page: "workflows"; tab: WorkflowTab; runId?: string }
   | { page: "settings"; category: SettingsCategoryId };
 
+/**
+ * One path segment as a plain string, or null when no decoder can read it.
+ *
+ * `decodeURIComponent` THROWS a `URIError` on a lone or truncated escape - `#/settings/%`,
+ * `#/workflows/runs/%E0%A4%A` - and every caller of `parseMissionRoute` is somewhere a
+ * throw cannot be caught usefully: a `useState` initializer, and a `hashchange` listener.
+ * An unreadable segment is the same thing as an unknown one, so it takes the same
+ * already-tested fallback rather than leaving the app on no route at all, for a link
+ * anyone can paste.
+ */
+function segment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
 export function parseMissionRoute(hash: string): MissionRoute {
   const path = hash.replace(/^#/, "").replace(/\/+$/, "");
   if (path === "/workflows") {
@@ -23,7 +41,12 @@ export function parseMissionRoute(hash: string): MissionRoute {
   }
   if (path === "/workflows/runs") return { page: "workflows", tab: "runs" };
   const run = /^\/workflows\/runs\/([^/]+)$/.exec(path);
-  if (run) return { page: "workflows", tab: "runs", runId: decodeURIComponent(run[1]!) };
+  if (run) {
+    // An id nothing can decode names no run, so it lands on the runs list - the same
+    // place an id that names a deleted run lands.
+    const runId = segment(run[1]!);
+    return runId ? { page: "workflows", tab: "runs", runId } : { page: "workflows", tab: "runs" };
+  }
   if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
@@ -31,10 +54,10 @@ export function parseMissionRoute(hash: string): MissionRoute {
     // A RUNTIME membership check, which is why the registry is imported for its values
     // rather than its type: these hashes are links people keep, and a category this build
     // no longer has must land on the default panel rather than on a blank pane.
-    const id = decodeURIComponent(settings[1]!);
+    const id = segment(settings[1]!);
     return {
       page: "settings",
-      category: isSettingsCategory(id) ? id : DEFAULT_SETTINGS_CATEGORY,
+      category: id !== null && isSettingsCategory(id) ? id : DEFAULT_SETTINGS_CATEGORY,
     };
   }
   return { page: "fleet" };

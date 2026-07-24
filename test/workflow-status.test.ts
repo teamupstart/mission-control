@@ -63,6 +63,24 @@ test("workflow status is on-demand, structured, bounded, and payload-free", () =
     costUsd: null,
     errorCode: null,
   });
+  store.insertLlmCall({
+    id: "compaction-call",
+    runId: "run",
+    submissionId: "submission",
+    nodeAttemptId: null,
+    purpose: "context_compaction",
+    runner: "codex",
+    model: "gpt",
+    attempt: 1,
+    state: "running",
+    startedAt: 1,
+    finishedAt: null,
+    durationMs: null,
+    inputBytes: 1_000,
+    outputBytes: 0,
+    costUsd: null,
+    errorCode: null,
+  });
   const manager = new WorkflowManager(new Registry(), store);
   const status = manager.status();
   assert.deepEqual(status, {

@@ -3378,7 +3378,8 @@ export class WorkflowStore {
           WHERE state = 'queued' AND persona_snapshot_json IS NOT NULL`,
       ),
       runningPersonaCalls: scalar(
-        `SELECT COUNT(*) AS count FROM workflow_llm_calls WHERE state = 'running'`,
+        `SELECT COUNT(*) AS count FROM workflow_llm_calls
+          WHERE state = 'running' AND purpose = 'persona_review'`,
       ),
       waitingDeliveries: scalar(
         `SELECT COUNT(*) AS count FROM workflow_deliveries

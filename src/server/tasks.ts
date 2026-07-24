@@ -1485,7 +1485,14 @@ export class TaskManager {
     satisfyDependents = false,
     requireStopped = false,
   ): Task | null {
-    if (requireStopped && this.reschedulingTasks.has(id)) {
+    // Refuse EVERY completion while a reschedule holds this task, not only the stopped-only
+    // dead-blocker path: a reschedule mid-teardown still has the row cancelled/failed, so an
+    // ordinary Mark done would flip it to `done` and the reschedule would then tear its
+    // worktree out from under that done row, leaving it pointing at reclaimed resources. The
+    // reservation covers the whole teardown window. The internal auto-settle callers never
+    // reach this throw: they only complete a running/dispatching task, and a reschedule only
+    // ever holds a cancelled/failed one.
+    if (this.reschedulingTasks.has(id)) {
       throw new TaskStatusConflictError("task is being rescheduled");
     }
     const t = this.registry.getTask(id);

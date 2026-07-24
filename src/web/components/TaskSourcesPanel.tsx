@@ -597,11 +597,37 @@ interface SourceDirectoryFilters {
   kind: TaskSourceKind | "all";
 }
 
+/**
+ * How many sources are in each health, for the metrics strip and the filter chips.
+ *
+ * One function because the two read the same four numbers and sit a few pixels apart: a
+ * strip saying "1 needs attention" over a chip saying "Attention 0" is the kind of
+ * disagreement nobody reports and everybody distrusts.
+ */
+function healthCounts(
+  sources: TaskSourceInstance[],
+  statuses: Map<string, TaskSourceStatus>,
+): Record<SourceHealth, number> {
+  return sources.reduce(
+    (all, src) => {
+      all[sourceHealth(src, statuses.get(src.id))] += 1;
+      return all;
+    },
+    { healthy: 0, attention: 0, pending: 0, paused: 0 },
+  );
+}
+
+/** Status rows by source id - the join every health question needs. */
+function statusesById(statuses: TaskSourceStatus[]): Map<string, TaskSourceStatus> {
+  return new Map(statuses.map((s) => [s.sourceId, s]));
+}
+
 function SourceDirectory({
   sources,
   kinds,
   statuses,
   filters,
+  selectedId,
   onFiltersChange,
   restoreFocusId,
   onFocusRestored,
@@ -612,6 +638,8 @@ function SourceDirectory({
   kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
   statuses: TaskSourceStatus[];
   filters: SourceDirectoryFilters;
+  /** Which source the editor beside this list is showing, so the row can say it is the one. */
+  selectedId: string | null;
   onFiltersChange: (filters: SourceDirectoryFilters) => void;
   restoreFocusId: string | null;
   onFocusRestored: () => void;
@@ -620,15 +648,8 @@ function SourceDirectory({
 }): React.JSX.Element {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const directoryRef = useRef<HTMLDivElement>(null);
-  const byId = new Map(statuses.map((s) => [s.sourceId, s]));
-  const counts = sources.reduce(
-    (all, src) => {
-      const health = sourceHealth(src, byId.get(src.id));
-      all[health] += 1;
-      return all;
-    },
-    { healthy: 0, attention: 0, pending: 0, paused: 0 },
-  );
+  const byId = statusesById(statuses);
+  const counts = healthCounts(sources, byId);
   const needle = filters.query.trim().toLowerCase();
   const visible = sources.filter((src) => {
     const status = byId.get(src.id);
@@ -649,25 +670,6 @@ function SourceDirectory({
 
   return (
     <>
-      <div className="settings-section-head">
-        <h3>Task sources <span className="ts-count">· {sources.length} configured</span></h3>
-        <Tooltip label="Configure a new upstream to pull work from into the backlog">
-          <button className="btn" onClick={onAdd}>+ Add source</button>
-        </Tooltip>
-      </div>
-
-      <div className="ts-overview" aria-label="Task source overview">
-        <div className="ts-metric"><strong>{sources.length}</strong><span>configured sources</span></div>
-        <div className="ts-metric"><strong className="ts-good">{counts.healthy}</strong><span>running normally</span></div>
-        <div className="ts-metric"><strong className={counts.attention > 0 ? "ts-attention" : "ts-good"}>{counts.attention}</strong><span>need attention</span></div>
-        <div className="ts-metric"><strong>{counts.pending}</strong><span>awaiting first sweep</span></div>
-      </div>
-      {counts.attention > 0 && (
-        <p className="ts-attention-callout">
-          <strong>Attention:</strong> {counts.attention} source{counts.attention === 1 ? "" : "s"} had a failed sweep. Filter to review and repair {counts.attention === 1 ? "it" : "them"}.
-        </p>
-      )}
-
       <div className="ts-directory-tools">
         <input
           className="field-input"
@@ -717,12 +719,15 @@ function SourceDirectory({
                     if (node) rowRefs.current.set(src.id, node);
                     else rowRefs.current.delete(src.id);
                   }}
-                  className="ts-directory-row"
+                  className={`ts-directory-row${selectedId === src.id ? " is-active" : ""}`}
+                  // The editor beside this list shows what the row names, so the row is
+                  // "current" rather than "selected": one of a set of destinations, the
+                  // way a nav item is, not a checkbox.
+                  aria-current={selectedId === src.id}
                   onClick={() => onSelect(src.id)}
                 >
                   <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
                   <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
-                  <span className="ts-directory-chevron" aria-hidden>›</span>
                 </button>
               </Tooltip>
             </div>
@@ -749,7 +754,6 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
     query: "",
     kind: "all",
   });
-  const editorRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
@@ -764,6 +768,7 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   sourcesRef.current = sources;
   const now = Date.now();
   const kind = draftKind || kinds[0]?.kind;
+  const counts = healthCounts(sources, statusesById(view?.status ?? []));
 
   function replace(next: TaskSourceInstance): void {
     void save(sourcesRef.current.map((s) => (s.id === next.id ? next : s)));
@@ -800,24 +805,39 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       config: {},
     };
     const saved = await save([...sourcesRef.current, added]);
-    if (saved) setShowAdd(false);
+    if (saved) {
+      setShowAdd(false);
+      // Straight into the editor beside the list: what you just added is off, unlabelled
+      // and pointed at a repo, and the next thing anyone does is configure it.
+      setSelectedId(added.id);
+    }
   }
 
+  // The source under the editor went away - removed here, or by another tab between two
+  // polls. Drop the selection and hand focus back to the list rather than leaving it on a
+  // button that no longer exists (`restoreFocusId` falls through to the list container
+  // when the row it names has gone).
   useEffect(() => {
     if (selectedId && !sources.some((s) => s.id === selectedId)) {
       setSelectedId(null);
-      setRestoreFocusId(null);
+      setRestoreFocusId(selectedId);
     }
+  }, [selectedId, sources]);
+
+  // Master-detail always has a detail: with sources configured and nothing selected, show
+  // the first one rather than an empty pane beside a full list.
+  useEffect(() => {
+    const first = sources[0];
+    if (selectedId === null && first) setSelectedId(first.id);
   }, [selectedId, sources]);
 
   const selected = selectedId ? sources.find((s) => s.id === selectedId) : undefined;
 
-  useEffect(() => {
-    if (selected) editorRef.current?.focus();
-  }, [selected?.id]);
-
   return (
-    <section className="settings-section">
+    // Anchored at the section, not only at the controls inside it: everything below is
+    // conditional on the daemon having answered, and a search hit for "task sources" has
+    // to land somewhere even when it hasn't.
+    <section className="settings-section ts-panel" data-anchor="task-sources/sources">
       <p className="settings-hint settings-blurb">
         Pulls work <strong>into</strong> the backlog from systems that already hold it. A
         source files backlog tasks and nothing else: <strong>it never dispatches an agent,
@@ -836,103 +856,118 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
 
       {error && <p className="settings-error">{error}</p>}
 
-      {view && sources.length === 0 && !showAdd ? (
-        <p className="settings-hint ts-empty">
-          No sources yet - nothing is being swept. Add one below; it starts switched off.
-        </p>
-      ) : null}
+      {view && (
+        <>
+          <div className="ts-overview" aria-label="Task source overview">
+            <div className="ts-metric"><strong>{sources.length}</strong><span>configured sources</span></div>
+            <div className="ts-metric"><strong className="ts-good">{counts.healthy}</strong><span>running normally</span></div>
+            <div className="ts-metric"><strong className={counts.attention > 0 ? "ts-attention" : "ts-good"}>{counts.attention}</strong><span>need attention</span></div>
+            <div className="ts-metric"><strong>{counts.pending}</strong><span>awaiting first sweep</span></div>
+          </div>
+          {counts.attention > 0 && (
+            <p className="ts-attention-callout">
+              <strong>Attention:</strong> {counts.attention} source{counts.attention === 1 ? "" : "s"} had a failed sweep. Filter to review and repair {counts.attention === 1 ? "it" : "them"}.
+            </p>
+          )}
 
-      {view && selected && !showAdd && (
-        <div className="ts-editor-view">
-          <Tooltip label="Back to the list of configured sources">
-            <button ref={editorRef} className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
-          </Tooltip>
-          <SourceCard
-            src={selected}
-            kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
-            status={view.status.find((s) => s.sourceId === selected.id)}
-            repos={repos}
-            now={now}
-            onChange={replace}
-            onRemove={() => {
-              remove(selected.id);
-              setSelectedId(null);
-              setRestoreFocusId(null);
-            }}
-            state={state}
-          />
-        </div>
-      )}
+          {/* Master-detail at page width, which is what the modal could not give this
+              category: the directory and the source you are editing are on screen at once,
+              so comparing two sources - or fixing the one that failed while the healthy
+              ones stay visible - is a glance rather than a back-and-forth. */}
+          <div className="ts-master-detail">
+            <div className="ts-list-col" data-anchor="task-sources/directory">
+              <div className="settings-section-head ts-list-head">
+                <h3>Configured <span className="ts-count">· {sources.length}</span></h3>
+                <Tooltip label={showAdd ? "Close the add form" : "Configure a new upstream to pull work from into the backlog"}>
+                  <button className="btn" aria-expanded={showAdd} onClick={() => setShowAdd((v) => !v)}>
+                    {showAdd ? "Cancel" : "+ Add source"}
+                  </button>
+                </Tooltip>
+              </div>
 
-      {view && !selected && !showAdd && sources.length > 0 && (
-        <SourceDirectory
-          sources={sources}
-          kinds={kinds}
-          statuses={view.status}
-          filters={directoryFilters}
-          onFiltersChange={setDirectoryFilters}
-          restoreFocusId={restoreFocusId}
-          onFocusRestored={() => setRestoreFocusId(null)}
-          onSelect={(id) => {
-            setRestoreFocusId(id);
-            setSelectedId(id);
-          }}
-          onAdd={() => setShowAdd(true)}
-        />
-      )}
+              {/* Inline, above the list it will join, rather than a screen of its own: the
+                  add form is three fields, and replacing the whole category with it lost
+                  sight of what is already configured while you typed. */}
+              {showAdd && (
+                <div className="ts-add" data-anchor="task-sources/add">
+                  {kinds.length > 0 && (
+                    <p className="settings-hint">{kinds.find((k) => k.kind === kind)?.blurb}</p>
+                  )}
+                  <div className="foreman-repo-add">
+                    <Tooltip label="Which upstream this new source pulls work from">
+                      <select
+                        className="harnesses-select"
+                        value={kind ?? ""}
+                        aria-label="What kind of source to add"
+                        onChange={(e) => setDraftKind(e.target.value as TaskSourceKind)}
+                      >
+                        {kinds.map((k) => (
+                          <option key={k.kind} value={k.kind}>
+                            {k.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Tooltip>
+                    <RepoCombobox
+                      repos={repos}
+                      value={draftRepo}
+                      onChange={(v) => {
+                        setDraftRepo(v);
+                        setAddError(null);
+                      }}
+                    />
+                    <Tooltip
+                      label={
+                        !draftRepo.trim()
+                          ? "Pick the checkout this source files tasks against"
+                          : "Add this source - it starts switched off"
+                      }
+                    >
+                      <button className="btn" disabled={!draftRepo.trim() || adding} onClick={() => void add()}>
+                        {adding ? "Adding…" : "Add"}
+                      </button>
+                    </Tooltip>
+                  </div>
+                  {addError && <p className="settings-error">{addError}</p>}
+                </div>
+              )}
 
-      {view && showAdd && <div className="ts-add ts-add-panel">
-        <Tooltip label="Back to the list of configured sources">
-          <button className="ts-back" onClick={() => setShowAdd(false)}>← All task sources</button>
-        </Tooltip>
-        <div className="settings-section-head"><h3>Add a task source</h3></div>
-        <p className="settings-group-label">Add a source</p>
-        {kinds.length > 0 && (
-          <p className="settings-hint">{kinds.find((k) => k.kind === kind)?.blurb}</p>
-        )}
-        <div className="foreman-repo-add">
-          <Tooltip label="Which upstream this new source pulls work from">
-            <select
-              className="harnesses-select"
-              value={kind ?? ""}
-              disabled={!view}
-              aria-label="What kind of source to add"
-              onChange={(e) => setDraftKind(e.target.value as TaskSourceKind)}
-            >
-              {kinds.map((k) => (
-                <option key={k.kind} value={k.kind}>
-                  {k.label}
-                </option>
-              ))}
-            </select>
-          </Tooltip>
-          <RepoCombobox
-            repos={repos}
-            value={draftRepo}
-            onChange={(v) => {
-              setDraftRepo(v);
-              setAddError(null);
-            }}
-          />
-          <Tooltip
-            label={
-              !draftRepo.trim()
-                ? "Pick the checkout this source files tasks against"
-                : "Add this source - it starts switched off"
-            }
-          >
-            <button className="btn" disabled={!view || !draftRepo.trim() || adding} onClick={() => void add()}>
-              {adding ? "Adding…" : "Add"}
-            </button>
-          </Tooltip>
-        </div>
-        {addError && <p className="settings-error">{addError}</p>}
-      </div>}
+              <SourceDirectory
+                sources={sources}
+                kinds={kinds}
+                statuses={view.status}
+                filters={directoryFilters}
+                selectedId={selectedId}
+                onFiltersChange={setDirectoryFilters}
+                restoreFocusId={restoreFocusId}
+                onFocusRestored={() => setRestoreFocusId(null)}
+                onSelect={setSelectedId}
+                onAdd={() => setShowAdd(true)}
+              />
+            </div>
 
-      {view && sources.length === 0 && !showAdd && (
-        <Tooltip label="Configure a new upstream to pull work from into the backlog">
-          <button className="btn ts-empty-add" onClick={() => setShowAdd(true)}>+ Add source</button>
-        </Tooltip>
+            <div className="ts-detail-col" data-anchor="task-sources/editor">
+              {selected ? (
+                <SourceCard
+                  src={selected}
+                  kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
+                  status={view.status.find((s) => s.sourceId === selected.id)}
+                  repos={repos}
+                  now={now}
+                  onChange={replace}
+                  onRemove={() => remove(selected.id)}
+                  state={state}
+                />
+              ) : (
+                <p className="settings-hint ts-empty">
+                  {sources.length === 0
+                    ? "No sources yet - nothing is being swept. Add one; it starts switched off."
+                    : "Select a source on the left to configure it."}
+                </p>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </section>
   );

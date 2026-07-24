@@ -13,7 +13,6 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 // why that suite exists rather than being a weaker duplicate of the runtime one.
 import { AssignResetModal } from "../src/web/components/AssignResetModal.tsx";
 import { ResetModal } from "../src/web/components/ResetModal.tsx";
-import { SettingsModal } from "../src/web/components/SettingsModal.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
 import { DiffViewer } from "../src/web/components/DiffViewer.tsx";
 import { AwayDigestCard } from "../src/web/components/AwayDigestCard.tsx";
@@ -156,24 +155,6 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
         taskTitle: "Wire it up",
         confirm: { queuedItems: 1, clearsContext: true, branch: "feature/held" },
         onClose: () => {},
-      }),
-  },
-  {
-    name: "SettingsModal",
-    el: () =>
-      createElement(SettingsModal, {
-        onClose: () => {},
-        foreman: { config: null, status: null, loading: false } as never,
-        cost: { status: null, update: async () => {}, error: null },
-        llm: {
-          config: null,
-          status: null,
-          personaDefaults: null,
-          update: async () => {},
-          error: null,
-        },
-        layout: "grid",
-        onLayoutChange: () => {},
       }),
   },
   {

@@ -51,6 +51,7 @@ export function modelSourceNote(
  */
 export function ModelField({
   id,
+  anchor,
   spec,
   value,
   resolved,
@@ -60,6 +61,15 @@ export function ModelField({
 }: {
   /** DOM id for the label association. Unique within the panel. */
   id: string;
+  /**
+   * This row's settings anchor, `<category>/<slug>` - the stable id search jumps to - or
+   * `null` for a field that is not on the settings page at all (the Persona editor).
+   * Required rather than optional, and never defaulted, because only the CALLER knows
+   * which category its row is in: the same widget serves three panels and one page that
+   * is not Settings, and a silently absent anchor is a control search can never reach.
+   * See `lib/settings-registry.ts`.
+   */
+  anchor: string | null;
   spec: ModelChoiceSpec;
   value: string;
   resolved: ResolvedModel | undefined;
@@ -74,7 +84,7 @@ export function ModelField({
 }): React.JSX.Element {
   const note = modelSourceNote(resolved, spec.envVar);
   return (
-    <div className="foreman-model-row">
+    <div className="foreman-model-row" data-anchor={anchor ?? undefined}>
       <label className="foreman-model-label" htmlFor={id}>
         {spec.label}
       </label>

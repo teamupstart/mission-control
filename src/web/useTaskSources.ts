@@ -4,7 +4,7 @@ import type { SweepReport, TaskSourceInstance, TaskSourcesView } from "@shared/t
 import { api, fetchTaskSources } from "./lib/api.ts";
 
 // The "Task sources" settings section: what pulls work INTO the backlog, and how each one
-// is doing. Owned locally by SettingsModal (like useSkills / useHarnesses), because
+// is doing. Owned locally by SettingsPage (like useSkills / useHarnesses), because
 // nothing outside the panel reads it - unlike Foreman, whose state the topbar shares.
 //
 // Polled rather than streamed, for the reason the other config hooks are: it is coarse,

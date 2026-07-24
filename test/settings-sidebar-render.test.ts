@@ -2,19 +2,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/SettingsModal.tsx";
-import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
+import { SettingsPage } from "../src/web/components/SettingsPage.tsx";
+import {
+  SETTINGS_CATEGORIES,
+  SETTINGS_GROUPS,
+  SETTINGS_SCOPES,
+  type SettingsCategoryId,
+} from "../src/web/lib/settings-registry.ts";
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
-import { withOverlayHost } from "./helpers/overlay-host.ts";
 
+// What is at stake: Settings is a page now, and the rail is the only inventory of what the
+// app can be told to do. A category that silently fails to render is one whose switches
+// nobody can see or change while the daemon goes on acting on whatever was last stored -
+// which is worst exactly where the blast radius is largest (Inspector posts, Shipping
+// merges). So every category is proved reachable, and the rail is proved to say how far
+// each group's writes reach.
+//
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation (same reason as plan-decisions-render).
 // Static markup is enough to prove the two-pane structure - the rail lists every category,
-// and the active category selects which panel renders - since the only thing a click does
-// is set `active`, which we exercise here through the initialCategory prop.
+// and the route's category selects which panel renders - since the only thing a click does
+// is navigate, which we exercise here through the `category` prop.
 
 // Foreman config is owned by App and passed in; null config is the pre-poll state, which
 // renders the panel's defaults. Static render never runs effects, so nothing fetches.
@@ -32,23 +43,20 @@ const LLM: LlmState = {
   error: null,
 };
 
-// The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
-// modal renders it, so the panel only edits what it's handed.
-function render(initialCategory?: SettingsCategoryId): string {
-  // Wrapped in a host because the modal is an <Overlay>, and an overlay outside a host
-  // refuses to render - being counted as open is not optional. See helpers/overlay-host.
+// The layout is owned by App too, for the same reason as Foreman: the dashboard renders
+// it, so the panel only edits what it's handed.
+function render(category: SettingsCategoryId = "display"): string {
   return renderToStaticMarkup(
-    withOverlayHost(
-      createElement(SettingsModal, {
-        onClose: () => {},
-        foreman: FOREMAN,
-        cost: COST,
-        llm: LLM,
-        layout: "grid",
-        onLayoutChange: () => {},
-        initialCategory,
-      }),
-    ),
+    createElement(SettingsPage, {
+      category,
+      onNavigate: () => {},
+      onLeave: () => {},
+      foreman: FOREMAN,
+      cost: COST,
+      llm: LLM,
+      layout: "grid",
+      onLayoutChange: () => {},
+    }),
   );
 }
 
@@ -72,60 +80,147 @@ test("the rail lists every category exactly once", () => {
   for (const c of SETTINGS_CATEGORIES) assert.ok(html.includes(c.label), `nav missing ${c.label}`);
 });
 
-test("opens on Keyboard by default: keyboard panel shows, skills panel does not", () => {
-  const html = render();
-  assert.match(html, KEYBOARD_ONLY);
-  assert.doesNotMatch(html, SKILLS_ONLY);
-  // The active item is Keyboard, not Skills.
-  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌨<\/span>Keyboard/);
+// The rail groups by blast radius, and the groups come from the registry - never from a
+// list written out in the rail's JSX, which is how a category lands in a group nothing
+// draws (invisible, and therefore unreachable except by typing its hash).
+test("every group is non-empty and every category belongs to exactly one", () => {
+  for (const group of SETTINGS_GROUPS) {
+    const members = SETTINGS_CATEGORIES.filter((c) => c.group === group.id);
+    assert.ok(members.length > 0, `group ${group.id} has no categories`);
+  }
+  for (const c of SETTINGS_CATEGORIES) {
+    const groups = SETTINGS_GROUPS.filter((g) => g.id === c.group);
+    assert.equal(groups.length, 1, `${c.id} names ${groups.length} groups`);
+  }
 });
 
-test("Layout is a category of its own: its panel shows, the others don't", () => {
-  const html = render("layout");
+// The arrow keys walk the FLAT registry while the rail draws it group by group. If the two
+// orders disagree, Down moves the selection somewhere the eye is not - so the registry has
+// to be grouped contiguously, in group order.
+test("the registry's order is the order the rail draws", () => {
+  const drawn = SETTINGS_GROUPS.flatMap((g) =>
+    SETTINGS_CATEGORIES.filter((c) => c.group === g.id).map((c) => c.id),
+  );
+  assert.deepEqual(drawn, SETTINGS_CATEGORIES.map((c) => c.id));
+});
+
+// The badge is the sentence the flat rail could not say: which settings stay in this
+// browser, and which act on GitHub under your account.
+test("every rail item sits under its group's scope badge", () => {
+  const html = render();
+  // Tooltip injects an `aria-describedby` and a sibling description span, so the badge is
+  // matched by shape rather than by exact markup.
+  const headOf = (group: (typeof SETTINGS_GROUPS)[number]): RegExp =>
+    new RegExp(
+      `${group.label}<span class="settings-scope settings-scope-${group.scope}"[^>]*>${SETTINGS_SCOPES[group.scope].label}</span>`,
+    );
+  for (const [i, group] of SETTINGS_GROUPS.entries()) {
+    const head = headOf(group).exec(html);
+    assert.ok(head, `rail group ${group.id} is missing its ${SETTINGS_SCOPES[group.scope].label} badge`);
+    // Every member is drawn after that header and before the next group's, which is what
+    // makes the badge a claim about those categories rather than a loose label.
+    const next = SETTINGS_GROUPS[i + 1];
+    const to = next ? (headOf(next).exec(html)?.index ?? html.length) : html.length;
+    const section = html.slice(head.index, to);
+    for (const c of SETTINGS_CATEGORIES.filter((x) => x.group === group.id)) {
+      assert.ok(section.includes(`>${c.label}</button>`), `${c.id} is not under ${group.id}`);
+    }
+  }
+});
+
+// The rail's badge is the group's, which can be gentler than a member's own - Skills sits
+// under "This machine" and symlinks into `~/`. The panel header is where the precise claim
+// gets made, so it has to be there for every category, not just the ones that differ.
+test("each panel header carries its own category's scope badge", () => {
+  for (const c of SETTINGS_CATEGORIES) {
+    const html = render(c.id);
+    assert.match(
+      html,
+      new RegExp(
+        `<div class="settings-panel-head"><h2>${c.label}</h2><span class="settings-scope settings-scope-${c.scope}"[^>]*>${SETTINGS_SCOPES[c.scope].label}</span>`,
+      ),
+      `${c.id} panel header is missing its scope badge`,
+    );
+  }
+});
+
+// The Phase 5 contract, pinned from day one: search jumps to a control by its anchor, so
+// two controls sharing one - or an anchor naming a category that does not exist - is a
+// jump that lands on the wrong row, or on nothing.
+test("every control anchor is unique and names a real category", () => {
+  const ids = new Set<string>(SETTINGS_CATEGORIES.map((c) => c.id));
+  const seen = new Map<string, SettingsCategoryId>();
+  for (const c of SETTINGS_CATEGORIES) {
+    const html = render(c.id);
+    for (const match of html.matchAll(/data-anchor="([^"]+)"/g)) {
+      const anchor = match[1]!;
+      const prefix = anchor.split("/")[0]!;
+      assert.ok(ids.has(prefix), `anchor "${anchor}" names no category`);
+      assert.equal(prefix, c.id, `anchor "${anchor}" rendered inside the ${c.id} panel`);
+      assert.equal(seen.get(anchor), undefined, `anchor "${anchor}" is used twice`);
+      seen.set(anchor, c.id);
+    }
+  }
+  // Every category contributes at least one anchor, or its controls are unreachable from
+  // search however good the index is.
+  for (const c of SETTINGS_CATEGORIES) {
+    assert.ok([...seen.values()].includes(c.id), `${c.id} has no anchored control`);
+  }
+});
+
+test("opens on Display by default: the layout picker shows, skills does not", () => {
+  const html = render();
   assert.match(html, LAYOUT_ONLY);
-  assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, SKILLS_ONLY);
-  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>▦<\/span>Layout/);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>▦<\/span>Display/);
+});
+
+// Layout and Appearance merged into one category: two settings about how this browser
+// draws the fleet, which sat as visual peers of the panel that merges pull requests.
+test("Display renders the layout picker and the formatting toggle together", () => {
+  const html = render("display");
+  assert.match(html, LAYOUT_ONLY);
+  assert.match(html, APPEARANCE_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
 });
 
 test("the layout picker offers every layout, with the live one checked", () => {
-  const html = render("layout");
+  const html = render("display");
   // Every shipped layout is on offer...
   for (const l of LAYOUTS) assert.ok(html.includes(l.label), `picker missing ${l.label}`);
   // ...and the one App handed us is the checked radio, not a local guess. Rendering the
   // panel against `layout: "grid"` must not leave a different mode selected - that is the
   // bug where the picker and the dashboard behind it disagree about what you're in.
   // (React emits `checked=""` BEFORE `value`, so the attributes are matched in that order.)
-  const inputs = html.match(/<input[^>]*>/g) ?? [];
-  const checked = inputs.filter((i) => i.includes("checked"));
-  assert.equal(inputs.length, LAYOUTS.length, "one radio per layout");
+  const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []);
+  const checked = radios.filter((i) => i.includes("checked"));
+  assert.equal(radios.length, LAYOUTS.length, "one radio per layout");
   assert.equal(checked.length, 1, "exactly one layout is checked");
   assert.match(checked[0]!, /value="grid"/);
 });
 
 test("the layout panel is absent from every other category", () => {
-  for (const id of ["keyboard", "skills", "harnesses", "foreman", "appearance", "cost"] as const) {
+  for (const id of ["keyboard", "skills", "harnesses", "foreman", "cost"] as const) {
     assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
   }
 });
 
-test("Appearance is a category of its own: its panel shows, the others don't", () => {
-  const html = render("appearance");
-  assert.match(html, APPEARANCE_ONLY);
-  assert.doesNotMatch(html, KEYBOARD_ONLY);
-  assert.doesNotMatch(html, LAYOUT_ONLY);
-  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>◐<\/span>Appearance/);
-});
-
 test("message formatting is on unless it has been turned off", () => {
-  // `render` mounts the modal with no daemon and no storage, so the shared config store
+  // `render` mounts the page with no daemon and no storage, so the shared config store
   // holds the shipped defaults. What this pins is that default reaching the control: the
   // panel shows a checked box, not an unchecked one or no box at all. It says nothing
   // about what the daemon or the cache hold; those paths are ui-config-*.test.ts.
-  const html = render("appearance");
+  const html = render("display");
   const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
-  assert.ok(toggle, "the appearance panel has a checkbox");
+  assert.ok(toggle, "the display panel has a checkbox");
   assert.match(toggle, /checked/);
+});
+
+test("Keyboard is a category of its own: its panel shows, the others don't", () => {
+  const html = render("keyboard");
+  assert.match(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, SKILLS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌨<\/span>Keyboard/);
 });
 
 test("Harnesses is a category of its own: its panel shows, the others don't", () => {
@@ -195,14 +290,16 @@ test("the cost panel says every number is an estimate", () => {
 test("the cost panel's controls are disabled until the first read lands", () => {
   // `status` is null here (static render runs no effects), which is the pre-poll instant.
   // A live-looking toggle in that window would let a click race the fetch and write a
-  // config built on defaults the daemon never sent.
+  // config built on defaults the daemon never sent. Scoped to the pane, since the rail
+  // beside it is full of buttons that are always live.
   const html = render("cost");
-  for (const control of html.match(/<(input|select)[^>]*>/g) ?? []) {
+  const pane = html.slice(html.indexOf('class="settings-pane"'));
+  for (const control of pane.match(/<(input|select)[^>]*>/g) ?? []) {
     assert.match(control, /disabled/, `cost control should be disabled pre-poll: ${control}`);
   }
 });
 
-test("initialCategory swaps the panel: skills shows, keyboard does not", () => {
+test("the route's category swaps the panel: skills shows, keyboard does not", () => {
   const html = render("skills");
   assert.match(html, SKILLS_ONLY);
   assert.doesNotMatch(html, KEYBOARD_ONLY);
@@ -221,7 +318,6 @@ test("the rail is a vertical tablist of tabs", () => {
   const html = render();
   assert.match(html, /role="tablist"[^>]*aria-orientation="vertical"/);
   assert.equal((html.match(/role="tab"/g) ?? []).length, SETTINGS_CATEGORIES.length);
-  assert.doesNotMatch(html, /aria-current/);
 });
 
 test("aria-selected tracks the active category, and only it", () => {

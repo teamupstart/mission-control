@@ -5842,25 +5842,148 @@ kbd {
 .gear-btn {
   font-size: 22px;
 }
-.settings-modal {
-  width: min(820px, 100%);
-}
-/* Two panes side by side, each capped and scrolling on its own so no category is ever
-   "below" another - the whole point of moving off the single scroll. */
-.settings-layout {
+/* ---- settings page ----
+   A routed page (`#/settings/<category>`), not a modal: eleven categories spanning four
+   blast radii never fit an 820px box, and the two that needed the room most - Task
+   sources, Keyboard - were the ones squeezed hardest. The rail groups by how far a
+   setting's writes reach, and every group carries the badge that says so.
+   The pane is what scrolls; the rail is sticky beside it. */
+.settings-page {
   display: flex;
   align-items: stretch;
-  max-height: 74vh;
+  min-width: 0;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
 }
-.settings-nav {
-  flex: 0 0 178px;
+.settings-rail {
+  flex: 0 0 232px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 14px 10px;
+  align-self: flex-start;
+  position: sticky;
+  top: calc(var(--topbar-h, 88px) + 8px);
+  max-height: calc(100dvh - var(--topbar-h, 88px) - 24px);
+  padding: 14px 12px 20px;
   border-right: 1px solid var(--border-soft);
-  background: var(--panel-2);
   overflow-y: auto;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-page-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 6px 6px;
+}
+.settings-page-title h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.settings-leave {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* The group's name and how far its members reach, on one line. Reading the rail top to
+   bottom is meant to read as a descent: this browser, this machine, then GitHub. */
+.settings-nav-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  margin: 13px 6px 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 640;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.settings-nav-group:first-child .settings-nav-label {
+  margin-top: 2px;
+}
+.settings-nav-label .settings-scope {
+  margin-left: auto;
+}
+.settings-scope {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 640;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Four scopes, four colours, in the order they escalate. Tokens, not literals - the same
+   ones the tone vocabulary uses elsewhere, so "amber" means the same thing here as on a
+   card. */
+.settings-scope-browser {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+}
+.settings-scope-machine {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+  background: color-mix(in oklab, var(--idle) 9%, transparent);
+}
+.settings-scope-home {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+.settings-scope-github {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 9%, transparent);
+}
+/* The category's own scope, beside the panel it is about. The rail's badge is its
+   GROUP's, which can be gentler than a member's own (Skills sits under This machine and
+   writes `~/`), so this one is the precise claim. */
+.settings-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.settings-panel-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.settings-panel-head .settings-scope {
+  margin-left: auto;
+}
+/* The gear is a destination now, not a switch that opens something over the page. */
+.gear-btn.is-active {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 14%, transparent);
+  color: var(--fg);
 }
 .settings-nav-item {
   display: flex;
@@ -5907,27 +6030,78 @@ kbd {
 .settings-pane {
   flex: 1;
   min-width: 0;
-  padding: 18px;
-  overflow-y: auto;
+  padding: 18px 26px 60px;
+}
+/* Display stacks two panels in one category, and a category may grow a second any time.
+   Sections are peers, so they get the same air between them as a group label gets. */
+.settings-pane > .settings-section + .settings-section {
+  margin-top: 26px;
+}
+/* A measure, not the whole page. These panels are label-left/control-right rows, and the
+   pane is now as wide as the window: unbounded, a toggle ends up a screen away from the
+   sentence it answers. Task sources opts out - it is master-detail, and the room IS the
+   reason it moved off the modal. */
+.settings-pane > .settings-section {
+  max-width: 900px;
+}
+.settings-pane > .ts-panel {
+  max-width: none;
+}
+/* Console and Board give their pages a fixed-height flex child rather than the grid's
+   scrolling document, so the page scrolls inside itself there - the same shape the
+   workflows page takes, for the same reason. */
+.app-console > .settings-page,
+.app-board > .settings-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.app-console > .settings-page .settings-rail,
+.app-board > .settings-page .settings-rail {
+  top: 8px;
+  max-height: calc(100dvh - var(--topbar-h, 88px) - 24px);
 }
 /* Narrow windows can't spare room for a side rail; fold it into a horizontal strip
-   above the pane so both stay usable. */
-@media (max-width: 620px) {
-  .settings-layout {
+   above the pane so both stay usable. Groups become inline runs, and their labels sit in
+   the flow rather than above a column. */
+@media (max-width: 760px) {
+  .settings-page {
     flex-direction: column;
-    max-height: 78vh;
   }
-  .settings-nav {
+  .settings-rail {
     flex: none;
-    flex-direction: row;
+    position: static;
+    max-height: none;
     gap: 6px;
+    padding: 12px;
     border-right: none;
     border-bottom: 1px solid var(--border-soft);
-    overflow-x: auto;
+  }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .settings-page-title {
+    margin: 0 0 4px;
+  }
+  .settings-nav-group {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .settings-nav-label,
+  .settings-nav-group:first-child .settings-nav-label {
+    margin: 0 4px 0 0;
   }
   .settings-nav-item {
     width: auto;
     white-space: nowrap;
+  }
+  .settings-pane {
+    padding: 16px;
   }
 }
 .settings-section-head {
@@ -6206,14 +6380,6 @@ kbd {
    panels' flat `.kb-row` list has no way to say "these belong to that one". Everything
    inside reuses the shared field/badge/button pieces; this section owns only the card
    frame and the two grids inside it. */
-.ts-list {
-  list-style: none;
-  margin: 14px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
 .ts-card {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -6226,10 +6392,12 @@ kbd {
   gap: 10px;
 }
 /* The source's own name. Flexes so the badge and the remove button stay put while the
-   field takes whatever is left. */
+   field takes whatever is left - capped, because at page width "whatever is left" is 700px
+   of empty box for a two-word label. */
 .ts-name {
   flex: 1;
   min-width: 0;
+  max-width: 420px;
   font-size: 12.5px;
 }
 .ts-head .foreman-repo-remove {
@@ -6325,9 +6493,6 @@ kbd {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
-}
-.ts-add {
-  margin-top: 18px;
 }
 .ts-empty,
 .ts-unknown {
@@ -6446,20 +6611,51 @@ kbd {
 .ts-health-pending i { background: var(--muted); }
 .ts-health-paused { color: var(--dim); }
 .ts-health-paused i { background: var(--dim); }
-.ts-directory-chevron { color: var(--dim); font-size: 16px; }
 .ts-directory-empty { margin: 0; padding: 14px; color: var(--dim); font-size: 11.5px; }
-.ts-back {
-  margin: 0 0 11px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--working);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
+/* The directory beside the source it is showing, which is the whole reason this category
+   moved off an 820px modal: at page width both fit, so repairing the one that failed no
+   longer hides the three that didn't. Columns, not a back-stack. */
+.ts-master-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  margin-top: 12px;
 }
-.ts-add-panel { margin-top: 0; }
-.ts-empty-add { margin-top: 10px; }
+.ts-list-col {
+  flex: 0 0 clamp(260px, 32%, 360px);
+  min-width: 0;
+}
+.ts-detail-col {
+  flex: 1;
+  min-width: 0;
+}
+.ts-list-head {
+  margin-bottom: 8px;
+}
+.ts-add {
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.ts-add .foreman-repo-add {
+  flex-wrap: wrap;
+}
+.ts-directory-row.is-active {
+  background: color-mix(in oklab, var(--working) 12%, var(--panel));
+  box-shadow: inset 3px 0 0 var(--working);
+}
+.ts-editor {
+  margin: 0;
+}
+/* Below this the two columns are two squeezes rather than a layout, so they stack - the
+   list first, because it is what you choose from. */
+@media (max-width: 900px) {
+  .ts-master-detail { flex-direction: column; }
+  .ts-list-col { flex: none; width: 100%; }
+  .ts-detail-col { width: 100%; }
+}
 @media (max-width: 460px) {
   .ts-overview { grid-template-columns: 1fr; }
   .ts-directory-tools { flex-direction: column; }
@@ -6662,7 +6858,13 @@ kbd {
   font-size: 11px;
   color: var(--fg);
 }
+/* `display: block` because two of these rows are a `<label>` wrapping their whole control
+   (Foreman's and the Inspector's Provider pickers), and an inline box does not take
+   vertical room for its padding and border - so the card drew UP over the "Model" group
+   label above it, striking a line through the word. The rest are divs, which this leaves
+   exactly as they were. */
 .foreman-model-row {
+  display: block;
   padding: 10px 12px;
   margin-top: 8px;
   background: var(--bg-2);
@@ -6682,7 +6884,11 @@ kbd {
   max-width: 260px;
   font-size: 12px;
 }
+/* Under the control, never beside it. In the two `<label>`-shaped rows this is a `<span>`
+   rather than ModelField's `<p>`, so inline it ignored its top margin and butted straight
+   against the select - "Codex⌄Runs every Foreman model role through this provider." */
 .foreman-model-blurb {
+  display: block;
   margin: 8px 0 0;
 }
 /* The "actually running as" line. Dimmer than the blurb above it and set in the mono

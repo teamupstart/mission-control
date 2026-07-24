@@ -1153,12 +1153,13 @@ then read and delete. Auto-dispatching swept work is deliberately **not** a feat
 a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry
 run) of exactly the kind Foreman carries.
 
-**Settings → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures them. Its
-directory summarizes which sources are healthy, awaiting a current sweep, paused, or need
-attention; search it or filter by health and source type, then select a row to open that
-source's editor. Add one by picking a kind and the repo its tasks should be filed against;
-it arrives **switched off**, because adding a source is configuration and turning it on is
-consent. Per source:
+**[Settings](#settings) → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures
+them, as master-detail: a directory summarizing which sources are healthy, awaiting a current
+sweep, paused, or need attention, beside the editor for the one you selected. Search it or
+filter by health and source type; the metrics strip above counts the whole set either way.
+Add one from the inline form above the list by picking a kind and the repo its tasks should
+be filed against; it arrives **switched off**, because adding a source is configuration and
+turning it on is consent. Per source:
 
 | Control | What it does |
 |---|---|
@@ -2162,9 +2163,46 @@ on, and an isolated `MISSION_HOME` makes it *worse*, because its ack table is em
 believes every session is owed a reload. If you're testing against a spare port, know
 that its reload loop is live from the moment it boots.
 
+## Settings
+
+Settings is a **page**, not a modal: `#/settings/<category>` in the URL, reached from the ⚙
+gear in the top bar, from **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> in the
+desktop app, or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
+gear takes you back the same way, and browser back/forward walk the categories you visited.
+While the page is up the fleet's shortcuts stand down, exactly as they do on Workflows -
+nothing you type here can drive the session behind it.
+
+The rail is grouped by **blast radius**, and each group carries a badge saying how far its
+settings reach. That is the question a flat list of eleven peers could not answer: which of
+these stays in this browser, and which of them acts publicly under your account.
+
+| Group | Reach | Categories |
+|-------|-------|-----------|
+| **This screen** | This browser | **Display** (layout + message formatting), **Keyboard** |
+| **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
+| **Background work** | This machine | **Foreman**, **Task sources**, **Models** |
+| **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping** |
+
+The badge on a group is the general case; the badge in a panel's own header is that
+category's precise claim, which can be stronger - Skills sits under *This machine* and
+symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+
+Two things changed shape when the page arrived. **Layout and Appearance merged into
+Display**: both are one browser's preferences about how this screen draws the fleet, and a
+category holding a single checkbox sat as a visual equal of the one that merges pull
+requests. And **Task sources is master-detail** - the directory of configured sources beside
+the one you are editing, instead of a drill-in that hid the other three while you repaired
+the one that failed. Adding a source is an inline form above that list; it still resolves the
+repo before the source exists, and the source still starts switched off.
+
+Deep links work for every category, and the whole list is stable enough to paste into an
+issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming
+a category this build does not have falls back to Display rather than a blank pane - the one
+browser-scoped category, so a stale link can never open a panel that acts on GitHub.
+
 ## Layout (cards, console, or board)
 
-The same fleet, three shapes. **Settings** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) → **Layout**
+The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
 switches between them live, and the choice persists per machine:
 
 | Layout | Shape | Good for |
@@ -2288,7 +2326,7 @@ code blocks with syntax highlighting drawn from the dashboard's own palette. The
 renderer draws shared plans and Foreman's briefs, so a fence looks the same wherever you
 read it.
 
-**Settings → Appearance → Format messages** turns it off, and the choice persists per
+**Settings → Display → Format messages** turns it off, and the choice persists per
 machine. Off shows the literal text an agent emitted, backticks and all - useful when
 you're checking exactly what was said before pasting it somewhere that isn't a markdown
 renderer. Formatting is display-only either way: it never changes what the agent wrote or

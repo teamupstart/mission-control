@@ -46,8 +46,8 @@ function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
  * A radio group, not a segmented control: these are three exclusive answers to one
  * question, and the description is the point. The labels alone don't say what you'd
  * be trading, and this is the rare setting where the wrong pick isn't obviously
- * wrong - it just quietly doesn't suit how you work. Applies live behind the modal,
- * which is the fastest way to find that out.
+ * wrong - it just quietly doesn't suit how you work. Applies live behind the settings
+ * page, which is the fastest way to find that out.
  */
 export function LayoutPanel({
   layout,
@@ -61,7 +61,12 @@ export function LayoutPanel({
       <div className="settings-section-head">
         <h3>Layout</h3>
       </div>
-      <div className="layout-picker" role="radiogroup" aria-label="Dashboard layout">
+      <div
+        className="layout-picker"
+        role="radiogroup"
+        aria-label="Dashboard layout"
+        data-anchor="display/layout"
+      >
         {LAYOUTS.map((l) => (
           <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
             <Tooltip label={l.description}>

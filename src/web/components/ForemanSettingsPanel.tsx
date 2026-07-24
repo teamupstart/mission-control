@@ -110,17 +110,13 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Foreman</h3>
-      </div>
-
       <p className="settings-hint foreman-settings-blurb">
         Foreman's set-once configuration. Turning it on, its mode, the work queues, and the
         on-drain action stay in the topbar Foreman control - the things you reach for while
         watching the fleet.
       </p>
 
-      <fieldset className="foreman-modes">
+      <fieldset className="foreman-modes" data-anchor="foreman/cheap-tier">
         <legend>Cheap tier</legend>
         {(["off", "shadow", "on"] as const).map((t) => (
           <Tooltip label={TIER_LABEL[t]} key={t}>
@@ -140,7 +136,11 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
 
       <div className="foreman-models">
         <p className="settings-group-label">Models</p>
-        <label className="foreman-model-row" htmlFor="foreman-provider">
+        <label
+          className="foreman-model-row"
+          htmlFor="foreman-provider"
+          data-anchor="foreman/provider"
+        >
           <span className="foreman-model-label">Provider</span>
           <Tooltip label="Which model provider Foreman's own calls are spawned with">
           <select
@@ -175,6 +175,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
         {FOREMAN_MODEL_ROLES.map((role) => (
           <ModelField
             key={role}
+            anchor={`foreman/model-${role}`}
             id={`foreman-model-${role}`}
             spec={FOREMAN_MODEL_SPECS[role]}
             value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
@@ -201,6 +202,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
         {AGENT_TYPES.map((agent) => (
           <ModelField
             key={agent}
+            anchor={`foreman/backlog-model-${agent}`}
             id={`foreman-backlog-task-model-${agent}`}
             spec={BACKLOG_TASK_MODEL_SPECS[agent]}
             value={config?.backlogDefaultModel?.[agent] ?? ""}
@@ -214,7 +216,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
         ))}
       </div>
 
-      <div className="foreman-repos">
+      <div className="foreman-repos" data-anchor="foreman/live-repos">
         <p className="settings-group-label">Live repositories</p>
         {/* Worktrees of these repos count too - the same thing the old popover textarea
             said, kept because "I set it live and it still asks me" reads as a bug otherwise. */}

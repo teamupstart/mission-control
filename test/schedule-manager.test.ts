@@ -268,17 +268,16 @@ test("coalesce-latest judges a catch-up larger than one recurrence page only onc
   assert.equal(allOccurrencesFor(created.id).length, 600);
 });
 
-test("a stopped catch-up never persists coverage for an occurrence that does not exist", async () => {
-  let scheduleId = "";
+test("a crash between coalesced rows leaves recoverable durable coverage", async () => {
   let armed = false;
   const coverAt = NINE + 2 * DAY;
   const h = harness("coverage-crash", {
     recurrence: {
       validate: (...args) => recurrence.validate(...args),
       nextAfter: (...args) => {
-        if (armed && args[2] === coverAt) {
+        if (armed && args[2] === NINE + DAY) {
           armed = false;
-          store.archiveSchedule(scheduleId, coverAt + 5_000);
+          throw new Error("simulated process crash");
         }
         return recurrence.nextAfter(...args);
       },
@@ -287,24 +286,28 @@ test("a stopped catch-up never persists coverage for an occurrence that does not
     },
   });
   const created = ok(await h.manager.create(definition())).schedule;
-  scheduleId = created.id;
   armed = true;
   h.clock.now = coverAt + 5_000;
 
   const summary = await h.manager.tick();
 
-  assert.equal(summary.coalesced, 2);
-  assert.equal(summary.lost, 1);
-  assert.equal(tasksFor(created.id).length, 0);
+  assert.equal(summary.coalesced, 1);
+  assert.equal(summary.failed, 1);
   const history = allOccurrencesFor(created.id);
   assert.equal(history.length, 2);
-  assert.ok(history.every((row) => row.coveredById === null));
-  assert.ok(
-    history.every(
-      (row) => row.coveredById === null || store.getOccurrence(row.coveredById) !== null,
-    ),
+  const coalesced = history.find((row) => row.status === "coalesced")!;
+  const covering = store.getOccurrence(coalesced.coveredById!);
+  assert.equal(covering?.scheduledFor, coverAt);
+  assert.equal(covering?.status, "claimed");
+
+  const recovery = await h.manager.recover(h.clock.now, "open");
+  assert.equal(recovery.recoveredBeforeTask, 1);
+  assert.equal(store.getOccurrence(covering!.id)?.status, "created");
+  assert.equal(
+    store.getOccurrence(coalesced.id)?.coveredById,
+    covering!.id,
+    "recovery closes the cover without having to reconstruct its dependents",
   );
-  assert.deepEqual(h.removed, [created.id]);
 });
 
 test("skip records every crossed instant and files nothing", async () => {
@@ -355,6 +358,58 @@ test("create-all keeps one newest-task cap across recurrence pages", async () =>
     firstHour + 599 * HOUR,
   );
   assert.equal(allOccurrencesFor(created.id).length, 600, "all instants reached the ledger");
+});
+
+test("create-all keeps its one cap beyond the old accounting ceiling", async () => {
+  const h = harness("createall-long");
+  const created = ok(
+    await h.manager.create(
+      definition({
+        expression: "0 * * * *",
+        missedPolicy: "create-all",
+        overlapPolicy: "allow",
+      }),
+    ),
+  ).schedule;
+
+  const dueCount = 10_001;
+  const firstHour = created.nextRunAt!;
+  h.clock.now = firstHour + (dueCount - 1) * HOUR;
+  const summary = await h.manager.tick();
+
+  assert.equal(summary.due, dueCount);
+  assert.equal(summary.created, SCHEDULE_CATCHUP_CREATE_CAP);
+  assert.equal(summary.coalesced, dueCount - SCHEDULE_CATCHUP_CREATE_CAP);
+  const filed = tasksFor(created.id);
+  assert.equal(filed.length, SCHEDULE_CATCHUP_CREATE_CAP);
+  assert.equal(
+    Math.min(...filed.map((task) => task.scheduledFor!)),
+    h.clock.now - (SCHEDULE_CATCHUP_CREATE_CAP - 1) * HOUR,
+  );
+  assert.equal(allOccurrencesFor(created.id).length, dueCount);
+});
+
+test("coalesce-latest still chooses one true latest run beyond that ceiling", async () => {
+  const h = harness("coalesce-long");
+  const created = ok(
+    await h.manager.create(
+      definition({
+        expression: "0 * * * *",
+        missedPolicy: "coalesce-latest",
+      }),
+    ),
+  ).schedule;
+
+  const dueCount = 10_001;
+  const firstHour = created.nextRunAt!;
+  h.clock.now = firstHour + (dueCount - 1) * HOUR;
+  const summary = await h.manager.tick();
+
+  assert.equal(summary.due, dueCount);
+  assert.equal(summary.created, 1);
+  assert.equal(summary.coalesced, dueCount - 1);
+  assert.equal(tasksFor(created.id)[0]?.scheduledFor, h.clock.now);
+  assert.equal(allOccurrencesFor(created.id).length, dueCount);
 });
 
 // ---- overlap policy ----

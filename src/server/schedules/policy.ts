@@ -53,6 +53,72 @@ export interface MissedPlanEntry {
 }
 
 /**
+ * The catch-up-wide part of missed policy, small enough to carry across recurrence pages.
+ *
+ * `newestInstants` is newest-first and needs at most `cap + 1` entries: one identifies
+ * coalesce-latest's run, `cap` entries identify create-all's runs, and the extra entry
+ * proves the cap was hit. The manager can therefore judge a catch-up of any length without
+ * allocating every crossed instant at once.
+ */
+export interface MissedWindowPlan {
+  policy: ScheduleMissedPolicy;
+  /** The earliest instant eligible to create work; older instants coalesce into it. */
+  firstCreatingAt: number | null;
+  hitCap: boolean;
+}
+
+export function planMissedWindow(
+  newestInstants: readonly number[],
+  policy: ScheduleMissedPolicy,
+  cap = SCHEDULE_CATCHUP_CREATE_CAP,
+): MissedWindowPlan {
+  if (policy === "skip" || newestInstants.length === 0) {
+    return { policy, firstCreatingAt: null, hitCap: false };
+  }
+  if (policy === "coalesce-latest") {
+    return { policy, firstCreatingAt: newestInstants[0]!, hitCap: false };
+  }
+  const creatingCount = Math.min(newestInstants.length, Math.max(1, cap));
+  return {
+    policy,
+    firstCreatingAt: newestInstants[creatingCount - 1]!,
+    hitCap: newestInstants.length > creatingCount,
+  };
+}
+
+export interface MissedWindowEntry {
+  at: number;
+  decisionKind: Exclude<ScheduleDecisionKind, "skipped_overlap">;
+  /** The durable covering reservation this row should name, if it coalesces. */
+  coveredByAt: number | null;
+}
+
+/** Apply one catch-up-wide decision to a bounded oldest-first recurrence page. */
+export function planMissedPage(
+  instants: readonly number[],
+  window: MissedWindowPlan,
+): MissedWindowEntry[] {
+  if (window.policy === "skip") {
+    return instants.map((at) => ({
+      at,
+      decisionKind: "skipped_policy",
+      coveredByAt: null,
+    }));
+  }
+  const firstCreatingAt = window.firstCreatingAt;
+  if (firstCreatingAt === null) return [];
+  return instants.map((at) =>
+    at < firstCreatingAt
+      ? {
+          at,
+          decisionKind: "coalesced" as const,
+          coveredByAt: firstCreatingAt,
+        }
+      : { at, decisionKind: "create_task" as const, coveredByAt: null },
+  );
+}
+
+/**
  * Divide the instants a catch-up crossed into the ones that create work and the ones that
  * are merely accounted for.
  *

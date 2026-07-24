@@ -32,8 +32,8 @@ import type { RecurrenceEvaluator } from "./recurrence.ts";
 import {
   decideOverlap,
   missedDecisionsFor,
-  planHitCap,
-  planMissedInstants,
+  planMissedPage,
+  planMissedWindow,
   terminalStatusFor,
 } from "./policy.ts";
 import * as store from "./store.ts";
@@ -77,9 +77,6 @@ export interface ScheduleNotifier {
 }
 
 const NOOP_NOTIFIER: ScheduleNotifier = { upsert() {}, remove() {} };
-
-/** Largest catch-up whose occurrence accounting is planned as one policy decision. */
-const SCHEDULE_CATCHUP_ACCOUNTING_MAX = 10_000;
 
 // ---- what the manager needs from the rest of the daemon ----
 
@@ -682,177 +679,232 @@ export class ScheduleManager {
       return;
     }
 
-    const instants = this.catchupInstants(schedule.id, revision, cursor, now);
-
-    if (instants.length === 0) {
+    const firstPage = this.recurrence.between(
+      revision.expression,
+      revision.timezone,
+      cursor - 1,
+      now,
+      SCHEDULE_BETWEEN_MAX,
+    );
+    if (firstPage.length === 0) {
       this.repairStuckCursor(schedule, revision, cursor, now);
       return;
     }
 
-    const plan = planMissedInstants(
-      instants,
+    const newest = this.newestDueInstants(
+      revision,
+      cursor,
+      now,
+      revision.missedPolicy === "skip"
+        ? 0
+        : revision.missedPolicy === "coalesce-latest"
+          ? 1
+          : SCHEDULE_CATCHUP_CREATE_CAP + 1,
+    );
+    const window = planMissedWindow(
+      newest,
       revision.missedPolicy,
       SCHEDULE_CATCHUP_CREATE_CAP,
     );
-    if (planHitCap(plan, revision.missedPolicy)) {
+    if (window.hitCap) {
       summary.capped++;
       this.log("catchup-capped", {
         schedule: schedule.id,
-        due: instants.length,
         cap: SCHEDULE_CATCHUP_CREATE_CAP,
       });
     }
 
-    const occurrenceIds = plan.map(() => this.uuid());
-    // Tasks this pass has already filed. Read before the DB for the `skip-active` check
-    // because it is the authority on what THIS tick did, whatever a query may or may not
-    // see of a write made moments ago.
-    let createdThisTick: string | null = null;
-    const pendingCoverage = new Map<number, string[]>();
-    let durableStateChanged = false;
-
-    for (const [index, entry] of plan.entries()) {
-      summary.due++;
-      const delayMs = Math.max(0, now - entry.at);
-      if (delayMs > summary.maxDelayMs) summary.maxDelayMs = delayMs;
-
-      const overlap =
-        entry.decisionKind === "create_task"
-          ? decideOverlap(
-              revision.overlapPolicy,
-              createdThisTick ??
-                store.findActiveTaskForSchedule(schedule.id)?.id ??
-                null,
-            )
-          : null;
-      const decisionKind = overlap ? overlap.decisionKind : entry.decisionKind;
-
-      const claim = store.claimOccurrence({
-        occurrenceId: occurrenceIds[index]!,
+    /**
+     * Reserve the covering occurrence before any row points at it.
+     *
+     * The cursor deliberately stays put: occurrence accounting still advances oldest
+     * first below. If the process dies now, recovery can finish this durable reservation,
+     * and every coalesced row already names an occurrence that survives the restart.
+     */
+    let cover: ScheduleOccurrence | null = null;
+    const firstCreatingAt = window.firstCreatingAt;
+    if (firstCreatingAt !== null && firstPage[0]! < firstCreatingAt) {
+      const blocking = store.findActiveTaskForSchedule(schedule.id)?.id ?? null;
+      const overlap = decideOverlap(revision.overlapPolicy, blocking);
+      const decisionKind = overlap.decisionKind;
+      const coverClaim = store.claimOccurrence({
+        occurrenceId: this.uuid(),
         scheduleId: schedule.id,
         scheduleRevision: revision.revision,
-        scheduledFor: entry.at,
+        scheduledFor: firstCreatingAt,
         triggerKind: "scheduled",
         decisionKind,
         taskId: decisionKind === "create_task" ? this.uuid() : null,
         coveredById: null,
-        blockingTaskId: overlap?.blockingTaskId ?? null,
+        blockingTaskId: overlap.blockingTaskId,
         claimedAt: now,
-        delayMs,
-        // The cursor moves with the claim, in one transaction. `nextAfter` from THIS
-        // instant rather than the next planned one, so a truncated window leaves the
-        // cursor at the first instant it did not reach rather than past it.
-        advanceCursor: true,
+        delayMs: Math.max(0, now - firstCreatingAt),
+        advanceCursor: false,
         nextRunAt: this.recurrence.nextAfter(
           revision.expression,
           revision.timezone,
-          entry.at,
+          firstCreatingAt,
         ),
       });
-
-      if (claim.outcome === "schedule_changed") {
-        // Archived, paused, or edited under us. Stop: every later instant in this plan was
-        // decided under a revision that is no longer in force, and the next tick will
-        // enumerate them again from the cursor and decide afresh.
+      if (coverClaim.outcome === "schedule_changed") {
         summary.lost++;
-        this.log("schedule-changed", { schedule: schedule.id, at: entry.at });
-        if (durableStateChanged) {
-          const latest = store.getSchedule(schedule.id, this.now());
-          if (latest) this.notifySchedule(latest);
-        }
         return;
       }
-      durableStateChanged = true;
-      if (
-        entry.coveredByIndex !== null &&
-        claim.occurrence.decisionKind === "coalesced"
-      ) {
-        const dependents = pendingCoverage.get(entry.coveredByIndex) ?? [];
-        dependents.push(claim.occurrence.id);
-        pendingCoverage.set(entry.coveredByIndex, dependents);
-      }
-      const dependents = pendingCoverage.get(index);
-      if (
-        dependents &&
-        dependents.length > 0 &&
-        claim.occurrence.decisionKind === decisionKind
-      ) {
-        store.recordOccurrenceCoverage(claim.occurrence.id, dependents);
-      }
-      if (claim.outcome === "already_exists") {
-        summary.lost++;
-        continue;
-      }
-
-      const settled = await this.settle(
-        claim.occurrence,
-        revision,
-        { decisionKind },
-        now,
-      );
-      count(summary, settled.status);
-      if (settled.status === "created" && settled.taskId)
-        createdThisTick = settled.taskId;
+      cover = coverClaim.occurrence;
     }
 
-    const after = store.getSchedule(schedule.id, this.now());
-    if (after) this.notifySchedule(after);
+    // Tasks this pass has already filed. Read before the DB for the `skip-active` check
+    // because it is the authority on what THIS tick did, whatever a query may or may not
+    // see of a write made moments ago.
+    let createdThisTick: string | null = null;
+    let durableStateChanged = cover !== null;
+    let after = cursor - 1;
+    let page = firstPage;
+
+    while (page.length > 0) {
+      const plan = planMissedPage(page, window);
+      for (const entry of plan) {
+        summary.due++;
+        const delayMs = Math.max(0, now - entry.at);
+        if (delayMs > summary.maxDelayMs) summary.maxDelayMs = delayMs;
+
+        const covering =
+          cover !== null && entry.at === cover.scheduledFor ? cover : null;
+        const isCover = covering !== null;
+        const overlap =
+          entry.decisionKind === "create_task" && !isCover
+            ? decideOverlap(
+                revision.overlapPolicy,
+                createdThisTick ??
+                  store.findActiveTaskForSchedule(schedule.id)?.id ??
+                  null,
+              )
+            : null;
+        const decisionKind = isCover
+          ? covering.decisionKind
+          : overlap
+            ? overlap.decisionKind
+            : entry.decisionKind;
+        if (decisionKind === null) {
+          summary.failed++;
+          continue;
+        }
+
+        const claim = store.claimOccurrence({
+          occurrenceId: isCover ? covering.id : this.uuid(),
+          scheduleId: schedule.id,
+          scheduleRevision: revision.revision,
+          scheduledFor: entry.at,
+          triggerKind: "scheduled",
+          decisionKind,
+          taskId:
+            isCover && covering.taskId !== null
+              ? covering.taskId
+              : decisionKind === "create_task"
+                ? this.uuid()
+                : null,
+          coveredById:
+            entry.coveredByAt !== null &&
+            cover?.scheduledFor === entry.coveredByAt
+              ? cover.id
+              : null,
+          blockingTaskId:
+            isCover ? covering.blockingTaskId : (overlap?.blockingTaskId ?? null),
+          claimedAt: now,
+          delayMs,
+          // The cursor moves with each oldest-first claim. Pages bound allocation, but
+          // one catch-up-wide policy boundary survives across every page.
+          advanceCursor: true,
+          nextRunAt: this.recurrence.nextAfter(
+            revision.expression,
+            revision.timezone,
+            entry.at,
+          ),
+        });
+
+        if (claim.outcome === "schedule_changed") {
+          // Archived, paused, or edited under us. Stop: every later instant in this plan
+          // was decided under a revision that is no longer in force.
+          summary.lost++;
+          this.log("schedule-changed", { schedule: schedule.id, at: entry.at });
+          if (durableStateChanged) {
+            const latest = store.getSchedule(schedule.id, this.now());
+            if (latest) this.notifySchedule(latest);
+          }
+          return;
+        }
+        durableStateChanged = true;
+        if (claim.outcome === "already_exists" && !isCover) {
+          summary.lost++;
+          continue;
+        }
+
+        const occurrence = claim.occurrence;
+        if (occurrence.status !== "claimed") {
+          summary.lost++;
+          continue;
+        }
+        const settled = await this.settle(
+          occurrence,
+          revision,
+          { decisionKind: occurrence.decisionKind ?? decisionKind },
+          now,
+        );
+        count(summary, settled.status);
+        if (settled.status === "created" && settled.taskId)
+          createdThisTick = settled.taskId;
+      }
+
+      const last = page[page.length - 1]!;
+      if (last <= after || page.length < SCHEDULE_BETWEEN_MAX) break;
+      after = last;
+      page = this.recurrence.between(
+        revision.expression,
+        revision.timezone,
+        after,
+        now,
+        SCHEDULE_BETWEEN_MAX,
+      );
+    }
+
+    const latestSchedule = store.getSchedule(schedule.id, this.now());
+    if (latestSchedule) this.notifySchedule(latestSchedule);
   }
 
   /**
-   * Enumerate one catch-up in recurrence-sized pages, then let policy judge it once.
+   * Read only the newest policy boundary, whatever the catch-up's total length.
    *
-   * The page bound protects recurrence evaluation, while this separate ceiling protects
-   * policy allocation. Applying policy to each page would turn one coalesce-latest
-   * catch-up into several tasks and reset create-all's task cap on every page.
+   * This intentionally uses the same forward evaluator as accounting: cron-parser's
+   * reverse iterator chooses different instants around DST folds and gaps. A ring of at
+   * most 51 instants keeps allocation bounded while pages walk to the end.
    */
-  private catchupInstants(
-    scheduleId: string,
+  private newestDueInstants(
     revision: RunnableScheduleRevision,
     cursor: number,
     now: number,
+    limit: number,
   ): number[] {
-    const instants: number[] = [];
-    // `between` is exclusive at the bottom and the cursor instant is itself due, so the
-    // first page opens one millisecond before it.
+    const newest: number[] = [];
+    if (limit <= 0) return newest;
     let after = cursor - 1;
-
-    while (instants.length < SCHEDULE_CATCHUP_ACCOUNTING_MAX) {
-      const limit = Math.min(
-        SCHEDULE_BETWEEN_MAX,
-        SCHEDULE_CATCHUP_ACCOUNTING_MAX - instants.length,
-      );
+    while (true) {
       const page = this.recurrence.between(
         revision.expression,
         revision.timezone,
         after,
         now,
-        limit,
+        SCHEDULE_BETWEEN_MAX,
       );
       if (page.length === 0) break;
-      instants.push(...page);
-      after = page[page.length - 1]!;
-      if (page.length < limit) break;
+      for (const at of page) {
+        newest.push(at);
+        if (newest.length > limit) newest.shift();
+      }
+      const last = page[page.length - 1]!;
+      if (last <= after || page.length < SCHEDULE_BETWEEN_MAX) break;
+      after = last;
     }
-
-    if (
-      instants.length === SCHEDULE_CATCHUP_ACCOUNTING_MAX &&
-      this.recurrence.between(
-        revision.expression,
-        revision.timezone,
-        after,
-        now,
-        1,
-      ).length > 0
-    ) {
-      this.log("catchup-accounting-capped", {
-        schedule: scheduleId,
-        due: instants.length,
-        limit: SCHEDULE_CATCHUP_ACCOUNTING_MAX,
-      });
-    }
-
-    return instants;
+    return newest.reverse();
   }
 
   /**

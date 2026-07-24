@@ -5,6 +5,8 @@ import {
   missedDecisionsFor,
   planHitCap,
   planMissedInstants,
+  planMissedPage,
+  planMissedWindow,
   statusBlocksOverlap,
   terminalStatusFor,
 } from "../src/server/schedules/policy.ts";
@@ -75,6 +77,34 @@ test("the shipped cap is what a real fortnight of hourly standby meets", () => {
   // Capped on TASKS, not on accounting: all 400 instants still reach the ledger.
   assert.equal(plan.length, 400);
   assert.equal(plan.filter((e) => e.decisionKind === "coalesced").length, 350);
+});
+
+test("one small boundary plan governs every page of an arbitrarily long catch-up", () => {
+  const newest = hourly(SCHEDULE_CATCHUP_CREATE_CAP + 1).reverse();
+  const window = planMissedWindow(newest, "create-all");
+  const oldestPage = hourly(3).map((at) => at - 10_000 * HOUR);
+  const newestPage = hourly(3).map(
+    (_, index) => window.firstCreatingAt! + index * HOUR,
+  );
+
+  assert.equal(
+    window.firstCreatingAt,
+    newest[SCHEDULE_CATCHUP_CREATE_CAP - 1],
+  );
+  assert.equal(window.hitCap, true);
+  assert.ok(
+    planMissedPage(oldestPage, window).every(
+      (entry) =>
+        entry.decisionKind === "coalesced" &&
+        entry.coveredByAt === window.firstCreatingAt,
+    ),
+  );
+  assert.ok(
+    planMissedPage(newestPage, window).every(
+      (entry) =>
+        entry.decisionKind === "create_task" && entry.coveredByAt === null,
+    ),
+  );
 });
 
 test("skip records every crossed instant and covers none", () => {

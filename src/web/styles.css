@@ -237,6 +237,18 @@
   margin-right: auto;
 }
 
+/* Provenance for a run something other than an operator started. Reads as metadata, not
+   as a control: there is nothing to click here until the source has a route of its own. */
+.workflow-run-provenance {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workflow-run-provenance code {
+  font-size: 11px;
+}
+
 .workflow-run-state {
   border: 1px solid var(--border);
   border-radius: 999px;

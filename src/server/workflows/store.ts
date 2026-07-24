@@ -8,11 +8,13 @@ import {
   WorkflowBindingDefaultsSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
+  WorkflowExternalSourceKindSchema,
   WorkflowJsonSchema,
   WorkflowNodeAttemptStateSchema,
   WorkflowRunStatusSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
+  WorkflowTriggerSourceSchema,
 } from "@shared/protocol.ts";
 import {
   WORKFLOW_BINDING_STATES,
@@ -29,10 +31,14 @@ import {
 import type {
   Persona,
   WorkflowBinding,
+  WorkflowBindingClaim,
+  WorkflowCaptureExpectation,
   WorkflowDefinition,
   WorkflowDelivery,
   WorkflowEdgeReceipt,
   WorkflowEvent,
+  WorkflowExternalSource,
+  WorkflowExternalSourceKind,
   WorkflowJson,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
@@ -62,7 +68,6 @@ const positive = integer.positive();
 const nullableText = text.nullable();
 const nullableInteger = integer.nullable();
 const boundedCode = text.max(200);
-const TRIGGER_SOURCES = ["manual", "foreman"] as const;
 const utf8 = new TextEncoder();
 
 export const WORKFLOW_TABLES = [
@@ -77,6 +82,7 @@ export const WORKFLOW_TABLES = [
   "workflow_deliveries",
   "workflow_llm_calls",
   "workflow_events",
+  "workflow_binding_claims",
 ] as const;
 
 export class WorkflowRowError extends Error {
@@ -91,7 +97,11 @@ export class WorkflowRowError extends Error {
 }
 
 function rowId(value: unknown): string {
-  if (value && typeof value === "object" && "id" in value) return String(value.id);
+  if (value && typeof value === "object") {
+    if ("id" in value) return String(value.id);
+    // The claim table is keyed by its opaque source key rather than a surrogate id.
+    if ("source_key" in value) return String(value.source_key);
+  }
   return "(unknown)";
 }
 
@@ -334,7 +344,7 @@ const WorkflowRunRowSchema = z.object({
   status: WorkflowRunStatusSchema,
   current_phase: text,
   max_repair_rounds: integer.min(WORKFLOW_LIMITS.repairRoundsMin).max(WORKFLOW_LIMITS.repairRoundsMax),
-  trigger_source: z.enum(TRIGGER_SOURCES),
+  trigger_source: WorkflowTriggerSourceSchema,
   trigger_key: nonempty,
   inspector_pr_key: nullableText,
   inspector_head_sha: nullableText,
@@ -376,7 +386,7 @@ const WorkflowSubmissionRowSchema = z.object({
   run_id: nonempty,
   round: positive,
   mode: WorkflowSubmissionModeSchema,
-  trigger_source: z.enum(TRIGGER_SOURCES),
+  trigger_source: WorkflowTriggerSourceSchema,
   trigger_key: nonempty,
   evidence_fingerprint: nonempty,
   context_json: nonempty,
@@ -618,6 +628,25 @@ export function parseWorkflowEventRow(value: unknown): WorkflowEvent {
   };
 }
 
+const WorkflowBindingClaimRowSchema = z.object({
+  source_key: nonempty.max(WORKFLOW_LIMITS.externalSourceKey),
+  source_kind: WorkflowExternalSourceKindSchema,
+  source_id: nonempty.max(WORKFLOW_LIMITS.externalSourceId),
+  binding_id: nonempty,
+  created_at: integer,
+});
+
+export function parseWorkflowBindingClaimRow(value: unknown): WorkflowBindingClaim {
+  const row = parseShape("workflow_binding_claims", WorkflowBindingClaimRowSchema, value);
+  return {
+    kind: row.source_kind,
+    sourceKey: row.source_key,
+    sourceId: row.source_id,
+    bindingId: row.binding_id,
+    createdAt: row.created_at,
+  };
+}
+
 function diagnose(error: unknown): void {
   console.error(`[workflow] skipping malformed durable row: ${String(error)}`);
 }
@@ -700,24 +729,61 @@ export interface WorkflowBindingInsert {
   now: number;
 }
 
+/**
+ * `triggerSource` is required on both inserts, not defaulted.
+ *
+ * It used to be a `manual` literal written inside the SQL, which meant a second caller was
+ * one forgotten argument away from filing its runs as an operator's own. Making it a
+ * required input costs each existing manual call site one explicit word and makes a missing
+ * source a typecheck failure rather than a durable misattribution.
+ */
 export interface WorkflowRunInsert {
   id: string;
   binding: WorkflowBinding;
-  triggerSource?: WorkflowTriggerSource;
+  triggerSource: WorkflowTriggerSource;
   triggerKey: string;
   now: number;
+  /**
+   * The artifact an externally sourced run is entitled to review, pinned INSIDE the creating
+   * transaction.
+   *
+   * It is a field on the insert rather than a follow-up call because those are two halves of
+   * one fact. Pinned afterwards, a crash in between leaves a run holding a submission but no
+   * expected commit - and the retry, finding nothing pinned, would accept whatever commit it
+   * was handed and review an artifact nobody originally selected. Committing them together
+   * removes that state rather than coping with it.
+   */
+  externalExpectation?: WorkflowCaptureExpectation;
 }
 
 export interface WorkflowSubmissionInsert {
   id: string;
   runId: string;
   round: number;
-  triggerSource?: WorkflowTriggerSource;
+  triggerSource: WorkflowTriggerSource;
   triggerKey: string;
   context: WorkflowJson;
   evidence: WorkflowJson;
   now: number;
 }
+
+export interface WorkflowExternalClaimInput {
+  sourceKind: WorkflowExternalSourceKind;
+  sourceKey: string;
+  sourceId: string;
+  /** Used only when the claim is new. An existing claim keeps the binding it already owns. */
+  binding: WorkflowBindingInsert;
+  now: number;
+}
+
+export type WorkflowExternalClaimResult =
+  | { ok: true; claim: WorkflowBindingClaim; binding: WorkflowBinding; created: boolean }
+  | {
+      ok: false;
+      reason: "note_conflict" | "binding_missing";
+      /** The active binding that already owns the note key, when that is the reason. */
+      conflict: WorkflowBinding | null;
+    };
 
 export interface WorkflowAttemptInsert {
   id: string;
@@ -1273,6 +1339,59 @@ export class WorkflowStore {
     return this.getBinding(id);
   }
 
+  claimBySourceKey(sourceKey: string): WorkflowBindingClaim | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_binding_claims WHERE source_key = ?`,
+    ).get(sourceKey);
+    if (!row) return null;
+    try { return parseWorkflowBindingClaimRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  claimForBinding(bindingId: string): WorkflowBindingClaim | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_binding_claims WHERE binding_id = ?`,
+    ).get(bindingId);
+    if (!row) return null;
+    try { return parseWorkflowBindingClaimRow(row); } catch (error) { diagnose(error); return null; }
+  }
+
+  /**
+   * Resolve one external orchestrator's claim, creating the claim and its binding together
+   * or returning exactly what an earlier call created.
+   *
+   * One transaction because the two halves are one fact: a claim pointing at a binding that
+   * was never inserted, or a binding no claim can find again, would each make the retry
+   * create a second review of the same result. `BEGIN IMMEDIATE` takes the write lock before
+   * the conflict check, so the check and the insert cannot interleave with a concurrent
+   * caller inside this single-writer daemon.
+   *
+   * An active binding already owning that conversation is a TYPED CONFLICT, never an
+   * adoption: silently taking it over would point somebody else's run at this result, and
+   * silently replacing it would discard a review an operator started.
+   */
+  ensureExternalBindingClaim(input: WorkflowExternalClaimInput): WorkflowExternalClaimResult {
+    return transaction(this.db, () => {
+      const existing = this.claimBySourceKey(input.sourceKey);
+      if (existing) {
+        const binding = this.getBinding(existing.bindingId);
+        return binding
+          ? { ok: true as const, claim: existing, binding, created: false }
+          : { ok: false as const, reason: "binding_missing" as const, conflict: null };
+      }
+      const conflict = this.activeBindingForNote(input.binding.noteKey);
+      if (conflict) return { ok: false as const, reason: "note_conflict" as const, conflict };
+      const binding = this.insertBinding(input.binding);
+      this.db.prepare(
+        `INSERT INTO workflow_binding_claims (
+           source_key, source_kind, source_id, binding_id, created_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(input.sourceKey, input.sourceKind, input.sourceId, binding.id, input.now);
+      const claim = this.claimBySourceKey(input.sourceKey);
+      if (!claim) throw new Error(`Workflow binding claim ${input.sourceKey} disappeared after insert`);
+      return { ok: true as const, claim, binding, created: true };
+    });
+  }
+
   getRun(id: string): WorkflowRun | null {
     const row = this.db.prepare(`SELECT * FROM workflow_runs WHERE id = ?`).get(id);
     if (!row) return null;
@@ -1439,7 +1558,7 @@ export class WorkflowStore {
         run.binding.id,
         run.binding.workflowVersionId,
         run.binding.maxRepairRounds,
-        run.triggerSource ?? "manual",
+        run.triggerSource,
         run.triggerKey,
         run.now,
         run.now,
@@ -1448,8 +1567,13 @@ export class WorkflowStore {
         ...submission,
         runId: run.id,
         round: 1,
-        triggerSource: run.triggerSource ?? "manual",
       });
+      if (run.externalExpectation) {
+        this.appendEvent(run.id, "external_expectation_pinned", {
+          expectedHeadSha: run.externalExpectation.expectedHeadSha,
+          requireCleanWorktree: run.externalExpectation.requireCleanWorktree,
+        }, run.now);
+      }
       this.appendEvent(run.id, "run_created", {
         submissionId: submission.id,
         triggerKey: submission.triggerKey,
@@ -1552,12 +1676,13 @@ export class WorkflowStore {
              id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
              trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
              gate_state_json, started_at, updated_at, completed_at
-           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, 'foreman', ?, NULL, NULL, NULL, ?, ?, NULL)`,
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
         ).run(
           input.runId,
           input.binding.id,
           input.binding.workflowVersionId,
           input.binding.maxRepairRounds,
+          "foreman" satisfies WorkflowTriggerSource,
           triggerKey,
           input.now,
           input.now,
@@ -1705,6 +1830,77 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, now, terminal ? 1 : 0, now, id);
     return this.mustSubmission(id);
+  }
+
+  /**
+   * The exact artifact an externally sourced run is entitled to review, or null.
+   *
+   * The expectation has to be DURABLE, not merely re-validated per call: the idempotency key
+   * names a result, and a retry that supplied a different commit under that same key would
+   * resume the same submission against evidence nobody selected - and after completion would
+   * be answered as idempotent success for a commit this run never saw. Pinned once, the run
+   * carries its own answer to "which artifact was this?" across restarts.
+   *
+   * It is written by `createInitialSubmission`, inside that transaction, and is deliberately
+   * not writable afterwards: a second entry point would be the two-step window again. It
+   * lives in the event ledger rather than a column because it is written exactly once and
+   * only ever read back for comparison - the same shape as the other once-only facts here.
+   */
+  externalExpectationFor(runId: string): WorkflowCaptureExpectation | null {
+    const row = this.db.prepare(
+      `SELECT json_extract(payload_json, '$.expectedHeadSha') AS expected_head_sha
+         FROM workflow_events
+        WHERE run_id = ? AND event_kind = 'external_expectation_pinned'
+        ORDER BY id ASC LIMIT 1`,
+    ).get(runId) as { expected_head_sha: string | null } | undefined;
+    if (!row?.expected_head_sha) return null;
+    // requireCleanWorktree is the literal true in the wire type, so the pin restates the
+    // requirement rather than storing a choice; there is no stored value that could relax it.
+    return { expectedHeadSha: row.expected_head_sha, requireCleanWorktree: true };
+  }
+
+  /**
+   * Return one blocked submission to evidence capture without starting a second family.
+   *
+   * The externally sourced path needs this and `reviveFailedSubmission` cannot serve it:
+   * that one resumes a submission whose evidence is already captured and whose graph work
+   * failed, so it lands in `running`. Here the capture itself is what did not happen - the
+   * caller's artifact was not the one on disk, or a restart interrupted the read - and the
+   * retry has to redo exactly that. Guarded on the exact blocking phases the capture path
+   * produces, so nothing else can re-enter capture, and it reuses the same run, round,
+   * submission and model-call ledger rather than minting new ones.
+   */
+  resumeCapture(
+    runId: string,
+    submissionId: string,
+    expectedPhases: readonly string[],
+    now = Date.now(),
+  ): { run: WorkflowRun; submission: WorkflowSubmission } | null {
+    if (expectedPhases.length === 0) return null;
+    const placeholders = expectedPhases.map(() => "?").join(", ");
+    return transaction(this.db, () => {
+      const submissionChanged = this.db.prepare(
+        `UPDATE workflow_submissions
+            SET status = 'capturing', updated_at = ?, completed_at = NULL
+          WHERE id = ? AND run_id = ? AND status = 'failed'
+            AND EXISTS (
+              SELECT 1 FROM workflow_runs
+               WHERE id = ? AND status = 'blocked' AND current_phase IN (${placeholders})
+            )`,
+      ).run(now, submissionId, runId, runId, ...expectedPhases);
+      if (Number(submissionChanged.changes) !== 1) return null;
+      const runChanged = this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
+                updated_at = ?, completed_at = NULL
+          WHERE id = ? AND status = 'blocked' AND current_phase IN (${placeholders})`,
+      ).run(now, runId, ...expectedPhases);
+      if (Number(runChanged.changes) !== 1) {
+        throw new Error(`Workflow run ${runId} left its blocked capture phase mid-transaction`);
+      }
+      this.appendEvent(runId, "capture_resumed", { submissionId }, now);
+      return { run: this.mustRun(runId), submission: this.mustSubmission(submissionId) };
+    });
   }
 
   reviveFailedSubmission(
@@ -2454,7 +2650,23 @@ export class WorkflowStore {
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
       deliveries: this.listDeliveries(id),
       events: this.listEvents(id),
+      externalSource: this.externalSourceForRun(run, binding.id),
     };
+  }
+
+  /**
+   * Display provenance only - the opaque idempotency key never leaves the store.
+   *
+   * Matched on the RUN's own trigger source, not merely on the binding having a claim. A
+   * claimed binding stays usable by the manual and Foreman paths, so a later run on it is
+   * genuinely not the external one, and reading provenance off the binding alone would put
+   * somebody else's name on an operator's own run.
+   */
+  private externalSourceForRun(run: WorkflowRun, bindingId: string): WorkflowExternalSource | null {
+    const claim = this.claimForBinding(bindingId);
+    return claim && claim.kind === run.triggerSource
+      ? { kind: claim.kind, sourceId: claim.sourceId, createdAt: claim.createdAt }
+      : null;
   }
 
   cancelRun(id: string, reason: string, now = Date.now()): WorkflowRun | null {
@@ -2648,6 +2860,16 @@ export class WorkflowStore {
         this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
         this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
       }
+      // Claims go before their bindings, in the same dependency order as everything above.
+      // Left behind, a claim would point at a binding that no longer exists and the next
+      // retry of the same external result would resolve to nothing it could open.
+      //
+      // Deleting the CLAIM is not deleting the orchestrator's own history: that lives in its
+      // own tables, keeps its artifacts, and renders this run as removed.
+      this.db.prepare(
+        `DELETE FROM workflow_binding_claims
+          WHERE binding_id IN (SELECT id FROM workflow_bindings WHERE note_key = ?)`,
+      ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
       return runIds;
     });
@@ -2723,7 +2945,7 @@ export class WorkflowStore {
       input.id,
       input.runId,
       input.round,
-      input.triggerSource ?? "manual",
+      input.triggerSource,
       input.triggerKey,
       `capturing:${input.id}`,
       JSON.stringify(input.context),

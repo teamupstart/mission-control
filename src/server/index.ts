@@ -35,6 +35,7 @@ import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
+import { createReviewScheduler } from "./llm/review-scheduler.ts";
 
 openDb();
 ensureToken();
@@ -62,7 +63,15 @@ const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
-const workflows = new WorkflowManager(registry, personas.store, { queueManager: queues });
+// One ceiling on tool-less review work for the whole daemon, constructed here and injected,
+// never reached for as a module global. Workflow Persona attempts and context compaction
+// share it today. The Foreman is a separate process and unrelated background jobs keep
+// their own limits on purpose - see llm/review-scheduler.ts.
+const reviewScheduler = createReviewScheduler();
+const workflows = new WorkflowManager(registry, personas.store, {
+  queueManager: queues,
+  reviewScheduler,
+});
 workflows.start();
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.

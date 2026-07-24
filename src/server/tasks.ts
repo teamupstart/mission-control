@@ -18,7 +18,12 @@ import { canWriteTo } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import type { Registry, TaskPrMerged } from "./registry.ts";
-import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
+import {
+  Dispatcher,
+  deriveTitle,
+  teardownWorktree,
+  type TaskDispatchOptions,
+} from "./dispatcher.ts";
 import {
   branchReleasedByReset,
   injectPrompt,
@@ -97,9 +102,17 @@ function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): b
   return task.status === "backlog" && !task.enabled && overrideDisabled !== true;
 }
 
-/** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
-export interface DispatchOptions {
-  defaultModel?: string | null;
+/**
+ * What a caller asks of ONE launch: the launch options the Dispatcher acts on
+ * (`TaskDispatchOptions` - pinned base, required Mission MCP tools, the launch-time default
+ * model Foreman may supply for an otherwise-unpinned backlog task) plus the one thing that
+ * is a TaskManager decision rather than a launch property.
+ *
+ * The split is the point. `overrideDisabled` is an authorization the caller is claiming
+ * about this request; everything else describes the agent that is about to start, and is
+ * forwarded verbatim. Nothing here is persisted - see `TaskDispatchOptions`.
+ */
+export interface DispatchOptions extends TaskDispatchOptions {
   /** The caller is deliberately starting a parked task. See `DISABLED_REFUSAL`. */
   overrideDisabled?: boolean;
 }
@@ -622,6 +635,13 @@ export class TaskManager {
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
+      // No schedule filed this. Every caller of `create` is a human or an external
+      // system - the dispatch form, an MCP tool, a task source sweep - and none of them
+      // has an occurrence to point at. Phase 2 of Recurring Missions adds the internal,
+      // recovery-safe producer that populates all three together.
+      scheduleId: null,
+      scheduleOccurrenceId: null,
+      scheduledFor: null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,
@@ -728,7 +748,11 @@ export class TaskManager {
         const selected = { ...t, model: options.defaultModel, updatedAt: Date.now() };
         this.registry.upsertTask(selected);
       }
-      void this.dispatcher.dispatch(id);
+      // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
+      // the layer that acts on it. The one field this method consumed above is harmless to
+      // pass along - the model a launch runs on is resolved from the stored task, never
+      // from an options object.
+      void this.dispatcher.dispatch(id, options);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
   }

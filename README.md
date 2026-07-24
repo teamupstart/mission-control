@@ -817,6 +817,13 @@ fine - it is a static instruction with no secrets in it.
 Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
+*Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
+the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
+binary in node mode when there isn't one), and the name it is registered under. Claude reads
+that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
+`-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
+leaves whatever **Install integrations** registered machine-wide alone.
+
 ## Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
@@ -1208,6 +1215,43 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
+## Recurring missions (foundation only, so far)
+
+A **recurring mission** is a durable template that files an ordinary backlog task on a
+cadence: "audit dependencies every Monday at 8am". It is deliberately not a
+[task source](#task-sources-pulling-work-into-the-backlog) - a source reads an *external*
+system and dedupes against what it has already seen, where a schedule is internal state
+whose identity is the pair `(schedule, instant)`.
+
+**Nothing is operable yet.** What has landed is the persistence and time-calculation
+contract: the shared vocabulary, one timezone-aware recurrence evaluator, three SQLite
+tables, and three nullable provenance columns on `tasks`. There is no scheduler loop, no
+route and no UI, so with no way to create a schedule the tables stay empty and the product
+behaves exactly as before. The catalog, the exactly-once scheduler and the Missions overlay
+arrive in later phases; the plan is
+[`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).
+
+Three decisions are worth knowing now, because everything later is built on them:
+
+- **A due instant creates a backlog task and stops there.** No schedule path will dispatch,
+  cut a worktree, or type into a pane. If [Foreman](#backlog-autopilot-foreman-schedules-the-fleet)
+  later picks the task up, the existing allowlist, dependency, capacity and pane-safety
+  gates remain the only autonomous route to execution.
+- **The guarantee is durable catch-up, not wall-clock.** The cadence lives in SQLite rather
+  than in a timer, so a restart or a closed laptop loses no due instant - but no work runs
+  while the machine is asleep, and the task is created *late* when it wakes. The catalog
+  will show that delay rather than rounding it off. A real wall-clock guarantee needs an
+  always-on host, which is a separate project.
+- **One hour is the minimum interval, and seconds are not expressible.** Cadences are five
+  cron fields; six-field seconds syntax is refused rather than parsed, and an expression
+  whose runs come closer than an hour apart is refused with the cadence it would have had.
+  A mistyped field should not be able to file 1,440 agent tasks in a day.
+
+Time is calculated in exactly one place, `src/server/schedules/recurrence.ts`, which is the
+only consumer of `cron-parser`. DST behaviour is pinned by fixtures against both US
+transitions, Europe/London, and a southern-hemisphere zone, so a dependency upgrade that
+moves somebody's 2am mission fails the suite instead.
+
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
@@ -1299,6 +1343,32 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 
+### Seed Personas you can import
+
+Four ready-made review roles ship in this repository under `docs/personas/`, distilled from
+the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. They are
+seeds, not built-ins: nothing imports them for you and nothing keeps your copy in sync with
+the file afterwards. Once imported they are ordinary Personas you own and can edit.
+
+| File | Imports as | What it judges |
+|---|---|---|
+| `docs/personas/intent-conformance-judge.md` | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| `docs/personas/code-risk-reviewer.md` | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
+| `docs/personas/test-evidence-auditor.md` | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
+| `docs/personas/documentation-steward.md` | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+
+**Import .md** in the Personas tab takes the whole file body as the guidance and the file's
+first level-one heading as the name, so each of these arrives named as the table says.
+Description stays empty and the provider and model overrides stay unset, which is the
+app-wide resolution above. Import each file once: a second import of the same file is
+refused, because the first already reserved that name.
+
+The four are written to compose as the example workflow in
+`docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
+gate, then the other three fanned out behind an All-pass Join. None of them restates the
+engine's own review contract or output format, which every Persona prompt already carries, so
+editing your copy changes what that role judges, not how it replies.
+
 ### Workflow drafts and published versions
 
 Every workflow starts with one visible **Session** node and one disconnected **End**. Add
@@ -1306,7 +1376,7 @@ Persona and **All-pass Join** nodes from the left palette, then connect the dire
 handles: Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may
 return to Session for changes. A Join needs both outcomes from at least two distinct
 predecessors, waits for one result from each, and passes only when all passed. Cycles are
-legal only when they include Session—Persona-only cycles are rejected because they could
+legal only when they include Session. Persona-only cycles are rejected because they could
 spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not
 a graph node.
 
@@ -1354,13 +1424,17 @@ details; a strict `fail` verdict requires concrete requested changes and evidenc
 Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
 fail verdicts.
 
-The durable engine runs up to three Persona calls concurrently, records attempts and edge
-receipts, waits for all inputs at an all-pass Join, retries transient infrastructure failures
-with bounded backoff, and stops at the binding's repair-round limit. A failing path back to
-Session waits for a manual resubmit. Resubmission captures fresh evidence and refuses an
-unchanged snapshot unless the operator explicitly confirms it, so an approval from an older
-round is never reused. Preview performs no terminal write, keystroke injection, Foreman
-action, Inspector action, or message delivery.
+The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
+Join, retries transient infrastructure failures with bounded backoff, and stops at the
+binding's repair-round limit. A failing path back to Session waits for a manual resubmit.
+Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
+explicitly confirms it, so an approval from an older round is never reused. Preview performs
+no terminal write, keystroke injection, Foreman action, Inspector action, or message delivery.
+
+The whole daemon runs at most three review calls at once, and Persona attempts and context
+compaction spend that one budget together rather than each holding a private ceiling. The
+Foreman is a separate process with its own serial queue, and the background jobs below keep
+their own limits, because they degrade differently and must not wait behind a Persona call.
 
 Run state survives daemon restarts. Interrupted provider calls become auditable errors and
 are retried without duplicating receipts; missing immutable data fails visibly instead of
@@ -1370,6 +1444,40 @@ then requires a fresh resubmit. Reset removes bindings, runs, submissions, attem
 captured context, and model-call metadata through the same session reset owner. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded only for the selected run. Cards, Console, and Board show the same workflow status.
+
+### Runs Mission Control started for itself
+
+Almost every run is one an operator submitted. A run can also be started by Mission Control
+on its own behalf, when one of its own features has already selected an exact result and
+wants it reviewed. That path is internal - there is no endpoint that starts arbitrary runs on
+a caller's say-so, and nothing can aim one at a session you did not choose. The daemon
+resolves the published version, the live conversation, and the idempotency key itself.
+
+Such a run is one run. Repeating the request, or restarting the daemon mid-flight, returns
+the same binding, the same run, and the same first submission rather than starting a second
+review of the same work. A conversation that already has an active binding is reported as a
+conflict: yours is never replaced or quietly taken over.
+
+The evidence must be exactly what was selected. Before anything is stored and before a single
+provider token is spent, the capture has to observe the expected commit **and** a clean
+working tree - matching HEAD with uncommitted changes beside it is not the selected result.
+A mismatch blocks visibly and says what it saw; restoring the exact result and asking again
+resumes that same submission instead of opening a new round.
+
+That commit is pinned to the run at creation and cannot be changed afterwards. A repeat call
+naming a different commit is refused rather than accepted, so one result id always means one
+artifact. For the same reason the ordinary **Preview fresh evidence** and discard-and-resend
+actions refuse on these runs: they re-read whatever the session holds right now, which is not
+what this run is reviewing.
+
+These runs are Preview and Manual only for now. If the pinned workflow version's defaults ask
+for Live delivery or Foreman completion, the request is refused rather than quietly downgraded
+to Preview - being handed a review that silently never reaches the session would be worse than
+being told no.
+
+Run detail names the feature that started a run, matched on that run's own source, so an
+ordinary manual run on the same session is never labelled as someone else's. Reset removes the
+claim with the rest of the run family.
 
 ### Live repair delivery and Foreman completion
 

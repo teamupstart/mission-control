@@ -202,6 +202,48 @@ Written from `harness/codex/launch.ts` it pointed four levels above the bundle, 
 failed, and every packaged build silently launched Codex uninstrumented - the designed
 fallback firing for a reason that is not the designed one.
 
+**Launch-scoped MCP is declared ONCE, in `src/server/mission-mcp.ts`.** One descriptor -
+`mcpServerPath()` plus a runtime and its env - rendered into whichever launch grammar the
+harness speaks: Claude's `--mcp-config` JSON file (written atomically, still at
+`<state>/ask-channel/mcp.json` because renaming it would orphan the file every installed
+argv already points at) and Codex's three `-c mcp_servers.mission-control.*` TOML
+overrides. All three of Codex's keys or none: a `command` with no `args`, or an Electron
+runtime with no `ELECTRON_RUN_AS_NODE`, is a server that looks registered and never starts.
+`MISSION_MCP_TOOLS` is the tool vocabulary a caller REQUIRES by name, and a name that does
+not match what `src/mcp/server.ts` publishes pre-approves nothing while looking as if it
+did - `mission-mcp.test.ts` scrapes that file's `registerTool` calls and fails on drift.
+`askChannelArgs` consumes the descriptor and stays all-four-or-none; a required tool widens
+its `--allowed-tools` rather than adding a second registration. None of this touches what
+`claude mcp add` / `codex mcp add` wrote machine-wide (`src/main/integrations.ts`), and none
+of it reaches a session an operator started. Test: `mission-mcp.test.ts`.
+
+**A dispatch may pin its input commit, and that is mechanism with no policy in it.**
+`TaskDispatchOptions` (`src/server/dispatcher.ts`) is ephemeral and server-only - nothing on
+it is persisted on a Task, because a caller that needs a relaunch to make the same request
+has to hold that request in its own durable state anyway. `verifyPinnedBase` takes FULL
+commit ids only: a ref name resolves fine and means something different an hour later, which
+is the drift a pin exists to remove. Both providers converge on that commit - the git
+fallback cuts from it instead of `HEAD`, a pool lease is hard-reset to it after
+`pinLeasedWorktree` proves the tree belongs to this repository - and both then re-read `HEAD`
+to prove it took. A pinned provisioning failure unwinds what it created (return the lease,
+tear down the worktree) before throwing, because it throws before the Dispatcher records the
+path and nothing downstream could ever find it. Test: `dispatch-pinned-base.test.ts`,
+`dispatcher-cleanup.test.ts`.
+
+**A worktree is captured through a TEMPORARY index, never the real one.**
+`src/server/git/ensemble-snapshot.ts`: `read-tree` / `add -A` / `write-tree` / `commit-tree`
+under `GIT_INDEX_FILE`, then one ref under `refs/mission-control/ensembles/<uuid>/<uuid>`.
+That is what leaves the member's staged/unstaged split, HEAD, branch and working tree
+byte-identical - a capture that committed through the real index would silently rewrite the
+staging area of an agent that is still working. Ref components are validated as generated
+UUIDs before they reach `update-ref`. `resetWorktreeToCommit` is the ONE owner of "hard
+reset, then `clean -fd` and never `-fdx`", shared by pinned provisioning and artifact
+restore: `-x` would delete the ignored warm dependencies a pooled tree exists to keep.
+Diffs are `baseSha..snapshotSha` DIRECTLY, never through a merge-base walk, because a member
+may amend or rebase and the snapshot is still an exact artifact; truncation reports its
+omitted byte count, and a patch too large to buffer is refused rather than given an invented
+one. Test: `ensemble-snapshot.test.ts`.
+
 **`applyHook`'s attribution guard compares against `discoveredIdentity`, and nothing else.**
 That map (`src/server/registry.ts`) holds what PASSIVE DISCOVERY read off the live process -
 the rollout an exact pid holds open - which a hook cannot contradict. `Session.agentSessionId`
@@ -237,6 +279,12 @@ strangers' pull requests. Test: `inspector-adoption.test.ts`.
 
 **New column on an existing table** → editing the `CREATE TABLE IF NOT EXISTS` block is not
 enough. Add an `addColumn` call in `migrate()` (`src/server/db.ts`). New tables need nothing.
+**An INDEX over that new column cannot live beside its table**: the CREATE block runs
+BEFORE `migrate()`, so on an upgrading database the statement references a column the ALTER
+has not added yet and `openDb()` throws on first start - for every existing operator, and
+never on the fresh install you tested. `idx_tasks_schedule` is the worked example; it sits
+in `migrate()` under the `addColumn` calls it depends on. Test: `schedule-db.test.ts`,
+which seeds a pre-feature database rather than a fresh one for exactly this reason.
 
 **No backticks inside `openDb()`'s SQL block.** It is one template literal, so a backtick in
 a `--` comment ends it and the file stops parsing. Name identifiers bare.
@@ -260,8 +308,22 @@ an external node, and `skills/` is reached through a symlink.
 **Append-only**, since old values persist on users' machines: skill directory prefixes in
 `src/shared/skills.ts`, the task source kind ids in `TASK_SOURCE_KINDS`
 (`src/shared/task-source.ts`), the background-job ids in `LLM_JOB_IDS`
-(`src/shared/llm-jobs.ts`), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback
-chain in `src/shared/harness-runtime.mjs`.
+(`src/shared/llm-jobs.ts`), the six schedule enums in `@shared/schedules.ts`
+(`SCHEDULE_EXECUTION_MODES` / `_OVERLAP_POLICIES` / `_MISSED_POLICIES` / `_TRIGGER_KINDS` /
+`_DECISION_KINDS` / `_OCCURRENCE_STATUSES`), and the `MISSION_` / `FLEET_` / `HARNESS_` env
+fallback chain in `src/shared/harness-runtime.mjs`.
+
+**A persisted enum this build cannot read is a `null`, never a nearest match.** The schedule
+store (`src/server/schedules/store.ts`) is where that is worked out: a row written by a
+NEWER build still loads - a schedule nobody can see is one nobody can fix - but every field
+that could carry an unknown value is `T | null` on `MissionSchedule` / `ScheduleRevision`,
+so a caller cannot reach a policy without saying what it does when there isn't one.
+`scheduleIsRunnable` / `revisionIsRunnable` are the single narrowing gates that answer it,
+and the row reports `unreadable` and derives `attention`. The failure this shape rules out
+is specific: reading an unknown `execution_mode` as `local-catchup` would create work on
+THIS laptop that the operator scheduled for a different host, and a default in the mapper
+is how that happens silently. Note the catalog reads the schedule row and the claim reads
+the revision, so each has to refuse independently. Test: `schedule-db.test.ts`.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
 marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are

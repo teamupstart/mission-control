@@ -17,6 +17,7 @@ import type {
   PersonaFeedbackSummary,
   PersonaVerdict,
   WorkflowBinding,
+  WorkflowCaptureExpectation,
   WorkflowContextSnapshot,
   WorkflowDefinition,
   WorkflowDetail,
@@ -33,9 +34,10 @@ import type {
   WorkflowDelivery,
   WorkflowCompletionClaim,
   WorkflowCompletionClaimResult,
+  WorkflowTriggerSource,
 } from "@shared/workflow.ts";
-import { normalizeWorkflowName } from "@shared/workflow.ts";
-import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { WORKFLOW_EXTERNAL_SOURCE_KINDS, normalizeWorkflowName } from "@shared/workflow.ts";
+import { PersonaVerdictSchema, WorkflowCaptureExpectationSchema } from "@shared/protocol.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -47,6 +49,11 @@ import { harnessFor, sessionMessages } from "../harness/index.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import {
+  DEFAULT_REVIEW_CONCURRENCY,
+  createReviewScheduler,
+  type ReviewScheduler,
+} from "../llm/review-scheduler.ts";
+import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
@@ -54,6 +61,13 @@ import {
   workflowContextFingerprint,
 } from "./context.ts";
 import { WorkflowEngine, type WorkflowEngineOptions } from "./engine.ts";
+import {
+  externalSourceKey,
+  type EnsureExternalBindingInput,
+  type ExternalBindingEligibility,
+  type ExternalBindingResult,
+  type SubmitExternalInput,
+} from "./external-binding.ts";
 import {
   WorkflowStore,
   type WorkflowPublishWrite,
@@ -103,7 +117,9 @@ export type WorkflowRuntimeMutation<T> =
         | "not_infrastructure_failure"
         | "stale_capture"
         | "invalid_delivery_state"
-        | "confirmation_required";
+        | "confirmation_required"
+        | "ineligible_session"
+        | "artifact_mismatch";
       message: string;
       current?: unknown;
     };
@@ -121,10 +137,81 @@ export interface WorkflowManagerOptions {
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   recordInjection?: typeof recordInjection;
+  /**
+   * The daemon's shared review budget, spent by Persona attempts and context compaction
+   * alike. Constructed here only so a test or a second embedder still gets a real ceiling.
+   */
+  reviewScheduler?: ReviewScheduler;
+  /**
+   * Whether an external orchestrator may claim this session right now.
+   *
+   * Injected rather than imported: the owner of that answer is the orchestrator holding the
+   * session, and a Workflow module that reached into its store to ask would be exactly the
+   * dependency this boundary exists to prevent. Returns one sentence for a human, or null.
+   */
+  externalBindingEligibility?: ExternalBindingEligibility;
 }
 
 function runIsTerminal(run: WorkflowRun): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
+}
+
+/**
+ * The blocked phases an externally sourced submission may resume capture from.
+ *
+ * Every one of them is produced by the capture path itself and leaves the round's evidence
+ * unwritten, which is what makes resuming the SAME submission correct rather than a way to
+ * paper over a run that failed for some other reason.
+ */
+const EXTERNAL_RESUMABLE_PHASES = [
+  "external_artifact_mismatch",
+  "capture_interrupted",
+  "capture_error",
+  "stale_capture",
+] as const;
+
+/**
+ * Whether this run's evidence is pinned to an external artifact.
+ *
+ * The manual paths - resubmit, and the replacement round a discarded delivery creates -
+ * capture whatever the session holds RIGHT NOW, with no expectation attached. On an
+ * externally sourced run that is a way around exact-clean capture: one click would review a
+ * working tree the external caller never selected, through a route that already exists. They
+ * refuse instead, because "review this session as it stands" is not a question this kind of
+ * run can be asked - its subject is one immutable artifact.
+ */
+function externallySourced(run: WorkflowRun): boolean {
+  return (WORKFLOW_EXTERNAL_SOURCE_KINDS as readonly string[]).includes(run.triggerSource);
+}
+
+const EXTERNAL_MANUAL_ROUND_REFUSAL =
+  "This run reviews one exact external result, so its evidence cannot be re-captured from "
+  + "the session's current state. The source that started it must submit again.";
+
+/** The exact facts that refused an externally sourced capture, or null when it may proceed. */
+type CaptureExpectationMismatch = {
+  expectedHeadSha: string;
+  headSha: string | null;
+  headMatches: boolean;
+  workingTreeDirty: boolean;
+  requireCleanWorktree: true;
+};
+
+function expectationMismatch(
+  expectation: WorkflowCaptureExpectation,
+  context: WorkflowContextSnapshot,
+): CaptureExpectationMismatch | null {
+  const headSha = context.evidence.headSha;
+  const workingTreeDirty = context.evidence.workingTreeDirty;
+  const headMatches = headSha === expectation.expectedHeadSha;
+  if (headMatches && !(expectation.requireCleanWorktree && workingTreeDirty)) return null;
+  return {
+    expectedHeadSha: expectation.expectedHeadSha,
+    headSha,
+    headMatches,
+    workingTreeDirty,
+    requireCleanWorktree: expectation.requireCleanWorktree,
+  };
 }
 
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
@@ -137,6 +224,7 @@ export class WorkflowManager {
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
   private readonly rememberInjection: typeof recordInjection;
+  private readonly schedule: ReviewScheduler;
 
   constructor(
     private readonly registry: Registry,
@@ -146,6 +234,18 @@ export class WorkflowManager {
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
     this.rememberInjection = options.recordInjection ?? recordInjection;
+    // ONE scheduler, resolved once from whichever option named it, then handed to both
+    // halves. Compaction used to run outside the engine's limiter entirely, so two
+    // submissions capturing at once could exceed the ceiling the engine was enforcing.
+    //
+    // It is resolved here rather than half here and half in the engine because those are the
+    // same budget: letting `engine.schedule` win for Persona attempts while compaction kept
+    // this one would hand back exactly the split this is meant to close, and would silently
+    // ignore `engine.concurrency` too. The assignment below therefore comes AFTER the spread
+    // of `options.engine`, so no caller can reintroduce a second scheduler.
+    this.schedule = options.reviewScheduler
+      ?? options.engine?.schedule
+      ?? createReviewScheduler(options.engine?.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.registry.initializeWorkflows(this.list(true));
     const configuredWaiting = options.engine?.onSubmissionWaiting;
     this.engine = new WorkflowEngine(
@@ -153,6 +253,7 @@ export class WorkflowManager {
       (runId) => this.publishRun(runId),
       {
         ...options.engine,
+        schedule: this.schedule,
         onSubmissionWaiting: (submissionId) => {
           this.scheduleWaitingDelivery(submissionId);
           configuredWaiting?.(submissionId);
@@ -462,6 +563,9 @@ export class WorkflowManager {
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "The run binding is missing" };
+    if (externallySourced(run)) {
+      return { ok: false, reason: "unsupported_mode", message: EXTERNAL_MANUAL_ROUND_REFUSAL };
+    }
     const key = `manual:${binding.id}:${input.requestId}`;
     const existing = this.store.submissionByTrigger(key);
     if (existing) {
@@ -806,6 +910,11 @@ export class WorkflowManager {
       };
     }
 
+    if (externallySourced(run)) {
+      // Same hole as resubmit: this branch also creates a manual round with no expectation.
+      // Marking the ambiguous packet delivered above stays available; only re-capturing does not.
+      return { ok: false, reason: "unsupported_mode", message: EXTERNAL_MANUAL_ROUND_REFUSAL };
+    }
     const binding = this.store.getBinding(run.bindingId);
     if (
       !binding
@@ -919,6 +1028,286 @@ export class WorkflowManager {
       };
     }
     return stored.result;
+  }
+
+  /**
+   * Resolve one external orchestrator's binding, creating it or returning the same one.
+   *
+   * There is deliberately NO route for this. An HTTP endpoint that started arbitrary
+   * Workflow runs on a caller's say-so would let a client target somebody else's session;
+   * every identity here is resolved server-side instead - the immutable version from the
+   * store, the live session and its noteKey from the registry, and the idempotency key from
+   * the supplied reference. Later Ensemble code calls this method in-process.
+   */
+  ensureExternalBinding(
+    input: EnsureExternalBindingInput,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<ExternalBindingResult> {
+    const version = this.store.getWorkflowVersionById(input.workflowVersionId);
+    if (!version) {
+      return { ok: false, reason: "not_found", message: "No such immutable workflow version" };
+    }
+    const triggerMode = input.triggerMode ?? version.bindingDefaults.triggerMode;
+    const deliveryMode = input.deliveryMode ?? version.bindingDefaults.deliveryMode;
+    const maxRepairRounds = input.maxRepairRounds ?? version.bindingDefaults.maxRepairRounds;
+    // Preview and Manual only, and REFUSED rather than quietly downgraded.
+    //
+    // The external path is Preview-scoped for now: Live delivery and Foreman completion are
+    // owned by their own phases and this boundary has not been proven against either. Those
+    // modes can arrive by DEFAULT as well as by request - a published version whose binding
+    // defaults say Live would otherwise hand this new path a terminal write - so the check is
+    // on the resolved values, not on the input. Silently substituting Preview would be worse
+    // than refusing: the caller pinned a version believing it would deliver, and would get a
+    // review that never reaches the session with nothing saying so.
+    if (deliveryMode !== "preview" || triggerMode !== "manual") {
+      return {
+        ok: false,
+        reason: "unsupported_mode",
+        message:
+          "An externally sourced binding is Preview and Manual only; "
+          + "this workflow version asks for "
+          + `${deliveryMode} delivery and ${triggerMode} trigger`,
+      };
+    }
+    let sourceKey: string;
+    try {
+      sourceKey = externalSourceKey(input.source, version.id);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    // A claim outlives the session it was made for, so answer the idempotent case before
+    // asking anything about live state: a retry after a restart must return the same
+    // binding even while its session is being rediscovered.
+    const claimed = this.store.claimBySourceKey(sourceKey);
+    if (claimed) {
+      const binding = this.store.getBinding(claimed.bindingId);
+      if (binding) return { ok: true, value: { binding, claim: claimed, created: false }, idempotent: true };
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "The claimed workflow binding is missing",
+        current: claimed,
+      };
+    }
+    const session = this.registry.getSession(input.sessionId);
+    if (!session || session.state === "exited") {
+      return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
+    }
+    const prerequisite = this.bindingModeBlock(session, triggerMode, deliveryMode);
+    if (prerequisite) return prerequisite;
+    const ineligible = this.options.externalBindingEligibility?.({
+      sessionId: session.id,
+      source: input.source,
+    });
+    if (ineligible) {
+      return { ok: false, reason: "ineligible_session", message: ineligible };
+    }
+    const resolved = this.store.ensureExternalBindingClaim({
+      sourceKind: input.source.kind,
+      sourceKey,
+      sourceId: input.source.sourceId,
+      binding: {
+        id: randomUUID(),
+        workflowVersionId: version.id,
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: session.cwd,
+        sessionRepoRoot: session.repoRoot,
+        triggerMode,
+        deliveryMode,
+        maxRepairRounds,
+        now,
+      },
+      now,
+    });
+    if (!resolved.ok) {
+      return resolved.reason === "note_conflict"
+        ? {
+            ok: false,
+            reason: "conflict",
+            message: "This conversation already has an active workflow binding",
+            current: resolved.conflict,
+          }
+        : { ok: false, reason: "not_found", message: "The claimed workflow binding is missing" };
+    }
+    return {
+      ok: true,
+      value: { binding: resolved.binding, claim: resolved.claim, created: resolved.created },
+      idempotent: !resolved.created,
+    };
+  }
+
+  /**
+   * Start, or resume, the ONE initial submission an external result is entitled to.
+   *
+   * The claim's own key is the trigger key, so a lost response, a repeat call and a restart
+   * all resolve to the same run, round and model-call family. A submission still capturing
+   * from an earlier attempt is resumed in place rather than replaced - that is the whole
+   * difference between "the caller restored its artifact and asked again" and "the caller
+   * started a second review".
+   */
+  async submitExternal(
+    bindingId: string,
+    input: SubmitExternalInput,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const binding = this.store.getBinding(bindingId);
+    if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
+    if (binding.state !== "active") {
+      return { ok: false, reason: "inactive_binding", message: "The workflow binding is not active" };
+    }
+    // The commit id is the one free-form value here. An abbreviated or upper-case sha would
+    // simply never equal what capture read, so the run would block forever with a message
+    // that blamed the session rather than the request.
+    const expectation = WorkflowCaptureExpectationSchema.safeParse(input.expectation);
+    if (!expectation.success) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "An external capture expectation needs one complete lowercase commit id",
+      };
+    }
+    const claim = this.store.claimForBinding(binding.id);
+    if (!claim || claim.kind !== input.source.kind) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This workflow binding is not owned by that external source",
+        current: claim,
+      };
+    }
+    let key: string;
+    try {
+      key = externalSourceKey(input.source, binding.workflowVersionId);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (key !== claim.sourceKey) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "The supplied external result does not match this binding's claim",
+        current: claim,
+      };
+    }
+    const existing = this.store.submissionByTrigger(key);
+    if (existing) {
+      const existingRun = this.store.getRun(existing.runId);
+      if (!existingRun) {
+        return { ok: false, reason: "not_found", message: "The idempotent run is missing" };
+      }
+      // The idempotency key names a RESULT, so the artifact behind it cannot change. Without
+      // this, a retry could hand a different commit to the same key and either resume the
+      // round against evidence nobody selected, or - once the run had finished - be answered
+      // as idempotent success for a commit this run never reviewed.
+      const pinned = this.store.externalExpectationFor(existingRun.id);
+      if (!pinned) {
+        // Unreachable by construction: the pin is written inside the same transaction as the
+        // run and its submission, so an external run cannot exist without one. It is a
+        // REFUSAL rather than an assumption because the alternative on being wrong is to
+        // accept whatever commit the retry names - exactly the artifact swap this guards.
+        // Nothing durable can be said about which artifact this run was for, so nothing is.
+        return {
+          ok: false,
+          reason: "conflict",
+          message:
+            "This external run has no pinned artifact, so the result it was started for "
+            + "cannot be established; start a new result rather than reviewing another commit",
+          current: existingRun,
+        };
+      }
+      if (pinned.expectedHeadSha !== expectation.data.expectedHeadSha) {
+        return {
+          ok: false,
+          reason: "conflict",
+          message:
+            "This external result already pinned a different commit; "
+            + "a new artifact needs its own result id",
+          current: pinned,
+        };
+      }
+      if (existing.status !== "failed") {
+        return {
+          ok: true,
+          value: { run: existingRun, submission: existing },
+          idempotent: true,
+        };
+      }
+      const resumed = this.store.resumeCapture(
+        existingRun.id,
+        existing.id,
+        EXTERNAL_RESUMABLE_PHASES,
+        now,
+      );
+      if (!resumed) {
+        return {
+          ok: true,
+          value: { run: existingRun, submission: existing },
+          idempotent: true,
+        };
+      }
+      this.publishRun(resumed.run.id);
+      return this.captureAndActivate(
+        binding,
+        resumed.run,
+        resumed.submission,
+        undefined,
+        false,
+        // The PINNED expectation, not the supplied one: they are equal by the check above,
+        // and reading the durable copy is what makes that true by construction.
+        pinned,
+      );
+    }
+    const active = this.store.activeRunForBinding(binding.id);
+    if (active) {
+      return {
+        ok: false,
+        reason: "run_active",
+        message: "This binding already has an active run",
+        current: active,
+      };
+    }
+    // The external source kind IS the trigger source. Assigning rather than restating it
+    // means a future external kind that nobody appended to WORKFLOW_TRIGGER_SOURCES fails
+    // to compile here instead of filing its runs under somebody else's name.
+    const triggerSource: WorkflowTriggerSource = input.source.kind;
+    // The pinned artifact rides WITH the run and submission, in one transaction. Pinning it
+    // afterwards left a window where a crash produced an external run holding no expected
+    // commit, and the retry - finding nothing pinned - would have accepted whatever commit it
+    // was handed and reviewed an artifact nobody selected.
+    const created = this.store.createInitialSubmission(
+      {
+        id: randomUUID(),
+        binding,
+        triggerSource,
+        triggerKey: key,
+        now,
+        externalExpectation: expectation.data,
+      },
+      { id: randomUUID(), triggerSource, triggerKey: key, context: {}, evidence: {}, now },
+    );
+    if (created.idempotent) {
+      return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
+    }
+    this.publishRun(created.run.id);
+    return this.captureAndActivate(
+      binding,
+      created.run,
+      created.submission,
+      undefined,
+      false,
+      expectation.data,
+    );
   }
 
   private bindingModeBlock(
@@ -1161,6 +1550,7 @@ export class WorkflowManager {
     submission: WorkflowSubmission,
     previousFingerprint?: string,
     allowUnchanged = false,
+    expectation?: WorkflowCaptureExpectation,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     try {
       return await this.withCaptureLock(binding.noteKey, async () => {
@@ -1205,14 +1595,39 @@ export class WorkflowManager {
           message: "The session changed during evidence capture; submit again when it is stable",
         };
       }
+      // An externally sourced submission proves it captured the artifact it was told to,
+      // and it proves it HERE: before the raw evidence is persisted and before a single
+      // provider token is spent. A matching HEAD is not enough - uncommitted changes would
+      // put work into the review that the caller never selected - so the tree must be clean
+      // too. Blocking is visible, typed and resumable rather than fatal, because the fix is
+      // for the caller to restore its artifact and ask again on this same submission.
+      const mismatch = expectation ? expectationMismatch(expectation, captured.context) : null;
+      if (mismatch) {
+        this.store.setSubmissionState(submission.id, "failed", Date.now());
+        this.store.setRunState(run.id, "blocked", "external_artifact_mismatch", mismatch, Date.now());
+        this.store.appendEvent(run.id, "external_artifact_mismatch", {
+          submissionId: submission.id,
+          ...mismatch,
+        }, Date.now());
+        this.publishRun(run.id);
+        return {
+          ok: false,
+          reason: "artifact_mismatch",
+          message:
+            "The session is not at the expected commit with a clean working tree; "
+            + "restore the exact artifact and submit the same result again",
+          current: mismatch,
+        };
+      }
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(captured.context),
         evidence: workflowJson(captured.context.evidence),
       }, Date.now());
       let context: WorkflowContextSnapshot;
-      if (this.options.compactContext) {
-        context = await this.options.compactContext(captured.raw);
+      const compact = this.options.compactContext;
+      if (compact) {
+        context = await this.schedule(() => compact(captured.raw));
       } else {
         const config = getLlmConfig();
         const contextRunner = llmRunnerChoice(config);
@@ -1258,11 +1673,11 @@ export class WorkflowManager {
             );
           },
         };
-        context = await compactWorkflowContext(captured.raw, {
+        context = await this.schedule(() => compactWorkflowContext(captured.raw, {
           runner: contextRunner.id,
           model: contextModel.id,
           observer,
-        });
+        }));
       }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);

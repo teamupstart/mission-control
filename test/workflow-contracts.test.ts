@@ -8,17 +8,22 @@ import {
   PublishedWorkflowGraphSchema,
   ReattachWorkflowBindingSchema,
   UpdatePersonaSchema,
+  WorkflowCaptureExpectationSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
   WorkflowNodeAttemptStateSchema,
   WorkflowRunStatusSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
+  WorkflowTriggerSourceSchema,
 } from "../src/shared/protocol.ts";
 import {
+  WORKFLOW_EXTERNAL_SOURCE_KINDS,
   WORKFLOW_LIMITS,
   WORKFLOW_PERSONA_MODEL_ENV,
   WORKFLOW_PERSONA_MODEL_SPEC,
+  WORKFLOW_TRIGGER_MODES,
+  WORKFLOW_TRIGGER_SOURCES,
   normalizePersonaName,
 } from "../src/shared/workflow.ts";
 
@@ -41,7 +46,50 @@ test("workflow limits are finite front-door contracts", () => {
     repairRoundsMax: 20,
     feedbackFieldBytes: 4_000,
     feedbackPayloadBytes: 8_000,
+    externalSourceId: 200,
+    externalSourceSegment: 200,
+    externalSourceKey: 1_000,
   });
+});
+
+test("trigger source is an append-only registry and is not a trigger mode", () => {
+  // Both tuples are persisted, and they answer different questions. A trigger MODE is
+  // recurring binding behaviour an operator chose; a trigger SOURCE records which caller
+  // produced one submission. Letting `ensemble` into the mode union would offer an operator
+  // a recurring behaviour that nothing implements.
+  assert.deepEqual([...WORKFLOW_TRIGGER_SOURCES], ["manual", "foreman", "ensemble"]);
+  assert.deepEqual([...WORKFLOW_TRIGGER_MODES], ["manual", "foreman_complete"]);
+  assert.equal(WorkflowTriggerSourceSchema.parse("ensemble"), "ensemble");
+  assert.equal(WorkflowTriggerSourceSchema.parse("manual"), "manual");
+  assert.equal(WorkflowTriggerSourceSchema.parse("foreman"), "foreman");
+  assert.throws(() => WorkflowTriggerSourceSchema.parse("inspector"));
+  assert.equal(
+    WORKFLOW_TRIGGER_MODES.includes("ensemble" as (typeof WORKFLOW_TRIGGER_MODES)[number]),
+    false,
+  );
+  // Every external source kind must also be a trigger source, because the kind IS the source
+  // a run is filed under. A kind with no matching source would file its runs as somebody
+  // else's.
+  for (const kind of WORKFLOW_EXTERNAL_SOURCE_KINDS) {
+    assert.equal(WorkflowTriggerSourceSchema.parse(kind), kind);
+  }
+});
+
+test("an external capture expectation is one exact commit and cannot waive a clean tree", () => {
+  const sha = "a".repeat(40);
+  assert.deepEqual(
+    WorkflowCaptureExpectationSchema.parse({ expectedHeadSha: sha, requireCleanWorktree: true }),
+    { expectedHeadSha: sha, requireCleanWorktree: true },
+  );
+  // A matching HEAD with uncommitted changes is not the selected artifact, so there is no
+  // valid request that turns the check off.
+  assert.throws(() =>
+    WorkflowCaptureExpectationSchema.parse({ expectedHeadSha: sha, requireCleanWorktree: false }));
+  // An abbreviated id can become ambiguous in a repository that grew since it was chosen.
+  assert.throws(() =>
+    WorkflowCaptureExpectationSchema.parse({ expectedHeadSha: "a".repeat(12), requireCleanWorktree: true }));
+  assert.throws(() =>
+    WorkflowCaptureExpectationSchema.parse({ expectedHeadSha: "A".repeat(40), requireCleanWorktree: true }));
 });
 
 test("Persona uniqueness normalization is Unicode-stable and English-lowercased", () => {
@@ -76,7 +124,11 @@ test("Persona writes distinguish omission from an explicit override clear", () =
   assert.throws(() => CreatePersonaSchema.parse({ name: "Bad", guidanceMarkdown: "# x", runner: "other" }));
 });
 
-test("graph vocabulary has one Session concept and no checkpoint or Inspector nodes", () => {
+// The Ensemble entry is not speculative: an external orchestrator can now start one run
+// through the manager, and the temptation is to let it be a node too. It must not be. Every
+// published graph has exactly one Session, and a node standing for N of them would make the
+// binding, the context snapshot, delivery, the final gate and Reset all multi-subject.
+test("graph vocabulary has one Session concept and no checkpoint, Inspector, or Ensemble nodes", () => {
   const base = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -87,11 +139,17 @@ test("graph vocabulary has one Session concept and no checkpoint or Inspector no
     edges: [],
   };
   assert.equal(WorkflowDraftGraphSchema.parse(base).nodes.length, 4);
-  for (const kind of ["checkpoint", "inspector"]) {
+  for (const kind of ["checkpoint", "inspector", "ensemble"]) {
     assert.throws(() =>
       WorkflowDraftGraphSchema.parse({
         ...base,
         nodes: [...base.nodes, { id: kind, kind, position: { x: 0, y: 0 } }],
+      }),
+    );
+    assert.throws(() =>
+      PublishedWorkflowGraphSchema.parse({
+        nodes: [{ id: kind, kind, position: { x: 0, y: 0 } }],
+        edges: [],
       }),
     );
   }

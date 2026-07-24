@@ -40,6 +40,7 @@ test("a written cache round-trips", () => {
     alerts: { notifications: true, sound: false },
     richText: false,
     usageBarCollapsed: true,
+    trustStaged: ["/work/staged"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -47,6 +48,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
   assert.equal(config.usageBarCollapsed, true);
+  assert.deepEqual(config.trustStaged, ["/work/staged"]);
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

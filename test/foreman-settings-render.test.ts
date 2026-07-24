@@ -2,10 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  ForemanSettingsPanel,
-  candidateRepos,
-} from "../src/web/components/ForemanSettingsPanel.tsx";
+import { ForemanSettingsPanel } from "../src/web/components/ForemanSettingsPanel.tsx";
+import { candidateRepos } from "../src/web/lib/trust.ts";
 import { ForemanPopover } from "../src/web/components/ForemanBar.tsx";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
@@ -35,13 +33,15 @@ function mkState(over: Partial<ForemanConfig> = {}): ForemanState {
     config: { ...BASE, ...over },
     status: null,
     backlogPlan: null,
-    update: async () => {},
+    update: async () => true,
     error: null,
   };
 }
 
 function renderPanel(state: ForemanState): string {
-  return renderToStaticMarkup(createElement(ForemanSettingsPanel, { state }));
+  return renderToStaticMarkup(
+    createElement(ForemanSettingsPanel, { state, onNavigate: () => {} }),
+  );
 }
 
 // ---- ForemanSettingsPanel ----
@@ -64,26 +64,34 @@ test("exactly one tier option is checked, following config.triage", () => {
   assert.match(on, /checked[^]*?On - cheap tier answers/);
 });
 
-test("each trusted repo renders a row with a remove control", () => {
+// The repo editor moved to the Trust matrix; the panel now summarizes the grant and
+// deep-links there. What must survive is the COUNT (so "am I live anywhere" is still
+// answerable here) and the link (so it is a route change, not a prose instruction), and
+// the editor must be gone so two surfaces cannot write the same list.
+test("the live-repos section is a grant count that deep-links to Trust, not an editor", () => {
   const html = renderPanel(mkState({ repoAllowlist: ["/work/alpha", "/work/beta"] }));
-  assert.match(html, /\/work\/alpha/);
-  assert.match(html, /\/work\/beta/);
-  // One remove button per repo, labelled with the path it drops.
-  assert.match(html, /aria-label="Stop trusting \/work\/alpha"/);
-  assert.match(html, /aria-label="Stop trusting \/work\/beta"/);
-});
-
-test("an empty allowlist shows the 'no repos' state, not an empty list", () => {
-  const html = renderPanel(mkState({ repoAllowlist: [] }));
-  // (apostrophe is HTML-escaped in static markup, so match around it)
-  assert.match(html, /No repos yet - Foreman won.{0,8}t act live anywhere/);
+  assert.match(html, /Foreman may send live in 2 repositories/);
+  assert.match(html, /Manage in Trust/);
+  // No inline editor: no picker, no per-repo remove buttons, no Add.
+  assert.doesNotMatch(html, /placeholder="search repos or type a path…"/);
+  assert.doesNotMatch(html, /aria-label="Stop trusting/);
   assert.doesNotMatch(html, /foreman-repo-row/);
 });
 
-test("the add row renders the repo picker and an Add button", () => {
-  const html = renderPanel(mkState());
-  assert.match(html, /placeholder="search repos or type a path…"/);
-  assert.match(html, /<button[^>]*>Add<\/button>/);
+test("one trusted repo reads in the singular", () => {
+  const html = renderPanel(mkState({ repoAllowlist: ["/work/alpha"] }));
+  assert.match(html, /Foreman may send live in 1 repository\b/);
+});
+
+test("with no answer from the daemon the count is unknown, not zero", () => {
+  const html = renderToStaticMarkup(
+    createElement(ForemanSettingsPanel, {
+      state: { ...mkState(), config: null },
+      onNavigate: () => {},
+    }),
+  );
+  assert.match(html, /Unknown - the daemon hasn.{0,8}t said which repos are trusted/);
+  assert.doesNotMatch(html, /0 repositories grant/);
 });
 
 test("Foreman provider and every model are catalog-backed dropdowns", () => {

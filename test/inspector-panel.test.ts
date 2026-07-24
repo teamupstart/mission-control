@@ -105,15 +105,32 @@ function state(over: Partial<InspectorState> = {}): InspectorState {
     config: InspectorConfigSchema.parse({ enabled: true, mode: "dry-run" }),
     inspections: [],
     model: null,
-    update: async () => {},
+    update: async () => true,
     error: null,
     ...over,
   };
 }
 
 function render(s: InspectorState = state()): string {
-  return renderToStaticMarkup(createElement(InspectorSettingsPanel, { state: s }));
+  return renderToStaticMarkup(
+    createElement(InspectorSettingsPanel, { state: s, onNavigate: () => {} }),
+  );
 }
+
+// The reviewed-repos editor moved to the Trust matrix; the panel keeps the count (so "which
+// repos does it post in" is still answerable here) and deep-links to Trust, and the editor
+// is gone so the Inspector's list has one writer.
+test("the reviewed-repos section is a grant count that deep-links to Trust, not an editor", () => {
+  const html = render(
+    state({
+      config: InspectorConfigSchema.parse({ enabled: true, repoAllowlist: ["/repo/a", "/repo/b"] }),
+    }),
+  );
+  assert.match(html, /The Inspector may post reviews in 2 repositories/);
+  assert.match(html, /Manage in Trust/);
+  assert.doesNotMatch(html, /placeholder="search repos or type a path…"/);
+  assert.doesNotMatch(html, /aria-label="Stop reviewing/);
+});
 
 test("the panel has a model field, and shows what would actually run", () => {
   // Without this the operator has no way to see or change the review model, which is how

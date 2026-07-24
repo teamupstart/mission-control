@@ -86,6 +86,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
     usageBarCollapsed: raw?.usageBarCollapsed ?? UI_CONFIG_DEFAULTS.usageBarCollapsed,
+    // A fresh array either way: the default is a shared frozen literal, and the cache must
+    // hand back something the Trust panel can build its next patch from without mutating it.
+    trustStaged: raw?.trustStaged ? [...raw.trustStaged] : [],
   };
 }
 

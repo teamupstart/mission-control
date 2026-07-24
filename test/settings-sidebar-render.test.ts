@@ -31,7 +31,7 @@ import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 
 // Foreman config is owned by App and passed in; null config is the pre-poll state, which
 // renders the panel's defaults. Static render never runs effects, so nothing fetches.
-const FOREMAN: ForemanState = { config: null, status: null, backlogPlan: null, update: async () => {}, error: null };
+const FOREMAN: ForemanState = { config: null, status: null, backlogPlan: null, update: async () => true, error: null };
 
 // Cost is owned by App and passed in for the same reason as Foreman - the topbar strip
 // reads the same view setting. A null status is the pre-poll state, which renders the

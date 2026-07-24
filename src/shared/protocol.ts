@@ -1352,6 +1352,7 @@ export const UI_CONFIG_DEFAULTS = {
   alerts: { notifications: false, sound: true },
   richText: true,
   usageBarCollapsed: false,
+  trustStaged: [],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -1375,6 +1376,20 @@ export const UiConfigSchema = z.object({
   richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
   /** Whether the topbar's fleet-cost/rate-limit strip is folded away. */
   usageBarCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.usageBarCollapsed),
+  /**
+   * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
+   *
+   * The Trust matrix is a view over the three `repoAllowlist`s, so a repo with no grant
+   * exists in none of them and would vanish on the next reload, breaking "adding is
+   * configuration; enabling is consent". This durable per-machine list is that repo's only
+   * home until it earns a grant. Owned WHOLE by the Trust panel (the blob's shallow-merge
+   * rule): it appends a resolved root on add, and prunes an entry the moment its repo gains
+   * a first grant or its row is removed. Persisted on operators' machines once shipped, so
+   * append-only in practice - renaming the key orphans staged rows. `trustRows` treats it
+   * as one more source of repos; a staged entry that has since gained a grant is redundant,
+   * and the allowlists win.
+   */
+  trustStaged: z.array(z.string().min(1)).default([]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

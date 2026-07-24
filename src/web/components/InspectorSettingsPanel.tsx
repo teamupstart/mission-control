@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import type { InspectorState } from "../useInspector.ts";
-import { fetchRepos, resolveRepo } from "../lib/api.ts";
-import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { candidateRepos } from "./ForemanSettingsPanel.tsx";
+import { TrustGrantSummary } from "./TrustPanel.tsx";
+import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -55,51 +53,18 @@ export function inspectionSummary(row: InspectorInspection): string {
   return `${row.openFindings} finding${row.openFindings === 1 ? "" : "s"}`;
 }
 
-export function InspectorSettingsPanel({ state }: { state: InspectorState }): React.JSX.Element {
+export function InspectorSettingsPanel({
+  state,
+  onNavigate,
+}: {
+  state: InspectorState;
+  onNavigate: SettingsNavigate;
+}): React.JSX.Element {
   const { config, inspections, model, update, error } = state;
-  const [repos, setRepos] = useState<string[]>([]);
-  const [draft, setDraft] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void fetchRepos().then(setRepos);
-  }, []);
-
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
   const allowlist = config?.repoAllowlist ?? [];
-  // Same stale-closure guard as the Foreman panel: `add` does a server round-trip while
-  // the config polls underneath it, so the write must extend whatever is in force when it
-  // lands rather than what was on screen when the button was clicked.
-  const allowlistRef = useRef(allowlist);
-  allowlistRef.current = allowlist;
-  const candidates = candidateRepos(repos, allowlist);
   const now = Date.now();
-
-  async function add(): Promise<void> {
-    const path = draft.trim();
-    if (!path || adding || !config) return;
-    setAdding(true);
-    setAddError(null);
-    const res = await resolveRepo(path);
-    setAdding(false);
-    if (!res.ok) {
-      setAddError(res.error);
-      return;
-    }
-    const current = allowlistRef.current;
-    if (current.includes(res.repoRoot)) {
-      setAddError(`${res.repoRoot} is already trusted`);
-      return;
-    }
-    setDraft("");
-    await update({ repoAllowlist: [...current, res.repoRoot] });
-  }
-
-  function remove(path: string): void {
-    void update({ repoAllowlist: allowlist.filter((p) => p !== path) });
-  }
 
   return (
     <section className="settings-section">
@@ -224,58 +189,17 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
 
       <div className="foreman-repos" data-anchor="inspector/reviewed-repos">
         <p className="settings-group-label">Reviewed repositories</p>
+        {/* The consent copy stays with the count: it is about the grant, not the editor. */}
         <p className="settings-hint foreman-repos-hint">
           The Inspector only posts in these repos - their worktrees count too, wherever they
           live on disk. It still reviews everywhere while in dry run.
         </p>
-
-        {allowlist.length === 0 ? (
-          <p className="settings-hint foreman-repos-empty">
-            {config
-              ? "No repos yet - the Inspector won't post anywhere."
-              : "Unknown - the daemon hasn't said which repos are trusted."}
-          </p>
-        ) : (
-          <ul className="foreman-repo-list">
-            {allowlist.map((path) => (
-              <li className="foreman-repo-row" key={path}>
-                <Tooltip label={path}>
-                  <span className="foreman-repo-path">{path}</span>
-                </Tooltip>
-                <Tooltip label="Stop reviewing this repo">
-                  <button
-                    className="foreman-repo-remove"
-                    onClick={() => remove(path)}
-                    aria-label={`Stop reviewing ${path}`}
-                  >
-                    ✕
-                  </button>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="foreman-repo-add">
-          <RepoCombobox
-            repos={candidates}
-            value={draft}
-            onChange={(v) => {
-              setDraft(v);
-              setAddError(null);
-            }}
-          />
-          <Tooltip label="Review pull requests Mission Control opens in this repo">
-            <button
-              className="btn"
-              disabled={!config || !draft.trim() || adding}
-              onClick={() => void add()}
-            >
-              {adding ? "Adding…" : "Add"}
-            </button>
-          </Tooltip>
-        </div>
-        {addError && <p className="settings-error">{addError}</p>}
+        <TrustGrantSummary
+          configured={Boolean(config)}
+          count={allowlist.length}
+          subject="The Inspector may post reviews in"
+          onNavigate={onNavigate}
+        />
       </div>
 
       {/* Without this, dry run is indistinguishable from broken: it reviews, finds things,

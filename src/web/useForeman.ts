@@ -31,7 +31,13 @@ export interface ForemanState {
    * owner of everything the layouts draw.
    */
   backlogPlan: BacklogPlan | null;
-  update: (patch: ForemanConfigPatch) => Promise<void>;
+  /**
+   * Apply a patch, resolving to whether the daemon accepted it. Callers that only edit a
+   * field ignore the boolean (`void update(...)`); a caller that must chain a SECOND write
+   * on this one succeeding - Trust retiring a staged repo once its first grant lands - waits
+   * for it, so a rejected write never leaves the two stores disagreeing.
+   */
+  update: (patch: ForemanConfigPatch) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -86,9 +92,9 @@ export function useForeman(): ForemanState {
    * a value that isn't in force is the whole ballgame.
    */
   const update = useCallback(
-    async (patch: ForemanConfigPatch): Promise<void> => {
+    async (patch: ForemanConfigPatch): Promise<boolean> => {
       const before = configRef.current;
-      if (!before) return;
+      if (!before) return false;
       // `backlogDefaultModel` is a per-harness map. Preserve the other harness's
       // selection while the server-side merge is in flight, matching setForemanConfig.
       setConfig({
@@ -103,11 +109,12 @@ export function useForeman(): ForemanState {
       if (!res.ok) {
         setConfig(before);
         setError(whyItFailed(res.error));
-        return;
+        return false;
       }
       setError(null);
       const c = await fetchForemanConfig();
       if (c) setConfig(c);
+      return true;
     },
     [setConfig],
   );

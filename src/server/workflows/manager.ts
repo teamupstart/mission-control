@@ -2167,18 +2167,16 @@ export class WorkflowManager {
       policy: version.completionPolicy.onFindings,
     };
     if (!binding.sessionId) {
-      if (inspectorOnly) {
-        this.transitionInspectorGate(
-          run,
-          state,
-          nextState,
-          "waiting_for_new_head",
-          "inspector_findings",
-          "inspector_findings",
-          findingEvent,
-          now,
-        );
-      }
+      this.transitionInspectorGate(
+        run,
+        state,
+        nextState,
+        inspectorOnly ? "waiting_for_new_head" : "blocked",
+        "inspector_findings",
+        "inspector_findings",
+        findingEvent,
+        now,
+      );
       return;
     }
     if (!state.prUrl || !state.targetHeadSha) return;

@@ -455,6 +455,49 @@ test("sessionless Inspector-only findings still wait for a new head", async () =
   await seeded.manager.stop();
 });
 
+test("sessionless full-workflow findings remain visible and blocked", async () => {
+  const seeded = await seed();
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `sessionless-full-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `sessionless-full-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Keep the finding visible",
+    body: "The normal repair path has no bound session.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  db.prepare(`UPDATE workflow_bindings SET session_id = NULL WHERE id = ?`).run(seeded.ids.binding);
+
+  signal(seeded, seeded.head);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.status === "blocked",
+    "sessionless full-workflow findings did not block visibly",
+  );
+  const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(state.waitReason, "findings");
+  assert.deepEqual(state.findingFingerprints, [`sessionless-full-finding-${serial}`]);
+  assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 0);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_findings").length,
+    1,
+  );
+  await seeded.manager.stop();
+});
+
 test("atomic repair-packet failure leaves the manager's prior gate untouched", async () => {
   const seeded = await seed();
   updateInspectorPr(seeded.key, {

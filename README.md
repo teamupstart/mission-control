@@ -495,10 +495,10 @@ from a passive transcript read), and it is the only source of the
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
 selected model and choose one for that session. A successful change uses the harness's
-native session-only control; it never changes **Settings → Harnesses → Default effort**
-or what future sessions start with. Until the current model and effort have a trustworthy
-passive baseline, or when the pane cannot be written, the badge stays read-only. The same
-picker appears on Cards, in Console detail, and on Board tiles.
+native session-only control; it never changes that harness card's **Effort** select in
+**Settings → Harnesses** or what future sessions start with. Until the current model and
+effort have a trustworthy passive baseline, or when the pane cannot be written, the badge
+stays read-only. The same picker appears on Cards, in Console detail, and on Board tiles.
 
 ### Session status colors
 
@@ -1113,12 +1113,12 @@ three is its own change.
 
 **Settings → Harnesses** draws **one card per harness** - Claude Code, Codex, Pi - each in
 the harness's own accent, holding that harness's default **model** and default **effort**
-side by side, a capability badge (whether auto mode reaches it, and the reason on the card
-when it does not), and a sentence restating what a dispatch of that harness will actually
-do. The cards derive from the harness list, so a new harness lights up here as one more
-card with no layout change and no stylesheet edit. Above them sits the one master toggle,
-**Auto mode on dispatch**, which puts every dispatched session it reaches into its most
-autonomous permission mode once ready.
+side by side and a sentence restating what a dispatch of that harness will actually do.
+While **Auto mode on dispatch** is enabled, cards it reaches show **auto mode on**; an
+excluded harness instead shows **no auto mode**, with the reason available on the badge.
+The cards derive from the harness list, so a new harness lights up here as one more card
+with no layout change and no stylesheet edit. The master toggle sits above them and puts
+every dispatched session it reaches into its most autonomous permission mode once ready.
 
 ### Default model
 
@@ -1132,7 +1132,7 @@ at all** and the CLI keeps using whatever you configured in the harness itself
 (`/model`, `~/.claude/settings.json`, `~/.codex/config.toml`, or
 `~/.pi/agent/settings.json`). That's a real setting, not
 an empty one - it's how you tell Mission Control to stay out of the way, and you can
-always put a row back to it.
+always put a card's select back to it.
 
 The default is read **when a task launches**, not when it's created, so changing it also
 changes what a task already sitting in the backlog will run on. Like every setting in

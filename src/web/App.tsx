@@ -1385,6 +1385,7 @@ export function App(): React.JSX.Element {
                 <ReportPanel
                   sessions={sessions}
                   tasks={tasks}
+                  backlogPlan={foreman.backlogPlan}
                   onClose={() => setReportOpen(false)}
                   onOpenReviews={(id) => {
                     setReportOpen(false);

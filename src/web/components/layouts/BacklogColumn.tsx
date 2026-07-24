@@ -1,11 +1,11 @@
 import { useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
-import { backlogIndex, blockersIn, nextUpTaskId } from "@shared/backlog.ts";
+import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
-import { LabelChips, ScheduleSwitch } from "../session-bits.tsx";
+import { DeadBlockerButton, LabelChips, ScheduleSwitch } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -81,6 +81,7 @@ export function BacklogColumn({
               key={t.id}
               task={t}
               blockers={blockersIn(t, index)}
+              deadBlockers={deadBlockersFor(t, index)}
               nextUp={t.id === nextUp}
               onAssignError={onAssignError}
               onDragging={onDragging}
@@ -124,6 +125,7 @@ function needsYou(blockers: BacklogBlocker[]): boolean {
 function BacklogCard({
   task,
   blockers,
+  deadBlockers,
   nextUp,
   onAssignError,
   onDragging,
@@ -131,6 +133,8 @@ function BacklogCard({
 }: {
   task: Task;
   blockers: BacklogBlocker[];
+  /** Cancelled/failed tasks blocking this card, directly or up its chain. */
+  deadBlockers: Task[];
   /** True on the item Foreman's autopilot would pick up next. */
   nextUp: boolean;
   onAssignError: (message: string) => void;
@@ -145,6 +149,26 @@ function BacklogCard({
     setBusy(true);
     const r = await api.dispatchBacklog(task.id, true);
     if (!r.ok) onAssignError(r.error ?? "could not dispatch");
+    setBusy(false);
+  }
+
+  // Resolve a dead prerequisite - the two halves of unblocking this card. The target is
+  // the DEAD task, never `task`: fixing it releases every dependent, not just this one.
+  async function rescheduleDead(deadId: string): Promise<void> {
+    setBusy(true);
+    const r = await api.rescheduleTask(deadId);
+    if (!r.ok) onAssignError(r.error ?? "could not reschedule that task");
+    setBusy(false);
+  }
+  async function completeDead(deadId: string): Promise<void> {
+    setBusy(true);
+    const r = await api.completeTask(
+      deadId,
+      "Marked done from a blocked dependent - its work is already in place.",
+      undefined,
+      true,
+    );
+    if (!r.ok) onAssignError(r.error ?? "could not complete that task");
     setBusy(false);
   }
 
@@ -266,6 +290,15 @@ function BacklogCard({
           </span>
         </Tooltip>
       )}
+      {/* The blocked chip above says WHAT this is waiting on; this button is the way OUT
+          when that thing is a cancelled/failed task that will never finish - including one
+          buried up the chain, which the chip (direct blockers only) cannot name. */}
+      <DeadBlockerButton
+        deadBlockers={deadBlockers}
+        busy={busy}
+        onReschedule={(id) => void rescheduleDead(id)}
+        onComplete={(id) => void completeDead(id)}
+      />
       {/* The CONSEQUENCE, not the setting - the switch above already says which way it
           is set, and repeating "disabled" here would be the card saying one fact twice,
           the way a read-only priority chip over a priority picker did. What a two-letter

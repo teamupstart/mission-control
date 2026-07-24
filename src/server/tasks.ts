@@ -1534,6 +1534,67 @@ export class TaskManager {
   }
 
   /**
+   * Put a stopped task back into the backlog so it can be run again. The escape hatch
+   * for a prerequisite that was cancelled or failed while the work it stood for still
+   * needs doing: its dependents stay blocked (a `stopped` dependency never satisfies)
+   * until it is either marked done or actually run, and this is the "run it" half - the
+   * companion to `complete(..., satisfyDependents)`, which is the "it already landed" half.
+   *
+   * Only `cancelled` and `failed` tasks are eligible: a `done` task's result is already
+   * recorded and a live one is on its way, so neither is a thing to re-file. Any leftover
+   * worktree/agent is reclaimed first - the same teardown `reclaim` performs, behind the
+   * same human click - because a fresh backlog dispatch provisions its own, and keeping
+   * the old one would leak it. The row is reset to the shape `create` leaves a backlog
+   * task in, so nothing stale (an old outcome, a dead branch) survives into the relaunch,
+   * and re-enabled so the autopilot it was filed for can actually pick it up again.
+   *
+   * Schedule provenance (`scheduleId` / `scheduleOccurrenceId` / `scheduledFor`) is left
+   * untouched: it records which occurrence FILED this task, a fact rescheduling does not
+   * change. Its declared dependencies are kept too - re-running it means re-running it
+   * under the same prerequisites, which the backlog re-evaluates on the next plan.
+   */
+  async reschedule(id: string): Promise<Ok> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status !== "cancelled" && t.status !== "failed") {
+      return {
+        ok: false,
+        error: `task is ${t.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    this.autoCompleted.delete(id);
+    if (t.worktreePath || t.homeName) {
+      try {
+        await teardownWorktree(this.registry.getTask(id) ?? t);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    const cur = this.registry.getTask(id) ?? t;
+    this.registry.upsertTask({
+      ...cur,
+      status: "backlog",
+      enabled: true,
+      worktreePath: null,
+      branch: null,
+      provider: null,
+      homeName: null,
+      terminalResourceId: null,
+      sessionId: null,
+      outcome: null,
+      outcomeUrl: null,
+      error: null,
+      dispatchedAt: null,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
+    return { ok: true };
+  }
+
+  /**
    * Free a terminal task's leftover worktree + agent (the explicit, confirmed
    * "reclaim" action) while KEEPING its status and outcome - unlike cancel, which
    * aborts an active task.

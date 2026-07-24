@@ -51,6 +51,7 @@ function roundup(tasks: Task[]): string {
       createElement(ReportPanel, {
         sessions: [],
         tasks,
+        backlogPlan: null,
         onClose: noop,
         onOpenReviews: noop,
         onEditTask: noop,

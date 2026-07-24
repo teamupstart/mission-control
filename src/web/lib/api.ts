@@ -621,6 +621,11 @@ export const api = {
     }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
+  // Put a cancelled/failed task back into the backlog so the autopilot can run it again.
+  // The "run it" half of unblocking a dependent stranded behind a stopped prerequisite;
+  // `completeTask(id, ..., true)` is the "it already landed" half. Refused (409) on a task
+  // that is done or still live.
+  rescheduleTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reschedule`),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.

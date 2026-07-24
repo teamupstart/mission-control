@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Session, Task, TaskSummary } from "@shared/types.ts";
+import type { BacklogPlan, Session, Task, TaskSummary } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -7,21 +7,24 @@ import {
   needsYouReason,
   reportBucket,
 } from "@shared/session.ts";
-import { declaredBlockers } from "@shared/backlog.ts";
+import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog.ts";
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import { AgentDot, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
+import { AgentDot, DeadBlockerButton, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 function BacklogReportRow({
   task,
   tasks,
+  deadBlockers,
   onEditTask,
 }: {
   task: Task;
   tasks: Task[];
+  /** Cancelled/failed tasks blocking this row, directly or up its chain. */
+  deadBlockers: Task[];
   onEditTask: (taskId: string) => void;
 }): React.JSX.Element {
   const [toggleBusy, setToggleBusy] = useState(false);
@@ -34,6 +37,17 @@ function BacklogReportRow({
     setToggleError(null);
     const result = await api.updateTask(task.id, { enabled });
     if (!result.ok) setToggleError(result.error ?? "Could not change the schedule setting");
+    setToggleBusy(false);
+  }
+
+  // Resolve a dead prerequisite - the two halves of unblocking this row. The target is
+  // the DEAD task, never `task`: fixing it releases every dependent, not just this one.
+  async function resolveDead(run: (id: string) => Promise<{ ok: boolean; error?: string }>, id: string): Promise<void> {
+    if (toggleBusy) return;
+    setToggleBusy(true);
+    setToggleError(null);
+    const result = await run(id);
+    if (!result.ok) setToggleError(result.error ?? "Could not resolve the blocking task");
     setToggleBusy(false);
   }
 
@@ -53,6 +67,25 @@ function BacklogReportRow({
             taskTitle={task.title}
             busy={toggleBusy}
             onChange={(enabled) => void setEnabled(enabled)}
+          />
+          {/* Same resolve affordance the board card carries, for the same dead-prerequisite
+              case - so the fix is reachable from whichever backlog surface you are reading. */}
+          <DeadBlockerButton
+            deadBlockers={deadBlockers}
+            busy={toggleBusy}
+            onReschedule={(id) => void resolveDead((deadId) => api.rescheduleTask(deadId), id)}
+            onComplete={(id) =>
+              void resolveDead(
+                (deadId) =>
+                  api.completeTask(
+                    deadId,
+                    "Marked done from a blocked dependent - its work is already in place.",
+                    undefined,
+                    true,
+                  ),
+                id,
+              )
+            }
           />
         </span>
         <span className="report-line report-line-sub">
@@ -113,12 +146,20 @@ function BacklogReportRow({
 export function ReportPanel({
   sessions,
   tasks,
+  backlogPlan,
   onClose,
   onOpenReviews,
   onEditTask,
 }: {
   sessions: Session[];
   tasks: Task[];
+  /**
+   * Foreman's reading of the backlog, or null when it has none. Threaded in for the same
+   * reason the board column takes it: without the plan's inferred edges this panel can
+   * only see operator-DECLARED dependencies, so a card stranded behind a cancelled task
+   * Foreman inferred would show nothing to act on. See `deadBlockersFor`.
+   */
+  backlogPlan: BacklogPlan | null;
   onClose: () => void;
   onOpenReviews: (sessionId: string) => void;
   /** Close this panel and reopen the dispatch modal over a backlog task. */
@@ -150,6 +191,9 @@ export function ReportPanel({
   const backlog = useMemo(() => backlogTasks(tasks), [tasks]);
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
+  // Built once for the whole Backlog section rather than per row, the way the board
+  // column does it - the dependency walk is linear off this shared index.
+  const backlogDepIndex = useMemo(() => backlogIndex(tasks, backlogPlan), [tasks, backlogPlan]);
 
   // gitBranch is null when the checkout's .git or HEAD can't be read; fall back to
   // the task's branch (matching the server's markdown digest, so the panel and the
@@ -325,6 +369,7 @@ export function ReportPanel({
               key={task.id}
               task={task}
               tasks={tasks}
+              deadBlockers={deadBlockersFor(task, backlogDepIndex)}
               onEditTask={onEditTask}
             />
           ))}

@@ -305,3 +305,50 @@ export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
 export function nextUpTaskId(tasks: Task[], plan: BacklogPlan | null): string | null {
   return readyBacklog(tasks, plan)[0]?.id ?? null;
 }
+
+/**
+ * The cancelled or failed tasks that stop `task` from ever reaching the front of the
+ * queue - directly, or through a chain of still-backlogged prerequisites that are each
+ * waiting on the next.
+ *
+ * `blockersIn` answers only the DIRECT level: a card whose prerequisite is itself a
+ * backlog task waiting on a cancelled one shows a plain "after X" and says nothing about
+ * the dead root - the one thing a human actually has to act on. This walks the chain and
+ * names those roots for the whole downstream, so the warning lands on every dependent and
+ * not just the one that happened to declare the dead edge itself.
+ *
+ * The walk follows only SCHEDULING-GATED edges: it recurses through a prerequisite just
+ * while that prerequisite is itself in the backlog, because a `running` or `dispatching`
+ * one is already on its way and whatever it once waited on no longer gates anything. It
+ * collects a prerequisite the moment it reports `stopped` (cancelled/failed) and does not
+ * look past it - that task is the one to reschedule or mark done, and its own
+ * prerequisites become its problem again once it is back in play.
+ *
+ * Returns the dead tasks themselves, deduplicated; empty when nothing dead is upstream.
+ * Shared, not inlined in a card, for the reason every predicate here is: the board, the
+ * Sitrep and the server must agree on what "blocked by a dead task" means. Built on
+ * `blockersIn` rather than a second edge-walk so it can never disagree with what actually
+ * gates scheduling.
+ */
+export function deadBlockersFor(task: Task, index: BacklogIndex): Task[] {
+  const dead = new Map<string, Task>();
+  const visiting = new Set<string>();
+  const walk = (current: Task): void => {
+    if (visiting.has(current.id)) return;
+    visiting.add(current.id);
+    for (const blocker of blockersIn(current, index)) {
+      const dep = index.byId.get(blocker.taskId);
+      if (!dep) continue; // a declared edge to a task that is GONE - nothing to act on
+      if (blocker.state === "stopped") {
+        dead.set(dep.id, dep);
+        continue;
+      }
+      // Only a still-backlogged prerequisite keeps gating us; one already dispatching
+      // will finish on its own, so its own history is not this card's problem.
+      if (dep.status === "backlog") walk(dep);
+    }
+    visiting.delete(current.id);
+  };
+  walk(task);
+  return [...dead.values()];
+}

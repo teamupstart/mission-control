@@ -2314,6 +2314,14 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 404);
   });
 
+  // Put a cancelled/failed task back into the backlog so it can run again. A refusal is a
+  // 404 when the task is gone and a 409 when it is in a state that cannot be re-filed (a
+  // done task, a live one) - a state conflict the operator can see, exactly like assign.
+  app.post("/api/tasks/:id/reschedule", async (c) => {
+    const r = await tasks.reschedule(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
   // Free a terminal task's leftover worktree/agent, keeping its status + outcome.
   app.post("/api/tasks/:id/reclaim", async (c) => {
     const r = await tasks.reclaim(c.req.param("id"));

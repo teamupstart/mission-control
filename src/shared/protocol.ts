@@ -894,15 +894,16 @@ export const ForemanConfigSchema = z.object({
    * for: a session finishes (via `/no-mistakes` or straight-to-PR), opens the PR, and
    * parks. The Inspector then reviews and posts comments, or CI goes red - and nobody is
    * driving the session to fix them, so the PR sits with unresolved feedback until a
-   * human notices. This turns each new round of feedback on a parked PR into a fresh
-   * instruction typed back at the session that opened it.
+   * human notices. This turns each new Inspector round or newly actionable feedback kind
+   * on a parked PR into a fresh instruction typed back at the session that opened it.
    *
    * Like every automated action here it only ever TYPES in live mode on an allowlisted
    * repo (`mayActLive`): the nudge is a live act, and dry-run means dry-run. It also
    * fires only at a settled-idle session - never interrupting one already working the
-   * fixes - and at most once per distinct round of feedback, so it re-engages a stalled
-   * PR without nagging one that is being handled. Independent of `wrapupTriggers`: those
-   * decide how work BECOMES a PR, this decides what happens to the PR afterwards.
+   * fixes - and at most once per Inspector-round/feedback-kind signature, so it
+   * re-engages a stalled PR without nagging one that is being handled. Independent of
+   * `wrapupTriggers`: those decide how work BECOMES a PR, this decides what happens to
+   * the PR afterwards.
    */
   trackReviewFeedback: z.boolean().default(true),
   /**

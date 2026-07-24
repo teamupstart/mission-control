@@ -776,6 +776,7 @@ export interface WorkflowRunDetail {
   binding: WorkflowBinding;
   version: WorkflowVersion | null;
   run: WorkflowRun;
+  contextState: "captured" | "not_captured" | "corrupt";
   submissions: WorkflowSubmission[];
   attempts: WorkflowNodeAttempt[];
   receipts: WorkflowEdgeReceipt[];

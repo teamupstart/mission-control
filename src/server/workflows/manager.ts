@@ -2831,15 +2831,20 @@ export class WorkflowManager {
         getWorkflowConfig().retention,
       );
       this.lastRetentionAt = Date.now();
-      this.lastRetentionError = null;
+      this.lastRetentionError = result.failedRunCount > 0
+        ? "retention_partial_failure"
+        : null;
       this.lastRetentionCompacted = result.compactedRunIds.length;
       this.lastRetentionDeleted = result.deletedRunIds.length;
       for (const id of result.compactedRunIds) this.publishRun(id);
       for (const id of result.deletedRunIds) this.registry.removeWorkflowRun(id);
-      workflowLog("info", {
-        event: "retention_complete",
+      workflowLog(result.failedRunCount > 0 ? "error" : "info", {
+        event: result.failedRunCount > 0
+          ? "retention_partial_failure"
+          : "retention_complete",
         compacted: result.compactedRunIds.length,
         deleted: result.deletedRunIds.length,
+        failed: result.failedRunCount,
       });
     } catch (error) {
       this.lastRetentionAt = Date.now();

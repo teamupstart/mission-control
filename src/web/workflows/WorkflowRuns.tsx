@@ -188,7 +188,9 @@ export function WorkflowRunView({
   const latest = detail.submissions.at(-1) ?? null;
   const latestFull = [...detail.submissions].reverse().find((submission) =>
     submission.mode === "full_workflow") ?? null;
-  const context = latestFull?.context as unknown as WorkflowContextSnapshot | null;
+  const context = detail.contextState === "captured"
+    ? latestFull?.context as unknown as WorkflowContextSnapshot | null
+    : null;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const version = detail.version;
   const inspectorGate = detail.inspectorGate;
@@ -594,6 +596,20 @@ export function WorkflowRunView({
         </p>
       )}
 
+      {detail.contextState === "not_captured" && (
+        <section className="workflow-run-context">
+          <h4>Intent and evidence not captured</h4>
+          <p>This submission stopped before its immutable context snapshot was recorded.</p>
+        </section>
+      )}
+      {detail.contextState === "corrupt" && (
+        <section className="workflow-run-context">
+          <h4>Captured intent and evidence are corrupt</h4>
+          <p className="persona-error" role="alert">
+            The durable context does not match its submission mode. Check daemon logs or restore it from backup.
+          </p>
+        </section>
+      )}
       {context && (
         <section className="workflow-run-context">
           <header>

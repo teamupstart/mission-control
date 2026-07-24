@@ -158,6 +158,26 @@ test("run detail distinguishes malformed durable rows from expired history", asy
     evidence: {},
     now: 2,
   });
+
+  const notCaptured = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(notCaptured.status, 200);
+  assert.equal(
+    (await notCaptured.json() as { contextState: string }).contextState,
+    "not_captured",
+  );
+
+  db.prepare(
+    `UPDATE workflow_submissions
+        SET context_json = '{"compaction":{}}'
+      WHERE id = 'corrupt-submission'`,
+  ).run();
+  const corruptContext = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(corruptContext.status, 200);
+  assert.equal(
+    (await corruptContext.json() as { contextState: string }).contextState,
+    "corrupt",
+  );
+
   db.prepare(
     `UPDATE workflow_runs SET gate_state_json = '{' WHERE id = 'corrupt-run'`,
   ).run();

@@ -14,6 +14,7 @@ import {
   WorkflowRunStatusSchema,
   WorkflowInspectorGateStateSchema,
   WorkflowContextSnapshotSchema,
+  WorkflowInspectorOnlyContextSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
@@ -711,6 +712,62 @@ function diagnose(error: unknown): void {
   });
 }
 
+function readFullWorkflowContext(
+  context: WorkflowJson,
+  status: WorkflowSubmission["status"] | string,
+):
+  | { kind: "captured"; context: WorkflowContextSnapshot }
+  | { kind: "not_captured" | "corrupt" } {
+  const parsed = WorkflowContextSnapshotSchema.safeParse(context);
+  if (parsed.success) return { kind: "captured", context: parsed.data };
+  if (
+    context !== null
+    && typeof context === "object"
+    && !Array.isArray(context)
+    && Object.keys(context).length === 0
+    && ["capturing", "cancelled", "failed"].includes(status)
+  ) {
+    return { kind: "not_captured" };
+  }
+  return { kind: "corrupt" };
+}
+
+function runContextState(
+  submissions: WorkflowSubmission[],
+): WorkflowRunDetail["contextState"] {
+  let latestFull: WorkflowRunDetail["contextState"] | null = null;
+  for (const submission of submissions) {
+    if (submission.mode === "inspector_only") {
+      if (!WorkflowInspectorOnlyContextSchema.safeParse(submission.context).success) {
+        diagnose(new WorkflowRowError(
+          "workflow_submissions",
+          submission.id,
+          "context_json is not a valid Inspector-only context",
+        ));
+        return "corrupt";
+      }
+      continue;
+    }
+    const context = readFullWorkflowContext(submission.context, submission.status);
+    if (context.kind === "corrupt") {
+      diagnose(new WorkflowRowError(
+        "workflow_submissions",
+        submission.id,
+        "context_json is not a captured workflow context",
+      ));
+      return "corrupt";
+    }
+    latestFull = context.kind;
+  }
+  if (latestFull) return latestFull;
+  diagnose(new WorkflowRowError(
+    "workflow_submissions",
+    "(missing)",
+    "run has no full-workflow submission",
+  ));
+  return "corrupt";
+}
+
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -843,6 +900,7 @@ export interface WorkflowExternalClaimInput {
 export interface WorkflowRetentionResult {
   compactedRunIds: string[];
   deletedRunIds: string[];
+  failedRunCount: number;
 }
 
 export type WorkflowExternalClaimResult =
@@ -3094,14 +3152,21 @@ export class WorkflowStore {
     ).all(input.rawEvidenceBefore) as Array<{ id: string }>).map((row) => row.id);
 
     const compacted: string[] = [];
+    const failedRunIds = new Set<string>();
     for (const runId of compactedRunIds) {
       let didCompact = false;
       try {
         didCompact = transaction(this.db, () => {
           const run = this.getRun(runId);
+          if (!run) {
+            const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(runId);
+            if (exists) {
+              throw new WorkflowRowError("workflow_runs", runId, "row is malformed");
+            }
+            return false;
+          }
           if (
-            !run
-            || !["completed", "cancelled"].includes(run.status)
+            !["completed", "cancelled"].includes(run.status)
             || run.evidencePrunedAt != null
             || run.completedAt === null
             || run.completedAt > input.rawEvidenceBefore
@@ -3113,9 +3178,14 @@ export class WorkflowStore {
           if (uncertain) return false;
 
           const rows = this.db.prepare(
-            `SELECT id, mode, context_json FROM workflow_submissions
+            `SELECT id, mode, status, context_json FROM workflow_submissions
               WHERE run_id = ? ORDER BY round ASC, id ASC`,
-          ).all(runId) as Array<{ id: string; mode: string; context_json: string }>;
+          ).all(runId) as Array<{
+            id: string;
+            mode: string;
+            status: string;
+            context_json: string;
+          }>;
           let diffBytes = 0;
           let statusEntries = 0;
           let transcriptMessages = 0;
@@ -3131,9 +3201,16 @@ export class WorkflowStore {
               WorkflowJsonSchema,
               WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
             );
-            const fullContext = WorkflowContextSnapshotSchema.safeParse(context);
-            if (!fullContext.success) continue;
-            const parsed = fullContext.data;
+            const fullContext = readFullWorkflowContext(context, row.status);
+            if (fullContext.kind === "not_captured") continue;
+            if (fullContext.kind === "corrupt") {
+              throw new WorkflowRowError(
+                "workflow_submissions",
+                row.id,
+                "context_json is not a captured workflow context",
+              );
+            }
+            const parsed = fullContext.context;
             if (parsed.evidence.retention?.state === "pruned") continue;
             diffBytes += utf8.encode(parsed.evidence.diff).byteLength;
             statusEntries += parsed.evidence.workingTreeStatus.length;
@@ -3199,6 +3276,7 @@ export class WorkflowStore {
         });
       } catch (error) {
         diagnose(error);
+        failedRunIds.add(runId);
       }
       if (didCompact) compacted.push(runId);
     }
@@ -3225,41 +3303,57 @@ export class WorkflowStore {
 
     const deleted: string[] = [];
     for (const runId of deletableRunIds) {
-      const didDelete = transaction(this.db, () => {
-        const run = this.getRun(runId);
-        if (
-          !run
-          || !["completed", "cancelled"].includes(run.status)
-          || run.completedAt === null
-          || run.completedAt > input.completedRunsBefore
-        ) return false;
-        const uncertain = this.db.prepare(
-          `SELECT 1 FROM workflow_deliveries
-            WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
-        ).get(runId);
-        if (uncertain) return false;
-        this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
-        this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
-        this.db.prepare(
-          `DELETE FROM workflow_edge_receipts
-            WHERE submission_id IN (
-              SELECT id FROM workflow_submissions WHERE run_id = ?
-            )`,
-        ).run(runId);
-        this.db.prepare(
-          `DELETE FROM workflow_node_attempts
-            WHERE submission_id IN (
-              SELECT id FROM workflow_submissions WHERE run_id = ?
-            )`,
-        ).run(runId);
-        this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
-        this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
-        this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
-        return true;
-      });
+      let didDelete = false;
+      try {
+        didDelete = transaction(this.db, () => {
+          const run = this.getRun(runId);
+          if (!run) {
+            const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(runId);
+            if (exists) {
+              throw new WorkflowRowError("workflow_runs", runId, "row is malformed");
+            }
+            return false;
+          }
+          if (
+            !["completed", "cancelled"].includes(run.status)
+            || run.completedAt === null
+            || run.completedAt > input.completedRunsBefore
+          ) return false;
+          const uncertain = this.db.prepare(
+            `SELECT 1 FROM workflow_deliveries
+              WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
+          ).get(runId);
+          if (uncertain) return false;
+          this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
+          this.db.prepare(
+            `DELETE FROM workflow_edge_receipts
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              )`,
+          ).run(runId);
+          this.db.prepare(
+            `DELETE FROM workflow_node_attempts
+              WHERE submission_id IN (
+                SELECT id FROM workflow_submissions WHERE run_id = ?
+              )`,
+          ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_submissions WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_runs WHERE id = ?`).run(runId);
+          return true;
+        });
+      } catch (error) {
+        diagnose(error);
+        failedRunIds.add(runId);
+      }
       if (didDelete) deleted.push(runId);
     }
-    return { compactedRunIds: compacted, deletedRunIds: deleted };
+    return {
+      compactedRunIds: compacted,
+      deletedRunIds: deleted,
+      failedRunCount: failedRunIds.size,
+    };
   }
 
   workflowStatusCounts(): {
@@ -3347,6 +3441,7 @@ export class WorkflowStore {
       binding,
       version,
       run,
+      contextState: runContextState(submissions),
       submissions,
       attempts: submissions.flatMap((submission) => this.listAttempts(submission.id)),
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),

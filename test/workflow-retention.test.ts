@@ -77,14 +77,15 @@ function insertRawSubmission(
   runId: string,
   mode: "full_workflow" | "inspector_only",
   contextJson: string,
+  status: "capturing" | "running" | "waiting_for_session" | "completed" | "cancelled" | "failed" = "completed",
 ): void {
   db.prepare(
     `INSERT INTO workflow_submissions (
        id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
        context_json, evidence_json, status, created_at, updated_at, completed_at
      ) VALUES (?, ?, 1, ?, 'manual', ?, 'fingerprint', ?, '{}',
-               'completed', 1, 1, 1)`,
-  ).run(id, runId, mode, `submission:${id}`, contextJson);
+               ?, 1, 1, 1)`,
+  ).run(id, runId, mode, `submission:${id}`, contextJson, status);
 }
 
 function seedReusableCatalog(): void {
@@ -228,7 +229,11 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     maxCompletedRuns: 100,
     now: 21,
   });
-  assert.deepEqual(repeated, { compactedRunIds: [], deletedRunIds: [] });
+  assert.deepEqual(repeated, {
+    compactedRunIds: [],
+    deletedRunIds: [],
+    failedRunCount: 0,
+  });
   assert.equal(
     store.listEvents("compact").filter((event) => event.kind === "evidence_pruned").length,
     1,
@@ -249,6 +254,7 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
     "b-cancelled-before-capture",
     "full_workflow",
     "{}",
+    "cancelled",
   );
   insertRun("c-malformed", "completed", 1);
   insertRawSubmission(
@@ -272,6 +278,7 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
     "b-cancelled-before-capture",
     "d-valid",
   ]);
+  assert.equal(result.failedRunCount, 1);
   assert.deepEqual(
     store.getSubmission("submission-inspector-only")?.context,
     { bypassReason: "Published policy", newHeadSha: "head" },
@@ -286,6 +293,30 @@ test("stage one skips non-evidence contexts and isolates malformed rows by run",
     "pruned",
   );
   assert.equal(store.getRun("c-malformed")?.evidencePrunedAt, null);
+});
+
+test("stage two isolates a malformed run and deletes later eligible families", () => {
+  insertRun("delete-corrupt", "completed", 1);
+  insertRun("delete-next", "completed", 2);
+  insertRun("delete-kept", "completed", 3);
+  db.prepare(
+    `UPDATE workflow_runs SET gate_state_json = '{' WHERE id = 'delete-corrupt'`,
+  ).run();
+
+  const result = store.runRetention({
+    rawEvidenceBefore: 0,
+    completedRunsBefore: 10,
+    maxCompletedRuns: 1,
+    now: 20,
+  });
+
+  assert.deepEqual(result.deletedRunIds, ["delete-next"]);
+  assert.equal(result.failedRunCount, 1);
+  assert.ok(
+    db.prepare(`SELECT 1 FROM workflow_runs WHERE id = 'delete-corrupt'`).get(),
+  );
+  assert.equal(store.getRun("delete-next"), null);
+  assert.ok(store.getRun("delete-kept"));
 });
 
 test("stage two keeps the newest cap and never deletes failed or uncertain families", () => {

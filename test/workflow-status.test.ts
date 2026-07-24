@@ -109,3 +109,28 @@ test("status exposes recovery and retention timing with a bounded failure class"
     await manager.stop();
   }
 });
+
+test("status reports partial retention failures without hiding committed work", async () => {
+  clearWorkflowTables(db);
+  const registry = new Registry();
+  const manager = new WorkflowManager(registry, new WorkflowStore(db), {
+    runRetention: () => ({
+      compactedRunIds: ["compacted"],
+      deletedRunIds: ["deleted"],
+      failedRunCount: 1,
+    }),
+  });
+  registry.applyDiscovery([]);
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    manager.start();
+    const status = manager.status();
+    assert.equal(status.lastRetentionError, "retention_partial_failure");
+    assert.equal(status.lastRetentionCompacted, 1);
+    assert.equal(status.lastRetentionDeleted, 1);
+  } finally {
+    console.error = originalError;
+    await manager.stop();
+  }
+});

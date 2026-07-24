@@ -29,6 +29,7 @@ const {
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const {
   WorkflowStore,
@@ -409,4 +410,429 @@ test("current-head findings prepare one frozen packet and zero findings complete
   assert.equal(state.observedHeadSha, clean.head);
   assert.equal(state.waitReason, null);
   await clean.manager.stop();
+});
+
+test("sessionless Inspector-only findings still wait for a new head", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `sessionless-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `sessionless-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Wait for the repair head",
+    body: "The bound session is no longer available.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  db.prepare(`UPDATE workflow_bindings SET session_id = NULL WHERE id = ?`).run(seeded.ids.binding);
+
+  signal(seeded, seeded.head);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_new_head",
+    "sessionless Inspector-only findings did not preserve the new-head policy",
+  );
+  const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(state.waitReason, "findings");
+  assert.deepEqual(state.findingFingerprints, [`sessionless-finding-${serial}`]);
+  assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 0);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_findings").length,
+    1,
+  );
+  await seeded.manager.stop();
+});
+
+test("sessionless full-workflow findings remain visible and blocked", async () => {
+  const seeded = await seed();
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `sessionless-full-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `sessionless-full-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Keep the finding visible",
+    body: "The normal repair path has no bound session.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  db.prepare(`UPDATE workflow_bindings SET session_id = NULL WHERE id = ?`).run(seeded.ids.binding);
+
+  signal(seeded, seeded.head);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.status === "blocked",
+    "sessionless full-workflow findings did not block visibly",
+  );
+  const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(state.waitReason, "findings");
+  assert.deepEqual(state.findingFingerprints, [`sessionless-full-finding-${serial}`]);
+  assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 0);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_findings").length,
+    1,
+  );
+  await seeded.manager.stop();
+});
+
+test("atomic repair-packet failure leaves the manager's prior gate untouched", async () => {
+  const seeded = await seed();
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `atomic-manager-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `atomic-manager-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Keep the prior gate",
+    body: "Packet insertion failed.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const collisionId = `atomic-manager-collision-${serial}`;
+  seeded.store.prepareDelivery({
+    id: collisionId,
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "persona_feedback",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "existing packet",
+    payloadSha256: `existing-manager-packet-${serial}`,
+  }, seeded.now);
+
+  const transition = seeded.store.transitionInspectorFindingsWithDelivery.bind(seeded.store);
+  let attempted = false;
+  let prior = seeded.store.getRun(seeded.ids.run)!;
+  seeded.store.transitionInspectorFindingsWithDelivery = (input) => {
+    attempted = true;
+    prior = seeded.store.getRun(seeded.ids.run)!;
+    return transition({
+      ...input,
+      delivery: { ...input.delivery, id: collisionId },
+    });
+  };
+
+  signal(seeded, seeded.head);
+  await waitFor(() => attempted, "the manager never attempted atomic finding delivery");
+  await new Promise((resolve) => setImmediate(resolve));
+  const after = seeded.store.getRun(seeded.ids.run)!;
+  assert.equal(after.status, prior.status);
+  assert.equal(after.currentPhase, prior.currentPhase);
+  assert.deepEqual(after.gateState, prior.gateState);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).some((event) =>
+      ["inspector_findings", "inspector_feedback_prepared", "inspector_adapter_error"].includes(event.kind)),
+    false,
+  );
+  assert.equal(
+    seeded.store.listDeliveries(seeded.ids.run).some((delivery) => delivery.kind === "inspector_feedback"),
+    false,
+  );
+  await seeded.manager.stop();
+});
+
+test("finding state and its immutable repair packet survive insertion failure and restart", async () => {
+  const seeded = await seed();
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const nextState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["atomic-finding"],
+  };
+  seeded.store.prepareDelivery({
+    id: "atomic-delivery-collision",
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "persona_feedback",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "existing packet",
+    payloadSha256: "existing-packet",
+  }, seeded.now);
+
+  assert.throws(() => seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: nextState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["atomic-finding"] },
+    delivery: {
+      id: "atomic-delivery-collision",
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "repair packet",
+      payloadSha256: "repair-packet",
+    },
+    deliveryEvent: {
+      deliveryId: "atomic-delivery-collision",
+      payloadSha256: "repair-packet",
+    },
+    now: seeded.now + 1,
+  }), /UNIQUE constraint failed/);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, before.status);
+  assert.deepEqual(seeded.store.getRun(seeded.ids.run)?.gateState, before.gateState);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).some((event) => event.kind === "inspector_findings"),
+    false,
+  );
+  assert.equal(
+    seeded.store.listDeliveries(seeded.ids.run).some((delivery) => delivery.kind === "inspector_feedback"),
+    false,
+  );
+
+  const committed = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: nextState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["atomic-finding"] },
+    delivery: {
+      id: "atomic-inspector-delivery",
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "repair packet",
+      payloadSha256: "repair-packet",
+    },
+    deliveryEvent: {
+      deliveryId: "atomic-inspector-delivery",
+      payloadSha256: "repair-packet",
+    },
+    now: seeded.now + 2,
+  });
+  assert.ok(committed);
+  assert.equal(committed.run.status, "waiting_for_session");
+  assert.equal(committed.delivery.kind, "inspector_feedback");
+  assert.deepEqual(committed.run.gateState, nextState);
+  assert.deepEqual(
+    seeded.store.listEvents(seeded.ids.run)
+      .filter((event) => event.kind.startsWith("inspector_"))
+      .slice(-2)
+      .map((event) => event.kind),
+    ["inspector_findings", "inspector_feedback_prepared"],
+  );
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await waitFor(
+    () => seeded.store.getDelivery(committed.delivery.id)?.state === "delivered",
+    "prepared Inspector feedback did not resume after restart",
+  );
+  const recovered = seeded.store.getDelivery(committed.delivery.id);
+  assert.equal(recovered?.payload, "repair packet");
+  assert.equal(recovered?.payloadSha256, "repair-packet");
+  assert.equal(
+    injected.filter((payload) => payload === "repair packet").length,
+    1,
+    "the immutable Inspector repair packet was not recovered exactly once",
+  );
+  await recoveredManager.stop();
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});
+
+test("restart recovery never sends a prepared packet from an older submission", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const findingsState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    observedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["stale-finding"],
+  };
+  const prepared = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: findingsState,
+    status: "waiting_for_new_head",
+    findingEvent: { findingFingerprints: ["stale-finding"] },
+    delivery: {
+      id: `stale-inspector-delivery-${serial}`,
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "stale repair packet",
+      payloadSha256: `stale-repair-packet-${serial}`,
+    },
+    deliveryEvent: {
+      deliveryId: `stale-inspector-delivery-${serial}`,
+      payloadSha256: `stale-repair-packet-${serial}`,
+    },
+    now: seeded.now + 1,
+  });
+  assert.ok(prepared);
+  const newerHead = `newer-head-${serial}`;
+  const currentState: WorkflowInspectorGateState = {
+    ...findingsState,
+    targetHeadSha: newerHead,
+    observedHeadSha: newerHead,
+    waitReason: "review_pending",
+  };
+  const newer = seeded.store.createInspectorOnlySubmission({
+    id: `newer-inspector-submission-${serial}`,
+    runId: seeded.ids.run,
+    triggerKey: `inspector-head:${seeded.ids.run}:${newerHead}`,
+    newHeadSha: newerHead,
+    failedHeadSha: seeded.head,
+    priorFindingFingerprints: findingsState.findingFingerprints,
+    bypassReason: "Published Inspector-only findings policy",
+    expectedState: findingsState,
+    state: currentState,
+    now: seeded.now + 2,
+  });
+  assert.ok(newer);
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await recoveredManager.stop();
+  assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
+  assert.deepEqual(injected, []);
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});
+
+test("restart recovery skips packets after the current submission advances past its findings", async () => {
+  const seeded = await seed();
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const findingsState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    observedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["superseded-finding"],
+  };
+  const prepared = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: findingsState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["superseded-finding"] },
+    delivery: {
+      id: `superseded-inspector-delivery-${serial}`,
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "superseded repair packet",
+      payloadSha256: `superseded-repair-packet-${serial}`,
+    },
+    deliveryEvent: {
+      deliveryId: `superseded-inspector-delivery-${serial}`,
+      payloadSha256: `superseded-repair-packet-${serial}`,
+    },
+    now: seeded.now + 1,
+  });
+  assert.ok(prepared);
+  const newerHead = `same-submission-head-${serial}`;
+  const advancedState: WorkflowInspectorGateState = {
+    ...findingsState,
+    targetHeadSha: newerHead,
+    observedHeadSha: newerHead,
+    waitReason: "review_pending",
+  };
+  assert.ok(seeded.store.updateInspectorGate({
+    runId: seeded.ids.run,
+    expectedState: findingsState,
+    state: advancedState,
+    status: "waiting_for_inspector",
+    phase: "inspector_review",
+    now: seeded.now + 2,
+  }));
+  const handoff = seeded.store.prepareDelivery({
+    id: `unrelated-handoff-${serial}`,
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "pr_handoff",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "unrelated handoff",
+    payloadSha256: `unrelated-handoff-packet-${serial}`,
+  }, seeded.now + 2);
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await recoveredManager.stop();
+  assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
+  assert.equal(seeded.store.getDelivery(handoff.delivery.id)?.state, "prepared");
+  assert.deepEqual(injected, []);
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });

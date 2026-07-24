@@ -264,6 +264,12 @@ total caps as Persona feedback, and hashes the final bytes. It creates or reuses
 `WorkflowDelivery` with `kind: "inspector_feedback"`. Preview displays/copies it; Live uses Phase 4's
 prepared/sending/delivered/refused/uncertain state machine. Never type directly from Inspector code.
 
+The finding-state transition, both finding audit events, and the immutable `prepared` delivery row
+commit in one database transaction. If packet insertion fails, the run remains in its prior gate
+state with no partial finding events. On daemon restart, Live mode resumes any eligible `prepared`
+packet directly; recovery must not depend on finding runs sharing Persona feedback's
+`waiting_for_session` submission state.
+
 ## Missing PR handoff
 
 The published `missingPrAction` means:
@@ -357,8 +363,10 @@ This keeps the Inspector/Shipping tick as the only GitHub merge path. No workflo
 - Serialize gate transitions per run. An Inspector signal, manual recheck, config change, and
   Foreman completion may arrive together; unique submission trigger keys and a gate compare-and-set
   allow only one transition.
-- Snapshot finding fingerprints and bodies before creating a delivery. Later Inspector resolution
-  never mutates an existing repair packet.
+- Snapshot finding fingerprints and bodies before creating a delivery. Commit the finding state,
+  audit events, and immutable prepared packet atomically; later Inspector resolution never mutates
+  that packet. Restart recovery resumes eligible prepared Live packets even when the submission is
+  no longer `waiting_for_session`.
 - Cancelling a run removes its Shipping veto immediately but retains audit rows.
 - Reset uses Phase 3's `resetSession` cleanup for run, gate state, submissions, deliveries, and
   events. It never deletes Inspector's PR/comment ledgers, which outlive sessions.
@@ -423,7 +431,8 @@ separate footer stage. Do not add an Inspector node to React Flow.
 - `inspector-body-migration.test.ts`: fresh and upgraded schema, null legacy row, scrubbed body round
   trip, resolution retention, and no raw-body persistence.
 - `workflow-inspector-gate.test.ts`: no policy, missing/unadopted PR, disabled Inspector, fresh
-  observation, dirty worktree, head mismatch, pending/error/backoff, findings, and clean completion.
+  observation, dirty worktree, head mismatch, pending/error/backoff, findings, atomic repair-packet
+  insertion, prepared-packet restart recovery, and clean completion.
 - `workflow-inspector-update.test.ts`: adoption, same-head observation, completed review, failure,
   config wakeup, restart wait, and no second timer/poller.
 - `workflow-inspector-feedback.test.ts`: severity order, fingerprint dedup, scrubbed bodies, legacy

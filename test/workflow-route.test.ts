@@ -62,3 +62,12 @@ test("Settings and Workflows share config-aware LLM state", () => {
   const hook = readFileSync(fileURLToPath(new URL("../src/web/useLlm.ts", import.meta.url)), "utf8");
   assert.equal(hook.match(/fetchPersonaDefaults\(\)/g)?.length, 2);
 });
+
+test("the Inspector gate action deep-links into the routed settings page", () => {
+  const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  assert.match(
+    app,
+    /onOpenInspectorSettings=\{\(\) =>[\s\S]*?navigate\(\{ page: "settings", category: "inspector" \}\)[\s\S]*?\}/,
+  );
+  assert.doesNotMatch(app, /setSettingsCategory|setSettingsOpen/);
+});

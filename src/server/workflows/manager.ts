@@ -2232,25 +2232,30 @@ export class WorkflowManager {
       findingFingerprints: fingerprints,
     };
     const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
-    const updated = this.transitionInspectorGate(
-      run,
-      state,
-      nextState,
-      inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
-      "inspector_findings",
-      "inspector_findings",
-      {
-        prKey: state.prKey,
-        targetHeadSha: state.targetHeadSha,
-        ...findingFingerprintAudit(fingerprints),
-        policy: version.completionPolicy.onFindings,
-      },
-      now,
-    );
-    if (!updated || !binding.sessionId || !state.prUrl || !state.targetHeadSha) return;
+    const findingEvent = {
+      prKey: state.prKey,
+      targetHeadSha: state.targetHeadSha,
+      ...findingFingerprintAudit(fingerprints),
+      policy: version.completionPolicy.onFindings,
+    };
+    if (!binding.sessionId) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        nextState,
+        inspectorOnly ? "waiting_for_new_head" : "blocked",
+        "inspector_findings",
+        "inspector_findings",
+        findingEvent,
+        now,
+      );
+      return;
+    }
+    if (!state.prUrl || !state.targetHeadSha) return;
     const summary = this.store.runSummary(run.id);
+    if (!summary) return;
     const rendered = renderInspectorFeedback({
-      workflowName: summary?.workflowName ?? "Workflow",
+      workflowName: summary.workflowName,
       workflowVersion: version.version,
       runId: run.id,
       submissionRound: submission.round,
@@ -2262,24 +2267,41 @@ export class WorkflowManager {
       policy: version.completionPolicy.onFindings,
       findings,
     });
-    const prepared = this.store.prepareDelivery({
-      id: randomUUID(),
-      runId: run.id,
-      submissionId: submission.id,
-      kind: "inspector_feedback",
-      sessionId: binding.sessionId,
-      noteKey: binding.noteKey,
-      payload: rendered.payload,
-      payloadSha256: rendered.payloadSha256,
-    }, now);
-    if (!prepared.idempotent) {
-      this.store.appendEvent(run.id, "inspector_feedback_prepared", {
-        deliveryId: prepared.delivery.id,
-        payloadSha256: prepared.delivery.payloadSha256,
-        ...findingFingerprintAudit(fingerprints),
-        policy: version.completionPolicy.onFindings,
-      }, now);
+    const deliveryId = randomUUID();
+    let prepared: ReturnType<WorkflowStore["transitionInspectorFindingsWithDelivery"]>;
+    try {
+      prepared = this.store.transitionInspectorFindingsWithDelivery({
+        runId: run.id,
+        expectedState: state,
+        state: nextState,
+        status: inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
+        findingEvent,
+        delivery: {
+          id: deliveryId,
+          runId: run.id,
+          submissionId: submission.id,
+          kind: "inspector_feedback",
+          sessionId: binding.sessionId,
+          noteKey: binding.noteKey,
+          payload: rendered.payload,
+          payloadSha256: rendered.payloadSha256,
+        },
+        deliveryEvent: {
+          deliveryId,
+          payloadSha256: rendered.payloadSha256,
+          ...findingFingerprintAudit(fingerprints),
+          policy: version.completionPolicy.onFindings,
+        },
+        now,
+      });
+    } catch (error) {
+      // The store rolled the finding state, both audits, and packet back together. Keep
+      // that prior gate intact instead of letting the generic Inspector adapter handler
+      // rewrite it after an atomic packet-preparation failure.
+      console.error(`[workflow] Inspector feedback preparation failed for run ${run.id}: ${String(error)}`);
+      return;
     }
+    if (!prepared) return;
     this.publishRun(run.id);
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
@@ -2382,8 +2404,34 @@ export class WorkflowManager {
   }
 
   private recoverWaitingDeliveries(): void {
-    for (const submission of this.store.listSubmissionsByState("waiting_for_session")) {
+    const waitingSubmissions = this.store.listSubmissionsByState("waiting_for_session");
+    const submissionRecovery = new Set(waitingSubmissions.map((submission) => submission.id));
+    for (const submission of waitingSubmissions) {
       this.scheduleWaitingDelivery(submission.id);
+    }
+    for (const delivery of this.store.listDeliveriesByState("prepared")) {
+      if (submissionRecovery.has(delivery.submissionId)) continue;
+      const run = this.store.getRun(delivery.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      const latestSubmission = run ? this.store.latestSubmission(run.id) : null;
+      const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+      const gate = run ? this.gateState(run) : null;
+      const inspectorOnly =
+        version?.completionPolicy.kind === "inspector"
+        && version.completionPolicy.onFindings === "inspector_only";
+      if (
+        delivery.kind !== "inspector_feedback"
+        || !run
+        || runIsTerminal(run)
+        || binding?.deliveryMode !== "live"
+        || latestSubmission?.id !== delivery.submissionId
+        || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
+        || run.currentPhase !== "inspector_findings"
+        || gate?.waitReason !== "findings"
+        || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha
+      ) continue;
+      this.schedulePreparedDelivery(delivery.id);
     }
   }
 
@@ -2402,6 +2450,29 @@ export class WorkflowManager {
         error: message,
       });
       this.publishRun(submission.runId);
+    }));
+  }
+
+  private schedulePreparedDelivery(deliveryId: string): void {
+    this.trackDeliveryTask(this.deliverPrepared(deliveryId, false).catch((error) => {
+      const delivery = this.store.getDelivery(deliveryId);
+      const run = delivery ? this.store.getRun(delivery.runId) : null;
+      if (!delivery || !run || runIsTerminal(run)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRunState(
+        delivery.runId,
+        "blocked",
+        "delivery_recovery_error",
+        (this.deliveryGateState(delivery) as unknown as WorkflowJson | null) ?? {
+          deliveryId,
+          error: message,
+        },
+      );
+      this.store.appendEvent(delivery.runId, "delivery_recovery_error", {
+        deliveryId,
+        error: message,
+      });
+      this.publishRun(delivery.runId);
     }));
   }
 

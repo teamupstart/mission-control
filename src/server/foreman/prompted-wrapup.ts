@@ -1,4 +1,4 @@
-import type { Session, SessionQueue } from "@shared/types.ts";
+import type { AgentType, Session, SessionQueue } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
@@ -218,6 +218,12 @@ export function planPromptedWrapup(
   cfg: PromptedConfig,
   /** Whether Foreman is cleared to type here (live + allowlisted) - the same gate a send passes. */
   mayActLive: boolean,
+  /**
+   * The harness whose composer this will be typed into. Step 1 already established
+   * there is one (`workQueue` non-null), but WHICH one decides how the gate is spelled -
+   * see `wrapupNoMistakes`.
+   */
+  agent: AgentType,
 ): PromptedPlan {
   // The verifier's primary axis. `complete: false` is the agent's work being
   // unfinished, which is the human's business and not ours.
@@ -239,7 +245,7 @@ export function planPromptedWrapup(
     };
   }
 
-  const payload = autoWrapupPayload(cfg.wrapup);
+  const payload = autoWrapupPayload(cfg.wrapup, agent);
 
   // Nothing to automate (`ask`), or Foreman may not type here. Same fallback as the
   // drain path and the same argument: the instruction PUSHES, so a dry-run that typed

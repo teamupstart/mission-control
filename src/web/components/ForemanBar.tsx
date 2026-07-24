@@ -28,7 +28,10 @@ const MODE_HINT: Record<"dry-run" | "semi-auto" | "live", string> = {
 
 const WRAPUP_HINT: Record<"ask" | "no-mistakes" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
-  "no-mistakes": "Run the /no-mistakes gate automatically",
+  // Named without a sigil: this setting is Foreman-wide, and the gate's invocation is
+  // spelled per harness (`wrapupNoMistakes`), so `/no-mistakes` here promised every
+  // session Claude's command.
+  "no-mistakes": "Run the no-mistakes gate automatically, in whichever way that session's agent runs a skill",
   pr: "Skip the gate: commit, push, open a PR, then wait for green CI",
 };
 
@@ -382,7 +385,7 @@ export function ForemanPopover({
                   onChange={() => void update({ wrapup: w })}
                 />
                 {w === "ask" && "Ask me - show the Ship it? card"}
-                {w === "no-mistakes" && "Run /no-mistakes automatically"}
+                {w === "no-mistakes" && "Run no-mistakes automatically"}
                 {w === "pr" && "Straight to PR - skip no-mistakes; commit, push, open a PR, then green CI"}
               </label>
             </Tooltip>

@@ -8,7 +8,11 @@ import {
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
 import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
 import type { QueueVerdict } from "../src/server/foreman/queue-machine.ts";
-import { isWrapupPayload, WRAPUP_NO_MISTAKES, WRAPUP_PR } from "../src/shared/queue.ts";
+import { isWrapupPayload, wrapupNoMistakes, WRAPUP_PR } from "../src/shared/queue.ts";
+import { AGENT_TYPES } from "../src/shared/types.ts";
+
+/** The gate instruction as it is typed at a Claude session - what these fixtures run on. */
+const NM_CLAUDE = wrapupNoMistakes("claude") as string;
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   GapSeverity,
@@ -237,13 +241,23 @@ test("THE LOOP GUARD: a goal that is Foreman's own wrap-up never re-fires", () =
   // UserPromptSubmit -> goal capture stores it (substantivePrompt filters only /clear
   // and /compact, so a slash command sails through) -> the run finishes and parks ->
   // re-armed. Without this the cycle is infinite, on a live repo, opening a PR each lap.
-  for (const payload of [WRAPUP_NO_MISTAKES, WRAPUP_PR]) {
+  for (const payload of [NM_CLAUDE, WRAPUP_PR]) {
     const r = decide({ goalPrompt: payload });
     assert.equal(r.kind, "skip", payload);
     assert.match(r.kind === "skip" ? r.why : "", /Foreman's own wrap-up/);
   }
   // Whitespace must not smuggle it past - the pane echo is not byte-exact.
-  assert.equal(decide({ goalPrompt: `  ${WRAPUP_NO_MISTAKES}  ` }).kind, "skip");
+  assert.equal(decide({ goalPrompt: `  ${NM_CLAUDE}  ` }).kind, "skip");
+
+  // EVERY harness's spelling, on a session of ANY harness. The guard is asked about a
+  // goal, and a goal outlives the harness that captured it: a `/clear` re-keys it and a
+  // queue can be re-attached across sessions. Recognising only the local agent's
+  // spelling would re-arm the trigger on text Foreman itself typed one harness ago.
+  for (const agent of AGENT_TYPES) {
+    const payload = wrapupNoMistakes(agent);
+    if (!payload) continue;
+    assert.equal(decide({ goalPrompt: payload }).kind, "skip", agent);
+  }
 });
 
 test("THE LOOP GUARD holds for wrap-up text we no longer send", () => {
@@ -277,7 +291,11 @@ test("both payloads are ONE line - a newline is a premature submit", () => {
   // `sendText` submits on every embedded newline, so wrapping either of these to keep
   // it under a column limit types half an instruction and then sends it. The PR payload
   // is the long one and therefore the one that will tempt someone.
-  for (const payload of [WRAPUP_NO_MISTAKES, WRAPUP_PR]) {
+  //
+  // Every harness's gate spelling, not just Claude's: the rule is about the delivery
+  // path, which is the same one for all of them.
+  const lines = [WRAPUP_PR, ...AGENT_TYPES.map((a) => wrapupNoMistakes(a)).filter((p) => p !== null)];
+  for (const payload of lines) {
     assert.ok(!/[\r\n]/.test(payload), payload);
   }
 });
@@ -312,29 +330,44 @@ test("an incomplete verdict holds - this trigger never sends a fix round", () =>
   // commissioned that work. This trigger commissioned nothing: it is a bystander to a
   // conversation between a human and their agent, so its only honest move is to stay
   // out of the way.
-  const p = planPromptedWrapup(GOAL, mkVerdict({ complete: false, summary: "half done" }), CFG, true);
+  const p = planPromptedWrapup(GOAL, mkVerdict({ complete: false, summary: "half done" }), CFG, true, "claude");
   assert.equal(p.kind, "hold");
   assert.match(p.kind === "hold" ? p.why : "", /half done/);
 });
 
 test("complete-but-blocking is a self-contradictory verdict, and it declines", () => {
-  const p = planPromptedWrapup(GOAL, mkVerdict({ gaps: [mkGap("blocking")] }), CFG, true);
+  const p = planPromptedWrapup(GOAL, mkVerdict({ gaps: [mkGap("blocking")] }), CFG, true, "claude");
   assert.equal(p.kind, "hold");
 });
 
 test("an ADVISORY gap never blocks the ship - same rule the queue follows", () => {
-  const p = planPromptedWrapup(GOAL, mkVerdict({ gaps: [mkGap("advisory")] }), CFG, true);
+  const p = planPromptedWrapup(GOAL, mkVerdict({ gaps: [mkGap("advisory")] }), CFG, true, "claude");
   assert.equal(p.kind, "ask-wrapup");
 });
 
 test("`ask` shows the card; the automated modes carry the exact payload", () => {
-  assert.equal(planPromptedWrapup(GOAL, mkVerdict(), CFG, true).kind, "ask-wrapup");
+  assert.equal(planPromptedWrapup(GOAL, mkVerdict(), CFG, true, "claude").kind, "ask-wrapup");
 
-  const nm = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "no-mistakes" }, true);
+  const nm = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "no-mistakes" }, true, "claude");
   assert.equal(nm.kind, "auto-wrapup");
-  assert.equal(nm.kind === "auto-wrapup" && nm.payload, WRAPUP_NO_MISTAKES);
+  assert.equal(nm.kind === "auto-wrapup" && nm.payload, NM_CLAUDE);
 
-  const pr = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "pr" }, true);
+  const pr = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "pr" }, true, "claude");
+  assert.equal(pr.kind === "auto-wrapup" && pr.payload, WRAPUP_PR);
+});
+
+test("the gate payload is spelled for the SESSION's harness, not for Claude", () => {
+  // The defect this closes: one constant, `/no-mistakes`, typed at whatever session
+  // drained. Codex has no such command - the gate ran only if the model chose to reach
+  // for the skill on its own, which is not what "run no-mistakes automatically" promises.
+  const cfg = { ...CFG, wrapup: "no-mistakes" } as const;
+  const codex = planPromptedWrapup(GOAL, mkVerdict(), cfg, true, "codex");
+  assert.equal(codex.kind, "auto-wrapup");
+  assert.equal(codex.kind === "auto-wrapup" && codex.payload, wrapupNoMistakes("codex"));
+  assert.notEqual(codex.kind === "auto-wrapup" && codex.payload, NM_CLAUDE);
+
+  // The PR mode is prose, and prose does not change per harness - see WRAPUP_PR's note.
+  const pr = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "pr" }, true, "codex");
   assert.equal(pr.kind === "auto-wrapup" && pr.payload, WRAPUP_PR);
 });
 
@@ -342,7 +375,7 @@ test("dry-run degrades to the ask and NEVER types - the instruction pushes", () 
   // Same argument as the drain path: `/no-mistakes` opens a PR, so a dry-run that typed
   // it would be a dry-run that shipped. Dry-run means dry-run.
   for (const w of ["no-mistakes", "pr"] as const) {
-    const p = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: w }, false);
+    const p = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: w }, false, "claude");
     assert.equal(p.kind, "ask-wrapup", w);
   }
 });

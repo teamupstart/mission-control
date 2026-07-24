@@ -138,7 +138,7 @@ the code changed after the shared evidence snapshot.
 The canvas ends at **Persona workflow passed**. The dotted Inspector portion is run-state decoration,
 not editable graph structure. Inspector cannot review a session diff directly, so a configured final
 gate waits for an adopted pull request and the Inspector subsystem's next poll of that PR. If no
-eligible PR exists, the run shows `awaiting_pr` and can offer the existing `/no-mistakes` or direct PR
+eligible PR exists, the run shows `awaiting_pr` and can offer the existing no-mistakes or direct PR
 wrap-up action. Inspector itself never commits, pushes, opens, or adopts anything.
 
 ## Design mockups

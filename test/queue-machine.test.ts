@@ -31,6 +31,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "../src/shared/types.ts";
+import { wrapupNoMistakes } from "../src/shared/queue.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
@@ -651,9 +652,45 @@ test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it stil
 });
 
 test("5. wrapup=no-mistakes types it when live, instrumented, settled and paned", () => {
+  // The fixture session is a Claude one, which is why this literal is safe here and
+  // why the Codex case below has to exist beside it.
   const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" } });
   assert.equal(a.kind, "auto-wrapup");
   assert.equal(a.kind === "auto-wrapup" && a.payload, "/no-mistakes");
+});
+
+test("5. the drain payload is spelled for THIS session's harness, not for Claude", () => {
+  // The defect: this path typed one constant, `/no-mistakes`, into whatever session
+  // drained. Codex has no such command, so the gate ran only if the model reached for
+  // the skill on its own.
+  //
+  // Asserted at the DRAIN boundary rather than only on `wrapupNoMistakes`, because the
+  // helper being right is not the same claim as this path calling it with the session's
+  // own agent - `decideQueueTick` could regress to a literal, or to a hard-coded
+  // "claude", while a helper-only test stayed green. Compared against the composed
+  // value AND against Claude's, so it fails whichever way it regresses.
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" }, session: { agent: "codex" } });
+  assert.equal(a.kind, "auto-wrapup");
+  assert.equal(a.kind === "auto-wrapup" && a.payload, wrapupNoMistakes("codex"));
+  assert.notEqual(a.kind === "auto-wrapup" && a.payload, wrapupNoMistakes("claude"));
+
+  // And it must be the line Codex can actually submit: a bare `$no-mistakes` at the end
+  // of its composer leaves the skill-mention popup open, and that popup eats the single
+  // Enter this harness's delivery spends. See `SkillsSpec.invoke`.
+  const payload = a.kind === "auto-wrapup" ? a.payload : "";
+  assert.ok(payload.startsWith("$no-mistakes "), payload);
+});
+
+test("5. the PR payload is NOT harness-scoped - it is prose, not an invocation", () => {
+  // Both harnesses get identical bytes here on purpose: `WRAPUP_PR` forbids the gate
+  // rather than running it, and splicing Codex's runnable line (which ends "run this
+  // skill now.") into "Do not run …" would invert the sentence it sits in.
+  const claude = tick({ items: DRAINED(), cfg: { wrapup: "pr" } });
+  const codex = tick({ items: DRAINED(), cfg: { wrapup: "pr" }, session: { agent: "codex" } });
+  assert.equal(
+    claude.kind === "auto-wrapup" && claude.payload,
+    codex.kind === "auto-wrapup" && codex.payload,
+  );
 });
 
 test("5. wrapup=pr types the PR instruction instead", () => {

@@ -541,8 +541,10 @@ Without it the UI will happily let someone edit an item already typed into a pan
 consent to a <em>specific</em> prompt, and from round 1 that prompt is the rendered fix prompt rather than
 the item&#x27;s intent - so the card has to show it, or Approve means consenting to text never read.</li>
 <li><strong>Wrap-up block</strong> at drained: two checkboxes (Create PR / Run no-mistakes) over an editable
-prefilled textarea, plus Send and Dismiss. Both ticked prefills <code>/no-mistakes</code> (the pipeline
-pushes and opens the PR itself); PR-only prefills a PR instruction; Dismiss closes and sends
+prefilled textarea, plus Send and Dismiss. Both ticked prefills the harness-specific gate
+instruction (the pipeline pushes and opens the PR itself); the
+<a href="../../README.md#work-queues-load-a-session-up-and-walk-away">README&#x27;s Work queues section</a>
+owns the current invocation behavior. PR-only prefills a PR instruction; Dismiss closes and sends
 nothing. Editable because the composed text is a guess. <strong>The human&#x27;s &quot;yes&quot; arrives later</strong>, so
 Send re-runs <code>queueSendStillValid</code> rather than trusting the drain-time snapshot.</li>
 <li><strong>Allowlist honesty.</strong> <code>foremanMayActLive</code>&#x27;s prefix match (<code>verdict.ts:288</code>) does not cover

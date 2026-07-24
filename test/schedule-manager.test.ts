@@ -1079,7 +1079,7 @@ test("preview leaves a truncated standby plan null even when a policy was named"
   assert.equal(result.standby?.plan, null);
 });
 
-test("preview reports dense schedule collisions beyond the first recurrence page", async () => {
+test("preview reports dense schedule collisions beyond the accounting ceiling", async () => {
   const h = harness("preview-collision-pages");
   const dense = ok(
     await h.manager.create(definition({ expression: "0 * * * *" })),
@@ -1088,7 +1088,7 @@ test("preview reports dense schedule collisions beyond the first recurrence page
     expression: "0 0 1 1 *",
     timezone: "UTC",
     after: T0,
-    count: 2,
+    count: 3,
   });
 
   assert.ok(result.ok);

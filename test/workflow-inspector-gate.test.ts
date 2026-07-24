@@ -753,3 +753,83 @@ test("restart recovery never sends a prepared packet from an older submission", 
   assert.deepEqual(injected, []);
   setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
+
+test("restart recovery skips packets after the current submission advances past its findings", async () => {
+  const seeded = await seed();
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const findingsState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    observedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["superseded-finding"],
+  };
+  const prepared = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: findingsState,
+    status: "waiting_for_session",
+    findingEvent: { findingFingerprints: ["superseded-finding"] },
+    delivery: {
+      id: `superseded-inspector-delivery-${serial}`,
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "superseded repair packet",
+      payloadSha256: `superseded-repair-packet-${serial}`,
+    },
+    deliveryEvent: {
+      deliveryId: `superseded-inspector-delivery-${serial}`,
+      payloadSha256: `superseded-repair-packet-${serial}`,
+    },
+    now: seeded.now + 1,
+  });
+  assert.ok(prepared);
+  const newerHead = `same-submission-head-${serial}`;
+  const advancedState: WorkflowInspectorGateState = {
+    ...findingsState,
+    targetHeadSha: newerHead,
+    observedHeadSha: newerHead,
+    waitReason: "review_pending",
+  };
+  assert.ok(seeded.store.updateInspectorGate({
+    runId: seeded.ids.run,
+    expectedState: findingsState,
+    state: advancedState,
+    status: "waiting_for_inspector",
+    phase: "inspector_review",
+    now: seeded.now + 2,
+  }));
+  const handoff = seeded.store.prepareDelivery({
+    id: `unrelated-handoff-${serial}`,
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "pr_handoff",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "unrelated handoff",
+    payloadSha256: `unrelated-handoff-packet-${serial}`,
+  }, seeded.now + 2);
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await recoveredManager.stop();
+  assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
+  assert.equal(seeded.store.getDelivery(handoff.delivery.id)?.state, "prepared");
+  assert.deepEqual(injected, []);
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});

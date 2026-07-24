@@ -2342,11 +2342,22 @@ export class WorkflowManager {
       const run = this.store.getRun(delivery.runId);
       const binding = run ? this.store.getBinding(run.bindingId) : null;
       const latestSubmission = run ? this.store.latestSubmission(run.id) : null;
+      const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+      const gate = run ? this.gateState(run) : null;
+      const inspectorOnly =
+        version?.completionPolicy.kind === "inspector"
+        && version.completionPolicy.onFindings === "inspector_only";
       if (
-        !run
+        delivery.kind !== "inspector_feedback"
+        || !run
         || runIsTerminal(run)
         || binding?.deliveryMode !== "live"
         || latestSubmission?.id !== delivery.submissionId
+        || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
+        || run.currentPhase !== "inspector_findings"
+        || gate?.waitReason !== "findings"
+        || !gate.targetHeadSha
+        || gate.targetHeadSha !== gate.failedHeadSha
       ) continue;
       this.schedulePreparedDelivery(delivery.id);
     }

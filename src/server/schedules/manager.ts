@@ -318,22 +318,25 @@ export class ScheduleManager {
   // ---- definition mutations ----
 
   async create(input: CreateScheduleInput): Promise<ScheduleSaveResult> {
-    const at = this.now();
-    const prepared = await this.prepareDefinition(input, at);
+    const prepared = await this.prepareDefinition(input, this.now());
     if (!prepared.ok) return prepared;
 
+    // Repository validation is asynchronous. Anchor the new cursor when the definition
+    // is ready to commit, so a due instant crossed during validation (or system standby)
+    // does not become debt for a schedule that did not exist yet.
+    const committedAt = this.now();
     const enabled = input.enabled ?? true;
     // A paused schedule holds NO cursor. Storing one and ignoring it would leave a
     // resumed schedule owing every instant it slept through - see `setEnabled`.
     const nextRunAt = enabled
-      ? this.firstRunAfter(prepared.definition, at)
+      ? this.firstRunAfter(prepared.definition, committedAt)
       : null;
     const schedule = store.createSchedule({
       id: this.uuid(),
       definition: prepared.definition,
       enabled,
       nextRunAt,
-      at,
+      at: committedAt,
     });
     this.notifySchedule(schedule);
     this.log("created", { schedule: schedule.id, enabled, nextRunAt });

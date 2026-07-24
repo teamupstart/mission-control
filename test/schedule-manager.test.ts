@@ -203,6 +203,24 @@ test("running the same tick again files nothing more", async () => {
   assert.equal(occurrencesFor(created.id).length, 1);
 });
 
+test("creating anchors the first run after asynchronous repository validation", async () => {
+  let h!: Harness;
+  h = harness("create-anchor", {
+    resolveRepoRoot: async (path) => {
+      // Validation began before today's run, but the schedule does not exist durably
+      // until after it. The crossed instant must not become catch-up debt.
+      h.clock.now = NINE + 30 * 60_000;
+      return { ok: true, repoRoot: path };
+    },
+  });
+
+  const created = ok(await h.manager.create(definition())).schedule;
+
+  assert.equal(created.createdAt, h.clock.now);
+  assert.equal(created.nextRunAt, NINE + DAY);
+  assert.equal((await h.manager.tick()).due, 0);
+});
+
 test("an instant already in the ledger cannot file a second task", async () => {
   const h = harness("replay");
   const created = ok(await h.manager.create(definition())).schedule;

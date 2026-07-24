@@ -24,6 +24,37 @@ import {
   type WorkflowVersion,
 } from "../src/shared/workflow.ts";
 
+const require = createRequire(import.meta.url);
+
+/**
+ * Backstop for a hung browser, NOT an assertion about how fast one starts.
+ *
+ * These two cases launch a real Electron GUI, which is the only way to measure laid-out
+ * geometry. That launch is cheap on Linux CI and expensive on a developer's Mac, where the
+ * runner also keeps a second test file in flight: measured here, ~10s idle and past 40s under
+ * that contention, against a former 20s deadline. The deadline firing produced a bare
+ * ETIMEDOUT, which reads as the layout defect this test exists to catch rather than as a busy
+ * machine. Keep it far above the honest cost - a real hang still fails, just later.
+ */
+const ELECTRON_TIMEOUT_MS = 120_000;
+
+/** Run one Electron fixture in a throwaway profile and return its stdout. */
+function runElectronFixture(args: string[]): string {
+  const electron = require("electron") as string;
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
+  try {
+    return execFileSync(electron, [
+      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
+      `--user-data-dir=${userData}`,
+      ...args,
+    ], { encoding: "utf8", env, timeout: ELECTRON_TIMEOUT_MS });
+  } finally {
+    rmSync(userData, { force: true, recursive: true });
+  }
+}
+
 const llm: LlmState = { config: null, status: null, personaDefaults: null, error: null, update: async () => {} };
 const workflow: WorkflowDefinition = {
   id: "w", name: "Release review", normalizedName: "release review", description: "",
@@ -79,23 +110,11 @@ test("version history names immutable source revisions and never offers update-v
 });
 
 test("published workflow nodes stay within the visible React Flow graph", () => {
-  const require = createRequire(import.meta.url);
-  const electron = require("electron") as string;
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
-  let output: string;
-  try {
-    output = execFileSync(electron, [
-      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
-      `--user-data-dir=${userData}`,
-      fileURLToPath(new URL("fixtures/workflow-graph-browser.cjs", import.meta.url)),
-      fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
-      require.resolve("@xyflow/react/dist/style.css"),
-    ], { encoding: "utf8", env, timeout: 20_000 });
-  } finally {
-    rmSync(userData, { force: true, recursive: true });
-  }
+  const output = runElectronFixture([
+    fileURLToPath(new URL("fixtures/workflow-graph-browser.cjs", import.meta.url)),
+    fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
+    require.resolve("@xyflow/react/dist/style.css"),
+  ]);
   const { graph, root, nodes } = JSON.parse(output.trim()) as {
     graph: DOMRect;
     root: DOMRect;
@@ -111,12 +130,7 @@ test("published workflow nodes stay within the visible React Flow graph", () => 
 });
 
 test("editable workflow canvas remains mounted with default node statuses", () => {
-  const require = createRequire(import.meta.url);
-  const electron = require("electron") as string;
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
   const fixtureDir = mkdtempSync(join(tmpdir(), "mission-workflow-canvas-"));
-  const userData = mkdtempSync(join(tmpdir(), "mission-workflow-browser-"));
   const bundlePath = join(fixtureDir, "canvas.js");
   const htmlPath = join(fixtureDir, "index.html");
   let output: string;
@@ -129,15 +143,12 @@ test("editable workflow canvas remains mounted with default node statuses", () =
       `--outfile=${bundlePath}`,
     ], { encoding: "utf8" });
     writeFileSync(htmlPath, '<!doctype html><div id="root" style="width:800px;height:600px"></div><script src="./canvas.js"></script>');
-    output = execFileSync(electron, [
-      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
-      `--user-data-dir=${userData}`,
+    output = runElectronFixture([
       fileURLToPath(new URL("fixtures/workflow-canvas-mount-browser.cjs", import.meta.url)),
       htmlPath,
-    ], { encoding: "utf8", env, timeout: 20_000 });
+    ]);
   } finally {
     rmSync(fixtureDir, { force: true, recursive: true });
-    rmSync(userData, { force: true, recursive: true });
   }
 
   const result = JSON.parse(output.trim()) as {

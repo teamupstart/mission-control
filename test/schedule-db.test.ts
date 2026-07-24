@@ -379,6 +379,45 @@ test("the revision fails closed on its own, because the claim path reads it and 
   assert.equal(store.getSchedule(s.id, T0)!.missedPolicy, "coalesce-latest");
 });
 
+test("a template priority or effort from a newer build fails closed, it does not downgrade", () => {
+  // Null is a legitimate stored value for both - "nobody set a priority" - so a template
+  // that carries one at all got it from a build that knew a value this one does not.
+  // Reading that as null would file the work untriaged, on every single run, silently.
+  for (const [field, value] of [
+    ["priority", "critical"],
+    ["effort", "ultra"],
+  ] as const) {
+    const s = mkSchedule();
+    const row = db
+      .openDb()
+      .prepare(`SELECT template_json AS t FROM mission_schedule_revisions WHERE schedule_id = ?`)
+      .get(s.id) as { t: string };
+    const template = { ...(JSON.parse(row.t) as Record<string, unknown>), [field]: value };
+    db.openDb()
+      .prepare(`UPDATE mission_schedule_revisions SET template_json = ? WHERE schedule_id = ?`)
+      .run(JSON.stringify(template), s.id);
+
+    const back = store.getSchedule(s.id, T0)!;
+    assert.equal(back.template, null, `${field}=${value} must not load`);
+    assert.deepEqual(back.unreadable!.fields, ["template"]);
+    assert.equal(back.health, "attention");
+    assert.equal(scheduleIsRunnable(back), false);
+  }
+});
+
+test("a template that simply set no priority or effort is ordinary, not unreadable", () => {
+  // The other side of the same coin: absent must stay null, or every schedule created
+  // without a priority would sit in attention for having answered the question honestly.
+  const s = mkSchedule({
+    template: { ...definition().template, priority: null, effort: null },
+  });
+  const back = store.getSchedule(s.id, T0)!;
+  assert.equal(back.unreadable, null);
+  assert.equal(back.template!.priority, null);
+  assert.equal(back.template!.effort, null);
+  assert.equal(back.health, "healthy");
+});
+
 test("an unparseable template costs that one schedule, not the whole catalog", () => {
   const good = mkSchedule();
   const bad = mkSchedule();
@@ -524,6 +563,59 @@ test("no new claim starts after a schedule is archived", () => {
     nextRunAt: T0 + 2 * HOUR,
   });
   assert.equal(claim.outcome, "schedule_changed");
+});
+
+test("a scheduled claim decided before the operator paused does not still win", () => {
+  // Pause does NOT mint a new revision, so the revision guard cannot stand in for this.
+  // The window is real: the tick reads a due schedule, awaits, and comes back after Pause
+  // - and without this check it files work from a schedule the dashboard shows as stopped.
+  const s = mkSchedule();
+  store.setScheduleEnabled(s.id, false, null, T0 + 1);
+
+  const claim = store.claimOccurrence({
+    occurrenceId: uid("occ"),
+    scheduleId: s.id,
+    scheduleRevision: 1, // unchanged by the pause, which is the point
+    scheduledFor: T0 + HOUR,
+    triggerKind: "scheduled",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + HOUR,
+    delayMs: 0,
+    advanceCursor: true,
+    nextRunAt: T0 + 2 * HOUR,
+  });
+  assert.equal(claim.outcome, "schedule_changed");
+
+  const rows = db
+    .openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM mission_schedule_occurrences WHERE schedule_id = ?`)
+    .get(s.id) as { n: number };
+  assert.equal(rows.n, 0, "a paused schedule records no reservation at all");
+});
+
+test("Run now still works on a paused schedule - that is what a manual trigger is for", () => {
+  const s = mkSchedule();
+  store.setScheduleEnabled(s.id, false, null, T0 + 1);
+  const manual = store.claimOccurrence({
+    occurrenceId: uid("occ"),
+    scheduleId: s.id,
+    scheduleRevision: 1,
+    scheduledFor: T0 + 23,
+    triggerKind: "manual",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + 23,
+    delayMs: 0,
+    advanceCursor: false,
+    nextRunAt: null,
+  });
+  assert.equal(manual.outcome, "claimed");
+  assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, null, "and the pause still stands");
 });
 
 test("Run now claims without moving the cron cursor", () => {

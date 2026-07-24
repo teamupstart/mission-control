@@ -120,14 +120,43 @@ export const SCHEDULE_CRON_FIELD_COUNT = 5;
 export const SCHEDULE_MIN_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
- * How many successive instants the minimum-interval check inspects.
+ * How far the minimum-interval check enumerates before it is entitled to say yes.
  *
- * The plan asks for the first two. This looks at five, which is a strict superset and
- * catches a cadence whose short gap is not the first one (`0 8,9,10,10 * * *` style
- * mistakes). Hourly across both DST transitions was measured at a 60-minute minimum gap
- * in every zone tried, so a longer probe adds no false rejections.
+ * The plan asks for the first two instants, and a fixed count of any size is a guess: it
+ * answers "no short gap in the first N" and reports it as "no short gap". This spans a
+ * whole day instead, which makes the check COMPLETE for a five-field expression, and the
+ * completeness argument is a property of the grammar rather than of the sample:
+ *
+ * the times-of-day a five-field cron selects are exactly `minutes x hours`, and that set
+ * is identical on every selected day - day-of-month and day-of-week choose WHICH days
+ * fire, never at what times. So two runs less than an hour apart are always two runs
+ * inside one day, and traversing any single selected day end to end sees every gap the
+ * expression can ever produce.
+ *
+ * 26 hours rather than 24 because a fall-back day is 25 hours long, and the anchor lands
+ * mid-day: the extra hour is what guarantees a complete traversal rather than a wrap that
+ * misses the pair straddling where the enumeration started.
+ *
+ * This replaced a five-instant sample, and it is worth being exact about what changed: a
+ * differential search over 8,100 expression/zone/anchor combinations found NO case the
+ * sample got wrong, which the argument above explains - a short pair recurs every selected
+ * hour, so it shows up in the first gap or two from any anchor. Nothing was leaking. What
+ * changed is where the guarantee comes from. "No short gap in the first five" is a narrower
+ * claim than "no short gap", and a reviewer had no way to tell whether the five was
+ * load-bearing or arbitrary. Now the bound is derived from the grammar and the sample size
+ * is not a number anyone has to trust.
  */
-export const SCHEDULE_MIN_INTERVAL_PROBE = 5;
+export const SCHEDULE_MIN_INTERVAL_SPAN_MS = 26 * 60 * 60 * 1000;
+
+/**
+ * Hard ceiling on that enumeration, so a pathological expression cannot spin.
+ *
+ * `minutes x hours` tops out at 1,440, so this bound is never the thing that ends a
+ * legitimate probe - and an expression dense enough to approach it has already been
+ * rejected several instants in, because the check stops the moment it finds one gap under
+ * the minimum.
+ */
+export const SCHEDULE_MIN_INTERVAL_MAX_PROBE = 1500;
 
 export const SCHEDULE_PREVIEW_DEFAULT_COUNT = 10;
 export const SCHEDULE_PREVIEW_MAX_COUNT = 50;

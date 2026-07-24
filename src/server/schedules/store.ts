@@ -126,22 +126,45 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
   if (kind === null) return null;
   const agent = readPersistedEnum(AGENT_TYPES, typeof t.agent === "string" ? t.agent : null);
   if (agent === null) return null;
+  // ABSENT and UNREADABLE are different answers, and collapsing them is a real data loss.
+  // Null is a legitimate stored value for both of these - "nobody set a priority" - so a
+  // template that has one at all can only have got it from a build that knew a value this
+  // one does not. Mapping that to null would silently downgrade a schedule written as
+  // `blocker` (or some priority added later) into untriaged work, on every run, for ever.
+  // Absent stays null; present-but-unknown fails the template closed, exactly as an
+  // unknown execution mode does.
+  const priority = readOptionalEnum(TASK_PRIORITIES, t.priority);
+  if (priority === UNREADABLE) return null;
+  const effort = readOptionalEnum(THINKING_LEVELS, t.effort);
+  if (effort === UNREADABLE) return null;
+
   return {
     title: t.title,
     intent: t.intent,
     repoRoot: t.repoRoot,
     kind,
     agent,
-    // Below this line an unreadable value degrades to "nobody set one", which is a real
-    // and harmless answer for all four. Above it, every field is load-bearing - a task
-    // with no intent or no repo is not a task - so a bad value fails the whole template.
-    priority: readPersistedEnum(TASK_PRIORITIES, typeof t.priority === "string" ? t.priority : null),
+    priority,
+    effort,
+    // These two carry no enum: any string is a legitimate model id or label, so there is
+    // no such thing as a value from the future to fail on.
     labels: Array.isArray(t.labels)
       ? normalizeLabels(t.labels.filter((v): v is string => typeof v === "string"))
       : [],
     model: typeof t.model === "string" ? t.model : null,
-    effort: readPersistedEnum(THINKING_LEVELS, typeof t.effort === "string" ? t.effort : null),
   };
+}
+
+/** Distinguishes "the template did not set this" from "it set something we can't read". */
+const UNREADABLE = Symbol("unreadable");
+
+function readOptionalEnum<T extends string>(
+  values: readonly T[],
+  raw: unknown,
+): T | null | typeof UNREADABLE {
+  if (raw === null || raw === undefined) return null;
+  const value = typeof raw === "string" ? readPersistedEnum(values, raw) : null;
+  return value ?? UNREADABLE;
 }
 
 /**
@@ -761,13 +784,26 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
   const d = openDb();
   return inTransaction(d, () => {
     const schedule = d
-      .prepare(`SELECT revision, archived_at FROM mission_schedules WHERE id = ?`)
-      .get(input.scheduleId) as { revision: number; archived_at: number | null } | undefined;
+      .prepare(`SELECT revision, archived_at, enabled FROM mission_schedules WHERE id = ?`)
+      .get(input.scheduleId) as
+      | { revision: number; archived_at: number | null; enabled: number }
+      | undefined;
     // A missing schedule takes the same branch as a changed one: in both cases the row
     // this decision was made about is not the row on disk, and nothing may be written.
     if (!schedule) return { outcome: "schedule_changed" as const };
     if (schedule.archived_at !== null) return { outcome: "schedule_changed" as const };
     if (schedule.revision !== input.scheduleRevision) {
+      return { outcome: "schedule_changed" as const };
+    }
+    // Pause has to be checked HERE, and it is the one guard the revision cannot stand in
+    // for: pausing does not mint a new revision, so a tick that read this schedule as due,
+    // awaited, and came back after the operator hit Pause would otherwise still win its
+    // claim and file work from a schedule the dashboard is showing as stopped.
+    //
+    // Scoped to scheduled claims, because Run now deliberately WORKS while paused - that
+    // is the whole point of a manual trigger - and it mints its own instant rather than
+    // acting on the cursor a pause just cleared.
+    if (input.triggerKind === "scheduled" && schedule.enabled === 0) {
       return { outcome: "schedule_changed" as const };
     }
 

@@ -2,8 +2,9 @@ import { CronExpressionParser } from "cron-parser";
 import {
   SCHEDULE_BETWEEN_MAX,
   SCHEDULE_CRON_FIELD_COUNT,
+  SCHEDULE_MIN_INTERVAL_MAX_PROBE,
   SCHEDULE_MIN_INTERVAL_MS,
-  SCHEDULE_MIN_INTERVAL_PROBE,
+  SCHEDULE_MIN_INTERVAL_SPAN_MS,
   clampPreviewCount,
   cronFieldCount,
   normalizeCronExpression,
@@ -160,14 +161,47 @@ function enumerate(
   }
 }
 
-/** The smallest gap between successive instants in a list, or null under two entries. */
-function smallestGap(instants: number[]): number | null {
-  let min: number | null = null;
-  for (let i = 1; i < instants.length; i++) {
-    const gap = (instants[i] as number) - (instants[i - 1] as number);
-    if (min === null || gap < min) min = gap;
+/**
+ * The smallest gap this cadence ever puts between two runs, and whether it fires at all.
+ *
+ * Enumerates until a whole day has been traversed rather than sampling a fixed number of
+ * instants - see `SCHEDULE_MIN_INTERVAL_SPAN_MS` for why one day is provably every gap a
+ * five-field expression can produce, and for what the measurement says about the sample
+ * this replaced.
+ *
+ * Stops early on the first gap under the minimum, because that is already the answer -
+ * which is what keeps a dense expression from paying for the full traversal.
+ */
+function probeCadence(
+  expression: string,
+  timezone: string,
+  after: number,
+): { fires: boolean; smallestGap: number | null } {
+  try {
+    const it = CronExpressionParser.parse(expression, {
+      tz: timezone,
+      currentDate: new Date(after),
+    });
+    let count = 0;
+    let first: number | null = null;
+    let previous: number | null = null;
+    let smallest: number | null = null;
+    while (count < SCHEDULE_MIN_INTERVAL_MAX_PROBE && it.hasNext()) {
+      const at = it.next().toDate().getTime();
+      count++;
+      if (first === null) first = at;
+      if (previous !== null) {
+        const gap = at - previous;
+        if (smallest === null || gap < smallest) smallest = gap;
+        if (gap < SCHEDULE_MIN_INTERVAL_MS) break;
+      }
+      previous = at;
+      if (at - first > SCHEDULE_MIN_INTERVAL_SPAN_MS) break;
+    }
+    return { fires: count > 0, smallestGap: smallest };
+  } catch {
+    return { fires: false, smallestGap: null };
   }
-  return min;
 }
 
 export const recurrence: RecurrenceEvaluator = {
@@ -195,17 +229,16 @@ export const recurrence: RecurrenceEvaluator = {
       return { ok: false, error: { field: "expression", message } };
     }
 
-    const { instants } = enumerate(expr, zone, at, null, SCHEDULE_MIN_INTERVAL_PROBE);
-    if (instants.length === 0) {
+    const { fires, smallestGap } = probeCadence(expr, zone, at);
+    if (!fires) {
       return {
         ok: false,
         error: { field: "expression", message: "This expression never comes due." },
       };
     }
 
-    const gap = smallestGap(instants);
-    if (gap !== null && gap < SCHEDULE_MIN_INTERVAL_MS) {
-      const minutes = Math.max(1, Math.round(gap / 60000));
+    if (smallestGap !== null && smallestGap < SCHEDULE_MIN_INTERVAL_MS) {
+      const minutes = Math.max(1, Math.round(smallestGap / 60000));
       return {
         ok: false,
         error: {

@@ -136,6 +136,49 @@ test("a sub-hour gap that is not the FIRST gap is still caught", () => {
   assert.match(!r.ok ? r.error.message : "", /every 5 minutes/);
 });
 
+test("the short gap is found wherever in the day it sits, and whatever the anchor", () => {
+  // The probe spans a whole day rather than sampling N instants, so "no short gap in the
+  // first N" can never be reported as "no short gap". Each of these puts the offending
+  // pair somewhere a fixed-count sample looks like it could miss: late in a dense day,
+  // straddling midnight, or on the far side of an anchor that landed mid-pattern. All of
+  // them were in fact caught by the five-instant sample too - a short pair recurs every
+  // selected hour, so it surfaces immediately - which is the point of pinning them: they
+  // are the cases someone will reach for when they next want to shrink this window.
+  const cases: Array<[string, string]> = [
+    ["0,10,20,30,40,45 8 * * *", "2026-07-01T08:41:00Z"], // anchor past all but the last
+    ["0,45 8 * * *", "2026-07-01T08:10:00Z"], // 45-minute pair, anchored between them
+    ["0,59 0,23 * * *", "2026-07-01T01:00:00Z"], // one minute apart, across midnight
+    ["50,10 8,9 * * *", "2026-07-01T00:00:00Z"], // adjacent hours, 20 minutes apart
+    ["0,30 0 1 * *", "2026-07-15T00:00:00Z"], // monthly, and the pair is a month away
+  ];
+  for (const [expression, anchor] of cases) {
+    const r = recurrence.validate(expression, "UTC", Date.parse(anchor));
+    assert.equal(r.ok, false, `${expression} from ${anchor} must be refused`);
+  }
+});
+
+test("a legitimately sparse cadence is not rejected by the wider probe", () => {
+  // The other half: widening the window must not start refusing schedules that are fine.
+  // Yearly is the extreme - two instants a year apart end the probe immediately.
+  for (const expression of ["0 8 * * *", "0 9 * * 1", "0 6 1 * *", "0 8 1 1 *", "0 * * * *"]) {
+    assert.ok(
+      recurrence.validate(expression, "UTC", Date.parse("2026-07-01T00:00:00Z")).ok,
+      expression,
+    );
+  }
+});
+
+test("the densest possible expression is refused without walking the whole day", () => {
+  // Every minute of every hour is 1,440 instants. The probe stops at the first short gap,
+  // so this is two instants of work, not 1,440 - the early exit is what keeps the wider
+  // window affordable.
+  const started = process.hrtime.bigint();
+  const r = recurrence.validate("* * * * *", "UTC", Date.parse("2026-07-01T00:00:00Z"));
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.equal(r.ok, false);
+  assert.ok(elapsedMs < 250, `expected an early exit, took ${elapsedMs.toFixed(1)}ms`);
+});
+
 test("an expression that never comes due is refused rather than returning nothing", () => {
   const r = recurrence.validate("0 0 30 2 *", "UTC");
   assert.equal(r.ok, false);

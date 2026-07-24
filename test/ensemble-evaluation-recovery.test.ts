@@ -21,6 +21,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
 const { bestOfNStrategy } = await import("../src/server/ensembles/strategies/best-of-n.ts");
+const { ensemblePayload } = await import("../src/shared/ensemble.ts");
 const { FakeGateway, ARTIFACT_ADAPTERS, fakeSha, runInsert } = await import("./ensemble-fixture.ts");
 type CompiledEnsemblePlan = import("../src/shared/ensemble.ts").CompiledEnsemblePlan;
 
@@ -187,6 +188,83 @@ test("a comparison interrupted by a restart recovers and retries with the same i
   // No member Task was reaped by the recovery, and every artifact is still ready.
   assert.deepEqual(gateway.cancelled, []);
   assert.ok(store.listArtifacts(run.id).every((a) => a.status === "ready"));
+});
+
+test("recovery completes a running review stage from its succeeded evaluation", async () => {
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const engine1 = makeEngine(store, gateway, () => new Promise<string>(() => {}));
+  const run = makeRun(store, bestOfNPlan(2));
+  await submitMembers(engine1, gateway, store, run.id);
+  await waitFor(() => store.listLlmCalls(run.id).some((call) => call.state === "running"));
+
+  const evaluation = store.listEvaluations(run.id)[0]!;
+  const call = store.listLlmCalls(run.id)[0]!;
+  const [recommendedArtifactId, otherArtifactId] = evaluation.subjectArtifactIds;
+  assert.ok(recommendedArtifactId && otherArtifactId);
+  const finishedAt = call.startedAt + 10;
+  store.finishLlmCall(call.id, ["running"], "succeeded", {
+    finishedAt,
+    durationMs: 10,
+    inputBytes: 100,
+    outputBytes: 100,
+    costUsd: null,
+    errorCode: null,
+  });
+  store.finishEvaluation(
+    evaluation.id,
+    ["running"],
+    "succeeded",
+    {
+      result: ensemblePayload({
+        version: 1,
+        recommendedArtifactId,
+        comparison: "compared",
+        caveats: [],
+        scorecards: [
+          {
+            artifactId: recommendedArtifactId,
+            score: 90,
+            rank: 1,
+            strengths: ["a"],
+            risks: ["b"],
+            rationale: "r",
+            confidence: 0.8,
+          },
+          {
+            artifactId: otherArtifactId,
+            score: 80,
+            rank: 2,
+            strengths: ["a"],
+            risks: ["b"],
+            rationale: "r",
+            confidence: 0.7,
+          },
+        ],
+        evidenceTruncated: false,
+      }),
+    },
+    finishedAt,
+  );
+
+  let modelCalls = 0;
+  const engine2 = makeEngine(store, gateway, async (prompt) => {
+    modelCalls += 1;
+    return validResponse(prompt);
+  });
+  await engine2.recover(run.id);
+
+  assert.equal(store.getRun(run.id)!.status, "awaiting_decision");
+  assert.equal(modelCalls, 0, "the completed comparison was not run again");
+  assert.equal(store.listEvaluations(run.id).length, 1);
+  assert.equal(store.listEvaluations(run.id)[0]!.status, "succeeded");
+  assert.equal(store.listLlmCalls(run.id)[0]!.state, "succeeded");
+  const stageAttempt = store.listStageAttempts(run.id).find((attempt) => attempt.driverKind === "review")!;
+  assert.equal(stageAttempt.status, "succeeded");
+  assert.deepEqual(stageAttempt.output, {
+    evaluationId: evaluation.id,
+    resultLabel: "recommends Submission A",
+  });
 });
 
 test("a comparison that already completed is left untouched by recovery", async () => {

@@ -693,6 +693,33 @@ export class EnsembleEngine {
         }
       }
 
+      const evaluations = this.store.listEvaluations(runId);
+      for (const stageAttempt of reconciledState.stageAttempts) {
+        if (stageAttempt.driverKind !== "review" || stageAttempt.status !== "running") continue;
+        const succeeded = evaluations.find(
+          (evaluation) =>
+            evaluation.stageAttemptId === stageAttempt.id &&
+            evaluation.status === "succeeded",
+        );
+        if (!succeeded) continue;
+        const driver = stageAttempt.driverKey ? reviewDriverFor(stageAttempt.driverKey) : null;
+        const resultLabel =
+          driver && succeeded.result
+            ? driver.resultLabel({
+                result: succeeded.result,
+                subjectArtifactIds: succeeded.subjectArtifactIds,
+              })
+            : null;
+        this.completeReviewStage(
+          runId,
+          stageAttempt.stageId,
+          stageAttempt.id,
+          succeeded.id,
+          resultLabel,
+          now,
+        );
+      }
+
       const interrupted = this.interruptRunningReviews(
         runId,
         "the daemon exited while this comparison was in flight",
@@ -1324,21 +1351,14 @@ export class EnsembleEngine {
           `review_runner_unknown:${stageAttemptId}`,
         );
       }
-      const finished = this.store.finishStageAttempt(
+      this.completeReviewStage(
+        runId,
+        stageId,
         stageAttemptId,
-        ["running"],
-        "succeeded",
-        { output: { evaluationId: outcome.evaluationId, resultLabel: outcome.resultLabel } as EnsembleJson },
+        outcome.evaluationId,
+        outcome.resultLabel,
         now,
       );
-      if (finished.ok) {
-        this.event(
-          runId,
-          "review_succeeded",
-          { stageId, evaluationId: outcome.evaluationId, resultLabel: outcome.resultLabel },
-          `review_succeeded:${stageAttemptId}`,
-        );
-      }
       await this.advanceLocked(runId);
       this.publish(runId);
       return;
@@ -1851,6 +1871,31 @@ export class EnsembleEngine {
     this.clearDeadline(runId);
     this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "failed", { error: reason, completedAt: now }, now);
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
+  }
+
+  private completeReviewStage(
+    runId: string,
+    stageId: string,
+    stageAttemptId: string,
+    evaluationId: string,
+    resultLabel: string | null,
+    now: number,
+  ): boolean {
+    const finished = this.store.finishStageAttempt(
+      stageAttemptId,
+      ["running"],
+      "succeeded",
+      { output: { evaluationId, resultLabel } as EnsembleJson },
+      now,
+    );
+    if (!finished.ok) return false;
+    this.event(
+      runId,
+      "review_succeeded",
+      { stageId, evaluationId, resultLabel },
+      `review_succeeded:${stageAttemptId}`,
+    );
+    return true;
   }
 
   private interruptRunningReviews(

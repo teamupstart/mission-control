@@ -164,5 +164,9 @@ export type ReviewOutcome =
 /** A versioned review driver, registered by the exact `driverKey` a compiled plan may name. */
 export interface ReviewDriver {
   driverKey: EnsembleDriverKey;
+  resultLabel(input: {
+    result: EnsemblePayloadEnvelope;
+    subjectArtifactIds: string[];
+  }): string | null;
   run(context: ReviewDriverContext): Promise<ReviewOutcome>;
 }

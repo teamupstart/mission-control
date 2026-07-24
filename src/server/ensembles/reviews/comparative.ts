@@ -4,12 +4,14 @@ import {
   ENSEMBLE_LIMITS,
   type EnsembleEvaluatorGuidance,
   type EnsembleJson,
+  type EnsemblePayloadEnvelope,
 } from "@shared/ensemble.ts";
 import {
   BEST_OF_N_BUILTIN_RUBRIC,
   BEST_OF_N_BUILTIN_RUBRIC_TEXT,
   BEST_OF_N_COMPARISON_VERSION,
   BestOfNComparisonResultSchema,
+  parseBestOfNComparison,
   type BestOfNComparison,
   type BestOfNComparisonResult,
   type BestOfNScorecard,
@@ -106,6 +108,17 @@ function observedForPrompt(json: EnsembleJson): { observed: Record<string, numbe
 /** Whether a subject has anything a fair comparison could weigh, rather than metadata alone. */
 function hasUsableEvidence(materialFilesChanged: number, observedFilesChanged: number, reported: Reported): boolean {
   return materialFilesChanged > 0 || observedFilesChanged > 0 || reported.summary.trim() !== "";
+}
+
+function resultLabel(input: {
+  result: EnsemblePayloadEnvelope;
+  subjectArtifactIds: string[];
+}): string | null {
+  const comparison = parseBestOfNComparison(input.result.body);
+  if (!comparison) return null;
+  const index = input.subjectArtifactIds.indexOf(comparison.recommendedArtifactId);
+  if (index < 0) return null;
+  return `recommends Submission ${SUBJECT_LETTERS[index] ?? String(index + 1)}`;
 }
 
 function resolveGuidance(
@@ -391,17 +404,18 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
     return { ok: false, kind: "invalid_output", detail: validated.reason, evaluationId, execution };
   }
 
-  const recommendedLabel = artifactToLabel.get(validated.comparison.recommendedArtifactId) ?? "a submission";
+  const persistedResult = ensemblePayload(validated.comparison as unknown as EnsembleJson);
   return {
     ok: true,
     evaluationId,
     execution,
-    result: ensemblePayload(validated.comparison as unknown as EnsembleJson),
-    resultLabel: `recommends ${recommendedLabel}`,
+    result: persistedResult,
+    resultLabel: resultLabel({ result: persistedResult, subjectArtifactIds }) ?? "recommends a submission",
   };
 }
 
 export const comparativeReviewDriver: ReviewDriver = {
   driverKey: "comparative_review@1",
+  resultLabel,
   run,
 };

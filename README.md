@@ -2136,8 +2136,9 @@ requests**, **on by default**) closes that gap: it nudges the parked session bac
 own PR to **resolve the Inspector's review comments and get a failing CI green**, and re-nudges
 each time a new round of feedback lands, until the PR is clean.
 
-It applies to any parked session on an open PR, whether the PR came from **Straight to PR**,
-an automatic **no-mistakes** wrap-up, or one you shipped by hand.
+It applies to parked sessions on harnesses Foreman can reliably drive - currently Claude,
+and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
+**Straight to PR**, an automatic **no-mistakes** wrap-up, or one you shipped by hand.
 
 The nudge is typed into the session's pane, so it carries the usual gates and one more:
 

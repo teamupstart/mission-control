@@ -56,6 +56,7 @@ function row(over: Partial<InspectorInspection> = {}): InspectorInspection {
     adoptedAt: 0,
     updatedAt: 0,
     openFindings: 0,
+    postedOpenFindings: 0,
     resolvedFindings: 0,
     ...over,
   };

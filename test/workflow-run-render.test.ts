@@ -454,6 +454,7 @@ test("Inspector final gate renders provenance, heads, policies, findings, action
         adoptedAt: 2,
         updatedAt: 9,
         openFindings: 1,
+        postedOpenFindings: 1,
         resolvedFindings: 0,
       },
       findings: [{

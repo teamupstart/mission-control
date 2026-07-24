@@ -4195,6 +4195,7 @@ export function loadInspectorInspections(limit?: number): InspectorInspection[] 
     .prepare(
       `SELECT p.*,
               COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'open' THEN 1 ELSE 0 END), 0) AS posted_open_findings,
               COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
          FROM inspector_prs p
          LEFT JOIN inspector_comments c ON c.pr_key = p.key
@@ -4204,11 +4205,13 @@ export function loadInspectorInspections(limit?: number): InspectorInspection[] 
     )
     .all(limit ?? -1) as unknown as (InspectorPrRow & {
     open_findings: number;
+    posted_open_findings: number;
     resolved_findings: number;
   })[];
   return rows.map((r) => ({
     ...rowToInspectorPr(r),
     openFindings: Number(r.open_findings),
+    postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),
   }));
 }

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   buildPayload,
   decideReviewFollowup,
-  reviewFollowupSignature,
 } from "../src/server/foreman/review-followup.ts";
 import type { ReviewFollowupInput } from "../src/server/foreman/review-followup.ts";
 import type { InspectorSummary, Session, SessionQueueSummary } from "../src/shared/types.ts";
@@ -29,11 +28,13 @@ const PANE: TerminalHandle = {
 };
 
 function inspector(over: Partial<InspectorSummary> = {}): InspectorSummary {
+  const open = over.open ?? 0;
   return {
     prKey: "owner/repo#7",
     url: "https://github.com/owner/repo/pull/7",
     mode: "live",
-    open: 0,
+    open,
+    postedOpen: over.postedOpen ?? open,
     round: 1,
     lastReviewedAt: NOW - 60_000,
     failed: false,
@@ -113,7 +114,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     session,
     bucket: "idle",
     mayActLive: true,
-    lastSig: null,
+    marker: null,
     cfg: { enabled: true, settleMs: SETTLE },
     now: NOW,
     ...over,
@@ -166,9 +167,18 @@ test("a clean open PR - no findings, CI not red - is left alone", () => {
 });
 
 test("dry-run Inspector findings are previews, not comments on the PR, so they do not fire", () => {
-  // open > 0 but mode dry-run: the findings are drafted, never posted - pointing the agent
+  // open > 0 but postedOpen = 0: the findings are drafted, never posted - pointing the agent
   // at "the review comments" would point it at comments that are not there.
-  const d = decide({ session: mkSession({ inspector: inspector({ open: 4, mode: "dry-run" }) }) });
+  const d = decide({
+    session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "dry-run" }) }),
+  });
+  assert.deepEqual(d, { kind: "skip", why: "no open review comments or failing CI" });
+});
+
+test("unposted findings do not fire even when the current Inspector mode is live", () => {
+  const d = decide({
+    session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "live" }) }),
+  });
   assert.deepEqual(d, { kind: "skip", why: "no open review comments or failing CI" });
 });
 
@@ -237,12 +247,75 @@ test("the same feedback state, already nudged, stays quiet", () => {
   const first = decide({ session });
   assert.equal(first.kind, "nudge");
   if (first.kind !== "nudge") return;
-  // Feed the stamped signature back: nothing has changed, so no second nudge.
-  const again = decide({ session, lastSig: first.sig });
+  const again = decide({ session, marker: first.marker });
   assert.deepEqual(again, { kind: "skip", why: "already nudged this round of feedback" });
 });
 
-test("a new Inspector round re-arms the nudge, even for the same open count", () => {
+test("CI clearing does not re-nudge unchanged findings", () => {
+  const failing = mkSession({
+    inspector: inspector({ open: 2, round: 1 }),
+    prChecks: "failing",
+  });
+  const first = decide({ session: failing });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  const cleared = decide({
+    session: mkSession({
+      inspector: inspector({ open: 2, round: 1 }),
+      prChecks: "passing",
+    }),
+    marker: first.marker,
+  });
+  assert.equal(cleared.kind, "skip");
+  if (cleared.kind !== "skip") return;
+  assert.equal(cleared.why, "already nudged this round of feedback");
+  assert.deepEqual(cleared.marker, { findingsRound: 1, ciFailing: false });
+});
+
+test("CI passing then failing re-arms a new CI episode", () => {
+  const first = decide({ session: mkSession({ prChecks: "failing" }) });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  const passing = decide({
+    session: mkSession({ prChecks: "passing" }),
+    marker: first.marker,
+  });
+  assert.equal(passing.kind, "skip");
+  if (passing.kind !== "skip") return;
+  if (!passing.marker) return assert.fail("passing CI should re-arm the marker");
+
+  const failingAgain = decide({
+    session: mkSession({ prChecks: "failing" }),
+    marker: passing.marker,
+  });
+  assert.equal(failingAgain.kind, "nudge");
+  if (failingAgain.kind !== "nudge") return;
+  assert.deepEqual(failingAgain.signal, { findingsRound: null, ciFailing: true });
+});
+
+test("a nudge only names feedback newly actionable in this episode", () => {
+  const findings = mkSession({ inspector: inspector({ open: 1, round: 1 }) });
+  const first = decide({ session: findings });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  const ciJoined = decide({
+    session: mkSession({
+      inspector: inspector({ open: 1, round: 1 }),
+      prChecks: "failing",
+    }),
+    marker: first.marker,
+  });
+  assert.equal(ciJoined.kind, "nudge");
+  if (ciJoined.kind !== "nudge") return;
+  assert.deepEqual(ciJoined.signal, { findingsRound: null, ciFailing: true });
+  assert.doesNotMatch(ciJoined.payload, /review comment/);
+  assert.match(ciJoined.payload, /CI/);
+});
+
+test("a new Inspector round with posted findings re-arms the nudge", () => {
   const round1 = mkSession({ inspector: inspector({ open: 2, round: 1 }) });
   const d1 = decide({ session: round1 });
   assert.equal(d1.kind, "nudge");
@@ -250,19 +323,10 @@ test("a new Inspector round re-arms the nudge, even for the same open count", ()
 
   // Agent pushed, the Inspector reviewed again and still found two things: new round.
   const round2 = mkSession({ inspector: inspector({ open: 2, round: 2 }) });
-  const d2 = decide({ session: round2, lastSig: d1.sig });
+  const d2 = decide({ session: round2, marker: d1.marker });
   assert.equal(d2.kind, "nudge");
   if (d2.kind !== "nudge") return;
-  assert.notEqual(d2.sig, d1.sig);
-});
-
-test("the signature turns on the PR, the round and which feedback is open", () => {
-  const base = mkSession({ inspector: inspector({ open: 1, round: 3 }), prChecks: "failing" });
-  const sig = reviewFollowupSignature(base, { findings: true, ciFailing: true });
-  assert.equal(sig, "owner/repo#7:r3:FC");
-  // The head sha is deliberately NOT in it - a push changes the head before the Inspector
-  // re-reviews, and keying on it would re-nudge a session that just pushed and is waiting.
-  assert.equal(reviewFollowupSignature(base, { findings: true, ciFailing: false }), "owner/repo#7:r3:F-");
+  assert.deepEqual(d2.signal, { findingsRound: 2, ciFailing: false });
 });
 
 // ---- the payload ----

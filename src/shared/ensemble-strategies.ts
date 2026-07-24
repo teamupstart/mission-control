@@ -49,7 +49,7 @@ export const ENSEMBLE_STRATEGY_INFO: Record<EnsembleStrategyId, EnsembleStrategy
   },
 };
 
-/** The strategies an operator may actually create right now, in declaration order. */
+/** The strategies this build can compile for in-process creation, in declaration order. */
 export function creatableStrategies(): EnsembleStrategyInfo[] {
   return ENSEMBLE_STRATEGY_IDS.map((id) => ENSEMBLE_STRATEGY_INFO[id]).filter(
     (info) => info.enabled,

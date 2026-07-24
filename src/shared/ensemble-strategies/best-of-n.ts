@@ -11,9 +11,10 @@ import type { EnsembleStrategyCapabilities, StrategyFormSpec } from "./types.ts"
  * one tool-less comparative review, and a human-confirmed promotion.
  *
  * This file is the BROWSER-safe half - the input schema, its bounds, the form the dashboard
- * renders and the launch estimate it prints before anybody confirms. Compilation into a
- * generic plan lives in `src/server/ensembles/strategies/best-of-n.ts`; nothing here knows
- * what a stage or a driver is.
+ * can render in a later phase and the launch estimate it can print before anybody confirms.
+ * Compilation into a generic plan lives in
+ * `src/server/ensembles/strategies/best-of-n.ts`; nothing here knows what a stage or a driver
+ * is.
  *
  * The bounds are product decisions, not tuning knobs: fewer than two candidates is not a
  * comparison, and more than five is uncontrolled local resource use for a comparison that

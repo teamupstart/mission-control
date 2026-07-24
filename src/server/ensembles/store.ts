@@ -400,9 +400,9 @@ function readJsonColumn<T>(
  *
  * **Nothing in here throws, and that is the point.** `EnsembleManager` builds the registry's
  * summaries during daemon construction, so a single unreadable run row that threw would stop
- * the daemon from starting - leaving the operator no dashboard from which to delete the row
- * that is stopping it. One bad row costs THAT run its runnability and nothing else, the same
- * stance `parseTemplate` takes in the schedule store.
+ * the daemon from starting - leaving no running control plane or later cleanup surface for
+ * the row that is stopping it. One bad row costs THAT run its runnability and nothing else,
+ * the same stance `parseTemplate` takes in the schedule store.
  *
  * Malformed child row shapes and JSON deliberately keep throwing (see `parseJson`). Unknown
  * child enum values degrade to null for version-skew tolerance. A corrupt artifact locator or

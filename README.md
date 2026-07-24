@@ -1299,7 +1299,7 @@ submitted, and you confirm the winner.
 
 **Nothing is operable yet.** What has landed is the durable contract the rest is built on:
 the shared vocabulary, a versioned strategy descriptor and compiler, the Best-of-N compiler,
-nine SQLite tables with a daemon-owned store, and a compact projection on the existing
+the daemon-owned SQLite store, and a compact projection on the existing
 [live channel](#how-it-works). There is no create route, no MCP tool, no engine and no UI,
 so with no way to create an ensemble the tables stay empty and the product behaves exactly
 as before. The plan is
@@ -1309,17 +1309,19 @@ Four decisions are worth knowing now, because everything later is built on them:
 
 - **Every member is an ordinary task.** Ensembles add no second dispatcher, worktree
   provisioner or cancellation path; the group owns what a task cannot own, and nothing else.
-  A member task carries its ensemble on its existing task chip, so cards, console and board
-  can all show which candidate a session is.
+  The member link nests inside the task summary a session already carries instead of adding
+  another field to the session itself. The dashboard does not present that link yet; that
+  arrives with the later UI phase.
 - **A model recommends; it never promotes.** The comparison is advisory and runs without
   tools. Anything destructive - resetting a branch to a chosen snapshot, reaping the losing
   worktrees - waits for an explicit human confirmation, and the compiled plan carries that
   requirement as a type the schema will not let a strategy opt out of.
 - **A run executes the plan it was created with.** Its strategy, version and compiled plan
   are snapshotted at creation, so a strategy whose defaults change later cannot silently
-  re-aim work that is already running. A run written by a *newer* build still loads and can
-  still be cancelled - it reports which piece this build does not have, and refuses to run
-  rather than substituting something adjacent.
+  re-aim work that is already running. A run written by a *newer* build still loads and
+  remains covered by the generic cancel contract, though this phase exposes no action route.
+  It reports which piece this build does not have and refuses to run rather than substituting
+  something adjacent.
 - **Members will not push or open pull requests.** Publishing happens after a winner is
   chosen, through the normal [shipping](#shipping-yolo-mode) flow, so an ensemble never
   leaves N branches and N pull requests behind. Note the isolation between members is

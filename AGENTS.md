@@ -666,30 +666,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `task-source-ingest.test.ts`, `github-issues-map.test.ts`, `task-sources-panel.test.ts`.
 - **Ensemble strategies (how a GROUP of agents is run)**: the same purity split again.
   `ENSEMBLE_STRATEGY_INFO` (`@shared/ensemble-strategies.ts`) holds what the dashboard can
-  answer in the browser - label, blurb, explanation, capabilities, config schema, a bounded
-  `StrategyFormSpec`, and a pure launch estimate - and `ENSEMBLE_STRATEGIES`
-  (`src/server/ensembles/strategies/index.ts`) spreads that in and adds `compile`, the one
-  call that turns a config into a durable plan. Both are `Record<EnsembleStrategyId, …>`, so
-  an id appended to `ENSEMBLE_STRATEGY_IDS` does not compile until something can validate and
-  compile it. **A strategy contributes validation, compilation and presentation - and gets
-  no persistence or execution.** The generic engine owns the tables, the transactions, the
-  barriers, the recovery and the events, and it dispatches on a compiled plan's stage kinds
-  and driver keys; nothing in it may branch on a strategy id. A strategy that needs a column,
-  a route, a `ServerEvent`, a session field or a layout mark is evidence of a new PRIMITIVE,
-  not a new strategy. **A compiled plan is immutable for the life of its run**: recovery
-  executes the stored snapshot, never a fresh compilation, because a compiler whose defaults
-  moved would silently re-aim a run that is already half-launched - retries create attempts,
-  not plan rewrites. `compile` is pure (no SQLite, no process, no checkout, no runtime id), so
-  the impure parts are lifted into `StrategyCompileContext`: a Persona is resolved to an exact
-  revision by the manager, and a descriptor handed nothing REFUSES rather than substituting
-  its built-in rubric. **What this build can CREATE and what it can LOAD are deliberately
-  different sets**: `EnsembleStrategyId` gates creation, while a persisted plan carries an
-  opaque `strategyKey` / `driverKey` (`id@version`), so a run written by a newer build still
-  loads, still renders, still cancels, and is refused by `ensembleIsRunnable` -
-  `missingDriverKeys` is a startup health error, never permission to invoke the latest
-  version. `defineStrategy` erases the config type so the catalog is one homogeneous record;
-  `StrategyCatalog` is generic over its key so a test can inject a descriptor without
-  appending a test-only id to the production tuple. Test:
+  answer in the browser, and `ENSEMBLE_STRATEGIES`
+  (`src/server/ensembles/strategies/index.ts`) adds the pure compiler that turns config into
+  a durable plan. Both are exhaustive `Record<EnsembleStrategyId, …>` registries, so a new id
+  cannot compile until both halves exist. The authoritative extension contract lives beside
+  `ENSEMBLE_STRATEGIES`; read it before changing strategy ids, driver keys, compilation,
+  persistence, or execution rather than duplicating that contract here. Test:
   `ensemble-strategy-catalog.test.ts`, `ensemble-best-of-n.test.ts`,
   `ensemble-contracts.test.ts`, `ensemble-store.test.ts`, `ensemble-db.test.ts`,
   `ensemble-sse.test.ts`.

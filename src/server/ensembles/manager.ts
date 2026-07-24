@@ -32,9 +32,10 @@ import {
  *
  * This is the whole daemon-facing boundary for ensembles as of this phase. It can compile a
  * request into an immutable plan and persist the run and its roster, and it can publish the
- * compact summaries the dashboard receives. It cannot dispatch a task, provision a worktree,
- * capture an artifact, run an evaluator or finalize anything: those are later phases, and
- * NOTHING routes to `create` yet, so a half-built orchestration cannot be reached by a user.
+ * compact summaries the browser's live state receives. It cannot dispatch a task, provision
+ * a worktree, capture an artifact, run an evaluator or finalize anything: those are later
+ * phases, and NOTHING routes to `create` yet, so a half-built orchestration cannot be reached
+ * by a user.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog
@@ -142,8 +143,9 @@ export class EnsembleManager {
    *
    * The order matters and is the invariant the plan states: the run, its immutable strategy
    * snapshot and its whole roster are durable BEFORE anything could be dispatched. A crash
-   * after this point leaves rows an operator can see and cancel; a crash before it leaves
-   * nothing at all. There is no third outcome where agents exist and the group does not.
+   * after this point leaves rows a later action surface can expose and cancel; a crash before
+   * it leaves nothing at all. There is no third outcome where agents exist and the group
+   * does not.
    */
   create(input: EnsembleCreateInput, now = Date.now()): EnsembleCreateOutcome {
     const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, input.sourceKind);

@@ -109,8 +109,8 @@ export interface EnsembleStrategyInfo<C = unknown> {
   /**
    * What creating this would start, from a raw config blob. Null when the blob is not
    * valid for this strategy - a form mid-edit is the ordinary case, and an estimate
-   * invented from an invalid config is worse than none, because it is the number the
-   * operator reads before pressing a button that launches local agents.
+   * invented from an invalid config is worse than none, because this is the number the
+   * later creation UI will show before launching local agents.
    */
   estimate(raw: unknown): EnsembleLaunchEstimate | null;
   /**

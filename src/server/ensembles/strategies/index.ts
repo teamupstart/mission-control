@@ -53,7 +53,7 @@ export function strategyFor(id: string): StrategyDescriptor | null {
   return descriptorFor(ensembleStrategyCatalog, id);
 }
 
-/** Every strategy an operator may create right now, in declaration order. */
+/** Every strategy this build can compile for in-process creation, in declaration order. */
 export function creatableStrategyDescriptors(): StrategyDescriptor[] {
   return ENSEMBLE_STRATEGY_IDS.map((id) => ENSEMBLE_STRATEGIES[id]).filter((s) => s.enabled);
 }

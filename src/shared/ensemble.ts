@@ -11,7 +11,7 @@ import type { LlmRunnerId } from "./llm.ts";
  * judge, diff or winner, because a tournament, a critique round and a synthesis all have to
  * persist through these same nouns.
  *
- * No `node:` imports reach this file and none may: the dashboard renders every type here,
+ * No `node:` imports reach this file and none may: the dashboard consumes these contracts,
  * so one `node:` import in the module graph takes the web bundle down. Compilation,
  * persistence and execution live under `src/server/ensembles/`.
  *
@@ -34,7 +34,8 @@ export const ENSEMBLE_STRATEGY_IDS = ["best_of_n"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
- * Who asked for an ensemble. Only `manual` exists: an operator pressing Create.
+ * Who asked for an ensemble. Only `manual` exists: operator-originated creation, currently
+ * reachable only through the in-process manager.
  *
  * Workflow and Foreman are deliberately absent rather than reserved - a source id nothing
  * can produce is a value a reader has to handle and a test cannot reach. Append one when a
@@ -489,7 +490,7 @@ export interface CompiledEnsemblePlan {
   stages: EnsembleStageSpec[];
 }
 
-/** What the dashboard tells an operator they are about to start, before they confirm. */
+/** What the later creation UI can tell an operator before they confirm. */
 export interface EnsembleLaunchEstimate {
   /** Members launched immediately. */
   initialMembers: number;
@@ -821,8 +822,8 @@ export interface EnsembleRunDetail {
  *
  * On the TASK summary rather than on `Session`, deliberately: `Session.task` is already
  * compared structurally by `byJson`, so this needs no new `SESSION_FIELD_COMPARATORS`
- * entry and adds no top-level denormalized session state. Bounded to what a card draws -
- * anything richer is a fetch against the run detail.
+ * entry and adds no top-level denormalized session state. Bounded to what the later session
+ * UI needs - anything richer is a fetch against the run detail.
  */
 export interface TaskEnsembleLink {
   runId: string;
@@ -831,7 +832,7 @@ export interface TaskEnsembleLink {
   memberId: string;
   ordinal: number;
   wave: number;
-  /** The member's compiled role key, which is what a card labels it by. */
+  /** The member's compiled role key, intended as its compact display label. */
   role: string;
   launchedMembers: number;
   maxMembers: number;

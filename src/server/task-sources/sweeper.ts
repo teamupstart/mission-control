@@ -189,7 +189,16 @@ function due(inst: TaskSourceInstance, now: number): boolean {
  * a network round trip on somebody else's API, and nothing here is latency-sensitive -
  * the whole feature is measured in fifteen-minute intervals.
  */
-export function startTaskSourceSweeper(tasks: TaskManager): () => void {
+export function startTaskSourceSweeper(
+  tasks: TaskManager,
+  /**
+   * Called after each sweep the loop runs, so the caller can push the settings status the
+   * dots read (a sweep records or clears `lastError`, which is the red dot's fact). Passed
+   * in rather than reached for because this module never touches the registry or the DB -
+   * it files backlog rows and stops there.
+   */
+  onSwept?: () => void,
+): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -208,6 +217,10 @@ export function startTaskSourceSweeper(tasks: TaskManager): () => void {
           await sweepOnce(inst, tasks);
         } catch (err) {
           console.error(`[task-source] ${inst.id} sweep failed:`, err);
+        } finally {
+          // Fires whether the sweep filed, failed, or refused: each outcome sets this
+          // source's `lastError` to a value or null, so the failing count may have moved.
+          onSwept?.();
         }
       }
     } catch (err) {

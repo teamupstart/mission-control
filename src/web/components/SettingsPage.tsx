@@ -20,6 +20,8 @@ import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
+import type { SettingsStatus } from "@shared/types.ts";
+import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_GROUPS,
@@ -28,6 +30,7 @@ import {
   settingsCategory,
   type SettingsCategoryId,
 } from "../lib/settings-registry.ts";
+import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** Stable per-tab id, so the pane can name its tab as its `aria-labelledby` label. */
@@ -48,6 +51,48 @@ function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.J
     <Tooltip label={hint}>
       <span className={`settings-scope settings-scope-${scope}`}>{label}</span>
     </Tooltip>
+  );
+}
+
+/** What one rail dot means, for the title and screen-reader label the colour alone can't. */
+function dotLabel(tone: SettingsDotTone, status: SettingsStatus | null): string {
+  switch (tone) {
+    case "live":
+      return "Inspector is live - reviews post to GitHub";
+    case "armed":
+      return "YOLO mode is armed - clean pull requests may merge themselves";
+    case "failing": {
+      const n = status?.taskSources.failing ?? 0;
+      return `${n} task source${n === 1 ? "" : "s"} failed their last sweep`;
+    }
+    case "foreman":
+      return "Foreman is on";
+  }
+}
+
+/**
+ * The status dot at a rail item's trailing edge, or nothing when it has nothing to flag.
+ *
+ * Colour alone is not a signal a screen reader can hear, so `role="img"` plus an
+ * `aria-label` names what it flags - which also folds the status into the tab's accessible
+ * name ("Inspector, Inspector is live ..."). No native `title`: the house rule is one
+ * tooltip mechanism, and this dot lives inside a button already carrying the category's
+ * hover blurb, so a second bubble here would be a theme the stylesheet does not reach.
+ */
+function RailDot({
+  tone,
+  status,
+}: {
+  tone: SettingsDotTone | null;
+  status: SettingsStatus | null;
+}): React.JSX.Element | null {
+  if (!tone) return null;
+  return (
+    <span
+      className={`settings-dot settings-dot-${tone}`}
+      role="img"
+      aria-label={dotLabel(tone, status)}
+    />
   );
 }
 
@@ -82,6 +127,7 @@ export function SettingsPage({
   llm,
   layout,
   onLayoutChange,
+  settingsStatus,
 }: {
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
@@ -110,6 +156,13 @@ export function SettingsPage({
    */
   layout: LayoutMode;
   onLayoutChange: (mode: LayoutMode) => void;
+  /**
+   * The subsystem status the rail dots read (Inspector live, YOLO armed, failing task
+   * sources), from `MissionState` over SSE. Null before the first snapshot - "unknown",
+   * so the affected dots stay off rather than claiming an all-clear. The Foreman dot does
+   * NOT come from here: it derives from the App-owned `foreman` prop above.
+   */
+  settingsStatus: SettingsStatus | null;
 }): React.JSX.Element {
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
@@ -164,6 +217,20 @@ export function SettingsPage({
       el.classList.remove("settings-flash");
     };
   }, [flashNonce, category]);
+
+  // Inputs to the rail dots (Phase 4). Foreman is App-owned, not in the status payload. The
+  // trust blind spot is a merge-without-review gap - a repo YOLO may merge that the Inspector
+  // is not allowlisted to review - computed from the two grant lists the page already holds,
+  // through the same `repoAllowlisted` predicate the daemon gates on so the dot cannot mean
+  // something different from the panels. It feeds the trust dot, now that Phase 2 has added
+  // the `trust` category to the registry the rail draws from.
+  const foremanEnabled = !!foreman.config?.enabled;
+  const inspectorAllow = inspector.config?.repoAllowlist ?? null;
+  const shippingAllow = shipping.config?.repoAllowlist ?? null;
+  const trustBlindSpot =
+    inspectorAllow !== null &&
+    shippingAllow !== null &&
+    shippingAllow.some((repo) => !repoAllowlisted(repo, null, inspectorAllow));
 
   // Escape returns to the fleet, which is the modal's muscle memory kept intact now that
   // there is no backdrop to dismiss.
@@ -322,6 +389,14 @@ export function SettingsPage({
                       {c.icon}
                     </span>
                     {c.label}
+                    <RailDot
+                      tone={settingsRailDot(c.id, {
+                        status: settingsStatus,
+                        foremanEnabled,
+                        trustBlindSpot,
+                      })}
+                      status={settingsStatus}
+                    />
                   </button>
                 </Tooltip>
               ))}

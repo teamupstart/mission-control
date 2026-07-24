@@ -13,6 +13,8 @@ import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
+import type { SettingsStatus } from "../src/shared/types.ts";
+import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 
 // What is at stake: Settings is a page now, and the rail is the only inventory of what the
 // app can be told to do. A category that silently fails to render is one whose switches
@@ -45,19 +47,37 @@ const LLM: LlmState = {
 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard renders
 // it, so the panel only edits what it's handed.
-function render(category: SettingsCategoryId = "display"): string {
+//
+// `settingsStatus` defaults to null - the pre-snapshot "unknown", which draws none of the
+// SSE-fed dots. A test that cares about the dots passes one, and may override `foreman` to
+// exercise the Foreman dot (which is App-owned, not part of the status payload).
+function render(
+  category: SettingsCategoryId = "display",
+  opts: { settingsStatus?: SettingsStatus | null; foreman?: ForemanState } = {},
+): string {
   return renderToStaticMarkup(
     createElement(SettingsPage, {
       category,
       onNavigate: () => {},
       onLeave: () => {},
-      foreman: FOREMAN,
+      foreman: opts.foreman ?? FOREMAN,
       cost: COST,
       llm: LLM,
       layout: "grid",
       onLayoutChange: () => {},
+      settingsStatus: opts.settingsStatus ?? null,
     }),
   );
+}
+
+/** A status tuple with every fact off, so a test flips exactly the one it is about. */
+function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
+  return {
+    inspector: { enabled: false, mode: "dry-run" },
+    shipping: { autoMerge: false },
+    taskSources: { failing: 0 },
+    ...over,
+  };
 }
 
 // Distinctive text that appears ONLY inside a given panel (not in the nav), so matching it
@@ -432,4 +452,58 @@ test("with no answer from the daemon, the Shipping panel says so rather than sho
     /No repos yet - nothing will merge itself anywhere/,
     "an unanswered panel must not assert an empty allowlist",
   );
+});
+
+// The rail status dots (Phase 4). The colour maps a subsystem's live posture onto the nav
+// without opening its panel, so the wiring worth pinning is which category lights and in
+// which tone - and that "unknown" (a null status) lights nothing rather than an all-clear.
+// The dot renders inside the category's own tab button, right after its label.
+
+// Match a dot of `tone` inside the button whose label is `label`. The icon span precedes
+// the label; the dot follows it, so the label text sits directly before the dot's span.
+function railDot(html: string, label: string, tone: string): boolean {
+  return new RegExp(`${label}<span class="settings-dot settings-dot-${tone}"`).test(html);
+}
+
+test("a null status lights none of the SSE-fed dots - unknown is not an all-clear", () => {
+  const html = render("display");
+  // Foreman's dot rides App-owned state, and FOREMAN.config is null here, so it is off too.
+  assert.doesNotMatch(html, /settings-dot settings-dot-(live|armed|failing|foreman)/);
+});
+
+test("a live Inspector lights the Inspector dot green, and only it", () => {
+  const html = render("display", {
+    settingsStatus: status({ inspector: { enabled: true, mode: "live" } }),
+  });
+  assert.ok(railDot(html, "Inspector", "live"), "Inspector should carry the green live dot");
+  // enabled-but-dry-run, or disabled, is not live - no dot.
+  const dry = render("display", {
+    settingsStatus: status({ inspector: { enabled: true, mode: "dry-run" } }),
+  });
+  assert.ok(!railDot(dry, "Inspector", "live"), "dry-run is not live and lights no dot");
+});
+
+test("armed YOLO lights the Shipping dot amber", () => {
+  const html = render("display", { settingsStatus: status({ shipping: { autoMerge: true } }) });
+  assert.ok(railDot(html, "Shipping", "armed"), "Shipping should carry the amber armed dot");
+  const disarmed = render("display", { settingsStatus: status() });
+  assert.ok(!railDot(disarmed, "Shipping", "armed"), "disarmed YOLO lights no dot");
+});
+
+test("a failing task source lights the Task sources dot red", () => {
+  const html = render("display", { settingsStatus: status({ taskSources: { failing: 2 } }) });
+  assert.ok(railDot(html, "Task sources", "failing"), "a failing source should light red");
+  // The label counts, not just the colour: two sources, plural.
+  assert.match(html, /2 task sources failed their last sweep/);
+  const healthy = render("display", { settingsStatus: status({ taskSources: { failing: 0 } }) });
+  assert.ok(!railDot(healthy, "Task sources", "failing"), "no failures lights no dot");
+});
+
+test("Foreman's dot follows its App-owned enabled state, not the status payload", () => {
+  const on: ForemanState = { ...FOREMAN, config: ForemanConfigSchema.parse({ enabled: true }) };
+  // Even with a null status (Foreman is not in the payload), the dot is knowable.
+  const html = render("display", { settingsStatus: null, foreman: on });
+  assert.ok(railDot(html, "Foreman", "foreman"), "Foreman on should light the purple dot");
+  const off = render("display", { settingsStatus: null, foreman: FOREMAN });
+  assert.ok(!railDot(off, "Foreman", "foreman"), "Foreman off (or unknown) lights no dot");
 });

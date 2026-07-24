@@ -6306,6 +6306,21 @@ kbd {
    so this only fills the button, it doesn't stretch it. */
 .gear-btn {
   font-size: 22px;
+  /* So the status dot below can pin to the button's own corner. */
+  position: relative;
+}
+/* The worst subsystem status, inherited by the gear from the settings rail dots. A ring in
+   the topbar colour lifts it off the glyph so it reads as a badge, not part of the ⚙. Its
+   colour is set by the shared `.settings-dot-<tone>` rules in the settings-page section. */
+.gear-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  pointer-events: none;
 }
 /* ---- settings page ----
    A routed page (`#/settings/<category>`), not a modal: eleven categories spanning four
@@ -6491,6 +6506,33 @@ kbd {
 .settings-nav-item:hover .settings-nav-icon,
 .settings-nav-item.is-active .settings-nav-icon {
   color: var(--fg);
+}
+/* Per-category status dot at the rail item's trailing edge, and the same tone classes the
+   gear reuses. `margin-left: auto` pushes it past the label to the right edge. Colours are
+   the existing state ramp - no new token, no vendor named - and a faint glow of the same
+   hue lifts a 6px dot off the dark rail. */
+.settings-dot {
+  flex: none;
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.settings-dot-live {
+  background: var(--idle);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--idle) 70%, transparent);
+}
+.settings-dot-armed {
+  background: var(--attention);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--attention) 70%, transparent);
+}
+.settings-dot-failing {
+  background: var(--danger);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.settings-dot-foreman {
+  background: var(--foreman);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--foreman) 70%, transparent);
 }
 .settings-pane {
   flex: 1;

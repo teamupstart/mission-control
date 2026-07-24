@@ -886,6 +886,26 @@ export const ForemanConfigSchema = z.object({
    */
   wrapup: z.enum(WRAPUP_MODES).default("ask"),
   /**
+   * Whether Foreman keeps a session on track once its work has become an OPEN pull
+   * request - nudging it back to address the Inspector's review comments and to get a
+   * failing CI green, until the PR is clean.
+   *
+   * On by default, because the gap it closes is the common failure the feature was asked
+   * for: a session finishes (via `/no-mistakes` or straight-to-PR), opens the PR, and
+   * parks. The Inspector then reviews and posts comments, or CI goes red - and nobody is
+   * driving the session to fix them, so the PR sits with unresolved feedback until a
+   * human notices. This turns each new round of feedback on a parked PR into a fresh
+   * instruction typed back at the session that opened it.
+   *
+   * Like every automated action here it only ever TYPES in live mode on an allowlisted
+   * repo (`mayActLive`): the nudge is a live act, and dry-run means dry-run. It also
+   * fires only at a settled-idle session - never interrupting one already working the
+   * fixes - and at most once per distinct round of feedback, so it re-engages a stalled
+   * PR without nagging one that is being handled. Independent of `wrapupTriggers`: those
+   * decide how work BECOMES a PR, this decides what happens to the PR afterwards.
+   */
+  trackReviewFeedback: z.boolean().default(true),
+  /**
    * Whether Foreman schedules the BACKLOG on its own - reading every item, working out
    * what depends on what, and then handing one at a time to an idle agent or to a fresh
    * worktree (see docs/plans/backlog-autopilot/plan.md).

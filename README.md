@@ -2126,6 +2126,32 @@ pickup/completion signals: Claude sessions must report installed hooks, Codex se
 have the launch-scoped hooks attached, and Pi is unsupported. The panel says so rather than
 letting you queue work that can't run.
 
+### Keeping a PR on track
+
+Wrapping up turns work into an **open pull request** - and then the session parks. The
+[Inspector](#inspector-automated-pr-review) reviews that PR and posts comments, or CI goes
+red, and nobody is driving the session to fix any of it, so the PR sits with unresolved
+feedback until you notice. **Keep sessions on track** (in the Foreman popover, under **Pull
+requests**, **on by default**) closes that gap: it nudges the parked session back onto its
+own PR to **resolve the Inspector's review comments and get a failing CI green**, and re-nudges
+each time a new round of feedback lands, until the PR is clean.
+
+It applies to any parked session on an open PR, whether the PR came from **Straight to PR**,
+an automatic **no-mistakes** wrap-up, or one you shipped by hand.
+
+The nudge is typed into the session's pane, so it carries the usual gates and one more:
+
+- it only **types** in **live** mode on an **allowlisted** repo, exactly like the automated
+  wrap-up actions - dry-run leaves the parked PR for you;
+- it fires only at a **settled-idle** session, so it never interrupts one already working the
+  fixes, and **at most once per round of feedback**, so a PR that's being handled isn't nagged
+  (a fresh Inspector round or a CI flip re-arms it);
+- it stands down while a **no-mistakes run is still in progress** (that pipeline already
+  follows the PR through CI and the merge), while the session **needs you**, and while it has a
+  live **work queue** (the drain trigger owns that checkout);
+- the review-comment half needs the **Inspector on and posting** (its dry-run findings are
+  previews that never reach the PR, so they don't count) - the failing-CI half works regardless.
+
 ## Backlog autopilot (Foreman schedules the fleet)
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*

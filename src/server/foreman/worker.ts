@@ -39,8 +39,9 @@ import {
   planPromptedWrapup,
 } from "./prompted-wrapup.ts";
 import type { PromptedConfig } from "./prompted-wrapup.ts";
-import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
+import { InjectError, applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
+import { decideReviewFollowup } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -285,12 +286,35 @@ async function main(): Promise<void> {
       log(`backlog autopilot failed (${String(err)})`);
     }
 
+    // Also fleet-level, and outside the "no targets" bail for the same reason: a session
+    // whose PR needs following through has, by definition, parked - it is exactly the
+    // quiet fleet this pass most needs to look at, and it is never a `tickTargets` pick.
+    //
+    // Returns the sessions it typed into, so the per-target loop below can leave them
+    // alone THIS pass: `promptedWantsATick` keeps a prompted-armed idle session selected
+    // forever (the card summary can't see it is already wrapped up), so a session can be
+    // both a follow-through nudge here and a wrap-up target below - and typing both into
+    // one pane in one pass is the double-send the whole worker is built to avoid. The
+    // follow-up wins; next pass the session is working on it and the wrap-up correctly
+    // stands down on its own.
+    let nudgedThisPass = new Set<string>();
+    try {
+      nudgedThisPass = await runReviewFollowup(client, cfg);
+      if (nudgedThisPass.size > 0) advanced = true;
+    } catch (err) {
+      log(`review follow-through failed (${String(err)})`);
+    }
+
     if (targets.length === 0) {
       if (!advanced) await sleep(IDLE_MS);
       continue;
     }
 
     for (const session of targets) {
+      // Skip a session the follow-through pass already typed into this pass - see
+      // `nudgedThisPass`. Its wrap-up (if any) waits one pass rather than landing a second
+      // instruction in the same pane.
+      if (nudgedThisPass.has(session.id)) continue;
       // Honour a mid-drain disable/mode change without finishing the whole list.
       try {
         cfg = await client.getConfig();
@@ -627,6 +651,95 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   lastBacklogNote = "";
   log(`backlog: launched an agent for "${oneLine(action.task.title)}" (${action.why})`);
   return true;
+}
+
+/**
+ * Session id -> the feedback signature we last nudged it about.
+ *
+ * In-memory, like `recentlyActed` and the failure trackers, and justified the same way:
+ * the lease guarantees a single worker, so this is the only reader/writer, and the cost
+ * of losing it on a restart is bounded to ONE re-nudge per PR still carrying feedback - a
+ * duplicate "go fix your PR" typed at an idle agent. That is low harm next to the DB
+ * column, route and migration a durable version would cost, and unlike the prompted
+ * wrap-up's marker this action does not PUSH, so a rare double is a repeated instruction,
+ * not a repeated pull request. Pruned to the live session set each pass so it cannot grow
+ * without bound.
+ */
+const reviewNudged = new Map<string, string>();
+
+/**
+ * The review follow-through pass: nudge each parked session whose OPEN pull request
+ * carries feedback nobody is acting on - unresolved Inspector comments, a failing CI, or
+ * both - back onto it.
+ *
+ * Decide-then-act, like every other step: all the precedence lives in
+ * `decideReviewFollowup` (pure, testable), and this only reads the fleet and types. Every
+ * input the decision needs is already on the session snapshot (`inspector`, `prChecks`,
+ * `prState`, the queue summary), so there is no per-session round-trip - one `sessions`
+ * read serves the whole pass.
+ *
+ * Returns the ids of the sessions whose pane it claimed this pass - a send that landed,
+ * or one that threw but MAY have reached the composer - so the caller can both judge
+ * progress (a non-empty set means come straight back) and keep the per-target loop from
+ * landing a second instruction in a pane this pass already touched. Only a send the
+ * daemon POSITIVELY reports as undelivered is left out, which frees that session to be
+ * retried next pass and typed into by the target loop now; it is also the one case whose
+ * marker is dropped, so it does re-nudge. A pass that claims no pane lets the loop sleep
+ * IDLE_MS rather than spinning - and a claimed-but-unconfirmed pane cannot spin either,
+ * because its marker is kept, so the next pass sees "already nudged" and does nothing.
+ */
+async function runReviewFollowup(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+): Promise<Set<string>> {
+  const nudged = new Set<string>();
+  if (!cfg.trackReviewFeedback) return nudged;
+
+  const sessions = await client.sessions().catch(() => null);
+  if (!sessions) return nudged;
+
+  // Drop markers for sessions that have gone away, so the map tracks the live fleet.
+  const liveIds = new Set(sessions.map((s) => s.id));
+  for (const id of reviewNudged.keys()) if (!liveIds.has(id)) reviewNudged.delete(id);
+
+  const now = Date.now();
+  for (const session of sessions) {
+    const decision = decideReviewFollowup({
+      session,
+      // The real fleet, not a one-element list: `reportBucket` needs it to tell a gate
+      // this session is driving from one that needs a human.
+      bucket: reportBucket(session, sessions),
+      mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+      lastSig: reviewNudged.get(session.id) ?? null,
+      cfg: { enabled: cfg.trackReviewFeedback, settleMs: SETTLE_MS },
+      now,
+    });
+    if (decision.kind === "skip") continue;
+
+    // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
+    // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
+    // stamp, because a lost response must not become a second nudge; a delivery the
+    // daemon reports as refused clears it to retry on a later pass.
+    reviewNudged.set(session.id, decision.sig);
+    try {
+      await client.inject(session.id, decision.payload);
+    } catch (err) {
+      // Only a delivery the daemon POSITIVELY reported as undelivered frees this session:
+      // its marker is dropped so it re-nudges, and it is NOT claimed, so the target loop
+      // may act on it now. Any other failure - a lost response, an unrecognised throw -
+      // is treated as "may have reached the composer" (the same conservative reading
+      // `queue-apply`'s `mayHaveLanded` makes): keep the marker and claim the pane, so
+      // nothing types a wrap-up on top of a follow-up that might already be sitting there.
+      const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
+      if (confirmedUndelivered) reviewNudged.delete(session.id);
+      else nudged.add(session.id);
+      log(`${session.name}: could not nudge the PR follow-through (${String(err)})`);
+      continue;
+    }
+    nudged.add(session.id);
+    log(`${session.name}: nudged to follow through on its PR - ${decision.reason}`);
+  }
+  return nudged;
 }
 
 /**

@@ -197,7 +197,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
   return {
     enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true,
     triage: "on", maxFixAttempts: 3, maxFixRounds: 10,
-    wrapupTriggers: ["drain"], wrapup: "ask",
+    wrapupTriggers: ["drain"], wrapup: "ask", trackReviewFeedback: true,
     autoBacklog: false, maxSessions: 3, backlogRespectOpenPrs: true,
     backlogDefaultModel: { claude: null, codex: null, pi: null },
     ...over,

@@ -405,6 +405,38 @@ export function ForemanPopover({
       </fieldset>
 
       {/*
+        What happens to the PR after it is open. The wrap-up above turns work INTO a pull
+        request; this keeps the session on it afterwards - back onto the Inspector's review
+        comments and a red CI until the PR is clean. Like the automated wrap-up actions it
+        only TYPES in live mode on an allowlisted repo, so the hint says so out loud.
+      */}
+      <fieldset className="foreman-modes" disabled={!enabled}>
+        <legend>Pull requests</legend>
+        <Tooltip label="Nudge a parked session back onto its open PR to resolve Inspector comments and fix failing CI">
+          <label className="alert-row">
+            {/*
+              `!== false`, not the value itself: a web build newer than the daemon it is
+              talking to gets no such key, and `undefined` must render as on - the daemon
+              defaults it to on, so an unticked box would swear the feature is off while it
+              is running. Same reasoning as the backlog open-PR guard.
+            */}
+            <input
+              type="checkbox"
+              checked={config.trackReviewFeedback !== false}
+              onChange={(e) => void update({ trackReviewFeedback: e.target.checked })}
+            />
+            Keep sessions on track - resolve review comments &amp; failing CI
+          </label>
+        </Tooltip>
+        {enabled && config.trackReviewFeedback !== false && mode !== "live" && (
+          <p className="alert-hint dim">
+            Only types in Live mode on an allowlisted repo - until then a parked PR is left
+            for you.
+          </p>
+        )}
+      </fieldset>
+
+      {/*
         The trusted-repo list moved to Settings → Foreman (a picker, not a paste box).
         Live mode still needs the at-a-glance "am I actually acting here", so it keeps a
         read-only count that deep-links to where you edit it - not an editor itself.

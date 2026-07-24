@@ -110,6 +110,7 @@ const LIVE_CFG: ForemanConfig = {
   autoApproveAccess: true,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  trackReviewFeedback: true,
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,

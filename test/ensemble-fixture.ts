@@ -65,6 +65,7 @@ export class FakeGateway implements EnsembleTaskGateway {
   readonly dispatched: MemberDispatchRequest[] = [];
   readonly cancelled: string[] = [];
   readonly cancelFailures = new Set<string>();
+  readonly dispatchFailures = new Set<string>();
   /** Every create/dispatch in order, so a test can prove a whole wave existed before a dispatch. */
   readonly log: string[] = [];
   private readonly state = new Map<
@@ -80,7 +81,12 @@ export class FakeGateway implements EnsembleTaskGateway {
     this.state.set(taskId, { status: "backlog", worktreePath: null, sessionId: null });
   }
 
-  dispatch(request: MemberDispatchRequest): void {
+  private allDispatchFail = false;
+
+  async dispatch(request: MemberDispatchRequest): Promise<void> {
+    if (this.allDispatchFail || this.dispatchFailures.has(request.taskId)) {
+      throw new Error(`dispatch refused for ${request.taskId}`);
+    }
     this.dispatched.push(request);
     this.log.push(`dispatch:${request.taskId}`);
     const t = this.state.get(request.taskId);
@@ -122,6 +128,12 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
   failCancel(taskId: string): void {
     this.cancelFailures.add(taskId);
+  }
+  failDispatch(taskId: string): void {
+    this.dispatchFailures.add(taskId);
+  }
+  failAllDispatches(): void {
+    this.allDispatchFail = true;
   }
   /** The most recent task id created for a given member id. */
   taskFor(memberOrdinalTitle: string): string | undefined {

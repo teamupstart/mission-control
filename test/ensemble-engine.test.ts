@@ -374,6 +374,36 @@ test("a quiet run trips its deadline via the armed timer, tearing down its live 
   assert.equal(store.getMember(member.id)!.status, "failed");
 });
 
+test("a refused dispatch fails the member and settles the wave instead of stalling it", async () => {
+  const gateway = new FakeGateway();
+  gateway.failAllDispatches();
+  const store = new EnsembleStore(db);
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: stubAdapters(), armTimer: () => () => {} });
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  // The rejection handler runs under the run lock after the launch releases it; let it settle.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const members = store.listMembers(run.id);
+  assert.ok(members.every((m) => m.status === "failed"), "a refused dispatch fails its member, never leaves it launching");
+  assert.equal(store.getRun(run.id)!.status, "failed", "the wave reached a terminal state rather than stalling");
+});
+
+test("completing a run stops its submitted members' live agents while keeping their artifacts", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  for (const dispatch of [...gateway.dispatched]) {
+    const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
+    await activate(engine, gateway, run.id, dispatch.taskId);
+    await submit(engine, run.id, memberId);
+  }
+  assert.equal(store.getRun(run.id)!.status, "completed");
+  // Their still-live Tasks were cancelled through the owner (agents stopped), but the immutable
+  // artifacts survive - a completed run must not leave agents that cancelRun then refuses to reap.
+  assert.deepEqual([...gateway.cancelled].sort(), gateway.dispatched.map((d) => d.taskId).sort());
+  assert.equal(store.listArtifacts(run.id).filter((a) => a.status === "ready").length, 2);
+});
+
 test("preflight validates the resolved harness and mandatory submission capability", async () => {
   const { path } = gitRepo();
   const checked: string[] = [];

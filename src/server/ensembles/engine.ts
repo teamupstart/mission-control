@@ -81,8 +81,12 @@ export interface MemberDispatchRequest {
 export interface EnsembleTaskGateway {
   /** Create ONE backlog member Task at its preallocated durable id. Never dispatches. */
   create(request: MemberTaskRequest): void;
-  /** Dispatch a created member Task with its pinned base and the ensemble submission tool. */
-  dispatch(request: MemberDispatchRequest): void;
+  /**
+   * Dispatch a created member Task with its pinned base and the ensemble submission tool. Rejects if
+   * the dispatch itself is refused or throws, so the engine can fail the member rather than leave it
+   * stuck launching. It does NOT wait for the agent to come up - the engine observes that durably.
+   */
+  dispatch(request: MemberDispatchRequest): Promise<void>;
   /** Cancel a member Task through its owner. Tears the agent down; keeps the record and worktree. */
   cancel(taskId: string): Promise<void>;
   /** The current durable status of a member Task, or null if it is gone. */
@@ -1146,15 +1150,39 @@ export class EnsembleEngine {
       }
       const role = state.run.plan.roles.find((r) => r.key === member.roleKey);
       this.store.setAttemptStatus(attempt.id, ["pending"], "launching", {}, this.now());
-      this.tasks.dispatch({
-        taskId: attempt.taskId!,
-        baseSha: attempt.baseSha!,
-        model: role?.model ?? null,
-        effort: role?.effort ?? null,
-      });
+      const memberId = member.id;
+      const attemptId = attempt.id;
+      // Fire-and-forget so the launch loop is not blocked, but with a rejection handler: if the
+      // dispatch itself is refused or throws, the member would otherwise sit `launching` with a Task
+      // that never goes live, and no durable Task change would wake the run - the wave would stall
+      // until a restart. The launch's own failures are still handled by the Dispatcher marking the
+      // Task failed (which the reconcile then folds in); this covers the dispatch call rejecting.
+      void this.tasks
+        .dispatch({
+          taskId: attempt.taskId!,
+          baseSha: attempt.baseSha!,
+          model: role?.model ?? null,
+          effort: role?.effort ?? null,
+        })
+        .catch((err) => this.onDispatchRejected(state.run.id, memberId, attemptId, err instanceof Error ? err.message : String(err)));
       this.event(state.run.id, "member_launched", { memberId: member.id }, `member_launched:${attempt.id}`);
       occupied += 1;
     }
+  }
+
+  /**
+   * A member's dispatch call rejected. Fail the attempt and the member under the run lock, then wake
+   * so the compiled barrier can decide whether the stage can still proceed - the same as any other
+   * member failure, just reached through the launch path instead of an observed Task death.
+   */
+  private async onDispatchRejected(runId: string, memberId: string, attemptId: string, detail: string): Promise<void> {
+    await this.withRunLock(runId, async () => {
+      const now = this.now();
+      this.store.setAttemptStatus(attemptId, ["pending", "launching"], "failed", { error: detail, finishedAt: now }, now);
+      this.store.setMemberStatus(memberId, ["pending", "launching"], "failed", { error: detail }, now);
+      this.event(runId, "member_dispatch_failed", { memberId, detail }, `member_dispatch_failed:${attemptId}`);
+    });
+    await this.wake(runId);
   }
 
   private attemptDispatched(state: RunState, member: EnsembleMember): boolean {
@@ -1360,6 +1388,9 @@ export class EnsembleEngine {
       .filter((id): id is string => typeof id === "string");
     for (const member of submitted) {
       this.store.setMemberStatus(member.id, ["submitted"], "retained", {}, now);
+      // Stop the retained member's agent if it is still live, keeping its worktree's work in the
+      // immutable ref: a completed run must not leave agents running that `cancelRun` then refuses.
+      await this.settleMemberTask(member, now);
     }
     this.clearDeadline(state.run.id);
     this.store.setRunStatus(
@@ -1387,26 +1418,43 @@ export class EnsembleEngine {
     const raw = this.loadRaw(runId);
     for (const member of raw?.members ?? []) {
       const status = member.status;
-      if (status !== "pending" && status !== "launching" && status !== "active") continue;
-      if (member.taskId) {
-        const taskStatus = this.tasks.status(member.taskId);
-        if (taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
-          try {
-            await this.tasks.cancel(member.taskId);
-          } catch (err) {
-            this.log("warn", { event: "ensemble_fail_cancel_failed", runId, memberId: member.id, error: String(err) });
-          }
-        }
+      if (status === "pending" || status === "launching" || status === "active") {
+        await this.settleMemberTask(member, now);
         const attempt = raw ? this.latestAttempt(raw, member.id) : null;
         if (attempt) {
           this.store.setAttemptStatus(attempt.id, ["pending", "launching", "running"], "cancelled", { finishedAt: now }, now);
         }
+        this.store.setMemberStatus(member.id, [status], "failed", { error: reason }, now);
+      } else {
+        // A member that already SETTLED (submitted, retained, ...) may still hold a live agent: it
+        // submitted but has not been reaped. Stop that agent too, keeping its status and its
+        // immutable artifact - or a run that fails after some members submitted leaks their agents,
+        // and a terminal run cannot be `cancelRun`'d to clean them up.
+        await this.settleMemberTask(member, now);
       }
-      this.store.setMemberStatus(member.id, [status], "failed", { error: reason }, now);
     }
     this.clearDeadline(runId);
     this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "failed", { error: reason, completedAt: now }, now);
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
+  }
+
+  /**
+   * Stop a member's live agent while KEEPING its record and its immutable artifact.
+   *
+   * Used at a terminal transition: a submitted member's agent must not outlive the run, but its
+   * captured snapshot is preserved by its private ref, so tearing the Task down (which reaps the
+   * worktree) loses no work - the ref IS the retained artifact, and a later phase restores a winner
+   * from it. Best-effort, because a terminal run cannot be held open on a cleanup hiccup.
+   */
+  private async settleMemberTask(member: EnsembleMember, now: number): Promise<void> {
+    if (!member.taskId) return;
+    const taskStatus = this.tasks.status(member.taskId);
+    if (taskStatus === null || !LIVE_TASK_STATUSES.includes(taskStatus)) return;
+    try {
+      await this.tasks.cancel(member.taskId);
+    } catch (err) {
+      this.log("warn", { event: "ensemble_settle_cancel_failed", runId: member.runId, memberId: member.id, error: String(err) });
+    }
   }
 
   private async enforceDeadline(state: RunState): Promise<boolean> {

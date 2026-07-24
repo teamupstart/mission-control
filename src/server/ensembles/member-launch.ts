@@ -37,14 +37,20 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     }, { id: request.taskId });
   }
 
-  dispatch(request: MemberDispatchRequest): void {
-    // Fire-and-forget through the owner: TaskManager provisions the worktree at the pinned base,
-    // launches the agent, and streams status over SSE. The engine learns the outcome from durable
-    // Task state on its next reconcile, never from this call returning.
-    void this.tasks.dispatch(request.taskId, {
+  async dispatch(request: MemberDispatchRequest): Promise<void> {
+    // Through the owner: TaskManager provisions the worktree at the pinned base, launches the agent,
+    // and streams status over SSE. This does NOT wait for the agent to come up - the engine learns
+    // that from durable Task state on its next reconcile. It DOES surface a refusal: a dispatch the
+    // owner declines (`ok: false`) would otherwise leave the member stuck launching with a Task that
+    // never goes live, so it is thrown for the engine to fail the member on. A launch that fails
+    // AFTER this returns lands on the Task as `failed`, which the reconcile folds in the same way.
+    const outcome = await this.tasks.dispatch(request.taskId, {
       baseSha: request.baseSha,
       missionMcp: { tools: [SUBMIT_ENSEMBLE_RESULT_TOOL] },
     });
+    if (!outcome.ok) {
+      throw new Error(outcome.error ?? `dispatch of member Task ${request.taskId} was refused`);
+    }
   }
 
   async cancel(taskId: string): Promise<void> {

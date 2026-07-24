@@ -96,7 +96,18 @@ function mkQueue(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
 }
 
 function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
-  return { id: "t", title: "T", kind: "ship", status: "running", outcome: null, outcomeUrl: null, ...over };
+  return {
+    id: "t",
+    title: "T",
+    kind: "ship",
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+    ...over,
+  };
 }
 
 /** A parked gate with no agent driving it: state must not be starting/working. */

@@ -1170,6 +1170,26 @@ export interface Task {
   terminalResourceId: string | null;
   /** Bound live session's synthetic id, once discovered. */
   sessionId: string | null;
+  /**
+   * The recurring mission that filed this task, or null. See `MissionSchedule`
+   * (@shared/schedules.ts).
+   *
+   * Its own field rather than a `TaskSourceRef`, and that is the whole reason Recurring
+   * Missions is not a task source: `source` is the link back to an EXTERNAL system, and
+   * de-duplication for it lives in `task_source_seen`. A schedule is internal durable
+   * state whose identity is `(scheduleId, scheduledFor)` and whose ledger is its own
+   * occurrence table. Overloading `source.externalId` with an internal clock instant
+   * would put recurring work in Settings and lose the revision, catch-up and overlap
+   * lifecycle it exists for.
+   *
+   * All three move together: populated on a generated task, null on every other - manual
+   * dispatch, an MCP call, a task-source sweep, and every task filed before the feature.
+   */
+  scheduleId: string | null;
+  /** The occurrence that reserved this task, for the deep link into run history. */
+  scheduleOccurrenceId: string | null;
+  /** The instant this task was FOR, in UTC epoch ms - not when it was actually filed. */
+  scheduledFor: number | null;
   status: TaskStatus;
   /** Free text set on completion (e.g. "opened PR #123"). */
   outcome: string | null;
@@ -1225,6 +1245,19 @@ export interface TaskSummary {
   status: TaskStatus;
   outcome: string | null;
   outcomeUrl: string | null;
+  /**
+   * Schedule provenance, carried through to the session card. Same three fields as
+   * `Task`, and null together for the same reasons.
+   *
+   * Here rather than only on `Task` because binding a task to a session is where a
+   * denormalized view silently drops what it was not told to keep: a card would then
+   * have no way to say the work it is running came from a recurring mission, and no link
+   * back to the run that filed it. This nests inside `Session.task`, so it adds no
+   * top-level Session field and the `byJson` comparator on `task` still covers it.
+   */
+  scheduleId: string | null;
+  scheduleOccurrenceId: string | null;
+  scheduledFor: number | null;
 }
 
 // ---- no-mistakes surfacing ----

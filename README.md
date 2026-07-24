@@ -1218,7 +1218,7 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
-## Recurring missions (foundation only, so far)
+## Recurring missions (no UI yet)
 
 A **recurring mission** is a durable template that files an ordinary backlog task on a
 cadence: "audit dependencies every Monday at 8am". It is deliberately not a
@@ -1226,12 +1226,13 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-**Nothing is operable yet.** What has landed is the persistence and time-calculation
-contract: the shared vocabulary, one timezone-aware recurrence evaluator, three SQLite
-tables, and three nullable provenance columns on `tasks`. There is no scheduler loop, no
-route and no UI, so with no way to create a schedule the tables stay empty and the product
-behaves exactly as before. The catalog, the exactly-once scheduler and the Missions overlay
-arrive in later phases; the plan is
+**The engine runs; there is still no way to reach it.** The daemon now carries the
+scheduler itself - a self-rescheduling loop that accounts for every crossed instant exactly
+once, applies the missed-run and overlap policies, recovers both crash windows around task
+creation, and files backlog tasks and nothing else. What it has no HTTP route, SSE
+collection or screen for, so with no way to *create* a schedule the tables stay empty and
+the product behaves exactly as before. The catalog and the Missions overlay arrive in later
+phases; the plan is
 [`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).
 
 Three decisions are worth knowing now, because everything later is built on them:
@@ -1254,6 +1255,33 @@ Time is calculated in exactly one place, `src/server/schedules/recurrence.ts`, w
 only consumer of `cron-parser`. DST behaviour is pinned by fixtures against both US
 transitions, Europe/London, and a southern-hemisphere zone, so a dependency upgrade that
 moves somebody's 2am mission fails the suite instead.
+
+### What the scheduler does when you were away
+
+Every instant the cadence crossed is enumerated from a cursor kept in SQLite, and each one
+gets exactly one durable outcome - it never matters how the machine came to be late, only
+what the ledger still owes. Which of them create work is the mission's **missed-run
+policy**:
+
+| Policy | A fortnight of daily runs becomes |
+|---|---|
+| **Coalesce to latest** (default) | one task, for the most recent instant; the other thirteen are recorded as `coalesced`, each naming the run that stood in for it |
+| **Create all** | one task per instant, capped at the newest 50 per catch-up - the cap bounds *tasks*, not history, so instants past it are still recorded |
+| **Skip** | no task; every crossed instant is recorded as skipped |
+
+Then the **overlap policy** asks whether this mission's previous work is still in flight -
+a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
+`skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
+`failed` never blocks: a mission whose last run went wrong still runs tomorrow.
+
+Two more properties, both deliberate:
+
+- **Pausing accrues no debt.** A resumed mission starts from the resume instant, not from
+  the one it was parked on, so a month off does not wake up owing thirty runs.
+- **A crash cannot lose or duplicate a run.** The reservation and the id of the task it is
+  going to create are written in one transaction *before* the task exists, so a daemon that
+  dies mid-run either finds the task already filed (and just closes the ledger) or files it
+  on the id it reserved. Neither path can produce a second task.
 
 ## Roundup
 

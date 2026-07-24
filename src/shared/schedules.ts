@@ -164,6 +164,20 @@ export const SCHEDULE_PREVIEW_MAX_COUNT = 50;
 /** Hard ceiling on one `between` enumeration, applied before anything is allocated. */
 export const SCHEDULE_BETWEEN_MAX = 500;
 
+/**
+ * The most tasks one catch-up may file for a single schedule under `create-all`.
+ *
+ * It caps TASKS, never accounting: instants past the cap are still written to the ledger,
+ * as `coalesced` pointing at the oldest run that did happen, so history explains the whole
+ * window rather than starting where the cap let go. The number is what separates "I was
+ * away for a fortnight and want the runs" from "a laptop that has been shut since spring
+ * files 500 agent tasks in one tick", which costs real money before anyone sees the board.
+ *
+ * Not persisted - it is applied at decision time, and the durable record of a capped
+ * catch-up is the coalesced rows themselves.
+ */
+export const SCHEDULE_CATCHUP_CREATE_CAP = 50;
+
 export const SCHEDULE_HISTORY_DEFAULT_LIMIT = 25;
 export const SCHEDULE_HISTORY_MAX_LIMIT = 100;
 
@@ -415,8 +429,24 @@ export interface ScheduleHistoryPage {
 
 // ---- validation ----
 
-/** Which input a refusal belongs to, so a form can put the message on the right field. */
-export const SCHEDULE_VALIDATION_FIELDS = ["expression", "timezone"] as const;
+/**
+ * Which input a refusal belongs to, so a form can put the message on the right field.
+ *
+ * Not persisted - a validation error is answered, rendered and thrown away - so unlike
+ * the enums at the top of this file this list is free to grow. The last four arrived with
+ * the scheduler: `recurrence.validate` only ever judges the cadence, but the manager also
+ * refuses a nameless mission, an untitled or intentless template, and a `repoRoot` that is
+ * not a repo's main checkout - and a refusal a form cannot attach to a field is one the
+ * operator has to guess at.
+ */
+export const SCHEDULE_VALIDATION_FIELDS = [
+  "expression",
+  "timezone",
+  "name",
+  "repoRoot",
+  "title",
+  "intent",
+] as const;
 export type ScheduleValidationField = (typeof SCHEDULE_VALIDATION_FIELDS)[number];
 
 export interface ScheduleValidationError {
@@ -451,10 +481,36 @@ export interface SchedulePreviewInstant {
 }
 
 /**
+ * What one crossed instant would become, without anything being written.
+ *
+ * The same `ScheduleDecisionKind` the ledger persists, produced by the same function the
+ * scheduler decides with (`planMissedInstants`, `src/server/schedules/policy.ts`) - so a
+ * preview that says "these three coalesce into the 09:00 run" is not a second description
+ * of the policy that can drift from it, it IS the policy.
+ *
+ * `skipped_overlap` never appears here: whether a task is still in flight is a fact about
+ * the moment of execution, not about the cadence, and a preview that guessed at it would
+ * be confidently wrong exactly when the operator is deciding which policy to pick.
+ */
+export interface ScheduleMissedDecision {
+  at: number;
+  decisionKind: ScheduleDecisionKind;
+  /** For `coalesced`, the instant whose run stands in for this one. */
+  coveredBy: number | null;
+}
+
+/**
  * "What would have happened while the laptop was shut?", answered without writing anything.
  *
- * Phase 1 enumerates the crossed instants; Phase 2 runs them through the same missed-run
- * policy the scheduler uses, so the answer on screen is the one that will actually happen.
+ * The two halves have different owners, and `plan` is null whenever the second one had no
+ * say: `recurrence.preview` knows the cadence and can enumerate what a window crossed, but
+ * it has no missed policy to judge them by. Supply `missedPolicy` on the input and the
+ * scheduler fills this in.
+ *
+ * What the plan does NOT claim is that the work ran on time. An instant that creates work
+ * here runs at `resumedAt`, late by `resumedAt - at`, and V1 promises exactly that: every
+ * crossed instant is accounted for once when Mission Control runs again, never that
+ * anything happened while the machine was off.
  */
 export interface ScheduleStandbySimulation {
   sleepStartedAt: number;
@@ -463,6 +519,16 @@ export interface ScheduleStandbySimulation {
   missed: number[];
   /** True when the window held more instants than `SCHEDULE_BETWEEN_MAX` could return. */
   truncated: boolean;
+  /** Per-instant outcome under the requested missed policy, or null if none was given. */
+  plan: ScheduleMissedDecision[] | null;
+}
+
+/** Another schedule already firing at instants this cadence also wants. Advisory only. */
+export interface SchedulePreviewCollision {
+  scheduleId: string;
+  name: string;
+  /** The previewed instants that schedule also fires at, oldest first. */
+  at: number[];
 }
 
 export interface SchedulePreviewInput {
@@ -473,6 +539,10 @@ export interface SchedulePreviewInput {
   count?: number;
   sleepStartedAt?: number;
   resumedAt?: number;
+  /** Judge the standby window by this policy. Omitted leaves `standby.plan` null. */
+  missedPolicy?: ScheduleMissedPolicy;
+  /** The schedule being edited, so a cadence never collides with its own saved self. */
+  excludeScheduleId?: string;
 }
 
 export type SchedulePreviewResult =
@@ -483,6 +553,14 @@ export type SchedulePreviewResult =
       timezone: string;
       instants: SchedulePreviewInstant[];
       standby: ScheduleStandbySimulation | null;
+      /**
+       * Enabled schedules that fire at one of these instants too.
+       *
+       * Empty from `recurrence.preview`, which answers questions about ONE expression and
+       * deliberately reads no catalog; the manager fills it. Advisory in the strict sense -
+       * two missions at 09:00 is a thing an operator may well want, and nothing refuses it.
+       */
+      collisions: SchedulePreviewCollision[];
     }
   | { ok: false; error: ScheduleValidationError };
 

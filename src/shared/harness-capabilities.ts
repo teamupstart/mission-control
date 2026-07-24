@@ -49,8 +49,8 @@ export interface PermissionModeSpec {
    */
   pickable: readonly PermissionMode[];
   /**
-   * The mode a freshly dispatched session is driven to when "auto mode on dispatch" is
-   * on, or null when this harness has modes but none that mean "proceed autonomously".
+   * The autonomous mode "auto mode on dispatch" requests for a freshly dispatched
+   * session, or null when this harness has modes but none that mean "proceed autonomously".
    *
    * Separate from `pickable` because the two answer different questions: `pickable` is
    * what a human may choose, this is what the setting promises on the operator's behalf.
@@ -602,7 +602,8 @@ export function autoModeAgents(): AgentType[] {
 }
 
 /**
- * Why "auto mode on dispatch" cannot arm this harness at launch, or null when it can.
+ * Why "auto mode on dispatch" cannot arm this harness's permission mode at launch, or
+ * null when it can.
  *
  * Three different absences, said differently, because they are different facts: a
  * harness with no permission modes at all has nothing to arm, one that HAS modes but

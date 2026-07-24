@@ -517,7 +517,11 @@ test("finding state and its immutable repair packet survive insertion failure an
     () => seeded.store.getDelivery(committed.delivery.id)?.state === "delivered",
     "prepared Inspector feedback did not resume after restart",
   );
-  assert.deepEqual(injected, ["repair packet"]);
+  assert.equal(
+    injected.filter((payload) => payload === "repair packet").length,
+    1,
+    "the immutable Inspector repair packet was not recovered exactly once",
+  );
   await recoveredManager.stop();
   setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });

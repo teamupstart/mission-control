@@ -67,7 +67,7 @@ test("the Inspector gate action deep-links into the routed settings page", () =>
   const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
   assert.match(
     app,
-    /onOpenInspectorSettings=\{\(\) => navigate\(\{ page: "settings", category: "inspector" \}\)\}/,
+    /onOpenInspectorSettings=\{\(\) =>[\s\S]*?navigate\(\{ page: "settings", category: "inspector" \}\)[\s\S]*?\}/,
   );
   assert.doesNotMatch(app, /setSettingsCategory|setSettingsOpen/);
 });

@@ -482,6 +482,18 @@ test("unbinding an inferred completion releases its reopening provenance", () =>
     updatedAt: completed.updatedAt + 1,
   });
   assert.equal(provenance.autoCompleted.size, 0);
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "start the next assignment",
+  });
+  const released = f.registry.getTask(f.taskId)!;
+  assert.equal(released.status, "done");
+  assert.equal(released.outcomeUrl, PR, "later work must not erase the released task's outcome");
 });
 
 test("pruning an inferred completion does not recreate its reopening provenance", () => {

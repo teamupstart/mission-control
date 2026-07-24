@@ -365,7 +365,10 @@ export class TaskManager {
   private reopenIfWorkResumed(s: Session): void {
     if (s.state !== "working") return;
     const t = this.registry.listTasks().find(
-      (task) => task.sessionId === s.id && task.status === "done" && this.autoCompleted.has(task.id),
+      (task) =>
+        task.sessionId === s.id &&
+        task.status === "done" &&
+        this.autoCompleted.get(task.id) === s.id,
     );
     if (!t) return;
     this.autoCompleted.delete(t.id);
@@ -427,7 +430,7 @@ export class TaskManager {
     }
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
     // the reason readable in the log even when the kill races the process away.
-    const completionWasInferred = this.autoCompleted.has(e.taskId);
+    const completionWasInferred = this.autoCompleted.get(e.taskId) === e.sessionId;
     const holding = await this.closeMergedSessionDeps.resetWouldDestroyWork(session);
     const currentSession = this.registry.getSession(e.sessionId);
     const currentTask = this.registry.getTask(e.taskId);
@@ -438,7 +441,8 @@ export class TaskManager {
       currentTask?.sessionId !== e.sessionId ||
       currentEpisode?.episodeId !== e.episodeId ||
       (completionWasInferred
-        ? currentTask.status !== "done" || !this.autoCompleted.has(e.taskId)
+        ? currentTask.status !== "done" ||
+          this.autoCompleted.get(e.taskId) !== e.sessionId
         : currentTask.status !== "running" && currentTask.status !== "dispatching")
     ) {
       return;

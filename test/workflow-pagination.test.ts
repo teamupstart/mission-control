@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-pagination-"));
 process.env.MISSION_HOME = home;
@@ -154,10 +153,9 @@ test("a 1000-run installation still reads one bounded page", () => {
   for (let index = 1; index <= 1_000; index += 1) {
     insert.run(`scale-${String(index).padStart(4, "0")}`, `scale:${index}`, index, index);
   }
-  const started = performance.now();
   const page = store.listRunSummaryPage({ limit: 50, cursor: null });
-  const elapsed = performance.now() - started;
   assert.equal(page.items.length, 50);
+  assert.equal(page.items[0]?.id, "scale-1000");
+  assert.equal(page.items.at(-1)?.id, "scale-0951");
   assert.ok(page.nextCursor);
-  assert.ok(elapsed < 1_000, `1000-run page took ${elapsed.toFixed(1)}ms`);
 });

@@ -49,13 +49,33 @@ export interface PermissionModeSpec {
    */
   pickable: readonly PermissionMode[];
   /**
-   * The mode a freshly dispatched session is driven to when "auto mode on dispatch" is
-   * on, or null when this harness has modes but none that mean "proceed autonomously".
+   * The autonomous mode "auto mode on dispatch" requests for a freshly dispatched
+   * session, or null when this harness has modes but none that mean "proceed autonomously".
    *
    * Separate from `pickable` because the two answer different questions: `pickable` is
    * what a human may choose, this is what the setting promises on the operator's behalf.
    */
   onDispatch: PermissionMode | null;
+  /**
+   * How to start a session already in `mode`, as launch argv - or null when this harness
+   * can only reach a mode by walking its TUI after launch.
+   *
+   * This is what "auto mode on dispatch" uses now, instead of the post-launch Shift+Tab
+   * walk (`setPermissionMode`): a flag on the argv sets the mode declaratively, so it no
+   * longer depends on a readable mode-line footer. A freshly launched session's
+   * folder-trust dialog HIDES that footer, and the walk read it as "can't see the mode"
+   * and gave up - silently leaving the session in its default mode. A flag is also
+   * scoped to sessions WE launch by construction: it can only ride an argv we build.
+   *
+   * The walk stays the mechanism for a human swapping a LIVE session's mode from the
+   * card, where there is no relaunch to carry a flag. Null here says exactly that: this
+   * harness has modes, but the only lever is the walk.
+   *
+   * Note the token can differ from the `PermissionMode` name: the name is what Claude
+   * reports on hooks and prints in its footer, the arg is what its CLI accepts, and the
+   * renderer bridges the two (see Claude's spec).
+   */
+  launchArgs: ((mode: PermissionMode) => readonly string[]) | null;
 }
 
 /**
@@ -311,6 +331,15 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // still renders on the chip when a session was started in it.
       pickable: ["default", "acceptEdits", "plan", "bypassPermissions", "auto"],
       onDispatch: "auto",
+      // `--permission-mode <mode>` starts Claude in that mode (verified against 2.1.219;
+      // choices: acceptEdits, auto, bypassPermissions, manual, dontAsk, plan). One token
+      // differs from our `PermissionMode`: the default mode is `default` on Claude's hooks
+      // and `manual mode on` in its footer, but the CLI spells it `manual` - the mirror of
+      // `FOOTER_MODES` mapping `manual mode on` back to `default` on the reading side. The
+      // flag does NOT skip the folder-trust dialog (that is only waived for `-p`/non-TTY
+      // runs), but it no longer needs to: the mode is set whether or not the footer is
+      // readable, and the dialog just delays the first prompt, not the mode.
+      launchArgs: (mode) => ["--permission-mode", mode === "default" ? "manual" : mode],
     },
     skills: CLAUDE_SKILLS,
     workQueue: {
@@ -557,8 +586,8 @@ export function skillsAgents(): AgentType[] {
 }
 
 /**
- * The agents "auto mode on dispatch" actually reaches - the ones that both have
- * permission modes and name one meaning "proceed autonomously".
+ * The agents "auto mode on dispatch" actually reaches - the ones that name a mode
+ * meaning "proceed autonomously" and can render it as launch arguments.
  *
  * A setting whose switch reaches only some of the grid has to say which some, and the
  * settings panel used to answer that with the literal words "claude only" and "Codex
@@ -566,30 +595,36 @@ export function skillsAgents(): AgentType[] {
  * that nothing would fail to catch.
  */
 export function autoModeAgents(): AgentType[] {
-  return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].permissionModes?.onDispatch);
+  return AGENT_TYPES.filter((a) => {
+    const modes = HARNESS_CAPABILITIES[a].permissionModes;
+    return !!modes?.onDispatch && !!modes.launchArgs;
+  });
 }
 
 /**
- * Why "auto mode on dispatch" does not drive this harness through a mode CYCLE, or null
- * when it does.
+ * Why "auto mode on dispatch" cannot arm this harness's permission mode at launch, or
+ * null when it can.
  *
- * Two different absences, said differently, because they are different facts: a harness
- * with no permission modes at all has nothing to switch, while one that HAS modes but
- * names no `onDispatch` has nothing that would mean "proceed without asking". Rolling
- * both into one sentence would make the second read as the first.
+ * Three different absences, said differently, because they are different facts: a
+ * harness with no permission modes at all has nothing to arm, one that HAS modes but
+ * names no `onDispatch` has nothing that would mean "proceed without asking", and one
+ * with that mode but no launch renderer can support only human-driven live-session
+ * changes. Rolling them into one sentence would misstate the declared capability.
  *
  * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
  * `--sandbox workspace-write --ask-for-approval on-request` at launch. The switch reaches
- * Codex; what it does not reach is `applyAutoMode`, because there is no Shift+Tab cycle to
- * walk. A panel promising "unaffected" over a session launched with a widened sandbox is a
+ * Codex; what it does not reach is a `--permission-mode` flag, because Codex has no such
+ * mode. A panel promising "unaffected" over a session launched with a widened sandbox is a
  * consent failure, not a copy nit.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
   const modes = HARNESS_CAPABILITIES[agent].permissionModes;
   const who = AGENT_IDENTITY[agent].label;
-  if (!modes) return `${who} has no permission modes to switch, so nothing is typed at it after launch.`;
+  if (!modes) return `${who} has no permission modes to arm with a launch flag.`;
   if (!modes.onDispatch)
-    return `${who} has permission modes but none that mean "proceed without asking", so nothing is typed at it after launch.`;
+    return `${who} has permission modes but none that mean "proceed without asking", so no mode is armed at launch.`;
+  if (!modes.launchArgs)
+    return `${who} has an autonomous permission mode but no launch-argument renderer, so Mission Control cannot arm it at launch; its live TUI walk is reserved for a human changing an existing session.`;
   return null;
 }

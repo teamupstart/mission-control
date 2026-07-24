@@ -33,8 +33,9 @@ const HARNESS_CARDS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((ag
 }));
 
 /**
- * Who the auto-mode switch reaches, and who it leaves alone - read off the
- * `permissionModes.onDispatch` capability rather than off the word "claude".
+ * Who the auto-mode switch reaches through a permission-mode launch flag, and who it
+ * does not - read off `permissionModes.onDispatch` plus its launch renderer rather than
+ * off the word "claude". Other harness-specific launch postures are outside this list.
  *
  * Every sentence on that row named an agent, and each was its own literal ("claude
  * only", "Every Claude session…", "Codex support comes later"). Pi would have left all
@@ -63,11 +64,11 @@ const AUTO_MODE_LABEL = ((): string | null => {
 /**
  * The badge on a harness's card, capability-derived and never a literal harness name.
  *
- * Two mutually exclusive states, both read off the same `onDispatch` capability the
- * master toggle reaches by:
- *  - a harness the switch REACHES wears "auto mode on" only while the switch is on, so
- *    the card says what a dispatch will do right now rather than what it could;
- *  - a harness the switch LEAVES ALONE wears "no auto mode", carrying
+ * Two mutually exclusive states, both read off the same permission-mode launch
+ * capability:
+ *  - a harness this capability REACHES wears "auto mode on" only while the switch is on,
+ *    so the card says what a dispatch will do right now rather than what it could;
+ *  - a harness this capability DOES NOT REACH wears "no auto mode", carrying
  *    `autoModeUnsupportedWhy` as its title - the sentence saying which of the two
  *    absences this is - so the reason is on the card, not just in the master row.
  */
@@ -91,7 +92,7 @@ function CardBadge({
   if (!autoMode) return null;
   return (
     <Tooltip
-      label={`Dispatched ${label} sessions are switched to ${AUTO_MODE_LABEL ?? "their most autonomous"} permission mode once ready.`}
+      label={`Dispatched ${label} sessions launch in ${AUTO_MODE_LABEL ?? "their most autonomous"} permission mode via a launch flag, even while a folder-trust dialog hides the mode footer.`}
     >
       <span className="skill-badge skill-badge-always-on">auto mode on</span>
     </Tooltip>
@@ -221,14 +222,15 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             )}
           </span>
           <span className="kb-row-desc">
-            Every {AUTO_LABEL} session dispatched from Mission Control is switched to{" "}
-            <strong>{AUTO_MODE_LABEL ?? "its most autonomous"}</strong> permission mode once it's
-            ready, so it works through its task without stopping for permission prompts.
+            Every {AUTO_LABEL} session dispatched from Mission Control launches directly in{" "}
+            <strong>{AUTO_MODE_LABEL ?? "its most autonomous"}</strong> permission mode via a
+            launch flag, so the mode is set even while a folder-trust dialog hides the mode
+            footer.
           </span>
         </div>
         <div className="kb-row-controls">
           <Tooltip
-            label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode, so it never stops for a permission prompt`}
+            label={`Launch every dispatched ${AUTO_LABEL} session directly in ${AUTO_MODE_LABEL ?? "its most autonomous"} mode via a launch flag`}
           >
             <label className="skill-switch">
               <input

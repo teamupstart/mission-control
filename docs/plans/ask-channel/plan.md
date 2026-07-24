@@ -122,8 +122,8 @@ The redirect needs no file: it travels inline as `--append-system-prompt`'s valu
 
 ### 3. Scope: dispatched sessions only
 
-Matches `applyAutoMode`'s existing precedent - only sessions the harness launched, never one the
-operator started and we merely discovered. `pane-dialog.ts` stays reachable and stays intact.
+Matches the dispatch launch policy - only sessions the harness launched, never one the operator
+started and we merely discovered. `pane-dialog.ts` stays reachable and stays intact.
 **Do not delete the grammar in this task**; establish the replacement first, delete it in the TUI
 task.
 

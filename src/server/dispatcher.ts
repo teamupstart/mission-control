@@ -6,7 +6,7 @@ import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelArgs } from "./ask-channel.ts";
-import { injectPrompt, setPermissionMode } from "./actions.ts";
+import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import { getHarnessesConfig, resolveDispatchEffort, resolveDispatchModel } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
@@ -64,6 +64,29 @@ export interface TaskDispatchOptions {
   baseSha?: string;
   /** Mission MCP tools this launch requires. */
   missionMcp?: MissionMcpRequirement;
+}
+
+/**
+ * The launch argv that starts a dispatched session already in its harness's autonomous
+ * mode when "auto mode on dispatch" is on - `--permission-mode auto` for Claude - or no
+ * args at all.
+ *
+ * Empty in three cases, each correct rather than a fallback: the setting is off; the
+ * harness has no `onDispatch` mode to arm (Codex names none here - its autonomous launch
+ * is a widened sandbox built in `prepareCodexLaunch`, not a permission mode); or the
+ * harness has such a mode but can only reach it by walking its TUI after launch
+ * (`launchArgs: null`), in which case dispatch declines rather than typing at it - the
+ * walk is reserved for a human swapping a LIVE session's mode from the card.
+ *
+ * This replaced the post-launch `setPermissionMode` walk on the dispatch path: the walk
+ * read the mode off the pane footer, which a fresh session's folder-trust dialog hides,
+ * so it silently left the session in its default mode. A flag needs no readable footer.
+ */
+export function dispatchPermissionModeArgs(agent: AgentType): string[] {
+  if (!getHarnessesConfig().autoModeOnDispatch) return [];
+  const spec = harnessFor(agent).permissionModes;
+  if (!spec?.onDispatch || !spec.launchArgs) return [];
+  return [...spec.launchArgs(spec.onDispatch)];
 }
 
 /**
@@ -131,6 +154,14 @@ export class Dispatcher {
       const model = resolveDispatchModel(task.agent, task.model);
       const effort = resolveDispatchEffort(task.agent, task.effort);
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
+      // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
+      // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
+      // which a fresh session's folder-trust dialog hides, so it gave up and the session
+      // ran in its default mode. The flag sets the mode whether or not the footer is
+      // readable, and is scoped to sessions WE launch by construction. Codex is reached by
+      // its own launch builder below (widened sandbox), so this is empty for it; the walk
+      // stays only for a human swapping a live session's mode from the card.
+      const modeArgs = dispatchPermissionModeArgs(task.agent);
       // Which of OUR tools this launch has to be able to call, if the caller said. Passed to
       // each harness's launch builder as a requirement, never as flags - see `mission-mcp.ts`.
       const missionMcp = options.missionMcp ?? null;
@@ -138,7 +169,7 @@ export class Dispatcher {
       // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
-      // `applyAutoMode` is - we only reconfigure agents WE launched, never one the operator
+      // `modeArgs` is - we only reconfigure agents WE launched, never one the operator
       // started and we merely discovered. It returns nothing rather than half its flags on
       // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
       // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
@@ -152,6 +183,7 @@ export class Dispatcher {
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
+        ...modeArgs,
         ...askArgs,
         ...codexLaunch.args,
         ...piLaunch.args,
@@ -203,13 +235,10 @@ export class Dispatcher {
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;
 
-      // Set the mode BEFORE the first prompt, so the task runs in it from the start -
-      // see `applyAutoMode`.
-      await this.applyAutoMode(this.requireLiveSession(session.id), task.agent);
-      if (await this.abortIfSettled(taskId)) return;
-
-      // Mode selection takes terminal I/O and can race the process exiting. Re-read at
-      // the actual send boundary so a lingered session cannot type into its dead pane.
+      // The permission mode is already set: it rode in on the launch argv (`modeArgs`),
+      // so the task runs in it from the first prompt with no post-launch keystrokes to
+      // race the process exiting or a launch-time dialog to read it off. Re-read the
+      // session at the send boundary so a lingered exited snapshot cannot lend its pane.
       const deliverySession = this.requireLiveSession(session.id);
       await this.deliverIntent(
         deliverySession.id,
@@ -344,38 +373,6 @@ export class Dispatcher {
       throw new Error("agent session exited before the initial prompt could be sent");
     }
     return session;
-  }
-
-  /**
-   * When the "auto mode on dispatch" harness setting is on, drive a freshly-ready
-   * session to its harness's autonomous mode before the first prompt lands, so the whole
-   * task runs without pausing on permission prompts.
-   *
-   * Scoped to the dispatch path on purpose: this only ever touches sessions the
-   * harness launched, never one the operator started themselves and the harness
-   * merely discovered - the contract the setting promises.
-   *
-   * `permissionModes.onDispatch` rather than a literal `"auto"`, and null is the whole
-   * answer for a harness with no autonomous mode to arm: it is skipped, silently and
-   * correctly, instead of the setting quietly meaning something different per agent.
-   *
-   * Best-effort by design. `setPermissionMode` walks the Shift+Tab cycle, which can
-   * legitimately fall short - `auto` isn't enabled for every account, and a dialog
-   * over the mode line makes it unreadable (though a fresh, pre-prompt Claude has
-   * neither) - and none of that should sink a dispatch that otherwise launched
-   * cleanly: the agent simply stays in whatever mode it booted in.
-   */
-  private async applyAutoMode(session: Session, agent: AgentType): Promise<void> {
-    const mode = harnessFor(agent).permissionModes?.onDispatch;
-    if (!mode) return;
-    if (!getHarnessesConfig().autoModeOnDispatch) return;
-    const r = await setPermissionMode(session, mode);
-    if (!r.ok) {
-      console.warn(
-        `[mission-control] could not put dispatched session ${session.id} into ${mode} mode: ` +
-          `${r.error ?? "unknown"} - it will run in its default mode`,
-      );
-    }
   }
 
   /**

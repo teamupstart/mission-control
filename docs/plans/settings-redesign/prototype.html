@@ -639,7 +639,7 @@ function panelHarnesses() {
     h("p", { class: "blurb" }, "Defaults for the agents Mission Control dispatches. These never touch sessions you started yourself - only the ones it launches. One card per harness (Mockup F): its model, its effort, and what a dispatch will actually do."),
     row("automode",
       ["Auto mode on dispatch", h("span", { class: "badge" }, "claude / codex")],
-      "Every dispatched session is switched to its most autonomous permission mode once it's ready, so it works through its task without stopping for permission prompts.",
+      "Current auto-mode dispatch behavior is documented under Harness cards in README.md.",
       sw(state.autoMode, (v) => { state.autoMode = v; render(); }, "Auto mode on dispatch")),
     h("div", { class: "glabel" }, "Per harness"),
     h("div", { class: "hcards" }, Object.entries(AGENTS).map(([id, a]) => {

@@ -1249,18 +1249,18 @@ export type ShippingConfigPatch = z.infer<typeof ShippingConfigPatchSchema>;
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
  *
- * The scoping is the whole contract: `autoModeOnDispatch` drives a session to `auto`
- * permission mode only on the dispatch path (see `Dispatcher.applyAutoMode`), so a
- * session the operator started themselves keeps whatever mode they chose. Ships off
- * because flipping a session into `auto` lets it act without stopping for prompts,
- * which is a posture the operator opts into, not a default.
+ * The scoping is the whole contract: `autoModeOnDispatch` affects only the dispatch
+ * path. Claude starts in `auto` through `dispatchPermissionModeArgs`; Codex gets the
+ * widened sandbox from `prepareCodexLaunch`. A session the operator started themselves
+ * keeps its existing posture. Ships off because these autonomous postures let a session
+ * act without stopping for the usual prompts, which the operator must opt into.
  */
 export const HarnessesConfigSchema = z.object({
   /**
-   * When on, every Claude session dispatched from Mission Control is driven to `auto`
-   * permission mode once it's ready, before its first prompt lands - so it works
-   * through its task without pausing on permission prompts. Codex has no permission
-   * mode, so it's untouched today; the setting is worded to admit codex support later.
+   * When on, every Claude session dispatched from Mission Control is launched directly
+   * in `auto` permission mode (`--permission-mode auto`) - so it works through its task
+   * without pausing on permission prompts. Codex has no permission mode; the same switch
+   * still reaches it, as a widened sandbox its launch builder applies (`prepareCodexLaunch`).
    */
   autoModeOnDispatch: z.boolean().default(false),
   /**

@@ -193,6 +193,8 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
+  /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
+  private autoCompleted = new Set<string>();
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -220,7 +222,10 @@ export class TaskManager {
       if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
-      if (e.type === "session_upsert") this.settleIfEpisodeFinished(e.session);
+      if (e.type === "session_upsert") {
+        this.settleIfEpisodeFinished(e.session);
+        this.reopenIfWorkResumed(e.session);
+      }
     });
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
@@ -296,9 +301,9 @@ export class TaskManager {
    *    new work (which `agentWentAway` deliberately reports as a failure);
    *  - and a merge is durably recorded against that binding.
    *
-   * A prompt arriving after all four hold is new work following a task that genuinely
-   * shipped, not a continuation of it - and because the agent goes `working` the instant
-   * it lands, the autopilot cannot have taken the agent in between either.
+   * An idle agent can still be wrong about being finished - it may be idle only because
+   * nobody has typed yet. That is why this conclusion is REVERSIBLE: see
+   * `reopenIfWorkResumed`. Every other route to `done` is a human's and stays put.
    */
   private settleIfEpisodeFinished(s: Session): void {
     if (s.state !== "idle") return;
@@ -313,6 +318,44 @@ export class TaskManager {
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
     this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+    this.autoCompleted.add(t.id);
+  }
+
+  /**
+   * Put back a task this class concluded, when its agent turns out to be working again.
+   *
+   * The honest answer to the one thing an idle agent cannot tell us. Concluding on
+   * idleness is what makes a shipped agent reusable at all, but idleness is not proof
+   * the work is over - the operator may simply not have typed yet. Landing an
+   * intermediate pull request, reading the diff, and then saying "now do the follow-up"
+   * is an ordinary sequence, and it produces a terminal task while its agent works on.
+   *
+   * Rather than guess for longer before concluding - every fixed window is outrunnable,
+   * which is what the timer this replaced got wrong - the conclusion is simply undone
+   * once the agent contradicts it. The evidence is unambiguous and it is the agent's
+   * own: it is working again on the very task we called finished.
+   *
+   * Only tasks THIS class auto-completed are eligible, tracked in `autoCompleted`. An
+   * outcome a human recorded is a statement about the work, not an inference from
+   * idleness, and nothing here may overwrite one. The set is in memory on purpose: after
+   * a restart nothing is reopened, which is the conservative direction - a task that
+   * stays `done` is the state the whole feature exists to reach.
+   */
+  private reopenIfWorkResumed(s: Session): void {
+    if (s.state !== "working") return;
+    const t = this.registry.listTasks().find(
+      (task) => task.sessionId === s.id && task.status === "done" && this.autoCompleted.has(task.id),
+    );
+    if (!t) return;
+    this.autoCompleted.delete(t.id);
+    this.registry.upsertTask({
+      ...t,
+      status: "running",
+      outcome: null,
+      outcomeUrl: null,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
   }
 
   /**

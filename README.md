@@ -2706,6 +2706,11 @@ An agent that was given **new work after its merge** and then vanished mid-fligh
 fails, rather than reporting the earlier merge as its outcome: that later work never
 landed, and saying otherwise would claim a success for it.
 
+An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
+that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to
+running and drops the outcome. Only conclusions Mission Control drew from idleness are
+undone this way - an outcome you recorded yourself is never overwritten.
+
 What happens to the agent is yours to choose, in **Settings → Shipping**:
 
 | Close the session after merge | What happens |

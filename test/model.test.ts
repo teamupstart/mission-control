@@ -4,9 +4,27 @@ import {
   defaultWindowForModel,
   effectiveContextWindow,
   isLongContext,
+  MODEL_CATALOG,
   modelLabel,
   parseContextWindowSize,
+  providerModelDefault,
 } from "../src/shared/model.ts";
+
+test("Claude catalog offers Opus 5 before the preserved previous-generation Opus", () => {
+  const opus5 = MODEL_CATALOG.claude.findIndex((choice) => choice.id === "claude-opus-5");
+  const opus48 = MODEL_CATALOG.claude.findIndex((choice) => choice.id === "claude-opus-4-8");
+
+  assert.ok(opus5 >= 0);
+  assert.equal(MODEL_CATALOG.claude[opus5]?.label, "Opus 5");
+  assert.equal(opus48, opus5 + 1);
+  assert.equal(MODEL_CATALOG.claude[opus48]?.hint, "previous-generation Opus");
+});
+
+test("Claude deep calls default to Opus 5 while cheaper tiers stay unchanged", () => {
+  assert.equal(providerModelDefault("claude", "deep"), "claude-opus-5");
+  assert.equal(providerModelDefault("claude", "balanced"), "claude-sonnet-5");
+  assert.equal(providerModelDefault("claude", "cheap"), "claude-haiku-4-5");
+});
 
 test("modelLabel maps Claude ids to friendly names", () => {
   assert.equal(modelLabel("claude-opus-5"), "Opus 5");

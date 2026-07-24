@@ -5,8 +5,10 @@ Give each of Foreman's four `claude -p` calls an explicit, configurable model, a
 environment variable is quietly outranking the box.
 
 > **Decided:** four separate knobs (Review / Verify / Triage / Backlog) rather than one
-> shared "Foreman model" (Decision 1); Review and Verify default to a **named**
-> `claude-opus-4-8` rather than continuing to inherit the CLI's default (Decision 2).
+> shared "Foreman model" (Decision 1); Review and Verify default to **named models**
+> rather than continuing to inherit the CLI's default (Decision 2). The current shipped
+> defaults live in [`FOREMAN_MODEL_SPECS`](../../../src/shared/foreman-models.ts) and are
+> documented in the [README](../../../README.md#which-model-foreman-runs-as).
 
 ## Why
 
@@ -30,8 +32,8 @@ Asked "which model does the Foreman run as?", the codebase had no answer.
 
 | Role | Default | Config key | Env var | What it does |
 |---|---|---|---|---|
-| Review | `claude-opus-4-8` | `reviewModel` | `FOREMAN_REVIEW_MODEL` | Judges a stuck session's pending question |
-| Verify | `claude-opus-4-8` | `verifyModel` | `FOREMAN_VERIFY_MODEL` | Reads the diff, decides if a queued item is done |
+| Review | [current default](../../../README.md#which-model-foreman-runs-as) | `reviewModel` | `FOREMAN_REVIEW_MODEL` | Judges a stuck session's pending question |
+| Verify | [current default](../../../README.md#which-model-foreman-runs-as) | `verifyModel` | `FOREMAN_VERIFY_MODEL` | Reads the diff, decides if a queued item is done |
 | Triage | `claude-haiku-4-5` | `triageModel` | `FOREMAN_TRIAGE_MODEL` | The cheap Tier 1 router in front of Review |
 | Backlog | `claude-sonnet-5` | `backlogModel` | `FOREMAN_BACKLOG_MODEL` | Orders the backlog by what depends on what |
 
@@ -148,10 +150,10 @@ making it required is what stops a future call site quietly re-acquiring it.
 
 ## Behaviour change
 
-Review and Verify now pin to `claude-opus-4-8` instead of following the CLI. For anyone
-whose CLI default was already Opus, nothing changes. For anyone else, this is the point:
-the two calls stop drifting with an unrelated setting. The README says so, and the fields
-are there to set it back.
+Review and Verify now pin to named models instead of following the CLI. The current values
+are owned by [`FOREMAN_MODEL_SPECS`](../../../src/shared/foreman-models.ts) and documented
+in the [README](../../../README.md#which-model-foreman-runs-as). The two calls therefore
+stop drifting with an unrelated CLI setting, and the fields are there to override them.
 
 ## Verified
 

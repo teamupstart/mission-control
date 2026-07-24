@@ -179,7 +179,7 @@ export function parseContextWindowSize(id: string | null | undefined): {
 /**
  * The context window a model runs at when its id carries no explicit size marker.
  * Claude Code enables the 1M (`[1m]`) window by default for its long-context
- * models - Opus 4.x and Sonnet 4.x/5 - but the transcript records the bare id with
+ * models - Opus 4+ and Sonnet 4+ - but the transcript records the bare id with
  * the marker stripped, so those families would otherwise read as the 200k default
  * and their context% would be ~5x too high. Map them to 1M here; everything else
  * (Haiku, Claude 3.x, unknown ids) keeps the standard 200k window.

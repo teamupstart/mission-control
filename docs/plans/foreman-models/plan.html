@@ -97,9 +97,12 @@ box.</p>
 
 <blockquote>
 <p><strong>Decided:</strong> four separate knobs (Review / Verify / Triage / Backlog) rather
-than one shared "Foreman model" (Decision 1); Review and Verify default to a
-<strong>named</strong> <code>claude-opus-4-8</code> rather than continuing to inherit the
-CLI's default (Decision 2).</p>
+than one shared "Foreman model" (Decision 1); Review and Verify default to
+<strong>named models</strong> rather than continuing to inherit the CLI's default
+(Decision 2). The current shipped defaults live in
+<a href="../../../src/shared/foreman-models.ts"><code>FOREMAN_MODEL_SPECS</code></a> and
+are documented in the
+<a href="../../../README.md#which-model-foreman-runs-as">README</a>.</p>
 </blockquote>
 
 <h2>Why</h2>
@@ -128,8 +131,8 @@ CLI's default (Decision 2).</p>
 <table>
   <thead><tr><th>Role</th><th>Default</th><th>Config key</th><th>Env var</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td>Review</td><td><code>claude-opus-4-8</code></td><td><code>reviewModel</code></td><td><code>FOREMAN_REVIEW_MODEL</code></td><td>Judges a stuck session's pending question</td></tr>
-    <tr><td>Verify</td><td><code>claude-opus-4-8</code></td><td><code>verifyModel</code></td><td><code>FOREMAN_VERIFY_MODEL</code></td><td>Reads the diff, decides if a queued item is done</td></tr>
+    <tr><td>Review</td><td><a href="../../../README.md#which-model-foreman-runs-as">current default</a></td><td><code>reviewModel</code></td><td><code>FOREMAN_REVIEW_MODEL</code></td><td>Judges a stuck session's pending question</td></tr>
+    <tr><td>Verify</td><td><a href="../../../README.md#which-model-foreman-runs-as">current default</a></td><td><code>verifyModel</code></td><td><code>FOREMAN_VERIFY_MODEL</code></td><td>Reads the diff, decides if a queued item is done</td></tr>
     <tr><td>Triage</td><td><code>claude-haiku-4-5</code></td><td><code>triageModel</code></td><td><code>FOREMAN_TRIAGE_MODEL</code></td><td>The cheap Tier 1 router in front of Review</td></tr>
     <tr><td>Backlog</td><td><code>claude-sonnet-5</code></td><td><code>backlogModel</code></td><td><code>FOREMAN_BACKLOG_MODEL</code></td><td>Orders the backlog by what depends on what</td></tr>
   </tbody>
@@ -305,10 +308,12 @@ CLI-inherited default in the first place; making it required is what stops a fut
 quietly re-acquiring it.</p>
 
 <h2>Behaviour change</h2>
-<p>Review and Verify now pin to <code>claude-opus-4-8</code> instead of following the CLI. For
-anyone whose CLI default was already Opus, nothing changes. For anyone else, this is the
-point: the two calls stop drifting with an unrelated setting. The README says so, and the
-fields are there to set it back.</p>
+<p>Review and Verify now pin to named models instead of following the CLI. The current
+values are owned by
+<a href="../../../src/shared/foreman-models.ts"><code>FOREMAN_MODEL_SPECS</code></a> and
+documented in the <a href="../../../README.md#which-model-foreman-runs-as">README</a>.
+The two calls therefore stop drifting with an unrelated CLI setting, and the fields are
+there to override them.</p>
 
 <h2>Verified</h2>
 <p>Against an isolated daemon + Vite from this worktree (<code>MISSION_HOME</code> /

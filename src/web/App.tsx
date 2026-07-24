@@ -825,7 +825,7 @@ export function App(): React.JSX.Element {
           // Console's reader zone sits above its selection the way grid focus and the
           // board drill-in do: hand the keyboard back to the rail first, and only drop
           // the selection on the next press.
-          if (layout === "console" && selected && inConsoleDetail) {
+          if (layout === "console" && selected && consoleZone === "detail") {
             e.preventDefault();
             setConsoleZone("rail");
             focusConsoleRail(selected.id);

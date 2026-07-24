@@ -118,7 +118,8 @@ test("Escape peels the reader zone back to the rail before dropping the selectio
   // The zone step-back sits above the selection-clearing return, so one Escape returns to
   // the rail and only a second clears the selection - the layered peel the grid and board
   // already do.
-  assert.match(branch, /selected && inConsoleDetail[\s\S]*setConsoleZone\("rail"\)/);
+  assert.match(branch, /selected && consoleZone === "detail"[\s\S]*setConsoleZone\("rail"\)/);
+  assert.doesNotMatch(branch, /selected && inConsoleDetail/);
 });
 
 test("zone transitions move DOM focus and hidden selections reset to the rail", () => {

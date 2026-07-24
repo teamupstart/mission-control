@@ -29,6 +29,7 @@ const {
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const {
   WorkflowStore,
@@ -411,7 +412,7 @@ test("current-head findings prepare one frozen packet and zero findings complete
   await clean.manager.stop();
 });
 
-test("finding state and its immutable repair packet share one crash-safe transaction", async () => {
+test("finding state and its immutable repair packet survive insertion failure and restart", async () => {
   const seeded = await seed();
   await seeded.manager.stop();
   const before = seeded.store.getRun(seeded.ids.run)!;
@@ -500,4 +501,23 @@ test("finding state and its immutable repair packet share one crash-safe transac
       .map((event) => event.kind),
     ["inspector_findings", "inspector_feedback_prepared"],
   );
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await waitFor(
+    () => seeded.store.getDelivery(committed.delivery.id)?.state === "delivered",
+    "prepared Inspector feedback did not resume after restart",
+  );
+  assert.deepEqual(injected, ["repair packet"]);
+  await recoveredManager.stop();
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });

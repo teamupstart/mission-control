@@ -2309,8 +2309,17 @@ export class WorkflowManager {
   }
 
   private recoverWaitingDeliveries(): void {
-    for (const submission of this.store.listSubmissionsByState("waiting_for_session")) {
+    const waitingSubmissions = this.store.listSubmissionsByState("waiting_for_session");
+    const submissionRecovery = new Set(waitingSubmissions.map((submission) => submission.id));
+    for (const submission of waitingSubmissions) {
       this.scheduleWaitingDelivery(submission.id);
+    }
+    for (const delivery of this.store.listDeliveriesByState("prepared")) {
+      if (submissionRecovery.has(delivery.submissionId)) continue;
+      const run = this.store.getRun(delivery.runId);
+      const binding = run ? this.store.getBinding(run.bindingId) : null;
+      if (!run || runIsTerminal(run) || binding?.deliveryMode !== "live") continue;
+      this.schedulePreparedDelivery(delivery.id);
     }
   }
 
@@ -2329,6 +2338,29 @@ export class WorkflowManager {
         error: message,
       });
       this.publishRun(submission.runId);
+    }));
+  }
+
+  private schedulePreparedDelivery(deliveryId: string): void {
+    this.trackDeliveryTask(this.deliverPrepared(deliveryId, false).catch((error) => {
+      const delivery = this.store.getDelivery(deliveryId);
+      const run = delivery ? this.store.getRun(delivery.runId) : null;
+      if (!delivery || !run || runIsTerminal(run)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.store.setRunState(
+        delivery.runId,
+        "blocked",
+        "delivery_recovery_error",
+        (this.deliveryGateState(delivery) as unknown as WorkflowJson | null) ?? {
+          deliveryId,
+          error: message,
+        },
+      );
+      this.store.appendEvent(delivery.runId, "delivery_recovery_error", {
+        deliveryId,
+        error: message,
+      });
+      this.publishRun(delivery.runId);
     }));
   }
 

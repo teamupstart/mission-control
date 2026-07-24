@@ -23,7 +23,12 @@ export interface ShippingState {
   config: ShippingConfig | null;
   /** Adopted PRs, newest activity first - the ones YOLO mode is deciding about. */
   inspections: InspectorInspection[];
-  update: (patch: ShippingConfigPatch) => Promise<void>;
+  /**
+   * Apply a patch, resolving to whether the daemon accepted it. Callers editing a field
+   * ignore the boolean; Trust waits on it so it retires a staged repo only once its first
+   * merge grant here has actually landed (see `ForemanState.update`).
+   */
+  update: (patch: ShippingConfigPatch) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -71,21 +76,22 @@ export function useShipping(): ShippingState {
    * off" while the daemon has it on is the state in which somebody walks away.
    */
   const update = useCallback(
-    async (patch: ShippingConfigPatch): Promise<void> => {
+    async (patch: ShippingConfigPatch): Promise<boolean> => {
       const before = configRef.current;
-      if (!before) return;
+      if (!before) return false;
       writes.current += 1;
       setConfig({ ...before, ...patch });
       const res = await api.setShippingConfig(patch);
       if (!res.ok) {
         setConfig(before);
         setError(whyItFailed(res.error));
-        return;
+        return false;
       }
       setError(null);
       const at = (writes.current += 1);
       const c = await fetchShippingConfig();
       if (c && writes.current === at) setConfig(c);
+      return true;
     },
     [setConfig],
   );

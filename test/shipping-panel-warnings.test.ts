@@ -25,7 +25,7 @@ const SHIPPING: ShippingState = {
     closeSessionAfterMerge: false,
   },
   inspections: [],
-  update: async () => {},
+  update: async () => true,
   error: null,
 };
 

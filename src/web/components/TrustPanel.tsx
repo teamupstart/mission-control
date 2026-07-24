@@ -107,7 +107,7 @@ export function TrustPanel({
     !shipping.config && "Shipping",
   ].filter((x): x is string => Boolean(x));
 
-  function grant(key: GrantColumn, repo: string, on: boolean): void {
+  async function grant(key: GrantColumn, repo: string, on: boolean): Promise<void> {
     // The decision - owning subsystem, full new list, staged prune - is a pure function so
     // it can be tested without a click; the refs feed it whatever is in force right now.
     const plan = grantPatch(key, repo, on, {
@@ -116,18 +116,22 @@ export function TrustPanel({
       shipping: shippingRef.current,
       staged: stagedRef.current,
     });
+    let ok: boolean;
     if (plan.subsystem === "foreman") {
       if (!foreman.config) return;
-      void foreman.update({ repoAllowlist: plan.repoAllowlist });
+      ok = await foreman.update({ repoAllowlist: plan.repoAllowlist });
     } else if (plan.subsystem === "inspector") {
       if (!inspector.config) return;
-      void inspector.update({ repoAllowlist: plan.repoAllowlist });
+      ok = await inspector.update({ repoAllowlist: plan.repoAllowlist });
     } else {
       if (!shipping.config) return;
-      void shipping.update({ repoAllowlist: plan.repoAllowlist });
+      ok = await shipping.update({ repoAllowlist: plan.repoAllowlist });
     }
-    // A first grant retires the staged entry: the repo now lives in a real allowlist.
-    if (plan.trustStaged !== null) {
+    // Retire the staged entry ONLY after the grant write is confirmed: pruning it
+    // eagerly would, on a rejected write, leave the repo in no allowlist AND no longer
+    // staged - vanishing the row despite the operator's click. A failed grant keeps the
+    // staged row, so the ungranted repo stays visible to try again.
+    if (ok && plan.trustStaged !== null) {
       void updateUiConfig({ trustStaged: plan.trustStaged });
     }
   }
@@ -216,7 +220,7 @@ export function TrustPanel({
             disabled={!configFor}
             aria-pressed={on}
             aria-label={`${on ? "Revoke" : "Grant"}: ${col.label} for ${row.repo}`}
-            onClick={() => grant(col.key, row.repo, on)}
+            onClick={() => void grant(col.key, row.repo, on)}
           >
             <span className="trust-grant-dot" aria-hidden />
             {on ? (trappedPill ? "allowed †" : "allowed") : "grant"}

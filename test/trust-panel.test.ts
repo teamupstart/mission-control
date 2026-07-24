@@ -89,6 +89,8 @@ test("revoking a grant removes it from the owning list and touches nothing stage
   assert.equal(patch.trustStaged, null, "a revoke never re-stages");
 });
 
+// `grantPatch` computes the INTENDED prune; the panel applies it only after the grant write
+// is confirmed (a rejected write must not vanish the row - see the panel's `grant`).
 test("a first grant prunes the staged entry; a grant on an unstaged repo leaves staging alone", () => {
   const staged = grantPatch("inspector", "/staged", false, LISTS);
   assert.deepEqual(staged.trustStaged, [], "the newly-granted repo leaves the staged list");
@@ -110,7 +112,7 @@ function foreman(over: Partial<{ repoAllowlist: string[]; config: null }> = {}):
     config: over.config === null ? null : ForemanConfigSchema.parse({ repoAllowlist: over.repoAllowlist ?? [] }),
     status: null,
     backlogPlan: null,
-    update: async () => {},
+    update: async () => true,
     error: null,
   };
 }
@@ -124,7 +126,7 @@ function inspector(
         : InspectorConfigSchema.parse({ repoAllowlist: over.repoAllowlist ?? [] }),
     inspections: [],
     model: null,
-    update: async () => {},
+    update: async () => true,
     error: null,
   };
 }
@@ -140,7 +142,7 @@ function shipping(
             autoMerge: over.autoMerge ?? false,
           }),
     inspections: [],
-    update: async () => {},
+    update: async () => true,
     error: null,
   };
 }

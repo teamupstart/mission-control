@@ -105,7 +105,7 @@ function state(over: Partial<InspectorState> = {}): InspectorState {
     config: InspectorConfigSchema.parse({ enabled: true, mode: "dry-run" }),
     inspections: [],
     model: null,
-    update: async () => {},
+    update: async () => true,
     error: null,
     ...over,
   };

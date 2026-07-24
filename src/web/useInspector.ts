@@ -31,7 +31,12 @@ export interface InspectorState {
    * the same thing an unreachable daemon does to every other control here.
    */
   model: ResolvedModel | null;
-  update: (patch: InspectorConfigPatch) => Promise<void>;
+  /**
+   * Apply a patch, resolving to whether the daemon accepted it. Callers editing a field
+   * ignore the boolean; Trust waits on it so it retires a staged repo only once its first
+   * grant here has actually landed (see `ForemanState.update`).
+   */
+  update: (patch: InspectorConfigPatch) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -97,16 +102,16 @@ export function useInspector(): InspectorState {
    * the daemon is live is the whole ballgame.
    */
   const update = useCallback(
-    async (patch: InspectorConfigPatch): Promise<void> => {
+    async (patch: InspectorConfigPatch): Promise<boolean> => {
       const before = configRef.current;
-      if (!before) return;
+      if (!before) return false;
       writes.current += 1;
       setConfig({ ...before, ...patch });
       const res = await api.setInspectorConfig(patch);
       if (!res.ok) {
         setConfig(before);
         setError(whyItFailed(res.error));
-        return;
+        return false;
       }
       setError(null);
       const at = (writes.current += 1);
@@ -114,9 +119,12 @@ export function useInspector(): InspectorState {
       // has to re-resolve NOW, or the source line under the box goes on saying "Shipped
       // default" for up to `POLL_MS` after you typed an override into it.
       const [c, status] = await Promise.all([fetchInspectorConfig(), fetchInspectorStatus()]);
-      if (writes.current !== at) return;
+      // A newer write superseded this one's REFETCH, so drop that; the write itself still
+      // committed on the server, so it succeeded from this caller's point of view.
+      if (writes.current !== at) return true;
       if (status) setModel(status.model);
       if (c) setConfig(c);
+      return true;
     },
     [setConfig],
   );

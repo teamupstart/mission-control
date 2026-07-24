@@ -37,6 +37,7 @@ import {
   type ActionResult,
 } from "./actions.ts";
 import {
+  getTask as getDurableTask,
   historicalTaskWorkEpisodeBindingsForTask,
   taskWorkEpisodeForTask,
 } from "./db.ts";
@@ -70,6 +71,44 @@ export interface CreateTaskInput {
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
+
+/**
+ * The three provenance values a schedule-created task carries, moved as one.
+ *
+ * A struct rather than three optional fields on `CreateTaskInput` because they are one
+ * fact - which occurrence of which schedule filed this, and for what instant - and two of
+ * three populated is not a partially-known task, it is a corrupt one.
+ */
+export interface TaskScheduleProvenance {
+  scheduleId: string;
+  scheduleOccurrenceId: string;
+  /** The instant the task is FOR, not when it was filed. See `Task.scheduledFor`. */
+  scheduledFor: number;
+}
+
+/**
+ * What an INTERNAL, durable producer supplies that no human caller may: a task id it
+ * chose itself, and the schedule occurrence that justifies it.
+ *
+ * The id is the whole mechanism behind exactly-once. The scheduler reserves an occurrence
+ * and the id of the task it is going to create in ONE transaction, then creates the task.
+ * A crash between those two leaves a claimed occurrence naming a task that does not exist,
+ * and recovery finishes the job by calling this again with the same id. Which only works
+ * if a second call with an id that already exists is a no-op rather than a second task -
+ * see `create`.
+ *
+ * Deliberately a second argument rather than fields on `CreateTaskInput`: every ordinary
+ * caller parses a request body into that type, and an id accepted there would be an id an
+ * HTTP client could choose.
+ */
+export interface InternalCreateOptions {
+  /** Preallocated, and reserved durably before this call. */
+  id: string;
+  schedule: TaskScheduleProvenance;
+}
+
+/** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
+export class TaskIdCollisionError extends Error {}
 
 export interface Ok {
   ok: boolean;
@@ -726,11 +765,50 @@ export class TaskManager {
    * Stays synchronous so the POST returns a task immediately: the card must appear the
    * instant it is dispatched, not after a subprocess. It appears under the heuristic title,
    * which `autoTitleThenDispatch` replaces over SSE a beat later.
+   *
+   * `internal` is the durable producer's door - today the Recurring Missions scheduler,
+   * and any future writer that has to survive its own crash. It makes this call idempotent
+   * on a caller-chosen id, which is the property the exactly-once ledger is built on. See
+   * `InternalCreateOptions`. Omitting it is every other caller, and their behaviour here is
+   * unchanged: fresh UUID, model titling when the title is blank, dispatch when it is not.
    */
-  create(input: CreateTaskInput): Task {
+  create(input: CreateTaskInput, internal?: InternalCreateOptions): Task {
     const now = Date.now();
     const explicitTitle = input.title?.trim();
-    const id = randomUUID();
+    const id = internal?.id ?? randomUUID();
+    if (internal) {
+      // Two rules, and the difference between them is the difference between recovering
+      // and corrupting. An id that already carries THIS occurrence's provenance is the
+      // crash window closing: the task was persisted before the process died, so this
+      // call has nothing left to do and must not re-emit, re-title or re-dispatch it. An
+      // id that exists carrying anything else is not a retry at all - the scheduler
+      // reserved an id that belongs to somebody else's task - and writing over it would
+      // rewrite a stranger's work as a recurring mission. Fail closed and let the
+      // occurrence record `failed`, which is visible, rather than "succeeding" quietly.
+      const existing = getDurableTask(id);
+      if (existing) {
+        const p = internal.schedule;
+        if (
+          existing.scheduleId !== p.scheduleId ||
+          existing.scheduleOccurrenceId !== p.scheduleOccurrenceId ||
+          existing.scheduledFor !== p.scheduledFor
+        ) {
+          throw new TaskIdCollisionError(
+            `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,
+          );
+        }
+        return existing;
+      }
+      // Both are the scheduler's own contract, asserted at the one place that could break
+      // it rather than trusted at each call site. A schedule files backlog work and stops:
+      // Foreman remains the only autonomous dispatch path, and a `backlog: false` reaching
+      // here would hand a recurring mission a worktree and a terminal with no capacity,
+      // allowlist or pane-safety gate having been consulted. The title is the other half -
+      // a blank one takes the model-titling path below, which would spend an LLM call on
+      // every single run to derive the same string from the same intent.
+      if (!input.backlog) throw new Error(`schedule-created task ${id} must be backlog`);
+      if (!explicitTitle) throw new Error(`schedule-created task ${id} must carry a title`);
+    }
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const task: Task = {
@@ -761,13 +839,12 @@ export class TaskManager {
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
-      // No schedule filed this. Every caller of `create` is a human or an external
-      // system - the dispatch form, an MCP tool, a task source sweep - and none of them
-      // has an occurrence to point at. Phase 2 of Recurring Missions adds the internal,
-      // recovery-safe producer that populates all three together.
-      scheduleId: null,
-      scheduleOccurrenceId: null,
-      scheduledFor: null,
+      // Null for every human or external caller - the dispatch form, an MCP tool, a task
+      // source sweep - none of which has an occurrence to point at. All three arrive
+      // together or not at all, from the scheduler's internal producer above.
+      scheduleId: internal?.schedule.scheduleId ?? null,
+      scheduleOccurrenceId: internal?.schedule.scheduleOccurrenceId ?? null,
+      scheduledFor: internal?.schedule.scheduledFor ?? null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,

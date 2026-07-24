@@ -308,9 +308,18 @@ export const recurrence: RecurrenceEvaluator = {
         resumedAt: input.resumedAt,
         missed: missed.instants,
         truncated: missed.truncated,
+        // The cadence half of the answer, and only that. Which of these instants would
+        // actually create work is a missed-policy question, and this module owns no
+        // policy - the manager runs `planMissedInstants` over `missed` and fills this in.
+        // Null rather than an empty array, so "nobody judged these" cannot be misread as
+        // "none of them do anything".
+        plan: null,
       };
     }
 
-    return { ok: true, expression, timezone, instants: previewInstants, standby };
+    // Collisions need the catalog, which this module never reads: it answers questions
+    // about one expression, so that a preview costs no schedule query and stays usable
+    // from the create form before anything has been saved. The manager fills it.
+    return { ok: true, expression, timezone, instants: previewInstants, standby, collisions: [] };
   },
 };

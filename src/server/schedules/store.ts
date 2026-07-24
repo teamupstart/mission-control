@@ -414,6 +414,25 @@ export function dueSchedules(now: number): MissionSchedule[] {
   return hydrate(d, rows, now);
 }
 
+/**
+ * The soonest instant any live schedule is due, or null when nothing is scheduled.
+ *
+ * Added for Phase 2's loop, which sleeps until the earlier of this and a one-minute health
+ * check. It exists as its own statement rather than a `Math.min` over `listSchedules()`
+ * because that call hydrates every row - active revision, template JSON, last occurrence,
+ * derived health - and the loop asks this question after every single tick. One aggregate
+ * over an indexed column is the whole cost instead.
+ */
+export function nextDueAt(): number | null {
+  const row = openDb()
+    .prepare(
+      `SELECT MIN(next_run_at) AS at FROM mission_schedules
+        WHERE enabled = 1 AND archived_at IS NULL AND next_run_at IS NOT NULL`,
+    )
+    .get() as { at: number | null } | undefined;
+  return row?.at ?? null;
+}
+
 /** The immutable revision a schedule currently points at. */
 export function activeRevision(scheduleId: string): ScheduleRevision | null {
   const row = openDb()
@@ -704,6 +723,39 @@ export function setScheduleEnabled(
 }
 
 /**
+ * Move a cursor that no claim can move, and only such a cursor.
+ *
+ * The foundation deliberately advances `next_run_at` INSIDE the claim, so there is no way
+ * for a cursor to move without an occurrence being written for the instant it left behind.
+ * That covers every ordinary tick. It does not cover the one case where a due cursor
+ * enumerates NOTHING: a stored instant that the current expression does not produce - a
+ * row written by a build whose cadence evaluation differed, a zone whose rules moved
+ * underneath a stored instant. There is no instant to claim, so no claim can advance it,
+ * and the schedule sits permanently due: enumerating nothing, filing nothing, and showing
+ * `overdue` for ever with no way out but an edit.
+ *
+ * Kept as narrow as that diagnosis. It is a compare-and-set on the exact stale value, so
+ * it cannot overwrite a cursor a concurrent claim has already moved, and it is guarded on
+ * the schedule still being live, so it can neither restart a paused schedule's clock nor
+ * touch an archived one. Reports whether it took, because "somebody else fixed it" and
+ * "this wrote the repair" are different lines in the log.
+ */
+export function repairScheduleCursor(
+  id: string,
+  expected: number,
+  nextRunAt: number | null,
+  at: number,
+): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE mission_schedules SET next_run_at = ?, updated_at = ?
+        WHERE id = ? AND enabled = 1 AND archived_at IS NULL AND next_run_at = ?`,
+    )
+    .run(nextRunAt, at, id, expected);
+  return info.changes > 0;
+}
+
+/**
  * Archive: stop the clock, leave every row standing.
  *
  * Idempotent, and it never re-stamps `archived_at` - a second Archive click must not
@@ -808,6 +860,16 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
       return { outcome: "schedule_changed" as const };
     }
 
+    const coveredById =
+      input.coveredById !== null &&
+      d
+        .prepare(
+          `SELECT 1 FROM mission_schedule_occurrences
+            WHERE id = ? AND schedule_id = ?`,
+        )
+        .get(input.coveredById, input.scheduleId)
+        ? input.coveredById
+        : null;
     const info = d
       .prepare(
         `INSERT INTO mission_schedule_occurrences (
@@ -826,7 +888,7 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
         input.decisionKind,
         input.claimedAt,
         input.taskId,
-        input.coveredById,
+        coveredById,
         input.blockingTaskId,
         input.delayMs,
         input.claimedAt,
@@ -887,7 +949,6 @@ export interface FinishOccurrenceInput {
   finishedAt: number;
   /** Set when the created task's id differs from the preallocated one. Rarely needed. */
   taskId?: string | null;
-  coveredById?: string | null;
   error?: string | null;
 }
 
@@ -905,16 +966,46 @@ export function finishOccurrence(input: FinishOccurrenceInput): ScheduleOccurren
     `UPDATE mission_schedule_occurrences
         SET status = ?, finished_at = ?,
             task_id = COALESCE(?, task_id),
-            covered_by_id = COALESCE(?, covered_by_id),
             error = ?
       WHERE id = ? AND status = 'claimed'`,
   ).run(
     input.status,
     input.finishedAt,
     input.taskId ?? null,
-    input.coveredById ?? null,
     input.error ?? null,
     input.id,
   );
   return getOccurrence(input.id);
+}
+
+/**
+ * Attach coalesced rows only after their covering occurrence exists durably.
+ *
+ * The existence check and update share one transaction so a missing cover leaves the
+ * dependent rows null rather than persisting an id that no occurrence owns.
+ */
+export function recordOccurrenceCoverage(
+  coveredById: string,
+  occurrenceIds: string[],
+): number {
+  if (occurrenceIds.length === 0) return 0;
+  const d = openDb();
+  return inTransaction(d, () => {
+    const covering = d
+      .prepare(`SELECT schedule_id FROM mission_schedule_occurrences WHERE id = ?`)
+      .get(coveredById) as { schedule_id: string } | undefined;
+    if (!covering) return 0;
+    const placeholders = occurrenceIds.map(() => "?").join(",");
+    const info = d
+      .prepare(
+        `UPDATE mission_schedule_occurrences
+            SET covered_by_id = ?
+          WHERE schedule_id = ?
+            AND id IN (${placeholders})
+            AND decision_kind = 'coalesced'
+            AND covered_by_id IS NULL`,
+      )
+      .run(coveredById, covering.schedule_id, ...occurrenceIds);
+    return Number(info.changes);
+  });
 }

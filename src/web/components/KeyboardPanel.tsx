@@ -30,9 +30,10 @@ function labelOf(id: ActionId): string {
  * This panel owns everything about recording a shortcut - the target being recorded, the
  * inline error, and the capture listener. The listener runs in the CAPTURE phase and
  * calls `stopPropagation`, so while a key is being recorded no other keydown handler
- * fires: not the grid's global keys, and not the overlay's Escape-to-close. That is what
- * lets the `Overlay` wrapping `SettingsModal` keep a plain bubble-phase Escape listener
- * without having to know whether a shortcut is mid-capture (see `Overlay.tsx`).
+ * fires: not the grid's global keys, and not an overlay's or the settings page's
+ * Escape. That is what lets `SettingsPage` keep a plain bubble-phase Escape listener
+ * (Escape returns to the fleet) without having to know whether a shortcut is mid-capture -
+ * the same contract `Overlay.tsx` relies on.
  */
 export function KeyboardPanel(): React.JSX.Element {
   const { bindings, hasCustom } = useKeybindings();
@@ -74,8 +75,11 @@ export function KeyboardPanel(): React.JSX.Element {
 
   return (
     <section className="settings-section">
+      {/* "Shortcuts", not "Keyboard shortcuts": the settings page's own header already
+          says Keyboard above this, and a heading that repeats its container reads as two
+          things stacked rather than one. */}
       <div className="settings-section-head">
-        <h3>Keyboard shortcuts</h3>
+        <h3>Shortcuts</h3>
         {hasCustom && (
           <Tooltip label="Restore every shortcut to its default key">
             <button className="btn btn-ghost" onClick={() => resetAll()}>
@@ -96,7 +100,11 @@ export function KeyboardPanel(): React.JSX.Element {
             const conflict = conflicts.get(a.id);
             const isRec = recording === a.id;
             return (
-              <div className={`kb-row${conflict ? " has-conflict" : ""}`} key={a.id}>
+              <div
+                className={`kb-row${conflict ? " has-conflict" : ""}`}
+                key={a.id}
+                data-anchor={`keyboard/${a.id}`}
+              >
                 <div className="kb-row-text">
                   <span className="kb-row-label">{a.label}</span>
                   <span className="kb-row-desc">{a.description}</span>

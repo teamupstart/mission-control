@@ -13,7 +13,8 @@ import { ReportPanel } from "./components/ReportPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
-import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
+import { SettingsPage } from "./components/SettingsPage.tsx";
+import { DEFAULT_SETTINGS_CATEGORY } from "./lib/settings-registry.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
@@ -93,8 +94,8 @@ export function App(): React.JSX.Element {
   const [layout, setLayout] = useLayoutMode();
   const [usageBarCollapsed, setUsageBarCollapsed] = useUsageBarCollapsed();
   const foreman = useForeman();
-  // Owned here rather than by SettingsModal, on the `foreman` precedent: the topbar strip
-  // and the Cost panel read the same `view` setting, so a local copy in the modal would
+  // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar strip
+  // and the Cost panel read the same `view` setting, so a local copy in the page would
   // leave the strip showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
@@ -124,11 +125,6 @@ export function App(): React.JSX.Element {
   // by a copy taken at open time.
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // Which category Settings opens on. The gear and ⌘, land on Keyboard; the ForemanBar
-  // "manage in Settings" link deep-links Foreman. Applied via SettingsModal's
-  // initialCategory, which re-reads on each open because the modal remounts.
-  const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>("keyboard");
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
@@ -187,15 +183,18 @@ export function App(): React.JSX.Element {
   }, [overlays]);
   const isOverlayOpen = useCallback(() => overlaysRef.current.anyOpen, []);
 
-  // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
-  // sets the same state directly. No-op in a plain browser (no preload bridge).
+  // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear navigates
+  // to the same route directly. No-op in a plain browser (no preload bridge).
+  //
+  // The IPC channel is reused exactly as it was - `mission:open-settings`, main and preload
+  // untouched - because what changed is what the renderer DOES with it, not what the shell
+  // sends. Only this listener's body is a navigation now.
   useEffect(
     () =>
       window.missionDesktop?.onOpenSettings(() => {
-        setSettingsCategory("keyboard");
-        setSettingsOpen(true);
+        navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY });
       }),
-    [],
+    [navigate],
   );
 
   // Live element + imperative-handle maps for the keyboard-selected card.
@@ -659,9 +658,10 @@ export function App(): React.JSX.Element {
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
-      // The Workflows page owns its own editor and navigation keys. Fleet shortcuts must not
-      // dispatch, select, or drive a session merely because its state remains mounted in App.
-      if (route.page === "workflows") return;
+      // Every page that is not the fleet owns its own keys - the Workflows editor, the
+      // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
+      // session merely because its state remains mounted in App.
+      if (route.page !== "fleet") return;
 
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
@@ -970,10 +970,7 @@ export function App(): React.JSX.Element {
             </Tooltip>
             <ForemanBar
               state={foreman}
-              onOpenSettings={() => {
-                setSettingsCategory("foreman");
-                setSettingsOpen(true);
-              }}
+              onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
             />
             <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
               <button className="dispatch-btn" onClick={openDispatch}>
@@ -992,14 +989,24 @@ export function App(): React.JSX.Element {
                 {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
               </button>
             </Tooltip>
-            <Tooltip label="Settings (⌘,)">
+            <Tooltip
+              label={
+                route.page === "settings"
+                  ? "Return to the fleet of running sessions"
+                  : "Settings (⌘,)"
+              }
+            >
               <button
-                className="ghost-btn glyph-btn gear-btn"
-                onClick={() => {
-                  setSettingsCategory("keyboard");
-                  setSettingsOpen(true);
-                }}
-                aria-label="Settings"
+                className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
+                onClick={() =>
+                  navigate(
+                    route.page === "settings"
+                      ? { page: "fleet" }
+                      : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+                  )
+                }
+                aria-label={route.page === "settings" ? "Return to Fleet" : "Settings"}
+                aria-pressed={route.page === "settings"}
               >
                 <span aria-hidden>⚙</span>
               </button>
@@ -1047,6 +1054,18 @@ export function App(): React.JSX.Element {
                 bindingDefaults: version.bindingDefaults,
               })}
               onDirtyChange={setWorkflowDirty}
+            />
+          )}
+          settings={(
+            <SettingsPage
+              category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
+              onNavigate={(cat) => navigate({ page: "settings", category: cat })}
+              onLeave={() => navigate({ page: "fleet" })}
+              foreman={foreman}
+              cost={cost}
+              llm={llm}
+              layout={layout}
+              onLayoutChange={setLayout}
             />
           )}
           fleet={(
@@ -1208,18 +1227,6 @@ export function App(): React.JSX.Element {
                     dismissDigest();
                     setReportOpen(true);
                   }}
-                />
-              )}
-
-              {settingsOpen && (
-                <SettingsModal
-                  onClose={() => setSettingsOpen(false)}
-                  foreman={foreman}
-                  cost={cost}
-                  llm={llm}
-                  initialCategory={settingsCategory}
-                  layout={layout}
-                  onLayoutChange={setLayout}
                 />
               )}
 

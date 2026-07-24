@@ -42,7 +42,6 @@ export const OVERLAY_IDS = {
   reviews: "reviews",
   dispatch: "dispatch",
   sitrep: "sitrep",
-  settings: "settings",
   diff: "diff",
   reset: "reset",
   assignReset: "assign-reset",

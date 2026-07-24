@@ -26,10 +26,6 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Cost</h3>
-      </div>
-
       <p className="settings-hint settings-blurb">
         Claude Code calculates an estimated API cost from its request usage and reports it
         over OpenTelemetry. Mission Control applies versioned OpenAI Standard API rates to
@@ -58,7 +54,7 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </p>
       )}
 
-      <div className="kb-row">
+      <div className="kb-row" data-anchor="cost/track">
         <div className="kb-row-text">
           <span className="kb-row-label">Track Claude estimated cost</span>
           <span className="kb-row-desc">
@@ -93,7 +89,7 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </div>
       </div>
 
-      <div className="kb-row">
+      <div className="kb-row" data-anchor="cost/interval">
         <div className="kb-row-text">
           <span className="kb-row-label">Export interval</span>
           <span className="kb-row-desc">
@@ -120,7 +116,7 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </div>
       </div>
 
-      <div className="kb-row">
+      <div className="kb-row" data-anchor="cost/view">
         <div className="kb-row-text">
           <span className="kb-row-label">Lead with</span>
           <span className="kb-row-desc">

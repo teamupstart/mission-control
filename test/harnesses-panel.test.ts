@@ -81,11 +81,14 @@ test("a disabled setting renders the switch unchecked", () => {
 });
 
 test("the switch is disabled until the first config read lands", () => {
-  // It mounts inside the settings modal, so the first paint happens with config: null.
+  // It mounts inside the settings page, so the first paint happens with config: null.
   // A togglable switch there would race the fetch and could write a value onto defaults
   // it never actually read.
+  //
+  // The panel draws its rows either way - the category's own title is the page's header
+  // now, not this panel's, so what proves it rendered is the control itself.
   const html = render(null);
-  assert.match(html, /Harnesses/);
+  assert.match(html, /Auto mode on dispatch/);
   assert.match(html, /<input[^>]*disabled/);
   // Off is the shipped default, so the pre-poll switch reads off, not checked.
   assert.doesNotMatch(html, /checked/);

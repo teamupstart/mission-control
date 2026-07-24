@@ -103,10 +103,6 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Inspector</h3>
-      </div>
-
       <p className="settings-hint">
         Reviews the pull requests Mission Control opened - and only those - against the
         repository's <code>INSPECTOR.md</code>. It comments on what it finds, answers replies in
@@ -127,7 +123,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
       )}
 
       <Tooltip label="Review the pull requests Mission Control opened, and comment on them">
-        <label className="alert-row inspector-toggle">
+        <label className="alert-row inspector-toggle" data-anchor="inspector/enabled">
           <input
             type="checkbox"
             checked={enabled}
@@ -138,7 +134,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         </label>
       </Tooltip>
 
-      <fieldset className="inspector-modes">
+      <fieldset className="inspector-modes" data-anchor="inspector/mode">
         <legend>Mode</legend>
         {(["dry-run", "live"] as const).map((m) => (
           <Tooltip
@@ -178,7 +174,11 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
           class vocabulary would be two selectors to keep in step for one widget. */}
       <div className="foreman-models">
         <p className="settings-group-label">Model</p>
-        <label className="foreman-model-row" htmlFor="inspector-provider">
+        <label
+          className="foreman-model-row"
+          htmlFor="inspector-provider"
+          data-anchor="inspector/provider"
+        >
           <span className="foreman-model-label">Provider</span>
           <Tooltip label="Which model provider the Inspector's review call is spawned with">
           <select
@@ -206,6 +206,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         </p>
         <ModelSuggestions providerLabel={AGENT_IDENTITY[config?.runner ?? "claude"].label} />
         <ModelField
+          anchor="inspector/model"
           id="inspector-model"
           spec={INSPECTOR_MODEL_SPEC}
           value={config?.model ?? ""}
@@ -221,7 +222,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         />
       </div>
 
-      <div className="foreman-repos">
+      <div className="foreman-repos" data-anchor="inspector/reviewed-repos">
         <p className="settings-group-label">Reviewed repositories</p>
         <p className="settings-hint foreman-repos-hint">
           The Inspector only posts in these repos - their worktrees count too, wherever they
@@ -280,7 +281,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
       {/* Without this, dry run is indistinguishable from broken: it reviews, finds things,
           posts nothing, and says nothing anywhere. This is where you read what it WOULD
           have said before you let it speak. */}
-      <div className="inspector-log">
+      <div className="inspector-log" data-anchor="inspector/recent">
         <p className="settings-group-label">Recent inspections</p>
         {inspections.length === 0 ? (
           <p className="settings-hint">

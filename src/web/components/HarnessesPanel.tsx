@@ -72,7 +72,7 @@ function DefaultModelRow({
   onChange: (id: string | null) => void;
 }): React.JSX.Element {
   return (
-    <div className="kb-row harnesses-row">
+    <div className="kb-row harnesses-row" data-anchor={`harnesses/model-${agent}`}>
       <div className="kb-row-text">
         <span className="kb-row-label">{label}</span>
         <span className="kb-row-desc">
@@ -120,7 +120,7 @@ function DefaultEffortRow({
   onChange: (level: ThinkingLevel | null) => void;
 }): React.JSX.Element {
   return (
-    <div className="kb-row harnesses-row">
+    <div className="kb-row harnesses-row" data-anchor={`harnesses/effort-${agent}`}>
       <div className="kb-row-text">
         <span className="kb-row-label">{label}</span>
         <span className="kb-row-desc">
@@ -159,10 +159,6 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Harnesses</h3>
-      </div>
-
       <p className="settings-hint settings-blurb">
         Defaults for the agents Mission Control <strong>dispatches</strong>. These never touch
         sessions you started yourself and the app merely discovered - only the ones it launches.
@@ -170,7 +166,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
 
       {error && <p className="settings-error">{error}</p>}
 
-      <div className="kb-row harnesses-row">
+      <div className="kb-row harnesses-row" data-anchor="harnesses/auto-mode">
         <div className="kb-row-text">
           <span className="kb-row-label">
             Auto mode on dispatch

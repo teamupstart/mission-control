@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings redesign - phased implementation</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --line: #d0d7de;
+  --accent: #0969da; --box: #f6f8fa; --code-bg: rgba(175, 184, 193, 0.2);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+    --accent: #4a9eff; --box: #161b22; --code-bg: rgba(110, 118, 129, 0.3);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 40px 24px 96px;
+  background: var(--bg); color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 860px; margin: 0 auto; }
+h1 { font-size: 28px; line-height: 1.25; margin: 0 0 16px; letter-spacing: -0.01em; }
+h2 { font-size: 21px; margin: 38px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+p { margin: 12px 0; }
+ul, ol { padding-left: 26px; margin: 12px 0; }
+li { margin: 7px 0; }
+a { color: var(--accent); }
+code { font: 0.85em ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); border-radius: 5px; padding: 1px 5px; }
+strong { font-weight: 650; }
+.table-wrap { overflow-x: auto; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; }
+th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; font-size: 14.5px; vertical-align: top; }
+th { background: var(--box); font-weight: 650; }
+.diagram-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--box); padding: 18px; }
+.diagram-wrap svg { display: block; min-width: 620px; }
+.svgbox { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; rx: 8; }
+.svgbox-hot { fill: var(--bg); stroke: var(--accent); stroke-width: 1.5; rx: 8; }
+.svgt { font: 12.5px system-ui, sans-serif; fill: var(--fg); }
+.svgedge { stroke: var(--muted); stroke-width: 1.2; fill: none; marker-end: url(#arr2); }
+footer { margin-top: 56px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Settings redesign - phased implementation</h1>
+
+<p>Source plan: <a href="plan.html"><code>plan.md</code></a> (approved; the operator
+selected the combined prototype - page container + Trust matrix + harness cards +
+search - as the target, with <a href="prototype.html"><code>prototype.html</code></a>
+beside this file as the visual reference). This index decomposes it into five
+merge-safe phases.</p>
+
+<h2>Incorporated human decisions</h2>
+<ul>
+  <li>The combined B+E+F+D direction was explicitly approved after reviewing seven
+  mockups; mockup C (hub landing) was not adopted.</li>
+  <li>The phased implementation itself was requested in the operator's own words
+  ("write up a phased-plan to implement it"), so no further follow-up decision gate was
+  posed.</li>
+  <li>Design choices resolved during planning and recorded in <code>plan.md</code> as
+  D1-D7: modal retirement in favor of a routed page, Display merge, Trust as a view
+  over three stores, SSE (not polling) for status, the gear navigating rather than
+  opening the palette, and the risky-toggle exemption from inline search flipping.</li>
+</ul>
+
+<h2>Investigated findings that shaped the phase boundaries</h2>
+<ul>
+  <li>Routing, the page shell, and the keyboard stand-down already have a worked
+  example (the Workflows page: <code>useWorkflowRoute.ts</code>,
+  <code>AppPageShell</code>, App's <code>route.page === "workflows"</code> guard), so
+  the container is a self-contained first phase.</li>
+  <li>The three allowlists share schemas, routes, and the add/patch/stale-guard
+  pattern; Trust needs no daemon change, making it a pure-web phase gated only on the
+  page.</li>
+  <li><code>cost_fleet</code> is the worked example for a scalar SSE status frame;
+  <code>settings_status</code> follows it exactly (event + snapshot +
+  <code>MissionState</code> + <code>useEventStream</code> case), so status is an
+  independent daemon+web phase.</li>
+  <li>The search index must cover Trust and the harness cards to ship complete, which
+  orders search after Phases 2 and 3 rather than straight after 1.</li>
+  <li><code>settings-sidebar-render.test.ts</code>,
+  <code>overlay-registry.test.ts</code>, <code>agent-accent.test.ts</code>, and
+  <code>keybindings.test.ts</code> pin today's shapes; each phase names the tests it
+  reworks.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th><th>Concurrency group</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Settings page container and grouped registry</td><td><a href="phase-1-settings-page.md"><code>phase-1-settings-page.md</code></a></td><td>-</td><td>A (alone)</td></tr>
+    <tr><td>2</td><td>Trust matrix over the three allowlists</td><td><a href="phase-2-trust-matrix.md"><code>phase-2-trust-matrix.md</code></a></td><td>Phase 1</td><td>B</td></tr>
+    <tr><td>3</td><td>Harness cards</td><td><a href="phase-3-harness-cards.md"><code>phase-3-harness-cards.md</code></a></td><td>Phase 1</td><td>B</td></tr>
+    <tr><td>4</td><td>Settings status on the live channel + dots</td><td><a href="phase-4-status-signal.md"><code>phase-4-status-signal.md</code></a></td><td>Phase 1</td><td>B</td></tr>
+    <tr><td>5</td><td>Settings search</td><td><a href="phase-5-settings-search.md"><code>phase-5-settings-search.md</code></a></td><td>Phases 2, 3</td><td>C (may overlap Phase 4)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<div class="diagram-wrap">
+<svg viewBox="0 0 640 170" width="640" height="170" role="img" aria-label="Phase dependency graph: phase 1 feeds phases 2, 3, and 4; phases 2 and 3 feed phase 5">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" opacity="0.65"/></marker></defs>
+  <rect class="svgbox-hot" x="10" y="66" width="150" height="38"/>
+  <text class="svgt" x="24" y="89">1 · page container</text>
+  <rect class="svgbox" x="250" y="12" width="150" height="38"/>
+  <text class="svgt" x="264" y="35">2 · trust matrix</text>
+  <rect class="svgbox" x="250" y="66" width="150" height="38"/>
+  <text class="svgt" x="264" y="89">3 · harness cards</text>
+  <rect class="svgbox" x="250" y="120" width="150" height="38"/>
+  <text class="svgt" x="264" y="143">4 · status + dots</text>
+  <rect class="svgbox" x="490" y="39" width="130" height="38"/>
+  <text class="svgt" x="504" y="62">5 · search</text>
+  <path class="svgedge" d="M160,78 C200,78 205,34 248,31"/>
+  <path class="svgedge" d="M160,85 L248,85"/>
+  <path class="svgedge" d="M160,92 C200,92 205,136 248,139"/>
+  <path class="svgedge" d="M400,31 C445,31 450,50 488,53"/>
+  <path class="svgedge" d="M400,85 C445,85 450,66 488,63"/>
+</svg>
+</div>
+<p>Phases 2, 3, and 4 are mutually independent and may merge in any order once Phase 1
+is on main. Phase 5 needs 2 and 3 merged (index completeness); it does not depend on 4
+and may run while 4 is in flight - the expected <code>SettingsPage</code> rail-area
+merge conflict is textual, not contractual.</p>
+
+<h2>Merge order</h2>
+<p>1 → { 2 | 3 | 4 in any order } → 5. Every phase leaves the repository operable: the
+page ships whole in Phase 1; Trust replaces the panel editors in the same PR that adds
+the matrix (no orphaned editors, no dead surface); dots ship with their event; search
+ships with its complete index.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>Owned by the earliest phase; later phases consume, never redefine.</p>
+<ul>
+  <li><strong>Phase 1 owns</strong>: the <code>MissionRoute</code> settings variant and
+  hash grammar; the <code>SETTINGS_CATEGORIES</code> entry shape (<code>id</code>,
+  <code>label</code>, <code>icon</code>, <code>group</code>, <code>scope</code>,
+  <code>keywords</code>) and the ordered <code>SETTINGS_GROUPS</code> registry; the
+  <code>data-anchor="&lt;category&gt;/&lt;slug&gt;"</code> convention with its
+  uniqueness test; the rule that <code>SettingsPage</code> owns the five
+  category-scoped hooks and receives App-owned state (<code>foreman</code>,
+  <code>cost</code>, <code>llm</code>, <code>layout</code>) as props.</li>
+  <li><strong>Phase 2 owns</strong>: the <code>trust</code> category id and its
+  anchors; the rule that the three panels summarize and link rather than edit repo
+  lists.</li>
+  <li><strong>Phase 3 owns</strong>: the per-harness card anchors
+  (<code>harnesses/&lt;agent&gt;</code>).</li>
+  <li><strong>Phase 4 owns</strong>: the <code>SettingsStatus</code> shape, the
+  <code>settings_status</code> event, and <code>MissionState.settingsStatus</code> as
+  the only client-side source of those facts.</li>
+  <li><strong>Phase 5 owns</strong>: <code>SETTINGS_CONTROLS</code> as the one
+  control-level index and the risky-toggle exemption list.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After Phase 5 merges: a manual end-to-end pass against a live daemon on a non-main
+checkout (per README "Verifying") covering - deep-link into every category from a cold
+tab; grant/revoke each Trust column and confirm the owning subsystem's behavior; flip
+Inspector mode and YOLO with the page closed and watch the gear dot move with no
+polling in the network tab; <code>⌘K</code> → "soak" → Enter lands flashing on the
+Shipping soak control; chord recording still swallows Escape while the palette is
+closed. Plus <code>npm run typecheck &amp;&amp; npm test &amp;&amp; npm run build</code>
+at every phase boundary (CI runs the same on Node 24 and 26).</p>
+
+<h2>Task mapping</h2>
+<p>One Mission Control ship task per phase, created in topological order, each
+depending on its direct prerequisites' task ids and on the planning session (whose PR
+carries these documents). Recorded at scheduling time in the planning session's
+report.</p>
+
+<footer>docs/plans/settings-redesign/phased-plan.md · rendered as phased-plan.html</footer>
+</main>
+</body>
+</html>

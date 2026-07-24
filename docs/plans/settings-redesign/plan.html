@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings redesign: page container, trust matrix, harness cards, search</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --line: #d0d7de;
+  --accent: #0969da; --warn-bg: #fff8c5; --warn-line: #d4a72c;
+  --code-bg: rgba(175, 184, 193, 0.2); --quote: #57606a;
+  --box: #f6f8fa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+    --accent: #4a9eff; --warn-bg: #2a2410; --warn-line: #8a6d1d;
+    --code-bg: rgba(110, 118, 129, 0.3); --quote: #9198a1;
+    --box: #161b22;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 40px 24px 96px;
+  background: var(--bg); color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 860px; margin: 0 auto; }
+h1 { font-size: 30px; line-height: 1.25; margin: 0 0 16px; letter-spacing: -0.01em; }
+h2 { font-size: 22px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 17px; margin: 26px 0 8px; }
+p, li { color: var(--fg); }
+p { margin: 12px 0; }
+ul { padding-left: 26px; margin: 12px 0; }
+li { margin: 7px 0; }
+li > ul { margin: 4px 0; }
+a { color: var(--accent); }
+code {
+  font: 0.85em ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--code-bg); border-radius: 5px; padding: 1px 5px;
+}
+blockquote {
+  margin: 18px 0; padding: 12px 18px;
+  border-left: 4px solid var(--warn-line); background: var(--warn-bg);
+  border-radius: 0 8px 8px 0;
+}
+blockquote p { margin: 0; }
+strong { font-weight: 650; }
+.diagram-wrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--box); padding: 18px; }
+.diagram-wrap svg { display: block; min-width: 720px; }
+.dg-caption { font-size: 13px; color: var(--muted); margin: 8px 2px 0; }
+.svgbox { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; rx: 8; }
+.svgbox-hot { fill: var(--bg); stroke: var(--accent); stroke-width: 1.4; rx: 8; }
+.svgt { font: 12.5px system-ui, sans-serif; fill: var(--fg); }
+.svgt-sub { font: 10.5px system-ui, sans-serif; fill: var(--muted); }
+.svgt-edge { font: 10.5px system-ui, sans-serif; fill: var(--muted); }
+.svgedge { stroke: var(--muted); stroke-width: 1.2; fill: none; marker-end: url(#arr); }
+footer { margin-top: 56px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Settings redesign: page container, trust matrix, harness cards, search</h1>
+
+<p>Move Settings from the 820px modal to a routed page with a rail grouped by blast
+radius, unify the three repo allowlists into one Trust view, rework the Harnesses panel
+into per-harness cards, surface subsystem status as rail dots, and add a search palette
+over every control.</p>
+
+<blockquote><p><strong>Decided.</strong> The operator reviewed a full settings audit (11
+panels, ~70 controls) with seven mockup directions, then approved a combined interactive
+prototype - <a href="prototype.html"><code>prototype.html</code></a> beside this plan -
+merging the page container (mockup B), the Trust matrix (mockup E), harness cards
+(mockup F), and settings search (mockup D), with the grouped rail and status dots from
+mockup A. That prototype is the visual and behavioral target; this plan translates it
+into repository terms. The mockup C "hub" landing page was considered and not
+adopted.</p></blockquote>
+
+<p>This is the successor to <code>docs/plans/settings-panel-layout/plan.md</code>, which
+built the current two-pane modal so that "adding a category is adding a peer, not
+lengthening a scroll". The peer list has since grown to eleven, the peers span four very
+different blast radii, and the heaviest panel (Task sources) became a sub-application.
+The structure needs a second step.</p>
+
+<h2>Problems being solved</h2>
+<ul>
+  <li><strong>F1 - one flat rail, four blast radii.</strong> Appearance (one localStorage
+  checkbox) and Shipping (merges to a default branch under the operator's GitHub account)
+  sit as visual peers. Nothing in the nav says which settings stay in the browser, which
+  reconfigure the machine, which edit <code>~/.claude/settings.json</code>, and which act
+  publicly.</li>
+  <li><strong>F2 - category scale varies ~60x and the container fits neither end.</strong>
+  Task sources is a directory + drill-in editor + imperative actions squeezed into a
+  back-stack inside 820px; Appearance is one toggle in the same pane.</li>
+  <li><strong>F3 - trust is scattered.</strong> Foreman-may-send-live, Inspector-may-post,
+  and Shipping-may-merge are three separate <code>repoAllowlist</code> editors on three
+  panels. The code already shares one predicate (<code>repoAllowlisted</code>); the UI has
+  no shared surface, and the one dangerous combination - merge granted, review not - is
+  only discoverable via prose warnings on the Shipping panel.</li>
+  <li><strong>F4 - status is computed, then buried.</strong> Whether the Inspector is
+  live, YOLO is armed, or a task source failed its last sweep is known to the panels but
+  invisible from the rail, the gear, and everywhere else.</li>
+  <li><strong>F5 - cross-panel dependencies navigate by prose.</strong> "Turn it on in
+  Settings → Inspector" is text, while the deep-link mechanism
+  (<code>initialCategory</code>) already exists.</li>
+  <li><strong>F6 - ~70 controls, no search.</strong> Finding "soak" requires already
+  knowing it is a Shipping concept.</li>
+  <li><strong>F7</strong> (recorded, deliberately not solved here): Foreman's
+  enable/mode/queues live in the topbar popover by design. The split stays; the panel
+  keeps saying so, and gains a real link where it used to have a sentence.</li>
+</ul>
+
+<h2>Decisions</h2>
+<p>Resolved by the approved prototype and by repository doctrine; requirements, not open
+questions.</p>
+<ul>
+  <li><strong>D1 - Settings becomes a routed page and the modal is retired.</strong> Same
+  container pattern as the Workflows page: a <code>MissionRoute</code> page with hash
+  deep-links (<code>#/settings</code>, <code>#/settings/&lt;category&gt;</code>). The
+  gear, the native <code>⌘,</code> menu (the existing <code>mission:open-settings</code>
+  IPC channel is reused unchanged; only App's listener changes behavior), and every
+  "manage in Settings" link become navigations. Escape on the page (when no palette is
+  open and focus is not in a text field) returns to the fleet, preserving the modal's
+  muscle memory.</li>
+  <li><strong>D2 - The rail groups by blast radius, and Layout + Appearance merge into
+  Display.</strong> Groups in order of consequence: <em>This screen</em> (Display,
+  Keyboard), <em>Sessions</em> (Harnesses, Skills, Cost), <em>Background work</em>
+  (Foreman, Task sources, Models), <em>Leaves the machine</em> (Inspector, Shipping,
+  Trust). Every group and category carries a scope badge: This browser / This machine /
+  Writes ~/ / Acts on GitHub. <code>SETTINGS_CATEGORIES</code> stays the single
+  data-driven registry (the render test keeps walking it) and grows <code>group</code>,
+  <code>scope</code>, and <code>keywords</code> fields.</li>
+  <li><strong>D3 - Trust is a view, not a store.</strong> A new category in the
+  <em>Leaves the machine</em> group renders one matrix: rows are repositories, columns
+  are the three existing allowlists (Foreman sends live · Inspector posts reviews · YOLO
+  merges). Each cell writes to its own subsystem's existing
+  <code>PUT /api/{foreman,inspector,shipping}/config</code> route; nothing about storage,
+  schemas, or the daemon's consent gates changes. The merge-without-review blind spot
+  renders structurally (an amber cell with both fixes offered) instead of only as
+  Shipping's prose. The three panels' repo editors become grant summaries deep-linking to
+  Trust.</li>
+  <li><strong>D4 - Harnesses renders as one card per harness.</strong> Model and effort
+  together, the accent from <code>AGENT_IDENTITY</code> arriving as an inline
+  <code>--agent-accent</code> (no agent id may appear in <code>styles.css</code>;
+  <code>agent-accent.test.ts</code> pins this), capability-driven badges ("no permission
+  modes" from the capability registry, never a literal), and the launch sentence composed
+  from the current values. Cards derive from <code>AGENT_TYPES</code>, so a third harness
+  is one more card with zero new layout.</li>
+  <li><strong>D5 - Settings search is a palette over a registry-derived index.</strong>
+  Opened by a new rebindable global shortcut (default <code>⌘K</code>) or the rail
+  search box; the topbar gear keeps its one job, navigating to the page. The index
+  derives from <code>SETTINGS_CATEGORIES</code> plus a
+  co-located control-level list - never a second hand-kept list. Boolean controls toggle
+  inline in the results; every other hit jumps to its category and flashes the control
+  via a <code>data-anchor</code> convention. Risky toggles are exempt from inline
+  flipping: YOLO mode and the Inspector's enable/mode always jump to their panel so their
+  consent copy is on screen when they change.</li>
+  <li><strong>D6 - Status reaches the rail over SSE, not a new poll.</strong> The live
+  channel is SSE only (house rule), so a new <code>settings_status</code>
+  <code>ServerEvent</code> (and snapshot field) carries the small status tuple the dots
+  need: Inspector enabled+mode, Shipping armed, count of failing task sources. Emitted on
+  the config writes and sweep completions that change it. Rail dots: Inspector live
+  (green), YOLO armed (amber), failing source (red), Foreman on (purple, derived from the
+  Foreman state App already owns). The topbar gear inherits the worst dot.</li>
+  <li><strong>D7 - What carries over untouched.</strong> The panels' internal honesty is
+  a requirement: the "can't reach the daemon - these are defaults, not state" warnings,
+  the empty-means-cleared model fields with their env-layer source notes, the consent
+  copy that persists while a risk persists, and all capability-computed reach
+  sentences.</li>
+</ul>
+
+<h2>Flows that change</h2>
+<p>Two load-bearing arrows change; everything else is re-arrangement inside the web
+app.</p>
+
+<h3>Settings status joins the live channel</h3>
+<p>Today Inspector/Shipping/Task-source state is polled by hooks that exist only while
+the modal is open. The rail dots need that state whenever the app is open, so the daemon
+starts emitting it:</p>
+<div class="diagram-wrap">
+<svg viewBox="0 0 780 190" width="780" height="190" role="img" aria-label="Settings status flow: three config writers feed a daemon compose step, which emits a settings_status SSE event consumed by the web app">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" opacity="0.65"/></marker></defs>
+  <rect class="svgbox" x="10" y="12" width="200" height="34"/>
+  <text class="svgt" x="20" y="33">PUT /api/inspector/config</text>
+  <rect class="svgbox" x="10" y="76" width="200" height="34"/>
+  <text class="svgt" x="20" y="97">PUT /api/shipping/config</text>
+  <rect class="svgbox" x="10" y="140" width="200" height="38"/>
+  <text class="svgt" x="20" y="156">PUT /api/task-sources/config</text>
+  <text class="svgt-sub" x="20" y="171">+ sweep completions</text>
+  <path class="svgedge" d="M210,29 C250,29 250,80 288,88"/>
+  <path class="svgedge" d="M210,93 L288,95"/>
+  <path class="svgedge" d="M210,159 C250,159 250,108 288,101"/>
+  <rect class="svgbox-hot" x="290" y="72" width="170" height="48"/>
+  <text class="svgt" x="302" y="92">settings-status compose</text>
+  <text class="svgt-sub" x="302" y="108">daemon</text>
+  <path class="svgedge" d="M460,96 L528,96"/>
+  <text class="svgt-edge" x="462" y="86">settings_status</text>
+  <rect class="svgbox" x="530" y="76" width="90" height="40"/>
+  <text class="svgt" x="546" y="100">SSE</text>
+  <path class="svgedge" d="M620,96 L648,96"/>
+  <rect class="svgbox" x="650" y="62" width="122" height="68"/>
+  <text class="svgt" x="660" y="84">useEventStream</text>
+  <text class="svgt-sub" x="660" y="101">MissionState →</text>
+  <text class="svgt-sub" x="660" y="116">rail dots + gear</text>
+</svg>
+<p class="dg-caption">The event also rides the connect-time snapshot, like every other top-level collection.</p>
+</div>
+
+<h3>Trust fans one view out to three existing stores</h3>
+<p>No new route, no new table; the matrix reads three configs and each cell edit PUTs to
+the config that owns it:</p>
+<div class="diagram-wrap">
+<svg viewBox="0 0 780 180" width="780" height="180" role="img" aria-label="Trust matrix writes fan out to the three existing config routes; repo adds resolve through /api/repos/resolve first">
+  <rect class="svgbox-hot" x="10" y="60" width="150" height="52"/>
+  <text class="svgt" x="24" y="82">Trust matrix</text>
+  <text class="svgt-sub" x="24" y="98">one view</text>
+  <path class="svgedge" d="M160,72 C230,72 260,32 328,29"/>
+  <path class="svgedge" d="M160,86 L328,88"/>
+  <path class="svgedge" d="M160,100 C230,100 260,146 328,147"/>
+  <text class="svgt-edge" x="190" y="60">repoAllowlist patch</text>
+  <rect class="svgbox" x="330" y="12" width="205" height="34"/>
+  <text class="svgt" x="342" y="33">PUT /api/foreman/config</text>
+  <rect class="svgbox" x="330" y="71" width="205" height="34"/>
+  <text class="svgt" x="342" y="92">PUT /api/inspector/config</text>
+  <rect class="svgbox" x="330" y="130" width="205" height="34"/>
+  <text class="svgt" x="342" y="151">PUT /api/shipping/config</text>
+  <rect class="svgbox" x="575" y="71" width="195" height="34"/>
+  <text class="svgt" x="587" y="92">POST /api/repos/resolve</text>
+  <path class="svgedge" d="M575,88 C500,88 260,120 160,106"/>
+  <text class="svgt-edge" x="430" y="118">canonical repo root, before any grant</text>
+</svg>
+<p class="dg-caption">Each column stays its subsystem's own allowlist; the daemon's consent gates are untouched.</p>
+</div>
+
+<h2>Requirements</h2>
+
+<h3>Page and rail (mockup B container, mockup A rail)</h3>
+<ul>
+  <li><strong>R1:</strong> <code>MissionRoute</code> gains
+  <code>{ page: "settings"; category: SettingsCategoryId }</code>; <code>#/settings</code>
+  and <code>#/settings/&lt;category&gt;</code> parse and format; unknown categories fall
+  back to the default category (Display).</li>
+  <li><strong>R2:</strong> <code>SettingsPage</code> replaces <code>SettingsModal</code>;
+  the settings entry in <code>OVERLAY_IDS</code> is removed and
+  <code>overlay-registry.test.ts</code> updated. Rail keeps the WAI-ARIA tablist semantics
+  and roving tabindex of the modal rail.</li>
+  <li><strong>R3:</strong> Fleet keyboard shortcuts stand down while the settings page is
+  showing, exactly as they do for the Workflows page.</li>
+  <li><strong>R4:</strong> The category-scoped state hooks (<code>useSkills</code>,
+  <code>useHarnesses</code>, <code>useInspector</code>, <code>useShipping</code>,
+  <code>useTaskSources</code>) move from the modal to the page and keep their
+  poll-while-open semantics.</li>
+  <li><strong>R5:</strong> Task sources renders master-detail at page width: metrics
+  strip, search, health filter chips, directory list, and the editor side by side - no
+  back-stack.</li>
+  <li><strong>R6:</strong> Every control row carries
+  <code>data-anchor="&lt;category&gt;/&lt;slug&gt;"</code>. This is the anchor contract
+  search consumes; anchors are unique across the page.</li>
+  <li><strong>R7:</strong> <code>styles.css</code> gains a settings-page section; every
+  removed <code>className</code> is grepped out of the stylesheet in the same change.</li>
+</ul>
+
+<h3>Trust (mockup E)</h3>
+<ul>
+  <li><strong>R8:</strong> A <code>trust</code> category (group <em>Leaves the
+  machine</em>) renders the matrix over the three <code>repoAllowlist</code>s; adding a
+  repo resolves through <code>POST /api/repos/resolve</code> first and grants nothing
+  until a cell is clicked ("adding is configuration; enabling is consent").</li>
+  <li><strong>R9:</strong> A cell edit patches only the owning subsystem's config and
+  survives the panels' 4s config polls (same stale-closure guard the three panels use
+  today).</li>
+  <li><strong>R10:</strong> The merge-without-review blind spot renders on the matrix
+  (amber cell + footnote offering both fixes) whenever YOLO is armed, using the same
+  facts the daemon's <code>inspectorPosture</code> gates on.</li>
+  <li><strong>R11:</strong> Foreman, Inspector, and Shipping panels stop editing repo
+  lists; each shows its grant count and deep-links to Trust. Shipping's dependency
+  warnings become links (R-F5) to the Inspector panel and to Trust.</li>
+</ul>
+
+<h3>Harness cards (mockup F)</h3>
+<ul>
+  <li><strong>R12:</strong> One card per <code>AGENT_TYPES</code> entry with model +
+  effort selects (choices from <code>modelChoicesFor</code> / the <code>effort</code>
+  capability), the auto-mode master toggle above, and accents via inline
+  <code>--agent-accent</code> only.</li>
+</ul>
+
+<h3>Status (mockup A dots)</h3>
+<ul>
+  <li><strong>R13:</strong> <code>settings_status</code> <code>ServerEvent</code> +
+  snapshot field carrying <code>{ inspector: { enabled, mode }, shipping: { autoMerge },
+  taskSources: { failing } }</code>, emitted from the three config PUT handlers and the
+  task-source sweep path, and reduced into <code>MissionState</code> by
+  <code>useEventStream</code>.</li>
+  <li><strong>R14:</strong> Rail dots per D6 and a worst-state dot on the topbar
+  gear.</li>
+</ul>
+
+<h3>Search (mockup D)</h3>
+<ul>
+  <li><strong>R15:</strong> A <code>settingsSearch</code> rebindable global action
+  (default <code>⌘K</code>) plus the rail search box open the palette; Escape
+  closes it; arrows/Enter navigate; the palette coexists with the Keyboard panel's
+  capture-phase chord recorder unchanged.</li>
+  <li><strong>R16:</strong> The index derives from the registry
+  (<code>SETTINGS_CATEGORIES</code> keywords + a co-located control list with label,
+  description, category, anchor, kind); a test walks it and fails on a control naming a
+  missing category or duplicate anchor.</li>
+  <li><strong>R17:</strong> Boolean controls flip inline in results except the risky set
+  (D5); all other hits jump and flash their <code>data-anchor</code> target.</li>
+</ul>
+
+<h3>Done means (every phase)</h3>
+<ul>
+  <li><strong>R18:</strong> README updated in the same change; <code>node:test</code>
+  tests beside the feature; no new build entry points; no em dashes in copy; the panels'
+  honesty inventory (D7) intact.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>The hub landing page (mockup C) and any status rollup banner.</li>
+  <li>Folding the Foreman popover's enable/mode/queues into the panel (F7 stays a
+  link).</li>
+  <li>Inline palette editing of non-boolean scalars (soak, intervals) - those jump.</li>
+  <li>New persistence, new tables, or any change to allowlist storage or consent
+  semantics.</li>
+  <li>The Electron capability surface: <code>mission:open-settings</code> is reused
+  as-is.</li>
+</ul>
+
+<h2>Phasing</h2>
+<p>Implementation is decomposed in <a href="phased-plan.html"><code>phased-plan.md</code></a>:
+five phases - page container first, then Trust / harness cards / status concurrently,
+then search last over the completed registry.</p>
+
+<footer>docs/plans/settings-redesign/plan.md · rendered as plan.html · approved prototype: prototype.html</footer>
+</main>
+</body>
+</html>

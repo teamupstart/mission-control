@@ -106,6 +106,7 @@ function mkTask(over: Partial<TaskSummary> = {}): TaskSummary {
     scheduleId: null,
     scheduleOccurrenceId: null,
     scheduledFor: null,
+    ensemble: null,
     ...over,
   };
 }

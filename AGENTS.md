@@ -311,8 +311,20 @@ an external node, and `skills/` is reached through a symlink.
 (`src/shared/task-source.ts`), the background-job ids in `LLM_JOB_IDS`
 (`src/shared/llm-jobs.ts`), the six schedule enums in `@shared/schedules.ts`
 (`SCHEDULE_EXECUTION_MODES` / `_OVERLAP_POLICIES` / `_MISSED_POLICIES` / `_TRIGGER_KINDS` /
-`_DECISION_KINDS` / `_OCCURRENCE_STATUSES`), and the `MISSION_` / `FLEET_` / `HARNESS_` env
-fallback chain in `src/shared/harness-runtime.mjs`.
+`_DECISION_KINDS` / `_OCCURRENCE_STATUSES`), every id and status tuple in
+`@shared/ensemble.ts` (`ENSEMBLE_STRATEGY_IDS` / `_SOURCE_KINDS` / `_DRIVER_KEYS` /
+`_ARTIFACT_KINDS`, plus the run / member / attempt / artifact / stage / evaluation /
+decision statuses), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback chain in
+`src/shared/harness-runtime.mjs`.
+
+**Foreign keys are ON, and the ensemble family is the only one that declares any.** The
+pragma sits beside `journal_mode` in `openDb()`, and it is safe there precisely because
+nothing else in that file has a `REFERENCES` clause - it constrains only what asks to be
+constrained, and a clause added to an older table becomes live the moment it is written. A
+declared foreign key with the pragma off is a comment that looks like a constraint, which is
+why `ensemble-db.test.ts` asserts an orphan INSERT actually throws. Every `TEXT PRIMARY KEY`
+in that family also says `NOT NULL` explicitly: on a non-STRICT rowid table SQLite does not
+imply it, so `PRIMARY KEY` alone admits several NULL ids.
 
 **A persisted enum this build cannot read is a `null`, never a nearest match.** The schedule
 store (`src/server/schedules/store.ts`) is where that is worked out: a row written by a
@@ -652,6 +664,17 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   none of the skills reload loop's `settledIdle` + pane-read + `withPaneLock` gate; if one
   ever can, that argument has to be redone. Test: `task-source-contract.test.ts`,
   `task-source-ingest.test.ts`, `github-issues-map.test.ts`, `task-sources-panel.test.ts`.
+- **Ensemble strategies (how a GROUP of agents is run)**: the same purity split again.
+  `ENSEMBLE_STRATEGY_INFO` (`@shared/ensemble-strategies.ts`) holds what the dashboard can
+  answer in the browser, and `ENSEMBLE_STRATEGIES`
+  (`src/server/ensembles/strategies/index.ts`) adds the pure compiler that turns config into
+  a durable plan. Both are exhaustive `Record<EnsembleStrategyId, …>` registries, so a new id
+  cannot compile until both halves exist. The authoritative extension contract lives beside
+  `ENSEMBLE_STRATEGIES`; read it before changing strategy ids, driver keys, compilation,
+  persistence, or execution rather than duplicating that contract here. Test:
+  `ensemble-strategy-catalog.test.ts`, `ensemble-best-of-n.test.ts`,
+  `ensemble-contracts.test.ts`, `ensemble-store.test.ts`, `ensemble-db.test.ts`,
+  `ensemble-sse.test.ts`.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

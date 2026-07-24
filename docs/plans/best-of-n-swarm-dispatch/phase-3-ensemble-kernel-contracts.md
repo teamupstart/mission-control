@@ -45,7 +45,8 @@ Out of scope:
 - `src/server/index.ts` owns the one registry snapshot and SSE stream. A new top-level collection must be present in `MissionState`, `registry.snapshot()`, the `snapshot` event, and `src/web/useEventStream.ts`.
 - `ServerEvent` handling is compiler-enforced in `src/web/useEventStream.ts`; add an explicit `ensemble_upsert` / `ensemble_remove` branch rather than a parallel client channel.
 - `Session` additions require `SESSION_FIELD_COMPARATORS`. The ensemble link belongs on the already nested task summary, not on `Session`, so this phase should not add a session comparator.
-- `TaskSummary` currently contains only task identity, kind, status, outcome, and outcome URL. It is the appropriate compact projection for a member link.
+- `TaskSummary` is already the compact task projection nested on `Session`. It is the
+  appropriate owner for a member link, alongside its existing task and provenance fields.
 - The daemon is the only SQLite writer. The Foreman worker must not import or mutate the ensemble store.
 - New tables need no `addColumn`; future columns added to these tables will.
 - Append-only ids are already the repository convention for persisted task sources and background jobs. Ensemble strategy and artifact-kind ids need the same treatment.

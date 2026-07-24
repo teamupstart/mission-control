@@ -29,6 +29,44 @@ import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
 } from "./workflow.ts";
 import type { WorkflowJson } from "./workflow.ts";
+import {
+  ENSEMBLE_ARTIFACT_KINDS,
+  ENSEMBLE_ARTIFACT_STATUSES,
+  ENSEMBLE_ATTEMPT_STATUSES,
+  ENSEMBLE_DECISION_ACTORS,
+  ENSEMBLE_DECISION_STATUSES,
+  ENSEMBLE_DRIVER_KEYS,
+  ENSEMBLE_EVALUATION_STATUSES,
+  ENSEMBLE_HARD_LIMITS,
+  ENSEMBLE_LIMITS,
+  ENSEMBLE_LLM_CALL_STATES,
+  ENSEMBLE_LLM_PURPOSES,
+  ENSEMBLE_MEMBER_STATUSES,
+  ENSEMBLE_OUTCOME_KINDS,
+  ENSEMBLE_PAYLOAD_VERSION,
+  ENSEMBLE_PLAN_VERSION,
+  ENSEMBLE_SOURCE_KINDS,
+  ENSEMBLE_STAGE_DRIVER_KINDS,
+  ENSEMBLE_STAGE_STATUSES,
+  ENSEMBLE_STATUSES,
+  ENSEMBLE_STRATEGY_IDS,
+} from "./ensemble.ts";
+import type {
+  EnsembleArtifact,
+  EnsembleAttempt,
+  EnsembleDecision,
+  EnsembleEvaluation,
+  EnsembleEvent,
+  EnsembleJson,
+  EnsembleLlmCall,
+  EnsembleMember,
+  EnsemblePayloadEnvelope,
+  EnsembleRun,
+  EnsembleRunDetail,
+  EnsembleStageAttempt,
+  EnsembleSummary,
+  EnsembleUnreadable,
+} from "./ensemble.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -2344,3 +2382,662 @@ export const WorkflowRunStatusSchema = z.enum(WORKFLOW_RUN_STATUSES);
 export const WorkflowSubmissionModeSchema = z.enum(WORKFLOW_SUBMISSION_MODES);
 export const WorkflowSubmissionStatusSchema = z.enum(WORKFLOW_SUBMISSION_STATUSES);
 export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATES);
+
+// ---- multi-agent ensembles ----
+//
+// The durable half of `@shared/ensemble.ts`. Row parsers in `src/server/ensembles/store.ts`
+// classify every TEXT enum and validate every JSON column before a typed record exists:
+// unknown enums degrade to null for version skew, while malformed JSON fails at ONE boundary
+// rather than surfacing as an undefined three call sites later. No route consumes them yet -
+// Phase 3 launches nothing - but the shapes are fixed now because they are what a later route,
+// the MCP submission tool and the dashboard all have to agree with.
+
+/** Recursive, JSON-only durable payload validation. */
+export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(EnsembleJsonSchema),
+    z.record(z.string(), EnsembleJsonSchema),
+  ]),
+);
+
+export const EnsemblePayloadEnvelopeSchema: z.ZodType<EnsemblePayloadEnvelope> = z.object({
+  payloadVersion: z.literal(ENSEMBLE_PAYLOAD_VERSION),
+  body: EnsembleJsonSchema,
+});
+
+export const EnsembleStatusSchema = z.enum(ENSEMBLE_STATUSES);
+export const EnsembleMemberStatusSchema = z.enum(ENSEMBLE_MEMBER_STATUSES);
+export const EnsembleAttemptStatusSchema = z.enum(ENSEMBLE_ATTEMPT_STATUSES);
+export const EnsembleArtifactKindSchema = z.enum(ENSEMBLE_ARTIFACT_KINDS);
+export const EnsembleArtifactStatusSchema = z.enum(ENSEMBLE_ARTIFACT_STATUSES);
+export const EnsembleStageDriverKindSchema = z.enum(ENSEMBLE_STAGE_DRIVER_KINDS);
+export const EnsembleStageStatusSchema = z.enum(ENSEMBLE_STAGE_STATUSES);
+export const EnsembleEvaluationStatusSchema = z.enum(ENSEMBLE_EVALUATION_STATUSES);
+export const EnsembleDecisionStatusSchema = z.enum(ENSEMBLE_DECISION_STATUSES);
+export const EnsembleDecisionActorSchema = z.enum(ENSEMBLE_DECISION_ACTORS);
+export const EnsembleLlmPurposeSchema = z.enum(ENSEMBLE_LLM_PURPOSES);
+export const EnsembleLlmCallStateSchema = z.enum(ENSEMBLE_LLM_CALL_STATES);
+export const EnsembleSourceKindSchema = z.enum(ENSEMBLE_SOURCE_KINDS);
+export const EnsembleStrategyIdSchema = z.enum(ENSEMBLE_STRATEGY_IDS);
+export const EnsembleDriverKeySchema = z.enum(ENSEMBLE_DRIVER_KEYS);
+
+/**
+ * The opaque `id@version` key a compiled plan persists.
+ *
+ * Deliberately a bounded STRING and not `EnsembleStrategyIdSchema`: this is the field that
+ * lets a run written by a newer build load at all. Creation validates the id against the
+ * exhaustive catalog; a plan read back off disk validates only that the key is bounded and
+ * well-formed, and an id nobody recognises becomes a visible "this build cannot run it"
+ * rather than a parse failure that hides the run entirely.
+ */
+const VERSIONED_KEY = /^[a-z][a-z0-9_]*@[1-9][0-9]{0,4}$/;
+
+export const EnsembleStrategyKeySchema = z
+  .string()
+  .min(3)
+  .max(ENSEMBLE_LIMITS.strategyKey)
+  .regex(VERSIONED_KEY, "strategy key must be id@version");
+
+/**
+ * A stage's driver key as PERSISTED - bounded and well-formed, not checked against the
+ * drivers this build ships.
+ *
+ * Same argument as `EnsembleStrategyKeySchema`: a plan naming `comparative_review@2` must
+ * stay readable on a build that only has `@1`, so an operator can see what the run was
+ * going to do and cancel it. `knownDriverKey` is where "readable" stops and "executable"
+ * begins, and `EnsembleDriverKeySchema` above is what a COMPILER's output is checked
+ * against, where naming a driver that does not exist is a bug rather than a version skew.
+ */
+export const EnsembleDriverKeyRefSchema = z
+  .string()
+  .min(3)
+  .max(ENSEMBLE_LIMITS.strategyKey)
+  .regex(VERSIONED_KEY, "driver key must be id@version");
+
+const ensembleId = z.string().min(1).max(200);
+const ensembleStageId = z.string().min(1).max(ENSEMBLE_LIMITS.stageId);
+const ensembleRoleKey = z.string().min(1).max(ENSEMBLE_LIMITS.roleKey);
+
+export const EnsembleBudgetSchema = z.object({
+  maxMembers: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  maxConcurrentMembers: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxConcurrentMembers),
+  maxWaves: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxWaves),
+  maxStageAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts),
+  deadlineMs: z.number().int().positive().nullable(),
+});
+
+export const EnsembleInformationPolicySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("isolated") }),
+]);
+
+export const EnsembleMemberInputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run_base") }),
+]);
+
+export const EnsembleRoleSpecSchema = z.object({
+  key: ensembleRoleKey,
+  label: z.string().min(1).max(ENSEMBLE_LIMITS.roleLabel),
+  ordinal: z.number().int().positive(),
+  wave: z.number().int().positive(),
+  agent: z.enum(AGENT_TYPES).nullable(),
+  model: ModelIdSchema.nullable(),
+  effort: EffortLevelSchema.nullable(),
+  approach: z.string().max(ENSEMBLE_LIMITS.approach).nullable(),
+  promptTemplate: z.string().max(ENSEMBLE_LIMITS.rolePrompt),
+  requiredArtifacts: z.array(EnsembleArtifactKindSchema).max(ENSEMBLE_ARTIFACT_KINDS.length),
+  input: EnsembleMemberInputSchema,
+});
+
+export const EnsembleBarrierSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({
+    kind: z.literal("members_settled"),
+    roleKeys: z.array(ensembleRoleKey).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    minEligible: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    requiredArtifacts: z.array(EnsembleArtifactKindSchema).max(ENSEMBLE_ARTIFACT_KINDS.length),
+  }),
+  z.object({
+    kind: z.literal("stages_succeeded"),
+    stageIds: z.array(ensembleStageId).min(1).max(50),
+  }),
+  z.object({ kind: z.literal("human_decision") }),
+]);
+
+export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("builtin"), rubricId: z.string().min(1).max(120) }),
+  z.object({
+    kind: z.literal("persona"),
+    personaId: z.string().min(1).max(200),
+    revision: z.number().int().positive(),
+  }),
+]);
+
+export const EnsembleEvaluatorPolicySchema = z.object({
+  kind: z.literal("comparative_llm"),
+  guidance: EnsembleEvaluatorGuidanceSchema,
+  runner: z.enum(LLM_RUNNER_IDS).nullable(),
+  model: ModelIdSchema.nullable(),
+  anonymizeSubjects: z.boolean(),
+  materialBudgetBytes: z.number().int().positive(),
+});
+
+export const EnsembleSubjectPolicySchema = z.object({
+  kind: z.literal("ready_artifacts"),
+  artifactKind: EnsembleArtifactKindSchema,
+  minSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  maxSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+});
+
+export const EnsembleDecisionPolicySchema = z.object({
+  kind: z.literal("select_one"),
+  eligibleArtifactKind: EnsembleArtifactKindSchema,
+  minEligibleSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+});
+
+/**
+ * `requiresHumanDecision` is `z.literal(true)`, matching the wire type and
+ * `WorkflowCaptureExpectationSchema.requireCleanWorktree`: this finalization resets a branch
+ * and reaps worktrees, so there is no valid plan that turns the confirmation off.
+ */
+export const EnsembleFinalizationPolicySchema = z.object({
+  kind: z.literal("select_one"),
+  requiresHumanDecision: z.literal(true),
+  loserPolicy: z.literal("reap_worktrees"),
+});
+
+const ensembleStageBase = {
+  id: ensembleStageId,
+  ordinal: z.number().int().positive(),
+  label: z.string().min(1).max(ENSEMBLE_LIMITS.stageLabel),
+  driverKey: EnsembleDriverKeyRefSchema,
+  dependsOn: z.array(ensembleStageId).max(50),
+  barrier: EnsembleBarrierSpecSchema,
+  maxAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts),
+};
+
+export const EnsembleStageSpecSchema = z.discriminatedUnion("driverKind", [
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("member"),
+    wave: z.number().int().positive(),
+    roleKeys: z.array(ensembleRoleKey).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("review"),
+    evaluator: EnsembleEvaluatorPolicySchema,
+    subjects: EnsembleSubjectPolicySchema,
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("decision"),
+    decision: EnsembleDecisionPolicySchema,
+  }),
+  z.object({
+    ...ensembleStageBase,
+    driverKind: z.literal("finalize"),
+    finalization: EnsembleFinalizationPolicySchema,
+  }),
+]);
+
+/**
+ * The immutable plan a run executes for its whole life.
+ *
+ * `planVersion` is pinned to exactly what this build understands. A snapshot from the future
+ * fails HERE, which is what turns it into a visible unreadable run rather than a plan
+ * half-read through today's field names.
+ */
+export const CompiledEnsemblePlanSchema = z
+  .object({
+    planVersion: z.literal(ENSEMBLE_PLAN_VERSION),
+    strategyKey: EnsembleStrategyKeySchema,
+    budget: EnsembleBudgetSchema,
+    information: EnsembleInformationPolicySchema,
+    roles: z.array(EnsembleRoleSpecSchema).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    stages: z.array(EnsembleStageSpecSchema).min(1).max(50),
+  })
+  // Structural integrity, checked once here rather than in each compiler and again in the
+  // engine: a stage naming a role or a dependency that does not exist is a plan that would
+  // block forever at a barrier nothing can satisfy, and it would do so only at runtime.
+  .superRefine((plan, ctx) => {
+    const roleKeys = new Set(plan.roles.map((role) => role.key));
+    if (roleKeys.size !== plan.roles.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["roles"], message: "role keys must be unique" });
+    }
+    if (plan.roles.length > plan.budget.maxMembers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["budget", "maxMembers"],
+        message: "the compiled roster is larger than the plan's own hard member cap",
+      });
+    }
+    if (plan.budget.maxConcurrentMembers > plan.budget.maxMembers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["budget", "maxConcurrentMembers"],
+        message: "concurrent members cannot exceed the plan's member cap",
+      });
+    }
+    plan.roles.forEach((role, index) => {
+      if (role.wave > plan.budget.maxWaves) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["roles", index, "wave"],
+          message: `role ${role.key} exceeds the plan's wave cap`,
+        });
+      }
+    });
+    const stageIds = new Set(plan.stages.map((stage) => stage.id));
+    if (stageIds.size !== plan.stages.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["stages"], message: "stage ids must be unique" });
+    }
+    plan.stages.forEach((stage, index) => {
+      if (stage.maxAttempts > plan.budget.maxStageAttempts) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stages", index, "maxAttempts"],
+          message: `stage ${stage.id} exceeds the plan's attempt cap`,
+        });
+      }
+      for (const dependency of stage.dependsOn) {
+        if (!stageIds.has(dependency)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "dependsOn"],
+            message: `stage ${stage.id} depends on unknown stage ${dependency}`,
+          });
+        }
+      }
+      const named =
+        stage.driverKind === "member"
+          ? stage.roleKeys
+          : stage.barrier.kind === "members_settled"
+            ? stage.barrier.roleKeys
+            : [];
+      for (const key of named) {
+        if (!roleKeys.has(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index],
+            message: `stage ${stage.id} names unknown role ${key}`,
+          });
+        }
+      }
+      if (stage.driverKind === "member") {
+        if (stage.wave > plan.budget.maxWaves) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "wave"],
+            message: `stage ${stage.id} exceeds the plan's wave cap`,
+          });
+        }
+        if (new Set(stage.roleKeys).size !== stage.roleKeys.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "roleKeys"],
+            message: `stage ${stage.id} role keys must be unique`,
+          });
+        }
+      }
+      if (stage.barrier.kind === "members_settled") {
+        const barrierRoles = new Set(stage.barrier.roleKeys);
+        if (barrierRoles.size !== stage.barrier.roleKeys.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "barrier", "roleKeys"],
+            message: `stage ${stage.id} barrier role keys must be unique`,
+          });
+        }
+        if (stage.barrier.minEligible > barrierRoles.size) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "barrier", "minEligible"],
+            message: `stage ${stage.id} requires more eligible members than it names`,
+          });
+        }
+      }
+      if (stage.driverKind === "review") {
+        if (stage.subjects.minSubjects > stage.subjects.maxSubjects) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "subjects", "minSubjects"],
+            message: `stage ${stage.id} minimum subjects exceed its maximum`,
+          });
+        }
+        if (stage.subjects.maxSubjects > plan.budget.maxMembers) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "subjects", "maxSubjects"],
+            message: `stage ${stage.id} subjects exceed the plan's member cap`,
+          });
+        }
+      }
+      if (
+        stage.driverKind === "decision" &&
+        stage.decision.minEligibleSubjects > plan.budget.maxMembers
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stages", index, "decision", "minEligibleSubjects"],
+          message: `stage ${stage.id} eligible subjects exceed the plan's member cap`,
+        });
+      }
+      if (stage.barrier.kind === "stages_succeeded") {
+        for (const dependency of stage.barrier.stageIds) {
+          if (!stageIds.has(dependency)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["stages", index, "barrier"],
+              message: `stage ${stage.id} waits on unknown stage ${dependency}`,
+            });
+          }
+        }
+      }
+    });
+
+    const dependencies = new Map(
+      plan.stages.map((stage) => [
+        stage.id,
+        [
+          ...stage.dependsOn,
+          ...(stage.barrier.kind === "stages_succeeded" ? stage.barrier.stageIds : []),
+        ],
+      ]),
+    );
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const cyclic = new Set<string>();
+    const visit = (stageId: string): void => {
+      if (visited.has(stageId)) return;
+      if (visiting.has(stageId)) {
+        cyclic.add(stageId);
+        return;
+      }
+      visiting.add(stageId);
+      for (const dependency of dependencies.get(stageId) ?? []) {
+        if (!dependencies.has(dependency)) continue;
+        visit(dependency);
+        if (cyclic.has(dependency)) cyclic.add(stageId);
+      }
+      visiting.delete(stageId);
+      visited.add(stageId);
+    };
+    for (const stage of plan.stages) visit(stage.id);
+    if (cyclic.size > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stages"],
+        message: `stage dependencies must be acyclic: ${[...cyclic].join(", ")}`,
+      });
+    }
+  });
+
+export const EnsembleOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("selected"),
+    memberIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    materializedTaskId: ensembleId.nullable(),
+  }),
+  z.object({
+    kind: z.literal("synthesized"),
+    memberId: ensembleId,
+    artifactId: ensembleId,
+    materializedTaskId: ensembleId.nullable(),
+  }),
+  z.object({
+    kind: z.literal("retained"),
+    memberIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+  z.object({
+    kind: z.literal("no_consensus"),
+    artifactIds: z.array(ensembleId).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+    reason: z.string().max(ENSEMBLE_LIMITS.rationale),
+  }),
+]);
+
+export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable> = z.object({
+  reason: z.string(),
+  fields: z.array(z.string()),
+});
+
+export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
+  id: ensembleId,
+  sourceKind: EnsembleSourceKindSchema.nullable(),
+  sourceKey: z.string(),
+  sourceId: z.string().nullable(),
+  strategyId: EnsembleStrategyIdSchema.nullable(),
+  strategyKey: z.string(),
+  strategyVersion: z.number().int(),
+  strategyLabel: z.string(),
+  title: z.string(),
+  intent: z.string(),
+  repoRoot: z.string(),
+  baseBranch: z.string().nullable(),
+  baseSha: z.string().nullable(),
+  plan: CompiledEnsemblePlanSchema.nullable(),
+  strategyConfig: EnsembleJsonSchema,
+  status: EnsembleStatusSchema.nullable(),
+  activeStageId: z.string().nullable(),
+  outcome: EnsembleOutcomeSchema.nullable(),
+  unreadable: EnsembleUnreadableSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+
+export const EnsembleMemberSchema: z.ZodType<EnsembleMember> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  roleKey: z.string(),
+  roleLabel: z.string(),
+  ordinal: z.number().int(),
+  wave: z.number().int(),
+  taskId: z.string().nullable(),
+  status: EnsembleMemberStatusSchema.nullable(),
+  selectedAttemptId: z.string().nullable(),
+  resultLabel: z.string().nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export const EnsembleAttemptSchema: z.ZodType<EnsembleAttempt> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  memberId: ensembleId,
+  attempt: z.number().int(),
+  taskId: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  agent: z.enum(AGENT_TYPES).nullable(),
+  requestedModel: z.string().nullable(),
+  requestedEffort: EffortLevelSchema.nullable(),
+  observedModel: z.string().nullable(),
+  baseSha: z.string().nullable(),
+  worktreePath: z.string().nullable(),
+  branch: z.string().nullable(),
+  status: EnsembleAttemptStatusSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  startedAt: z.number().int().nullable(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleArtifactSchema: z.ZodType<EnsembleArtifact> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  attemptId: z.string().nullable(),
+  kind: EnsembleArtifactKindSchema.nullable(),
+  formatVersion: z.number().int(),
+  attempt: z.number().int(),
+  status: EnsembleArtifactStatusSchema.nullable(),
+  locator: EnsembleJsonSchema,
+  digest: z.string(),
+  metadata: EnsembleJsonSchema,
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  readyAt: z.number().int().nullable(),
+});
+
+export const EnsembleStageAttemptSchema: z.ZodType<EnsembleStageAttempt> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageId: z.string(),
+  driverKind: EnsembleStageDriverKindSchema.nullable(),
+  driverKey: EnsembleDriverKeySchema.nullable(),
+  attempt: z.number().int(),
+  commandKey: z.string(),
+  status: EnsembleStageStatusSchema.nullable(),
+  input: EnsembleJsonSchema,
+  output: EnsembleJsonSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  startedAt: z.number().int().nullable(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageAttemptId: ensembleId,
+  attempt: z.number().int(),
+  method: z.string(),
+  runnerId: z.string().nullable(),
+  modelId: z.string().nullable(),
+  inputFingerprint: z.string(),
+  subjectArtifactIds: z.array(z.string()),
+  result: EnsemblePayloadEnvelopeSchema.nullable(),
+  status: EnsembleEvaluationStatusSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleLlmCallSchema: z.ZodType<EnsembleLlmCall> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageAttemptId: z.string().nullable(),
+  evaluationId: z.string().nullable(),
+  purpose: EnsembleLlmPurposeSchema.nullable(),
+  runnerId: z.string(),
+  modelId: z.string(),
+  attempt: z.number().int(),
+  state: EnsembleLlmCallStateSchema.nullable(),
+  startedAt: z.number().int(),
+  finishedAt: z.number().int().nullable(),
+  durationMs: z.number().int().nullable(),
+  inputBytes: z.number().int(),
+  outputBytes: z.number().int(),
+  costUsd: z.number().nullable(),
+  errorCode: z.string().nullable(),
+});
+
+export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  version: z.number().int(),
+  actor: EnsembleDecisionActorSchema.nullable(),
+  actorId: z.string().nullable(),
+  status: EnsembleDecisionStatusSchema.nullable(),
+  selection: EnsemblePayloadEnvelopeSchema,
+  rationale: z.string(),
+  finalizationStageAttemptId: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export const EnsembleEventSchema: z.ZodType<EnsembleEvent> = z.object({
+  id: z.number().int(),
+  runId: ensembleId,
+  ts: z.number().int(),
+  kind: z.string(),
+  payload: EnsembleJsonSchema,
+});
+
+export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
+  id: ensembleId,
+  title: z.string(),
+  repoRoot: z.string(),
+  strategyId: EnsembleStrategyIdSchema.nullable(),
+  strategyKey: z.string(),
+  strategyLabel: z.string(),
+  strategyVersion: z.number().int(),
+  status: EnsembleStatusSchema.nullable(),
+  activeStageId: z.string().nullable(),
+  memberCount: z.number().int().nonnegative(),
+  launchedMembers: z.number().int().nonnegative(),
+  maxMembers: z.number().int().nonnegative(),
+  readyArtifacts: z.number().int().nonnegative(),
+  selectedMemberId: z.string().nullable(),
+  outcomeKind: z.enum(ENSEMBLE_OUTCOME_KINDS).nullable(),
+  unreadable: EnsembleUnreadableSchema.nullable(),
+  attention: z.boolean(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+
+export const EnsembleRunDetailSchema: z.ZodType<EnsembleRunDetail> = z.object({
+  run: EnsembleRunSchema,
+  members: z.array(EnsembleMemberSchema),
+  attempts: z.array(EnsembleAttemptSchema),
+  artifacts: z.array(EnsembleArtifactSchema),
+  stageAttempts: z.array(EnsembleStageAttemptSchema),
+  evaluations: z.array(EnsembleEvaluationSchema),
+  decisions: z.array(EnsembleDecisionSchema),
+  llmCalls: z.array(EnsembleLlmCallSchema),
+  events: z.array(EnsembleEventSchema),
+});
+
+/**
+ * What a caller asks for.
+ *
+ * `strategyConfig` stays `unknown` here on purpose: the generic envelope must not know what
+ * a roster is, and the chosen strategy's own schema is the only thing that can validate it.
+ * The daemon re-parses it through the descriptor at creation, which is the one place the
+ * config's type is known - the same split `TaskSourceInstanceSchema` makes.
+ */
+export const EnsembleCreateInputSchema = z.object({
+  sourceKey: z.string().min(1).max(ENSEMBLE_LIMITS.sourceKey),
+  sourceKind: EnsembleSourceKindSchema.default("manual"),
+  sourceId: z.string().min(1).max(ENSEMBLE_LIMITS.sourceId).nullable().default(null),
+  title: z.string().trim().min(1).max(ENSEMBLE_LIMITS.title),
+  intent: z.string().min(1).max(ENSEMBLE_LIMITS.intent),
+  repoRoot: z.string().min(1),
+  strategyId: EnsembleStrategyIdSchema,
+  /** Absent means "this build's current version for that strategy". */
+  strategyVersion: z.number().int().positive().optional(),
+  strategyConfig: z.unknown().default({}),
+});
+export type EnsembleCreateBody = z.infer<typeof EnsembleCreateInputSchema>;
+
+/**
+ * The generic operator authorities over one run.
+ *
+ * One discriminated union behind one future route rather than a route family per verb: a
+ * strategy composed only from existing primitives must add nothing here, so a proposal that
+ * needs a new member is evidence of a new primitive rather than a new strategy.
+ */
+export const EnsembleActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("retry_stage"), stageId: ensembleStageId }),
+  z.object({ kind: z.literal("withdraw_member"), memberId: ensembleId }),
+  z.object({
+    kind: z.literal("decide"),
+    selection: EnsembleJsonSchema,
+    rationale: z.string().max(ENSEMBLE_LIMITS.rationale).default(""),
+  }),
+  z.object({ kind: z.literal("resolve_finalization") }),
+  z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
+  z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
+]);
+export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;

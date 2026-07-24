@@ -4,11 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import type { QueueManager } from "../src/server/queue.ts";
+import type { ReviewManager } from "../src/server/reviews.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-complete-satisfies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { buildApp } = await import("../src/server/routes.ts");
 const { blockersFor, readyBacklog } = await import("../src/shared/backlog.ts");
 const { CompleteTaskSchema } = await import("../src/shared/protocol.ts");
 
@@ -81,6 +84,7 @@ test("satisfyDependents defaults to false on the wire", () => {
   // The schema default is what makes every existing client keep the merge guard, so it
   // is pinned here rather than left to be read off the zod chain.
   assert.equal(CompleteTaskSchema.parse({ outcome: "x" }).satisfyDependents, false);
+  assert.equal(CompleteTaskSchema.parse({ outcome: "x" }).requireStopped, false);
 });
 
 // ---- the opt-in exit --------------------------------------------------------------------
@@ -171,4 +175,29 @@ test("an already-satisfied edge keeps its original timestamp", () => {
   });
   tasks.complete("root", "landed", undefined, true);
   assert.equal(registry.getTask("dependent")!.dependencies[0]?.satisfiedAt, 42);
+});
+
+test("a blocked-dependent completion refuses a task that is no longer stopped", async () => {
+  const { registry, tasks } = setup();
+  chain(registry);
+  const app = buildApp(
+    registry,
+    {} as ReviewManager,
+    tasks,
+    {} as QueueManager,
+  );
+
+  const response = await app.request("/api/tasks/root/complete", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({
+      outcome: "landed elsewhere",
+      satisfyDependents: true,
+      requireStopped: true,
+    }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(registry.getTask("root")!.status, "running");
+  assert.equal(registry.getTask("dependent")!.dependencies[0]!.satisfiedAt, null);
 });

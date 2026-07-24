@@ -167,6 +167,7 @@ function BacklogCard({
       "Marked done from a blocked dependent - its work is already in place.",
       undefined,
       true,
+      true,
     );
     if (!r.ok) onAssignError(r.error ?? "could not complete that task");
     setBusy(false);

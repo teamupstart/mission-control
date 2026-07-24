@@ -9779,6 +9779,17 @@ kbd {
   gap: 6px;
   margin-left: auto;
 }
+.board-backlog .bl-deadblock {
+  align-self: stretch;
+}
+.board-backlog .bl-deadblock-pop {
+  box-sizing: border-box;
+  width: 100%;
+}
+.board-backlog .bl-deadblock-acts {
+  flex-direction: column;
+  align-items: stretch;
+}
 
 /* ---- dragging a backlog card over the board ----
    While a card is in the air the board answers one question and no others: which

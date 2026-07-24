@@ -123,6 +123,8 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+export class TaskStatusConflictError extends Error {}
+
 /**
  * Why the disabled toggle refuses by DEFAULT rather than trusting callers to identify
  * themselves, spelled out once for both options objects below.
@@ -1480,10 +1482,16 @@ export class TaskManager {
     outcome: string,
     outcomeUrl?: string,
     satisfyDependents = false,
+    requireStopped = false,
   ): Task | null {
-    this.autoCompleted.delete(id);
     const t = this.registry.getTask(id);
     if (!t) return null;
+    if (requireStopped && t.status !== "cancelled" && t.status !== "failed") {
+      throw new TaskStatusConflictError(
+        `task is ${t.status}, only a cancelled or failed task can be completed from a blocked dependent`,
+      );
+    }
+    this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {
       ...t,
@@ -1573,7 +1581,14 @@ export class TaskManager {
         };
       }
     }
-    const cur = this.registry.getTask(id) ?? t;
+    const cur = this.registry.getTask(id);
+    if (!cur) return { ok: false, error: "no such task" };
+    if (cur.status !== "cancelled" && cur.status !== "failed") {
+      return {
+        ok: false,
+        error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
     this.registry.upsertTask({
       ...cur,
       status: "backlog",

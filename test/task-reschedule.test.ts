@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
+import type { QueueManager } from "../src/server/queue.ts";
+import type { ReviewManager } from "../src/server/reviews.ts";
 
 /**
  * What is at stake: a prerequisite that was cancelled or failed while the work it stood
@@ -22,6 +24,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-task-reschedule-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { buildApp } = await import("../src/server/routes.ts");
 const { backlogIndex, blockersFor, deadBlockersFor } = await import("../src/shared/backlog.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -119,4 +122,65 @@ test("rescheduling a task that does not exist is a plain refusal", async () => {
   const r = await tasks.reschedule("nope");
   assert.equal(r.ok, false);
   assert.equal(r.error, "no such task");
+});
+
+test("rescheduling does not resurrect a task removed during resource teardown", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({
+    id: "removed-during-teardown",
+    status: "failed",
+    homeName: "mission-test-reschedule-race-removed",
+  }));
+
+  const pending = tasks.reschedule("removed-during-teardown");
+  registry.removeTask("removed-during-teardown");
+  const r = await pending;
+
+  assert.deepEqual(r, { ok: false, error: "no such task" });
+  assert.equal(registry.getTask("removed-during-teardown"), undefined);
+});
+
+test("rescheduling does not overwrite a status changed during resource teardown", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({
+    id: "completed-during-teardown",
+    status: "failed",
+    homeName: "mission-test-reschedule-race-completed",
+  }));
+
+  const pending = tasks.reschedule("completed-during-teardown");
+  const current = registry.getTask("completed-during-teardown")!;
+  registry.upsertTask({ ...current, status: "done", outcome: "finished elsewhere" });
+  const r = await pending;
+
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /task is done/);
+  assert.equal(registry.getTask("completed-during-teardown")!.status, "done");
+  assert.equal(registry.getTask("completed-during-teardown")!.outcome, "finished elsewhere");
+});
+
+test("the reschedule route validates an empty body before mutating", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({ id: "wire", status: "cancelled" }));
+  const app = buildApp(
+    registry,
+    {} as ReviewManager,
+    tasks,
+    {} as QueueManager,
+  );
+
+  const stray = await app.request("/api/tasks/wire/reschedule", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ force: true }),
+  });
+  assert.equal(stray.status, 400);
+  assert.equal(registry.getTask("wire")!.status, "cancelled");
+
+  const empty = await app.request("/api/tasks/wire/reschedule", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317" },
+  });
+  assert.equal(empty.status, 200);
+  assert.equal(registry.getTask("wire")!.status, "backlog");
 });

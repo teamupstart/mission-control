@@ -31,6 +31,7 @@ import {
   NomistakesRespondSchema,
   OtlpMetricsSchema,
   ReattachQueueSchema,
+  RescheduleTaskSchema,
   RenameSchema,
   ReorderQueueSchema,
   ResetSchema,
@@ -99,7 +100,7 @@ import type {
   WorkItem,
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
-import { TaskDependencyError, type TaskManager } from "./tasks.ts";
+import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
@@ -2318,6 +2319,8 @@ export function buildApp(
   // 404 when the task is gone and a 409 when it is in a state that cannot be re-filed (a
   // done task, a live one) - a state conflict the operator can see, exactly like assign.
   app.post("/api/tasks/:id/reschedule", async (c) => {
+    const parsed = await parseBody(c, RescheduleTaskSchema);
+    if (!parsed.ok) return parsed.res;
     const r = await tasks.reschedule(c.req.param("id"));
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
@@ -2331,12 +2334,19 @@ export function buildApp(
   app.post("/api/tasks/:id/complete", async (c) => {
     const parsed = await parseBody(c, CompleteTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const t = await tasks.complete(
-      c.req.param("id"),
-      parsed.data.outcome,
-      parsed.data.outcomeUrl,
-      parsed.data.satisfyDependents,
-    );
+    let t;
+    try {
+      t = tasks.complete(
+        c.req.param("id"),
+        parsed.data.outcome,
+        parsed.data.outcomeUrl,
+        parsed.data.satisfyDependents,
+        parsed.data.requireStopped,
+      );
+    } catch (error) {
+      if (error instanceof TaskStatusConflictError) return c.json({ error: error.message }, 409);
+      throw error;
+    }
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
   });

@@ -82,6 +82,7 @@ function BacklogReportRow({
                     "Marked done from a blocked dependent - its work is already in place.",
                     undefined,
                     true,
+                    true,
                   ),
                 id,
               )

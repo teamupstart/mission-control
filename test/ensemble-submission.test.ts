@@ -64,7 +64,7 @@ function engineWith(store: InstanceType<typeof EnsembleStore>, adapters = ARTIFA
   for (const attempt of run ? store.listAttempts(run.id) : []) {
     if (attempt.taskId && attempt.worktreePath) gateway.running(attempt.taskId, attempt.worktreePath);
   }
-  return new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters });
+  return new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters });
 }
 
 const CLAIMS = { summary: "implemented it", checks: ["npm test"], testEvidence: null };
@@ -132,7 +132,7 @@ test("a historical worktree path is refused when the Task no longer owns it", as
   const { run, member } = seedActiveMember(store, path, baseSha);
   const gateway = new FakeGateway();
   gateway.running("seeded-task", "/reused/by/another/task");
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: stubAdapters() });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
   const result = await engine.submit({
     runId: run.id,
     memberId: member.id,
@@ -166,7 +166,7 @@ test("a late submission fails the run before artifact capture", async () => {
     },
   };
   clock = 1000;
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters, now: () => clock });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters, now: () => clock });
   const result = await engine.submit({
     runId: run.id,
     memberId: member.id,

@@ -46,6 +46,9 @@ function harness(now = () => 1000) {
     publish: (id) => published.push(id),
     adapters: stubAdapters(),
     now,
+    // A no-op wall-clock timer by default, so a deadline run in one test cannot fire a real
+    // setTimeout into another. The timer's own behaviour is exercised with a controllable stub below.
+    armTimer: () => () => {},
   });
   return { store, gateway, engine, published };
 }
@@ -326,6 +329,49 @@ test("a run past its wall-clock deadline fails rather than parking forever", asy
   await engine.launch(run.id);
   assert.equal(store.getRun(run.id)!.status, "failed");
   assert.match(store.getRun(run.id)!.error ?? "", /deadline/i);
+});
+
+test("a quiet run trips its deadline via the armed timer, tearing down its live members", async () => {
+  let clock = 0;
+  // An array holder, so the deadline wake captured inside the `armTimer` callback stays visible to
+  // the test (a plain `let` would be narrowed back to its initial null by control-flow analysis).
+  const armed: Array<() => void> = [];
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const engine = new EnsembleEngine({
+    store,
+    tasks: gateway,
+    publish: () => {},
+    adapters: stubAdapters(),
+    now: () => clock,
+    // Capture the deadline wake instead of scheduling real time, so the test fires it deterministically.
+    armTimer: (_delayMs, cb) => {
+      armed.push(cb);
+      return () => {};
+    },
+  });
+  const plan = singleWavePlan(2);
+  plan.budget.deadlineMs = 1000;
+  const { run } = store.createRun(runInsert(plan), 0);
+  await engine.launch(run.id);
+  const task = gateway.dispatched[0]!.taskId;
+  gateway.running(task, `/wt/${task}`);
+  await engine.wake(run.id);
+  // The run is now quiet - a member is running and no further event is coming - but a deadline wake
+  // is armed, which is the whole point: without it, the deadline would never be noticed.
+  assert.ok(armed.length > 0, "a deadline wake was armed for the quiet non-terminal run");
+  assert.notEqual(store.getRun(run.id)!.status, "failed");
+
+  clock = 5000; // the deadline has now passed
+  armed[armed.length - 1]!();
+  await new Promise((resolve) => setTimeout(resolve, 20)); // let the fired wake settle
+
+  const after = store.getRun(run.id)!;
+  assert.equal(after.status, "failed", "the armed timer failed the otherwise-quiet run");
+  assert.match(after.error ?? "", /deadline/i);
+  assert.ok(gateway.cancelled.includes(task), "failing the run tore down its live member Task, not leaking it");
+  const member = store.listMembers(run.id).find((m) => m.taskId === task)!;
+  assert.equal(store.getMember(member.id)!.status, "failed");
 });
 
 test("preflight validates the resolved harness and mandatory submission capability", async () => {

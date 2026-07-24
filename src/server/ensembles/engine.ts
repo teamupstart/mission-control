@@ -106,6 +106,13 @@ export interface EnsembleEngineDeps {
   adapters?: ArtifactAdapterRegistry;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
+  /**
+   * Arm a one-shot wall-clock timer and return a canceller. Injected so a test controls time and so
+   * a quiet run - one whose members run stably past its deadline, producing no registry event - is
+   * still failed on schedule rather than only when the next event happens to arrive. The default is
+   * an unref'd `setTimeout`; tests pass a no-op or a controllable stub.
+   */
+  armTimer?: (delayMs: number, fire: () => void) => () => void;
 }
 
 // ---- submission ----
@@ -202,7 +209,10 @@ export class EnsembleEngine {
   private readonly publish: (runId: string) => void;
   private readonly now: () => number;
   private readonly log: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
+  private readonly armTimer: (delayMs: number, fire: () => void) => () => void;
   private readonly locks = new Map<string, Promise<void>>();
+  /** One pending deadline wake per run, so a re-arm cancels the prior one and a terminal clears it. */
+  private readonly deadlineTimers = new Map<string, () => void>();
 
   constructor(deps: EnsembleEngineDeps) {
     this.store = deps.store;
@@ -211,6 +221,42 @@ export class EnsembleEngine {
     this.publish = deps.publish;
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
+    this.armTimer =
+      deps.armTimer ??
+      ((delayMs, fire) => {
+        const timer = setTimeout(fire, Math.max(0, delayMs));
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      });
+  }
+
+  /**
+   * Arm (or re-arm) the wall-clock deadline wake for one non-terminal run, or clear it when the run
+   * has none. The fire path is an ordinary `wake`, so the deadline is enforced through the same
+   * serialized `advanceLocked`/`enforceDeadline` a normal event would - it just guarantees the event
+   * arrives even if no member ever produces one.
+   */
+  private armDeadline(state: RunState): void {
+    const deadline = state.run.plan.budget.deadlineMs;
+    this.clearDeadline(state.run.id);
+    if (deadline === null) return;
+    const remaining = state.run.createdAt + deadline - this.now();
+    const runId = state.run.id;
+    this.deadlineTimers.set(
+      runId,
+      this.armTimer(Math.max(0, remaining), () => {
+        this.deadlineTimers.delete(runId);
+        void this.wake(runId);
+      }),
+    );
+  }
+
+  private clearDeadline(runId: string): void {
+    const cancel = this.deadlineTimers.get(runId);
+    if (cancel) {
+      cancel();
+      this.deadlineTimers.delete(runId);
+    }
   }
 
   private adapterFor(kind: string) {
@@ -286,6 +332,7 @@ export class EnsembleEngine {
         this.publish(runId);
         return false;
       }
+      this.clearDeadline(runId);
       const cancelled = this.store.forceCancelRun(runId, reason, now);
       this.event(runId, "run_cancelled", { reason, unreadable: true }, `run_cancelled:${runId}`);
       this.publish(runId);
@@ -306,6 +353,7 @@ export class EnsembleEngine {
       this.publish(state.run.id);
       return false;
     }
+    this.clearDeadline(state.run.id);
     this.store.setRunStatus(state.run.id, ["cancelling"], "cancelled", { error: reason, completedAt: now }, now);
     this.event(state.run.id, "run_cancelled", { reason }, `run_cancelled:${state.run.id}`);
     this.publish(state.run.id);
@@ -647,10 +695,14 @@ export class EnsembleEngine {
         continue;
       }
 
-      if (this.enforceDeadline(state)) {
+      if (await this.enforceDeadline(state)) {
         this.publish(runId);
         return;
       }
+      // Arm (or re-arm) the wall-clock deadline before the run may go quiet waiting for events, so a
+      // member that runs stably past its deadline still trips it. A terminal transition inside `step`
+      // clears the timer; a waiting one leaves it armed for the next wake.
+      this.armDeadline(state);
 
       const step = await this.step(state, plan);
       if (step === "progressed") {
@@ -670,13 +722,13 @@ export class EnsembleEngine {
     const stages = [...plan.stages].sort((a, b) => a.ordinal - b.ordinal);
     for (const stage of stages) {
       if (!this.driverMatches(stage)) {
-        this.failRun(state.run.id, `stage ${stage.id} pairs ${stage.driverKind} with incompatible driver ${stage.driverKey}`);
+        await this.failRun(state.run.id, `stage ${stage.id} pairs ${stage.driverKind} with incompatible driver ${stage.driverKey}`);
         return "published";
       }
       const status = this.stageStatus(state, stage);
       if (status === "succeeded") continue;
       if (status === "failed") {
-        this.failRun(state.run.id, `stage ${stage.id} could not complete`);
+        await this.failRun(state.run.id, `stage ${stage.id} could not complete`);
         return "published";
       }
       if (status === "running") {
@@ -690,7 +742,7 @@ export class EnsembleEngine {
         return "published";
       }
       if (this.barrierImpossible(state, stage.barrier)) {
-        this.failRun(
+        await this.failRun(
           state.run.id,
           `stage ${stage.id} can no longer meet its barrier: too many members failed or withdrew`,
         );
@@ -703,7 +755,7 @@ export class EnsembleEngine {
       return await this.startStage(state, stage);
     }
     // Every stage has succeeded. The run is done with its compiled work.
-    this.completeRun(state);
+    await this.completeRun(state);
     return "published";
   }
 
@@ -916,7 +968,7 @@ export class EnsembleEngine {
     const run = state.run;
     const now = this.now();
     if (stage.wave > run.plan.budget.maxWaves) {
-      this.failRun(run.id, `stage ${stage.id} is wave ${stage.wave}, past the plan's ${run.plan.budget.maxWaves}-wave cap`);
+      await this.failRun(run.id, `stage ${stage.id} is wave ${stage.wave}, past the plan's ${run.plan.budget.maxWaves}-wave cap`);
       return;
     }
     const commandKey = `wave:${run.id}:${stage.id}:1`;
@@ -1089,7 +1141,7 @@ export class EnsembleEngine {
       if (!attempt || attempt.status !== "pending") continue; // already dispatched
       if (occupied >= ceiling) break;
       if (launchedTotal > state.run.plan.budget.maxMembers) {
-        this.failRun(state.run.id, "a member launch would exceed the plan's hard member cap");
+        await this.failRun(state.run.id, "a member launch would exceed the plan's hard member cap");
         return;
       }
       const role = state.run.plan.roles.find((r) => r.key === member.roleKey);
@@ -1171,7 +1223,7 @@ export class EnsembleEngine {
     if (!runIsAccepting(state.run.status)) {
       return { ok: false, reason: "run_not_accepting", detail: `run is ${state.run.status}` };
     }
-    if (this.enforceDeadline(state)) {
+    if (await this.enforceDeadline(state)) {
       this.publish(input.runId);
       return { ok: false, reason: "run_not_accepting", detail: "the run's wall-clock deadline has passed" };
     }
@@ -1291,10 +1343,10 @@ export class EnsembleEngine {
 
   // ---- terminal transitions ----
 
-  private completeRun(state: RunState): void {
+  private async completeRun(state: RunState): Promise<void> {
     const readyArtifacts = state.artifacts.filter((a) => a.status === "ready");
     if (readyArtifacts.length === 0) {
-      this.failRun(state.run.id, "every member settled without producing an artifact");
+      await this.failRun(state.run.id, "every member settled without producing an artifact");
       return;
     }
     const now = this.now();
@@ -1309,6 +1361,7 @@ export class EnsembleEngine {
     for (const member of submitted) {
       this.store.setMemberStatus(member.id, ["submitted"], "retained", {}, now);
     }
+    this.clearDeadline(state.run.id);
     this.store.setRunStatus(
       state.run.id,
       ["running", "waiting", "evaluating"],
@@ -1319,17 +1372,48 @@ export class EnsembleEngine {
     this.event(state.run.id, "run_completed", { outcome: "retained", members: memberIds.length }, `run_completed:${state.run.id}`);
   }
 
-  private failRun(runId: string, reason: string): void {
+  /**
+   * Fail a run, tearing down every live member Task first.
+   *
+   * A failed run is TERMINAL, and `cancelRun` refuses a terminal run, so this is the ONLY place a
+   * failing run's agents get torn down - leaving them would leak an agent and a worktree with no
+   * ensemble action able to reclaim them. Teardown is best-effort: unlike `cancelRun`, a cancel that
+   * cannot confirm does not hold the run open, because a deadline or an impossible barrier is a hard
+   * stop and the operator can still Reclaim the worktree. The member is marked `failed` regardless,
+   * because a terminal run is never reconciled again.
+   */
+  private async failRun(runId: string, reason: string): Promise<void> {
     const now = this.now();
+    const raw = this.loadRaw(runId);
+    for (const member of raw?.members ?? []) {
+      const status = member.status;
+      if (status !== "pending" && status !== "launching" && status !== "active") continue;
+      if (member.taskId) {
+        const taskStatus = this.tasks.status(member.taskId);
+        if (taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
+          try {
+            await this.tasks.cancel(member.taskId);
+          } catch (err) {
+            this.log("warn", { event: "ensemble_fail_cancel_failed", runId, memberId: member.id, error: String(err) });
+          }
+        }
+        const attempt = raw ? this.latestAttempt(raw, member.id) : null;
+        if (attempt) {
+          this.store.setAttemptStatus(attempt.id, ["pending", "launching", "running"], "cancelled", { finishedAt: now }, now);
+        }
+      }
+      this.store.setMemberStatus(member.id, [status], "failed", { error: reason }, now);
+    }
+    this.clearDeadline(runId);
     this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "failed", { error: reason, completedAt: now }, now);
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
   }
 
-  private enforceDeadline(state: RunState): boolean {
+  private async enforceDeadline(state: RunState): Promise<boolean> {
     const deadline = state.run.plan.budget.deadlineMs;
     if (deadline === null) return false;
     if (this.now() - state.run.createdAt <= deadline) return false;
-    this.failRun(state.run.id, "the run passed its wall-clock deadline before finishing");
+    await this.failRun(state.run.id, "the run passed its wall-clock deadline before finishing");
     return true;
   }
 

@@ -28,7 +28,7 @@ beforeEach(() => clearEnsembleTables(db));
 
 function makeEngine(gateway = new FakeGateway(), adapters = stubAdapters()) {
   const store = new EnsembleStore(db);
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters });
   return { store, gateway, engine };
 }
 
@@ -39,7 +39,7 @@ test("recovery before any launch starts the wave, and a second recovery does not
   const { run } = store.createRun(runInsert(singleWavePlan(3)));
   // Nothing launched yet - the crash happened right after the run was persisted.
   const gateway = new FakeGateway();
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: stubAdapters() });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
 
   await engine.recover(run.id);
   assert.equal(gateway.created.length, 3, "the wave is launched on recovery");
@@ -165,7 +165,7 @@ test("recovery fails a capture interrupted by the crash so the member can submit
 
   const survivor = new FakeGateway();
   survivor.running("t-a", "/wt/a");
-  const engine = new EnsembleEngine({ store, tasks: survivor, publish: () => {}, adapters: stubAdapters() });
+  const engine = new EnsembleEngine({ store, tasks: survivor, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
   await engine.recover(run.id);
 
   const artifacts = store.listArtifacts(run.id);
@@ -220,7 +220,7 @@ test("recovery completes an interrupted capture whose deterministic ref is durab
   };
   const gateway = new FakeGateway();
   gateway.running("t-recover", "/wt/recover");
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters });
   await engine.recover(run.id);
   assert.equal(store.listArtifacts(run.id).find((row) => row.id === artifact.id)!.status, "ready");
   assert.equal(store.getMember(member.id)!.status, "submitted");
@@ -262,7 +262,7 @@ test("recovery repairs an active member already backed by a ready artifact", asy
   });
   const gateway = new FakeGateway();
   gateway.running("t-ready", "/wt/ready");
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: stubAdapters() });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
   await engine.recover(run.id);
   assert.equal(store.getMember(member.id)!.status, "submitted");
   assert.equal(store.listAttempts(run.id).find((row) => row.id === attempt.id)!.status, "submitted");
@@ -306,7 +306,7 @@ test("recovery invalidates a ready artifact whose private ref no longer verifies
   });
   const adapters = stubAdapters();
   adapters.commit = { ...adapters.commit!, async verify() { return false; } };
-  const engine = new EnsembleEngine({ store, tasks: new FakeGateway(), publish: () => {}, adapters });
+  const engine = new EnsembleEngine({ store, tasks: new FakeGateway(), publish: () => {}, armTimer: () => () => {}, adapters });
   await engine.recover(run.id);
   assert.equal(store.listArtifacts(run.id).find((row) => row.id === artifact.id)!.status, "failed");
 });
@@ -459,7 +459,7 @@ test("restoreArtifact verifies the private ref, then restores through the adapte
   const gateway = new FakeGateway();
   gateway.running(task, `/wt/${task}`);
   const store = new EnsembleStore(db);
-  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, adapters: spyAdapters });
+  const engine = new EnsembleEngine({ store, tasks: gateway, publish: () => {}, armTimer: () => () => {}, adapters: spyAdapters });
   const result = await engine.restoreArtifact(run.id, artifact.id);
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.deepEqual(verified, ["v"], "the ref was verified before touching a checkout");
@@ -478,7 +478,7 @@ test("restoreArtifact refuses a historical path no longer owned by the member Ta
   const artifact = first.store.listArtifacts(run.id).find((row) => row.status === "ready")!;
   const reused = new FakeGateway();
   reused.running(task, "/wt/reused");
-  const engine = new EnsembleEngine({ store: first.store, tasks: reused, publish: () => {}, adapters: stubAdapters() });
+  const engine = new EnsembleEngine({ store: first.store, tasks: reused, publish: () => {}, armTimer: () => () => {}, adapters: stubAdapters() });
   const result = await engine.restoreArtifact(run.id, artifact.id);
   assert.equal(result.ok, false);
   assert.match(result.detail ?? "", /no live worktree/);

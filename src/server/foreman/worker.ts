@@ -1007,6 +1007,7 @@ async function processPromptedWrapup(
     result.verdict,
     pcfg,
     foremanMayActLive(cfg, session.cwd, session.repoRoot),
+    session.agent,
   );
 
   // Retire the episode FIRST - before anything types - for the reason in the header.

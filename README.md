@@ -1881,15 +1881,23 @@ The action is the same whichever trigger fired:
 | Then | What it does |
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
-| **Run /no-mistakes** | types that instruction into the session itself |
+| **Run no-mistakes** | types the gate instruction into the session itself, spelled for that session's agent |
 | **Straight to PR** | explicitly skip no-mistakes; use git and `gh` directly to commit, push, and open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
 The two automated actions type something that *pushes*, so they only fire in **live** mode
 on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
 letting a selected radio quietly do nothing.
 
+**The gate instruction is spelled per harness**, because running a skill by name is: it is
+`/no-mistakes` at Claude, `$no-mistakes …` at Codex and `/skill:no-mistakes` at pi. Each
+harness declares its own grammar (`SkillsSpec.invoke`), and the trailing clause on Codex's
+is load-bearing rather than decorative - a bare `$name` at the end of Codex's composer
+leaves its skill-mention popup open, and that popup swallows the Enter that would have sent
+the message. The same rule reaches the **Ship it?** card, so the button and the automation
+send identical bytes.
+
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does
-not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job
+not run tests. no-mistakes remains the gate that actually executes things; Foreman's job
 here is the narrower question no pipeline answers: *was the thing you asked for actually
 done?* Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
 lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman

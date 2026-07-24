@@ -379,7 +379,9 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // selected forever deciding `none`.
     if (!wrapupTriggerOn(cfg.wrapupTriggers, "drain")) return { kind: "none" };
 
-    const payload = autoWrapupPayload(cfg.wrapup);
+    // Spelled for THIS session's harness: the gate is `/no-mistakes` on Claude and
+    // `$no-mistakes …` on Codex, and typing the wrong one is a wrap-up that never runs.
+    const payload = autoWrapupPayload(cfg.wrapup, session.agent);
 
     // Nothing to automate (`ask`), or Foreman may not type here at all. `mayActLive` is
     // the same gate a queue send passes, and it binds harder here: the instruction

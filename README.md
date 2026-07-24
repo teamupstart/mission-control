@@ -2491,9 +2491,11 @@ earns two surfaces a card has nowhere to put:
   That is the **rail** zone. Press <kbd>Tab</kbd> to hand focus to the open conversation
   (the **reader** zone): the pane takes the ring, and <kbd>↑</kbd>/<kbd>↓</kbd> now scroll
   its active Conversation or Files reader instead of moving the selection. <kbd>⇧</kbd><kbd>Tab</kbd>
-  hands it back to the rail. Once focus is in the reader, ordinary browser tabbing continues
-  through its tabs, reply box and controls. In the focused inline Diff reader the arrows
-  move through its file list instead; that navigation stays scoped to the reader.
+  hands it back to the rail. These handoffs apply only while focus is inside the rail or
+  reader; ordinary browser tabbing elsewhere is untouched. Once focus is in the reader,
+  ordinary browser tabbing continues through its tabs, reply box and controls. In the
+  focused inline Diff reader the arrows move through its file list instead; that navigation
+  stays scoped to the reader.
   <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
   the pane.
 - **The board separates the two**, because its overview is worth reading without being

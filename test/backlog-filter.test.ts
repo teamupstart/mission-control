@@ -34,6 +34,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
+    onConsoleZoneChange: () => {},
     onSelect: () => {},
     onDeselect: () => {},
     expandedId: null,

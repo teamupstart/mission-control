@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import { groupByTone } from "../../lib/tone.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
@@ -21,21 +20,19 @@ import type { SessionViewProps } from "./types.ts";
  */
 export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
-  const activeId = active?.id ?? null;
   const groups = groupByTone(props.sessions, props.gateAlerts).filter((g) => g.sessions.length > 0);
-  const detailRef = useRef<HTMLElement>(null);
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
   // pane there is no reader to hand focus to, so it always presents as the rail.
   const zone = active ? props.consoleZone : "rail";
 
-  useEffect(() => {
-    if (activeId && zone === "detail") detailRef.current?.focus({ preventScroll: true });
-  }, [activeId, zone]);
-
   return (
     <div className="console" data-zone={zone}>
-      <nav className="console-rail" aria-label="Sessions">
+      <nav
+        className="console-rail"
+        aria-label="Sessions"
+        onFocusCapture={() => props.onConsoleZoneChange("rail")}
+      >
         {groups.map((g) => (
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
@@ -47,9 +44,9 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 key={s.id}
                 session={s}
                 selected={s.id === props.selectedId}
-                focusSelected={s.id === props.selectedId && zone === "rail"}
                 gateNeedsYou={props.gateAlerts.has(s.id)}
                 onSelect={() => props.onSelect(s.id)}
+                registerEl={props.registerEl}
                 workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                 onOpenWorkflowRun={props.onOpenWorkflowRun}
               />
@@ -58,7 +55,11 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
         ))}
       </nav>
 
-      <section ref={detailRef} className="console-detail" tabIndex={active ? -1 : undefined}>
+      <section
+        className="console-detail"
+        tabIndex={active ? -1 : undefined}
+        onFocusCapture={() => props.onConsoleZoneChange("detail")}
+      >
         {active ? (
           // Keyed by id so switching sessions remounts: the tab resets to the
           // conversation and the transcript starts clean, instead of showing the

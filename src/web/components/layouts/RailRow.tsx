@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
@@ -18,31 +18,36 @@ import { Tooltip } from "../Tooltip.tsx";
 export function RailRow({
   session,
   selected,
-  focusSelected = false,
   gateNeedsYou,
   onSelect,
+  registerEl,
   workflowRun = null,
   onOpenWorkflowRun,
 }: {
   session: Session;
   selected: boolean;
-  focusSelected?: boolean;
   gateNeedsYou: boolean;
   onSelect: () => void;
+  registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
+  const setRef = useCallback(
+    (el: HTMLButtonElement | null) => {
+      ref.current = el;
+      registerEl?.(session.id, el);
+    },
+    [registerEl, session.id],
+  );
 
   // Keep the selected row in view as the arrow keys walk the rail. Local to the row
-  // because the rail scrolls independently of the detail beside it - App's map holds
-  // the card element, which in this layout is the pane, not the row.
+  // because the rail scrolls independently of the detail beside it.
   useEffect(() => {
     if (!selected) return;
     ref.current?.scrollIntoView({ block: "nearest" });
-    if (focusSelected) ref.current?.focus({ preventScroll: true });
-  }, [selected, focusSelected]);
+  }, [selected]);
 
   const marks: string[] = [];
   if (session.nomistakesGated) marks.push("◇");
@@ -63,7 +68,7 @@ export function RailRow({
   return (
     <>
       <button
-        ref={ref}
+        ref={setRef}
         className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
         aria-current={selected}
         aria-describedby={descriptionId}

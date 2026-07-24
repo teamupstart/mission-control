@@ -49,9 +49,11 @@ export interface SessionViewProps {
    * Which half of the Console holds the keyboard - the rail selector or the open
    * conversation reader. Console-only: the grid and board ignore it. Drives whether the
    * rail's selected row reads as active or handed-off, and which surface shows the focus
-   * ring. App owns the transition (Tab / Shift+Tab / Escape); the view only reflects it.
+   * ring. App owns the transition (Tab / Shift+Tab / Escape); the view reports native
+   * focus movement so the state stays aligned with the DOM.
    */
   consoleZone: "rail" | "detail";
+  onConsoleZoneChange: (zone: "rail" | "detail") => void;
   onSelect: (id: string) => void;
   /** Close the current detail: reverses the board drill-in or empties the console. */
   onDeselect: () => void;

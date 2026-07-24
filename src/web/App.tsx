@@ -259,6 +259,17 @@ export function App(): React.JSX.Element {
     else cardEls.current.delete(id);
   }, []);
 
+  const focusConsoleRail = useCallback((id: string) => {
+    const active = document.activeElement as HTMLElement | null;
+    const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
+    if (activeEditor && !active?.closest(".console-detail")) return;
+    cardEls.current.get(id)?.focus({ preventScroll: true });
+  }, []);
+
+  const focusConsoleDetail = useCallback(() => {
+    document.querySelector<HTMLElement>(".console-detail")?.focus({ preventScroll: true });
+  }, []);
+
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
     if (handle) actionHandles.current.set(id, handle);
     else actionHandles.current.delete(id);
@@ -562,6 +573,7 @@ export function App(): React.JSX.Element {
     gateAlerts,
     selectedId,
     consoleZone,
+    onConsoleZoneChange: setConsoleZone,
     onSelect:
       layout === "board"
         ? (id) => {
@@ -712,6 +724,8 @@ export function App(): React.JSX.Element {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      const inConsoleRail = Boolean(target?.closest(".console-rail"));
+      const inConsoleDetail = Boolean(target?.closest(".console-detail"));
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
       // An embedded session surface can own navigation without being a screen-owning
@@ -747,16 +761,27 @@ export function App(): React.JSX.Element {
       if (overlaysRef.current.anyOpen || renamingId) return;
 
       if (layout === "console" && selected) {
-        if (chord === "shift+Tab" && consoleZone === "detail") {
+        if (chord === "shift+Tab" && inConsoleDetail) {
           e.preventDefault();
           setConsoleZone("rail");
+          focusConsoleRail(selected.id);
           return;
         }
-        if (chord === "Tab" && consoleZone === "rail") {
+        if (chord === "Tab" && inConsoleRail) {
           e.preventDefault();
           setConsoleZone("detail");
+          focusConsoleDetail();
           return;
         }
+      }
+
+      if (
+        layout === "console" &&
+        (chord === "Tab" || chord === "shift+Tab") &&
+        !inConsoleRail &&
+        !inConsoleDetail
+      ) {
+        return;
       }
 
       if (typing) return;
@@ -800,9 +825,10 @@ export function App(): React.JSX.Element {
           // Console's reader zone sits above its selection the way grid focus and the
           // board drill-in do: hand the keyboard back to the rail first, and only drop
           // the selection on the next press.
-          if (layout === "console" && selected && consoleZone === "detail") {
+          if (layout === "console" && selected && inConsoleDetail) {
             e.preventDefault();
             setConsoleZone("rail");
+            focusConsoleRail(selected.id);
             return;
           }
           if (!selectedId) return;
@@ -839,6 +865,7 @@ export function App(): React.JSX.Element {
           });
           if (nextId) {
             setSelectedId(nextId);
+            if (layout === "console" && consoleZone === "rail") focusConsoleRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
@@ -949,7 +976,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, focusConsoleRail, focusConsoleDetail]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

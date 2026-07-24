@@ -477,6 +477,7 @@ test("card and console detail agree on every shared leaf", () => {
         gateAlerts: new Set<string>(),
         selectedId: session.id,
         consoleZone: "rail",
+        onConsoleZoneChange: () => {},
         onSelect: () => {},
         onDeselect: () => {},
         expandedId: null,

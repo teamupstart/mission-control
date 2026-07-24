@@ -29,6 +29,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
+    onConsoleZoneChange: () => {},
     onSelect: () => {},
     onDeselect: () => {},
     expandedId: null,
@@ -99,8 +100,8 @@ test("App wires Tab and Shift+Tab to the console focus zones", () => {
   const start = app.indexOf('if (layout === "console" && selected)');
   assert.ok(start >= 0, "no Console zone branch in the key handler");
   const body = app.slice(start, app.indexOf("if (typing) return;", start));
-  assert.match(body, /chord === "Tab" && consoleZone === "rail"/);
-  assert.match(body, /chord === "shift\+Tab" && consoleZone === "detail"/);
+  assert.match(body, /chord === "Tab" && inConsoleRail/);
+  assert.match(body, /chord === "shift\+Tab" && inConsoleDetail/);
   assert.match(body, /setConsoleZone\("detail"\)/);
   assert.match(body, /setConsoleZone\("rail"\)/);
   assert.ok(
@@ -117,7 +118,7 @@ test("Escape peels the reader zone back to the rail before dropping the selectio
   // The zone step-back sits above the selection-clearing return, so one Escape returns to
   // the rail and only a second clears the selection - the layered peel the grid and board
   // already do.
-  assert.match(branch, /selected && consoleZone === "detail"[\s\S]*setConsoleZone\("rail"\)/);
+  assert.match(branch, /selected && inConsoleDetail[\s\S]*setConsoleZone\("rail"\)/);
 });
 
 test("zone transitions move DOM focus and hidden selections reset to the rail", () => {
@@ -125,7 +126,22 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   const consoleView = source("components/layouts/ConsoleView.tsx");
   const railRow = source("components/layouts/RailRow.tsx");
   assert.match(app, /setConsoleZone\("rail"\);[\s\S]*\[visibleSelectedId, layout\]/);
-  assert.match(consoleView, /zone === "detail"[\s\S]*detailRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(consoleView, /focusSelected=\{s\.id === props\.selectedId && zone === "rail"\}/);
-  assert.match(railRow, /if \(focusSelected\) ref\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /querySelector<HTMLElement>\("\.console-detail"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(app, /cardEls\.current\.get\(id\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
+  assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);
+  assert.doesNotMatch(railRow, /focusSelected/);
+});
+
+test("Console handoffs are scoped to the DOM zone that owns focus", () => {
+  const app = source("App.tsx");
+  assert.match(app, /target\?\.closest\("\.console-rail"\)/);
+  assert.match(app, /target\?\.closest\("\.console-detail"\)/);
+  assert.match(app, /chord === "Tab" && inConsoleRail/);
+  assert.match(app, /chord === "shift\+Tab" && inConsoleDetail/);
+  assert.match(app, /activeEditor && !active\?\.closest\("\.console-detail"\)/);
+  assert.match(
+    app,
+    /\(chord === "Tab" \|\| chord === "shift\+Tab"\)[\s\S]*!inConsoleRail[\s\S]*!inConsoleDetail[\s\S]*return/,
+  );
 });

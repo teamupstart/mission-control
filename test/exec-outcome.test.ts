@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { run } from "../src/server/util/exec.ts";
 import { wasRefused } from "../src/server/inspector/github.ts";
 
@@ -108,4 +111,45 @@ test("an overflow on a write is never a refusal, whatever the flags say", () => 
     false,
     "the response overflowed, not the request - it may well have landed",
   );
+});
+
+// An argv the kernel will not accept is thrown SYNCHRONOUSLY out of `spawn`, not handed to
+// the callback the way a missing binary is - so it escaped this function as a promise
+// REJECTION, which is the one thing `run` documents that it never does. Every caller here
+// reads `code` instead of holding a try/catch, so the throw did not degrade into a failed
+// command, it took down whatever was awaiting it.
+//
+// That is the same family as the bug this landed with: a payload on argv has a ceiling, and
+// past it the write does not fail, it explodes. tmux's ceiling is its own ~16KB command
+// limit and is fixed by piping the payload; the backends with no stdin form (cmux's `rpc`,
+// ghostty's `osascript -e`) still have the OS's `ARG_MAX` under them, and this is what makes
+// reaching it an ordinary refusal they can report.
+test("an argv too large to spawn is a refusal, not a throw", async () => {
+  // Comfortably past `ARG_MAX`, which is 1MB on macOS and 2MB on common Linux configs.
+  const res = await run(process.execPath, ["-e", "0", "x".repeat(8 * 1024 * 1024)]);
+
+  assert.notEqual(res.code, 0, "it must report failure");
+  // The errno spelling is a platform/runtime detail: Unix reports E2BIG, while Windows
+  // can surface the same command-line refusal as EINVAL or ENAMETOOLONG.
+  const tooLarge = process.platform === "win32" ? /E2BIG|EINVAL|ENAMETOOLONG/ : /E2BIG/;
+  assert.match(res.stderr, tooLarge, "and say why, so an operator sees more than a bare exit");
+  // The load-bearing half. Nothing spawned, so nothing ran and nothing was written - which
+  // is the one direction a caller may safely retry from. Reported as an unknown outcome,
+  // `injectPrompt` would refuse to re-send a prompt that never left this process.
+  assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
+  assert.equal(res.overflowed, false, "that flag is about stdout, not argv");
+});
+
+test("a callback-reported spawn refusal keeps its diagnostic", async () => {
+  // ENOENT takes `execFile`'s callback path rather than its synchronous-throw path. Both
+  // paths represent the same fact - no process existed - and both need to retain Node's
+  // message so an E2BIG reported this way does not degrade to a blank fallback on another
+  // runtime or operating system.
+  const missing = join(tmpdir(), `mission-control-missing-${randomUUID()}`);
+  const res = await run(missing, []);
+
+  assert.notEqual(res.code, 0);
+  assert.ok(res.stderr.trim(), "the spawn refusal must say why it could not start");
+  assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
+  assert.equal(res.overflowed, false);
 });

@@ -34,7 +34,17 @@ import type { TerminalResult } from "./types.ts";
 export type TerminalExec = (
   bin: string,
   args: string[],
-  opts?: { timeoutMs?: number; env?: NodeJS.ProcessEnv },
+  opts?: {
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    /**
+     * Text for the child's stdin. When the backend exposes an stdin transport, human- or
+     * model-authored payloads belong here rather than in argv, whose size limits vary by
+     * operating system and terminal backend. Flags, targets, and bounded key names remain
+     * command-line arguments.
+     */
+    input?: string;
+  },
 ) => Promise<RunResult>;
 
 export const defaultExec: TerminalExec = run;

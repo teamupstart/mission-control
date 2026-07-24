@@ -570,8 +570,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   has no such state (every emulator), null ANSWER means we asked and the pane is in none -
   read the first as the second and a new multiplexer's keystrokes are swallowed silently.
   The seam for all of it is `PaneDeps.pane`, so a test drives the real adapter on a fake
-  subprocess (real argv) or a hand-built pane (capability nulls no shipped backend declares
-  yet). Tests:
+  subprocess (real arguments and stdin) or a hand-built pane (capability nulls no shipped
+  backend declares yet).
+  **PIPE PAYLOADS through `TerminalExec.input` wherever the backend allows it.** tmux and
+  WezTerm pipe all human- or model-authored text; bounded key names remain arguments. The
+  current cmux and Ghostty mechanisms are documented exceptions that still have an `ARG_MAX`
+  ceiling, so `run` must turn a synchronous spawn refusal into `outcomeUnknown: false`: no
+  process existed and nothing was written. The adapter comments own the backend-specific
+  transport and flag invariants. Tests: `exec-outcome.test.ts`,
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
   `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`,
   `terminal-host-join.test.ts`, `terminal-ghostty.test.ts`.

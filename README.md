@@ -206,9 +206,14 @@ The same declaration decides how a session is **typed into and read**. A reply, 
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
 the backend holding the innermost pane, which renders them in its own convention - tmux
 takes key names, WezTerm takes escape sequences - so nothing above that layer knows which
-terminal it is talking to. Everything you send arrives as written, including a message
-that begins with a dash. A backend that cannot be typed into at all refuses and names
-itself, rather than reporting that the session has no terminal.
+terminal it is talking to. Everything you send through tmux or WezTerm arrives as
+written, including a message that begins with a dash. Those backends pipe payload text on
+stdin, so prompts carrying a whole plan or phase document are not constrained by a
+command-line size limit. The cmux and Ghostty adapters still carry text in command-line
+arguments and can refuse a payload that reaches the operating system's argument limit;
+that refusal is reported without claiming that any text reached the pane. A backend that
+cannot be typed into at all refuses and names itself, rather than reporting that the
+session has no terminal.
 
 The same declaration decides a session's **lifecycle** - Focus, Rename, Kill, and where a
 dispatched agent is launched in the first place. Focus is the clearest case, because it is

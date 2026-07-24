@@ -1801,8 +1801,8 @@ export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 /**
  * Deliver a whole (possibly multi-line) prompt into a session's input as ONE
  * submission, via bracketed paste. Distinct from SendTextSchema because `/send`
- * is literal `send-keys -l`, where every embedded newline submits - so it cannot
- * deliver a multi-line intent or a bulleted gap list at all.
+ * types literally, where every embedded newline submits - so it cannot deliver a
+ * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
   text: z.string().min(1).max(INTENT_MAX),

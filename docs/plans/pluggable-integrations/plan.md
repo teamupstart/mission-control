@@ -359,11 +359,8 @@ Three refinements the sketch above did not have, each forced by the existing cod
 Two things the migration commits will carry that a reader of their diffs must not mistake
 for a pure move:
 
-- **The adapters terminate flag parsing; the inline call sites do not.** `send-keys`,
-  `new-session` and `wezterm send-text` all parse their trailing arguments as options, so a
-  reply beginning with a dash (`-v is what broke it`) dies in the arg parser and never
-  reaches the pane. Verified on tmux 3.6b and wezterm's clap parser; both fixed by `--`, and
-  the terminator changes nothing about how what follows is read.
+- **Pane payload transport is adapter-owned.** The current transport contract is owned by
+  `AGENTS.md` and `src/server/terminal/`; this historical plan does not duplicate it.
 - **Every wezterm command in the adapter goes through `cli --no-auto-start` with
   `weztermEnv()`.** The writes in `actions.ts` and the captures in `discovery/pane-capture.ts`
   use neither, so they inherit `WEZTERM_UNIX_SOCKET` while the pane ids they are given came
@@ -442,8 +439,8 @@ for every backend. Six deltas, each forced by something real:
 - **The seam moved from a command runner to the PANE.** `PaneDeps.exec` was the only way a
   test could drive these writers, and after the migration nothing in the write paths used
   it except to build an adapter - so it is `PaneDeps.pane: (session) => BoundPane | null`,
-  and `bindSession(session, fakeExec)` is how a test that wants real argv still gets it
-  (`pane-copy-mode.test.ts` reads the same `send-keys` lines it always did). What that
+  and `bindSession(session, fakeExec)` is how a test that wants real subprocess calls still
+  gets them (`pane-copy-mode.test.ts` exercises that seam). What that
   bought is the other half: the capability NULLS - no `write`, no `paste`, no `mode` - are
   reachable from a test through a hand-built pane, before the adapter that depends on them
   exists. A path first exercised by Ghostty is a path that ships broken.
@@ -468,11 +465,10 @@ for every backend. Six deltas, each forced by something real:
   that was KILLED may be sitting in the composer, and the same answer would re-paste onto
   it and append a second copy. That case now reports `pasted: true`. Erring this way costs
   a prompt someone re-sends by hand; erring the other way corrupts one already delivered.
-- **Two behavior changes came along, both stated in the adapters' own docs.** The `--`
-  terminator means a reply beginning with a dash reaches the pane instead of tmux's getopt
-  or wezterm's clap parser - verified live on both. And every wezterm command now carries
-  `--no-auto-start` with `WEZTERM_UNIX_SOCKET` dropped, so writes and captures address the
-  same mux the pane ids were enumerated on.
+- **The adapters' own docs own the pane-I/O behavior deltas.** This historical plan does not
+  restate their payload transport. Every wezterm command carries `--no-auto-start` with
+  `WEZTERM_UNIX_SOCKET` dropped, so writes and captures address the same mux the pane ids
+  were enumerated on.
 
 `TMUX` is still NOT in `TMUX_BIN.dropEnv`, and this was the commit that was supposed to
 add it. It cannot: the writes that moved are only some of them. Focus, rename, kill and
@@ -483,11 +479,11 @@ the one that exists now. It goes with the focus/spawn/kill item.
 
 Verified the way the enumeration item was, on live backends rather than from the diff: a
 real tmux pane and a real WezTerm tab, each with a child recording every byte it received.
-Typed text, a dash-leading body (which fails on `HEAD`), a multi-line bracketed paste and
-its Enter, and a capture read back - all delivered, in order, on both. The suite's
-existing real-tmux cases (the copy-mode swallow, the placeholder through a live
-`capture-pane`) pass unchanged. Tests: `pane-write-capabilities.test.ts` (the capability
-nulls, the innermost-handle rule, the two `outcomeUnknown` directions),
+Typed text, a dash-leading body (which failed on the pre-migration baseline), a multi-line
+bracketed paste and its Enter, and a capture read back - all delivered, in order, on both.
+The suite's existing real-tmux cases (the copy-mode swallow, the placeholder through a live
+`capture-pane`) pass unchanged. Tests: `pane-write-capabilities.test.ts` (the capability nulls,
+the innermost-handle rule, the two `outcomeUnknown` directions),
 `pane-copy-mode.test.ts`, `inject-prompt-submit.test.ts`, `harness-control.test.ts`.
 
 #### Lifecycle, as landed

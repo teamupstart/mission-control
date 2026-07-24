@@ -27,17 +27,32 @@ import { ALL_KEYS } from "../src/server/terminal/types.ts";
 interface Call {
   bin: string;
   args: string[];
+  /**
+   * What was piped to the child's stdin, and the reason this fake had to grow a third
+   * field. A payload on argv and the same payload on stdin are the same call to a recorder
+   * that only watches argv - which is precisely the difference between a prompt that
+   * delivers and one that dies at `command too long`, so a test blind to it cannot guard
+   * the bug this file's `write.text` / `write.paste` cases exist for.
+   */
+  input?: string;
 }
 
 function recorder(results: RunResult[] = []) {
   const calls: Call[] = [];
   let n = 0;
-  const exec = async (bin: string, args: string[]): Promise<RunResult> => {
-    calls.push({ bin, args });
+  const exec = async (
+    bin: string,
+    args: string[],
+    opts?: { input?: string },
+  ): Promise<RunResult> => {
+    calls.push({ bin, args, input: opts?.input });
     return results[n++] ?? stubRun({ stdout: "", stderr: "", code: 0 });
   };
   return { calls, exec };
 }
+
+/** tmux's per-pane buffer name, spelled here so the argv assertions below read literally. */
+const BUF = "harness-3";
 
 const MUX = { session: "api", windowIndex: 0, paneId: "%3" };
 const EMU = { paneId: "5", tabId: "2" };
@@ -50,7 +65,11 @@ test("every key renders into each backend's own convention", async () => {
 
     const wez = recorder();
     await weztermEmulator(wez.exec).write!.keys(EMU, [key]);
-    const wezRendered = wez.calls[0]!.args.at(-1)!;
+    // Read off STDIN, not argv. wezterm's payload moved there when `send-text` stopped
+    // taking a trailing argument, and `args.at(-1)` kept "passing" against `--no-paste` -
+    // a flag that is equal to no key name and different from every tmux rendering, so all
+    // three assertions below held while checking nothing about the key at all.
+    const wezRendered = wez.calls[0]!.input!;
 
     // Neither backend may pass the vocabulary word through. tmux would type "shift-tab" as
     // literal text; wezterm would write those nine bytes into the pty.
@@ -64,39 +83,124 @@ test("tmux sends key names, and text literally", async () => {
   const { calls, exec } = recorder();
   const tmux = tmuxMultiplexer(exec);
 
+  // Keys stay on argv: they are a bounded vocabulary of short names, never a payload, and
+  // routing them through a paste buffer would type the NAMES into the pane.
   await tmux.write.keys(MUX, ["shift-tab"]);
   assert.deepEqual(calls[0]!.args, ["send-keys", "-t", "%3", "--", "BTab"]);
 
-  // `-l` is the difference between typing a body and pressing whatever it happens to spell.
+  // Text goes through the buffer, so a body that happens to spell a key name is still typed
+  // rather than pressed - the job `send-keys -l` used to do, now done by not being a key
+  // command at all. `-r` keeps tmux from rewriting LF to CR, which is what makes this
+  // `text` (a newline submits) rather than `paste`.
   await tmux.write.text(MUX, "Enter");
-  assert.deepEqual(calls[1]!.args, ["send-keys", "-t", "%3", "-l", "--", "Enter"]);
+  assert.deepEqual(calls[1]!.args, ["load-buffer", "-b", BUF, "-"]);
+  assert.equal(calls[1]!.input, "Enter");
+  assert.deepEqual(calls[2]!.args, ["paste-buffer", "-r", "-d", "-b", BUF, "-t", "%3"]);
+
+  // And the paste verb differs by exactly one flag: `-p` for bracketed paste, no `-r`.
+  await tmux.write.paste!(MUX, "one\ntwo");
+  assert.deepEqual(calls[3]!.args, ["load-buffer", "-b", BUF, "-"]);
+  assert.equal(calls[3]!.input, "one\ntwo");
+  assert.deepEqual(calls[4]!.args, ["paste-buffer", "-p", "-d", "-b", BUF, "-t", "%3"]);
+});
+
+test("a payload never rides on argv, however big it gets", async () => {
+  // The regression guard for the bug this seam exists to close. tmux caps the total length
+  // of a COMMAND far below the OS's argv limit - measured against 3.6b, 16,000 bytes as an
+  // argument is accepted and 20,000 is refused with `command too long`, exit 1 - so a
+  // dispatch carrying a phase document created its worktree, launched its agent, and then
+  // died at prompt delivery with nothing in the composer.
+  //
+  // Asserting "the text is on stdin" is not enough on its own: what has to be true is that
+  // it is NOT an argument, which is the property tmux's limit is levied against. So this
+  // checks every argv entry of every call, and fails against both old spellings
+  // (`set-buffer -b <buf> -- <text>` and `send-keys -l -- <text>`).
+  const big = "x".repeat(64 * 1024);
+
+  for (const verb of ["text", "paste"] as const) {
+    const { calls, exec } = recorder();
+    const tmux = tmuxMultiplexer(exec);
+    const res = await (verb === "text" ? tmux.write.text(MUX, big) : tmux.write.paste!(MUX, big));
+
+    assert.equal(res.ok, true, `${verb} should deliver`);
+    assert.equal(calls[0]!.input, big, `${verb} must pipe the payload`);
+    for (const call of calls) {
+      for (const arg of call.args) {
+        assert.ok(
+          !arg.includes(big),
+          `tmux ${verb} put a ${big.length}-byte payload in argv: ${call.args[0]}`,
+        );
+        // Nothing an adapter passes as an argument is a payload, so nothing it passes as an
+        // argument has any business approaching tmux's limit.
+        assert.ok(arg.length < 1024, `tmux ${verb} emitted a suspiciously long argv entry`);
+      }
+    }
+  }
+
+  // wezterm's ceiling is the OS's `ARG_MAX` rather than a tmux limit, but it is the same
+  // defect and takes the same fix - its `send-text` reads the body from stdin when the
+  // positional argument is omitted.
+  for (const literal of [true, false]) {
+    const { calls, exec } = recorder();
+    const wez = weztermEmulator(exec);
+    await (literal ? wez.write!.text(EMU, big) : wez.write!.paste!(EMU, big));
+
+    assert.equal(calls[0]!.input, big);
+    for (const arg of calls[0]!.args) assert.ok(!arg.includes(big), "wezterm put a payload in argv");
+  }
+});
+
+test("an empty write succeeds without reaching for a buffer", async () => {
+  // `load-buffer` with empty stdin exits 0 and creates NO buffer (measured, tmux 3.6b), so
+  // the `paste-buffer` behind it would fail `no buffer harness-3` - turning what used to be
+  // a no-op `send-keys -l -- ""` into a reported failure to reach the pane.
+  const { calls, exec } = recorder();
+  const res = await tmuxMultiplexer(exec).write.text(MUX, "");
+
+  assert.equal(res.ok, true);
+  assert.equal(calls.length, 0, "an empty write should spawn nothing at all");
 });
 
 test("a body beginning with a dash is typed, not parsed as flags", async () => {
   // Both CLIs parse their trailing arguments as options, so "-v is what broke it" - an
   // ordinary reply - dies in the arg parser and never reaches the pane. Verified against
   // tmux 3.6b (`unknown flag -v`, exit 1) and wezterm's clap parser (`unexpected argument
-  // '-v'`), both fixed by the terminator, and neither visible to the caller as anything but
-  // a failed write.
+  // '-v'`), neither visible to the caller as anything but a failed write.
+  //
+  // A `--` terminator used to be what saved both. For the two WRITE paths it no longer
+  // exists, and the hazard is gone in the stronger way: the body is not an argument any
+  // more, so there is no parser to reach. That is the same move that removed the size
+  // limit - a payload nobody passes as an argument is neither parsed nor counted - and this
+  // case now pins that the body stays out of argv rather than that a terminator precedes it.
   const body = "-v is what broke it";
 
   const tmux = recorder();
   await tmuxMultiplexer(tmux.exec).write.text(MUX, body);
-  assert.deepEqual(tmux.calls[0]!.args, ["send-keys", "-t", "%3", "-l", "--", body]);
+  assert.equal(tmux.calls[0]!.input, body);
+  for (const call of tmux.calls) {
+    assert.ok(!call.args.includes(body), "the body must not be a tmux argument");
+  }
 
   const wez = recorder();
   await weztermEmulator(wez.exec).write!.paste!(EMU, body);
-  assert.deepEqual(wez.calls[0]!.args.slice(-2), ["--", body]);
+  assert.equal(wez.calls[0]!.input, body);
+  assert.ok(!wez.calls[0]!.args.includes(body), "the body must not be a wezterm argument");
 
-  // The agent binary is a trailing argument of `new-session` for the same reason.
+  // The terminator is still load-bearing everywhere a value genuinely IS an argument, and
+  // those are the cases a caller cannot move to stdin: the agent binary is a trailing
+  // argument of `new-session`, and a session name is what `rename-session` takes.
   const spawn = recorder();
-  await tmuxMultiplexer(spawn.exec).sessions!.spawnDetached({
+  const mux = tmuxMultiplexer(spawn.exec);
+  await mux.sessions!.spawnDetached({
     name: "api",
     cwd: "/w/api",
     argv: ["claude", "--model", "opus"],
     sidePane: false,
   });
   assert.deepEqual(spawn.calls[0]!.args.slice(-4), ["--", "claude", "--model", "opus"]);
+
+  await mux.sessions!.rename("api", "-wip");
+  assert.deepEqual(spawn.calls.at(-1)!.args.slice(-2), ["--", "-wip"]);
 });
 
 test("wezterm sends escape sequences, and distinguishes typing from pasting", async () => {
@@ -111,34 +215,33 @@ test("wezterm sends escape sequences, and distinguishes typing from pasting", as
     "--pane-id",
     "5",
     "--no-paste",
-    "--",
-    "\x1b[Z",
   ]);
+  assert.equal(calls[0]!.input, "\x1b[Z");
 
   // Omitting --no-paste is what makes it a bracketed paste, which is the only way a
-  // multi-line prompt reaches a composer without submitting at every newline.
+  // multi-line prompt reaches a composer without submitting at every newline. Verified
+  // against a real pane holding a byte recorder with bracketed-paste mode on: the stdin
+  // form delivers `ESC[200~one\ntwo ESC[201~`, identical to what the argument form did.
   await wez.write!.paste!(EMU, "one\ntwo");
-  assert.deepEqual(calls[1]!.args, [
-    "cli",
-    "--no-auto-start",
-    "send-text",
-    "--pane-id",
-    "5",
-    "--",
-    "one\ntwo",
-  ]);
+  assert.deepEqual(calls[1]!.args, ["cli", "--no-auto-start", "send-text", "--pane-id", "5"]);
+  assert.equal(calls[1]!.input, "one\ntwo");
 });
 
-test("a tmux paste stops at the buffer it could not set", async () => {
+test("a tmux write stops at the buffer it could not load", async () => {
   // The buffer and the paste are two commands, and the caller's whole retry decision turns
-  // on whether text reached the pane. A failed set-buffer must not be followed by a paste.
-  const { calls, exec } = recorder([stubRun({ stdout: "", stderr: "no space", code: 1 })]);
-  const res = await tmuxMultiplexer(exec).write.paste!(MUX, "body");
+  // on whether text reached the pane. A failed load-buffer must not be followed by a paste -
+  // that is what keeps "reported failure" meaning "the composer was not touched", which
+  // `injectPrompt` reads to decide whether re-pasting would append a second copy.
+  for (const verb of ["text", "paste"] as const) {
+    const { calls, exec } = recorder([stubRun({ stdout: "", stderr: "no space", code: 1 })]);
+    const tmux = tmuxMultiplexer(exec);
+    const res = await (verb === "text" ? tmux.write.text(MUX, "body") : tmux.write.paste!(MUX, "body"));
 
-  assert.equal(res.ok, false);
-  assert.equal(res.error, "no space");
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.args[0], "set-buffer");
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "no space");
+    assert.equal(calls.length, 1, `${verb} must not paste after a failed load`);
+    assert.equal(calls[0]!.args[0], "load-buffer");
+  }
 });
 
 test("a write that died rather than answering says so", async () => {
@@ -152,7 +255,7 @@ test("a write that died rather than answering says so", async () => {
   assert.equal(res.ok, false);
   assert.equal(res.outcomeUnknown, true);
   // Silent failure is the common case for an unresolvable target, so the fallback names it.
-  assert.equal(res.error, "tmux send-keys failed");
+  assert.equal(res.error, "tmux load-buffer failed");
 });
 
 test("a detached session gets its shell pane, and the session survives a failed split", async () => {

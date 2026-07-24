@@ -279,6 +279,17 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
    * lifecycle verbs answer with a REF on stdout where the method answers with the UUID that
    * is still valid a tick later.
    *
+   * **The payload rides in argv here, and unlike tmux's and WezTerm's it has nowhere else to
+   * go.** `cmux rpc <method> [json-params]` and `cmux send [flags] [--] <text>` both take
+   * their body as an argument, and neither help output on the installed 0.64.20 mentions
+   * stdin. This backend therefore retains the operating system's `ARG_MAX` ceiling.
+   *
+   * It is deliberately NOT worked around here. The cmux app was not running on the machine
+   * where the rest of this change was measured, so a chunking scheme or a temp-file dance
+   * could not be pointed at a real install. `run` (`util/exec.ts`) still turns a synchronous
+   * E2BIG into an ordinary refusal with `outcomeUnknown: false`: no process ran, so nothing
+   * reached the pane and the caller may retry.
+   *
    * The trade is that a socket method takes its params UNVALIDATED. cmux does not reject an
    * unrecognized key, it falls back to the caller's default target - `{"surface":<id>}`
    * instead of `{"surface_id":<id>}` reports success having typed into a completely
@@ -393,7 +404,7 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
        *
        * cmux has no paste verb that leaves the composer unsubmitted - `terminal.paste` sends
        * a trailing CR and reports `submitted` - so the markers are written here. One call, so
-       * unlike tmux's set-buffer-then-paste-buffer there is no window in which half of it has
+       * unlike tmux's buffer-load-then-paste sequence there is no window in which half of it has
        * happened: either the whole block reached the pane or none of it did.
        */
       paste: async (t, text) =>

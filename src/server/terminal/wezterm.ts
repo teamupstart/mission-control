@@ -118,9 +118,10 @@ export function parsePanes(stdout: string): EmulatorPane[] {
 export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
   const bin = () => resolveBin(WEZTERM_BIN);
   /** Every `wezterm cli` call: live default mux, no auto-start, inherited socket dropped. */
-  const cli = (args: string[], opts: { timeoutMs?: number } = {}) =>
+  const cli = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
     exec(bin(), ["cli", "--no-auto-start", ...args], { ...opts, env: binEnv(WEZTERM_BIN) });
-  const cmd = async (args: string[], fail: string) => toResult(await cli(args), fail);
+  const cmd = async (args: string[], fail: string, opts: { input?: string } = {}) =>
+    toResult(await cli(args, opts), fail);
 
   /**
    * Returns [] when wezterm isn't running or the CLI isn't reachable - the product works
@@ -134,16 +135,27 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     return res.code === 0 ? parsePanes(res.stdout) : [];
   };
 
+  /**
+   * Write `text` to a pane, literally or as a bracketed paste.
+   *
+   * The payload goes on stdin, never in argv. `wezterm cli send-text` documents that an
+   * omitted positional argument is read from stdin, and a real pane verified that the
+   * stdin and argv forms deliver the same bytes for UTF-8, escapes, tabs, CR, LF, and a
+   * leading dash.
+   *
+   * Dropping the payload also retires the `--` terminator, and that is a strengthening
+   * rather than a loss. The terminator was there because wezterm's clap parser reads a body
+   * starting with a dash ("-v is what broke it") as an option bundle; text that is not an
+   * argument cannot be parsed as one, so the hazard is gone by construction instead of by
+   * remembering a flag.
+   */
   const sendText = (target: EmulatorTarget, text: string, literal: boolean, fail: string) =>
     cmd(
       // Omitting `--no-paste` is what makes wezterm send the text as a bracketed paste, so
       // the flag is the difference between typing and pasting rather than a formality.
-      //
-      // `--` ends flag parsing. wezterm's CLI is clap-based, so a body starting with a dash
-      // ("-v is what broke it") is otherwise read as an option bundle and the write fails
-      // with a usage dump instead of being typed.
-      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : []), "--", text],
+      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : [])],
       fail,
+      { input: text },
     );
 
   /**

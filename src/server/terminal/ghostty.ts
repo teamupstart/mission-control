@@ -186,6 +186,23 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
    * on a machine without it this whole adapter is unreachable anyway - `binPresent` gates on
    * the app bundle, which only exists on macOS.
    */
+  /**
+   * **The script - payload and all - is one argv entry, so this backend retains the
+   * operating system's `ARG_MAX` ceiling.** `typeLiterally` builds a single `tell` block
+   * holding every line of the body.
+   *
+   * Left on `-e` deliberately. `osascript` does read a script from stdin when given neither
+   * `-e` nor a file - verified on this machine - so the transport swap is available and
+   * cheap. What is NOT available is evidence that Ghostty still behaves after it: the app was
+   * not running where this was measured, and driving it needs an Automation permission grant
+   * that only a human at the keyboard can give. This file's own rule is that a claim about a
+   * backend is worth what the capture behind it is worth, so the ceiling remains documented
+   * instead of moving without verification.
+   *
+   * The failure MODE is fixed even though the limit is not: `run` (`util/exec.ts`) used to
+   * let `spawn`'s synchronous E2BIG escape as a promise rejection, and now reports it as an
+   * ordinary refusal that delivered nothing.
+   */
   const osa = (script: string, timeoutMs: number) =>
     exec("/usr/bin/osascript", ["-e", script], { timeoutMs });
 

@@ -258,10 +258,63 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
    * enumeration and the writes have to reach the SAME server, or a pane id from one is
    * addressed against another.
    */
-  const tmux = (args: string[], opts: { timeoutMs?: number } = {}) =>
+  const tmux = (args: string[], opts: { timeoutMs?: number; input?: string } = {}) =>
     exec(bin(), args, { ...opts, env: binEnv(TMUX_BIN) });
-  const cmd = async (args: string[], fail: string, timeoutMs?: number): Promise<TerminalResult> =>
-    toResult(await tmux(args, timeoutMs ? { timeoutMs } : {}), fail);
+  const cmd = async (
+    args: string[],
+    fail: string,
+    opts: { timeoutMs?: number; input?: string } = {},
+  ): Promise<TerminalResult> => toResult(await tmux(args, opts), fail);
+
+  /**
+   * Put `text` in this pane's buffer and hand it to the pane - the shape BOTH write verbs
+   * take, differing only in the flag that says whether it is being typed or pasted.
+   *
+   * The payload rides on stdin because tmux imposes its own command-length limit below the
+   * operating system's argv ceiling. `load-buffer -b <buf> -` avoids that limit and was
+   * verified with 200,000 bytes against tmux 3.6b.
+   *
+   * The refusal was at least LOUD - `paste-buffer` never ran, so nothing partial reached the
+   * pane - and that property is kept: `load-buffer` failing returns before the paste, so a
+   * caller reading `ok: false` still knows the composer was not touched.
+   *
+   * Chunking `send-keys` is not equivalent: it trades one atomic refusal for partial
+   * delivery with no way to identify the prefix that landed.
+   */
+  const viaBuffer = async (
+    t: MuxTarget,
+    text: string,
+    pasteFlags: string[],
+    fail: string,
+  ): Promise<TerminalResult> => {
+    // An empty payload writes nothing, and has to SUCCEED at writing nothing. The old
+    // `send-keys -l -- ""` was a no-op that exited 0; the buffer form is not, and the
+    // asymmetry is silent - measured against 3.6b, `load-buffer` with empty stdin exits 0
+    // but creates no buffer at all, so the `paste-buffer` behind it fails `no buffer
+    // harness-…`. Without this line every empty write would start reporting a failure it
+    // never used to, which reads to a caller as a pane it could not reach.
+    if (text === "") return { ok: true, outcomeUnknown: false };
+    const buf = pasteBuffer(t);
+    // `-` is the stdin form. No `--` terminator is needed or possible here: the payload is
+    // not an argument any more, which is exactly what makes a body starting with a dash
+    // safe by construction rather than by remembering a terminator.
+    const loaded = await cmd(["load-buffer", "-b", buf, "-"], "tmux load-buffer failed", {
+      input: text,
+    });
+    if (!loaded.ok) return loaded;
+    // tmux resolves both the buffer and the pane BEFORE writing, so a non-zero exit here
+    // means nothing reached the pane - the one thing a caller most needs to be true.
+    // -d: drop the buffer after, so a pane's buffer never outlives the write.
+    const pasted = await cmd(
+      ["paste-buffer", ...pasteFlags, "-d", "-b", buf, "-t", paneTarget(t)],
+      fail,
+    );
+    if (!pasted.ok) {
+      // A failed paste never reached -d, so the buffer would otherwise outlive the write.
+      await cmd(["delete-buffer", "-b", buf], "tmux delete-buffer failed");
+    }
+    return pasted;
+  };
 
   return {
     id: "tmux",
@@ -283,34 +336,43 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     },
 
     write: {
-      // `-l` sends the text literally, so a body containing something that looks like a key
-      // name is typed rather than pressed.
-      //
-      // `--` ends flag parsing, and it is load-bearing here rather than tidy: tmux parses
-      // the trailing arguments with getopt, so a reply beginning with a dash ("-v is what
-      // broke it") comes back as `unknown flag -v` and never reaches the pane. The
-      // terminator does not change how what follows is read - key names after it are still
-      // resolved as keys - so it costs nothing.
-      text: (t, text) =>
-        cmd(["send-keys", "-t", paneTarget(t), "-l", "--", text], "tmux send-keys failed"),
-      // No `-l` here, for the mirrored reason: these ARE key names.
+      /**
+       * Type `text` literally, where a newline SUBMITS - `PaneWrite.text`'s contract.
+       *
+       * tmux offers no stdin form for `send-keys -l`, so the buffer is the only way to keep
+       * literal payload bytes out of the size-limited command.
+       *
+       * **`-r` is what keeps this `text` rather than `paste`, and it is two claims, both
+       * measured** against tmux 3.6b at the far end of a real pane holding a byte recorder:
+       *
+       *   - `-r` means "do not replace LF with CR". Without it `paste-buffer` rewrites every
+       *     newline, so `AB\nCD` arrives as `AB\rCD` - a CR is what pressing Enter sends, so
+       *     dropping the flag would silently change what a multi-line body does in a
+       *     composer. With it, the bytes are `AB\nCD`, exactly what `send-keys -l` delivers.
+       *   - omitting `-p` means no bracketed-paste markers, *even when the receiving
+       *     application has requested that mode* - which an agent TUI does. Checked
+       *     explicitly rather than assumed, by recording against a pty with DECSET 2004 on:
+       *     `-r` delivered bare `AB\nCD` while `-p` delivered
+       *     `ESC[200~AB\rCD ESC[201~`. Had the markers leaked in, every literal write would
+       *     have become a paste and a queue item would sit unsubmitted in the composer.
+       *
+       * The full hostile payload - UTF-8, an ESC byte, a tab, a bare CR, a leading dash -
+       * came back byte-identical between the two forms, which is the assertion that made
+       * this substitution safe rather than merely plausible.
+       */
+      text: (t, text) => viaBuffer(t, text, ["-r"], "tmux paste-buffer failed"),
+      // Still `send-keys`, and no `-l`, for the mirrored reason: these ARE key names, which
+      // tmux resolves to the terminal's own sequences. Bounded by `Key` - eight short words,
+      // never a payload - so the size limit that drove `text` onto the buffer cannot be
+      // reached here, and routing them through a paste buffer would send the NAMES as text.
       keys: (t, keys) =>
         cmd(
           ["send-keys", "-t", paneTarget(t), "--", ...keys.map((k) => KEY_NAMES[k])],
           "tmux send-keys failed",
         ),
-      paste: async (t, text) => {
-        const buf = pasteBuffer(t);
-        const set = await cmd(["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
-        if (!set.ok) return set;
-        // -p: bracketed paste, so embedded newlines do not submit. -d: drop the buffer after.
-        // tmux resolves both the buffer and the pane BEFORE writing, so a non-zero exit here
-        // means nothing reached the pane - the one thing a caller most needs to be true.
-        return cmd(
-          ["paste-buffer", "-p", "-d", "-b", buf, "-t", paneTarget(t)],
-          "tmux paste-buffer failed",
-        );
-      },
+      // -p: bracketed paste, so embedded newlines do not submit. That flag and `text`'s `-r`
+      // are the entire difference between the two verbs now.
+      paste: (t, text) => viaBuffer(t, text, ["-p"], "tmux paste-buffer failed"),
     },
 
     capture: async (t) => {
@@ -344,7 +406,7 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         const created = await cmd(
           ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", ...spec.argv],
           "tmux new-session failed",
-          SESSION_TIMEOUT_MS,
+          { timeoutMs: SESSION_TIMEOUT_MS },
         );
         if (!created.ok || !spec.sidePane) return created;
         const agentPane = `${spec.name}:0.0`;
@@ -353,10 +415,10 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         await cmd(
           ["split-window", "-h", "-l", "33%", "-t", agentPane, "-c", spec.cwd],
           "tmux split-window failed",
-          SESSION_TIMEOUT_MS,
+          { timeoutMs: SESSION_TIMEOUT_MS },
         );
         // Leave the agent pane focused so attaching lands on it, not the shell.
-        await cmd(["select-pane", "-t", agentPane], "tmux select-pane failed", SESSION_TIMEOUT_MS);
+        await cmd(["select-pane", "-t", agentPane], "tmux select-pane failed", { timeoutMs: SESSION_TIMEOUT_MS });
         return created;
       },
       // Resolved through `bin`, not the bare name: this argv is handed to an emulator to
@@ -371,7 +433,7 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       // A tmux session IS a killable group - every window and pane in it goes at once,
       // which is what stops a dispatched agent's shell pane outliving the agent.
       kill: (session) =>
-        cmd(["kill-session", "-t", session], "tmux kill-session failed", SESSION_TIMEOUT_MS),
+        cmd(["kill-session", "-t", session], "tmux kill-session failed", { timeoutMs: SESSION_TIMEOUT_MS }),
       names: TMUX_NAMES,
     },
   };

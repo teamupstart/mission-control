@@ -2246,7 +2246,8 @@ works in every layout:
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
-| <kbd>k</kbd> | Kill the selected session | Selected session |
+| <kbd>c</kbd> | Complete the selected session's task - record an outcome, then close the session (confirms first). Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
+| <kbd>k</kbd> | Kill the selected session (confirms first) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 
 Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
@@ -2474,6 +2475,33 @@ Shipping → Where each pull request stands** carries the current reason per PR:
 still running, three open findings, not on the allowlist. When GitHub refuses the merge
 outright - a branch protection rule this app cannot see - its own message is shown there
 verbatim, because that is the only account you get of a rule nothing here can read.
+
+### When a task's pull request merges
+
+A merge ends the task it came from. The task is marked **done** with the pull request as
+its outcome, and this is not optional and **not tied to YOLO mode** - a pull request you
+merged yourself on GitHub settles its task exactly the same way.
+
+That is deliberate, because a task left `running` after its work shipped costs more than a
+stale row. A live session counts against the `maxSessions` ceiling for as long as it
+exists, *and* the backlog autopilot refuses to hand work to an agent that still has a
+non-terminal task bound to it - so a finished agent both occupies a slot and is ineligible
+to use it. A fleet fills up with agents that have nothing left to do.
+
+An agent that was **prompted again after its merge** keeps its task. Landing an
+intermediate pull request part-way through a task is not the end of that task, and the
+work-episode rollover is what tells the two apart.
+
+What happens to the agent is yours to choose, in **Settings → Shipping**:
+
+| Close the session after merge | What happens |
+|---|---|
+| **off** (default) | The agent stays with its checkout and its context. Now that its task is settled it counts as free, so the autopilot may hand it the next backlog task in place - no worktree to provision, but it carries the previous task's context into the next one |
+| **on** | The agent is killed, freeing a fleet slot for a fresh dispatch. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+
+The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
+nothing about files still sitting unsaved in that checkout, and reclaiming runs
+`git worktree remove --force`. Anything that could be lost stays behind a human click.
 
 ## no-mistakes
 

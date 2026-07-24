@@ -36,6 +36,8 @@ function props(sessions: Session[]): SessionViewProps {
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
+    onComplete: () => {},
+    onKill: () => {},
     onKilled: () => {},
     resetNonces: {},
     registerEl: () => {},

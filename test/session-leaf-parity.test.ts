@@ -488,6 +488,8 @@ test("card and console detail agree on every shared leaf", () => {
         diffTabRequest: null,
         files: {} as SessionFilesController,
         onReset: () => {},
+        onComplete: () => {},
+        onKill: () => {},
         onKilled: () => {},
         resetNonces: {},
         registerEl: () => {},

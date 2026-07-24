@@ -45,6 +45,8 @@ export const OVERLAY_IDS = {
   settings: "settings",
   diff: "diff",
   reset: "reset",
+  complete: "complete",
+  kill: "kill",
   assignReset: "assign-reset",
   digest: "digest",
   files: "files",

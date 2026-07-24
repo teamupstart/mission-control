@@ -2010,7 +2010,12 @@ export function buildApp(
   app.post("/api/tasks/:id/complete", async (c) => {
     const parsed = await parseBody(c, CompleteTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const t = await tasks.complete(c.req.param("id"), parsed.data.outcome, parsed.data.outcomeUrl);
+    const t = await tasks.complete(
+      c.req.param("id"),
+      parsed.data.outcome,
+      parsed.data.outcomeUrl,
+      parsed.data.satisfyDependents,
+    );
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
   });

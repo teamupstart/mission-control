@@ -477,8 +477,15 @@ export const api = {
     }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
-  completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/complete`, { outcome, outcomeUrl }),
+  // `satisfyDependents` is the operator's explicit override of the merge gate on
+  // declared dependencies - omitted rather than sent as false so the request body stays
+  // the one every existing caller already sends. See `CompleteTaskSchema`.
+  completeTask: (id: string, outcome: string, outcomeUrl?: string, satisfyDependents?: boolean) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/complete`, {
+      outcome,
+      outcomeUrl,
+      ...(satisfyDependents ? { satisfyDependents: true } : {}),
+    }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
 
   // --- Foreman (auto-responder) ---

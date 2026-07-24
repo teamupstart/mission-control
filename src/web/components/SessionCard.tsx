@@ -86,7 +86,8 @@ export function SessionCard({
   onOpenFiles,
   onOpenFile,
   onReset,
-  onKilled,
+  onComplete,
+  onKill,
   resetNonce = 0,
   selected = false,
   onSelect,
@@ -118,8 +119,10 @@ export function SessionCard({
   /** Open a link in this session's file workspace when it is checkout-contained. */
   onOpenFile?: WorkspaceLinkHandler;
   onReset?: () => void;
-  /** This card's session was killed (successfully), so focus mode has nothing left to show. */
-  onKilled?: () => void;
+  /** Open the complete-and-close confirm for this session (app-level modal). */
+  onComplete?: () => void;
+  /** Open the kill confirm for this session (app-level modal). */
+  onKill?: () => void;
   /** Bumped each time this session is reset, so the reply box remounts and drops the
    *  text the reset discarded (it's an uncontrolled box; clearing the draft map alone
    *  wouldn't empty one that's open). */
@@ -383,7 +386,8 @@ export function SessionCard({
           registerActions={registerActions}
           onReset={onReset}
           onFiles={onOpenFiles}
-          onKilled={onKilled}
+          onComplete={onComplete}
+          onKill={onKill}
         />
       )}
 

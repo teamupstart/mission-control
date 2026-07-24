@@ -1229,8 +1229,8 @@ whose identity is the pair `(schedule, instant)`.
 **The engine runs; there is still no way to reach it.** The daemon now carries the
 scheduler itself - a self-rescheduling loop that accounts for every crossed instant exactly
 once, applies the missed-run and overlap policies, recovers both crash windows around task
-creation, and files backlog tasks and nothing else. What it has no HTTP route, SSE
-collection or screen for, so with no way to *create* a schedule the tables stay empty and
+creation, and files backlog tasks and nothing else. It still has no HTTP route, SSE
+collection or screen, so with no way to *create* a schedule the tables stay empty and
 the product behaves exactly as before. The catalog and the Missions overlay arrive in later
 phases; the plan is
 [`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).

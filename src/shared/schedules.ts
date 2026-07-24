@@ -9,7 +9,7 @@ import type { AgentType, TaskKind, TaskPriority, TaskStatus, ThinkingLevel } fro
  * `src/server/schedules/recurrence.ts`; what lives here is the shape of the answer and
  * the handful of decisions both sides must make identically.
  *
- * The three arrays below the enums are PERSISTED - every value appears in an operator's
+ * The six arrays below are PERSISTED - every value appears in an operator's
  * SQLite file - so they are append-only, for the reason `TASK_SOURCE_KINDS` is: renaming
  * one does not migrate the rows written under the old spelling, it orphans them.
  */
@@ -204,7 +204,7 @@ export const SCHEDULE_STALE_CLAIM_MS = 5 * 60 * 1000;
  * Task statuses that count as this schedule's work being still in flight.
  *
  * Shared because two readers must agree exactly: the SQL behind
- * `findActiveTaskForSchedule` and the `skip-active` decision Phase 2 makes from it. The
+ * `findActiveTaskForSchedule` and the scheduler's `skip-active` decision. The
  * terminal three (`done`, `cancelled`, `failed`) deliberately do not block - a schedule
  * whose last run failed still runs tomorrow.
  */

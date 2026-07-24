@@ -325,15 +325,15 @@ THIS laptop that the operator scheduled for a different host, and a default in t
 is how that happens silently. Note the catalog reads the schedule row and the claim reads
 the revision, so each has to refuse independently. Test: `schedule-db.test.ts`.
 
-**The scheduler is four modules and each owns one question**, and a change belongs to the
-one whose question it answers: `schedules/recurrence.ts` says WHEN a cadence is due (the
-only consumer of `cron-parser`), `schedules/policy.ts` says WHAT should happen to the
-instants it produced - pure, no clock and no database - `schedules/store.ts` owns the claim
-transaction that makes a decision exactly-once, and `schedules/manager.ts` sequences those
-three and copes with the ledger REFUSING a decision. A new policy written into the manager
-is one no test can reach without manufacturing time; a cadence question answered anywhere
-but `recurrence.ts` is a second answer that agrees with the first only by luck. Test:
-`schedule-policy.test.ts`, `schedule-manager.test.ts`.
+**The scheduler's decision path is four modules and each owns one question**, and a change
+belongs to the one whose question it answers: `schedules/recurrence.ts` says WHEN a cadence
+is due (the only consumer of `cron-parser`), `schedules/policy.ts` says WHAT should happen
+to the instants it produced - pure, no clock and no database - `schedules/store.ts` owns
+the claim transaction that makes a decision exactly-once, and `schedules/manager.ts`
+sequences those three and copes with the ledger REFUSING a decision. A new policy written
+into the manager is one no test can reach without manufacturing time; a cadence question
+answered anywhere but `recurrence.ts` is a second answer that agrees with the first only by
+luck. Test: `schedule-policy.test.ts`, `schedule-manager.test.ts`.
 Three of its rules are the ones worth restating. **Missed policy is applied BEFORE
 overlap**: reversed, a catch-up under `skip-active` blocks on its first instant and
 coalesces nothing, so a fortnight away files one task and records the rest as
@@ -357,11 +357,6 @@ schedule files work, it never launches it - Foreman stays the only autonomous di
 with its capacity, allowlist and pane gates) and must carry a title (a blank one puts the
 model titler on the path of every single run, deriving the same string for ever). Ordinary
 callers pass no second argument and are unchanged. Test: `schedule-task-create.test.ts`.
-
-**`ScheduleNotifier` is post-commit, and no-op until Phase 3 wires the Registry.** Every
-call site is after the durable write it describes has returned, because an SSE emission
-cannot be rolled back and a notification sent from inside a transaction that can still fail
-is a dashboard showing a schedule the database does not have.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
 marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are

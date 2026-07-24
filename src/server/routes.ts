@@ -685,8 +685,17 @@ export function buildApp(
   app.get("/api/workflow-runs/:id", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const detail = manager.run(c.req.param("id"));
-    return detail ? c.json(detail) : c.json({ error: "no such workflow run" }, 404);
+    const result = manager.run(c.req.param("id"));
+    if (result.kind === "found") return c.json(result.detail);
+    return result.kind === "corrupt"
+      ? c.json({
+          error: "workflow run data is malformed",
+          code: "workflow_run_corrupt",
+        }, 500)
+      : c.json({
+          error: "no such workflow run",
+          code: "workflow_run_not_found",
+        }, 404);
   });
   app.post("/api/workflow-runs/:id/resubmit", async (c) => {
     const manager = workflowManager();

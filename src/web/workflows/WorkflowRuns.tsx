@@ -20,6 +20,19 @@ function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
+export function workflowRunLoadError(caught: unknown): string {
+  if (
+    caught instanceof WorkflowApiError
+    && caught.body?.code === "workflow_run_corrupt"
+  ) {
+    return "This workflow run has malformed durable data. Check daemon logs or restore it from backup.";
+  }
+  if (caught instanceof WorkflowApiError && caught.status === 404) {
+    return "This workflow run is no longer retained. Select another run from history.";
+  }
+  return caught instanceof Error ? caught.message : "Could not load workflow run";
+}
+
 export function workflowCallCost(
   calls: NonNullable<WorkflowRunDetail["llmCalls"]>,
   totalCount: number,
@@ -892,13 +905,7 @@ export function WorkflowRuns({
       .catch((caught) => {
         if (loadGeneration.current !== generation) return;
         setDetail(null);
-        setError(
-          caught instanceof WorkflowApiError && caught.status === 404
-            ? "This workflow run is no longer retained. Select another run from history."
-            : caught instanceof Error
-              ? caught.message
-              : "Could not load workflow run",
-        );
+        setError(workflowRunLoadError(caught));
       });
   };
   useEffect(() => {

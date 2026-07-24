@@ -514,9 +514,13 @@ export class WorkflowManager {
       : null;
   }
 
-  run(id: string): WorkflowRunDetail | null {
-    const detail = this.store.runDetail(id);
-    return detail ? this.decorateRun(detail) : null;
+  run(id: string):
+    | { kind: "found"; detail: WorkflowRunDetail }
+    | { kind: "missing" | "corrupt" } {
+    const result = this.store.runDetailResult(id);
+    return result.kind === "found"
+      ? { kind: "found", detail: this.decorateRun(result.detail) }
+      : result;
   }
 
   private decorateRun(detail: WorkflowRunDetail): WorkflowRunDetail {

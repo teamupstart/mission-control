@@ -79,8 +79,49 @@ test("completion and resumed transitions are digest-only while manual waits need
   );
   assert.equal(resumed[0]?.id, "workflow:run-1:resumed");
   assert.equal(resumed[0]?.severity, "info");
+  const inspectorResumed = detectAlerts(
+    scope(run({ status: "blocked", phase: "inspector_disabled", gate: "blocked" })),
+    scope(run({
+      status: "waiting_for_inspector",
+      phase: "inspector_review",
+      gate: "waiting_inspector",
+    })),
+  );
+  assert.equal(inspectorResumed[0]?.id, "workflow:run-1:resumed");
+  assert.equal(inspectorResumed[0]?.severity, "info");
   const buffer = foldAlerts(emptyBuffer(1), completed, 2);
   assert.match(rollupLine(buffer), /workflow update/);
+});
+
+test("new reconnect summaries retain attention and Inspector transition semantics", () => {
+  const empty: AlertScope = { sessions: [], tasks: [], workflowRuns: [] };
+  const blocked = detectAlerts(
+    empty,
+    scope(run({ status: "blocked", phase: "infrastructure_error" })),
+  );
+  assert.equal(blocked[0]?.id, "workflow:run-1:blocked");
+  assert.equal(blocked[0]?.severity, "attention");
+
+  const uncertain = detectAlerts(
+    empty,
+    scope(run({
+      status: "blocked",
+      phase: "delivery_uncertain",
+      uncertainDeliveryCount: 1,
+    })),
+  );
+  assert.equal(uncertain[0]?.id, "workflow:run-1:uncertain");
+
+  const inspectorDisabled = detectAlerts(
+    scope(run()),
+    scope(run({
+      status: "blocked",
+      phase: "inspector_disabled",
+      gate: "blocked",
+    })),
+  );
+  assert.equal(inspectorDisabled[0]?.id, "workflow:run-1:inspector-enablement");
+  assert.match(inspectorDisabled[0]?.title ?? "", /Inspector enabled/);
 });
 
 test("notifier preserves workflow deep links and reconnect uses the shared detector", () => {

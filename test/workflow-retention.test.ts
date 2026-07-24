@@ -72,6 +72,21 @@ function insertSubmission(id: string, runId: string): void {
   ).run(id, runId, `submission:${id}`, JSON.stringify(context), JSON.stringify(context.evidence));
 }
 
+function insertRawSubmission(
+  id: string,
+  runId: string,
+  mode: "full_workflow" | "inspector_only",
+  contextJson: string,
+): void {
+  db.prepare(
+    `INSERT INTO workflow_submissions (
+       id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
+       context_json, evidence_json, status, created_at, updated_at, completed_at
+     ) VALUES (?, ?, 1, ?, 'manual', ?, 'fingerprint', ?, '{}',
+               'completed', 1, 1, 1)`,
+  ).run(id, runId, mode, `submission:${id}`, contextJson);
+}
+
 function seedReusableCatalog(): void {
   store.insertPersona({
     id: "persona",
@@ -218,6 +233,59 @@ test("stage one prunes only eligible terminal evidence and records a sentinel fi
     store.listEvents("compact").filter((event) => event.kind === "evidence_pruned").length,
     1,
   );
+});
+
+test("stage one skips non-evidence contexts and isolates malformed rows by run", () => {
+  insertRun("a-inspector-only", "completed", 1);
+  insertRawSubmission(
+    "submission-inspector-only",
+    "a-inspector-only",
+    "inspector_only",
+    JSON.stringify({ bypassReason: "Published policy", newHeadSha: "head" }),
+  );
+  insertRun("b-cancelled-before-capture", "cancelled", 1);
+  insertRawSubmission(
+    "submission-cancelled-before-capture",
+    "b-cancelled-before-capture",
+    "full_workflow",
+    "{}",
+  );
+  insertRun("c-malformed", "completed", 1);
+  insertRawSubmission(
+    "submission-malformed",
+    "c-malformed",
+    "full_workflow",
+    "{",
+  );
+  insertRun("d-valid", "completed", 1);
+  insertSubmission("submission-valid", "d-valid");
+
+  const result = store.runRetention({
+    rawEvidenceBefore: 10,
+    completedRunsBefore: 0,
+    maxCompletedRuns: 100,
+    now: 20,
+  });
+
+  assert.deepEqual(result.compactedRunIds, [
+    "a-inspector-only",
+    "b-cancelled-before-capture",
+    "d-valid",
+  ]);
+  assert.deepEqual(
+    store.getSubmission("submission-inspector-only")?.context,
+    { bypassReason: "Published policy", newHeadSha: "head" },
+  );
+  assert.deepEqual(
+    store.getSubmission("submission-cancelled-before-capture")?.context,
+    {},
+  );
+  assert.equal(
+    (store.getSubmission("submission-valid")?.context as typeof context)
+      .evidence.retention.state,
+    "pruned",
+  );
+  assert.equal(store.getRun("c-malformed")?.evidencePrunedAt, null);
 });
 
 test("stage two keeps the newest cap and never deletes failed or uncertain families", () => {

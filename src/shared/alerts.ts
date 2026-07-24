@@ -309,8 +309,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const previousRuns = new Map((prev.workflowRuns ?? []).map((run) => [run.id, run]));
   for (const run of next.workflowRuns ?? []) {
     const beforeRun = previousRuns.get(run.id);
-    if (!beforeRun) continue;
-    const beforeUncertain = beforeRun.uncertainDeliveryCount ?? 0;
+    const beforeUncertain = beforeRun?.uncertainDeliveryCount ?? 0;
     const uncertain = run.uncertainDeliveryCount ?? 0;
     let transition: {
       className: string;
@@ -327,8 +326,22 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         severity: "attention",
       };
     } else if (
+      run.status === "blocked"
+      && run.phase === "inspector_disabled"
+      && (
+        beforeRun?.status !== "blocked"
+        || beforeRun.phase !== "inspector_disabled"
+      )
+    ) {
+      transition = {
+        className: "inspector-enablement",
+        title: `${run.workflowName} needs Inspector enabled`,
+        body: "Enable Inspector for the repository to continue.",
+        severity: "attention",
+      };
+    } else if (
       (run.status === "blocked" || run.status === "failed")
-      && run.status !== beforeRun.status
+      && run.status !== beforeRun?.status
     ) {
       transition = {
         className: run.status,
@@ -338,7 +351,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       };
     } else if (
       run.status === "waiting_for_session"
-      && run.status !== beforeRun.status
+      && run.status !== beforeRun?.status
     ) {
       transition = {
         className: "manual-resubmit",
@@ -346,25 +359,14 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         body: run.phase.replaceAll("_", " "),
         severity: "attention",
       };
-    } else if (run.gate === "waiting_pr" && beforeRun.gate !== "waiting_pr") {
+    } else if (run.gate === "waiting_pr" && beforeRun?.gate !== "waiting_pr") {
       transition = {
         className: "missing-pr",
         title: `${run.workflowName} needs a pull request`,
         body: "Open or adopt the intended pull request to continue.",
         severity: "attention",
       };
-    } else if (
-      run.gate === "waiting_inspector"
-      && beforeRun.gate !== "waiting_inspector"
-      && run.phase === "inspector_disabled"
-    ) {
-      transition = {
-        className: "inspector-enablement",
-        title: `${run.workflowName} needs Inspector enabled`,
-        body: "Enable Inspector for the repository to continue.",
-        severity: "attention",
-      };
-    } else if (run.status === "completed" && beforeRun.status !== "completed") {
+    } else if (run.status === "completed" && beforeRun?.status !== "completed") {
       transition = {
         className: "completed",
         title: `${run.workflowName} completed`,
@@ -372,8 +374,8 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         severity: "info",
       };
     } else if (
-      ["capturing", "running"].includes(run.status)
-      && beforeRun.status === "blocked"
+      ["capturing", "running", "waiting_for_inspector"].includes(run.status)
+      && beforeRun?.status === "blocked"
     ) {
       transition = {
         className: "resumed",

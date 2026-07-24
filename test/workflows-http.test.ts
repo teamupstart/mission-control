@@ -122,6 +122,61 @@ test("workflow history query bounds reject malformed cursors, ranges, and oversi
   assert.equal((await request(`/api/workflow-runs/missing/calls?after=${"x".repeat(201)}`)).status, 400);
 });
 
+test("run detail distinguishes malformed durable rows from expired history", async () => {
+  const { request, store } = fixture();
+  const valid = await seedValid(request);
+  const publishedResponse = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  const published = await publishedResponse.json() as { version: { id: string } };
+  const binding = store.insertBinding({
+    id: "corrupt-binding",
+    workflowVersionId: published.version.id,
+    noteKey: "corrupt-note",
+    sessionId: null,
+    sessionAgent: "codex",
+    sessionName: "Corrupt worker",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission({
+    id: "corrupt-run",
+    binding,
+    triggerSource: "manual",
+    triggerKey: "corrupt-run-trigger",
+    now: 2,
+  }, {
+    id: "corrupt-submission",
+    triggerSource: "manual",
+    triggerKey: "corrupt-submission-trigger",
+    context: {},
+    evidence: {},
+    now: 2,
+  });
+  db.prepare(
+    `UPDATE workflow_runs SET gate_state_json = '{' WHERE id = 'corrupt-run'`,
+  ).run();
+
+  const corrupt = await request("/api/workflow-runs/corrupt-run");
+  assert.equal(corrupt.status, 500);
+  assert.equal(
+    (await corrupt.json() as { code: string }).code,
+    "workflow_run_corrupt",
+  );
+
+  const missing = await request("/api/workflow-runs/expired-run");
+  assert.equal(missing.status, 404);
+  assert.equal(
+    (await missing.json() as { code: string }).code,
+    "workflow_run_not_found",
+  );
+});
+
 test("version exports use a browser-download filename and immutable schema envelope", async () => {
   const { request, store } = fixture();
   const valid = await seedValid(request);

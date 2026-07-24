@@ -6,7 +6,9 @@ import type { WorkflowRunDetail } from "../src/shared/workflow.ts";
 import {
   WorkflowRunView,
   workflowNodeStatuses,
+  workflowRunLoadError,
 } from "../src/web/workflows/WorkflowRuns.tsx";
+import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
@@ -207,6 +209,23 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.doesNotMatch(html, />Send</);
   // A manually started run carries no provenance line at all rather than an empty one.
   assert.doesNotMatch(html, /Started by/);
+});
+
+test("run detail distinguishes malformed durable data from expired history", () => {
+  const corrupt = workflowRunLoadError(new WorkflowApiError(
+    "workflow run data is malformed",
+    500,
+    { code: "workflow_run_corrupt" },
+  ));
+  const expired = workflowRunLoadError(new WorkflowApiError(
+    "no such workflow run",
+    404,
+    { code: "workflow_run_not_found" },
+  ));
+  assert.match(corrupt, /malformed durable data/);
+  assert.match(corrupt, /restore it from backup/);
+  assert.match(expired, /no longer retained/);
+  assert.notEqual(corrupt, expired);
 });
 
 test("external provenance renders as text, not as a link to a route that does not exist", () => {

@@ -3095,95 +3095,111 @@ export class WorkflowStore {
 
     const compacted: string[] = [];
     for (const runId of compactedRunIds) {
-      const didCompact = transaction(this.db, () => {
-        const run = this.getRun(runId);
-        if (
-          !run
-          || !["completed", "cancelled"].includes(run.status)
-          || run.evidencePrunedAt != null
-          || run.completedAt === null
-          || run.completedAt > input.rawEvidenceBefore
-        ) return false;
-        const uncertain = this.db.prepare(
-          `SELECT 1 FROM workflow_deliveries
-            WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
-        ).get(runId);
-        if (uncertain) return false;
+      let didCompact = false;
+      try {
+        didCompact = transaction(this.db, () => {
+          const run = this.getRun(runId);
+          if (
+            !run
+            || !["completed", "cancelled"].includes(run.status)
+            || run.evidencePrunedAt != null
+            || run.completedAt === null
+            || run.completedAt > input.rawEvidenceBefore
+          ) return false;
+          const uncertain = this.db.prepare(
+            `SELECT 1 FROM workflow_deliveries
+              WHERE run_id = ? AND state = 'uncertain' LIMIT 1`,
+          ).get(runId);
+          if (uncertain) return false;
 
-        const rows = this.db.prepare(
-          `SELECT id, context_json FROM workflow_submissions
-            WHERE run_id = ? ORDER BY round ASC, id ASC`,
-        ).all(runId) as Array<{ id: string; context_json: string }>;
-        let diffBytes = 0;
-        let statusEntries = 0;
-        let transcriptMessages = 0;
-        let standardsDocuments = 0;
-        const updates: Array<{ id: string; context: WorkflowContextSnapshot }> = [];
-        for (const row of rows) {
-          const parsed = WorkflowContextSnapshotSchema.parse(JSON.parse(row.context_json));
-          if (parsed.evidence.retention?.state === "pruned") continue;
-          diffBytes += utf8.encode(parsed.evidence.diff).byteLength;
-          statusEntries += parsed.evidence.workingTreeStatus.length;
-          transcriptMessages += parsed.evidence.transcript.length;
-          standardsDocuments += parsed.evidence.standards.length;
-          parsed.evidence = {
-            ...parsed.evidence,
-            diff: "",
-            workingTreeStatus: [],
-            transcript: [],
-            standards: parsed.evidence.standards.map((document) => ({ ...document, text: "" })),
-            retention: {
-              state: "pruned",
-              prunedAt: input.now,
-              diffBytes: utf8.encode(parsed.evidence.diff).byteLength,
-              workingTreeStatusEntries: parsed.evidence.workingTreeStatus.length,
-              transcriptMessages: parsed.evidence.transcript.length,
-              standardsDocuments: parsed.evidence.standards.length,
-            },
-          };
-          updates.push({ id: row.id, context: parsed });
-        }
+          const rows = this.db.prepare(
+            `SELECT id, mode, context_json FROM workflow_submissions
+              WHERE run_id = ? ORDER BY round ASC, id ASC`,
+          ).all(runId) as Array<{ id: string; mode: string; context_json: string }>;
+          let diffBytes = 0;
+          let statusEntries = 0;
+          let transcriptMessages = 0;
+          let standardsDocuments = 0;
+          const updates: Array<{ id: string; context: WorkflowContextSnapshot }> = [];
+          for (const row of rows) {
+            if (row.mode !== "full_workflow") continue;
+            const context = parseJson(
+              "workflow_submissions",
+              row.id,
+              "context_json",
+              row.context_json,
+              WorkflowJsonSchema,
+              WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+            );
+            const fullContext = WorkflowContextSnapshotSchema.safeParse(context);
+            if (!fullContext.success) continue;
+            const parsed = fullContext.data;
+            if (parsed.evidence.retention?.state === "pruned") continue;
+            diffBytes += utf8.encode(parsed.evidence.diff).byteLength;
+            statusEntries += parsed.evidence.workingTreeStatus.length;
+            transcriptMessages += parsed.evidence.transcript.length;
+            standardsDocuments += parsed.evidence.standards.length;
+            parsed.evidence = {
+              ...parsed.evidence,
+              diff: "",
+              workingTreeStatus: [],
+              transcript: [],
+              standards: parsed.evidence.standards.map((document) => ({ ...document, text: "" })),
+              retention: {
+                state: "pruned",
+                prunedAt: input.now,
+                diffBytes: utf8.encode(parsed.evidence.diff).byteLength,
+                workingTreeStatusEntries: parsed.evidence.workingTreeStatus.length,
+                transcriptMessages: parsed.evidence.transcript.length,
+                standardsDocuments: parsed.evidence.standards.length,
+              },
+            };
+            updates.push({ id: row.id, context: parsed });
+          }
 
-        this.appendEvent(runId, "evidence_pruned", {
-          submissions: updates.length,
-          diffBytes,
-          workingTreeStatusEntries: statusEntries,
-          transcriptMessages,
-          standardsDocuments,
-        }, input.now);
-        const updateSubmission = this.db.prepare(
-          `UPDATE workflow_submissions
-              SET context_json = ?, evidence_json = ?, updated_at = ?
-            WHERE id = ?`,
-        );
-        for (const update of updates) {
-          updateSubmission.run(
-            JSON.stringify(update.context),
-            JSON.stringify(update.context.evidence),
-            input.now,
-            update.id,
+          this.appendEvent(runId, "evidence_pruned", {
+            submissions: updates.length,
+            diffBytes,
+            workingTreeStatusEntries: statusEntries,
+            transcriptMessages,
+            standardsDocuments,
+          }, input.now);
+          const updateSubmission = this.db.prepare(
+            `UPDATE workflow_submissions
+                SET context_json = ?, evidence_json = ?, updated_at = ?
+              WHERE id = ?`,
           );
-        }
-        this.db.prepare(
-          `UPDATE workflow_deliveries
-              SET payload = '', payload_pruned_at = ?,
-                  error = CASE
-                    WHEN error IS NULL THEN NULL
-                    WHEN length(error) <= 100
-                         AND error NOT GLOB '*[^a-zA-Z0-9_:-]*' THEN error
-                    ELSE 'delivery_error'
-                  END
-            WHERE run_id = ?
-              AND state IN ('delivered', 'refused')
-              AND payload_pruned_at IS NULL`,
-        ).run(input.now, runId);
-        this.db.prepare(
-          `UPDATE workflow_runs
-              SET evidence_pruned_at = ?, updated_at = ?
-            WHERE id = ?`,
-        ).run(input.now, input.now, runId);
-        return true;
-      });
+          for (const update of updates) {
+            updateSubmission.run(
+              JSON.stringify(update.context),
+              JSON.stringify(update.context.evidence),
+              input.now,
+              update.id,
+            );
+          }
+          this.db.prepare(
+            `UPDATE workflow_deliveries
+                SET payload = '', payload_pruned_at = ?,
+                    error = CASE
+                      WHEN error IS NULL THEN NULL
+                      WHEN length(error) <= 100
+                           AND error NOT GLOB '*[^a-zA-Z0-9_:-]*' THEN error
+                      ELSE 'delivery_error'
+                    END
+              WHERE run_id = ?
+                AND state IN ('delivered', 'refused')
+                AND payload_pruned_at IS NULL`,
+          ).run(input.now, runId);
+          this.db.prepare(
+            `UPDATE workflow_runs
+                SET evidence_pruned_at = ?, updated_at = ?
+              WHERE id = ?`,
+          ).run(input.now, input.now, runId);
+          return true;
+        });
+      } catch (error) {
+        diagnose(error);
+      }
       if (didCompact) compacted.push(runId);
     }
 
@@ -3344,6 +3360,20 @@ export class WorkflowStore {
       externalSource: this.externalSourceForRun(run, binding.id),
       inspectorGate: null,
     };
+  }
+
+  runDetailResult(id: string):
+    | { kind: "found"; detail: WorkflowRunDetail }
+    | { kind: "missing" | "corrupt" } {
+    const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(id);
+    if (!exists) return { kind: "missing" };
+    try {
+      const detail = this.runDetail(id);
+      return detail ? { kind: "found", detail } : { kind: "corrupt" };
+    } catch (error) {
+      diagnose(error);
+      return { kind: "corrupt" };
+    }
   }
 
   /**

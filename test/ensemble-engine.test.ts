@@ -207,6 +207,33 @@ test("retrying a failed member appends an attempt and reuses the logical member"
   );
 });
 
+test("retrying a member whose wave already succeeded still dispatches it, not leaving it backlog", async () => {
+  const { store, gateway, engine } = harness();
+  const plan = reviewPlan(2, 1); // review barrier is met by one eligible member, so the run parks (non-terminal)
+  plan.budget.maxMembers = 3; // room for one retry
+  const { run } = store.createRun(runInsert(plan));
+  await engine.launch(run.id);
+  const [t1, t2] = gateway.dispatched.map((d) => d.taskId);
+  const m1 = store.listAttempts(run.id).find((a) => a.taskId === t1)!.memberId;
+  const m2 = store.listAttempts(run.id).find((a) => a.taskId === t2)!.memberId;
+
+  // Member 1 submits; member 2 fails. Both settled, so the member stage SUCCEEDS and the run parks at
+  // review - the exact state that makes a retry's wave un-serviceable by the ordinary advance.
+  await activate(engine, gateway, run.id, t1!);
+  await submit(engine, run.id, m1);
+  gateway.fail(t2!);
+  await engine.wake(run.id);
+  assert.equal(store.getMember(m2)!.status, "failed");
+  assert.equal(store.getRun(run.id)!.status, "evaluating", "the succeeded wave parked the run at review");
+  gateway.vanish(t2!); // its worktree is reclaimed
+
+  const before = gateway.dispatched.length;
+  assert.equal(await engine.retryMember(run.id, m2), true);
+  assert.equal(gateway.dispatched.length, before + 1, "the retry was dispatched, not left in the backlog forever");
+  assert.equal(store.getMember(m2)!.status, "launching");
+  assert.equal(store.getRun(run.id)!.status, "waiting", "the run returned to waiting for the retried member");
+});
+
 test("member retry refuses before Task creation when the lifetime launch budget is spent", async () => {
   const { store, gateway, engine } = harness();
   const { run } = store.createRun(runInsert(singleWavePlan(2)));

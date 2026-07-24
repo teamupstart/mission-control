@@ -447,7 +447,7 @@ export class EnsembleEngine {
       });
       const taskId = randomUUID();
       const agent = role.agent ?? AGENT_TYPES[0];
-      this.store.reserveAttempt(
+      const reserved = this.store.reserveAttempt(
         {
           runId: state.run.id,
           memberId: member.id,
@@ -476,7 +476,18 @@ export class EnsembleEngine {
         model: role.model,
         effort: role.effort,
       });
+      // Dispatch the retry DIRECTLY, not through the wave's service loop: the member's original stage
+      // may already have SUCCEEDED (its peers settled while this one failed), and `advanceLocked`
+      // skips a succeeded member stage, so `launchReadyMembers` would never run and the reserved Task
+      // would sit backlog forever. `reserveAttempt` already moved the member to `launching`; take the
+      // attempt to `launching` and hand it to the owner, with the same rejection handling a wave launch has.
+      this.store.setAttemptStatus(reserved.id, ["pending"], "launching", {}, now);
+      void this.tasks
+        .dispatch({ taskId, baseSha: input.baseSha, model: role.model, effort: role.effort })
+        .catch((err) => this.onDispatchRejected(state.run.id, member.id, reserved.id, err instanceof Error ? err.message : String(err)));
       this.event(runId, "member_retried", { memberId, attempt: attemptNumber }, `member_retried:${member.id}:${attemptNumber}`);
+      // Advance so the downstream barrier re-opens: the retried member is no longer settled, so a run
+      // parked at review returns to waiting until it submits.
       await this.advanceLocked(runId);
       this.publish(runId);
       return true;

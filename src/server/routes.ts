@@ -35,6 +35,13 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  ArchiveScheduleSchema,
+  CreateScheduleSchema,
+  RunScheduleNowSchema,
+  ScheduleHistoryQuerySchema,
+  SchedulePreviewSchema,
+  SetScheduleEnabledSchema,
+  UpdateScheduleSchema,
   SelectOptionSchema,
   SendTextSchema,
   OpenSessionFileSchema,
@@ -185,6 +192,9 @@ import type {
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "@shared/workflow.ts";
 import { getWorkflowConfig, setWorkflowConfig } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
+import type { ScheduleService } from "./schedules/manager.ts";
+import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
+import type { ScheduleValidationError } from "@shared/schedules.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -332,6 +342,12 @@ export function buildApp(
   personas?: PersonaManager,
   /** Optional for existing route-unit stubs; the daemon always supplies it. */
   workflows?: WorkflowManager,
+  /**
+   * The Recurring Missions service. Optional only so the broad legacy route-unit
+   * construction (four args) still compiles; production always passes it, and the schedule
+   * routes answer 503 when it is absent rather than constructing a second manager here.
+   */
+  schedules?: ScheduleService,
 ): Hono {
   const app = new Hono();
 
@@ -2148,6 +2164,157 @@ export function buildApp(
   app.delete("/api/tasks/:id", async (c) => {
     const r = await tasks.remove(c.req.param("id"));
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
+  // --- Recurring Missions: schedule catalog, preview, and paginated history ---
+  //
+  // Thin adapters over the schedule service. Each validates SHAPE through `parseBody`, calls
+  // exactly one service method, and maps its durable result to HTTP. No recurrence, policy,
+  // or schedule SQL lives here: the service owns that, and under it Phase 1's store. The
+  // service is the only schedule writer; the Registry is its live cache and notifier.
+  const scheduleService = (): ScheduleService | null => schedules ?? null;
+
+  /** A service validation refusal, carrying the field so the editor can attach the message. */
+  const scheduleValidationFailure = (c: Context, error: ScheduleValidationError) =>
+    c.json({ error: error.message, field: error.field }, 400);
+
+  app.get("/api/schedules", (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    // Served from the Registry, the SAME live collection the SSE snapshot carries, so a GET
+    // and a reconnect return byte-identical catalogs. Non-archived schedules only.
+    return c.json(registry.listSchedules());
+  });
+
+  // Preview is a READ: no schedule, revision, occurrence, or task is written and no
+  // ServerEvent is emitted. It accepts the exact save definition (plus preview-only knobs)
+  // so the browser can never preview a cadence the save route would refuse.
+  app.post("/api/schedules/preview", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, SchedulePreviewSchema);
+    if (!parsed.ok) return parsed.res;
+    const d = parsed.data;
+    const result = svc.preview({
+      expression: d.expression,
+      timezone: d.timezone,
+      missedPolicy: d.missedPolicy,
+      after: d.after,
+      count: d.count,
+      sleepStartedAt: d.sleepStartedAt,
+      resumedAt: d.resumedAt,
+      excludeScheduleId: d.excludeScheduleId,
+    });
+    // A cadence the shape layer passed but the evaluator rejects (a bad IANA zone, a sub-hour
+    // interval) returns `ok:false` with the offending field - a 400, not a 500.
+    return result.ok ? c.json(result) : scheduleValidationFailure(c, result.error);
+  });
+
+  app.post("/api/schedules", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, CreateScheduleSchema);
+    if (!parsed.ok) return parsed.res;
+    const d = parsed.data;
+    // The service canonicalizes cadence and repo root and returns the canonical schedule.
+    // `executionMode` / `runnerId` are validated by the schema but not forwarded: V1 pins them.
+    const result = await svc.create({
+      name: d.name,
+      expression: d.expression,
+      timezone: d.timezone,
+      overlapPolicy: d.overlapPolicy,
+      missedPolicy: d.missedPolicy,
+      template: d.template,
+      enabled: d.enabled,
+    });
+    return result.ok ? c.json(result.schedule, 201) : scheduleValidationFailure(c, result.error);
+  });
+
+  app.post("/api/schedules/:id/update", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateScheduleSchema);
+    if (!parsed.ok) return parsed.res;
+    const existing = svc.get(c.req.param("id"));
+    if (!existing) return c.json({ error: "no such schedule" }, 404);
+    // An archived schedule is present but out of the catalog: it cannot be edited, and that
+    // is a 404 (no editable schedule under this id), not a validation 400.
+    if (existing.archivedAt !== null) return c.json({ error: "this schedule is archived" }, 404);
+    const d = parsed.data;
+    const result = await svc.update(existing.id, {
+      name: d.name,
+      expression: d.expression,
+      timezone: d.timezone,
+      overlapPolicy: d.overlapPolicy,
+      missedPolicy: d.missedPolicy,
+      template: d.template,
+    });
+    return result.ok ? c.json(result.schedule) : scheduleValidationFailure(c, result.error);
+  });
+
+  app.post("/api/schedules/:id/set-enabled", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, SetScheduleEnabledSchema);
+    if (!parsed.ok) return parsed.res;
+    const existing = svc.get(c.req.param("id"));
+    if (!existing) return c.json({ error: "no such schedule" }, 404);
+    if (existing.archivedAt !== null) return c.json({ error: "this schedule is archived" }, 404);
+    // The service recomputes the cursor from the resume instant (enabling) or clears it
+    // (pausing); the route never does date math.
+    const result = await svc.setEnabled(existing.id, parsed.data.enabled);
+    return result.ok ? c.json(result.schedule) : scheduleValidationFailure(c, result.error);
+  });
+
+  // Run now works while paused and leaves the cron cursor untouched (see the service). The
+  // occurrence it returns carries its own terminal status, so an overlap skip or a failed
+  // fire-time repo check is a 200 with that outcome rather than an HTTP error.
+  app.post("/api/schedules/:id/run-now", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, RunScheduleNowSchema);
+    if (!parsed.ok) return parsed.res;
+    const existing = svc.get(c.req.param("id"));
+    if (!existing) return c.json({ error: "no such schedule" }, 404);
+    if (existing.archivedAt !== null) return c.json({ error: "this schedule is archived" }, 404);
+    const result = await svc.runNow(existing.id);
+    // After the pre-checks above, a refusal is a claim race or an unreadable revision - a
+    // state conflict the operator can retry, i.e. a 409.
+    return result.ok
+      ? c.json({ occurrence: result.occurrence, schedule: result.schedule })
+      : c.json({ error: result.error }, 409);
+  });
+
+  // Archive is idempotent and removes the schedule from the live catalog ONLY after the
+  // durable archive write: the service notifies `remove` post-commit, which emits
+  // `schedule_remove`. Direct occurrence history stays reachable afterwards.
+  app.post("/api/schedules/:id/archive", async (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveScheduleSchema);
+    if (!parsed.ok) return parsed.res;
+    const schedule = await svc.archive(c.req.param("id"));
+    return schedule ? c.json(schedule) : c.json({ error: "no such schedule" }, 404);
+  });
+
+  // Occurrence history is page-oriented and fetched on demand, never in the SSE snapshot.
+  // The page carries the schedule INCLUDING an archived one, so a generated task can still
+  // deep-link to its run history after the schedule has left the catalog.
+  app.get("/api/schedules/:id/occurrences", (c) => {
+    const svc = scheduleService();
+    if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
+    const query = ScheduleHistoryQuerySchema.safeParse({
+      before: c.req.query("before"),
+      limit: c.req.query("limit"),
+    });
+    // An unparseable cursor or an out-of-range limit is refused, not clamped: paging through
+    // the wrong window silently is worse than a 400 the caller can see.
+    if (!query.success) return c.json({ error: query.error.message }, 400);
+    const page = svc.history(c.req.param("id"), {
+      before: query.data.before ?? null,
+      limit: query.data.limit ?? SCHEDULE_HISTORY_DEFAULT_LIMIT,
+    });
+    return page ? c.json(page) : c.json({ error: "no such schedule" }, 404);
   });
 
   return app;

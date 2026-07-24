@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FleetCost, ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
 import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 
 /**
@@ -25,6 +26,12 @@ export interface MissionState {
    * large a run's roster or evaluation history grows.
    */
   ensembleSummaries: EnsembleSummary[];
+  /**
+   * The live Recurring Missions catalog. The SOLE catalog source: EventSource reconnect and
+   * the snapshot are the only refresh mechanism - this hook never polls the schedule routes.
+   * Non-archived schedules only; occurrence history is fetched on demand elsewhere.
+   */
+  schedules: MissionSchedule[];
   /**
    * Fleet spend and the subscription's rate limits, for the topbar strip. A single
    * value rather than a per-session field because that is the shape of the fact: the
@@ -54,6 +61,7 @@ export function useEventStream(): MissionState {
   const [workflowSummaries, setWorkflowSummaries] = useState<Map<string, WorkflowSummary>>(new Map());
   const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
+  const [schedules, setSchedules] = useState<Map<string, MissionSchedule>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -87,6 +95,10 @@ export function useEventStream(): MissionState {
           setWorkflowSummaries(new Map(msg.workflowSummaries.map((workflow) => [workflow.id, workflow])));
           setWorkflowRuns(new Map(msg.workflowRunSummaries.map((run) => [run.id, run])));
           setEnsembles(new Map(msg.ensembleSummaries.map((ensemble) => [ensemble.id, ensemble])));
+          // Replaced wholesale from the snapshot, like every other collection here: a
+          // reconnect after a gap must drop schedules archived while we were away, not merge
+          // them back in.
+          setSchedules(new Map(msg.schedules.map((schedule) => [schedule.id, schedule])));
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
           setFleetCost(msg.fleetCost);
@@ -167,6 +179,16 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "schedule_upsert":
+          setSchedules((prev) => new Map(prev).set(msg.schedule.id, msg.schedule));
+          break;
+        case "schedule_remove":
+          setSchedules((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
@@ -204,6 +226,7 @@ export function useEventStream(): MissionState {
     workflowSummaries: [...workflowSummaries.values()],
     workflowRunSummaries: [...workflowRuns.values()],
     ensembleSummaries: [...ensembles.values()],
+    schedules: [...schedules.values()],
     fleetCost,
     connected,
     hasSnapshot,

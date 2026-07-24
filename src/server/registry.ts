@@ -36,6 +36,7 @@ import type {
   InspectionUpdated,
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
+import type { MissionSchedule } from "@shared/schedules.ts";
 import type {
   HookIngest,
   OtlpMetrics,
@@ -61,6 +62,11 @@ import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead, SessionActivityRead } from "./harness/types.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
+// The live catalog is seeded from the Phase 1 store at boot; it is a read of durable state,
+// the same shape as `loadActiveTasks` above. The store never imports the registry, so this
+// direct import is cycle-free - unlike ensembles, whose projection is a registered callback
+// because it runs per session per sweep.
+import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
   clearQueue as clearQueueDb,
@@ -334,6 +340,15 @@ export class Registry extends EventEmitter {
   /** Compact ensemble projections only. Members, artifacts and evaluations stay on HTTP. */
   private ensembles = new Map<string, EnsembleSummary>();
   /**
+   * The live Recurring Missions catalog: non-archived schedules only.
+   *
+   * A cache and a notifier, never a second persistence authority - the schedule service is
+   * the only writer, and it calls `upsertSchedule`/`removeSchedule` here AFTER its durable
+   * write returns. Occurrence history stays out of this map on purpose: it is page-oriented
+   * and fetched on demand, not live catalog state.
+   */
+  private schedules = new Map<string, MissionSchedule>();
+  /**
    * How a task finds out it is an ensemble member.
    *
    * Registered by the daemon rather than imported, so nothing in here has to know what an
@@ -452,6 +467,9 @@ export class Registry extends EventEmitter {
     // terminal tasks would push them past the recent cap.
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
+    // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
+    // tick. Empty on every machine that has never saved a schedule.
+    for (const s of loadActiveSchedules()) this.schedules.set(s.id, s);
     this.hydrateTaskDependencyProvenance();
     this.cleanupDependencyProvenance();
   }
@@ -464,6 +482,7 @@ export class Registry extends EventEmitter {
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
     ensembleSummaries: EnsembleSummary[];
+    schedules: MissionSchedule[];
     fleetCost: FleetCost | null;
   } {
     return {
@@ -474,6 +493,7 @@ export class Registry extends EventEmitter {
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
       ensembleSummaries: [...this.ensembles.values()],
+      schedules: [...this.schedules.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -670,6 +690,30 @@ export class Registry extends EventEmitter {
   registerEnsembleProjection(lookup: (taskId: string) => TaskEnsembleLink | null): void {
     this.ensembleProjection = lookup;
     for (const id of this.sessions.keys()) this.resyncSessionTask(id);
+  }
+
+  // ---- schedule catalog (Recurring Missions live state) ----
+  //
+  // The schedule service is the only writer of the schedule tables; these methods are the
+  // live-state adapter it notifies, and each emits AFTER the durable write it reflects (an
+  // SSE emission cannot be rolled back). `upsertSchedule` / `removeSchedule` are the two
+  // halves of the `ScheduleNotifier` the manager was built against in Phase 2.
+
+  getSchedule(id: string): MissionSchedule | undefined {
+    return this.schedules.get(id);
+  }
+
+  listSchedules(): MissionSchedule[] {
+    return [...this.schedules.values()];
+  }
+
+  upsertSchedule(schedule: MissionSchedule): void {
+    this.schedules.set(schedule.id, schedule);
+    this.emitEvent({ type: "schedule_upsert", schedule });
+  }
+
+  removeSchedule(id: string): void {
+    if (this.schedules.delete(id)) this.emitEvent({ type: "schedule_remove", id });
   }
 
   registerWorkflowReset(cleanup: (noteKey: string) => void): void {

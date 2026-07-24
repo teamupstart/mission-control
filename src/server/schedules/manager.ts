@@ -210,7 +210,27 @@ function emptyTick(): ScheduleTickSummary {
 
 // ---- the manager ----
 
-export class ScheduleManager {
+/**
+ * The server-only surface Phase 3's routes depend on.
+ *
+ * Every method returns a durable result the route can map straight to HTTP; none reopens
+ * recurrence, policy, or SQL. Declared so `buildApp` can take a narrowed dependency and a
+ * test can pass a fake without constructing a real manager - `ScheduleManager` satisfies it
+ * structurally through `implements`.
+ */
+export interface ScheduleService {
+  list(): MissionSchedule[];
+  get(id: string): MissionSchedule | null;
+  history(id: string, cursor: ScheduleHistoryCursor): ScheduleHistoryPage | null;
+  preview(input: SchedulePreviewInput): SchedulePreviewResult;
+  create(input: CreateScheduleInput): Promise<ScheduleSaveResult>;
+  update(id: string, input: UpdateScheduleInput): Promise<ScheduleSaveResult>;
+  setEnabled(id: string, enabled: boolean): Promise<ScheduleSaveResult>;
+  runNow(id: string): Promise<ScheduleRunNowResult>;
+  archive(id: string): Promise<MissionSchedule | null>;
+}
+
+export class ScheduleManager implements ScheduleService {
   private readonly tasks: ScheduleTaskCreator;
   private readonly now: () => number;
   private readonly uuid: () => string;

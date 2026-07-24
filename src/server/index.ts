@@ -39,6 +39,7 @@ import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
+import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 
 openDb();
@@ -77,21 +78,29 @@ const workflows = new WorkflowManager(registry, personas.store, {
   reviewScheduler,
 });
 workflows.start();
-// Constructed for exactly two effects, both read-only: the registry's ensemble collection is
-// populated from persisted rows so a reconnect snapshot is truthful, and the task projection
-// is registered so a member's session card could name its group. Nothing here starts work -
-// there is no route into `create`, no engine, and no launch path until later phases - so on
-// every existing machine these tables are empty and the product behaves exactly as before.
+// The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
+// is truthful, registers the task projection so a member's session card names its group, and -
+// now that a Task gateway is wired in - owns the engine that launches member waves, captures
+// submissions and recovers. No CREATE route is enabled yet (Best-of-N's evaluator lands in a
+// later phase), so on every existing machine these tables are empty and the product behaves
+// exactly as before; the runtime is proven by tests and the internal action surface.
 //
 // Its Persona resolver is the manager's own store, so a comparison configured against a
 // Persona pins that Persona's exact revision at creation instead of re-reading a Markdown
-// file that may since have been edited.
-new EnsembleManager(registry, undefined, {
+// file that may since have been edited. The gateway is how the engine reaches TaskManager for
+// every member Task's create/dispatch/cancel without learning its internals.
+const ensembles = new EnsembleManager(registry, undefined, {
   resolvePersona: (personaId) => {
     const persona = personas.store.getPersona(personaId);
     return persona ? { id: persona.id, revision: persona.revision } : null;
   },
+  tasks: new TaskManagerGateway(tasks, registry),
 });
+// Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
+// real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so
+// their reconstruction runs first. Recovery is derived from SQLite plus current registry state,
+// never from missed events.
+registry.onSessionsObserved(() => void ensembles.recoverNonTerminalRuns());
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
@@ -129,7 +138,7 @@ const schedules = new ScheduleManager({
 });
 let stopSchedules = () => {};
 
-const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows, schedules);
+const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.
@@ -179,6 +188,7 @@ async function shutdown(): Promise<void> {
   // daemon shutdown.
   killLiveLlmRuns();
   await workflows.stop();
+  ensembles.stop();
   away.stop();
   stopHeadlessPruner();
   stopPoolReaper();

@@ -948,3 +948,14 @@ async function resolveBinPath(bin: string): Promise<string | null> {
 async function hasBin(bin: string): Promise<boolean> {
   return (await resolveBinPath(bin)) !== null;
 }
+
+/**
+ * Whether the binary a given agent would launch is resolvable on this machine.
+ *
+ * Exported for ensemble creation preflight, which refuses to persist a run whose members name a
+ * harness that is not installed - the same resolution `dispatch` does at launch, asked once up
+ * front so a whole roster fails visibly before any worktree is cut rather than one member at a time.
+ */
+export async function agentBinPresent(agent: AgentType): Promise<boolean> {
+  return hasBin(resolveAgentBin(agent));
+}

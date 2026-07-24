@@ -266,6 +266,11 @@ export const ENSEMBLE_LIMITS = {
   resultLabel: 60,
   /** Page size reserved for the later HTTP detail surface. */
   detailPageSize: 200,
+  /** One member submission's own bounded, member-authored content. */
+  submissionSummary: 4_000,
+  submissionCheck: 400,
+  submissionChecks: 40,
+  submissionTestEvidence: 8_000,
 } as const;
 
 /**
@@ -337,10 +342,20 @@ export interface EnsembleBudget {
  */
 export type EnsembleInformationPolicy = { kind: "isolated" };
 
-/** Where a member's checkout starts. */
+/**
+ * Where a member's checkout starts.
+ *
+ * `run_base` is the run's single pinned base commit, and every Best-of-N member verifies the
+ * same one. `parent_artifacts` is the second-wave case: a revision or synthesis member starts
+ * from the immutable artifacts a PRIOR wave produced, named by the compiled ROLE keys of those
+ * parents rather than by runtime ids the compiler cannot know. The launch runtime resolves
+ * those role keys to the ready commit each parent submitted and pins the member to the first of
+ * them - which is what makes "a second wave from parent artifact inputs" an ordinary pinned
+ * dispatch rather than a new lifecycle. Append-only, for the reason the whole file is.
+ */
 export type EnsembleMemberInput =
-  /** The run's single pinned base commit. Every Best-of-N member verifies the same one. */
-  { kind: "run_base" };
+  | { kind: "run_base" }
+  | { kind: "parent_artifacts"; roleKeys: string[] };
 
 /**
  * One member template, in stable compiled order.

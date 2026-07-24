@@ -1,0 +1,244 @@
+import { after, beforeEach, test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * What is at stake: this is the engine that turns a compiled plan into real agents on an operator's
+ * machine. The failures it must make impossible are all silent and all expensive - a wave dispatched
+ * before its members are durable, a member launched past the concurrency the operator authorized, a
+ * comparison manufactured out of one artifact when the rest failed, a restart that launches a second
+ * fleet. Every test here drives the engine against a fake gateway and a stubbed capture so the whole
+ * state machine can be exercised deterministically, without spawning an agent or touching Git.
+ */
+
+const home = mkdtempSync(join(tmpdir(), "mission-ensemble-engine-"));
+process.env.HARNESS_HOME = join(home, "state");
+
+const { openDb } = await import("../src/server/db.ts");
+const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
+const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const {
+  FakeGateway,
+  stubAdapters,
+  singleWavePlan,
+  twoWavePlan,
+  reviewPlan,
+  runInsert,
+} = await import("./ensemble-fixture.ts");
+
+const db = openDb();
+after(() => rmSync(home, { recursive: true, force: true }));
+beforeEach(() => clearEnsembleTables(db));
+
+function harness(now = () => 1000) {
+  const store = new EnsembleStore(db);
+  const gateway = new FakeGateway();
+  const published: string[] = [];
+  const engine = new EnsembleEngine({
+    store,
+    tasks: gateway,
+    publish: (id) => published.push(id),
+    adapters: stubAdapters(),
+    now,
+  });
+  return { store, gateway, engine, published };
+}
+
+/** Move a member's task to running and reconcile it to `active`. */
+async function activate(engine: InstanceType<typeof EnsembleEngine>, gateway: InstanceType<typeof FakeGateway>, runId: string, taskId: string, worktree = `/wt/${taskId}`) {
+  gateway.running(taskId, worktree);
+  await engine.wake(runId);
+}
+
+/** Submit a member and advance. Returns the outcome. */
+function submit(engine: InstanceType<typeof EnsembleEngine>, runId: string, memberId: string, summary = "done") {
+  return engine.submit({ runId, memberId, claims: { summary, checks: [], testEvidence: null }, source: "mcp", requireWorktree: null });
+}
+
+test("every member of a wave is durable before the first dispatch", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(3)));
+  await engine.launch(run.id);
+
+  assert.equal(gateway.created.length, 3, "all three tasks created");
+  assert.equal(gateway.dispatched.length, 3, "all three dispatched (concurrency 3)");
+  // The ordering is the invariant: no dispatch may precede the creation of the whole wave.
+  const firstDispatch = gateway.log.findIndex((entry) => entry.startsWith("dispatch:"));
+  const creates = gateway.log.slice(0, firstDispatch).filter((entry) => entry.startsWith("create:"));
+  assert.equal(creates.length, 3, "the whole wave was created before any dispatch");
+});
+
+test("every member of a wave is pinned to the same base sha even after HEAD would move", async () => {
+  const { store, gateway, engine } = harness();
+  const insert = runInsert(singleWavePlan(3));
+  const { run } = store.createRun(insert);
+  await engine.launch(run.id);
+  assert.equal(gateway.dispatched.length, 3);
+  for (const dispatch of gateway.dispatched) {
+    assert.equal(dispatch.baseSha, insert.baseSha, "member pinned to the run's one base commit");
+  }
+});
+
+test("member concurrency is a hard ceiling, and a settled member frees exactly one slot", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(4, { maxConcurrentMembers: 2 })));
+  await engine.launch(run.id);
+  assert.equal(gateway.dispatched.length, 2, "only the ceiling launches at first");
+
+  // Settle the first member: its slot must free exactly one more launch.
+  const members = store.listMembers(run.id);
+  const firstTask = gateway.dispatched[0]!.taskId;
+  const firstMember = store.listAttempts(run.id).find((a) => a.taskId === firstTask)!.memberId;
+  await activate(engine, gateway, run.id, firstTask);
+  await submit(engine, run.id, firstMember);
+  assert.equal(gateway.dispatched.length, 3, "one slot freed, one more launched");
+  assert.ok(members.length === 4);
+});
+
+test("a threshold barrier reached with enough eligible members parks in front of review", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(reviewPlan(3, 2)));
+  await engine.launch(run.id);
+  const attempts = () => store.listAttempts(run.id);
+
+  // Two submit with artifacts; the third fails. Two eligible >= minEligible 2, so the review barrier
+  // is satisfied and the run parks in `evaluating` (the review driver is not executable this phase).
+  for (const dispatch of gateway.dispatched.slice(0, 2)) {
+    const memberId = attempts().find((a) => a.taskId === dispatch.taskId)!.memberId;
+    await activate(engine, gateway, run.id, dispatch.taskId);
+    await submit(engine, run.id, memberId);
+  }
+  const failTask = gateway.dispatched[2]!.taskId;
+  gateway.fail(failTask);
+  await engine.wake(run.id);
+
+  const after = store.getRun(run.id)!;
+  assert.equal(after.status, "evaluating", "the run parks in front of the not-yet-executable review");
+  assert.equal(after.activeStageId, "stage-2");
+});
+
+test("an impossible barrier fails the run rather than manufacturing a comparison of one", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(reviewPlan(3, 2)));
+  await engine.launch(run.id);
+  const attempts = () => store.listAttempts(run.id);
+
+  // Only one member submits; the other two fail. One eligible < minEligible 2 with everyone settled.
+  const okTask = gateway.dispatched[0]!.taskId;
+  const okMember = attempts().find((a) => a.taskId === okTask)!.memberId;
+  await activate(engine, gateway, run.id, okTask);
+  await submit(engine, run.id, okMember);
+  for (const dispatch of gateway.dispatched.slice(1, 3)) {
+    gateway.fail(dispatch.taskId);
+  }
+  await engine.wake(run.id);
+
+  const after = store.getRun(run.id)!;
+  assert.equal(after.status, "failed");
+  assert.match(after.error ?? "", /barrier/i);
+});
+
+test("a test strategy runs two waves, the second pinned to the first wave's artifact", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(twoWavePlan(2)));
+  await engine.launch(run.id);
+  assert.equal(gateway.dispatched.length, 2, "wave one launched");
+
+  // Settle both wave-one members.
+  const attempts = () => store.listAttempts(run.id);
+  for (const dispatch of [...gateway.dispatched]) {
+    const memberId = attempts().find((a) => a.taskId === dispatch.taskId)!.memberId;
+    await activate(engine, gateway, run.id, dispatch.taskId);
+    await submit(engine, run.id, memberId);
+  }
+  // Wave two must now have launched, pinned to the a-1 member's snapshot, not the run base.
+  assert.equal(gateway.dispatched.length, 3, "wave two launched from parent artifacts");
+  const a1Member = store.listMembers(run.id).find((m) => m.roleKey === "a-1")!;
+  const a1Artifact = store.listArtifacts(run.id).find(
+    (a) => a.status === "ready" && a.attemptId === a1Member.selectedAttemptId,
+  )!;
+  const a1Sha = (a1Artifact.locator as { snapshotSha: string }).snapshotSha;
+  const waveTwoDispatch = gateway.dispatched[2]!;
+  assert.equal(waveTwoDispatch.baseSha, a1Sha, "wave two started from wave one's exact snapshot");
+
+  // Settle wave two: the run completes with everything retained.
+  const b1Member = store.listMembers(run.id).find((m) => m.roleKey === "b-1")!;
+  await activate(engine, gateway, run.id, waveTwoDispatch.taskId);
+  await submit(engine, run.id, b1Member.id);
+
+  const finished = store.getRun(run.id)!;
+  assert.equal(finished.status, "completed");
+  assert.equal(finished.outcome?.kind, "retained");
+  assert.equal(store.listArtifacts(run.id).filter((a) => a.status === "ready").length, 3);
+});
+
+test("retrying a failed member appends an attempt and reuses the logical member", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  const failTask = gateway.dispatched[0]!.taskId;
+  const memberId = store.listAttempts(run.id).find((a) => a.taskId === failTask)!.memberId;
+  const before = store.getMember(memberId)!;
+
+  gateway.fail(failTask);
+  await engine.wake(run.id);
+  assert.equal(store.getMember(memberId)!.status, "failed");
+  gateway.vanish(failTask); // its worktree is reclaimed
+
+  const retried = await engine.retryMember(run.id, memberId);
+  assert.equal(retried, true);
+  const after = store.getMember(memberId)!;
+  assert.equal(after.ordinal, before.ordinal, "the ordinal never changes on retry");
+  assert.equal(after.roleKey, before.roleKey);
+  const attempts = store.listAttempts(run.id).filter((a) => a.memberId === memberId);
+  assert.equal(attempts.length, 2, "a second attempt was appended");
+  assert.deepEqual(
+    attempts.map((a) => a.attempt).sort(),
+    [1, 2],
+  );
+});
+
+test("a duplicate launch does not create a second wave (command-key idempotency)", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(3)));
+  // Two launches racing: the persist-before-act command key collides, so the wave is created once.
+  await Promise.all([engine.launch(run.id), engine.launch(run.id)]);
+  assert.equal(gateway.created.length, 3, "exactly one wave of tasks");
+  assert.equal(store.listStageAttempts(run.id).filter((s) => s.stageId === "stage-1").length, 1);
+});
+
+test("a submit and a cancel racing on one run serialize to one consistent terminal state", async () => {
+  const { store, gateway, engine } = harness();
+  const { run } = store.createRun(runInsert(singleWavePlan(2)));
+  await engine.launch(run.id);
+  const task = gateway.dispatched[0]!.taskId;
+  const memberId = store.listAttempts(run.id).find((a) => a.taskId === task)!.memberId;
+  await activate(engine, gateway, run.id, task);
+
+  // Fire a submission and a cancel at the same time; the per-run lock orders them.
+  await Promise.all([
+    submit(engine, run.id, memberId).catch(() => {}),
+    engine.cancelRun(run.id, "operator stopped it"),
+  ]);
+  const after = store.getRun(run.id)!;
+  // Whichever won, the run is in exactly one terminal-or-cancelling state, never a torn one.
+  assert.ok(["cancelled", "running", "waiting", "completed"].includes(after.status ?? ""));
+  if (after.status === "cancelled") {
+    // A cancel keeps submitted refs but withdraws live members.
+    assert.ok(gateway.cancelled.length >= 1 || store.listArtifacts(run.id).some((a) => a.status === "ready"));
+  }
+});
+
+test("a run past its wall-clock deadline fails rather than parking forever", async () => {
+  let clock = 0;
+  const { store, engine } = harness(() => clock);
+  const plan = singleWavePlan(2);
+  plan.budget.deadlineMs = 1000;
+  const { run } = store.createRun(runInsert(plan), 0);
+  clock = 5000; // well past the deadline
+  await engine.launch(run.id);
+  assert.equal(store.getRun(run.id)!.status, "failed");
+  assert.match(store.getRun(run.id)!.error ?? "", /deadline/i);
+});

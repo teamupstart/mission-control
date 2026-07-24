@@ -1088,6 +1088,24 @@ export class EnsembleStore {
     ).map(rowToArtifact);
   }
 
+  /**
+   * The next capture attempt number for one (attempt, kind), so `UNIQUE(run_id, attempt_id,
+   * kind, attempt)` cannot collide when a failed capture is retried.
+   *
+   * A failed capture leaves a `failed` row; counting it means a retry writes a NEW row rather
+   * than colliding, and the `capturing` -> `ready`/`failed` transition below never has to
+   * rewrite an artifact that another reader may already have quoted.
+   */
+  nextArtifactAttempt(runId: string, attemptId: string, kind: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT MAX(attempt) AS highest FROM ensemble_artifacts
+           WHERE run_id = ? AND attempt_id = ? AND kind = ?`,
+      )
+      .get(runId, attemptId, kind) as unknown as { highest: number | null } | undefined;
+    return (row?.highest ?? 0) + 1;
+  }
+
   listStageAttempts(runId: string): EnsembleStageAttempt[] {
     return (
       this.db
@@ -1477,6 +1495,8 @@ export class EnsembleStore {
       sessionId?: string | null;
       observedModel?: string | null;
       baseSha?: string | null;
+      worktreePath?: string | null;
+      branch?: string | null;
       startedAt?: number | null;
       finishedAt?: number | null;
       error?: string | null;
@@ -1501,6 +1521,14 @@ export class EnsembleStore {
       if ("baseSha" in patch) {
         sets.push("base_sha = ?");
         values.push(patch.baseSha ?? null);
+      }
+      if ("worktreePath" in patch) {
+        sets.push("worktree_path = ?");
+        values.push(patch.worktreePath ?? null);
+      }
+      if ("branch" in patch) {
+        sets.push("branch = ?");
+        values.push(patch.branch ?? null);
       }
       if ("startedAt" in patch) {
         sets.push("started_at = ?");
@@ -1601,6 +1629,77 @@ export class EnsembleStore {
         );
       const row = this.db.prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`).get(id) as unknown;
       return rowToArtifact(row);
+    });
+  }
+
+  /**
+   * Move one artifact off `capturing`, the only mutable transition an artifact has.
+   *
+   * An artifact is born `capturing` before the Git snapshot runs, so a crash mid-capture
+   * leaves a row a recovery pass can fail rather than an orphaned ref nothing describes. This
+   * is what fills in the real locator, fingerprint and evidence once the snapshot exists, or
+   * marks the row `failed` when it does not - and it refuses to touch a row that is already
+   * `ready`, because a ready artifact is immutable and something downstream may already have
+   * read it. `ready` requires the whole triple: a locator, a digest and a `readyAt`, so the
+   * invariant "a ready artifact always has honest evidence" holds by construction here.
+   */
+  setArtifactStatus(
+    id: string,
+    next: Extract<EnsembleArtifact["status"], "ready" | "failed">,
+    patch: {
+      locator?: EnsembleJson;
+      digest?: string;
+      metadata?: EnsembleJson;
+      readyAt?: number | null;
+      error?: string | null;
+    } = {},
+    now = Date.now(),
+  ): EnsembleTransition<EnsembleArtifact> {
+    if (next === "ready" && (patch.locator === undefined || patch.digest === undefined)) {
+      throw new Error("a ready artifact must carry its locator and fingerprint");
+    }
+    const locator =
+      patch.locator === undefined
+        ? undefined
+        : serializedJson(patch.locator, ENSEMBLE_LIMITS.artifactLocatorJsonBytes, "artifact locator");
+    const metadata =
+      patch.metadata === undefined
+        ? undefined
+        : serializedJson(patch.metadata, ENSEMBLE_LIMITS.artifactMetadataJsonBytes, "artifact metadata");
+    return this.inTransaction(() => {
+      const before = this.db.prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`).get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToArtifact(before);
+      const sets = ["status = ?"];
+      const values: Array<string | number | null> = [next];
+      if (locator !== undefined) {
+        sets.push("locator_json = ?");
+        values.push(locator);
+      }
+      if (patch.digest !== undefined) {
+        sets.push("digest = ?");
+        values.push(patch.digest);
+      }
+      if (metadata !== undefined) {
+        sets.push("metadata_json = ?");
+        values.push(metadata);
+      }
+      if ("readyAt" in patch) {
+        sets.push("ready_at = ?");
+        values.push(patch.readyAt ?? null);
+      }
+      if ("error" in patch) {
+        sets.push("error = ?");
+        values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
+      }
+      const changed = this.db
+        .prepare(`UPDATE ensemble_artifacts SET ${sets.join(", ")} WHERE id = ? AND status = 'capturing'`)
+        .run(...values, id).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db.prepare(`SELECT * FROM ensemble_artifacts WHERE id = ?`).get(id) as unknown;
+      return row
+        ? { ok: true, value: rowToArtifact(row) }
+        : { ok: false, reason: "not_found", current: null };
     });
   }
 

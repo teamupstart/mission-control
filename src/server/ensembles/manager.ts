@@ -4,6 +4,8 @@ import {
   ensemblePayload,
   ensembleStrategyKey,
   readEnsembleEnum,
+  type CompiledEnsemblePlan,
+  type EnsembleArtifact,
   type EnsembleCreateInput,
   type EnsembleDecision,
   type EnsembleJson,
@@ -12,18 +14,32 @@ import {
   type EnsembleSummary,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
-import { EnsembleCreateInputSchema } from "@shared/protocol.ts";
+import {
+  EnsembleCreateInputSchema,
+  type EnsembleSubmissionClaims,
+} from "@shared/protocol.ts";
 import type { Registry } from "../registry.ts";
+import type { AgentType } from "@shared/types.ts";
+import { agentBinPresent } from "../dispatcher.ts";
+import { resolveTaskRepoRoot } from "../repos.ts";
+import { run } from "../util/exec.ts";
 import {
   EnsembleStore,
   type EnsembleDecisionInsert,
   type EnsembleMemberInsert,
 } from "./store.ts";
 import {
+  EnsembleEngine,
+  type EnsembleSubmitRefusal,
+  type EnsembleTaskGateway,
+} from "./engine.ts";
+import type { ArtifactAdapterRegistry } from "./artifacts/index.ts";
+import {
   descriptorFor,
   ensembleStrategyCatalog,
   type StrategyCatalog,
   type StrategyCompileContext,
+  type StrategyDescriptor,
   type StrategyIssue,
 } from "./strategies/index.ts";
 
@@ -48,11 +64,26 @@ export type EnsembleCreateRefusal =
   | "unknown_strategy"
   | "strategy_disabled"
   | "version_unavailable"
-  | "invalid_config";
+  | "invalid_config"
+  | "preflight_failed";
 
 export type EnsembleCreateOutcome =
   | { ok: true; run: EnsembleRun; summary: EnsembleSummary; created: boolean }
   | { ok: false; reason: EnsembleCreateRefusal; issues: StrategyIssue[] };
+
+/** A resolved, pinned repository state a run's members will all be cut from. */
+interface PreflightResult {
+  repoRoot: string;
+  baseSha: string;
+  baseBranch: string | null;
+}
+
+/** Why a submission was refused, on top of the engine's own capture refusals. */
+export type EnsembleSubmitReason = EnsembleSubmitRefusal | "no_session" | "no_engine";
+
+export type EnsembleSubmitResult =
+  | { ok: true; artifact: EnsembleArtifact; replayed: boolean }
+  | { ok: false; reason: EnsembleSubmitReason; detail: string };
 
 export interface EnsembleManagerOptions {
   catalog?: StrategyCatalog;
@@ -65,11 +96,24 @@ export interface EnsembleManagerOptions {
    * built-in rubric.
    */
   resolvePersona?: (personaId: string) => { id: string; revision: number } | null;
+  /**
+   * The bridge the engine launches member Tasks through. Present only when the daemon wired one
+   * in: without it the manager still validates, compiles and persists runs, but launches nothing -
+   * which is exactly what the phases before this one did, and what the read-only tests rely on.
+   */
+  tasks?: EnsembleTaskGateway;
+  /** Artifact adapters, for tests that drive capture against a fake instead of real Git. */
+  adapters?: ArtifactAdapterRegistry;
+  now?: () => number;
+  log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
 }
 
 export class EnsembleManager {
   private readonly catalog: StrategyCatalog;
   private readonly resolvePersona: (personaId: string) => { id: string; revision: number } | null;
+  private readonly engine: EnsembleEngine | null;
+  private readonly now: () => number;
+  private unsubscribe: (() => void) | null = null;
 
   /**
    * taskId -> member link, rebuilt from the store on every write.
@@ -87,6 +131,19 @@ export class EnsembleManager {
   ) {
     this.catalog = options.catalog ?? ensembleStrategyCatalog;
     this.resolvePersona = options.resolvePersona ?? (() => null);
+    this.now = options.now ?? (() => Date.now());
+    // The engine exists only when a Task gateway was wired in. It calls back into `publish` after
+    // every step, so the two are constructed together with the manager holding the reference.
+    this.engine = options.tasks
+      ? new EnsembleEngine({
+          store: this.store,
+          tasks: options.tasks,
+          publish: (runId) => this.publish(runId),
+          adapters: options.adapters,
+          now: this.now,
+          log: options.log,
+        })
+      : null;
     // Boot-time catalog install, before SSE is served, so no incremental emit is needed -
     // the same shape `initializePersonas` / `initializeWorkflows` use.
     this.registry.initializeEnsembles(this.summaries());
@@ -96,6 +153,23 @@ export class EnsembleManager {
     // session on every discovery sweep.
     this.store.onTaskLinksChanged(() => this.refreshLinks());
     this.refreshProjection();
+    // A member Task changing durable state is the engine's wake signal: a task going idle is not a
+    // submission and a task dying is not a completion, so the engine recomputes from durable rows on
+    // every wake rather than trusting the event. Only wired when there is an engine to wake.
+    if (this.engine) {
+      this.unsubscribe = this.registry.subscribe((event) => {
+        if (event.type !== "task_upsert" && event.type !== "task_remove") return;
+        const taskId = event.type === "task_upsert" ? event.task.id : event.id;
+        const member = this.store.memberForTask(taskId);
+        if (member) void this.engine!.wake(member.runId);
+      });
+    }
+  }
+
+  /** Detach the wake subscription. The daemon owns the single process; tests call this to be tidy. */
+  stop(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
   }
 
   /** Rebuilt rather than patched: a member LOSING its task matters as much as gaining one. */
@@ -146,8 +220,65 @@ export class EnsembleManager {
    * after this point leaves rows a later action surface can expose and cancel; a crash before
    * it leaves nothing at all. There is no third outcome where agents exist and the group
    * does not.
+   *
+   * This path pins no base and launches nothing - `createAndLaunch` is the runtime one. It stays
+   * here as the compile-and-persist building block and as the read-only door the earlier phases
+   * proved.
    */
   create(input: EnsembleCreateInput, now = Date.now()): EnsembleCreateOutcome {
+    const existing = this.existingRun(input);
+    if (existing) return existing;
+    const compiled = this.compile(input, now);
+    if (!compiled.ok) return compiled.outcome;
+    const write = this.persistRun(compiled.value, null, null, "planning", now);
+    return this.published(write);
+  }
+
+  /**
+   * The runtime create: preflight, pin one base, persist, and launch the first wave.
+   *
+   * Preflight resolves and PINS one full commit before anything is written, so every member of the
+   * run - this wave and any later one - is cut from byte-identical state even if the source branch
+   * moves mid-launch. The persisted run, its whole roster and (through the engine) its first stage
+   * attempt all exist before the first dispatch. Idempotent on the source key: a response-loss retry
+   * returns the original run and resumes it rather than launching a second fleet.
+   */
+  async createAndLaunch(input: EnsembleCreateInput, now = this.now()): Promise<EnsembleCreateOutcome> {
+    if (!this.engine) {
+      return {
+        ok: false,
+        reason: "preflight_failed",
+        issues: [{ path: "", message: "this build has no launch gateway wired in" }],
+      };
+    }
+    const existing = this.existingRun(input);
+    if (existing) {
+      // A duplicate request returns the original run and resumes it - the engine's own idempotency
+      // keys make a second advance harmless, and a run that crashed mid-launch is picked back up.
+      if (existing.ok) void this.engine.launch(existing.run.id);
+      return existing;
+    }
+    const compiled = this.compile(input, now);
+    if (!compiled.ok) return compiled.outcome;
+
+    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
+    if (!preflight.ok) return { ok: false, reason: "preflight_failed", issues: preflight.issues };
+
+    const write = this.persistRun(
+      compiled.value,
+      preflight.value.baseSha,
+      preflight.value.baseBranch,
+      "running",
+      now,
+      preflight.value.repoRoot,
+    );
+    const outcome = this.published(write);
+    if (write.created) await this.engine.launch(write.run.id);
+    else void this.engine.launch(write.run.id);
+    return outcome;
+  }
+
+  private existingRun(input: EnsembleCreateInput): EnsembleCreateOutcome | null {
     const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, input.sourceKind);
     const sourceKey =
       typeof input.sourceKey === "string" &&
@@ -156,24 +287,29 @@ export class EnsembleManager {
         ? input.sourceKey
         : null;
     const existing =
-      sourceKind !== null && sourceKey !== null
-        ? this.store.runBySource(sourceKind, sourceKey)
-        : null;
-    if (existing) {
-      const summary = this.publish(existing.id);
-      if (!summary) throw new Error(`ensemble ${existing.id} has no summary for its source claim`);
-      return { ok: true, run: existing, summary, created: false };
-    }
+      sourceKind !== null && sourceKey !== null ? this.store.runBySource(sourceKind, sourceKey) : null;
+    if (!existing) return null;
+    const summary = this.publish(existing.id);
+    if (!summary) throw new Error(`ensemble ${existing.id} has no summary for its source claim`);
+    return { ok: true, run: existing, summary, created: false };
+  }
 
+  /** Parse, resolve the descriptor, and compile - the pure half both create paths share. */
+  private compile(
+    input: EnsembleCreateInput,
+    now: number,
+  ):
+    | { ok: true; value: { descriptor: StrategyDescriptor; plan: CompiledEnsemblePlan; config: EnsembleJson; request: ReturnType<typeof EnsembleCreateInputSchema.parse> } }
+    | { ok: false; outcome: EnsembleCreateOutcome } {
     const parsed = EnsembleCreateInputSchema.safeParse(input);
     if (!parsed.success) {
       return {
         ok: false,
-        reason: "invalid_config",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message,
-        })),
+        outcome: {
+          ok: false,
+          reason: "invalid_config",
+          issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+        },
       };
     }
     const request = parsed.data;
@@ -181,51 +317,65 @@ export class EnsembleManager {
     if (!descriptor) {
       return {
         ok: false,
-        reason: "unknown_strategy",
-        issues: [{ path: "strategyId", message: `unknown strategy ${request.strategyId}` }],
+        outcome: {
+          ok: false,
+          reason: "unknown_strategy",
+          issues: [{ path: "strategyId", message: `unknown strategy ${request.strategyId}` }],
+        },
       };
     }
     if (!descriptor.enabled) {
       return {
         ok: false,
-        reason: "strategy_disabled",
-        issues: [
-          { path: "strategyId", message: `${descriptor.label} cannot be created by this build` },
-        ],
+        outcome: {
+          ok: false,
+          reason: "strategy_disabled",
+          issues: [{ path: "strategyId", message: `${descriptor.label} cannot be created by this build` }],
+        },
       };
     }
     // A pinned version this build does not compile is a refusal, never a silent upgrade: the
     // operator asked for a specific behaviour, and running a newer one would be a different
     // ensemble wearing the version they chose.
-    if (
-      request.strategyVersion !== undefined &&
-      request.strategyVersion !== descriptor.compilesVersion
-    ) {
+    if (request.strategyVersion !== undefined && request.strategyVersion !== descriptor.compilesVersion) {
       return {
         ok: false,
-        reason: "version_unavailable",
-        issues: [
-          {
-            path: "strategyVersion",
-            message: `this build compiles ${descriptor.id} at version ${descriptor.compilesVersion}`,
-          },
-        ],
+        outcome: {
+          ok: false,
+          reason: "version_unavailable",
+          issues: [
+            {
+              path: "strategyVersion",
+              message: `this build compiles ${descriptor.id} at version ${descriptor.compilesVersion}`,
+            },
+          ],
+        },
       };
     }
-
     const config = request.strategyConfig ?? {};
     const context = this.compileContext(request.repoRoot, config, now);
-    if (!context.ok) return { ok: false, reason: "invalid_config", issues: context.issues };
+    if (!context.ok) return { ok: false, outcome: { ok: false, reason: "invalid_config", issues: context.issues } };
     const compiled = descriptor.compile(config, context.value);
-    if (!compiled.ok) return { ok: false, reason: "invalid_config", issues: compiled.issues };
+    if (!compiled.ok) return { ok: false, outcome: { ok: false, reason: "invalid_config", issues: compiled.issues } };
+    return { ok: true, value: { descriptor, plan: compiled.plan, config: compiled.config, request } };
+  }
 
-    const members: EnsembleMemberInsert[] = compiled.plan.roles.map((role) => ({
+  private persistRun(
+    compiled: { descriptor: StrategyDescriptor; plan: CompiledEnsemblePlan; config: EnsembleJson; request: ReturnType<typeof EnsembleCreateInputSchema.parse> },
+    baseSha: string | null,
+    baseBranch: string | null,
+    status: "planning" | "running",
+    now: number,
+    repoRoot?: string,
+  ) {
+    const { descriptor, plan, config, request } = compiled;
+    const members: EnsembleMemberInsert[] = plan.roles.map((role) => ({
       roleKey: role.key,
       roleLabel: role.label,
       ordinal: role.ordinal,
       wave: role.wave,
     }));
-    const write = this.store.createRun(
+    return this.store.createRun(
       {
         sourceKind: request.sourceKind,
         sourceKey: request.sourceKey,
@@ -236,24 +386,156 @@ export class EnsembleManager {
         strategyLabel: descriptor.label,
         title: request.title,
         intent: request.intent,
-        repoRoot: request.repoRoot,
-        baseBranch: null,
-        // Pinned by the launch runtime, which is a later phase. Until then a run has no
-        // base, and the column says so rather than holding a plausible HEAD that nothing
-        // verified.
-        baseSha: null,
-        plan: compiled.plan,
-        strategyConfig: compiled.config,
-        status: "planning",
+        repoRoot: repoRoot ?? request.repoRoot,
+        baseBranch,
+        baseSha,
+        plan,
+        strategyConfig: config,
+        status,
         members,
       },
       now,
     );
+  }
+
+  private published(write: { run: EnsembleRun; created: boolean }): EnsembleCreateOutcome {
     const summary = this.publish(write.run.id);
-    if (!summary) {
-      throw new Error(`ensemble ${write.run.id} has no summary immediately after creation`);
-    }
+    if (!summary) throw new Error(`ensemble ${write.run.id} has no summary immediately after creation`);
     return { ok: true, run: write.run, summary, created: write.created };
+  }
+
+  /**
+   * Canonicalize the repository, pin one full commit, and prove every member's harness is installed.
+   *
+   * The base is `git rev-parse HEAD^{commit}` resolved ONCE and stored full: comparison between
+   * members is meaningless if their starting points differ, and a ref name would mean something
+   * different an hour later. The branch is recorded separately and is informational. A missing
+   * harness binary fails the whole create up front rather than one member at a time after launch.
+   */
+  private async preflight(
+    plan: CompiledEnsemblePlan,
+    repoRoot: string,
+  ): Promise<{ ok: true; value: PreflightResult } | { ok: false; issues: StrategyIssue[] }> {
+    const resolved = await resolveTaskRepoRoot(repoRoot);
+    if (!resolved.ok) return { ok: false, issues: [{ path: "repoRoot", message: resolved.error }] };
+    const canonical = resolved.repoRoot;
+
+    const head = await run("git", ["-C", canonical, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    const baseSha = head.stdout.trim();
+    if (head.code !== 0 || !/^[0-9a-f]{40}$/.test(baseSha)) {
+      return {
+        ok: false,
+        issues: [{ path: "repoRoot", message: `could not resolve a base commit in ${canonical}` }],
+      };
+    }
+    const branchRun = await run("git", ["-C", canonical, "rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = branchRun.stdout.trim();
+    const baseBranch = branchRun.code === 0 && branch && branch !== "HEAD" ? branch : null;
+
+    const agents = new Set<AgentType>();
+    for (const role of plan.roles) if (role.agent !== null) agents.add(role.agent);
+    for (const agent of agents) {
+      if (!(await agentBinPresent(agent))) {
+        return { ok: false, issues: [{ path: "strategyConfig", message: `the ${agent} binary is not installed` }] };
+      }
+    }
+    return { ok: true, value: { repoRoot: canonical, baseSha, baseBranch } };
+  }
+
+  // ---- submission ----
+
+  /**
+   * Attribute an MCP submission to its member, server-side, then capture it.
+   *
+   * The whole security of the submission tool is that a member never names itself: the caller's
+   * authenticated runtime - pane token, agent session id, or a unique cwd - resolves to ONE live
+   * session, that session to the Task it is running, and that Task to at most one ensemble member.
+   * A guessed id reaches nothing. The session's cwd must be the member's live worktree, which is
+   * what stops a session in the wrong tree from submitting for a member it merely shares a repo with.
+   */
+  async submitFromSession(input: {
+    env: Parameters<Registry["findSessionByEnv"]>[0];
+    sessionId: string | null;
+    cwd: string | null;
+    claims: EnsembleSubmissionClaims;
+  }): Promise<EnsembleSubmitResult> {
+    if (!this.engine) return { ok: false, reason: "no_engine", detail: "this build cannot accept submissions" };
+    const session = this.registry.findSessionByEnv(
+      input.env,
+      input.sessionId ?? undefined,
+      input.cwd ?? undefined,
+    );
+    if (!session || session.state === "exited") {
+      return { ok: false, reason: "no_session", detail: "no live session matched this request" };
+    }
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task) return { ok: false, reason: "no_member", detail: "this session is not running an ensemble member" };
+    const member = this.store.memberForTask(task.id);
+    if (!member) return { ok: false, reason: "no_member", detail: "this session's task is not an ensemble member" };
+    return this.engine.submit({
+      runId: member.runId,
+      memberId: member.id,
+      claims: input.claims,
+      source: "mcp",
+      requireWorktree: session.cwd,
+    });
+  }
+
+  /**
+   * The manual submission fallback: an explicit operator act that names the member in the URL.
+   *
+   * Named rather than attributed, but not trusted for it: the daemon still runs the same capture
+   * service, so the member must be active and hold a live worktree or the submission is refused.
+   * The result is labelled `operator`; it never borrows a session's provenance.
+   */
+  async submitManual(runId: string, memberId: string, claims: EnsembleSubmissionClaims): Promise<EnsembleSubmitResult> {
+    if (!this.engine) return { ok: false, reason: "no_engine", detail: "this build cannot accept submissions" };
+    const member = this.store.getMember(memberId);
+    if (!member || member.runId !== runId) {
+      return { ok: false, reason: "no_member", detail: "no such member in this run" };
+    }
+    return this.engine.submit({ runId, memberId, claims, source: "operator", requireWorktree: null });
+  }
+
+  // ---- internal recovery actions (Phase 6 exposes the complete action API) ----
+
+  async cancelRun(runId: string, reason: string | null): Promise<boolean> {
+    return this.engine ? this.engine.cancelRun(runId, reason) : false;
+  }
+
+  async withdrawMember(runId: string, memberId: string, reason: string | null = null): Promise<boolean> {
+    return this.engine ? this.engine.withdrawMember(runId, memberId, reason) : false;
+  }
+
+  async retryMember(runId: string, memberId: string): Promise<boolean> {
+    return this.engine ? this.engine.retryMember(runId, memberId) : false;
+  }
+
+  async retryStage(runId: string, stageId: string): Promise<boolean> {
+    return this.engine ? this.engine.retryStage(runId, stageId) : false;
+  }
+
+  async restoreArtifact(runId: string, artifactId: string): Promise<{ ok: boolean; detail?: string }> {
+    return this.engine ? this.engine.restoreArtifact(runId, artifactId) : { ok: false, detail: "no engine" };
+  }
+
+  /**
+   * Resume every non-terminal run after a restart.
+   *
+   * Called once the Task registry has been reconstructed, so the engine's reconcile sees real Task
+   * state rather than an empty one. Each run recovers under its own lock and republishes; because
+   * every command carries a durable idempotency key, resuming cannot duplicate a Task, member,
+   * attempt, artifact or wave.
+   */
+  async recoverNonTerminalRuns(): Promise<void> {
+    if (!this.engine) return;
+    for (const run of this.store.listNonTerminalRuns()) {
+      try {
+        await this.engine.recover(run.id);
+      } catch (err) {
+        console.error(`[ensemble] recovery failed for run ${run.id}:`, err);
+      }
+    }
   }
 
   /**

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
+import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./ensembles/submission-tool.ts";
 import { run } from "./util/exec.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
@@ -40,6 +41,7 @@ export const MISSION_MCP_TOOLS = [
   "create_task",
   "request_input",
   "report_status",
+  SUBMIT_ENSEMBLE_RESULT_TOOL,
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];

@@ -1316,7 +1316,7 @@ Two more properties, both deliberate:
   dies mid-run either finds the task already filed (and just closes the ledger) or files it
   on the id it reserved. Neither path can produce a second task.
 
-## Multi-agent ensembles (foundation only, so far)
+## Multi-agent ensembles (runtime landed; creation still gated)
 
 An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
 under one versioned *strategy*, plus the group-level facts a single task cannot express: one
@@ -1325,13 +1325,23 @@ decision, and a terminal outcome. The first strategy is **Best of N** - two to f
 implement the same task alone from the same commit, one tool-less comparison ranks what they
 submitted, and you confirm the winner.
 
-**Nothing is operable yet.** What has landed is the durable contract the rest is built on:
-the shared vocabulary, a versioned strategy descriptor and compiler, the Best-of-N compiler,
-the daemon-owned SQLite store, and a compact projection on the existing
-[live channel](#how-it-works). There is no create route, no MCP tool, no engine and no UI,
-so with no way to create an ensemble the tables stay empty and the product behaves exactly
-as before. The plan is
-[`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
+**The engine works; there is still no way to start a Best-of-N run.** What has landed is the
+strategy-neutral runtime: it pins one base commit, launches bounded *waves* of ordinary member
+tasks (creating every task in a wave before dispatching the first, and never launching past the
+concurrency the plan authorizes), accepts an explicit submission from each member, captures its
+working tree as an immutable private Git commit, advances barriers off ready artifacts rather
+than off a task going idle, and resumes safely after a daemon restart. A member submits through
+a dedicated `submit_ensemble_result` MCP tool (with a manual operator fallback), and the daemon
+decides *which* member from the calling session, its task and its worktree - a member never names
+itself, so a guessed id reaches nothing. Read-only detail and bounded artifact-evidence endpoints
+serve what the run produced.
+
+What is deliberately still absent is the **create path**: a Best-of-N run cannot be started until
+its comparative evaluator and the human decision boundary land in the next phases, because a run
+that launched but could not be judged or promoted would be orchestration that cannot finish. The
+runtime is proven by tests and by internal recovery actions rather than by a route or UI, and on
+every existing machine the tables stay empty and the product behaves exactly as before. The plan
+is [`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
 
 Four decisions are worth knowing now, because everything later is built on them:
 

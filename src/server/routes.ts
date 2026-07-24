@@ -196,6 +196,10 @@ import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
 import type { ScheduleValidationError } from "@shared/schedules.ts";
+import type { EnsembleManager, EnsembleSubmitResult } from "./ensembles/manager.ts";
+import { EnsembleMemberSubmitSchema, SubmitEnsembleResultSchema } from "@shared/protocol.ts";
+import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
+import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -332,6 +336,66 @@ function readVersion(): string {
   }
 }
 
+/** Parse a query-string count into a bounded positive integer, or fall back. */
+function boundedLimit(raw: string | undefined, fallback: number, max = fallback): number {
+  const n = raw === undefined ? fallback : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.floor(n), max);
+}
+
+/** The short commit an artifact points at, for a durable submission acknowledgement. */
+function artifactShortSha(locator: unknown): string | null {
+  if (locator && typeof locator === "object" && !Array.isArray(locator)) {
+    const sha = (locator as { snapshotSha?: unknown }).snapshotSha;
+    if (typeof sha === "string") return sha.slice(0, 12);
+  }
+  return null;
+}
+
+/**
+ * Map one submission result to an HTTP status and body, for both the MCP and the manual route.
+ *
+ * The refusals are distinct on purpose: a wrong cwd, a withdrawn member and a late replay are
+ * different things for a caller (or an operator) to understand, and collapsing them to one code
+ * would turn "you are in the wrong tree" into the same silence as "there is no such member".
+ */
+function ensembleSubmitResponse(result: EnsembleSubmitResult): { status: 200 | 400 | 404 | 409 | 500 | 503; body: unknown } {
+  if (result.ok) {
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        replayed: result.replayed,
+        artifact: {
+          id: result.artifact.id,
+          kind: result.artifact.kind,
+          fingerprint: result.artifact.digest,
+          shortSha: artifactShortSha(result.artifact.locator),
+        },
+      },
+    };
+  }
+  const body = { error: result.detail, code: `ensemble_submit_${result.reason}` };
+  switch (result.reason) {
+    case "no_engine":
+      return { status: 503, body };
+    case "no_session":
+    case "no_member":
+      return { status: 404, body };
+    case "capture_failed":
+      return { status: 500, body };
+    case "wrong_cwd":
+    case "member_inactive":
+    case "no_attempt":
+    case "no_worktree":
+    case "run_not_accepting":
+    case "already_submitted":
+      return { status: 409, body };
+    default:
+      return { status: 400, body };
+  }
+}
+
 export function buildApp(
   registry: Registry,
   reviews: ReviewManager,
@@ -349,6 +413,8 @@ export function buildApp(
    * routes answer 503 when it is absent rather than constructing a second manager here.
    */
   schedules?: ScheduleService,
+  /** Optional for existing route-unit stubs; the daemon always supplies it. */
+  ensembles?: EnsembleManager,
 ): Hono {
   const app = new Hono();
 
@@ -373,6 +439,7 @@ export function buildApp(
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
+  const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
@@ -1157,6 +1224,96 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
+  });
+
+  // --- ensemble member submission (token-guarded MCP; attribution is server-side) ---
+  app.post("/mcp/ensembles/submit", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, SubmitEnsembleResultSchema);
+    if (!parsed.ok) return parsed.res;
+    // No id from the caller: the member is derived from its authenticated session, its Task, and
+    // its worktree. A guessed ensemble/member id reaches nothing.
+    const result = await manager.submitFromSession({
+      env: parsed.data.env,
+      sessionId: parsed.data.sessionId,
+      cwd: parsed.data.cwd,
+      claims: parsed.data.result,
+    });
+    const response = ensembleSubmitResponse(result);
+    return c.json(response.body, response.status);
+  });
+
+  // --- ensemble read + manual submission (localhost only; no create route in this phase) ---
+  app.get("/api/ensembles/:id", (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const detail = manager.detail(c.req.param("id"));
+    if (!detail) return c.json({ error: "no such ensemble" }, 404);
+    // Bounded on the way out: a later strategy may generate hundreds of events or attempts, and a
+    // detail read must not become an unbounded transfer. The full patch is never here - it is its
+    // own on-demand route.
+    const eventsLimit = boundedLimit(c.req.query("eventsLimit"), ENSEMBLE_LIMITS.detailPageSize);
+    const attemptsLimit = boundedLimit(c.req.query("attemptsLimit"), ENSEMBLE_LIMITS.detailPageSize);
+    const events = detail.events.slice(-eventsLimit);
+    const attempts = detail.attempts.slice(0, attemptsLimit);
+    return c.json({
+      ...detail,
+      events,
+      attempts,
+      pagination: {
+        eventsTotal: detail.events.length,
+        eventsReturned: events.length,
+        attemptsTotal: detail.attempts.length,
+        attemptsReturned: attempts.length,
+      },
+    });
+  });
+
+  app.get("/api/ensembles/:id/artifacts/:artifactId", (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const detail = manager.detail(c.req.param("id"));
+    if (!detail) return c.json({ error: "no such ensemble" }, 404);
+    const artifact = detail.artifacts.find((a) => a.id === c.req.param("artifactId"));
+    if (!artifact) return c.json({ error: "no such artifact" }, 404);
+    // Metadata and bounded evidence only; the exact patch is the separate `/patch` route.
+    return c.json({ artifact });
+  });
+
+  app.get("/api/ensembles/:id/artifacts/:artifactId/patch", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const detail = manager.detail(c.req.param("id"));
+    if (!detail) return c.json({ error: "no such ensemble" }, 404);
+    const artifact = detail.artifacts.find((a) => a.id === c.req.param("artifactId"));
+    if (!artifact) return c.json({ error: "no such artifact" }, 404);
+    if (artifact.status !== "ready" || artifact.kind === null) {
+      return c.json({ error: `artifact is ${artifact.status ?? "unreadable"}` }, 409);
+    }
+    const adapter = artifactAdapterFor(artifact.kind);
+    if (!adapter) return c.json({ error: `no adapter for ${artifact.kind} artifacts` }, 409);
+    // Materialized on demand from the immutable commit, never stored - the ref lives in the shared
+    // git dir, so the run's repo root can read it. The cap is explicit and its truncation honest.
+    const maxBytes = boundedLimit(c.req.query("maxBytes"), 400 * 1024, 4 * 1024 * 1024);
+    const material = await adapter.materialize(artifact.locator, {
+      repoPath: detail.run.repoRoot,
+      maxPatchBytes: maxBytes,
+    });
+    return c.json(material);
+  });
+
+  app.post("/api/ensembles/:id/members/:memberId/submit", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, EnsembleMemberSubmitSchema);
+    if (!parsed.ok) return parsed.res;
+    // The operator names the member, but the daemon still verifies it is active and holds a live
+    // worktree before capturing, and labels the result `operator` rather than a session's provenance.
+    const result = await manager.submitManual(c.req.param("id"), c.req.param("memberId"), parsed.data.result);
+    const response = ensembleSubmitResponse(result);
+    return c.json(response.body, response.status);
   });
 
   // --- review resolution (from the dashboard, localhost) ---

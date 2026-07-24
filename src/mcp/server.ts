@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
+import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
 import { titleLine } from "@shared/title.ts";
 
@@ -321,6 +322,65 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// Submit this ensemble member's finished work for comparison. The member NEVER names itself: the
+// daemon derives which member from this session's pane/id/cwd, so the arguments carry only the
+// member's own bounded claims - no ensemble, member, task, session, worktree, artifact or ref id.
+// The zod here is a hand-written mirror of `SubmitEnsembleResultSchema` in `@shared/protocol.ts`;
+// the two are duplicated deliberately, and change together.
+server.registerTool(
+  "submit_ensemble_result",
+  {
+    title: "Submit an ensemble result",
+    description:
+      "When your ensemble candidate is ready to be compared, submit it. Mission Control captures " +
+      "your working tree as an immutable snapshot and records your summary and reported checks as " +
+      "claims. Do not push, open a PR, or run the shipping gate - a winner is chosen afterwards.",
+    inputSchema: {
+      summary: z
+        .string()
+        .min(1)
+        .max(ENSEMBLE_LIMITS.submissionSummary)
+        .describe("A concise summary of what you did."),
+      checks: z
+        .array(z.string().min(1).max(ENSEMBLE_LIMITS.submissionCheck))
+        .max(ENSEMBLE_LIMITS.submissionChecks)
+        .optional()
+        .describe("The checks you actually ran. Do not claim a check you did not run."),
+      testEvidence: z
+        .string()
+        .max(ENSEMBLE_LIMITS.submissionTestEvidence)
+        .optional()
+        .describe("Optional test output you chose to include."),
+    },
+  },
+  async ({ summary, checks, testEvidence }) => {
+    try {
+      const res = await http("/mcp/ensembles/submit", "POST", {
+        env: ENV,
+        sessionId: SESSION_ID,
+        cwd: process.cwd(),
+        result: { summary, checks: checks ?? [], testEvidence: testEvidence ?? null },
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        return textResult(`Mission Control refused the submission (${res.status}): ${detail}`, true);
+      }
+      const body = (await res.json()) as {
+        artifact?: { kind?: string; shortSha?: string; fingerprint?: string };
+        replayed?: boolean;
+      };
+      const ref = body.artifact?.shortSha ?? body.artifact?.fingerprint ?? "captured";
+      return textResult(
+        body.replayed
+          ? `Already submitted; returning the existing snapshot (${ref}). You can stop.`
+          : `Submitted. Your work was captured as an immutable snapshot (${ref}). You can stop.`,
+      );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

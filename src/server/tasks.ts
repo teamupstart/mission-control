@@ -317,9 +317,10 @@ export class TaskManager {
    * `agentWentAway`.
    *
    * The disposition of the agent remains a separate preference. With
-   * `closeSessionAfterMerge` enabled, an idle merged session is closed only if it still
-   * matches this task and episode after the asynchronous checkout-safety probe. Work
-   * resuming during that probe cancels the close.
+   * `closeSessionAfterMerge` enabled, an idle merged session is closed only AFTER its
+   * task has been recorded done, and only if it still matches that task and episode
+   * after the asynchronous checkout-safety probe. Work resuming during that probe
+   * reopens the inferred completion and cancels the close.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
@@ -336,7 +337,17 @@ export class TaskManager {
       // predicate rather than two that could drift.
       if (session) this.settleIfEpisodeFinished(session);
       if (!getShippingConfig().closeSessionAfterMerge) return;
-      if (session?.state === "working") return;
+      // This preference is "complete, then close", never Kill's "stop and let the task
+      // settle as failed". `settleIfEpisodeFinished` is deliberately narrower than
+      // "not working": awaiting input/review is still an unfinished turn. Requiring the
+      // completion it just recorded keeps those states out of the terminal kill path.
+      if (
+        session?.state !== "idle" ||
+        this.registry.getTask(e.taskId)?.status !== "done" ||
+        this.autoCompleted.get(e.taskId) !== e.sessionId
+      ) {
+        return;
+      }
       await this.closeMergedSession(e);
     } catch (error) {
       console.error("[merge] closing merged session failed:", e.taskId, error);
@@ -448,13 +459,14 @@ export class TaskManager {
   }
 
   /**
-   * End the agent of a task that just merged, and reclaim its checkout if that is safe.
+   * Close the agent of a task that was completed after its merge, and reclaim its
+   * checkout if that is safe.
    *
-   * Two separate judgements. Killing is allowed only while the session is still idle and
-   * still owns this task and merged episode. The checkout-safety probe awaits filesystem
-   * work, so all three facts are re-read afterwards; a follow-up prompt during the probe
-   * reopens an inferred completion and cancels the close instead of killing a working
-   * agent.
+   * Two separate judgements. Closing is allowed only while the session is still idle,
+   * its task is already done, and it still owns this merged episode. The checkout-safety
+   * probe awaits filesystem work, so all four facts are re-read afterwards; a follow-up
+   * prompt during the probe reopens an inferred completion and cancels the close instead
+   * of terminating a working agent.
    *
    * Reclaiming is not. A merge proves the COMMITTED work landed; it says nothing about
    * uncommitted edits or untracked files still sitting in that checkout, and `reclaim`
@@ -466,28 +478,21 @@ export class TaskManager {
    */
   private async closeMergedSession(e: TaskPrMerged): Promise<void> {
     const session = this.registry.getSession(e.sessionId);
-    if (!session) {
-      // No agent to stop - the tree is still ours to free, and nothing can be dirtying
-      // it any more.
-      await this.reclaim(e.taskId);
-      return;
-    }
+    if (!session) return;
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
     // the reason readable in the log even when the kill races the process away.
-    const completionWasInferred = this.autoCompleted.get(e.taskId) === e.sessionId;
     const holding = await this.closeMergedSessionDeps.resetWouldDestroyWork(session);
     const currentSession = this.registry.getSession(e.sessionId);
     const currentTask = this.registry.getTask(e.taskId);
     const currentEpisode = this.registry.workEpisodeForSession(e.sessionId);
     if (
       !currentSession ||
-      currentSession.state === "working" ||
+      currentSession.state !== "idle" ||
+      (currentSession.queue?.openCount ?? 0) > 0 ||
       currentTask?.sessionId !== e.sessionId ||
       currentEpisode?.episodeId !== e.episodeId ||
-      (completionWasInferred
-        ? currentTask.status !== "done" ||
-          this.autoCompleted.get(e.taskId) !== e.sessionId
-        : currentTask.status !== "running" && currentTask.status !== "dispatching")
+      currentTask.status !== "done" ||
+      this.autoCompleted.get(e.taskId) !== e.sessionId
     ) {
       return;
     }

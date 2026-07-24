@@ -226,10 +226,11 @@ export function ShippingSettingsPanel({
       <div className="ship-after-merge">
         <p className="settings-group-label">When a task's pull request merges</p>
         <p className="settings-hint">
-          Its task is marked done either way - that is what lets the backlog autopilot use
-          the agent again, and it is not optional. This decides whether the agent stays.
+          Mission Control marks the task complete either way - it never gives the task
+          Kill's failed outcome. This setting only decides whether the completed agent
+          stays available for more work.
         </p>
-        <Tooltip label="Kill the agent once its work lands, and free its checkout when nothing would be lost">
+        <Tooltip label="After recording the merged task as complete, close its idle agent and free the checkout when nothing would be lost">
           <label className="alert-row ship-toggle">
             <input
               type="checkbox"
@@ -237,7 +238,10 @@ export function ShippingSettingsPanel({
               disabled={!config}
               onChange={(e) => void update({ closeSessionAfterMerge: e.target.checked })}
             />
-            <span>Close the session after merge - frees a slot for a new backlog task</span>
+            <span>
+              Complete the task, then close its session - frees a slot for a new backlog
+              task
+            </span>
           </label>
         </Tooltip>
         <p className="settings-hint">

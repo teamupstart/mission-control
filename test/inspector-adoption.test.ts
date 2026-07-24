@@ -12,9 +12,14 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-inspector-adoption-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, getInspectorPr, loadOpenInspectorPrs, updateInspectorPr } = await import(
-  "../src/server/db.ts"
-);
+const {
+  openDb,
+  getInspectorPr,
+  loadInspectorInspections,
+  loadOpenInspectorPrs,
+  updateInspectorPr,
+  upsertInspectorComment,
+} = await import("../src/server/db.ts");
 const { adoptPr, pushEndsTheWait } = await import("../src/server/inspector/worker.ts");
 const { parsePrUrl } = await import("../src/server/inspector/github.ts");
 const { getInspectorConfig, setInspectorConfig } = await import(
@@ -53,6 +58,34 @@ test("adopting records the PR under a key that survives clones and worktrees", (
   // rather than deciding it has already seen this head.
   assert.equal(row?.headSha, null);
   assert.equal(row?.round, 0);
+});
+
+test("inspection tallies distinguish posted findings from pending rows", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const statuses = ["open", "drafted", "posting", "resolved"] as const;
+  for (const [index, status] of statuses.entries()) {
+    upsertInspectorComment({
+      id: `finding-${index}`,
+      prKey: "mancej/ai-harness#56",
+      fingerprint: `fingerprint-${index}`,
+      path: "src/example.ts",
+      line: index + 1,
+      title: `Finding ${index}`,
+      body: "Detail",
+      severity: "major",
+      round: 1,
+      status,
+      replies: 0,
+      answeredCommentId: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+  }
+
+  const row = loadInspectorInspections().find((entry) => entry.key === "mancej/ai-harness#56");
+  assert.equal(row?.openFindings, 3);
+  assert.equal(row?.postedOpenFindings, 1);
+  assert.equal(row?.resolvedFindings, 1);
 });
 
 // Both signals call this freely, from different places, on different schedules. The

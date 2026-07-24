@@ -35,6 +35,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     maxFixRounds: 10,
     wrapupTriggers: ["drain"],
     wrapup: "ask",
+    trackReviewFeedback: true,
     autoBacklog: false,
     backlogRespectOpenPrs: true,
     backlogDefaultModel: { claude: null, codex: null, pi: null },

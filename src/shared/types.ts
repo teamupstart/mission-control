@@ -1769,8 +1769,10 @@ export interface InspectorSummary {
   prKey: string;
   url: string;
   mode: InspectorMode;
-  /** Findings currently surfaced - posted in live mode, previewed in dry-run. */
+  /** Findings currently tracked as unresolved, including drafted and posting rows. */
   open: number;
+  /** Findings currently posted on the pull request. */
+  postedOpen: number;
   /** Completed review rounds. Zero means adopted but not yet looked at. */
   round: number;
   lastReviewedAt: number | null;
@@ -1781,6 +1783,7 @@ export interface InspectorSummary {
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
   openFindings: number;
+  postedOpenFindings: number;
   resolvedFindings: number;
 }
 

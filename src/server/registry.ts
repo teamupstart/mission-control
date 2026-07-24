@@ -4056,6 +4056,7 @@ export class Registry extends EventEmitter {
       url: row.url,
       mode: getInspectorConfig().mode,
       open: row.openFindings,
+      postedOpen: row.postedOpenFindings,
       round: row.round,
       lastReviewedAt: row.lastReviewedAt,
       failed: row.lastError !== null,

@@ -22,6 +22,7 @@ const BASE: ForemanConfig = {
   maxFixRounds: 10,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  trackReviewFeedback: true,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
   backlogDefaultModel: { claude: null, codex: null, pi: null },
@@ -200,6 +201,30 @@ test("with no trigger armed the action group is disabled and says so", () => {
   const html = renderPopover(mkState({ wrapupTriggers: [] }));
   assert.match(html, /Foreman never wraps up on its own/);
   assert.match(html, /<fieldset class="foreman-wrapup-action" disabled=""/);
+});
+
+test("the review follow-through toggle renders, checked by default", () => {
+  const html = renderPopover(mkState());
+  assert.match(html, /<legend>Pull requests<\/legend>/);
+  assert.match(html, /Keep sessions on track/);
+  const at = html.indexOf("Keep sessions on track");
+  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+});
+
+test("a daemon too old to know the follow-through key still renders it as on", () => {
+  // Same failure the backlog guard guards against: a web build ahead of the daemon gets no
+  // key, and an unticked box would swear the feature is off while the server runs it on.
+  const state = mkState();
+  delete (state.config as Partial<ForemanConfig>).trackReviewFeedback;
+  const html = renderPopover(state);
+  const at = html.indexOf("Keep sessions on track");
+  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+});
+
+test("the follow-through hint warns when it cannot type outside Live mode", () => {
+  assert.match(renderPopover(mkState({ mode: "dry-run" })), /a parked PR is left\s+for you/);
+  // In live mode the caveat is gone - it would describe the opposite of what happens.
+  assert.doesNotMatch(renderPopover(mkState({ mode: "live" })), /a parked PR is left/);
 });
 
 test("the popover no longer holds Tier or a paste-a-path allowlist", () => {

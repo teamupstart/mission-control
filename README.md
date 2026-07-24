@@ -2126,6 +2126,37 @@ pickup/completion signals: Claude sessions must report installed hooks, Codex se
 have the launch-scoped hooks attached, and Pi is unsupported. The panel says so rather than
 letting you queue work that can't run.
 
+### Keeping a PR on track
+
+Wrapping up turns work into an **open pull request** - and then the session parks. The
+[Inspector](#inspector-automated-pr-review) reviews that PR and posts comments, or CI goes
+red, and nobody is driving the session to fix any of it, so the PR sits with unresolved
+feedback until you notice. **Keep sessions on track** (in the Foreman popover, under **Pull
+requests**, **on by default**) closes that gap: it nudges the parked session back onto its
+own PR to **resolve the Inspector's review comments and get a failing CI green**, and nudges
+again when a later Inspector round or a newly actionable feedback kind changes what needs
+attention.
+
+It applies to parked sessions on harnesses Foreman can reliably drive - currently Claude,
+and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
+**Straight to PR**, an automatic **no-mistakes** wrap-up, or one you shipped by hand.
+
+The nudge is typed into the session's pane, so it carries the usual gates and one more:
+
+- it only **types** in **live** mode on an **allowlisted** repo, exactly like the automated
+  wrap-up actions - dry-run leaves the parked PR for you;
+- it fires only at a **settled-idle** session, so it never interrupts one already working the
+  fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
+  Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
+  recover, a later failure counts as new (so a red CI is never permanently silenced, and a
+  CI that merely goes green does not re-nudge the comments already relayed);
+- it stands down while a **no-mistakes run is still in progress** (that pipeline already
+  follows the PR through CI and the merge), while the session **needs you**, and while it has a
+  live **work queue** (the drain trigger owns that checkout);
+- the review-comment half counts only Inspector findings **already posted on the PR**
+  (dry-run drafts and findings still being posted do not count) - the failing-CI half works
+  regardless.
+
 ## Backlog autopilot (Foreman schedules the fleet)
 
 A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*
@@ -3156,7 +3187,7 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_BACKLOG_TIMEOUT_MS` | scales with the backlog | Backlog autopilot: hard cap on one dependency read. Unset, the budget is `60s + 20s` per backlog item, capped at 10 min - the reply carries one written entry per task, so a fixed cap silently stops working once the backlog outgrows it. Set it to pin a flat ceiling instead. Three failures in a row and Foreman schedules serially |
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
-| `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |
+| `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step, the PR follow-up, and the backlog autopilot's "is this agent free?" test |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
@@ -3218,7 +3249,7 @@ make init              # one-time bootstrap (deps, build, hooks, treehouse + no-
 make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
-npm run foreman        # Foreman worker (needs-you queue, work queues, backlog autopilot)
+npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run smoke          # boot the built bundles and check they actually run (after build)

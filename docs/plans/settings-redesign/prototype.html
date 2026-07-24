@@ -1,0 +1,1116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control - Settings prototype (B + E + F + search)</title>
+<style>
+/* App tokens, mirrored from src/web/styles.css */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f; --bg-2: #0e1116; --panel: #14181e; --panel-2: #171c23;
+  --border: #232a33; --bsoft: #1b2129;
+  --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+  --blue: #4a9eff; --green: #35c08a; --amb: #f6a733; --red: #f85149;
+  --purple: #a371f7; --claude: #d97757; --codex: #10a37f;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font: 13px/1.5 var(--sans);
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg);
+  -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+input, select { font: inherit; }
+code { font: 11px var(--mono); background: rgba(255,255,255,0.05); border-radius: 4px; padding: 1px 4px; white-space: nowrap; }
+
+/* topbar */
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 22px; border-bottom: 1px solid var(--bsoft);
+  background: rgba(14, 17, 22, 0.85); flex: none;
+}
+.brand { font: 700 12px var(--mono); letter-spacing: 0.06em; }
+.proto-tag {
+  font: 600 9.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--amb); border: 1px solid color-mix(in oklab, var(--amb) 45%, var(--border));
+  border-radius: 20px; padding: 2.5px 9px; background: rgba(246,167,51,0.08);
+}
+.topbar .grow { flex: 1; }
+.top-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 7px; padding: 4px 10px; white-space: nowrap; }
+.gear { position: relative; font-size: 15px; }
+.gear .gear-dot { position: absolute; top: -1px; right: -2px; width: 7px; height: 7px; border-radius: 50%; border: 2px solid var(--bg-2); display: none; }
+
+/* shell */
+.shell { flex: 1; min-height: 0; display: flex; justify-content: center; }
+.page { flex: 1; max-width: 1400px; min-width: 0; display: flex; align-items: stretch; }
+
+/* rail */
+.rail {
+  flex: 0 0 236px; display: flex; flex-direction: column; gap: 2px;
+  padding: 16px 12px; border-right: 1px solid var(--bsoft);
+  background: color-mix(in oklab, var(--panel-2) 55%, transparent);
+  overflow-y: auto;
+}
+.rail-search {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 2px 10px; padding: 7px 10px;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+  color: #566070; font-size: 11.5px; cursor: pointer; width: calc(100% - 4px);
+}
+.rail-search:hover { border-color: var(--dim); color: var(--muted); }
+.rail-search kbd {
+  margin-left: auto; font: 10px var(--mono); color: var(--dim);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; background: var(--panel);
+}
+.navlab {
+  display: flex; align-items: center; gap: 7px;
+  margin: 13px 6px 4px; font: 640 9px var(--mono);
+  letter-spacing: 0.07em; text-transform: uppercase; color: #5f6a7a; white-space: nowrap;
+}
+.navlab:first-of-type { margin-top: 2px; }
+.nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 10px; border-radius: 8px; border: 1px solid transparent;
+  color: var(--muted); font-size: 12.5px; font-weight: 540; white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.nav-item:hover { background: var(--panel); color: var(--fg); }
+.nav-item.on {
+  background: color-mix(in oklab, var(--blue) 14%, transparent);
+  border-color: color-mix(in oklab, var(--blue) 30%, var(--border));
+  color: var(--fg); font-weight: 600;
+}
+.nav-item .ic { flex: none; width: 16px; text-align: center; font-size: 13px; color: var(--dim); }
+.nav-item.on .ic, .nav-item:hover .ic { color: var(--fg); }
+.dot { width: 6px; height: 6px; border-radius: 50%; margin-left: auto; flex: none; }
+.dot-live { background: var(--green); box-shadow: 0 0 5px rgba(53,192,138,0.7); }
+.dot-armed { background: var(--amb); box-shadow: 0 0 5px rgba(246,167,51,0.7); }
+.dot-fail { background: var(--red); box-shadow: 0 0 5px rgba(248,81,73,0.7); }
+.dot-fore { background: var(--purple); box-shadow: 0 0 5px rgba(163,113,247,0.7); }
+
+/* scope chips */
+.scope {
+  display: inline-flex; align-items: center;
+  font: 600 9px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 20px; border: 1px solid; white-space: nowrap;
+}
+.navlab .scope { margin-left: auto; }
+.scope-browser { color: #7fb2ff; border-color: rgba(127,178,255,0.4); background: rgba(127,178,255,0.09); }
+.scope-machine { color: #4cc796; border-color: rgba(76,199,150,0.4); background: rgba(76,199,150,0.09); }
+.scope-home { color: #e5ad4f; border-color: rgba(229,173,79,0.45); background: rgba(229,173,79,0.09); }
+.scope-github { color: #f57e73; border-color: rgba(245,126,115,0.45); background: rgba(245,126,115,0.09); }
+
+/* panel */
+.panel { flex: 1; min-width: 0; overflow-y: auto; padding: 22px 30px 60px; }
+.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.panel-head h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.blurb { font-size: 11.5px; color: var(--dim); line-height: 1.55; margin: 4px 0 14px; max-width: 62em; }
+.hint { font-size: 11.5px; color: var(--dim); line-height: 1.55; margin: 7px 0; }
+.glabel {
+  margin: 20px 0 7px; font-size: 10.5px; font-weight: 640;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim);
+}
+.warn {
+  border: 1px solid color-mix(in oklab, var(--amb) 40%, var(--border));
+  background: rgba(246,167,51,0.07); color: #f2c57c;
+  font-size: 11.5px; line-height: 1.55; border-radius: 9px; padding: 8px 12px; margin: 8px 0; max-width: 62em;
+}
+.warn.danger { border-color: color-mix(in oklab, var(--red) 42%, var(--border)); background: rgba(248,81,73,0.07); color: #f0958e; }
+.warn .lnk, a.lnk { color: #7fb2ff; border-bottom: 1px solid rgba(127,178,255,0.4); cursor: pointer; text-decoration: none; white-space: nowrap; }
+
+/* rows */
+.row { display: flex; align-items: center; gap: 14px; padding: 9px 10px; border-radius: 9px; border: 1px solid transparent; max-width: 760px; }
+.row:hover { background: var(--panel-2); }
+.rtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.rlab { font-size: 12.5px; font-weight: 570; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rdesc { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+.badge {
+  font-size: 9.5px; font-weight: 640; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--dim); border: 1px solid var(--border); border-radius: 5px; padding: 1.5px 6px; white-space: nowrap;
+}
+fieldset.cascade { border: 0; margin: 0; padding: 0; }
+fieldset.cascade:disabled { opacity: 0.45; pointer-events: none; }
+
+/* controls */
+.switch { position: relative; width: 32px; height: 18px; flex: none; display: inline-block; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch i {
+  position: absolute; inset: 0; border-radius: 10px; background: var(--border); transition: background 0.15s ease;
+}
+.switch i::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--dim); transition: left 0.15s ease, background 0.15s ease;
+}
+.switch input:checked + i { background: var(--green); }
+.switch input:checked + i::after { left: 16px; background: #06251a; }
+.switch input:focus-visible + i { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+select.sel, input.tin {
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; color: var(--fg); font-size: 12px;
+}
+select.sel:focus, input.tin:focus { outline: none; border-color: var(--blue); }
+input.tin.mono, select.sel.mono { font-family: var(--mono); font-size: 11.5px; }
+input.tin::placeholder { color: #566070; }
+
+.seg { display: inline-flex; gap: 3px; background: var(--bg-2); border: 1px solid var(--bsoft); border-radius: 9px; padding: 3px; }
+.seg button { padding: 5px 12px; border-radius: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.seg button.on { color: var(--fg); background: color-mix(in oklab, var(--blue) 16%, var(--panel-2)); }
+.seg button:not(.on):hover { color: var(--fg); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 13px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); color: var(--fg); font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+.btn:hover { border-color: var(--dim); }
+.btn.primary { background: color-mix(in oklab, var(--blue) 20%, var(--panel-2)); border-color: color-mix(in oklab, var(--blue) 40%, var(--border)); }
+.btn.ghost { background: transparent; color: var(--muted); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+
+.kcap {
+  font: 11px var(--mono); color: var(--fg);
+  background: var(--bg-2); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 6px; padding: 4px 10px; white-space: nowrap; cursor: pointer; min-width: 44px; text-align: center;
+}
+.kcap.rec { color: var(--amb); border-color: color-mix(in oklab, var(--amb) 50%, var(--border)); animation: pulse 1.1s ease infinite; }
+@keyframes pulse { 50% { background: rgba(246,167,51,0.12); } }
+.kreset { color: #566070; font-size: 13px; padding: 4px 6px; }
+.kreset:disabled { opacity: 0.35; }
+.conflict { color: var(--amb); font-size: 11px; }
+.err { color: var(--red); font-size: 11.5px; margin: 6px 0; }
+
+/* layout picker glyph options */
+.layout-pick { display: flex; flex-direction: column; gap: 7px; max-width: 620px; }
+.lopt {
+  display: flex; gap: 12px; align-items: flex-start; padding: 11px 13px;
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: color-mix(in oklab, var(--panel) 70%, transparent);
+}
+.lopt.on { border-color: color-mix(in oklab, var(--blue) 45%, var(--border)); background: color-mix(in oklab, var(--blue) 8%, var(--panel)); }
+.lopt svg { flex: none; margin-top: 2px; color: var(--dim); }
+.lopt.on svg { color: var(--blue); }
+.lopt b { font-size: 12.5px; display: block; margin-bottom: 2px; }
+.lopt span { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+
+/* harness cards (Mockup F) */
+.hcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 420px)); gap: 12px; }
+.hcard {
+  border: 1px solid var(--border); border-left: 3px solid var(--agent-accent, var(--dim));
+  border-radius: 10px; background: var(--panel); padding: 13px 16px;
+}
+.hcard-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.hcard-head .adot { width: 8px; height: 8px; border-radius: 50%; background: var(--agent-accent, var(--dim)); }
+.hcard-head b { font-size: 13px; }
+.hcard-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
+.hcard-grid label { font-size: 11px; color: var(--dim); }
+.hcard .hnote { font-size: 11px; color: var(--dim); line-height: 1.5; margin: 10px 0 0; }
+.hcard .hnote code { color: var(--muted); }
+
+/* repo / ledger */
+.repo-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 11px; border: 1px solid var(--bsoft); border-radius: 8px;
+  background: var(--bg-2); font: 11.5px var(--mono); color: #c7cdd8; max-width: 760px;
+}
+.repo-row + .repo-row { margin-top: 5px; }
+.ledger { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+.lrow { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; padding: 6px 10px; border-radius: 8px; font-size: 12px; }
+.lrow:nth-child(odd) { background: rgba(255,255,255,0.018); }
+.lrow .pr { color: #7fb2ff; font-family: var(--mono); font-size: 11.5px; }
+.lrow .when { color: #566070; font-size: 11px; }
+.state { font-size: 11px; color: var(--muted); }
+.state.good { color: var(--green); } .state.merged { color: var(--purple); }
+.state.warnc { color: var(--amb); } .state.bad { color: var(--red); }
+
+/* stepper */
+.stepper { display: inline-flex; align-items: center; gap: 8px; }
+.stepper button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--muted); }
+.stepper button:hover { color: var(--fg); border-color: var(--dim); }
+.stepper .val {
+  min-width: 46px; text-align: center; font: 12px var(--mono);
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px;
+}
+
+/* task sources master-detail (Mockup B) */
+.metrics { display: flex; gap: 10px; margin: 4px 0 16px; flex-wrap: wrap; }
+.metric {
+  border: 1px solid var(--bsoft); border-radius: 10px; background: var(--panel-2);
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 118px;
+}
+.metric b { font-size: 19px; font-weight: 650; }
+.metric span { font-size: 10.5px; color: var(--dim); }
+.metric .good { color: var(--green); } .metric .warnc { color: var(--amb); }
+.md { display: flex; gap: 22px; align-items: flex-start; }
+.md-list { flex: 0 0 320px; min-width: 0; }
+.md-tools { display: flex; gap: 7px; margin-bottom: 9px; }
+.md-tools input { flex: 1; min-width: 0; }
+.chips { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
+.chips button {
+  font-size: 10px; font-weight: 640; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--dim); border: 1px solid var(--border); border-radius: 5px; padding: 2.5px 8px;
+}
+.chips button.on { color: var(--fg); border-color: color-mix(in oklab, var(--blue) 40%, var(--border)); background: rgba(74,158,255,0.12); }
+.chips button.warn-chip.on { border-color: color-mix(in oklab, var(--amb) 45%, var(--border)); background: rgba(246,167,51,0.1); color: var(--amb); }
+.src-item {
+  width: 100%; border: 1px solid var(--bsoft); background: var(--panel);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; cursor: pointer;
+}
+.src-item:hover { border-color: var(--dim); }
+.src-item.on { border-color: color-mix(in oklab, var(--blue) 35%, var(--border)); background: color-mix(in oklab, var(--blue) 8%, var(--panel)); }
+.src-item.paused { opacity: 0.65; }
+.src-line1 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.src-line1 b { font-size: 12.5px; }
+.src-meta { font-size: 11px; color: var(--dim); margin-top: 3px; }
+.health { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
+.health i { width: 7px; height: 7px; border-radius: 50%; }
+.health.ok { color: var(--green); } .health.ok i { background: var(--green); }
+.health.warnc { color: var(--amb); } .health.warnc i { background: var(--amb); }
+.health.mute { color: var(--dim); } .health.mute i { background: var(--dim); }
+.md-editor { flex: 1; min-width: 0; border: 1px solid var(--bsoft); border-radius: 12px; background: var(--panel); padding: 15px 18px; }
+.ed-head { display: flex; align-items: center; gap: 10px; }
+.ed-head b { font-size: 13px; }
+.ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 10px; max-width: 640px; }
+.ed-grid label, .fcol { display: flex; flex-direction: column; gap: 4px; }
+.ed-grid .flab, .flab { font-size: 10px; font-weight: 640; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.ed-actions { display: flex; gap: 8px; margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--bsoft); align-items: center; flex-wrap: wrap; }
+.ed-note { font-size: 11.5px; color: var(--green); }
+
+/* trust matrix (Mockup E) */
+.matrix { border: 1px solid var(--bsoft); border-radius: 11px; max-width: 860px; overflow: hidden; }
+.mx-grid { display: grid; grid-template-columns: 1fr 150px 158px 130px 40px; align-items: stretch; }
+.mx-h {
+  padding: 9px 12px; background: var(--panel-2);
+  font-size: 10px; font-weight: 640; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); text-align: center;
+}
+.mx-h:first-child { text-align: left; padding-left: 14px; }
+.mx-c { padding: 9px 10px; border-top: 1px solid var(--bsoft); display: flex; align-items: center; justify-content: center; }
+.mx-repo { justify-content: flex-start; font: 11.5px var(--mono); color: #c7cdd8; padding-left: 14px; }
+.mx-c.trap { background: rgba(246,167,51,0.06); }
+.grant {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  padding: 3px 10px; border-radius: 20px; border: 1px solid transparent; cursor: pointer;
+}
+.grant i { width: 7px; height: 7px; border-radius: 50%; }
+.grant.yes { color: var(--green); border-color: rgba(53,192,138,0.35); background: rgba(53,192,138,0.07); }
+.grant.yes i { background: var(--green); }
+.grant.no { color: #566070; border-color: var(--bsoft); }
+.grant.no i { background: #3a4350; }
+.grant.yes.trapped { color: var(--amb); border-color: rgba(246,167,51,0.4); background: rgba(246,167,51,0.08); }
+.grant.yes.trapped i { background: var(--amb); }
+.grant:hover { border-color: var(--dim); }
+.mx-del { color: #566070; font-size: 12px; }
+.mx-del:hover { color: var(--red); }
+
+/* search palette (Mockup D) */
+.pal-veil { position: fixed; inset: 0; background: rgba(5,7,10,0.55); display: none; z-index: 40; }
+.pal-veil.open { display: block; }
+.pal {
+  position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+  width: min(640px, calc(100vw - 40px)); z-index: 41; display: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 13px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.4), 0 24px 64px rgba(0,0,0,0.55);
+}
+.pal.open { display: block; }
+.pal-in { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--bsoft); }
+.pal-in input { flex: 1; background: none; border: 0; outline: none; color: var(--fg); font-size: 14px; }
+.pal-in .glass { color: #566070; }
+.pal-results { padding: 8px; max-height: 380px; overflow-y: auto; }
+.pal-glabel { margin: 6px 8px 4px; font-size: 10px; font-weight: 640; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.pal-row {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 9px 11px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+}
+.pal-row.sel { background: color-mix(in oklab, var(--blue) 12%, transparent); border-color: color-mix(in oklab, var(--blue) 30%, var(--border)); }
+.pal-row .rtext { pointer-events: none; }
+.pal-empty { padding: 18px 12px; color: #566070; font-size: 12px; text-align: center; }
+.pal-foot { display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--bsoft); font-size: 10.5px; color: #566070; }
+.pal-foot b { color: var(--dim); font-weight: 600; }
+.pal .scope { flex: none; }
+
+/* flash target after a search jump */
+@keyframes flash { 0% { outline-color: var(--amb); background: rgba(246,167,51,0.12); } 100% { outline-color: transparent; background: transparent; } }
+.flash { outline: 2px solid transparent; outline-offset: 2px; border-radius: 9px; animation: flash 1.6s ease 2; }
+
+@media (max-width: 860px) {
+  .rail { flex-basis: 200px; }
+  .md { flex-direction: column; }
+  .md-list { flex: none; width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">MISSION CONTROL</span>
+  <span class="proto-tag">settings prototype · fake data</span>
+  <span class="grow"></span>
+  <span class="top-chip">Sitrep</span>
+  <span class="top-chip">+ Dispatch</span>
+  <button class="top-chip gear" id="gearBtn" title="Settings">⚙<span class="gear-dot" id="gearDot"></span></button>
+</div>
+
+<div class="shell">
+  <div class="page">
+    <nav class="rail" id="rail" aria-label="Settings categories"></nav>
+    <main class="panel" id="panel"></main>
+  </div>
+</div>
+
+<div class="pal-veil" id="palVeil"></div>
+<div class="pal" id="pal" role="dialog" aria-label="Search settings">
+  <div class="pal-in">
+    <span class="glass">⌕</span>
+    <input id="palInput" placeholder="Search settings… (soak, model, skills, merge)" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="pal-results" id="palResults"></div>
+  <div class="pal-foot"><span><b>↑↓</b> navigate</span><span><b>↵</b> open / toggle</span><span><b>esc</b> close</span></div>
+</div>
+
+<script>
+"use strict";
+/* =============================================================
+   Mission Control settings prototype.
+   Combines: B (page container, master-detail Task sources),
+   E (Trust matrix replacing the three per-panel repo lists),
+   F (harness cards), D (search palette). All data is fake and
+   lives in `state`; every control writes it and re-renders, so
+   the cross-panel logic (Shipping vs Inspector vs Trust, rail
+   status dots, gear dot) can be exercised for real.
+   ============================================================= */
+
+const state = {
+  layout: "grid",
+  richText: true,
+  bindings: {}, // actionId -> chord (filled from ACTIONS defaults)
+  recording: null,
+  kbError: null,
+  autoMode: true,
+  harness: {
+    claude: { model: "claude-sonnet-4-5", effort: "" },
+    codex: { model: "", effort: "high" },
+  },
+  skillsEnabled: true,
+  skills: [
+    { id: "no-mistakes", name: "no-mistakes", enf: "on triggers", desc: "Validate changes through review, tests, lint, docs, push, PR and CI before they reach the push target.", on: true },
+    { id: "html-plans", name: "mission-html-plans", enf: "when relevant", desc: "Render every written plan as a self-contained HTML page beside its markdown.", on: true },
+    { id: "pull-request", name: "mission-pull-request", enf: "when relevant", desc: "Write a specific, reviewable PR description with proof the work works.", on: true },
+    { id: "phased-plan", name: "mission-phased-plan", enf: "when relevant", desc: "Turn an existing plan into merge-aware implementation phases with scheduled tasks.", on: false },
+  ],
+  cost: { enabled: true, interval: 15000, view: "usd" },
+  foreman: { tier: "shadow", provider: "claude", models: { review: "", verify: "", triage: "claude-haiku-4-5", backlog: "" } },
+  llm: { runner: "claude", jobs: { title: "", goal: "", digest: "claude-haiku-4-5", workflow: "" } },
+  inspector: { enabled: true, mode: "live", model: "" },
+  shipping: { yolo: true, soak: 10, method: "squash" },
+  trust: [
+    { repo: "~/workspace/ai-harness", foreman: true, inspector: true, merge: true },
+    { repo: "~/workspace/side-project", foreman: true, inspector: false, merge: true },
+    { repo: "~/oss/zmk-config", foreman: false, inspector: true, merge: false },
+  ],
+  sources: [
+    { id: "s1", label: "Bugs from GitHub", repo: "~/workspace/ai-harness", every: 30, max: 10, labels: "bug, regression", assignee: "nobody", enabled: true, lastSweep: "12m ago - filed 2 task(s)", error: null, note: null },
+    { id: "s2", label: "Up for grabs", repo: "~/workspace/side-project", every: 60, max: 5, labels: "good first issue", assignee: "nobody", enabled: true, lastSweep: "1h ago", error: "gh: HTTP 403 rate limited", note: null },
+    { id: "s3", label: "Docs backlog", repo: "~/oss/zmk-config", every: 240, max: 3, labels: "docs", assignee: "any", enabled: false, lastSweep: null, error: null, note: null },
+  ],
+  srcSel: "s1",
+  srcFilter: "all",
+  srcQuery: "",
+  active: "display",
+};
+
+const ACTIONS = [
+  { id: "roundup", label: "Toggle Sitrep", desc: "Open the fleet roundup report.", def: "R", group: "Anywhere" },
+  { id: "dispatch", label: "Dispatch an agent", desc: "Open the dispatch modal.", def: "+", group: "Anywhere" },
+  { id: "filter", label: "Focus filter", desc: "Jump to the session filter box.", def: "/", group: "Anywhere" },
+  { id: "expand", label: "Expand / collapse", desc: "Open the selected card in place.", def: "E", group: "Selected session" },
+  { id: "diff", label: "Open diff", desc: "The session branch's working diff.", def: "D", group: "Selected session" },
+  { id: "files", label: "Open files", desc: "Browse the session's checkout.", def: "F", group: "Selected session" },
+  { id: "filePicker", label: "Find a file", desc: "Fuzzy-find a file in the checkout.", def: "⇧O", group: "Selected session" },
+  { id: "send", label: "Send message", desc: "Focus the reply composer.", def: "S", group: "Selected session" },
+  { id: "focus", label: "Focus pane", desc: "Raise the session's terminal.", def: "P", group: "Selected session" },
+  { id: "queue", label: "Toggle work queue", desc: "Open the session's queued work.", def: "Q", group: "Selected session" },
+  { id: "mode", label: "Cycle permission mode", desc: "Step the harness's permission mode.", def: "⇧Tab", group: "Selected session" },
+  { id: "rename", label: "Rename session", desc: "Edit the card's title.", def: "⇧R", group: "Selected session" },
+  { id: "kill", label: "Kill session", desc: "Terminate the agent process.", def: "K", group: "Selected session" },
+  { id: "reset", label: "Reset checkout", desc: "Reset the worktree to origin.", def: "⌃R", group: "Selected session" },
+];
+for (const a of ACTIONS) state.bindings[a.id] = a.def;
+
+const MODELS = {
+  claude: [
+    { id: "", label: "Harness default" },
+    { id: "claude-sonnet-4-5", label: "Sonnet 4.5 - fast daily driver" },
+    { id: "claude-opus-4-8", label: "Opus 4.8 - deepest reasoning" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5 - cheapest" },
+  ],
+  codex: [
+    { id: "", label: "Harness default" },
+    { id: "gpt-5.2-codex", label: "gpt-5.2-codex - default" },
+    { id: "gpt-5.2-codex-mini", label: "codex-mini - cheaper" },
+  ],
+};
+const EFFORTS = { claude: ["", "low", "medium", "high", "max"], codex: ["", "low", "medium", "high"] };
+const AGENTS = { claude: { label: "Claude Code", accent: "#d97757" }, codex: { label: "Codex", accent: "#10a37f" } };
+
+/* ---------- derived facts (the cross-panel logic) ---------- */
+const trustRow = (repo) => state.trust.find((r) => r.repo === repo);
+const failingSources = () => state.sources.filter((s) => s.enabled && s.error).length;
+const mergeTraps = () => state.trust.filter((r) => r.merge && !r.inspector);
+function catDot(id) {
+  if (id === "task-sources") return failingSources() > 0 ? "dot-fail" : null;
+  if (id === "foreman") return "dot-fore";
+  if (id === "inspector") return state.inspector.enabled && state.inspector.mode === "live" ? "dot-live" : null;
+  if (id === "shipping") return state.shipping.yolo ? "dot-armed" : null;
+  if (id === "trust") return mergeTraps().length > 0 && state.shipping.yolo ? "dot-armed" : null;
+  return null;
+}
+function worstDot() {
+  if (failingSources() > 0) return "var(--red)";
+  if (state.shipping.yolo) return "var(--amb)";
+  if (state.inspector.enabled && state.inspector.mode === "live") return "var(--green)";
+  return null;
+}
+
+/* ---------- registry: groups, scope, keywords ---------- */
+const GROUPS = [
+  { label: "This screen", scope: ["scope-browser", "browser"], items: ["display", "keyboard"] },
+  { label: "Sessions", scope: ["scope-machine", "machine"], items: ["harnesses", "skills", "cost"] },
+  { label: "Background work", scope: ["scope-machine", "machine"], items: ["foreman", "task-sources", "models"] },
+  { label: "Leaves the machine", scope: ["scope-github", "github"], items: ["inspector", "shipping", "trust"] },
+];
+const CATS = {
+  display: { icon: "▦", label: "Display", scope: ["scope-browser", "This browser"] },
+  keyboard: { icon: "⌨", label: "Keyboard", scope: ["scope-browser", "This browser"] },
+  harnesses: { icon: "⚙", label: "Harnesses", scope: ["scope-machine", "This machine"] },
+  skills: { icon: "✦", label: "Skills", scope: ["scope-home", "Writes ~/"] },
+  cost: { icon: "$", label: "Cost", scope: ["scope-home", "Writes ~/"] },
+  foreman: { icon: "●", label: "Foreman", scope: ["scope-machine", "This machine"] },
+  "task-sources": { icon: "⇊", label: "Task sources", scope: ["scope-machine", "This machine"] },
+  models: { icon: "◈", label: "Models", scope: ["scope-machine", "This machine"] },
+  inspector: { icon: "⌕", label: "Inspector", scope: ["scope-github", "Acts on GitHub"] },
+  shipping: { icon: "⚑", label: "Shipping", scope: ["scope-github", "Acts on GitHub"] },
+  trust: { icon: "⛨", label: "Trust", scope: ["scope-github", "Acts on GitHub"] },
+};
+
+/* ---------- tiny DOM helpers ---------- */
+const $ = (sel) => document.querySelector(sel);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  }
+  return el;
+}
+function sw(checked, onchange, label) {
+  const input = h("input", { type: "checkbox", "aria-label": label || "" });
+  input.checked = checked;
+  input.addEventListener("change", () => onchange(input.checked));
+  return h("label", { class: "switch" }, input, h("i"));
+}
+function sel(options, value, onchange, cls) {
+  const s = h("select", { class: "sel " + (cls || "") });
+  for (const o of options) {
+    const opt = h("option", { value: o.id !== undefined ? o.id : o }, o.label !== undefined ? o.label : (o || "harness default"));
+    s.append(opt);
+  }
+  s.value = value;
+  s.addEventListener("change", () => onchange(s.value));
+  return s;
+}
+function seg(options, value, onchange) {
+  return h("div", { class: "seg" }, options.map(([id, label]) =>
+    h("button", { class: value === id ? "on" : "", onclick: () => onchange(id) }, label)));
+}
+function row(anchor, labelKids, desc, control) {
+  return h("div", { class: "row", "data-anchor": anchor },
+    h("div", { class: "rtext" }, h("span", { class: "rlab" }, labelKids), desc ? h("span", { class: "rdesc" }, desc) : null),
+    control);
+}
+function head(id, extra) {
+  const c = CATS[id];
+  return h("div", { class: "panel-head" },
+    h("h2", null, c.label),
+    h("span", { style: "flex:1" }),
+    extra || null,
+    h("span", { class: "scope " + c.scope[0] }, c.scope[1]));
+}
+function jump(catId, anchor) {
+  setActive(catId);
+  if (anchor) requestAnimationFrame(() => {
+    const el = document.querySelector(`[data-anchor="${anchor}"]`);
+    if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 3400); }
+  });
+}
+const lnk = (text, cat, anchor) => h("a", { class: "lnk", onclick: (e) => { e.preventDefault(); jump(cat, anchor); } }, text);
+
+/* ---------- panels ---------- */
+const LAYOUTS = [
+  { id: "grid", label: "Cards", desc: "Every session a card in a responsive grid. One expands in place to fill the screen.", rects: [[0,0,7,6],[8.5,0,7,6],[0,7,7,6],[8.5,7,7,6]] },
+  { id: "console", label: "Console", desc: "A compact rail of sessions beside one always-open detail pane.", rects: [[0,0,5,4],[0,4.7,5,4],[0,9.4,5,3.6],[6.2,0,9.3,13]] },
+  { id: "board", label: "Board", desc: "A column per state; tiles move as sessions change state.", rects: [[0,0,3.3,13],[4.1,0,3.3,9],[8.2,0,3.3,6],[12.3,0,3.3,4]] },
+];
+function glyph(rects) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 15.6 13"); svg.setAttribute("width", "22"); svg.setAttribute("height", "18");
+  for (const [x, y, w, hh] of rects) {
+    const r = document.createElementNS(ns, "rect");
+    r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", hh);
+    r.setAttribute("rx", "1.5"); r.setAttribute("fill", "currentColor");
+    svg.append(r);
+  }
+  return svg;
+}
+
+function panelDisplay() {
+  return [
+    head("display"),
+    h("p", { class: "blurb" }, "How this dashboard looks. Both settings apply live and stay in this browser's localStorage - nothing here reaches the daemon."),
+    h("div", { class: "glabel" }, "Layout"),
+    h("div", { class: "layout-pick", "data-anchor": "layout" }, LAYOUTS.map((l) =>
+      h("div", { class: "lopt" + (state.layout === l.id ? " on" : ""), onclick: () => { state.layout = l.id; render(); } },
+        glyph(l.rects),
+        h("div", null, h("b", null, l.label), h("span", null, l.desc))))),
+    h("div", { class: "glabel" }, "Appearance"),
+    row("richtext", "Format messages",
+      "Render agent and human turns as markdown. Turn this off to read the literal text an agent emitted, backticks and all.",
+      sw(state.richText, (v) => { state.richText = v; render(); }, "Format messages")),
+    h("p", { class: "hint" }, "Formatting is display-only. It never changes what the agent wrote or what gets sent when you reply."),
+  ];
+}
+
+function chordFromEvent(e) {
+  const mods = (e.metaKey ? "⌘" : "") + (e.ctrlKey ? "⌃" : "") + (e.altKey ? "⌥" : "") + (e.shiftKey ? "⇧" : "");
+  let k = e.key;
+  if (["Meta", "Control", "Alt", "Shift"].includes(k)) return null;
+  if (k === " ") k = "Space";
+  if (k.length === 1) k = k.toUpperCase();
+  return mods + k;
+}
+function panelKeyboard() {
+  const conflicts = {};
+  const seen = {};
+  for (const a of ACTIONS) {
+    const c = state.bindings[a.id];
+    if (seen[c]) { conflicts[a.id] = seen[c]; conflicts[seen[c]] = a.id; }
+    else seen[c] = a.id;
+  }
+  const hasCustom = ACTIONS.some((a) => state.bindings[a.id] !== a.def);
+  const groups = ["Anywhere", "Selected session"];
+  return [
+    head("keyboard", hasCustom ? h("button", { class: "btn ghost", onclick: () => { for (const a of ACTIONS) state.bindings[a.id] = a.def; render(); } }, "Reset all") : null),
+    h("p", { class: "blurb" }, "Click a shortcut, then press the new key (with ⌘/⌃/⌥ if you like). Esc and the arrow keys drive grid navigation and can't be reassigned."),
+    state.kbError ? h("p", { class: "err" }, state.kbError) : null,
+    groups.map((g) => [
+      h("div", { class: "glabel" }, g),
+      ACTIONS.filter((a) => a.group === g).map((a) => {
+        const rec = state.recording === a.id;
+        const conf = conflicts[a.id];
+        return h("div", { class: "row", "data-anchor": "kb-" + a.id },
+          h("div", { class: "rtext" },
+            h("span", { class: "rlab" }, a.label),
+            h("span", { class: "rdesc" }, a.desc),
+            conf ? h("span", { class: "conflict" }, "Same key as " + ACTIONS.find((x) => x.id === conf).label) : null),
+          h("button", { class: "kcap" + (rec ? " rec" : ""), onclick: () => { state.kbError = null; state.recording = rec ? null : a.id; render(); } },
+            rec ? "press a key…" : state.bindings[a.id]),
+          h("button", { class: "kreset", title: "Reset to default", disabled: state.bindings[a.id] === a.def ? "" : null, onclick: () => { state.bindings[a.id] = a.def; render(); } }, "↺"));
+      }),
+    ]),
+  ];
+}
+
+function panelHarnesses() {
+  return [
+    head("harnesses"),
+    h("p", { class: "blurb" }, "Defaults for the agents Mission Control dispatches. These never touch sessions you started yourself - only the ones it launches. One card per harness (Mockup F): its model, its effort, and what a dispatch will actually do."),
+    row("automode",
+      ["Auto mode on dispatch", h("span", { class: "badge" }, "claude / codex")],
+      "Every dispatched session is switched to its most autonomous permission mode once it's ready, so it works through its task without stopping for permission prompts.",
+      sw(state.autoMode, (v) => { state.autoMode = v; render(); }, "Auto mode on dispatch")),
+    h("div", { class: "glabel" }, "Per harness"),
+    h("div", { class: "hcards" }, Object.entries(AGENTS).map(([id, a]) => {
+      const cfg = state.harness[id];
+      const modelLabel = cfg.model ? `launch with --model ${cfg.model}` : "pass no --model flag, so " + a.label + " uses its own configured model";
+      return h("div", { class: "hcard", style: `--agent-accent:${a.accent}`, "data-anchor": "harness-" + id },
+        h("div", { class: "hcard-head" },
+          h("span", { class: "adot" }), h("b", null, a.label),
+          h("span", { style: "flex:1" }),
+          id === "codex" ? h("span", { class: "badge" }, "no permission modes") : (state.autoMode ? h("span", { class: "badge" }, "auto mode ready") : null)),
+        h("div", { class: "hcard-grid" },
+          h("label", null, "Model"),
+          sel(MODELS[id], cfg.model, (v) => { cfg.model = v; render(); }, "mono"),
+          h("label", null, "Effort"),
+          sel(EFFORTS[id].map((e) => ({ id: e, label: e || "Harness default" })), cfg.effort, (v) => { cfg.effort = v; render(); })),
+        h("p", { class: "hnote" }, `Dispatched ${a.label} sessions ${modelLabel}.`,
+          cfg.effort ? ` They start at ${cfg.effort} reasoning effort.` : ` Effort stays whatever ${a.label} has configured.`));
+    })),
+    h("p", { class: "hint" }, "The dispatch form starts on these values and lets you pick per task, so a one-off that needs more (or less) horsepower doesn't mean changing the default."),
+  ];
+}
+
+function panelSkills() {
+  return [
+    head("skills"),
+    h("p", { class: "blurb" }, "Skills switched on here are symlinked into ", h("code", null, "~/.claude/skills"), " and ", h("code", null, "~/.agents/skills"),
+      ", so they reach every Claude Code and Codex session on this machine - including ones this app never launched. Running sessions pick them up at their next idle moment; Codex watches its directory itself."),
+    row("skills-master", "Enable Mission Control skills", null, sw(state.skillsEnabled, (v) => { state.skillsEnabled = v; render(); }, "Enable skills")),
+    (() => {
+      const fs = h("fieldset", { class: "cascade" }, state.skills.map((s) =>
+        row("skill-" + s.id,
+          ["/" + s.name, h("span", { class: "badge" }, s.enf)],
+          s.desc,
+          sw(s.on, (v) => { s.on = v; render(); }, "Enable /" + s.name))));
+      if (!state.skillsEnabled) fs.disabled = true;
+      return fs;
+    })(),
+    state.skillsEnabled ? h("p", { class: "hint" }, "2 Claude Code sessions will pick changes up when they next go idle.") : h("p", { class: "hint" }, "Off: nothing is symlinked, whatever the rows say."),
+  ];
+}
+
+function panelCost() {
+  return [
+    head("cost"),
+    h("p", { class: "blurb" }, "Claude Code reports an estimated API cost over OpenTelemetry; Mission Control applies versioned rates to Codex usage. Both feed one API-equivalent estimate - not plan spend, credits, or an invoice."),
+    row("cost-track", "Track Claude estimated cost",
+      ["Writes an ", h("code", null, "env"), " block into ", h("code", null, "~/.claude/settings.json"), " so every Claude Code session on this machine exports usage to the daemon on loopback. Switching this off removes only the keys it added."],
+      sw(state.cost.enabled, (v) => { state.cost.enabled = v; render(); }, "Track cost")),
+    row("cost-interval", "Export interval", "How often each session reports. Shorter keeps the badge in step with the context meter; longer means fewer loopback requests.",
+      sel([5, 10, 15, 30, 60].map((s) => ({ id: String(s * 1000), label: s + "s" })), String(state.cost.interval), (v) => { state.cost.interval = Number(v); render(); })),
+    row("cost-view", "Lead with", "Which group comes first in the topbar.",
+      sel([{ id: "usd", label: "Estimated cost" }, { id: "plan", label: "Plan usage" }], state.cost.view, (v) => { state.cost.view = v; render(); })),
+  ];
+}
+
+const FOREMAN_ROLES = [
+  { id: "review", label: "Review", blurb: "Judges a stuck session's pending question - answer, escalate, or leave it." },
+  { id: "verify", label: "Verify", blurb: "Reads the diff and decides whether a queued work item is actually done." },
+  { id: "triage", label: "Triage", blurb: "The cheap Tier 1 router in front of Review. Buckets the ask; never solves it." },
+  { id: "backlog", label: "Backlog", blurb: "Reads the backlog once per change and orders it by what depends on what." },
+];
+function panelForeman() {
+  return [
+    head("foreman"),
+    h("p", { class: "blurb" }, "Foreman's set-once configuration. Turning it on, its mode, the work queues, and the on-drain action stay in the topbar Foreman control - the things you reach for while watching the fleet. Where it may act live is granted in ", lnk("Trust", "trust"), "."),
+    h("div", { class: "glabel" }, "Cheap tier"),
+    h("div", { "data-anchor": "foreman-tier" }, seg([["off", "Off"], ["shadow", "Shadow - measure it"], ["on", "On - answers the easy ones"]], state.foreman.tier, (v) => { state.foreman.tier = v; render(); })),
+    h("p", { class: "hint" }, state.foreman.tier === "off" ? "Full review for every prompt." : state.foreman.tier === "shadow" ? "The cheap tier runs alongside the full review and is measured against it; it answers nothing." : "The cheap tier answers the easy prompts; hard ones still get full review."),
+    h("div", { class: "glabel" }, "Models"),
+    row("foreman-provider", "Provider", "Runs every Foreman model role through this provider.",
+      sel([{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }], state.foreman.provider, (v) => { state.foreman.provider = v; state.foreman.models = { review: "", verify: "", triage: "", backlog: "" }; render(); })),
+    FOREMAN_ROLES.map((r) =>
+      row("foreman-" + r.id, r.label, r.blurb,
+        sel(MODELS[state.foreman.provider].map((m) => ({ id: m.id, label: m.id ? m.label : "Default" })), state.foreman.models[r.id], (v) => { state.foreman.models[r.id] = v; render(); }, "mono"))),
+  ];
+}
+
+const LLM_JOBS = [
+  { id: "title", label: "Task title", blurb: "Names a dispatched task whose Title was left blank, for the card and the branch." },
+  { id: "goal", label: "Goal", blurb: "Rewrites each session's raw prompt into the sentence its card shows." },
+  { id: "digest", label: "Away digest", blurb: "Narrates what the fleet did while you were away, over the deterministic rollup." },
+  { id: "workflow", label: "Workflow context", blurb: "Compacts user goals, decisions, and rationale for Persona review." },
+];
+function panelModels() {
+  return [
+    head("models"),
+    h("p", { class: "blurb" }, "Mission Control does a little model work of its own - naming an untitled task, rewriting a prompt into the sentence on a card, narrating what happened while you were away. This is the provider those calls go through, and which model each uses. Foreman's four models are under ", lnk("Foreman", "foreman"), " and the Inspector's under ", lnk("Inspector", "inspector"), " - each with the subsystem that spends it."),
+    h("div", { class: "glabel" }, "Provider"),
+    h("div", { "data-anchor": "llm-runner" }, seg([["claude", "Claude Code"], ["codex", "Codex"]], state.llm.runner, (v) => { state.llm.runner = v; state.llm.jobs = { title: "", goal: "", digest: "", workflow: "" }; render(); })),
+    h("div", { class: "glabel" }, "Background jobs"),
+    h("p", { class: "hint" }, "Each is a single cheap call with a deterministic fallback behind it - if the model can't be reached, you get a rougher title or a terser digest, never an error."),
+    LLM_JOBS.map((j) =>
+      row("llm-" + j.id, j.label, j.blurb,
+        sel(MODELS[state.llm.runner].map((m) => ({ id: m.id, label: m.id ? m.label : "Default" })), state.llm.jobs[j.id], (v) => { state.llm.jobs[j.id] = v; render(); }, "mono"))),
+  ];
+}
+
+/* ---- Task sources: Mockup B master-detail ---- */
+function srcHealth(s) {
+  if (!s.enabled) return ["mute", "Paused"];
+  if (s.error) return ["warnc", "Failed"];
+  if (!s.lastSweep) return ["mute", "Never swept"];
+  return ["ok", "Healthy"];
+}
+function panelTaskSources() {
+  const counts = { all: state.sources.length, healthy: 0, attention: 0, paused: 0 };
+  for (const s of state.sources) {
+    const hcls = srcHealth(s)[1];
+    if (hcls === "Healthy") counts.healthy++;
+    else if (hcls === "Failed") counts.attention++;
+    else if (hcls === "Paused") counts.paused++;
+  }
+  const q = state.srcQuery.trim().toLowerCase();
+  const visible = state.sources.filter((s) => {
+    const [, txt] = srcHealth(s);
+    if (state.srcFilter === "healthy" && txt !== "Healthy") return false;
+    if (state.srcFilter === "attention" && txt !== "Failed") return false;
+    if (state.srcFilter === "paused" && txt !== "Paused") return false;
+    return !q || (s.label + " " + s.repo).toLowerCase().includes(q);
+  });
+  const selSrc = state.sources.find((s) => s.id === state.srcSel);
+
+  function editor(s) {
+    if (!s) return h("div", { class: "md-editor" }, h("p", { class: "hint" }, "Select a source on the left."));
+    const [hcls, htxt] = srcHealth(s);
+    return h("div", { class: "md-editor", "data-anchor": "src-editor" },
+      h("div", { class: "ed-head" },
+        sw(s.enabled, (v) => { s.enabled = v; render(); }, "Sweep on a schedule"),
+        h("b", null, s.label), h("span", { class: "badge" }, "GitHub Issues"),
+        h("span", { style: "flex:1" }),
+        h("span", { class: "health " + hcls }, h("i"), htxt)),
+      h("p", { class: "hint", style: "margin:8px 0 0" }, s.lastSweep ? `Last swept ${s.lastSweep}.` : "Never swept yet."),
+      s.error ? h("p", { class: "err" }, s.error) : null,
+      s.note ? h("p", { class: "hint", style: "color:var(--green)" }, s.note) : null,
+      h("div", { class: "ed-grid" },
+        h("label", null, h("span", { class: "flab" }, "What to call this source"),
+          (() => { const i = h("input", { class: "tin" }); i.value = s.label; i.addEventListener("change", () => { s.label = i.value.trim() || s.label; render(); }); return i; })()),
+        h("label", null, h("span", { class: "flab" }, "Files tasks against"),
+          (() => { const i = h("input", { class: "tin mono" }); i.value = s.repo; i.addEventListener("change", () => { s.repo = i.value.trim() || s.repo; render(); }); return i; })()),
+        h("label", null, h("span", { class: "flab" }, "Labels (any of)"),
+          (() => { const i = h("input", { class: "tin mono" }); i.value = s.labels; i.addEventListener("change", () => { s.labels = i.value; render(); }); return i; })()),
+        h("label", null, h("span", { class: "flab" }, "Sweep every (minutes)"),
+          (() => { const i = h("input", { class: "tin mono", type: "number", min: "5", max: "1440" }); i.value = s.every; i.addEventListener("change", () => { s.every = Math.max(5, Number(i.value) || s.every); render(); }); return i; })()),
+        h("div", { class: "fcol" }, h("span", { class: "flab" }, "Assignee"),
+          seg([["any", "Anyone"], ["me", "Assigned to me"], ["nobody", "Unassigned"]], s.assignee, (v) => { s.assignee = v; render(); })),
+        h("label", null, h("span", { class: "flab" }, "Most tasks per sweep"),
+          (() => { const i = h("input", { class: "tin mono", type: "number", min: "1", max: "200" }); i.value = s.max; i.addEventListener("change", () => { s.max = Math.max(1, Number(i.value) || s.max); render(); }); return i; })())),
+      h("div", { class: "ed-actions" },
+        h("button", { class: "btn", onclick: () => {
+          s.note = "Sweeping…"; render();
+          setTimeout(() => { s.error = null; s.lastSweep = "just now - filed 2 task(s)"; s.note = "Swept: filed 2, 38 already filed."; render(); }, 900);
+        } }, "Sweep now"),
+        h("button", { class: "btn", onclick: () => { s.note = "Looks good - gh is reachable and this repo lists issues."; render(); } }, "Check it works"),
+        h("button", { class: "btn ghost", onclick: () => { s.note = "Forgotten - the next sweep will file these items again."; render(); } }, "Forget seen items"),
+        h("span", { style: "flex:1" }),
+        h("button", { class: "btn ghost", style: "color:var(--red)", onclick: () => {
+          state.sources = state.sources.filter((x) => x.id !== s.id);
+          state.srcSel = state.sources[0]?.id ?? null; render();
+        } }, "Remove")));
+  }
+
+  return [
+    head("task-sources", h("button", { class: "btn primary", onclick: () => {
+      const id = "s" + Math.random().toString(36).slice(2, 7);
+      state.sources.push({ id, label: "New source", repo: "~/workspace/ai-harness", every: 60, max: 10, labels: "", assignee: "any", enabled: false, lastSweep: null, error: null, note: "Starts switched off. Adding is configuration; turning it on is consent." });
+      state.srcSel = id; render();
+    } }, "+ Add source")),
+    h("p", { class: "blurb" }, "Pulls work into the backlog from systems that already hold it. A source files backlog tasks and nothing else: it never dispatches an agent, never cuts a worktree and never types into a session."),
+    h("div", { class: "metrics" },
+      h("div", { class: "metric" }, h("b", null, String(counts.all)), h("span", null, "configured sources")),
+      h("div", { class: "metric" }, h("b", { class: "good" }, String(counts.healthy)), h("span", null, "running normally")),
+      h("div", { class: "metric" }, h("b", { class: counts.attention ? "warnc" : "good" }, String(counts.attention)), h("span", null, "need attention")),
+      h("div", { class: "metric" }, h("b", null, String(counts.paused)), h("span", null, "paused"))),
+    h("div", { class: "md" },
+      h("div", { class: "md-list" },
+        h("div", { class: "md-tools" },
+          (() => { const i = h("input", { class: "tin", placeholder: "Search sources…" }); i.value = state.srcQuery; i.addEventListener("input", () => { state.srcQuery = i.value; renderPanel(); }); return i; })()),
+        h("div", { class: "chips" }, [["all", `All ${counts.all}`], ["healthy", `Healthy ${counts.healthy}`], ["attention", `Attention ${counts.attention}`], ["paused", `Paused ${counts.paused}`]].map(([id, label]) =>
+          h("button", { class: (state.srcFilter === id ? "on " : "") + (id === "attention" ? "warn-chip" : ""), onclick: () => { state.srcFilter = id; renderPanel(); } }, label))),
+        visible.map((s) => {
+          const [hcls, htxt] = srcHealth(s);
+          return h("button", { class: "src-item" + (s.id === state.srcSel ? " on" : "") + (!s.enabled ? " paused" : ""), onclick: () => { state.srcSel = s.id; renderPanel(); } },
+            h("div", { class: "src-line1" }, h("b", null, s.label), h("span", { class: "health " + hcls }, h("i"), htxt)),
+            h("div", { class: "src-meta" }, `GitHub Issues · ${s.repo} · every ${s.every} min`));
+        }),
+        visible.length === 0 ? h("p", { class: "hint" }, "No sources match these filters.") : null),
+      editor(selSrc)),
+  ];
+}
+
+function panelInspector() {
+  const reviewed = state.trust.filter((r) => r.inspector).length;
+  return [
+    head("inspector"),
+    h("p", { class: "blurb" }, "Reviews the pull requests Mission Control opened - and only those - against the repository's ", h("code", null, "INSPECTOR.md"), ". It comments on what it finds, answers replies in its own threads, re-reviews on every push, and closes its own threads once a push fixes them."),
+    row("inspector-enabled", "Run the Inspector", null, sw(state.inspector.enabled, (v) => { state.inspector.enabled = v; render(); }, "Run the Inspector")),
+    h("div", { class: "glabel" }, "Mode"),
+    h("div", { "data-anchor": "inspector-mode" }, seg([["dry-run", "Dry run - record findings, post nothing"], ["live", "Live - post review comments on GitHub"]], state.inspector.mode, (v) => { state.inspector.mode = v; render(); })),
+    state.inspector.mode === "live" && state.inspector.enabled
+      ? h("div", { class: "warn" }, "Comments are posted to GitHub under your account, and are public on a public repository. The Inspector can read files in the reviewed worktree to do its job.")
+      : null,
+    h("div", { class: "glabel" }, "Model"),
+    row("inspector-model", "Review model", "The Inspector starts an isolated call per review, with read-only tools scoped to the worktree.",
+      sel(MODELS.claude.map((m) => ({ id: m.id, label: m.id ? m.label : "Default - claude-sonnet-4-5" })), state.inspector.model, (v) => { state.inspector.model = v; render(); }, "mono")),
+    h("div", { class: "glabel" }, "Reviewed repositories"),
+    h("p", { class: "hint" }, reviewed + " repositories grant the Inspector review access. Grants are managed in one place now - ", lnk("open Trust", "trust", "trust-matrix"), "."),
+    h("div", { class: "glabel" }, "Recent inspections"),
+    h("div", { class: "ledger" },
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "ai-harness#181"), h("span", { class: "state good" }, "clean"), h("span", { class: "when" }, "2h ago")),
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "ai-harness#179"), h("span", { class: "state warnc" }, "2 findings"), h("span", { class: "when" }, "31m ago")),
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "side-project#12"), h("span", { class: "state" }, "queued"), h("span", { class: "when" }, "just now"))),
+  ];
+}
+
+function panelShipping() {
+  const traps = mergeTraps();
+  const armed = state.shipping.yolo;
+  const mergeRepos = state.trust.filter((r) => r.merge);
+  return [
+    head("shipping"),
+    h("p", { class: "blurb" }, "What lands without you. YOLO mode merges the pull requests Mission Control opened once the Inspector has reviewed the current push with nothing outstanding, CI is green, nobody has an unresolved thread on it, and it has been open for the soak window below."),
+    row("yolo", "YOLO mode - merge our pull requests when they come out clean", null,
+      sw(armed, (v) => { state.shipping.yolo = v; render(); }, "YOLO mode")),
+    armed ? h("div", { class: "warn danger" }, "Merges are performed on GitHub under your account and land on the base branch. Nothing in Mission Control can undo one.") : null,
+    armed && !state.inspector.enabled
+      ? h("div", { class: "warn" }, "The Inspector is switched off, so no pull request is being reviewed and none will qualify. ", lnk("Turn it on in Inspector →", "inspector", "inspector-enabled"))
+      : null,
+    armed && state.inspector.enabled && state.inspector.mode !== "live"
+      ? h("div", { class: "warn" }, "The Inspector is in dry run, so it reviews but publishes nothing - and YOLO mode will not merge on a review nobody can see. ", lnk("Set it to live in Inspector →", "inspector", "inspector-mode"))
+      : null,
+    armed && state.inspector.enabled && state.inspector.mode === "live" && traps.length > 0
+      ? h("div", { class: "warn" }, "The Inspector is not allowed to review " + traps.map((t) => t.repo).join(", ") + ", so nothing there will merge. ", lnk("Fix in Trust →", "trust", "trust-matrix"))
+      : null,
+    h("div", { class: "glabel" }, "Soak time"),
+    h("div", { class: "stepper", "data-anchor": "soak" },
+      h("button", { onclick: () => { state.shipping.soak = Math.max(0, state.shipping.soak - 5); render(); } }, "−"),
+      h("span", { class: "val" }, String(state.shipping.soak)),
+      h("button", { onclick: () => { state.shipping.soak = Math.min(1440, state.shipping.soak + 5); render(); } }, "+"),
+      h("span", { class: "hint", style: "margin:0" }, "minutes open before it may merge")),
+    h("p", { class: "hint" }, "The window in which somebody can look at what an agent proposed and say no. Zero means merge as soon as everything else passes."),
+    h("div", { class: "glabel" }, "How to merge"),
+    h("div", { "data-anchor": "merge-method" }, seg([["squash", "Squash and merge"], ["merge", "Merge commit"], ["rebase", "Rebase and merge"]], state.shipping.method, (v) => { state.shipping.method = v; render(); })),
+    h("div", { class: "glabel" }, "Repositories that may merge themselves"),
+    h("p", { class: "hint" }, mergeRepos.length + " repositories hold the merge grant. Grants are managed in one place now - ", lnk("open Trust", "trust", "trust-matrix"), "."),
+    h("div", { class: "glabel" }, "Where each pull request stands"),
+    h("div", { class: "ledger" },
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "ai-harness#181"), h("span", { class: "state merged" }, "merged"), h("span", { class: "when" }, "2h ago")),
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "ai-harness#180"),
+        h("span", { class: "state " + (armed ? "good" : "") }, armed ? `soaking - merges in ${Math.max(1, state.shipping.soak - 4)} min` : "YOLO mode is off"), h("span", { class: "when" }, "just now")),
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "ai-harness#179"), h("span", { class: "state warnc" }, "the Inspector has open findings"), h("span", { class: "when" }, "31m ago")),
+      h("div", { class: "lrow" }, h("span", { class: "pr" }, "side-project#12"),
+        h("span", { class: "state warnc" }, trustRow("~/workspace/side-project")?.inspector ? "not reviewed yet" : "review never published - repo not on the Inspector's list"),
+        h("span", { class: "when" }, "3h ago"))),
+  ];
+}
+
+function panelTrust() {
+  const cols = [
+    ["foreman", "Foreman sends live", "Machine-side: Foreman answers prompts in this repo's sessions without asking you."],
+    ["inspector", "Inspector posts reviews", "Publishes review comments on this repo's PRs under your GitHub account."],
+    ["merge", "YOLO merges", "Clean, soaked PRs in this repo merge themselves to the base branch."],
+  ];
+  function cell(rowData, key) {
+    const on = rowData[key];
+    const trapped = key === "merge" && on && !rowData.inspector && state.shipping.yolo;
+    return h("div", { class: "mx-c" + (key !== "foreman" && key !== "inspector" && trapped ? " trap" : "") + (key === "inspector" && rowData.merge && !rowData.inspector && state.shipping.yolo ? " trap" : "") },
+      h("button", {
+        class: "grant " + (on ? "yes" : "no") + (trapped ? " trapped" : ""),
+        title: cols.find((c) => c[0] === key)[2],
+        onclick: () => { rowData[key] = !rowData[key]; render(); },
+      }, h("i"), on ? (trapped ? "allowed †" : "allowed") : "-"));
+  }
+  const traps = mergeTraps();
+  const addInput = h("input", { class: "tin mono", placeholder: "add a repository… (e.g. ~/oss/new-thing)", style: "flex:1" });
+  return [
+    head("trust"),
+    h("p", { class: "blurb" }, "Every grant that lets Mission Control act outside this app, in one table (Mockup E). Each column is its subsystem's own allowlist - clicking a cell writes there, and the Foreman, Inspector and Shipping panels keep working unchanged. Worktrees of a trusted repo count too, wherever they live on disk."),
+    h("div", { class: "matrix", "data-anchor": "trust-matrix" },
+      h("div", { class: "mx-grid" },
+        h("div", { class: "mx-h" }, "Repository"),
+        cols.map(([, label]) => h("div", { class: "mx-h" }, label)),
+        h("div", { class: "mx-h" }),
+        state.trust.map((r) => [
+          h("div", { class: "mx-c mx-repo" }, r.repo),
+          cols.map(([key]) => cell(r, key)),
+          h("div", { class: "mx-c" }, h("button", { class: "mx-del", title: "Remove every grant for " + r.repo, onclick: () => { state.trust = state.trust.filter((x) => x !== r); render(); } }, "✕")),
+        ]))),
+    state.shipping.yolo && traps.length > 0
+      ? h("div", { class: "warn" }, "† YOLO may merge in " + traps.map((t) => t.repo).join(", ") + ", but the Inspector may not review there - so no pull request will ever qualify. Grant the review, or revoke the merge.")
+      : null,
+    h("div", { style: "display:flex; gap:8px; margin-top:12px; max-width:860px;" },
+      addInput,
+      h("button", { class: "btn", onclick: () => {
+        const repo = addInput.value.trim();
+        if (!repo || state.trust.some((r) => r.repo === repo)) return;
+        state.trust.push({ repo, foreman: false, inspector: false, merge: false });
+        addInput.value = ""; render();
+      } }, "Add")),
+    h("p", { class: "hint" }, "Adding a repo grants nothing yet - cells start empty, one deliberate click each. Adding is configuration; enabling is consent."),
+  ];
+}
+
+const PANELS = {
+  display: panelDisplay, keyboard: panelKeyboard, harnesses: panelHarnesses,
+  skills: panelSkills, cost: panelCost, foreman: panelForeman,
+  "task-sources": panelTaskSources, models: panelModels,
+  inspector: panelInspector, shipping: panelShipping, trust: panelTrust,
+};
+
+/* ---------- search palette (Mockup D) ---------- */
+const SEARCH = [
+  { label: "Layout", desc: "Display · Cards, Console, or Board", cat: "display", anchor: "layout", kw: "grid console board cards arrangement" },
+  { label: "Format messages", desc: "Display · render transcripts as markdown", cat: "display", anchor: "richtext", kw: "rich text markdown appearance", toggle: () => state.richText, set: (v) => { state.richText = v; } },
+  { label: "Keyboard shortcuts", desc: "Keyboard · rebind any action", cat: "keyboard", anchor: "kb-roundup", kw: "keys chord binding hotkey shortcut" },
+  { label: "Auto mode on dispatch", desc: "Harnesses · most autonomous permission mode", cat: "harnesses", anchor: "automode", kw: "permission bypass autonomous", toggle: () => state.autoMode, set: (v) => { state.autoMode = v; } },
+  { label: "Claude Code default model", desc: "Harnesses · what a dispatch launches with", cat: "harnesses", anchor: "harness-claude", kw: "model sonnet opus dispatch" },
+  { label: "Codex default model", desc: "Harnesses · what a dispatch launches with", cat: "harnesses", anchor: "harness-codex", kw: "model gpt codex dispatch" },
+  { label: "Enable Mission Control skills", desc: "Skills · symlinked into every harness's skills dir", cat: "skills", anchor: "skills-master", kw: "skill slash command", toggle: () => state.skillsEnabled, set: (v) => { state.skillsEnabled = v; } },
+  { label: "Track Claude estimated cost", desc: "Cost · writes an env block into ~/.claude/settings.json", cat: "cost", anchor: "cost-track", kw: "telemetry otel usage spend money", toggle: () => state.cost.enabled, set: (v) => { state.cost.enabled = v; } },
+  { label: "Export interval", desc: "Cost · how often each session reports", cat: "cost", anchor: "cost-interval", kw: "telemetry frequency seconds" },
+  { label: "Cheap tier", desc: "Foreman · off, shadow, or on", cat: "foreman", anchor: "foreman-tier", kw: "triage shadow router" },
+  { label: "Foreman models", desc: "Foreman · Review, Verify, Triage, Backlog", cat: "foreman", anchor: "foreman-review", kw: "model review verify triage backlog provider" },
+  { label: "Task sources", desc: "Background work · what pulls work into the backlog", cat: "task-sources", anchor: "src-editor", kw: "github issues sweep backlog import" },
+  { label: "Background job models", desc: "Models · title, goal, digest, workflow", cat: "models", anchor: "llm-title", kw: "titler goal refiner away digest provider runner" },
+  { label: "Run the Inspector", desc: "Inspector · review the PRs we opened", cat: "inspector", anchor: "inspector-enabled", kw: "review pr pull request", toggle: () => state.inspector.enabled, set: (v) => { state.inspector.enabled = v; } },
+  { label: "Inspector mode", desc: "Inspector · dry run or live", cat: "inspector", anchor: "inspector-mode", kw: "dry-run live publish post comments" },
+  { label: "YOLO mode", desc: "Shipping · merge our PRs when they come out clean", cat: "shipping", anchor: "yolo", kw: "auto merge automerge ship", toggle: () => state.shipping.yolo, set: (v) => { state.shipping.yolo = v; } },
+  { label: "Soak time", desc: "Shipping · minutes a clean PR stays open before it may merge", cat: "shipping", anchor: "soak", kw: "soak window delay minutes wait" },
+  { label: "How to merge", desc: "Shipping · squash, merge commit, or rebase", cat: "shipping", anchor: "merge-method", kw: "squash rebase merge method" },
+  { label: "Trust grants", desc: "Trust · who may act in which repository", cat: "trust", anchor: "trust-matrix", kw: "allowlist repo repository permission grant matrix foreman inspector merge" },
+];
+let palSel = 0;
+let palOpen = false;
+function palMatches() {
+  const q = $("#palInput").value.trim().toLowerCase();
+  if (!q) return { settings: SEARCH.slice(0, 6), cats: [] };
+  const settings = SEARCH.filter((e) => (e.label + " " + e.desc + " " + e.kw).toLowerCase().includes(q));
+  const cats = Object.entries(CATS).filter(([, c]) => c.label.toLowerCase().includes(q)).map(([id]) => id);
+  return { settings, cats };
+}
+function renderPal() {
+  const { settings, cats } = palMatches();
+  const box = $("#palResults");
+  box.textContent = "";
+  const total = settings.length + cats.length;
+  if (palSel >= total) palSel = Math.max(0, total - 1);
+  if (total === 0) { box.append(h("div", { class: "pal-empty" }, "Nothing matches. Try “soak”, “model”, or “merge”.")); return; }
+  let idx = 0;
+  if (settings.length) box.append(h("div", { class: "pal-glabel" }, "Settings"));
+  for (const e of settings) {
+    const i = idx++;
+    const right = e.toggle
+      ? sw(e.toggle(), (v) => { e.set(v); render(); renderPal(); }, e.label)
+      : h("span", { class: "badge" }, "open ↵");
+    const rowEl = h("div", { class: "pal-row" + (i === palSel ? " sel" : ""), onclick: (ev) => { if (ev.target.closest(".switch")) return; closePal(); jump(e.cat, e.anchor); } },
+      h("div", { class: "rtext", style: "pointer-events:none" }, h("span", { class: "rlab" }, e.label), h("span", { class: "rdesc" }, e.desc)),
+      right);
+    rowEl.addEventListener("mousemove", () => { if (palSel !== i) { palSel = i; renderPal(); } });
+    box.append(rowEl);
+  }
+  if (cats.length) box.append(h("div", { class: "pal-glabel" }, "Jump to"));
+  for (const id of cats) {
+    const i = idx++;
+    const c = CATS[id];
+    const rowEl = h("div", { class: "pal-row" + (i === palSel ? " sel" : ""), onclick: () => { closePal(); jump(id); } },
+      h("span", { style: "color:var(--dim); width:16px; text-align:center;" }, c.icon),
+      h("div", { class: "rtext", style: "pointer-events:none" }, h("span", { class: "rlab" }, c.label)),
+      h("span", { class: "scope " + c.scope[0] }, c.scope[1]));
+    rowEl.addEventListener("mousemove", () => { if (palSel !== i) { palSel = i; renderPal(); } });
+    box.append(rowEl);
+  }
+}
+function openPal(prefill) {
+  palOpen = true; palSel = 0;
+  $("#palVeil").classList.add("open"); $("#pal").classList.add("open");
+  const input = $("#palInput");
+  if (prefill !== undefined) input.value = prefill;
+  renderPal();
+  input.focus(); input.select();
+}
+function closePal() {
+  palOpen = false;
+  $("#palVeil").classList.remove("open"); $("#pal").classList.remove("open");
+}
+function palEnter() {
+  const { settings, cats } = palMatches();
+  const all = [...settings.map((e) => ({ kind: "s", e })), ...cats.map((id) => ({ kind: "c", id }))];
+  const pick = all[palSel];
+  if (!pick) return;
+  closePal();
+  if (pick.kind === "s") jump(pick.e.cat, pick.e.anchor);
+  else jump(pick.id);
+}
+
+/* ---------- render ---------- */
+function renderRail() {
+  const rail = $("#rail");
+  rail.textContent = "";
+  const search = h("button", { class: "rail-search", onclick: () => openPal("") },
+    h("span", null, "⌕"), "Search settings…", h("kbd", null, "⌘K"));
+  rail.append(search);
+  for (const g of GROUPS) {
+    rail.append(h("div", { class: "navlab" }, g.label, h("span", { class: "scope " + g.scope[0] }, g.scope[1])));
+    for (const id of g.items) {
+      const c = CATS[id];
+      const dot = catDot(id);
+      rail.append(h("button", {
+        class: "nav-item" + (state.active === id ? " on" : ""),
+        onclick: () => setActive(id),
+      }, h("span", { class: "ic" }, c.icon), c.label, dot ? h("span", { class: "dot " + dot }) : null));
+    }
+  }
+  const wd = worstDot();
+  const gd = $("#gearDot");
+  gd.style.display = wd ? "block" : "none";
+  if (wd) gd.style.background = wd;
+}
+function renderPanel() {
+  const panel = $("#panel");
+  const fn = PANELS[state.active];
+  panel.textContent = "";
+  for (const node of [fn()].flat(Infinity)) if (node) panel.append(node);
+}
+function render() { renderRail(); renderPanel(); }
+function setActive(id) {
+  state.active = id;
+  state.recording = null;
+  if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  render();
+  $("#panel").scrollTop = 0;
+}
+
+/* ---------- global keys ---------- */
+window.addEventListener("keydown", (e) => {
+  // chord recording swallows everything first, Escape cancels (the KeyboardPanel contract)
+  if (state.recording) {
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === "Escape") { state.recording = null; render(); return; }
+    const chord = chordFromEvent(e);
+    if (!chord) return;
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Escape"].includes(e.key)) {
+      state.kbError = chord + " is reserved for grid navigation."; render(); return;
+    }
+    state.bindings[state.recording] = chord;
+    state.recording = null; state.kbError = null; render();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); palOpen ? closePal() : openPal(""); return; }
+  if (palOpen) {
+    if (e.key === "Escape") { closePal(); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); palSel++; renderPal(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(0, palSel - 1); renderPal(); return; }
+    if (e.key === "Enter") { e.preventDefault(); palEnter(); return; }
+  }
+});
+$("#palInput").addEventListener("input", () => { palSel = 0; renderPal(); });
+$("#palVeil").addEventListener("click", closePal);
+$("#gearBtn").addEventListener("click", () => openPal(""));
+window.addEventListener("hashchange", () => {
+  const id = location.hash.slice(1);
+  if (PANELS[id]) { state.active = id; render(); }
+});
+
+/* boot: honor #category and ?search= deep links */
+(function boot() {
+  const id = location.hash.slice(1);
+  if (PANELS[id]) state.active = id;
+  render();
+  const q = new URLSearchParams(location.search).get("search");
+  if (q !== null) openPal(q);
+})();
+</script>
+</body>
+</html>

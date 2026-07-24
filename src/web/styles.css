@@ -74,32 +74,6 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f4f6f8;
-    --bg-2: #eef1f5;
-    --panel: #ffffff;
-    --panel-2: #e6ebf1;
-    --border: #b7c0cc;
-    --border-soft: #cdd4dd;
-    --fg: #17202b;
-    --muted: #405064;
-    --dim: #526176;
-    --working: #075fb7;
-    --idle: #067247;
-    --attention: #8a4b00;
-    --danger: #b42318;
-    --exited: #526176;
-    --neutral: #4b596b;
-    --select: #067247;
-    --purple: #6542a6;
-    --syntax-type: #9b3d22;
-    --pr-open: #067247;
-    --shadow: 0 1px 2px rgb(23 32 43 / 15%), 0 8px 24px rgb(23 32 43 / 12%);
-  }
-}
-
 /* Phase 3 workflow Preview: compact marks share one status vocabulary across layouts. */
 .workflow-chip,
 .workflow-bind-chip {

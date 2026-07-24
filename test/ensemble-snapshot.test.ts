@@ -341,6 +341,37 @@ test("truncation reports exactly how much it left out", async () => {
   assert.deepEqual(capped.files, whole.files);
 });
 
+test("a budget too small for one line yields no patch, not half a header", async () => {
+  // "Cut at a line boundary" has to hold at EVERY budget or it is not a property a reader
+  // can rely on. Ten bytes of `diff --git a/…` is a malformed diff, which reads as a broken
+  // artifact rather than as a stopped one - and the numbers stay honest either way.
+  const { repo, member, baseSha } = mkRepoWithMember("tiny-budget");
+  writeFileSync(join(member, "keep.txt"), "changed\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const whole = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 10_000_000,
+  });
+  const tiny = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 10,
+  });
+
+  assert.equal(tiny.patch, "");
+  assert.equal(tiny.truncated, true);
+  assert.equal(tiny.omittedBytes, Buffer.byteLength(whole.patch, "utf8"));
+  assert.deepEqual(tiny.files, whole.files, "the statistics are still complete");
+});
+
 test("a diff between ids that are not full commits is refused", async () => {
   const { repo, baseSha } = mkRepoWithMember("diff-ids");
   await assert.rejects(

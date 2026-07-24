@@ -307,13 +307,18 @@ function parseNumstatZ(stdout: string): SnapshotFileStat[] {
  * Bytes rather than characters because the budget exists to bound what reaches a model's
  * context and a token bill, and a line boundary because half a hunk header reads to a
  * reader (human or model) as a malformed diff rather than as a stopped one.
+ *
+ * A budget too small for even the first line therefore yields NO patch rather than the
+ * first few bytes of `diff --git`. "Line boundary" has to hold at every budget or it is not
+ * a property a reader can rely on, and the numbers stay honest either way: `truncated` is
+ * true and `omittedBytes` is the whole patch.
  */
 function capPatch(patch: string, budget: number): { patch: string; truncated: boolean; omittedBytes: number } {
   const buf = Buffer.from(patch, "utf8");
   if (buf.length <= budget) return { patch, truncated: false, omittedBytes: 0 };
   const head = buf.subarray(0, Math.max(budget, 0));
   const lastNewline = head.lastIndexOf(0x0a);
-  const kept = lastNewline >= 0 ? head.subarray(0, lastNewline + 1) : head;
+  const kept = head.subarray(0, lastNewline + 1); // -1 when no line fits, so nothing is kept
   return {
     patch: kept.toString("utf8"),
     truncated: true,

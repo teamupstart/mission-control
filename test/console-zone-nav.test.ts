@@ -104,10 +104,12 @@ test("App wires Tab and Shift+Tab to the console focus zones", () => {
   const start = app.indexOf('if (layout === "console" && selected && !typing)');
   assert.ok(start >= 0, "no typing-guarded Console zone branch in the key handler");
   const body = app.slice(start, app.indexOf("if (typing) return;", start));
-  // The handoff is gated on the logical zone, not on which element holds DOM focus, so one
-  // Tab enters the reader whatever the last click left focused.
-  assert.match(body, /chord === "Tab" && consoleZone === "rail"/);
-  assert.match(body, /chord === "shift\+Tab" && consoleZone === "detail"/);
+  // The handoff is gated on where DOM focus actually is (`.console-detail` ancestry), not
+  // the lagging `consoleZone` state: Tab enters the reader from anywhere OUTSIDE it, and
+  // Shift+Tab leaves only from INSIDE it. The zone is still set so the ring and arrows follow.
+  assert.match(body, /const inReader = Boolean\(target\?\.closest\("\.console-detail"\)\)/);
+  assert.match(body, /chord === "Tab" && !inReader/);
+  assert.match(body, /chord === "shift\+Tab" && inReader/);
   assert.match(body, /setConsoleZone\("detail"\)/);
   assert.match(body, /setConsoleZone\("rail"\)/);
 });
@@ -137,15 +139,17 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   assert.doesNotMatch(railRow, /focusSelected/);
 });
 
-test("Tab enters the reader from the rail zone whatever element holds focus", () => {
-  // The regression this pins: gating the handoff on DOM focus (`inConsoleRail`) meant a bare
-  // Tab did nothing but native browser tabbing unless focus already sat on a rail row - so
-  // opening a session and pressing Tab walked the buttons instead of the conversation. The
-  // gate must be the logical zone, and no focus-scoped early return may let Tab escape to
+test("Tab enters the reader from anywhere outside it, whatever the zone state says", () => {
+  // Two regressions this pins at once. First: gating on `inConsoleRail` (#221) meant Tab did
+  // nothing but native browser tabbing unless focus already sat ON a rail row. Then gating on
+  // `consoleZone === "rail"` (the state) desynced the other way - a stale "detail" zone with
+  // focus still on the rail let Tab walk to the next rail row. The gate that survives both is
+  // actual DOM focus: outside the reader Tab always enters, so it can never fall through to
   // the browser while a session is open.
   const app = source("App.tsx");
-  assert.match(app, /chord === "Tab" && consoleZone === "rail"/);
-  assert.match(app, /chord === "shift\+Tab" && consoleZone === "detail"/);
+  assert.match(app, /chord === "Tab" && !inReader/);
+  assert.match(app, /chord === "shift\+Tab" && inReader/);
+  assert.doesNotMatch(app, /chord === "Tab" && consoleZone/);
   assert.doesNotMatch(app, /inConsoleRail/);
   assert.doesNotMatch(app, /inConsoleDetail/);
   // focusConsoleRail still refuses to steal focus from an editor outside the detail (the

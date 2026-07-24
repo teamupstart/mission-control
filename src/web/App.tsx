@@ -765,22 +765,27 @@ export function App(): React.JSX.Element {
 
       // Console focus zones. Tab hands the keyboard from the rail selector to the open
       // conversation so the vertical arrows scroll it; Shift+Tab (and Escape) hand it back.
-      // The gate is the logical zone, NOT where DOM focus happens to sit: once a session is
-      // open the operator's one Tab has to reach the reader whether the last click left
-      // focus on a rail row, on the body, or nowhere. Gating instead on the focused
-      // element's rail/detail ancestry was the regression that made a bare Tab fall through
-      // to native browser tabbing unless focus already sat on a rail button, walking the
-      // buttons rather than the conversation. `!typing` keeps native Tab in the topbar filter
-      // and the reply composer; Shift+Tab from the rail zone falls through to the `mode`
-      // binding below, so that shortcut still works in Console like every other layout.
+      //
+      // The gate is where DOM focus ACTUALLY is - `.console-detail` ancestry - not the
+      // `consoleZone` React state, which is a lagging mirror of it. Gating Tab on
+      // `consoleZone === "rail"` looked right but desynced: any path that set the zone to
+      // "detail" while focus stayed on a rail row (a stale reset, a re-render) left the one
+      // Tab the operator pressed falling straight through to native browser tabbing - it
+      // walked to the next rail row instead of the conversation, the exact bug reported.
+      // Reading focus makes it self-correcting: outside the reader Tab always enters it,
+      // inside it Shift+Tab always leaves. `consoleZone` is still SET here so the ring and
+      // the arrow-scroll routing follow, but it is no longer TRUSTED as the gate. `!typing`
+      // keeps native Tab in the topbar filter and the reply composer; Shift+Tab outside the
+      // reader falls through to the `mode` binding below, so that shortcut still works.
       if (layout === "console" && selected && !typing) {
-        if (chord === "Tab" && consoleZone === "rail") {
+        const inReader = Boolean(target?.closest(".console-detail"));
+        if (chord === "Tab" && !inReader) {
           e.preventDefault();
           setConsoleZone("detail");
           focusConsoleDetail();
           return;
         }
-        if (chord === "shift+Tab" && consoleZone === "detail") {
+        if (chord === "shift+Tab" && inReader) {
           e.preventDefault();
           setConsoleZone("rail");
           focusConsoleRail(selected.id);

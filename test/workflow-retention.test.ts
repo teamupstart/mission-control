@@ -11,7 +11,11 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
-const { clearWorkflowTables, WorkflowStore } = await import("../src/server/workflows/store.ts");
+const {
+  clearWorkflowTables,
+  WorkflowStore,
+  WORKFLOW_RETENTION_BATCH_SIZE,
+} = await import("../src/server/workflows/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const db = openDb();
@@ -431,6 +435,53 @@ test("stage two keeps the newest cap and never deletes failed or uncertain famil
   assert.equal(
     (db.prepare(`SELECT COUNT(*) AS count FROM inspector_comments`).get() as { count: number }).count,
     1,
+  );
+});
+
+test("each retention stage processes a fixed-size batch", () => {
+  for (let index = 1; index <= WORKFLOW_RETENTION_BATCH_SIZE + 1; index += 1) {
+    insertRun(`compact-${String(index).padStart(3, "0")}`, "completed", index);
+  }
+  const originalInfo = console.info;
+  console.info = () => {};
+  const compacted = (() => {
+    try {
+      return store.runRetention({
+        rawEvidenceBefore: WORKFLOW_RETENTION_BATCH_SIZE + 1,
+        completedRunsBefore: 0,
+        maxCompletedRuns: 100,
+        now: 1_000,
+      });
+    } finally {
+      console.info = originalInfo;
+    }
+  })();
+  assert.equal(compacted.compactedRunIds.length, WORKFLOW_RETENTION_BATCH_SIZE);
+  const uncompacted = db.prepare(
+    `SELECT COUNT(*) AS count FROM workflow_runs WHERE evidence_pruned_at IS NULL`,
+  ).get() as { count: number };
+  assert.equal(uncompacted.count, 1);
+  assert.equal(store.runRetention({
+    rawEvidenceBefore: WORKFLOW_RETENTION_BATCH_SIZE + 1,
+    completedRunsBefore: 0,
+    maxCompletedRuns: 100,
+    now: 1_001,
+  }).compactedRunIds.length, 1);
+
+  clearWorkflowTables(db);
+  for (let index = 1; index <= WORKFLOW_RETENTION_BATCH_SIZE + 101; index += 1) {
+    insertRun(`delete-${String(index).padStart(3, "0")}`, "completed", index);
+  }
+  const deleted = store.runRetention({
+    rawEvidenceBefore: 0,
+    completedRunsBefore: WORKFLOW_RETENTION_BATCH_SIZE + 101,
+    maxCompletedRuns: 100,
+    now: 1_000,
+  });
+  assert.equal(deleted.deletedRunIds.length, WORKFLOW_RETENTION_BATCH_SIZE);
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS count FROM workflow_runs`).get() as { count: number }).count,
+    101,
   );
 });
 

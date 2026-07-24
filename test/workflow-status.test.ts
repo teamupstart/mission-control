@@ -101,6 +101,35 @@ test("workflow status is on-demand, structured, bounded, and payload-free", () =
   assert.doesNotMatch(serialized, /secret|guidance|payload|prompt|diff|transcript/i);
 });
 
+test("status counts only blocked runs with a valid Inspector gate", () => {
+  clearWorkflowTables(db);
+  const insert = db.prepare(
+    `INSERT INTO workflow_runs (
+       id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
+       trigger_source, trigger_key, gate_state_json, started_at, updated_at
+     ) VALUES (?, 'binding', 'version', 'blocked', 'gate', 5,
+               'manual', ?, ?, 1, 1)`,
+  );
+  insert.run("delivery-block", "delivery-trigger", JSON.stringify({
+    deliveryState: "uncertain",
+  }));
+  insert.run("inspector-block", "inspector-trigger", JSON.stringify({
+    prKey: "owner/repo#213",
+    prUrl: "https://github.com/owner/repo/pull/213",
+    targetHeadSha: "a".repeat(40),
+    failedHeadSha: null,
+    enteredAt: 1,
+    lastObservedAt: 1,
+    observedHeadSha: "a".repeat(40),
+    reviewPosture: "live",
+    waitReason: "findings",
+    findingFingerprints: [],
+  }));
+
+  const status = new WorkflowStore(db).workflowStatusCounts();
+  assert.equal(status.inspectorGates, 1);
+});
+
 test("status exposes recovery and retention timing with a bounded failure class", async () => {
   clearWorkflowTables(db);
   const registry = new Registry();

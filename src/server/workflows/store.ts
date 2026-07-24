@@ -81,6 +81,7 @@ const nullableInteger = integer.nullable();
 const boundedCode = text.max(200);
 const utf8 = new TextEncoder();
 const DEFAULT_DETAIL_PAGE_SIZE = 200;
+export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 type RunCursor = { updatedAt: number; id: string };
 
@@ -3148,8 +3149,12 @@ export class WorkflowStore {
             SELECT 1 FROM workflow_deliveries d
              WHERE d.run_id = r.id AND d.state = 'uncertain'
           )
-        ORDER BY r.completed_at ASC, r.id ASC`,
-    ).all(input.rawEvidenceBefore) as Array<{ id: string }>).map((row) => row.id);
+        ORDER BY r.completed_at ASC, r.id ASC
+        LIMIT ?`,
+    ).all(
+      input.rawEvidenceBefore,
+      WORKFLOW_RETENTION_BATCH_SIZE,
+    ) as Array<{ id: string }>).map((row) => row.id);
 
     const compacted: string[] = [];
     const failedRunIds = new Set<string>();
@@ -3297,8 +3302,13 @@ export class WorkflowStore {
        )
        SELECT id FROM ranked
         WHERE completed_at <= ? AND newest_position > ?
-        ORDER BY completed_at ASC, id ASC`,
-    ).all(input.completedRunsBefore, input.maxCompletedRuns) as Array<{ id: string }>)
+        ORDER BY completed_at ASC, id ASC
+        LIMIT ?`,
+    ).all(
+      input.completedRunsBefore,
+      input.maxCompletedRuns,
+      WORKFLOW_RETENTION_BATCH_SIZE,
+    ) as Array<{ id: string }>)
       .map((row) => row.id);
 
     const deleted: string[] = [];
@@ -3368,6 +3378,21 @@ export class WorkflowStore {
     const scalar = (sql: string): number => Number(
       (this.db.prepare(sql).get() as { count: number }).count,
     );
+    const inspectorGates = (this.db.prepare(
+      `SELECT * FROM workflow_runs
+        WHERE gate_state_json IS NOT NULL
+          AND status IN (
+            'waiting_for_pr', 'waiting_for_inspector',
+            'waiting_for_new_head', 'blocked'
+          )`,
+    ).all() as unknown[]).reduce<number>((count, row) => {
+      try {
+        return inspectorGateState(parseWorkflowRunRow(row)) ? count + 1 : count;
+      } catch (error) {
+        diagnose(error);
+        return count;
+      }
+    }, 0);
     return {
       activeRuns: scalar(
         `SELECT COUNT(*) AS count FROM workflow_runs
@@ -3388,14 +3413,7 @@ export class WorkflowStore {
       uncertainDeliveries: scalar(
         `SELECT COUNT(*) AS count FROM workflow_deliveries WHERE state = 'uncertain'`,
       ),
-      inspectorGates: scalar(
-        `SELECT COUNT(*) AS count FROM workflow_runs
-          WHERE gate_state_json IS NOT NULL
-            AND status IN (
-              'waiting_for_pr', 'waiting_for_inspector',
-              'waiting_for_new_head', 'blocked'
-            )`,
-      ),
+      inspectorGates,
       retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
     };
   }

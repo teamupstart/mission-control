@@ -12,33 +12,31 @@ process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
-const { recordWorkEpisodePrompt } = await import("../src/server/db.ts");
 const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
- * A merged pull request has to END its task.
+ * A task whose work SHIPPED has to end as `done`, not as `failed`.
  *
- * Nothing did that. `maybeMerge` retires its own ledger row and returns; no poller
- * touched the task. So a shipped task sat `running` forever, and the cost was not
- * cosmetic - it compounded twice over. `activeAgentCount` counts that session against
- * `maxSessions`, and `agentIsFree` refuses an agent that still has a non-terminal task
- * bound to it, so a finished agent simultaneously occupied a fleet slot AND was
- * ineligible to be given anything. A fleet silts up at its ceiling with agents that are
- * done: observed as 9 active against a max of 7, two ready backlog items, nothing
- * launching.
+ * Nothing used to end a task on merge at all - `maybeMerge` retires its own ledger row
+ * and returns, and no poller touched the task - so a shipped task sat `running` until
+ * its agent went away and then settled as `failed`, "ended with no outcome recorded".
+ * That is wrong twice: the outcome exists (it is the pull request), and `failed` reports
+ * as a `stopped` blocker, so every task declared to wait on it deadlocks behind work that
+ * actually landed.
  *
- * Two properties are pinned here, and the second is the one most likely to be broken by
- * someone tidying up later:
+ * The interesting part is WHEN it may be concluded, and the first design got it wrong in
+ * a way that looked right. Completing when the merge is observed - or a fixed delay
+ * afterwards - treats a timeout as proof the episode ended. It is not: an agent routinely
+ * lands an intermediate pull request and carries on, and an operator can merge, read the
+ * diff for a minute, and only then tell the agent to continue. Any fixed window is
+ * outrunnable, and the task is already terminal when the prompt arrives.
  *
- *  1. Settling is NOT gated on YOLO mode. The same stranded row happens when a human
- *     merges on GitHub, which is the commoner path, and `autoMerge` ships off - so a fix
- *     hung off `maybeMerge` would have covered almost nothing and shipped dark.
- *  2. It does NOT fire when the agent kept working. A merge of some intermediate pull
- *     request, followed by another prompt, is not the end of the task; the registry's own
- *     `rolledOver` answer is what separates the two, and this is what stops someone
- *     "simplifying" the guard away.
+ * So the conclusion is drawn at a boundary a later prompt CANNOT outrun - the agent
+ * actually going away - and the merge is read from the durable binding row rather than
+ * from a clock. While an agent is still being given work it is still here, so nothing
+ * concludes anything; once it is gone, no prompt is coming.
  */
 
 const PR = "https://github.com/example/repo/pull/77";
@@ -84,8 +82,7 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
 /** A session with a running task bound to its current work episode. */
 function fleet(id: string) {
   const registry = new Registry();
-  // Zero delay: the ORDERING is what these tests are about, not the wall clock.
-  const tasks = new TaskManager(registry, { mergeSettleMs: 0 });
+  const tasks = new TaskManager(registry);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({
@@ -120,61 +117,28 @@ function merge(f: ReturnType<typeof fleet>): void {
   );
 }
 
-/** Let the deferred settle (scheduled at 0ms here) run to completion. */
-const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+/** The durable "this agent is gone for good" signal - Registry's eviction. */
+function agentGone(f: ReturnType<typeof fleet>): void {
+  f.registry.emit("event", { type: "session_remove", id: f.id });
+}
 
-// ---- the settle itself -----------------------------------------------------------------
+// ---- a merge alone concludes nothing -----------------------------------------------------
 
-test("a merged pull request marks its task done, recording the PR as the outcome", async () => {
+test("a merge does NOT complete the task while its agent is still here", () => {
+  // The heart of the Inspector's finding. The agent may have landed an intermediate pull
+  // request and be about to be told to carry on; nothing observable at merge time can
+  // rule that out, so the merge alone must not be terminal.
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-settle");
+  const f = fleet("s-alive");
   merge(f);
-  await flush();
-  const t = f.registry.getTask(f.taskId)!;
-  assert.equal(t.status, "done");
-  assert.equal(t.outcomeUrl, PR);
-  assert.match(t.outcome ?? "", /merged/);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
-test("it settles with YOLO mode OFF - a human's merge strands a task just the same", async () => {
-  // The property the whole design turns on. `autoMerge` defaults to false, so a fix
-  // hung off `maybeMerge` would never have run for most merges.
-  setShippingConfig({ autoMerge: false, closeSessionAfterMerge: false });
-  const f = fleet("s-yolo-off");
-  merge(f);
-  await flush();
-  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
-});
-
-test("a task an operator already completed is not reopened by a late sweep", async () => {
+test("an agent prompted long after its merge still owns a running task", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-idempotent");
-  f.tasks.complete(f.taskId, "done by hand");
-  merge(f);
-  await flush();
-  const t = f.registry.getTask(f.taskId)!;
-  assert.equal(t.status, "done");
-  assert.equal(t.outcome, "done by hand");
-});
-
-test("a cancelled task is left cancelled", async () => {
-  setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-cancelled");
-  const cur = f.registry.getTask(f.taskId)!;
-  f.registry.upsertTask({ ...cur, status: "cancelled" });
-  merge(f);
-  await flush();
-  assert.equal(f.registry.getTask(f.taskId)?.status, "cancelled");
-});
-
-// ---- the agent kept working ------------------------------------------------------------
-
-test("a prompt recorded before the merge is seen keeps the task running", async () => {
-  setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-rollover");
+  const f = fleet("s-late-prompt");
   const episode = f.registry.workEpisodeForSession(f.id)!;
-  const mergedAt = Date.now();
-  recordWorkEpisodePrompt(f.id, episode.episodeId, mergedAt + 1000);
+  const mergedAt = episode.startedAt + 10;
   f.registry.reconcilePrs(
     new Map([[f.id, prMatch({
       state: "merged",
@@ -185,19 +149,63 @@ test("a prompt recorded before the merge is seen keeps the task running", async 
     })]]),
     new Set(),
   );
-  await flush();
+  // A minute later, by the clock or by the operator reading the diff - it makes no
+  // difference, because nothing is counting.
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "now do the follow-up",
+    ts: mergedAt + 60_000,
+  });
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
-test("a prompt that arrives AFTER the merge was seen still keeps the task running", async () => {
-  // The ordering that makes the delay necessary rather than merely tidy, and the one a
-  // synchronous settle gets wrong: the poller sees the merge, and only then does the
-  // agent get told to carry on. Nothing checkable at merge time can see that prompt, so
-  // the answer has to be re-asked afterwards - which is what the episode id comparison
-  // in `settleMergedTask` does. Pinned here because "simplifying" the wait away passes
-  // every other test in this file.
+// ---- the boundary that concludes it ------------------------------------------------------
+
+test("once the agent is gone, a merged task settles as done with the PR as its outcome", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-late-prompt");
+  const f = fleet("s-gone-merged");
+  merge(f);
+  agentGone(f);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  assert.match(t.outcome ?? "", /merged/);
+});
+
+test("it concludes with YOLO mode OFF - a human's merge lands a task just the same", () => {
+  // `autoMerge` ships off, so anything hung off `maybeMerge` would cover almost nothing.
+  // The signal is the merge itself, whoever performed it.
+  setShippingConfig({ autoMerge: false, closeSessionAfterMerge: false });
+  const f = fleet("s-yolo-off");
+  merge(f);
+  agentGone(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+});
+
+test("an agent that went away with NO merge still fails, exactly as before", () => {
+  // The other half of the contract: this must not turn every orphaned task into a
+  // success. `failed` keeps its meaning - ended with no outcome recorded.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-gone-unmerged");
+  agentGone(f);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "failed");
+  assert.match(t.error ?? "", /no outcome recorded/);
+});
+
+test("an agent that rolled onto new work and then vanished fails, not lands", () => {
+  // Deliberate, and the tempting alternative is wrong. A rollover means the agent was
+  // given MORE work; vanishing mid-flight leaves that work unlanded, so reporting the
+  // earlier merge as this task's outcome would claim a success for something that never
+  // finished. Only the episode the agent was actually on may conclude the task, which is
+  // why `mergedPrFor` reads the current binding and not the historical ones.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-rolled");
   const episode = f.registry.workEpisodeForSession(f.id)!;
   const mergedAt = episode.startedAt + 10;
   f.registry.reconcilePrs(
@@ -217,22 +225,44 @@ test("a prompt that arrives AFTER the merge was seen still keeps the task runnin
     cwd: `/repo/${f.id}`,
     transcriptPath: null,
     env: {},
-    prompt: "continue with the next change",
+    prompt: "carry on",
     ts: mergedAt + 1,
   });
-  await flush();
-  assert.notEqual(
-    f.registry.workEpisodeForSession(f.id)?.episodeId,
-    episode.episodeId,
-    "the agent should have rolled onto a new work episode",
-  );
-  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
+  agentGone(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "failed");
 });
 
-// ---- the config only governs the AGENT --------------------------------------------------
+test("a task an operator already completed is not rewritten", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-idempotent");
+  f.tasks.complete(f.taskId, "done by hand");
+  merge(f);
+  agentGone(f);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, "done by hand");
+});
 
-test("closeSessionAfterMerge defaults off, and off still settles the task", () => {
-  // "Off" must not read as "nothing happens": the completion is what makes the agent
-  // reusable at all, and it is deliberately not behind this switch.
+test("a cancelled task is left cancelled", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-cancelled");
+  const cur = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({ ...cur, status: "cancelled" });
+  merge(f);
+  agentGone(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "cancelled");
+});
+
+// ---- the switch only governs the AGENT ---------------------------------------------------
+
+test("closeSessionAfterMerge defaults off", () => {
   assert.equal(ShippingConfigSchema.parse({}).closeSessionAfterMerge, false);
+});
+
+test("with the switch off, a merge leaves the session alone", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-keep");
+  merge(f);
+  assert.ok(f.registry.getSession(f.id), "the session should still be here");
 });

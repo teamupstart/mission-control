@@ -2586,26 +2586,37 @@ verbatim, because that is the only account you get of a rule nothing here can re
 
 ### When a task's pull request merges
 
-A merge ends the task it came from. The task is marked **done** with the pull request as
-its outcome, and this is not optional and **not tied to YOLO mode** - a pull request you
-merged yourself on GitHub settles its task exactly the same way.
+A task whose pull request merged ends as **done**, with that pull request as its outcome,
+instead of as `failed`. This is **not tied to YOLO mode** - a pull request you merged
+yourself on GitHub lands its task exactly the same way.
 
-That is deliberate, because a task left `running` after its work shipped costs more than a
-stale row. A live session counts against the `maxSessions` ceiling for as long as it
-exists, *and* the backlog autopilot refuses to hand work to an agent that still has a
-non-terminal task bound to it - so a finished agent both occupies a slot and is ineligible
-to use it. A fleet fills up with agents that have nothing left to do.
+It matters because `failed` means "ended with no outcome recorded", and a failed task
+reports as a *stopped* blocker - so every task declared to wait on it deadlocks behind
+work that actually shipped. A task left unsettled costs more than a stale row, too: a live
+session counts against the `maxSessions` ceiling, *and* the backlog autopilot refuses to
+hand work to an agent that still has a non-terminal task bound to it, so a finished agent
+both occupies a slot and is ineligible to use it.
 
-An agent that was **prompted again after its merge** keeps its task. Landing an
-intermediate pull request part-way through a task is not the end of that task, and the
-work-episode rollover is what tells the two apart.
+**The merge alone does not end the task** - the agent going away does. An agent routinely
+lands an intermediate pull request and carries on, and you might merge, read the diff for
+a minute, and only then tell it to continue; no delay after the merge is long enough to
+rule that out. So the merge is recorded durably when it happens, and the conclusion is
+drawn at the one boundary a later prompt cannot outrun. While an agent is still being
+given work it is still there, and nothing concludes anything.
+
+An agent that was given **new work after its merge** and then vanished mid-flight still
+fails, rather than reporting the earlier merge as its outcome: that later work never
+landed, and saying otherwise would claim a success for it.
 
 What happens to the agent is yours to choose, in **Settings → Shipping**:
 
 | Close the session after merge | What happens |
 |---|---|
-| **off** (default) | The agent stays with its checkout and its context. Now that its task is settled it counts as free, so the autopilot may hand it the next backlog task in place - no worktree to provision, but it carries the previous task's context into the next one |
-| **on** | The agent is killed, freeing a fleet slot for a fresh dispatch. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+| **off** (default) | The agent stays, with its checkout and its context. Its task lands whenever that agent does finish and go away |
+| **on** | Landing the pull request ends the session, which frees a fleet slot for a fresh dispatch and lands the task through the same path. Its worktree is reclaimed **only** when nothing would be lost - uncommitted or untracked files keep the checkout, and the task row keeps its **Clean up** button |
+
+An agent that is still **working** is never closed mid-turn, even with the switch on: the
+merge is recorded either way, so its task lands correctly whenever it does finish.
 
 The reclaim is conditional on purpose: a merge proves the *committed* work landed and says
 nothing about files still sitting unsaved in that checkout, and reclaiming runs

@@ -36,6 +36,10 @@ import {
   validateSessionNameAgainstTasks,
   type ActionResult,
 } from "./actions.ts";
+import {
+  historicalTaskWorkEpisodeBindingsForTask,
+  taskWorkEpisodeForTask,
+} from "./db.ts";
 import { resetSession } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
@@ -189,20 +193,7 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
-  /** Pending post-merge settles, by task id. See `scheduleMergeSettle`. */
-  private mergeSettles = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly mergeSettleMs: number;
-
-  constructor(
-    private registry: Registry,
-    /**
-     * How long to wait after a merge before deciding it ended the task. Injectable so a
-     * test can drive the real ordering without sleeping through it; see
-     * `scheduleMergeSettle` for why a delay is required rather than merely tidy.
-     */
-    opts: { mergeSettleMs?: number } = {},
-  ) {
-    this.mergeSettleMs = opts.mergeSettleMs ?? 20_000;
+  constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -237,56 +228,30 @@ export class TaskManager {
     registry.onSessionsObserved(() => this.reconcileTasksWithNoLiveSession());
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
-    registry.onTaskPrMerged((e) => this.scheduleMergeSettle(e));
+    registry.onTaskPrMerged((e) => void this.settleMergedTask(e));
   }
 
   /**
-   * Wait out the window in which a merge turns out NOT to have ended the task.
+   * A task's pull request merged. End its agent, if the operator asked for that.
    *
-   * The delay is the whole correctness argument, so it is not a politeness timer. The
-   * merge is seen by a poller; the prompt that CONTINUES a task arrives on its own
-   * schedule and is routinely a beat later - Mission Control's own shipping flow lands a
-   * pull request and then keeps talking to the agent. Settling the instant the merge is
-   * observed therefore closes tasks out from under agents that are still working, and no
-   * amount of checking at that instant can see a prompt that has not happened yet. Pinned
-   * by `task-dependencies.test.ts`'s "post-merge episode rollover preserves running task
-   * ownership", which is what caught this.
+   * Note what this does NOT do: complete the task. That was the first design and it was
+   * wrong for a reason worth recording, because it looks right and passes its own tests.
+   * A merge is not proof the task is over - an agent routinely lands an intermediate pull
+   * request and carries on - and no check made when the merge is OBSERVED can see a
+   * prompt that has not arrived yet. Deferring the check by a timer only moves the
+   * guess: an operator who merges, reads the diff for a minute, and then tells the agent
+   * to continue outruns any fixed window, and their task is already terminal.
    *
-   * So the answer is deferred and then RE-ASKED against the world: if the agent was
-   * prompted meanwhile it has rolled onto a new work episode, and the id no longer
-   * matches. Re-arming per task rather than stacking timers keeps a PR observed on
-   * several sweeps to one pending settle.
-   */
-  private scheduleMergeSettle(e: TaskPrMerged): void {
-    clearTimeout(this.mergeSettles.get(e.taskId));
-    const timer = setTimeout(() => {
-      this.mergeSettles.delete(e.taskId);
-      void this.settleMergedTask(e);
-    }, this.mergeSettleMs);
-    // Never hold the daemon open for one of these.
-    timer.unref?.();
-    this.mergeSettles.set(e.taskId, timer);
-  }
-
-  /**
-   * Close a task whose pull request merged, and decide what becomes of its agent.
+   * So completion moved to the one boundary a later prompt cannot outrun - the agent
+   * actually going away - and reads the merge from the durable record rather than from a
+   * clock. See `agentWentAway`.
    *
-   * The completion half is UNCONDITIONAL and deliberately not behind any setting. Nothing
-   * used to end a task on merge - not `maybeMerge`, not the pollers - so a shipped task
-   * sat `running` forever. That is not cosmetic: `activeAgentCount` counts its session
-   * against `maxSessions`, and `agentIsFree` refuses to reuse an agent that still has a
-   * non-terminal task bound, so a finished agent both occupied a slot AND was ineligible
-   * for work. A fleet silts up at its ceiling with agents that are done. Observed as
-   * 9 active against a max of 7 with ready backlog items and nothing launching.
-   *
-   * A merged pull request is the strongest evidence this app has that work landed - it is
-   * already the ONLY evidence `blockersIn` accepts for a declared dependency - so the
-   * task's own row is held to the same standard rather than a weaker one.
-   *
-   * `satisfyDependents` is deliberately NOT passed. The merge itself already closed those
-   * edges, through the same reconciliation that emitted this event; passing it would be a
-   * second, weaker justification for something already justified properly, and would
-   * quietly widen the operator-only override into an automatic one.
+   * What is left here is the disposition of the agent, which is a preference and is
+   * behind a switch. `closeSessionAfterMerge` means "this agent's job was that pull
+   * request", so landing it ends the session; the completion then happens through
+   * `agentWentAway` like any other. A session still WORKING is left alone even so: the
+   * merge is durably recorded either way, so whenever that agent does finish its task
+   * settles correctly, and we never kill an agent mid-turn to satisfy a setting.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
@@ -294,21 +259,35 @@ export class TaskManager {
   private async settleMergedTask(e: TaskPrMerged): Promise<void> {
     try {
       const t = this.registry.getTask(e.taskId);
-      // Idempotent by status, the same shape `agentWentAway` uses: the pollers can
-      // observe one merge more than once, and a task an operator already completed or
-      // cancelled must not be reopened by a late sweep.
       if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
-      // Asked now rather than when the merge was seen: this is the question the delay
-      // above exists to be able to answer. A different current episode means the agent
-      // was prompted after its pull request landed, so the merge did not end its task.
-      const current = this.registry.workEpisodeForSession(e.sessionId);
-      if (current && current.episodeId !== e.episodeId) return;
-      this.complete(e.taskId, `merged ${e.url}`, e.url);
       if (!getShippingConfig().closeSessionAfterMerge) return;
+      const session = this.registry.getSession(e.sessionId);
+      if (session?.state === "working") return;
       await this.closeMergedSession(e);
     } catch (error) {
-      console.error("[merge] settling merged task failed:", e.taskId, error);
+      console.error("[merge] closing merged session failed:", e.taskId, error);
     }
+  }
+
+  /**
+   * The pull request this task's work episode produced, if one was observed merged.
+   *
+   * Read from `task_work_episode_bindings`, which `markWorkEpisodeMerged` stamps at the
+   * moment the merge is seen. That is the durable acknowledgement the settle needs: it
+   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a
+   * timer it is a FACT rather than an inference.
+   *
+   * The CURRENT binding only, deliberately, and the rejected alternative is the
+   * interesting half. Walking historical bindings too would let a task whose episode
+   * rolled over after its merge still report `done` - but a rollover means the agent was
+   * given more work, and an agent that then vanishes mid-flight left that work unlanded.
+   * Reporting the earlier merge would claim a success for it. So a task is `done` only
+   * when the work its agent was ACTUALLY on when it went away is the work that merged;
+   * anything else stays `failed`, which is the honest answer and the recoverable one.
+   */
+  private mergedPrFor(taskId: string): string | null {
+    const binding = taskWorkEpisodeForTask(taskId);
+    return binding?.mergedAt !== null && binding?.prUrl ? binding.prUrl : null;
   }
 
   /**
@@ -396,6 +375,18 @@ export class TaskManager {
    */
   private agentWentAway(t: Task): void {
     if (t.status !== "running" && t.status !== "dispatching") return;
+    // The agent is gone AND its work landed, which is the one combination that means the
+    // task finished rather than merely stopped. This is the boundary a later prompt
+    // cannot outrun: while an agent is still being given work it is still here, so
+    // nothing reaches this line; once it is gone, no prompt is coming. `failed` below
+    // says "ended with no outcome recorded", and a merged pull request IS the outcome -
+    // reporting it as a failure would strand every task declared to wait on this one
+    // behind a `stopped` blocker, for work that shipped.
+    const merged = this.mergedPrFor(t.id);
+    if (merged) {
+      this.complete(t.id, `merged ${merged}`, merged);
+      return;
+    }
     const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
     const now = Date.now();
     this.registry.upsertTask({

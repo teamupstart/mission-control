@@ -69,10 +69,17 @@ test("it counts the tasks the completion would release, and offers to release th
   assert.match(html, /Phase 3: the dashboard/);
 });
 
-test("with no open PR the box is pre-ticked - nothing will ever merge to satisfy them", () => {
+test("an UNKNOWN pr state leaves the box clear - null is 'not polled yet', not 'no PR'", () => {
+  // The poller runs seconds behind and clears the field when it fails, so `null` is at
+  // its most likely right after an agent opens a pull request - which is exactly when
+  // releasing dependents onto a base without its commits does the most damage. Unknown
+  // is treated as unmerged, not as safe.
   const html = renderComplete(sessionWithTask({ prState: null }));
-  assert.match(html, /type="checkbox"[^>]*checked=""/);
-  assert.match(html, /never produce/);
+  assert.doesNotMatch(html, /type="checkbox"[^>]*checked=""/);
+  assert.match(html, /stay blocked until a pull request from this work is merged/);
+  // And the tooltip on the box the operator would have to tick says what it costs,
+  // rather than describing an unknown state as if it were a safe one.
+  assert.match(html, /may not hold its commits/);
 });
 
 test("an open PR leaves the box CLEAR, and says what ticking it would cost", () => {
@@ -83,9 +90,10 @@ test("an open PR leaves the box CLEAR, and says what ticking it would cost", () 
   assert.match(html, /until a pull request from this work is merged/);
 });
 
-test("a merged PR counts as no obstacle, so the box is pre-ticked", () => {
+test("only a positively observed merge pre-ticks the box", () => {
   const html = renderComplete(sessionWithTask({ prState: "merged" }));
   assert.match(html, /type="checkbox"[^>]*checked=""/);
+  assert.match(html, /will be cut from a branch that contains it/);
 });
 
 test("with nothing waiting there is no checkbox to answer", () => {

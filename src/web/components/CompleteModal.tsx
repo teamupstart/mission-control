@@ -37,9 +37,13 @@ export function CompleteModal({
 }): React.JSX.Element {
   const task = session.task;
   const [outcome, setOutcome] = useState("");
-  // Pre-ticked only where there is no unmerged PR standing between this work and the
-  // base the next task will be cut from. See the note above.
-  const [satisfy, setSatisfy] = useState(session.prState !== "open");
+  // Pre-ticked ONLY on a positively observed merge. `null` is the trap: it means the
+  // poller has not answered yet - it runs seconds behind, and a failed poll clears the
+  // field - not that there is no pull request. Reading it as "nothing to worry about"
+  // pre-ticks the override in exactly the window right after an agent opens a PR, which
+  // is when releasing dependents onto a base without its commits does the most damage.
+  // Unknown gets the same answer as unmerged: leave it clear and let the operator say so.
+  const [satisfy, setSatisfy] = useState(session.prState === "merged");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -132,9 +136,9 @@ export function CompleteModal({
               <label className="complete-satisfy">
                 <Tooltip
                   label={
-                    session.prState === "open"
-                      ? "Satisfies their dependency on this task even though its pull request is not merged - they will be cut from the default branch without its commits"
-                      : "Satisfies their dependency on this task, which a merged pull request would otherwise be the only way to do"
+                    session.prState === "merged"
+                      ? "Satisfies their dependency on this task, which its merged pull request already evidences"
+                      : "Satisfies their dependency on this task without a merged pull request - they will be cut from the default branch, which may not hold its commits"
                   }
                 >
                   <input
@@ -152,11 +156,13 @@ export function CompleteModal({
             )}
             {dependents.length > 0 && (
               <p className="complete-satisfy-why">
-                {satisfy
-                  ? session.prState === "open"
-                    ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
-                    : "Otherwise they wait for a merged pull request, which this work will never produce."
-                  : "They stay blocked until a pull request from this work is merged."}
+                {!satisfy
+                  ? "They stay blocked until a pull request from this work is merged."
+                  : session.prState === "merged"
+                    ? "This work is merged, so those tasks will be cut from a branch that contains it."
+                    : session.prState === "open"
+                      ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
+                      : "No merged pull request has been observed for this session, so those tasks may be cut from a branch without its commits."}
               </p>
             )}
             {dependents.length > 0 && (

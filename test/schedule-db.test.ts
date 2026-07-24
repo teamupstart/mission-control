@@ -515,6 +515,81 @@ test("the claim and the cursor advance together, or not at all", () => {
   assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, T0 + 2 * HOUR);
 });
 
+test("a Run now that lands on the cron grid does not wedge the cursor for ever", () => {
+  // The deadlock this rules out: Run now mints its own instant and never advances the
+  // cursor. If that instant IS the current cron instant, the manual row takes the shared
+  // (schedule_id, scheduled_for) key - so every later scheduled claim loses, and if a lost
+  // claim left the cursor alone the schedule would stay permanently due and never file
+  // work again, silently.
+  const s = mkSchedule({}, true, T0 + HOUR);
+  const manual = store.claimOccurrence({
+    occurrenceId: uid("occ"),
+    scheduleId: s.id,
+    scheduleRevision: 1,
+    scheduledFor: T0 + HOUR, // deliberately exactly the cursor
+    triggerKind: "manual",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + HOUR,
+    delayMs: 0,
+    advanceCursor: false,
+    nextRunAt: null,
+  });
+  assert.equal(manual.outcome, "claimed");
+  assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, T0 + HOUR, "Run now left the cursor");
+
+  const tick = store.claimOccurrence({
+    occurrenceId: uid("occ"),
+    scheduleId: s.id,
+    scheduleRevision: 1,
+    scheduledFor: T0 + HOUR,
+    triggerKind: "scheduled",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + HOUR,
+    delayMs: 0,
+    advanceCursor: true,
+    nextRunAt: T0 + 2 * HOUR,
+  });
+  assert.equal(tick.outcome, "already_exists");
+  assert.equal(
+    store.getSchedule(s.id, T0)!.nextRunAt,
+    T0 + 2 * HOUR,
+    "the instant is accounted for, so the cursor must move past it",
+  );
+});
+
+test("a lost claim can only move the cursor forward, never drag it back", () => {
+  // The other half of that repair. A cursor already past this instant belongs to a later
+  // claim that won; pulling it back would re-enumerate work the ledger has settled.
+  const s = mkSchedule({}, true, T0 + HOUR);
+  claimOne(s.id, T0 + HOUR); // wins, cursor -> T0 + 2h
+  claimOne(s.id, T0 + 2 * HOUR); // wins, cursor -> T0 + 3h
+  assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, T0 + 3 * HOUR);
+
+  const stale = store.claimOccurrence({
+    occurrenceId: uid("occ"),
+    scheduleId: s.id,
+    scheduleRevision: 1,
+    scheduledFor: T0 + HOUR, // an instant the ledger settled two claims ago
+    triggerKind: "scheduled",
+    decisionKind: "create_task",
+    taskId: uid("task"),
+    coveredById: null,
+    blockingTaskId: null,
+    claimedAt: T0 + HOUR,
+    delayMs: 0,
+    advanceCursor: true,
+    nextRunAt: T0 + 2 * HOUR,
+  });
+  assert.equal(stale.outcome, "already_exists");
+  assert.equal(store.getSchedule(s.id, T0)!.nextRunAt, T0 + 3 * HOUR, "cursor unmoved");
+});
+
 test("a claim against a superseded revision writes nothing at all", () => {
   const s = mkSchedule();
   store.updateSchedule(s.id, definition({ name: "Edited" }), T0 + 5 * HOUR, T0 + HOUR);

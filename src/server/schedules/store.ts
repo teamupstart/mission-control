@@ -772,9 +772,10 @@ export type ScheduleClaimResult =
  *
  *  - `claimed`: this call won. The occurrence exists as `claimed` and, if it owned the
  *    cursor, the cursor moved in the same transaction.
- *  - `already_exists`: the instant was already reserved. The cursor is deliberately NOT
- *    touched, because the claim that won moved it in its own transaction; touching it
- *    here could only move it backwards.
+ *  - `already_exists`: the instant was already reserved. The cursor still advances, but
+ *    only forward - an instant that holds a ledger row is accounted for whoever put it
+ *    there, and a Run now that landed on the cron grid would otherwise wedge the cursor
+ *    on it for ever. See the branch itself.
  *  - `schedule_changed`: the schedule was archived or edited between the decision and
  *    this call, so the reservation would be recorded against a revision that is no longer
  *    in force. Nothing is written. Phase 2 re-reads and decides again under the new
@@ -840,6 +841,28 @@ export function claimOccurrence(input: ScheduleClaimInput): ScheduleClaimResult 
       // The row has to be there - the conflict is what brought us here - but reading it
       // back is what lets the caller name the winner instead of assuming.
       if (!existing) return { outcome: "schedule_changed" as const };
+      // A LOST claim still advances the cursor, and this is not belt-and-braces: the
+      // cursor means "the next instant not yet accounted for", and an instant holding a
+      // ledger row is accounted for no matter who put it there.
+      //
+      // Leaving it alone deadlocks on one specific collision. Run now mints its own
+      // instant and never advances the cursor; if that instant lands on the cron grid -
+      // exactly the current cursor, or a future instant the cursor later reaches - the
+      // manual row occupies the shared (schedule_id, scheduled_for) key. The tick then
+      // enumerates that instant, loses the claim, and would leave the cursor where it
+      // was: permanently due, never advancing, no work ever filed again, and nothing on
+      // screen to say so. Phase 2 is expected to mint manual instants off the grid, but
+      // the ledger must not depend on a caller's convention to avoid a silent stall.
+      //
+      // Guarded to move FORWARD only. A cursor already past this instant belongs to a
+      // later claim that won, and dragging it back would re-enumerate work the ledger has
+      // already settled.
+      if (input.advanceCursor) {
+        d.prepare(
+          `UPDATE mission_schedules SET next_run_at = ?, updated_at = ?
+            WHERE id = ? AND next_run_at IS NOT NULL AND next_run_at <= ?`,
+        ).run(input.nextRunAt, input.claimedAt, input.scheduleId, input.scheduledFor);
+      }
       return { outcome: "already_exists" as const, occurrence: rowToOccurrence(existing) };
     }
 

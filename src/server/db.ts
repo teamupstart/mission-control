@@ -169,6 +169,15 @@ export function openDb(): DatabaseSync {
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       terminal_resource_id TEXT,
       session_id    TEXT,
+      -- Which recurring mission filed this task, and for which instant. All three NULL
+      -- on every task a human dispatched, an MCP call created, or a task source swept -
+      -- which is every task that existed before Recurring Missions. Deliberately NOT
+      -- folded into source_id/external_id above: a task source reads an EXTERNAL system
+      -- and dedupes against task_source_seen, where a schedule is internal state whose
+      -- identity is (schedule_id, scheduled_for) and lives in its own occurrence ledger.
+      schedule_id            TEXT,
+      schedule_occurrence_id TEXT,
+      scheduled_for          INTEGER,
       status        TEXT NOT NULL,
       outcome       TEXT,
       outcome_url   TEXT,
@@ -723,6 +732,94 @@ export function openDb(): DatabaseSync {
     -- so it can serve no query that one cannot, and it costs a write per row.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
       ON inspector_comments(pr_key, fingerprint);
+
+    -- ---- recurring missions ----
+    --
+    -- One row per schedule the operator created. The TEMPLATE is not here: it lives on
+    -- the immutable revision this row points at, because history has to be able to say
+    -- what a run was configured to do at the moment it ran, and a rename must not
+    -- rewrite what already happened.
+    CREATE TABLE IF NOT EXISTS mission_schedules (
+      id             TEXT PRIMARY KEY,
+      name           TEXT NOT NULL,
+      enabled        INTEGER NOT NULL DEFAULT 0,
+      archived_at    INTEGER,           -- archived: hidden from the catalog, deletes nothing
+      expression     TEXT NOT NULL,     -- five cron fields, canonical spacing
+      timezone       TEXT NOT NULL,     -- canonical IANA id, as Intl resolved it
+      overlap_policy TEXT NOT NULL,
+      missed_policy  TEXT NOT NULL,
+      execution_mode TEXT NOT NULL,
+      runner_id      TEXT,              -- always NULL in V1; the always-on host, later
+      revision       INTEGER NOT NULL,  -- -> mission_schedule_revisions.revision
+      -- The durable cursor, in UTC epoch milliseconds. This, not an in-memory timer, is
+      -- what makes catch-up correct: timers stop when the laptop sleeps and are lost on
+      -- restart, and neither event may lose a due instant. NULL only for paused,
+      -- archived, or uncomputable.
+      next_run_at    INTEGER,
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL
+    );
+    -- The tick asks "which enabled, unarchived schedules are due?" on a bounded loop.
+    CREATE INDEX IF NOT EXISTS idx_mission_schedules_due
+      ON mission_schedules(enabled, next_run_at);
+
+    -- Immutable. An edit inserts revision n+1 and repoints the schedule; nothing here is
+    -- ever updated. Cadence and policies are COPIED rather than joined because they are
+    -- what explain a historical decision, and the schedule's current values do not.
+    CREATE TABLE IF NOT EXISTS mission_schedule_revisions (
+      schedule_id    TEXT NOT NULL,
+      revision       INTEGER NOT NULL,
+      template_json  TEXT NOT NULL,
+      expression     TEXT NOT NULL,
+      timezone       TEXT NOT NULL,
+      overlap_policy TEXT NOT NULL,
+      missed_policy  TEXT NOT NULL,
+      execution_mode TEXT NOT NULL,
+      runner_id      TEXT,
+      created_at     INTEGER NOT NULL,
+      PRIMARY KEY (schedule_id, revision)
+    );
+
+    -- The exactly-once ledger. One row per (schedule, instant), and the UNIQUE index is
+    -- the guarantee itself rather than a check somewhere in TypeScript: two ticks, two
+    -- processes or a restart mid-claim all collide on the same key, and exactly one wins.
+    --
+    -- Both key columns are NOT NULL, which is load-bearing. SQLite treats NULLs as
+    -- distinct, so a nullable column in an index you ON CONFLICT against turns the upsert
+    -- back into an insert and the row multiplies on every retry - here that would be a
+    -- duplicate agent task per tick.
+    CREATE TABLE IF NOT EXISTS mission_schedule_occurrences (
+      id                TEXT PRIMARY KEY,
+      schedule_id       TEXT NOT NULL,
+      schedule_revision INTEGER NOT NULL,  -- the revision in force at claim time
+      scheduled_for     INTEGER NOT NULL,  -- the instant this is FOR, not when it ran
+      trigger_kind      TEXT NOT NULL,     -- scheduled | manual (Run now)
+      -- The intent RESERVED with the claim, before any task exists. Immutable, and the
+      -- reason recovery can finish a crashed claim at all: without it, a restart would
+      -- have to recompute policy from a schedule the operator may have edited in the
+      -- meantime, and a pending coalesce would come back as something else.
+      decision_kind     TEXT NOT NULL,
+      claimed_at        INTEGER NOT NULL,
+      finished_at       INTEGER,
+      status            TEXT NOT NULL,     -- claimed is the only non-terminal value
+      task_id           TEXT,              -- preallocated at claim, so recovery can find it
+      covered_by_id     TEXT,              -- the later occurrence that represented this one
+      blocking_task_id  TEXT,              -- the still-active task behind a skipped_overlap
+      delay_ms          INTEGER NOT NULL DEFAULT 0,
+      error             TEXT,
+      created_at        INTEGER NOT NULL,
+      UNIQUE (schedule_id, scheduled_for)
+    );
+    -- History is drawn newest-first and paged on scheduled_for; the UNIQUE index above is
+    -- (schedule_id, scheduled_for) already, so this exists only for the DESC scan.
+    CREATE INDEX IF NOT EXISTS idx_mission_occurrences_history
+      ON mission_schedule_occurrences(schedule_id, scheduled_for DESC);
+    -- Crash recovery sweeps every unfinished reservation, across all schedules.
+    CREATE INDEX IF NOT EXISTS idx_mission_occurrences_recovery
+      ON mission_schedule_occurrences(status, claimed_at);
+    -- A generated task deep-links back to the run that filed it.
+    CREATE INDEX IF NOT EXISTS idx_mission_occurrences_task
+      ON mission_schedule_occurrences(task_id);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -783,6 +880,25 @@ function migrate(d: DatabaseSync): void {
   // and the autopilot would go quiet with nothing on screen to explain it.
   addColumn(d, "tasks", "enabled", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
+  // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
+  // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
+  // already have and every task write would fail on three columns that never appeared.
+  // All three nullable with no default, and no backfill: there were no scheduled tasks
+  // before this feature, so NULL is the true answer for every existing row rather than a
+  // placeholder standing in for one.
+  addColumn(d, "tasks", "schedule_id", "TEXT");
+  addColumn(d, "tasks", "schedule_occurrence_id", "TEXT");
+  addColumn(d, "tasks", "scheduled_for", "INTEGER");
+  // The one index in this file that cannot live beside its table. The CREATE TABLE block
+  // runs BEFORE migrate(), so on an upgrading database this statement would reference a
+  // column the ALTER above has not added yet and openDb() would throw on first start -
+  // for every existing operator, not just for a fresh install nobody would notice.
+  //
+  // The overlap check ("is this schedule's previous work still in flight?") runs once per
+  // due instant per tick and is bounded by schedule, so it wants the pair. Nullable
+  // columns are fine here: unlike the occurrence ledger's UNIQUE index this one is never
+  // conflicted against, so SQLite treating NULLs as distinct costs nothing.
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_schedule ON tasks(schedule_id, status);`);
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
@@ -1639,6 +1755,9 @@ interface TaskRow {
   home_name: string | null;
   terminal_resource_id: string | null;
   session_id: string | null;
+  schedule_id: string | null;
+  schedule_occurrence_id: string | null;
+  scheduled_for: number | null;
   status: string;
   outcome: string | null;
   outcome_url: string | null;
@@ -1760,6 +1879,9 @@ function rowToTask(r: TaskRow): Task {
     homeName: r.home_name,
     terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
+    scheduleId: r.schedule_id,
+    scheduleOccurrenceId: r.schedule_occurrence_id,
+    scheduledFor: r.scheduled_for,
     status: r.status as TaskStatus,
     outcome: r.outcome,
     outcomeUrl: r.outcome_url,
@@ -1791,9 +1913,11 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
-         provider, home_name, terminal_resource_id, session_id, status, outcome, outcome_url, error,
+         provider, home_name, terminal_resource_id, session_id,
+         schedule_id, schedule_occurrence_id, scheduled_for,
+         status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -1803,6 +1927,9 @@ export function upsertTask(t: Task): string[] {
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, home_name=excluded.home_name,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
+         schedule_id=excluded.schedule_id,
+         schedule_occurrence_id=excluded.schedule_occurrence_id,
+         scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
@@ -1818,7 +1945,9 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
-      t.homeName, t.terminalResourceId, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.homeName, t.terminalResourceId, t.sessionId,
+      t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
+      t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
     if (ownsTransaction) d.exec("COMMIT");

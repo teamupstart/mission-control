@@ -1215,6 +1215,43 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
+## Recurring missions (foundation only, so far)
+
+A **recurring mission** is a durable template that files an ordinary backlog task on a
+cadence: "audit dependencies every Monday at 8am". It is deliberately not a
+[task source](#task-sources-pulling-work-into-the-backlog) - a source reads an *external*
+system and dedupes against what it has already seen, where a schedule is internal state
+whose identity is the pair `(schedule, instant)`.
+
+**Nothing is operable yet.** What has landed is the persistence and time-calculation
+contract: the shared vocabulary, one timezone-aware recurrence evaluator, three SQLite
+tables, and three nullable provenance columns on `tasks`. There is no scheduler loop, no
+route and no UI, so with no way to create a schedule the tables stay empty and the product
+behaves exactly as before. The catalog, the exactly-once scheduler and the Missions overlay
+arrive in later phases; the plan is
+[`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).
+
+Three decisions are worth knowing now, because everything later is built on them:
+
+- **A due instant creates a backlog task and stops there.** No schedule path will dispatch,
+  cut a worktree, or type into a pane. If [Foreman](#backlog-autopilot-foreman-schedules-the-fleet)
+  later picks the task up, the existing allowlist, dependency, capacity and pane-safety
+  gates remain the only autonomous route to execution.
+- **The guarantee is durable catch-up, not wall-clock.** The cadence lives in SQLite rather
+  than in a timer, so a restart or a closed laptop loses no due instant - but no work runs
+  while the machine is asleep, and the task is created *late* when it wakes. The catalog
+  will show that delay rather than rounding it off. A real wall-clock guarantee needs an
+  always-on host, which is a separate project.
+- **One hour is the minimum interval, and seconds are not expressible.** Cadences are five
+  cron fields; six-field seconds syntax is refused rather than parsed, and an expression
+  whose runs come closer than an hour apart is refused with the cadence it would have had.
+  A mistyped field should not be able to file 1,440 agent tasks in a day.
+
+Time is calculated in exactly one place, `src/server/schedules/recurrence.ts`, which is the
+only consumer of `cron-parser`. DST behaviour is pinned by fixtures against both US
+transitions, Europe/London, and a southern-hemisphere zone, so a dependency upgrade that
+moves somebody's 2am mission fails the suite instead.
+
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live

@@ -3456,7 +3456,17 @@ export class Registry extends EventEmitter {
   private taskSummaryFor(sessionId: string, cwd: string | null): TaskSummary | null {
     const t = this.activeTaskFor(sessionId, cwd);
     return t
-      ? { id: t.id, title: t.title, kind: t.kind, status: t.status, outcome: t.outcome, outcomeUrl: t.outcomeUrl }
+      ? {
+          id: t.id,
+          title: t.title,
+          kind: t.kind,
+          status: t.status,
+          outcome: t.outcome,
+          outcomeUrl: t.outcomeUrl,
+          scheduleId: t.scheduleId,
+          scheduleOccurrenceId: t.scheduleOccurrenceId,
+          scheduledFor: t.scheduledFor,
+        }
       : null;
   }
 

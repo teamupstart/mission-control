@@ -279,6 +279,12 @@ strangers' pull requests. Test: `inspector-adoption.test.ts`.
 
 **New column on an existing table** → editing the `CREATE TABLE IF NOT EXISTS` block is not
 enough. Add an `addColumn` call in `migrate()` (`src/server/db.ts`). New tables need nothing.
+**An INDEX over that new column cannot live beside its table**: the CREATE block runs
+BEFORE `migrate()`, so on an upgrading database the statement references a column the ALTER
+has not added yet and `openDb()` throws on first start - for every existing operator, and
+never on the fresh install you tested. `idx_tasks_schedule` is the worked example; it sits
+in `migrate()` under the `addColumn` calls it depends on. Test: `schedule-db.test.ts`,
+which seeds a pre-feature database rather than a fresh one for exactly this reason.
 
 **No backticks inside `openDb()`'s SQL block.** It is one template literal, so a backtick in
 a `--` comment ends it and the file stops parsing. Name identifiers bare.
@@ -302,8 +308,22 @@ an external node, and `skills/` is reached through a symlink.
 **Append-only**, since old values persist on users' machines: skill directory prefixes in
 `src/shared/skills.ts`, the task source kind ids in `TASK_SOURCE_KINDS`
 (`src/shared/task-source.ts`), the background-job ids in `LLM_JOB_IDS`
-(`src/shared/llm-jobs.ts`), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback
-chain in `src/shared/harness-runtime.mjs`.
+(`src/shared/llm-jobs.ts`), the six schedule enums in `@shared/schedules.ts`
+(`SCHEDULE_EXECUTION_MODES` / `_OVERLAP_POLICIES` / `_MISSED_POLICIES` / `_TRIGGER_KINDS` /
+`_DECISION_KINDS` / `_OCCURRENCE_STATUSES`), and the `MISSION_` / `FLEET_` / `HARNESS_` env
+fallback chain in `src/shared/harness-runtime.mjs`.
+
+**A persisted enum this build cannot read is a `null`, never a nearest match.** The schedule
+store (`src/server/schedules/store.ts`) is where that is worked out: a row written by a
+NEWER build still loads - a schedule nobody can see is one nobody can fix - but every field
+that could carry an unknown value is `T | null` on `MissionSchedule` / `ScheduleRevision`,
+so a caller cannot reach a policy without saying what it does when there isn't one.
+`scheduleIsRunnable` / `revisionIsRunnable` are the single narrowing gates that answer it,
+and the row reports `unreadable` and derives `attention`. The failure this shape rules out
+is specific: reading an unknown `execution_mode` as `local-catchup` would create work on
+THIS laptop that the operator scheduled for a different host, and a default in the mapper
+is how that happens silently. Note the catalog reads the schedule row and the claim reads
+the revision, so each has to refuse independently. Test: `schedule-db.test.ts`.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
 marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are

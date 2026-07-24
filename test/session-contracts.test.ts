@@ -95,6 +95,34 @@ test("nested summaries are compared structurally", () => {
   assert.equal(sessionEqual(mkSession(), mkSession({ nomistakesFixes: [FIX] })), false);
 });
 
+test("schedule provenance rides inside Session.task, and a change to it still emits", () => {
+  // Recurring Missions added three fields to `TaskSummary` rather than to `Session`,
+  // which is only safe because `task` compares with `byJson`. If it were ever narrowed to
+  // a field list, a session would render its scheduled provenance once from the snapshot
+  // and then never update - the exact silent failure this file exists to catch.
+  const summary = {
+    id: "t1",
+    title: "Audit dependencies",
+    kind: "ship" as const,
+    status: "running" as const,
+    outcome: null,
+    outcomeUrl: null,
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+  };
+  assert.equal(sessionEqual(mkSession({ task: summary }), mkSession({ task: summary })), true);
+  assert.equal(
+    sessionEqual(
+      mkSession({ task: summary }),
+      mkSession({
+        task: { ...summary, scheduleId: "sch-1", scheduleOccurrenceId: "occ-1", scheduledFor: 5 },
+      }),
+    ),
+    false,
+  );
+});
+
 test("orphanedQueue emits - the bug the comparator record documents", () => {
   // A queue is orphaned only once ANOTHER session is evicted, so the session whose
   // hint changes need not have changed in any way of its own. Leaving this out of

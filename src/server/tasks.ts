@@ -511,6 +511,13 @@ export class TaskManager {
       homeName: null,
       terminalResourceId: null,
       sessionId: null,
+      // No schedule filed this. Every caller of `create` is a human or an external
+      // system - the dispatch form, an MCP tool, a task source sweep - and none of them
+      // has an occurrence to point at. Phase 2 of Recurring Missions adds the internal,
+      // recovery-safe producer that populates all three together.
+      scheduleId: null,
+      scheduleOccurrenceId: null,
+      scheduledFor: null,
       status: input.backlog || mustBacklog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,

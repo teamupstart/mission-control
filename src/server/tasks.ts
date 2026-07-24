@@ -249,6 +249,7 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
+  private reschedulingTasks = new Set<string>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
   private autoCompleted = new Map<string, string>();
   constructor(
@@ -1484,6 +1485,9 @@ export class TaskManager {
     satisfyDependents = false,
     requireStopped = false,
   ): Task | null {
+    if (requireStopped && this.reschedulingTasks.has(id)) {
+      throw new TaskStatusConflictError("task is being rescheduled");
+    }
     const t = this.registry.getTask(id);
     if (!t) return null;
     if (requireStopped && t.status !== "cancelled" && t.status !== "failed") {
@@ -1562,6 +1566,9 @@ export class TaskManager {
    * under the same prerequisites, which the backlog re-evaluates on the next plan.
    */
   async reschedule(id: string): Promise<Ok> {
+    if (this.reschedulingTasks.has(id)) {
+      return { ok: false, error: "task is being rescheduled" };
+    }
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (t.status !== "cancelled" && t.status !== "failed") {
@@ -1570,43 +1577,48 @@ export class TaskManager {
         error: `task is ${t.status}, only a cancelled or failed task can be rescheduled`,
       };
     }
-    this.autoCompleted.delete(id);
-    if (t.worktreePath || t.homeName) {
-      try {
-        await teardownWorktree(this.registry.getTask(id) ?? t);
-      } catch (error) {
+    this.reschedulingTasks.add(id);
+    try {
+      this.autoCompleted.delete(id);
+      if (t.worktreePath || t.homeName) {
+        try {
+          await teardownWorktree(this.registry.getTask(id) ?? t);
+        } catch (error) {
+          return {
+            ok: false,
+            error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      }
+      const cur = this.registry.getTask(id);
+      if (!cur) return { ok: false, error: "no such task" };
+      if (cur.status !== "cancelled" && cur.status !== "failed") {
         return {
           ok: false,
-          error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+          error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
         };
       }
+      this.registry.upsertTask({
+        ...cur,
+        status: "backlog",
+        enabled: true,
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        homeName: null,
+        terminalResourceId: null,
+        sessionId: null,
+        outcome: null,
+        outcomeUrl: null,
+        error: null,
+        dispatchedAt: null,
+        completedAt: null,
+        updatedAt: Date.now(),
+      });
+      return { ok: true };
+    } finally {
+      this.reschedulingTasks.delete(id);
     }
-    const cur = this.registry.getTask(id);
-    if (!cur) return { ok: false, error: "no such task" };
-    if (cur.status !== "cancelled" && cur.status !== "failed") {
-      return {
-        ok: false,
-        error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
-      };
-    }
-    this.registry.upsertTask({
-      ...cur,
-      status: "backlog",
-      enabled: true,
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      homeName: null,
-      terminalResourceId: null,
-      sessionId: null,
-      outcome: null,
-      outcomeUrl: null,
-      error: null,
-      dispatchedAt: null,
-      completedAt: null,
-      updatedAt: Date.now(),
-    });
-    return { ok: true };
   }
 
   /**

@@ -138,6 +138,30 @@ test("rescheduling does not resurrect a task removed during resource teardown", 
 
   assert.deepEqual(r, { ok: false, error: "no such task" });
   assert.equal(registry.getTask("removed-during-teardown"), undefined);
+
+  registry.upsertTask(mkTask({ id: "removed-during-teardown", status: "failed" }));
+  assert.equal((await tasks.reschedule("removed-during-teardown")).ok, true);
+});
+
+test("a reschedule reservation refuses duplicate and stopped-only completion", async () => {
+  const { registry, tasks } = setup();
+  registry.upsertTask(mkTask({
+    id: "resolving",
+    status: "failed",
+    homeName: "mission-test-reschedule-race-resolving",
+  }));
+
+  const pending = tasks.reschedule("resolving");
+  const duplicate = await tasks.reschedule("resolving");
+  assert.deepEqual(duplicate, { ok: false, error: "task is being rescheduled" });
+  assert.throws(
+    () => tasks.complete("resolving", "landed", undefined, true, true),
+    /task is being rescheduled/,
+  );
+  assert.equal(registry.getTask("resolving")!.status, "failed");
+
+  assert.equal((await pending).ok, true);
+  assert.equal(registry.getTask("resolving")!.status, "backlog");
 });
 
 test("rescheduling does not overwrite a status changed during resource teardown", async () => {

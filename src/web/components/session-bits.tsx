@@ -906,6 +906,7 @@ export function DeadBlockerButton({
   busy = false,
   onReschedule,
   onComplete,
+  onOpenChange,
 }: {
   /** The cancelled/failed tasks blocking this card, from `deadBlockersFor`. */
   deadBlockers: Task[];
@@ -915,16 +916,31 @@ export function DeadBlockerButton({
   onReschedule: (taskId: string) => void;
   /** Mark the dead task done (its work already landed), releasing this card. */
   onComplete: (taskId: string) => void;
+  onOpenChange?: (open: boolean) => void;
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
+  const openRef = useRef(false);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const changeOpen = (next: boolean): void => {
+    openRef.current = next;
+    setOpen(next);
+    onOpenChangeRef.current?.(next);
+  };
+  useEffect(
+    () => () => {
+      if (openRef.current) onOpenChangeRef.current?.(false);
+    },
+    [],
+  );
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) changeOpen(false);
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") changeOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -953,7 +969,7 @@ export function DeadBlockerButton({
           aria-label={`Blocked by a stopped task: ${summary}`}
           aria-expanded={open}
           disabled={busy}
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => changeOpen(!open)}
         >
           <ChecksFailedIcon />
         </button>
@@ -976,7 +992,7 @@ export function DeadBlockerButton({
                       disabled={busy}
                       onClick={() => {
                         onReschedule(d.id);
-                        setOpen(false);
+                        changeOpen(false);
                       }}
                     >
                       Reschedule
@@ -988,7 +1004,7 @@ export function DeadBlockerButton({
                       disabled={busy}
                       onClick={() => {
                         onComplete(d.id);
-                        setOpen(false);
+                        changeOpen(false);
                       }}
                     >
                       Mark done

@@ -29,6 +29,7 @@ function BacklogReportRow({
 }): React.JSX.Element {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
+  const [deadBlockerOpen, setDeadBlockerOpen] = useState(false);
   const blockers = declaredBlockers(task, tasks);
 
   async function setEnabled(enabled: boolean): Promise<void> {
@@ -52,7 +53,11 @@ function BacklogReportRow({
   }
 
   return (
-    <div className={`report-row${task.enabled ? "" : " is-disabled"}`}>
+    <div
+      className={`report-row${task.enabled ? "" : " is-disabled"}${
+        deadBlockerOpen ? " is-deadblock-open" : ""
+      }`}
+    >
       <div className="report-row-main report-row-stack">
         <span className="report-line">
           <Tooltip label="Open this task for editing">
@@ -73,6 +78,7 @@ function BacklogReportRow({
           <DeadBlockerButton
             deadBlockers={deadBlockers}
             busy={toggleBusy}
+            onOpenChange={setDeadBlockerOpen}
             onReschedule={(id) => void resolveDead((deadId) => api.rescheduleTask(deadId), id)}
             onComplete={(id) =>
               void resolveDead(

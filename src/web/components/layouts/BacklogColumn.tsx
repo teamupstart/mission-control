@@ -142,6 +142,7 @@ function BacklogCard({
   onEdit: () => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  const [deadBlockerOpen, setDeadBlockerOpen] = useState(false);
   const blocked = blockers.length > 0;
   const declaredBlocked = blockers.some((blocker) => blocker.source === "declared");
 
@@ -193,7 +194,7 @@ function BacklogCard({
     <article
       className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
         nextUp ? " is-next" : ""
-      }${task.enabled ? "" : " is-disabled"}`}
+      }${task.enabled ? "" : " is-disabled"}${deadBlockerOpen ? " is-deadblock-open" : ""}`}
       // Foreman's inferred edge remains overridable. An operator-declared dependency is
       // policy, so both drag-to-assign and launch are disabled until it completes.
       draggable={!busy && !declaredBlocked}
@@ -299,6 +300,7 @@ function BacklogCard({
         busy={busy}
         onReschedule={(id) => void rescheduleDead(id)}
         onComplete={(id) => void completeDead(id)}
+        onOpenChange={setDeadBlockerOpen}
       />
       {/* The CONSEQUENCE, not the setting - the switch above already says which way it
           is set, and repeating "disabled" here would be the card saying one fact twice,

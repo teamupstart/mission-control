@@ -4955,6 +4955,13 @@ kbd {
 .report-row.is-disabled .report-row-main {
   opacity: 0.72;
 }
+.report-row.is-deadblock-open {
+  position: relative;
+  z-index: 6;
+}
+.report-row.is-deadblock-open .report-row-main {
+  opacity: 1;
+}
 .report-row-main {
   display: flex;
   align-items: center;
@@ -9640,6 +9647,11 @@ kbd {
    difference at the distance the column is read from. */
 .bl-card.is-disabled {
   opacity: 0.72;
+}
+.bl-card.is-deadblock-open {
+  position: relative;
+  z-index: 6;
+  opacity: 1;
 }
 .bl-blocked,
 .bl-off,

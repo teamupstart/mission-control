@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
@@ -122,4 +123,28 @@ test("a downstream card inherits the warning through a chain, not just the direc
     containsMarkup(column([dep1, dep2], all, plan), bit([dead])),
     "the downstream card must inherit the same dead-blocker button",
   );
+});
+
+test("an open resolver elevates its host above adjacent blocked cards", () => {
+  const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
+  const cardRule = css.match(/\.bl-card\.is-deadblock-open\s*\{([^}]*)\}/)?.[1] ?? "";
+  const rowRule = css.match(/\.report-row\.is-deadblock-open\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(cardRule, /z-index:\s*[1-9]/);
+  assert.match(cardRule, /opacity:\s*1/);
+  assert.match(rowRule, /z-index:\s*[1-9]/);
+
+  const dead = mkTask({ id: "dead", title: "Phase 1", status: "failed" });
+  const phase2 = mkTask({ id: "phase-2", title: "Phase 2" });
+  const phase3 = mkTask({ id: "phase-3", title: "Phase 3" });
+  const phase4 = mkTask({ id: "phase-4", title: "Phase 4" });
+  const html = column(
+    [phase2, phase3, phase4],
+    [dead, phase2, phase3, phase4],
+    planFor([
+      ["phase-2", ["dead"]],
+      ["phase-3", ["phase-2"]],
+      ["phase-4", ["phase-3"]],
+    ]),
+  );
+  assert.equal(html.match(/class="bl-card is-blocked"/g)?.length, 3);
 });

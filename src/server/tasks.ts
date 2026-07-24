@@ -443,7 +443,10 @@ export class TaskManager {
     ) {
       return;
     }
-    await this.closeMergedSessionDeps.kill(currentSession);
+    const killed = await this.closeMergedSessionDeps.kill(currentSession);
+    if (!killed.ok) {
+      throw new Error(killed.error ?? "could not close the merged task's session");
+    }
     if (holding !== null) {
       console.log(
         `[merge] task ${e.taskId}: session closed, checkout kept - ${holding}. ` +

@@ -362,6 +362,42 @@ test("work resuming during the close probe cancels the pending session close", a
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
+test("a failed session close keeps the inferred completion reversible", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const closeAttempted = deferred();
+  const f = fleet("s-close-failed", false, {
+    resetWouldDestroyWork: async () => null,
+    kill: async () => {
+      closeAttempted.resolve();
+      return { ok: false, error: "agent refused to stop" };
+    },
+  });
+  const active = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...active,
+    worktreePath: null,
+    updatedAt: active.updatedAt + 1,
+  });
+
+  merge(f);
+  await closeAttempted.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const completed = f.registry.getTask(f.taskId)!;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.sessionId, f.id, "a failed close must not reclaim or unbind the task");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue after the failed close",
+  });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
 // ---- the conclusion is reversible --------------------------------------------------------
 
 test("an agent that resumes work reopens the task we concluded from its idleness", () => {

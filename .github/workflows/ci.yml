@@ -51,6 +51,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Electron 42+ downloads its runtime on first use instead of during npm install.
+      # Provision it explicitly so GUI fixtures only exercise the application under test.
+      - name: Install Electron test runtime
+        run: npm exec -- install-electron --no
+
       - name: Typecheck
         run: npm run typecheck
 

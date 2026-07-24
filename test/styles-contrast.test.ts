@@ -25,14 +25,6 @@ function token(name: string): string {
   return hex;
 }
 
-function lightToken(name: string): string {
-  const block = css.match(/@media \(prefers-color-scheme: light\) \{\s*:root \{([\s\S]*?)\n  \}\n\}/)?.[1];
-  assert.ok(block, "light theme token block is missing");
-  const value = block.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`))?.[1];
-  assert.ok(value, `light theme token --${name} is missing`);
-  return value;
-}
-
 /** WCAG relative luminance. */
 function luminance(hex: string): number {
   const channel = (i: number): number => {
@@ -82,20 +74,31 @@ test("the text ramp stays a ramp", () => {
   }
 });
 
-test("workflow state tones clear AA in both light and dark themes", () => {
+test("workflow state tones clear AA on the dark surfaces", () => {
   const tones = ["working", "idle", "attention", "danger", "dim"];
-  for (const theme of ["dark", "light"] as const) {
-    const read = theme === "dark" ? token : lightToken;
-    for (const tone of tones) {
-      for (const surface of ["bg", "panel", "panel-2"]) {
-        const ratio = contrast(read(tone), read(surface));
-        assert.ok(
-          ratio >= 4.5,
-          `${theme} --${tone} on --${surface} is ${ratio.toFixed(2)}:1, under the workflow AA floor`,
-        );
-      }
+  for (const tone of tones) {
+    for (const surface of ["bg", "panel", "panel-2"]) {
+      const ratio = contrast(token(tone), token(surface));
+      assert.ok(
+        ratio >= 4.5,
+        `--${tone} on --${surface} is ${ratio.toFixed(2)}:1, under the workflow AA floor`,
+      );
     }
   }
+});
+
+test("the app stays dark-only - no OS light-mode override", () => {
+  // Mission Control is dark-only by design: there is no theme toggle anywhere
+  // (no `data-theme`, no settings control), and `:root` hardcodes the dark tokens.
+  // A `@media (prefers-color-scheme: light)` block flips every token to white on a
+  // light-mode OS with no way to force dark - which is exactly the regression #213
+  // shipped. Keep this file free of a light override until the app grows a real,
+  // user-controllable theme.
+  assert.doesNotMatch(
+    css,
+    /prefers-color-scheme:\s*light/,
+    "styles.css must not carry a light-mode override - the app is dark-only",
+  );
 });
 
 test("workflow fail, uncertain, focus, disabled, and stale states have non-color labels", () => {

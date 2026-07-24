@@ -92,6 +92,41 @@ test("repeating an internal create returns the same task and rewrites nothing", 
   assert.equal(db.listTasks().filter((t) => t.id === "reserved-2").length, 1);
 });
 
+test("idempotency compares the scheduled instant as part of durable provenance", () => {
+  tasks.create(input(), { id: "reserved-instant", schedule: provenance("occ-instant") });
+
+  assert.throws(
+    () =>
+      tasks.create(input(), {
+        id: "reserved-instant",
+        schedule: {
+          ...provenance("occ-instant"),
+          scheduledFor: SCHEDULED_FOR + 1,
+        },
+      }),
+    TaskIdCollisionError,
+  );
+  assert.equal(db.getTask("reserved-instant")?.scheduledFor, SCHEDULED_FOR);
+});
+
+test("a collision hidden from the Registry cache still fails closed", () => {
+  const source = db.getTask("reserved-1")!;
+  db.upsertTask({
+    ...source,
+    id: "durable-only",
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+  });
+  assert.equal(registry.getTask("durable-only"), undefined);
+
+  assert.throws(
+    () => tasks.create(input(), { id: "durable-only", schedule: provenance("occ-durable") }),
+    TaskIdCollisionError,
+  );
+  assert.equal(db.getTask("durable-only")?.scheduleId, null);
+});
+
 test("a reserved id belonging to another occurrence is corruption, and fails closed", () => {
   tasks.create(input(), { id: "reserved-3", schedule: provenance("occ-3") });
 

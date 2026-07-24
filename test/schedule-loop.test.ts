@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { startScheduleManager } from "../src/server/schedules/loop.ts";
 
 // What is at stake: the loop is the only thing in the daemon that ever calls the
@@ -218,4 +219,20 @@ test("the stop closure clears the pending timer and no tick runs after it", asyn
   await flush();
   assert.deepEqual(calls, ["recover:open", "tick"]);
   assert.equal(timers.state.scheduled.length, 0, "and nothing was scheduled on the way out");
+});
+
+test("the daemon starts open-claim recovery only after winning its listen port", () => {
+  const source = readFileSync(new URL("../src/server/index.ts", import.meta.url), "utf8");
+  const declaration = source.indexOf("let stopSchedules = () => {};");
+  const listen = source.indexOf("const server = serve(");
+  const start = source.indexOf("stopSchedules = startScheduleManager(schedules);");
+  const shutdown = source.indexOf("async function shutdown");
+
+  assert.ok(declaration >= 0 && declaration < listen, "shutdown owns a no-op stopper before listen");
+  assert.ok(start > listen && start < shutdown, "startup recovery is inside the listen callback");
+  assert.equal(
+    source.slice(declaration, listen).includes("startScheduleManager(schedules)"),
+    false,
+    "a daemon that loses the port cannot sweep another daemon's open claims",
+  );
 });

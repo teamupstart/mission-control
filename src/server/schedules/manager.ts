@@ -77,6 +77,9 @@ export interface ScheduleNotifier {
 
 const NOOP_NOTIFIER: ScheduleNotifier = { upsert() {}, remove() {} };
 
+/** Largest catch-up whose occurrence accounting is planned as one policy decision. */
+const SCHEDULE_CATCHUP_ACCOUNTING_MAX = 10_000;
+
 // ---- what the manager needs from the rest of the daemon ----
 
 /**
@@ -216,6 +219,7 @@ export class ScheduleManager {
   private readonly resolveRepoRoot: (path: string) => Promise<TaskRepoRoot>;
   private notifier: ScheduleNotifier;
   private readonly log: ScheduleLog;
+  private readonly operationTails = new Map<string, Promise<void>>();
 
   constructor(deps: ScheduleManagerDeps) {
     this.tasks = deps.tasks;
@@ -334,7 +338,7 @@ export class ScheduleManager {
       nextRunAt,
       at,
     });
-    this.notifier.upsert(schedule);
+    this.notifySchedule(schedule);
     this.log("created", { schedule: schedule.id, enabled, nextRunAt });
     return { ok: true, schedule };
   }
@@ -373,7 +377,7 @@ export class ScheduleManager {
       at,
     );
     if (!schedule) return refuse("name", `no schedule ${id}`);
-    this.notifier.upsert(schedule);
+    this.notifySchedule(schedule);
     this.log("updated", {
       schedule: id,
       revision: schedule.revision,
@@ -409,7 +413,7 @@ export class ScheduleManager {
       : null;
     const schedule = store.setScheduleEnabled(id, enabled, nextRunAt, at);
     if (!schedule) return refuse("name", `no schedule ${id}`);
-    this.notifier.upsert(schedule);
+    this.notifySchedule(schedule);
     this.log(enabled ? "resumed" : "paused", { schedule: id, nextRunAt });
     return { ok: true, schedule };
   }
@@ -419,7 +423,7 @@ export class ScheduleManager {
     const at = this.now();
     const schedule = store.archiveSchedule(id, at);
     if (!schedule) return null;
-    this.notifier.upsert(schedule);
+    this.notifySchedule(schedule);
     this.log("archived", { schedule: id });
     return schedule;
   }
@@ -510,6 +514,10 @@ export class ScheduleManager {
    * its own, but avoiding it keeps a manual run from ever standing in for a scheduled one.
    */
   async runNow(id: string): Promise<ScheduleRunNowResult> {
+    return this.withScheduleLock(id, () => this.runNowLocked(id));
+  }
+
+  private async runNowLocked(id: string): Promise<ScheduleRunNowResult> {
     const at = this.now();
     const schedule = store.getSchedule(id, at);
     if (!schedule) return { ok: false, error: `no schedule ${id}` };
@@ -538,7 +546,7 @@ export class ScheduleManager {
 
     const settled = await this.settle(claim.occurrence, revision, decision, at);
     const after = store.getSchedule(id, this.now());
-    if (after) this.notifier.upsert(after);
+    if (after) this.notifySchedule(after);
     this.log("run-now", {
       schedule: id,
       occurrence: settled.id,
@@ -567,9 +575,11 @@ export class ScheduleManager {
     },
     at: number,
   ): { occurrence: ScheduleOccurrence } | null {
-    // Cron instants are minute-aligned, so an odd offset can never be one.
-    let scheduledFor = at % 60_000 === 0 ? at + 1 : at;
+    let scheduledFor = at;
     for (let attempt = 0; attempt < 100; attempt++) {
+      // A collision can step onto the next minute boundary, so enforce this for every
+      // candidate rather than only the clock value the first attempt started from.
+      if (scheduledFor % 60_000 === 0) scheduledFor += 1;
       const result = store.claimOccurrence({
         occurrenceId: this.uuid(),
         scheduleId: id,
@@ -613,7 +623,9 @@ export class ScheduleManager {
     for (const schedule of store.dueSchedules(now)) {
       summary.schedules++;
       try {
-        await this.tickSchedule(schedule, now, summary);
+        await this.withScheduleLock(schedule.id, () =>
+          this.tickSchedule(schedule, now, summary),
+        );
       } catch (err) {
         // Contained per schedule: one mission with an unreadable template must not stop
         // the rest of the catalog from running.
@@ -664,16 +676,7 @@ export class ScheduleManager {
       return;
     }
 
-    // `between` is exclusive at the bottom and the cursor instant is itself due, so the
-    // window opens one millisecond before it. Cron instants are minute-aligned, so that
-    // millisecond can hold nothing else.
-    const instants = this.recurrence.between(
-      revision.expression,
-      revision.timezone,
-      cursor - 1,
-      now,
-      SCHEDULE_BETWEEN_MAX,
-    );
+    const instants = this.catchupInstants(schedule.id, revision, cursor, now);
 
     if (instants.length === 0) {
       this.repairStuckCursor(schedule, revision, cursor, now);
@@ -769,7 +772,63 @@ export class ScheduleManager {
     }
 
     const after = store.getSchedule(schedule.id, this.now());
-    if (after) this.notifier.upsert(after);
+    if (after) this.notifySchedule(after);
+  }
+
+  /**
+   * Enumerate one catch-up in recurrence-sized pages, then let policy judge it once.
+   *
+   * The page bound protects recurrence evaluation, while this separate ceiling protects
+   * policy allocation. Applying policy to each page would turn one coalesce-latest
+   * catch-up into several tasks and reset create-all's task cap on every page.
+   */
+  private catchupInstants(
+    scheduleId: string,
+    revision: RunnableScheduleRevision,
+    cursor: number,
+    now: number,
+  ): number[] {
+    const instants: number[] = [];
+    // `between` is exclusive at the bottom and the cursor instant is itself due, so the
+    // first page opens one millisecond before it.
+    let after = cursor - 1;
+
+    while (instants.length < SCHEDULE_CATCHUP_ACCOUNTING_MAX) {
+      const limit = Math.min(
+        SCHEDULE_BETWEEN_MAX,
+        SCHEDULE_CATCHUP_ACCOUNTING_MAX - instants.length,
+      );
+      const page = this.recurrence.between(
+        revision.expression,
+        revision.timezone,
+        after,
+        now,
+        limit,
+      );
+      if (page.length === 0) break;
+      instants.push(...page);
+      after = page[page.length - 1]!;
+      if (page.length < limit) break;
+    }
+
+    if (
+      instants.length === SCHEDULE_CATCHUP_ACCOUNTING_MAX &&
+      this.recurrence.between(
+        revision.expression,
+        revision.timezone,
+        after,
+        now,
+        1,
+      ).length > 0
+    ) {
+      this.log("catchup-accounting-capped", {
+        schedule: scheduleId,
+        due: instants.length,
+        limit: SCHEDULE_CATCHUP_ACCOUNTING_MAX,
+      });
+    }
+
+    return instants;
   }
 
   /**
@@ -799,7 +858,7 @@ export class ScheduleManager {
       to: next,
     });
     const after = store.getSchedule(schedule.id, now);
-    if (after) this.notifier.upsert(after);
+    if (after) this.notifySchedule(after);
   }
 
   /**
@@ -837,6 +896,17 @@ export class ScheduleManager {
     // a doomed task says nothing until somebody tries to dispatch it.
     const repo = await this.resolveRepoRoot(revision.template.repoRoot);
     if (!repo.ok) return this.fail(occurrence, repo.error, at);
+
+    const schedule = store.getSchedule(occurrence.scheduleId, this.now());
+    if (!schedule || schedule.archivedAt !== null) {
+      return (
+        store.finishOccurrence({
+          id: occurrence.id,
+          status: "cancelled",
+          finishedAt: this.now(),
+        }) ?? occurrence
+      );
+    }
 
     try {
       const task = this.tasks.create(
@@ -932,7 +1002,9 @@ export class ScheduleManager {
     for (const occurrence of claims) {
       summary.claims++;
       try {
-        await this.recoverOne(occurrence, now, summary);
+        await this.withScheduleLock(occurrence.scheduleId, () =>
+          this.recoverOne(occurrence, now, summary),
+        );
       } catch (err) {
         summary.failed++;
         this.log("recovery-error", {
@@ -992,7 +1064,8 @@ export class ScheduleManager {
     if (existing) {
       if (
         existing.scheduleId !== occurrence.scheduleId ||
-        existing.scheduleOccurrenceId !== occurrence.id
+        existing.scheduleOccurrenceId !== occurrence.id ||
+        existing.scheduledFor !== occurrence.scheduledFor
       ) {
         // The reserved id belongs to somebody else's task. Not a retry - corruption - and
         // the task is left exactly as it is.
@@ -1051,7 +1124,41 @@ export class ScheduleManager {
     if (settled.status === "created") summary.recoveredBeforeTask++;
     else summary.failed++;
     const after = store.getSchedule(occurrence.scheduleId, now);
-    if (after) this.notifier.upsert(after);
+    if (after) this.notifySchedule(after);
+  }
+
+  private notifySchedule(schedule: MissionSchedule): void {
+    if (schedule.archivedAt === null) this.notifier.upsert(schedule);
+    else this.notifier.remove(schedule.id);
+  }
+
+  /**
+   * Serialize the decision, claim, and task persistence for one schedule.
+   *
+   * The daemon is the only database writer, but Run now and the scheduler loop are still
+   * concurrent promises in that process. Without this critical section both can observe
+   * no active task under skip-active, reserve work, and file it after an awaited repo check.
+   */
+  private async withScheduleLock<T>(
+    scheduleId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.operationTails.get(scheduleId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.operationTails.set(scheduleId, tail);
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.operationTails.get(scheduleId) === tail)
+        this.operationTails.delete(scheduleId);
+    }
   }
 }
 

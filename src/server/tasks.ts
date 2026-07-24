@@ -37,6 +37,7 @@ import {
   type ActionResult,
 } from "./actions.ts";
 import {
+  getTask as getDurableTask,
   historicalTaskWorkEpisodeBindingsForTask,
   taskWorkEpisodeForTask,
 } from "./db.ts";
@@ -695,12 +696,13 @@ export class TaskManager {
       // reserved an id that belongs to somebody else's task - and writing over it would
       // rewrite a stranger's work as a recurring mission. Fail closed and let the
       // occurrence record `failed`, which is visible, rather than "succeeding" quietly.
-      const existing = this.registry.getTask(id);
+      const existing = getDurableTask(id);
       if (existing) {
         const p = internal.schedule;
         if (
           existing.scheduleId !== p.scheduleId ||
-          existing.scheduleOccurrenceId !== p.scheduleOccurrenceId
+          existing.scheduleOccurrenceId !== p.scheduleOccurrenceId ||
+          existing.scheduledFor !== p.scheduledFor
         ) {
           throw new TaskIdCollisionError(
             `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,

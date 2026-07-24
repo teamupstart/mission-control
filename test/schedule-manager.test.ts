@@ -30,6 +30,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { ScheduleManager } = await import("../src/server/schedules/manager.ts");
 const { SCHEDULE_CATCHUP_CREATE_CAP } = await import("../src/shared/schedules.ts");
 type CreateScheduleInput = import("../src/server/schedules/manager.ts").CreateScheduleInput;
+type ScheduleManagerDeps = import("../src/server/schedules/manager.ts").ScheduleManagerDeps;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -53,6 +54,8 @@ interface Harness {
   clock: { now: number };
   /** Every schedule the notifier was told about, in order. */
   notified: MissionSchedule[];
+  /** Every schedule the notifier was told to remove from the live catalog. */
+  removed: string[];
 }
 
 /**
@@ -62,29 +65,38 @@ interface Harness {
  * of one test apart from another's in the single shared database - and makes an assertion
  * about a preallocated id readable.
  */
-function harness(label: string): Harness {
+function harness(
+  label: string,
+  deps: Partial<
+    Pick<ScheduleManagerDeps, "resolveRepoRoot" | "recurrence" | "log">
+  > = {},
+): Harness {
   // Retire everything an earlier test left running. `tick` sweeps the WHOLE catalog by
   // design - that is the behaviour under test - so one live schedule per test is what
   // keeps a summary's counters attributable to the schedule the test is about.
   for (const existing of store.listSchedules()) store.archiveSchedule(existing.id, T0 - 1);
   const clock = { now: T0 };
   const notified: MissionSchedule[] = [];
+  const removed: string[] = [];
   let n = 0;
   const manager = new ScheduleManager({
     tasks,
     now: () => clock.now,
     uuid: () => `${label}-${++n}`,
-    resolveRepoRoot: async (path: string) =>
-      repos.has(path)
-        ? { ok: true as const, repoRoot: path }
-        : { ok: false as const, error: `not a git repository: ${path}` },
+    resolveRepoRoot:
+      deps.resolveRepoRoot ??
+      (async (path: string) =>
+        repos.has(path)
+          ? { ok: true as const, repoRoot: path }
+          : { ok: false as const, error: `not a git repository: ${path}` }),
+    recurrence: deps.recurrence,
     notifier: {
       upsert: (schedule) => notified.push(schedule),
-      remove: () => {},
+      remove: (id) => removed.push(id),
     },
-    log: () => {},
+    log: deps.log ?? (() => {}),
   });
-  return { manager, clock, notified };
+  return { manager, clock, notified, removed };
 }
 
 function definition(over: Partial<CreateScheduleInput> = {}): CreateScheduleInput {
@@ -117,6 +129,18 @@ function ok<T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> {
 
 function occurrencesFor(scheduleId: string) {
   return store.historyPage(scheduleId, { before: null, limit: 100 })?.occurrences ?? [];
+}
+
+function allOccurrencesFor(scheduleId: string) {
+  const occurrences: ReturnType<typeof occurrencesFor> = [];
+  let before: number | null = null;
+  do {
+    const page = store.historyPage(scheduleId, { before, limit: 100 });
+    if (!page) return [];
+    occurrences.push(...page.occurrences);
+    before = page.nextCursor;
+  } while (before !== null);
+  return occurrences;
 }
 
 function tasksFor(scheduleId: string): Task[] {
@@ -224,6 +248,25 @@ test("coalesce-latest catches a five-day standby up with one task", async () => 
   }
 });
 
+test("coalesce-latest judges a catch-up larger than one recurrence page only once", async () => {
+  const h = harness("coalesce-paged");
+  const created = ok(
+    await h.manager.create(
+      definition({ expression: "0 * * * *", missedPolicy: "coalesce-latest" }),
+    ),
+  ).schedule;
+
+  const firstHour = created.nextRunAt!;
+  h.clock.now = firstHour + 599 * HOUR;
+  const summary = await h.manager.tick();
+
+  assert.equal(summary.due, 600);
+  assert.equal(summary.created, 1);
+  assert.equal(summary.coalesced, 599);
+  assert.equal(tasksFor(created.id)[0]?.scheduledFor, firstHour + 599 * HOUR);
+  assert.equal(allOccurrencesFor(created.id).length, 600);
+});
+
 test("skip records every crossed instant and files nothing", async () => {
   const h = harness("skip");
   const created = ok(await h.manager.create(definition({ missedPolicy: "skip" }))).schedule;
@@ -238,7 +281,7 @@ test("skip records every crossed instant and files nothing", async () => {
   assert.equal(store.getSchedule(created.id)?.nextRunAt, NINE + 4 * DAY);
 });
 
-test("create-all files each run, and the cap bounds tasks without losing history", async () => {
+test("create-all keeps one newest-task cap across recurrence pages", async () => {
   const h = harness("createall");
   const created = ok(
     await h.manager.create(
@@ -253,15 +296,25 @@ test("create-all files each run, and the cap bounds tasks without losing history
   ).schedule;
 
   const firstHour = created.nextRunAt!;
-  h.clock.now = firstHour + 59 * HOUR;
+  h.clock.now = firstHour + 599 * HOUR;
   const summary = await h.manager.tick();
 
-  assert.equal(summary.due, 60);
+  assert.equal(summary.due, 600);
   assert.equal(summary.created, SCHEDULE_CATCHUP_CREATE_CAP);
-  assert.equal(summary.coalesced, 10);
+  assert.equal(summary.coalesced, 550);
   assert.equal(summary.capped, 1);
-  assert.equal(tasksFor(created.id).length, SCHEDULE_CATCHUP_CREATE_CAP);
-  assert.equal(occurrencesFor(created.id).length, 60, "all sixty instants reached the ledger");
+  const filed = tasksFor(created.id);
+  assert.equal(filed.length, SCHEDULE_CATCHUP_CREATE_CAP);
+  assert.equal(
+    Math.min(...filed.map((task) => task.scheduledFor!)),
+    firstHour + 550 * HOUR,
+    "the oldest run that survived the cap is still newer than every coalesced instant",
+  );
+  assert.equal(
+    Math.max(...filed.map((task) => task.scheduledFor!)),
+    firstHour + 599 * HOUR,
+  );
+  assert.equal(allOccurrencesFor(created.id).length, 600, "all instants reached the ledger");
 });
 
 // ---- overlap policy ----
@@ -585,6 +638,7 @@ test("Run now leaves an ENABLED schedule's cursor exactly where it was", async (
 test("repeated Run now clicks in the same millisecond each get their own run", async () => {
   const h = harness("runnow-twice");
   const created = ok(await h.manager.create(definition({ overlapPolicy: "allow" }))).schedule;
+  h.clock.now = T0 + 59_999;
 
   const first = ok(await h.manager.runNow(created.id)).occurrence;
   const second = ok(await h.manager.runNow(created.id)).occurrence;
@@ -595,6 +649,42 @@ test("repeated Run now clicks in the same millisecond each get their own run", a
   assert.notEqual(first.scheduledFor % 60_000, 0);
   assert.notEqual(second.scheduledFor % 60_000, 0);
   assert.equal(tasksFor(created.id).length, 2);
+});
+
+test("scheduled and manual triggers serialize their skip-active decision", async () => {
+  let blockFire = false;
+  let releaseFire!: () => void;
+  let fireStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    fireStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseFire = resolve;
+  });
+  const h = harness("serialized", {
+    resolveRepoRoot: async (path) => {
+      if (blockFire) {
+        fireStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+
+  blockFire = true;
+  h.clock.now = NINE + 5_000;
+  const tick = h.manager.tick();
+  await started;
+  const manual = h.manager.runNow(created.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(tasksFor(created.id).length, 0, "the scheduled task is still awaiting its repo");
+
+  releaseFire();
+  assert.equal((await tick).created, 1);
+  const manualResult = ok(await manual);
+  assert.equal(manualResult.occurrence.status, "skipped_overlap");
+  assert.equal(tasksFor(created.id).length, 1);
 });
 
 test("Run now honours overlap policy and says which task blocked it", async () => {
@@ -616,6 +706,39 @@ test("Run now refuses an archived schedule", async () => {
   await h.manager.archive(created.id);
   const result = await h.manager.runNow(created.id);
   assert.equal(result.ok, false);
+});
+
+test("archiving while a claimed run validates its repo cancels task creation", async () => {
+  let blockFire = false;
+  let releaseFire!: () => void;
+  let fireStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    fireStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseFire = resolve;
+  });
+  const h = harness("archive-race", {
+    resolveRepoRoot: async (path) => {
+      if (blockFire) {
+        fireStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+
+  blockFire = true;
+  const running = h.manager.runNow(created.id);
+  await started;
+  await h.manager.archive(created.id);
+  releaseFire();
+
+  const result = ok(await running);
+  assert.equal(result.occurrence.status, "cancelled");
+  assert.equal(tasksFor(created.id).length, 0);
+  assert.equal(h.removed.at(-1), created.id, "the in-flight completion cannot re-add the archive");
 });
 
 // ---- pause, resume, and the clock ----
@@ -712,6 +835,9 @@ test("the notifier is told only about writes that landed, and only after they di
   h.clock.now = NINE + 5_000;
   await h.manager.tick();
   assert.deepEqual(h.notified.at(-1), store.getSchedule(created.id, h.clock.now));
+
+  await h.manager.archive(created.id);
+  assert.deepEqual(h.removed, [created.id]);
 });
 
 test("preview answers with policy and collisions, and writes nothing", async () => {

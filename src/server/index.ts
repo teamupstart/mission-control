@@ -99,7 +99,7 @@ const stopTaskSources = startTaskSourceSweeper(tasks);
 // Foreman is still the only autonomous path to a running agent. Inert until an operator
 // saves a schedule, which no route can do yet.
 const schedules = new ScheduleManager({ tasks });
-const stopSchedules = startScheduleManager(schedules);
+let stopSchedules = () => {};
 
 const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows);
 
@@ -120,6 +120,9 @@ if (hasDist) {
 }
 
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  // Startup recovery treats every open claim as abandoned, so it may begin only after
+  // this daemon has won the port that makes it the single writer.
+  stopSchedules = startScheduleManager(schedules);
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;

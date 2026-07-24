@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentType,
   PrState,
@@ -923,11 +923,11 @@ export function DeadBlockerButton({
   const openRef = useRef(false);
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
-  const changeOpen = (next: boolean): void => {
+  const changeOpen = useCallback((next: boolean): void => {
     openRef.current = next;
     setOpen(next);
     onOpenChangeRef.current?.(next);
-  };
+  }, []);
   useEffect(
     () => () => {
       if (openRef.current) onOpenChangeRef.current?.(false);
@@ -948,7 +948,10 @@ export function DeadBlockerButton({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [changeOpen, open]);
+  useEffect(() => {
+    if (deadBlockers.length === 0 && open) changeOpen(false);
+  }, [changeOpen, deadBlockers.length, open]);
 
   if (deadBlockers.length === 0) return null;
   const summary =

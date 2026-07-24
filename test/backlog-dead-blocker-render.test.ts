@@ -148,3 +148,14 @@ test("an open resolver elevates its host above adjacent blocked cards", () => {
   );
   assert.equal(html.match(/class="bl-card is-blocked"/g)?.length, 3);
 });
+
+test("the resolver closes before returning null when blockers disappear", () => {
+  const source = readFileSync(
+    new URL("../src/web/components/session-bits.tsx", import.meta.url),
+    "utf8",
+  );
+  const close = source.indexOf("if (deadBlockers.length === 0 && open) changeOpen(false);");
+  const empty = source.indexOf("if (deadBlockers.length === 0) return null;");
+  assert.ok(close >= 0);
+  assert.ok(empty > close);
+});

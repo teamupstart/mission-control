@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentType,
   PrState,
   Session,
   SessionCost,
   SessionMeta,
+  Task,
   TaskPriority,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -879,5 +880,145 @@ export function LabelChips({
         {hidden > 0 && <span className="task-label task-label-more">+{hidden}</span>}
       </span>
     </Tooltip>
+  );
+}
+
+/**
+ * The warning a backlog card wears when a cancelled or failed prerequisite is blocking
+ * it - directly, or somewhere up its dependency chain (`deadBlockersFor`). Nothing else
+ * on the card will ever clear it: a `stopped` dependency never satisfies, so the item
+ * sits in `ready: 0` forever until a human resolves the dead task. This is where they do.
+ *
+ * Shared rather than inlined for the ScheduleSwitch reason: the backlog is drawn on the
+ * board column and in the Sitrep, and a resolve affordance that lived on one would be a
+ * fix you could reach from the board and not find in the list you were reading. It leads
+ * with the same triangle the PR "checks failed" alert uses, because it is the same
+ * grammar - "this will not fix itself, look here".
+ *
+ * Presentational, like every leaf here: it owns only its own open/closed popover, and
+ * hands the two resolutions back to the host, which calls `api.rescheduleTask` /
+ * `api.completeTask` exactly as `ScheduleSwitch`'s host calls `api.updateTask`. Both
+ * pointer handlers stop propagation for the same reason ScheduleSwitch's do - the board
+ * card underneath is `draggable` and click-to-edit.
+ */
+export function DeadBlockerButton({
+  deadBlockers,
+  busy = false,
+  onReschedule,
+  onComplete,
+  onOpenChange,
+}: {
+  /** The cancelled/failed tasks blocking this card, from `deadBlockersFor`. */
+  deadBlockers: Task[];
+  /** A resolution is in flight; the controls are inert until it lands. */
+  busy?: boolean;
+  /** Put the dead task back in the backlog to run again. */
+  onReschedule: (taskId: string) => void;
+  /** Mark the dead task done (its work already landed), releasing this card. */
+  onComplete: (taskId: string) => void;
+  onOpenChange?: (open: boolean) => void;
+}): React.JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const openRef = useRef(false);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const changeOpen = useCallback((next: boolean): void => {
+    openRef.current = next;
+    setOpen(next);
+    onOpenChangeRef.current?.(next);
+  }, []);
+  useEffect(
+    () => () => {
+      if (openRef.current) onOpenChangeRef.current?.(false);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) changeOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") changeOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [changeOpen, open]);
+  useEffect(() => {
+    if (deadBlockers.length === 0 && open) changeOpen(false);
+  }, [changeOpen, deadBlockers.length, open]);
+
+  if (deadBlockers.length === 0) return null;
+  const summary =
+    deadBlockers.length === 1
+      ? `"${deadBlockers[0]!.title}" was ${deadBlockers[0]!.status} and won't finish on its own`
+      : `${deadBlockers.length} prerequisites were cancelled or failed and won't finish on their own`;
+
+  return (
+    <span
+      className="bl-deadblock"
+      ref={ref}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <Tooltip label={summary}>
+        <button
+          className="bl-deadblock-btn"
+          aria-label={`Blocked by a stopped task: ${summary}`}
+          aria-expanded={open}
+          disabled={busy}
+          onClick={() => changeOpen(!open)}
+        >
+          <ChecksFailedIcon />
+        </button>
+      </Tooltip>
+      {open && (
+        <div className="bl-deadblock-pop" role="dialog" aria-label="Resolve a stopped prerequisite">
+          <p className="bl-deadblock-lead">
+            This can't be scheduled until the prerequisite below is resolved. Run it again, or mark
+            it done if its work already landed.
+          </p>
+          <ul className="bl-deadblock-list">
+            {deadBlockers.map((d) => (
+              <li className="bl-deadblock-item" key={d.id}>
+                <span className="bl-deadblock-name">{d.title}</span>
+                <span className={`bl-deadblock-state state-${d.status}`}>{d.status}</span>
+                <span className="bl-deadblock-acts">
+                  <Tooltip label={`Put "${d.title}" back in the backlog to run again`}>
+                    <button
+                      className="btn btn-send"
+                      disabled={busy}
+                      onClick={() => {
+                        onReschedule(d.id);
+                        changeOpen(false);
+                      }}
+                    >
+                      Reschedule
+                    </button>
+                  </Tooltip>
+                  <Tooltip label={`Mark "${d.title}" done - use this if its work already merged`}>
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        onComplete(d.id);
+                        changeOpen(false);
+                      }}
+                    >
+                      Mark done
+                    </button>
+                  </Tooltip>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </span>
   );
 }

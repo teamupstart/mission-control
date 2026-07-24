@@ -123,6 +123,8 @@ export interface Ok {
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+export class TaskStatusConflictError extends Error {}
+
 /**
  * Why the disabled toggle refuses by DEFAULT rather than trusting callers to identify
  * themselves, spelled out once for both options objects below.
@@ -247,6 +249,7 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
+  private reschedulingTasks = new Set<string>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
   private autoCompleted = new Map<string, string>();
   constructor(
@@ -1480,10 +1483,26 @@ export class TaskManager {
     outcome: string,
     outcomeUrl?: string,
     satisfyDependents = false,
+    requireStopped = false,
   ): Task | null {
-    this.autoCompleted.delete(id);
+    // Refuse EVERY completion while a reschedule holds this task, not only the stopped-only
+    // dead-blocker path: a reschedule mid-teardown still has the row cancelled/failed, so an
+    // ordinary Mark done would flip it to `done` and the reschedule would then tear its
+    // worktree out from under that done row, leaving it pointing at reclaimed resources. The
+    // reservation covers the whole teardown window. The internal auto-settle callers never
+    // reach this throw: they only complete a running/dispatching task, and a reschedule only
+    // ever holds a cancelled/failed one.
+    if (this.reschedulingTasks.has(id)) {
+      throw new TaskStatusConflictError("task is being rescheduled");
+    }
     const t = this.registry.getTask(id);
     if (!t) return null;
+    if (requireStopped && t.status !== "cancelled" && t.status !== "failed") {
+      throw new TaskStatusConflictError(
+        `task is ${t.status}, only a cancelled or failed task can be completed from a blocked dependent`,
+      );
+    }
+    this.autoCompleted.delete(id);
     const now = Date.now();
     const updated: Task = {
       ...t,
@@ -1530,6 +1549,82 @@ export class TaskManager {
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
       }
+    }
+  }
+
+  /**
+   * Put a stopped task back into the backlog so it can be run again. The escape hatch
+   * for a prerequisite that was cancelled or failed while the work it stood for still
+   * needs doing: its dependents stay blocked (a `stopped` dependency never satisfies)
+   * until it is either marked done or actually run, and this is the "run it" half - the
+   * companion to `complete(..., satisfyDependents)`, which is the "it already landed" half.
+   *
+   * Only `cancelled` and `failed` tasks are eligible: a `done` task's result is already
+   * recorded and a live one is on its way, so neither is a thing to re-file. Any leftover
+   * worktree/agent is reclaimed first - the same teardown `reclaim` performs, behind the
+   * same human click - because a fresh backlog dispatch provisions its own, and keeping
+   * the old one would leak it. The row is reset to the shape `create` leaves a backlog
+   * task in, so nothing stale (an old outcome, a dead branch) survives into the relaunch,
+   * and re-enabled so the autopilot it was filed for can actually pick it up again.
+   *
+   * Schedule provenance (`scheduleId` / `scheduleOccurrenceId` / `scheduledFor`) is left
+   * untouched: it records which occurrence FILED this task, a fact rescheduling does not
+   * change. Its declared dependencies are kept too - re-running it means re-running it
+   * under the same prerequisites, which the backlog re-evaluates on the next plan.
+   */
+  async reschedule(id: string): Promise<Ok> {
+    if (this.reschedulingTasks.has(id)) {
+      return { ok: false, error: "task is being rescheduled" };
+    }
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status !== "cancelled" && t.status !== "failed") {
+      return {
+        ok: false,
+        error: `task is ${t.status}, only a cancelled or failed task can be rescheduled`,
+      };
+    }
+    this.reschedulingTasks.add(id);
+    try {
+      this.autoCompleted.delete(id);
+      if (t.worktreePath || t.homeName) {
+        try {
+          await teardownWorktree(this.registry.getTask(id) ?? t);
+        } catch (error) {
+          return {
+            ok: false,
+            error: `could not reclaim task resources: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      }
+      const cur = this.registry.getTask(id);
+      if (!cur) return { ok: false, error: "no such task" };
+      if (cur.status !== "cancelled" && cur.status !== "failed") {
+        return {
+          ok: false,
+          error: `task is ${cur.status}, only a cancelled or failed task can be rescheduled`,
+        };
+      }
+      this.registry.upsertTask({
+        ...cur,
+        status: "backlog",
+        enabled: true,
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        homeName: null,
+        terminalResourceId: null,
+        sessionId: null,
+        outcome: null,
+        outcomeUrl: null,
+        error: null,
+        dispatchedAt: null,
+        completedAt: null,
+        updatedAt: Date.now(),
+      });
+      return { ok: true };
+    } finally {
+      this.reschedulingTasks.delete(id);
     }
   }
 

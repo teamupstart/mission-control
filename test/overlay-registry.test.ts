@@ -88,13 +88,24 @@ test("only the Overlay primitive renders a backdrop", () => {
 
 /**
  * Known-unregistered `role="dialog"` surfaces, listed so the gap is findable rather than
- * invisible. Both are anchored popovers, not screen-owning overlays, so they were left
+ * invisible. All are anchored popovers, not screen-owning overlays, so they were left
  * out of the registry deliberately - but the consequence is real and NOT yet fixed: while
- * either is open, focus sits on a button (so the `typing` guard is false) and `anyOpen` is
+ * one is open, focus sits on a button (so the `typing` guard is false) and `anyOpen` is
  * false, so the grid shortcuts - INCLUDING kill and reset - still act on the card behind
  * the popover. A follow-up needs to decide whether anchored popovers register too.
+ *
+ * `session-bits.tsx` is the dead-blocker resolver (`DeadBlockerButton`): a popover that
+ * hangs off one backlog card and offers to reschedule or complete a stopped prerequisite.
+ * It owns its own Escape and outside-click, and its "behind" is a backlog card rather than
+ * a live session, so kill/reset - which target the selected session - do not reach through
+ * it the way they do the other two; it joins the list for the same registry gap all the
+ * same, not for a distinct one.
  */
-const UNREGISTERED_DIALOGS = ["components/AlertBar.tsx", "components/ForemanBar.tsx"];
+const UNREGISTERED_DIALOGS = [
+  "components/AlertBar.tsx",
+  "components/ForemanBar.tsx",
+  "components/session-bits.tsx",
+];
 
 test("every role=\"dialog\" surface is registered, or is a declared exception", () => {
   // A new file declaring a literal role="dialog" fails here until someone decides which
@@ -163,6 +174,7 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
       createElement(ReportPanel, {
         sessions: [mkSession()],
         tasks: [],
+        backlogPlan: null,
         onClose: () => {},
         onOpenReviews: () => {},
         onEditTask: () => {},

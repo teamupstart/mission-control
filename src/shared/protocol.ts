@@ -572,8 +572,11 @@ export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),
   outcomeUrl: z.string().url().optional(),
   satisfyDependents: z.boolean().optional().default(false),
+  requireStopped: z.boolean().optional().default(false),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
+
+export const RescheduleTaskSchema = z.object({}).strict();
 
 /**
  * Edit a task - what the dispatch modal sends when it is reopened on a backlog card,

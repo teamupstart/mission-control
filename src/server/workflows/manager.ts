@@ -2327,7 +2327,13 @@ export class WorkflowManager {
       if (submissionRecovery.has(delivery.submissionId)) continue;
       const run = this.store.getRun(delivery.runId);
       const binding = run ? this.store.getBinding(run.bindingId) : null;
-      if (!run || runIsTerminal(run) || binding?.deliveryMode !== "live") continue;
+      const latestSubmission = run ? this.store.latestSubmission(run.id) : null;
+      if (
+        !run
+        || runIsTerminal(run)
+        || binding?.deliveryMode !== "live"
+        || latestSubmission?.id !== delivery.submissionId
+      ) continue;
       this.schedulePreparedDelivery(delivery.id);
     }
   }

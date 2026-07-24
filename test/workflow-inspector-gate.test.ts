@@ -593,3 +593,77 @@ test("finding state and its immutable repair packet survive insertion failure an
   await recoveredManager.stop();
   setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
 });
+
+test("restart recovery never sends a prepared packet from an older submission", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  await seeded.manager.stop();
+  const before = seeded.store.getRun(seeded.ids.run)!;
+  const state = before.gateState as unknown as WorkflowInspectorGateState;
+  const findingsState: WorkflowInspectorGateState = {
+    ...state,
+    targetHeadSha: seeded.head,
+    failedHeadSha: seeded.head,
+    observedHeadSha: seeded.head,
+    waitReason: "findings",
+    findingFingerprints: ["stale-finding"],
+  };
+  const prepared = seeded.store.transitionInspectorFindingsWithDelivery({
+    runId: seeded.ids.run,
+    expectedState: state,
+    state: findingsState,
+    status: "waiting_for_new_head",
+    findingEvent: { findingFingerprints: ["stale-finding"] },
+    delivery: {
+      id: `stale-inspector-delivery-${serial}`,
+      runId: seeded.ids.run,
+      submissionId: seeded.ids.submission,
+      kind: "inspector_feedback",
+      sessionId: seeded.ids.session,
+      noteKey: `agent-${serial}`,
+      payload: "stale repair packet",
+      payloadSha256: `stale-repair-packet-${serial}`,
+    },
+    deliveryEvent: {
+      deliveryId: `stale-inspector-delivery-${serial}`,
+      payloadSha256: `stale-repair-packet-${serial}`,
+    },
+    now: seeded.now + 1,
+  });
+  assert.ok(prepared);
+  const newerHead = `newer-head-${serial}`;
+  const currentState: WorkflowInspectorGateState = {
+    ...findingsState,
+    targetHeadSha: newerHead,
+    observedHeadSha: newerHead,
+    waitReason: "review_pending",
+  };
+  const newer = seeded.store.createInspectorOnlySubmission({
+    id: `newer-inspector-submission-${serial}`,
+    runId: seeded.ids.run,
+    triggerKey: `inspector-head:${seeded.ids.run}:${newerHead}`,
+    newHeadSha: newerHead,
+    failedHeadSha: seeded.head,
+    priorFindingFingerprints: findingsState.findingFingerprints,
+    bypassReason: "Published Inspector-only findings policy",
+    expectedState: findingsState,
+    state: currentState,
+    now: seeded.now + 2,
+  });
+  assert.ok(newer);
+
+  seeded.store.updateBinding(seeded.ids.binding, { deliveryMode: "live" }, seeded.now + 3);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recoveredManager = new WorkflowManager(seeded.registry, seeded.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recoveredManager.start();
+  await recoveredManager.stop();
+  assert.equal(seeded.store.getDelivery(prepared.delivery.id)?.state, "prepared");
+  assert.deepEqual(injected, []);
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});

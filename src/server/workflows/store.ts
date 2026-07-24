@@ -743,6 +743,17 @@ export interface WorkflowRunInsert {
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
   now: number;
+  /**
+   * The artifact an externally sourced run is entitled to review, pinned INSIDE the creating
+   * transaction.
+   *
+   * It is a field on the insert rather than a follow-up call because those are two halves of
+   * one fact. Pinned afterwards, a crash in between leaves a run holding a submission but no
+   * expected commit - and the retry, finding nothing pinned, would accept whatever commit it
+   * was handed and review an artifact nobody originally selected. Committing them together
+   * removes that state rather than coping with it.
+   */
+  externalExpectation?: WorkflowCaptureExpectation;
 }
 
 export interface WorkflowSubmissionInsert {
@@ -1557,6 +1568,12 @@ export class WorkflowStore {
         runId: run.id,
         round: 1,
       });
+      if (run.externalExpectation) {
+        this.appendEvent(run.id, "external_expectation_pinned", {
+          expectedHeadSha: run.externalExpectation.expectedHeadSha,
+          requireCleanWorktree: run.externalExpectation.requireCleanWorktree,
+        }, run.now);
+      }
       this.appendEvent(run.id, "run_created", {
         submissionId: submission.id,
         triggerKey: submission.triggerKey,
@@ -1816,31 +1833,19 @@ export class WorkflowStore {
   }
 
   /**
-   * Record, once, the exact artifact an externally sourced run is entitled to review.
+   * The exact artifact an externally sourced run is entitled to review, or null.
    *
    * The expectation has to be DURABLE, not merely re-validated per call: the idempotency key
    * names a result, and a retry that supplied a different commit under that same key would
    * resume the same submission against evidence nobody selected - and after completion would
-   * be answered as idempotent success for a commit this run never saw. Pinned here, the run
+   * be answered as idempotent success for a commit this run never saw. Pinned once, the run
    * carries its own answer to "which artifact was this?" across restarts.
    *
-   * It lives in the event ledger rather than a column because it is written exactly once, at
-   * run creation, and only ever read back for comparison - the same shape as the other
-   * once-only facts this table already holds.
+   * It is written by `createInitialSubmission`, inside that transaction, and is deliberately
+   * not writable afterwards: a second entry point would be the two-step window again. It
+   * lives in the event ledger rather than a column because it is written exactly once and
+   * only ever read back for comparison - the same shape as the other once-only facts here.
    */
-  pinExternalExpectation(
-    runId: string,
-    expectation: WorkflowCaptureExpectation,
-    now = Date.now(),
-  ): void {
-    if (this.externalExpectationFor(runId)) return;
-    this.appendEvent(runId, "external_expectation_pinned", {
-      expectedHeadSha: expectation.expectedHeadSha,
-      requireCleanWorktree: expectation.requireCleanWorktree,
-    }, now);
-  }
-
-  /** The pinned expectation for a run, or null when it was not externally sourced. */
   externalExpectationFor(runId: string): WorkflowCaptureExpectation | null {
     const row = this.db.prepare(
       `SELECT json_extract(payload_json, '$.expectedHeadSha') AS expected_head_sha

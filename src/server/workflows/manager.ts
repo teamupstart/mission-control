@@ -1211,7 +1211,22 @@ export class WorkflowManager {
       // round against evidence nobody selected, or - once the run had finished - be answered
       // as idempotent success for a commit this run never reviewed.
       const pinned = this.store.externalExpectationFor(existingRun.id);
-      if (pinned && pinned.expectedHeadSha !== expectation.data.expectedHeadSha) {
+      if (!pinned) {
+        // Unreachable by construction: the pin is written inside the same transaction as the
+        // run and its submission, so an external run cannot exist without one. It is a
+        // REFUSAL rather than an assumption because the alternative on being wrong is to
+        // accept whatever commit the retry names - exactly the artifact swap this guards.
+        // Nothing durable can be said about which artifact this run was for, so nothing is.
+        return {
+          ok: false,
+          reason: "conflict",
+          message:
+            "This external run has no pinned artifact, so the result it was started for "
+            + "cannot be established; start a new result rather than reviewing another commit",
+          current: existingRun,
+        };
+      }
+      if (pinned.expectedHeadSha !== expectation.data.expectedHeadSha) {
         return {
           ok: false,
           reason: "conflict",
@@ -1250,7 +1265,7 @@ export class WorkflowManager {
         false,
         // The PINNED expectation, not the supplied one: they are equal by the check above,
         // and reading the durable copy is what makes that true by construction.
-        pinned ?? expectation.data,
+        pinned,
       );
     }
     const active = this.store.activeRunForBinding(binding.id);
@@ -1266,16 +1281,24 @@ export class WorkflowManager {
     // means a future external kind that nobody appended to WORKFLOW_TRIGGER_SOURCES fails
     // to compile here instead of filing its runs under somebody else's name.
     const triggerSource: WorkflowTriggerSource = input.source.kind;
+    // The pinned artifact rides WITH the run and submission, in one transaction. Pinning it
+    // afterwards left a window where a crash produced an external run holding no expected
+    // commit, and the retry - finding nothing pinned - would have accepted whatever commit it
+    // was handed and reviewed an artifact nobody selected.
     const created = this.store.createInitialSubmission(
-      { id: randomUUID(), binding, triggerSource, triggerKey: key, now },
+      {
+        id: randomUUID(),
+        binding,
+        triggerSource,
+        triggerKey: key,
+        now,
+        externalExpectation: expectation.data,
+      },
       { id: randomUUID(), triggerSource, triggerKey: key, context: {}, evidence: {}, now },
     );
     if (created.idempotent) {
       return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
     }
-    // Pin before capture, so a crash between the two leaves a run that still knows which
-    // artifact it is entitled to rather than one that would accept whatever the retry names.
-    this.store.pinExternalExpectation(created.run.id, expectation.data, now);
     this.publishRun(created.run.id);
     return this.captureAndActivate(
       binding,

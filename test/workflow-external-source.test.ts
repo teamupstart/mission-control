@@ -387,6 +387,8 @@ test("a restart between every durable step resumes the same run rather than star
       triggerSource: "ensemble",
       triggerKey: rebound.value.claim.sourceKey,
       now: 5,
+      // The pin commits with the run, so a mid-capture crash always leaves one behind.
+      externalExpectation: expectation,
     },
     {
       id: "restart-submission",
@@ -472,6 +474,117 @@ test("the pinned artifact cannot be swapped by a later call under the same resul
     expectation: { expectedHeadSha: OTHER_HEAD, requireCleanWorktree: true },
   });
   assert.equal(afterCompletion.ok, false);
+  await workflows.stop();
+});
+
+test("the pinned artifact commits with the run, and an unpinned external run is refused", async () => {
+  seedVersion("atomic");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("atomic-session")]);
+  const personas = new PersonaManager(registry);
+  const state = { headSha: EXPECTED_HEAD, dirty: false, reads: 0 };
+  const workflows = new WorkflowManager(registry, personas.store, {
+    readContextRaw: capture(state),
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+  });
+  const source = { kind: "ensemble" as const, sourceId: "ens-atomic", resultId: "member-1" };
+  const bound = workflows.ensureExternalBinding({
+    source,
+    workflowVersionId: "v-atomic",
+    sessionId: "atomic-session",
+  });
+  assert.equal(bound.ok, true);
+  if (!bound.ok) return;
+
+  // The pin rides with the run and its submission in ONE transaction, so there is no instant
+  // at which an external run exists holding no expected commit.
+  const created = workflows.store.createInitialSubmission(
+    {
+      id: "atomic-run",
+      binding: bound.value.binding,
+      triggerSource: "ensemble",
+      triggerKey: bound.value.claim.sourceKey,
+      now: 5,
+      externalExpectation: expectation,
+    },
+    {
+      id: "atomic-submission",
+      triggerSource: "ensemble",
+      triggerKey: bound.value.claim.sourceKey,
+      context: {},
+      evidence: {},
+      now: 5,
+    },
+  );
+  assert.equal(created.idempotent, false);
+  assert.equal(
+    workflows.store.externalExpectationFor("atomic-run")?.expectedHeadSha,
+    EXPECTED_HEAD,
+  );
+  // The pin is durable the moment the run is readable at all - not one write later.
+  const pinIndex = workflows.store.listEvents("atomic-run")
+    .findIndex((event) => event.kind === "external_expectation_pinned");
+  assert.notEqual(pinIndex, -1);
+
+  await workflows.stop();
+});
+
+test("an external submission with no pinned artifact is refused, not given a new one", async () => {
+  // The backstop for a state the transaction above can no longer produce. It is asserted
+  // because the alternative on being wrong is the artifact swap this whole boundary exists to
+  // prevent: with nothing pinned, a retry naming any commit would simply be believed.
+  seedVersion("stranded");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("stranded-session")]);
+  const personas = new PersonaManager(registry);
+  const state = { headSha: EXPECTED_HEAD, dirty: false, reads: 0 };
+  const workflows = new WorkflowManager(registry, personas.store, {
+    readContextRaw: capture(state),
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+  });
+  const source = { kind: "ensemble" as const, sourceId: "ens-stranded", resultId: "member-1" };
+  const bound = workflows.ensureExternalBinding({
+    source,
+    workflowVersionId: "v-stranded",
+    sessionId: "stranded-session",
+  });
+  assert.equal(bound.ok, true);
+  if (!bound.ok) return;
+
+  // Exactly what a crash between the old two writes left behind: the run and submission the
+  // idempotency key resolves to, with no pin.
+  workflows.store.createInitialSubmission(
+    {
+      id: "stranded-run",
+      binding: bound.value.binding,
+      triggerSource: "ensemble",
+      triggerKey: bound.value.claim.sourceKey,
+      now: 6,
+    },
+    {
+      id: "stranded-submission",
+      triggerSource: "ensemble",
+      triggerKey: bound.value.claim.sourceKey,
+      context: {},
+      evidence: {},
+      now: 6,
+    },
+  );
+  assert.equal(workflows.store.externalExpectationFor("stranded-run"), null);
+
+  const retried = await workflows.submitExternal(bound.value.binding.id, {
+    source,
+    expectation: { expectedHeadSha: OTHER_HEAD, requireCleanWorktree: true },
+  });
+  assert.equal(retried.ok, false);
+  if (retried.ok) return;
+  assert.equal(retried.reason, "conflict");
+  assert.match(retried.message, /no pinned artifact/);
+  // It refused instead of capturing: no evidence was read for the commit it was handed.
+  assert.equal(state.reads, 0);
+  assert.equal(workflows.store.getSubmission("stranded-submission")?.status, "capturing");
   await workflows.stop();
 });
 

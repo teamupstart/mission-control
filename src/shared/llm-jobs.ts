@@ -15,10 +15,11 @@ import type { LlmRunnerId } from "./llm.ts";
 // persisted key and operator-visible choice exist from the workflow foundation onward.
 //
 // They are grouped by SUBSYSTEM the same way the other two are - these are the daemon's
-// own housekeeping calls, all of them cheap, all of them degrading silently to a
-// deterministic tier when the model cannot be reached. Foreman's roles stay with Foreman
-// and the Inspector's with the Inspector; a panel that edited all three sets would be one
-// surface writing three different config blobs.
+// operator-configurable jobs. Most are best-effort housekeeping calls; ensemble comparison
+// is the review-shaped exception, still cheap by default but durably failed rather than
+// replaced when the model cannot be reached. Foreman's roles stay with Foreman and the
+// Inspector's with the Inspector; a panel that edited all three sets would be one surface
+// writing three different config blobs.
 //
 // Pure, and in `shared`, for the reason `foreman-models.ts` is: the daemon SPAWNS with
 // these answers and the settings panel DISPLAYS them, and a panel that renders a default
@@ -62,11 +63,10 @@ export interface LlmJobSpec extends ModelChoiceSpec {
  * Every fallback is Haiku, and every one is NAMED rather than left unset. That is not a
  * cost preference dressed up as a default - an unset `--model` inherits whatever the local
  * CLI happens to be logged in as, which is both the priciest tier available and
- * unanswerable from inside this app. These are scoped housekeeping calls (name a task,
- * summarise a prompt, narrate a short digest, compact workflow context), each with a
- * deterministic tier standing behind it, so the cheap tier is the right one - but the
- * reason they are written down is that "nobody chose this" is not an acceptable answer to
- * what the app spawns with.
+ * unanswerable from inside this app. These are scoped calls (name a task, summarise a
+ * prompt, narrate a short digest, compact workflow context, compare a bounded candidate
+ * set), so the cheap tier is the right one - but the reason they are written down is that
+ * "nobody chose this" is not an acceptable answer to what the app spawns with.
  */
 export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
   "task-title": {

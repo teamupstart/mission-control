@@ -1914,7 +1914,13 @@ export class EnsembleEngine {
       .filter((evaluation) => stageAttemptIds.has(evaluation.stageAttemptId) && evaluation.status === "running");
     const evaluationIds = new Set(evaluations.map((evaluation) => evaluation.id));
     for (const call of this.store.listLlmCalls(runId)) {
-      if (!evaluationIds.has(call.evaluationId) || call.state !== "running") continue;
+      if (
+        call.evaluationId === null ||
+        !evaluationIds.has(call.evaluationId) ||
+        call.state !== "running"
+      ) {
+        continue;
+      }
       this.store.finishLlmCall(call.id, ["running"], "interrupted", {
         finishedAt: now,
         durationMs: Math.max(0, now - call.startedAt),

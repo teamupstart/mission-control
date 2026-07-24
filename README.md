@@ -1327,7 +1327,7 @@ under one versioned *strategy*, plus the group-level facts a single task cannot 
 pinned base commit, member roles, immutable submitted artifacts, a comparison, a human
 decision, and a terminal outcome. The first strategy is **Best of N** - two to five agents
 implement the same task alone from the same commit, one tool-less comparison ranks what they
-submitted, and you confirm the winner.
+submitted, and a later phase will let you confirm the winner.
 
 **The engine works and the comparison runs; there is still no way to start a Best-of-N run.**
 What has landed is the strategy-neutral runtime and its first review driver. The runtime pins one
@@ -1342,17 +1342,17 @@ session, its task and its worktree - a member never names itself, so a guessed i
 When every live member has submitted or terminated and at least two produced a snapshot, the
 daemon runs one tool-less, provider-neutral **comparison** of the immutable submissions and parks
 the run at a durable human-decision boundary. The judge is deliberately blind: it is handed the
-task, the exact diffs, the observed statistics and each member's own reported claims (labelled as
-claims), but every agent name, model, member ordinal, ref name and worktree path is stripped and
-each submission is relabelled anonymously, so brand and order cannot bias the ranking. Every
-candidate-authored section is fenced as untrusted data. The reply is validated strictly - exactly
-the eligible submissions once each, integer scores, contiguous ranks, a recommendation that holds
-rank 1 - and a malformed, incomplete, or injected reply is a *failed attempt*, never a low score
-or a fallback winner. The comparison shares the one daemon review-call ceiling with Workflow
-review, resolves its runner and model per call (a judging Persona's own overrides, else the
-`ensemble-comparison` job model), records every call on a durable ledger, and recovers a call
-interrupted by a restart by retrying it against the exact same evidence. It **recommends** a
-winner; it cannot promote one.
+task, bounded base-to-snapshot diffs, per-file statistics and each member's own reported claims
+(labelled as claims), but every agent name, model, member ordinal, ref name, snapshot commit id and
+worktree path is stripped and each submission is relabelled anonymously, so brand and order cannot
+bias the ranking. Truncated diff evidence is disclosed in the result. Every candidate-authored
+section is fenced as untrusted data. The reply is validated strictly - exactly the eligible
+submissions once each, integer scores, contiguous ranks, a recommendation that holds rank 1 - and a
+malformed, incomplete, or injected reply is a *failed attempt*, never a low score or a fallback
+winner. The comparison shares the one daemon review-call ceiling with Workflow review, resolves
+its runner and model per call (a judging Persona's own overrides, else the `ensemble-comparison`
+job model), records every call on a durable ledger, and recovers a call interrupted by a restart by
+retrying it against the exact same evidence. It **recommends** a winner; it cannot promote one.
 
 What is deliberately still absent is the **create path and the promotion boundary**: a Best-of-N
 run still cannot be started from a route or UI, and a recommendation cannot yet be confirmed or
@@ -1755,9 +1755,10 @@ drawers.
 
 ## Models (what the app's own model work runs on)
 
-Mission Control does a little model work of its own - naming an untitled [dispatch](#dispatch-an-agent),
-rewriting a prompt into the [Goal](#goal) on a card, narrating the [away digest](#away-mode). None of
-it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
+Mission Control does a little model work of its own - naming an untitled
+[dispatch](#dispatch-an-agent), rewriting a prompt into the [Goal](#goal) on a card, narrating the
+[away digest](#away-mode), compacting Workflow evidence, and comparing Ensemble submissions. None
+of it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
 say which provider does that work and which model each job uses.
 
 Two separate choices, deliberately.
@@ -1788,9 +1789,10 @@ variable set in the daemon's shell outranks the box and would otherwise be invis
 browser. Any id the selected provider's CLI accepts works; the fields are free text, not a fixed
 list, with suggestions offered for whichever provider is in force.
 
-The currently active jobs are cheap calls with a deterministic tier standing behind them, so a
-missing or logged-out provider costs you a rougher title, your own words instead of a refined goal,
-or a digest with no narrative - never an error and never a failed dispatch.
+The title, goal, digest, and Workflow-context jobs are best-effort calls with a deterministic
+fallback, so a missing or logged-out provider degrades their output rather than failing a
+dispatch. An Ensemble comparison is different: a provider failure or invalid reply fails its
+durable, bounded attempt, and the engine never invents a recommendation.
 
 **Foreman's four models and the Inspector's review model are not here.** They live with the
 subsystem that spends them - **Settings → Foreman** and **Settings → Inspector** - because each
@@ -3185,7 +3187,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles-runtime-landed-creation-still-gated): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins, then this variable, then the `ensemble-comparison` job default. **Settings → Models → Ensemble comparison** wins where it is set |
+| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles-runtime-landed-creation-still-gated): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |

@@ -2159,26 +2159,12 @@ export class WorkflowManager {
       waitReason: "findings",
       findingFingerprints: fingerprints,
     };
-    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
-    const updated = this.transitionInspectorGate(
-      run,
-      state,
-      nextState,
-      inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
-      "inspector_findings",
-      "inspector_findings",
-      {
-        prKey: state.prKey,
-        targetHeadSha: state.targetHeadSha,
-        ...findingFingerprintAudit(fingerprints),
-        policy: version.completionPolicy.onFindings,
-      },
-      now,
-    );
-    if (!updated || !binding.sessionId || !state.prUrl || !state.targetHeadSha) return;
+    if (!binding.sessionId || !state.prUrl || !state.targetHeadSha) return;
     const summary = this.store.runSummary(run.id);
+    if (!summary) return;
+    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
     const rendered = renderInspectorFeedback({
-      workflowName: summary?.workflowName ?? "Workflow",
+      workflowName: summary.workflowName,
       workflowVersion: version.version,
       runId: run.id,
       submissionRound: submission.round,
@@ -2190,24 +2176,37 @@ export class WorkflowManager {
       policy: version.completionPolicy.onFindings,
       findings,
     });
-    const prepared = this.store.prepareDelivery({
-      id: randomUUID(),
+    const deliveryId = randomUUID();
+    const prepared = this.store.transitionInspectorFindingsWithDelivery({
       runId: run.id,
-      submissionId: submission.id,
-      kind: "inspector_feedback",
-      sessionId: binding.sessionId,
-      noteKey: binding.noteKey,
-      payload: rendered.payload,
-      payloadSha256: rendered.payloadSha256,
-    }, now);
-    if (!prepared.idempotent) {
-      this.store.appendEvent(run.id, "inspector_feedback_prepared", {
-        deliveryId: prepared.delivery.id,
-        payloadSha256: prepared.delivery.payloadSha256,
+      expectedState: state,
+      state: nextState,
+      status: inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
+      findingEvent: {
+        prKey: state.prKey,
+        targetHeadSha: state.targetHeadSha,
         ...findingFingerprintAudit(fingerprints),
         policy: version.completionPolicy.onFindings,
-      }, now);
-    }
+      },
+      delivery: {
+        id: deliveryId,
+        runId: run.id,
+        submissionId: submission.id,
+        kind: "inspector_feedback",
+        sessionId: binding.sessionId,
+        noteKey: binding.noteKey,
+        payload: rendered.payload,
+        payloadSha256: rendered.payloadSha256,
+      },
+      deliveryEvent: {
+        deliveryId,
+        payloadSha256: rendered.payloadSha256,
+        ...findingFingerprintAudit(fingerprints),
+        policy: version.completionPolicy.onFindings,
+      },
+      now,
+    });
+    if (!prepared) return;
     this.publishRun(run.id);
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }

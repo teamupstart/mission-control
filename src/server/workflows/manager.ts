@@ -2177,35 +2177,44 @@ export class WorkflowManager {
       findings,
     });
     const deliveryId = randomUUID();
-    const prepared = this.store.transitionInspectorFindingsWithDelivery({
-      runId: run.id,
-      expectedState: state,
-      state: nextState,
-      status: inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
-      findingEvent: {
-        prKey: state.prKey,
-        targetHeadSha: state.targetHeadSha,
-        ...findingFingerprintAudit(fingerprints),
-        policy: version.completionPolicy.onFindings,
-      },
-      delivery: {
-        id: deliveryId,
+    let prepared: ReturnType<WorkflowStore["transitionInspectorFindingsWithDelivery"]>;
+    try {
+      prepared = this.store.transitionInspectorFindingsWithDelivery({
         runId: run.id,
-        submissionId: submission.id,
-        kind: "inspector_feedback",
-        sessionId: binding.sessionId,
-        noteKey: binding.noteKey,
-        payload: rendered.payload,
-        payloadSha256: rendered.payloadSha256,
-      },
-      deliveryEvent: {
-        deliveryId,
-        payloadSha256: rendered.payloadSha256,
-        ...findingFingerprintAudit(fingerprints),
-        policy: version.completionPolicy.onFindings,
-      },
-      now,
-    });
+        expectedState: state,
+        state: nextState,
+        status: inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
+        findingEvent: {
+          prKey: state.prKey,
+          targetHeadSha: state.targetHeadSha,
+          ...findingFingerprintAudit(fingerprints),
+          policy: version.completionPolicy.onFindings,
+        },
+        delivery: {
+          id: deliveryId,
+          runId: run.id,
+          submissionId: submission.id,
+          kind: "inspector_feedback",
+          sessionId: binding.sessionId,
+          noteKey: binding.noteKey,
+          payload: rendered.payload,
+          payloadSha256: rendered.payloadSha256,
+        },
+        deliveryEvent: {
+          deliveryId,
+          payloadSha256: rendered.payloadSha256,
+          ...findingFingerprintAudit(fingerprints),
+          policy: version.completionPolicy.onFindings,
+        },
+        now,
+      });
+    } catch (error) {
+      // The store rolled the finding state, both audits, and packet back together. Keep
+      // that prior gate intact instead of letting the generic Inspector adapter handler
+      // rewrite it after an atomic packet-preparation failure.
+      console.error(`[workflow] Inspector feedback preparation failed for run ${run.id}: ${String(error)}`);
+      return;
+    }
     if (!prepared) return;
     this.publishRun(run.id);
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);

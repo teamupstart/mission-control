@@ -412,6 +412,74 @@ test("current-head findings prepare one frozen packet and zero findings complete
   await clean.manager.stop();
 });
 
+test("atomic repair-packet failure leaves the manager's prior gate untouched", async () => {
+  const seeded = await seed();
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `atomic-manager-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `atomic-manager-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Keep the prior gate",
+    body: "Packet insertion failed.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const collisionId = `atomic-manager-collision-${serial}`;
+  seeded.store.prepareDelivery({
+    id: collisionId,
+    runId: seeded.ids.run,
+    submissionId: seeded.ids.submission,
+    kind: "persona_feedback",
+    sessionId: seeded.ids.session,
+    noteKey: `agent-${serial}`,
+    payload: "existing packet",
+    payloadSha256: `existing-manager-packet-${serial}`,
+  }, seeded.now);
+
+  const transition = seeded.store.transitionInspectorFindingsWithDelivery.bind(seeded.store);
+  let attempted = false;
+  let prior = seeded.store.getRun(seeded.ids.run)!;
+  seeded.store.transitionInspectorFindingsWithDelivery = (input) => {
+    attempted = true;
+    prior = seeded.store.getRun(seeded.ids.run)!;
+    return transition({
+      ...input,
+      delivery: { ...input.delivery, id: collisionId },
+    });
+  };
+
+  signal(seeded, seeded.head);
+  await waitFor(() => attempted, "the manager never attempted atomic finding delivery");
+  await new Promise((resolve) => setImmediate(resolve));
+  const after = seeded.store.getRun(seeded.ids.run)!;
+  assert.equal(after.status, prior.status);
+  assert.equal(after.currentPhase, prior.currentPhase);
+  assert.deepEqual(after.gateState, prior.gateState);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).some((event) =>
+      ["inspector_findings", "inspector_feedback_prepared", "inspector_adapter_error"].includes(event.kind)),
+    false,
+  );
+  assert.equal(
+    seeded.store.listDeliveries(seeded.ids.run).some((delivery) => delivery.kind === "inspector_feedback"),
+    false,
+  );
+  await seeded.manager.stop();
+});
+
 test("finding state and its immutable repair packet survive insertion failure and restart", async () => {
   const seeded = await seed();
   await seeded.manager.stop();

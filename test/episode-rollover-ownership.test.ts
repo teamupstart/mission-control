@@ -159,17 +159,19 @@ test("an explicit /clear still gives up the work the task was dispatched for", (
 });
 
 test("the barrier still blocks a session sitting in a genuinely cancelled task's tree", async () => {
-  const { registry, writes, deps, guard, session, TASK } = dispatched(FIRST_ID);
+  const { registry, writes, deps, guard, session, SID, TASK } = dispatched(FIRST_ID);
   // The operator cancelled the task and its teardown failed, so the resources remain
   // tracked and the session predates the cancellation. Nothing may be typed at it.
+  const liveSession = session();
+  const episodeStartedAt = registry.workEpisodeForSession(SID)!.startedAt;
   registry.upsertTask({
     ...registry.getTask(TASK)!,
     status: "cancelled",
     sessionId: null,
-    completedAt: Date.now(),
+    completedAt: episodeStartedAt + 1,
   });
 
-  const result = await sendText(session(), "more work", true, deps, guard);
+  const result = await sendText(liveSession, "more work", true, deps, guard);
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /clean up.*cancelled task/);
   assert.deepEqual(writes, []);

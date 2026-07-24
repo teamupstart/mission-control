@@ -59,6 +59,7 @@ import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
+import { priorFindingFingerprintAudit } from "./finding-audit.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -2003,7 +2004,7 @@ export class WorkflowStore {
         submissionId: input.id,
         failedHeadSha: input.failedHeadSha,
         newHeadSha: input.newHeadSha,
-        priorFindingFingerprints: input.priorFindingFingerprints,
+        ...priorFindingFingerprintAudit(input.priorFindingFingerprints),
         bypassReason: input.bypassReason,
       }, input.now);
       return {

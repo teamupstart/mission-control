@@ -13,7 +13,11 @@ import { createLimiter, parseModelJson, runStructured } from "../llm/structured.
 import { llmRunner } from "../llm/index.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
-import { inspectorPosture, reviewNeedsLiveRerun } from "@shared/inspector.ts";
+import {
+  INSPECTOR_LIMITS,
+  inspectorPosture,
+  reviewNeedsLiveRerun,
+} from "@shared/inspector.ts";
 import type { PrOpened, Registry } from "../registry.ts";
 import type {
   InspectorComment,
@@ -128,8 +132,6 @@ const MAX_REPLIES_PER_THREAD = 6;
  * Rounds we will review one PR for. A long-lived PR is normal; a thousand rounds on one
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
-const MAX_ROUNDS = 100;
-
 /**
  * The model both the review and the follow-up replies run on: config, then
  * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
@@ -162,7 +164,7 @@ function inspectorRunOptions(cfg: InspectorConfig, timeoutMs: number, cwd: strin
 /**
  * Backoff for a PR that keeps failing.
  *
- * `MAX_ROUNDS` counts SUCCESSES, so on its own it can never stop a PR that fails
+ * `INSPECTOR_LIMITS.maxRounds` counts SUCCESSES, so on its own it can never stop a PR that fails
  * permanently - a reaped worktree, revoked `gh` access, a diff the model cannot answer
  * for inside `TIMEOUT_MS`. Such a PR was re-attempted every `POLL_MS` for its whole
  * life, and `runStructured` retries once internally, so one tick of it costs up to two
@@ -522,8 +524,8 @@ async function processPr(
   }
   if (!unpark && backedOff) return false;
 
-  if (pr.round >= MAX_ROUNDS) {
-    return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now, tick);
+  if (pr.round >= INSPECTOR_LIMITS.maxRounds) {
+    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, now, tick);
   }
 
   // Who we are, for every ownership decision below.

@@ -88,6 +88,7 @@ import {
   renderPrHandoff,
   renderWorkflowFeedback,
 } from "./feedback.ts";
+import { findingFingerprintAudit } from "./finding-audit.ts";
 import {
   getInspectorPr,
   loadInspectorComments,
@@ -1947,19 +1948,20 @@ export class WorkflowManager {
       const priorHeads = new Set(
         this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : []),
       );
-      if (!state.failedHeadSha || newHead === state.failedHeadSha || priorHeads.has(newHead)) {
+      if (!state.failedHeadSha) {
         this.transitionInspectorGate(
           run,
           state,
           { ...state, waitReason: "head_mismatch" },
           "blocked",
-          "inspector_same_head_refused",
-          "inspector_same_head_refused",
+          "inspector_gate_context_invalid",
+          null,
           { failedHeadSha: state.failedHeadSha, observedHeadSha: newHead },
           now,
         );
         return;
       }
+      if (newHead === state.failedHeadSha || priorHeads.has(newHead)) return;
       if (submission.round > run.maxRepairRounds) {
         this.transitionInspectorGate(
           run,
@@ -2168,7 +2170,7 @@ export class WorkflowManager {
       {
         prKey: state.prKey,
         targetHeadSha: state.targetHeadSha,
-        findingFingerprints: fingerprints,
+        ...findingFingerprintAudit(fingerprints),
         policy: version.completionPolicy.onFindings,
       },
       now,
@@ -2202,7 +2204,7 @@ export class WorkflowManager {
       this.store.appendEvent(run.id, "inspector_feedback_prepared", {
         deliveryId: prepared.delivery.id,
         payloadSha256: prepared.delivery.payloadSha256,
-        findingFingerprints: fingerprints,
+        ...findingFingerprintAudit(fingerprints),
         policy: version.completionPolicy.onFindings,
       }, now);
     }

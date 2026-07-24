@@ -13,12 +13,14 @@ import {
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
   WorkflowNodeAttemptStateSchema,
+  WorkflowInspectorGateStateSchema,
   WorkflowRunStatusSchema,
   WorkflowRunActionSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
 } from "../src/shared/protocol.ts";
+import { INSPECTOR_LIMITS } from "../src/shared/inspector.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
   WORKFLOW_LIMITS,
@@ -197,6 +199,36 @@ test("Inspector is a closed workflow-level completion policy", () => {
       kind: "inspector",
       onFindings: "ask_session",
       missingPrAction: "wait",
+    }),
+  );
+});
+
+test("Inspector gate persistence covers the Inspector finding lifetime", () => {
+  assert.equal(
+    INSPECTOR_LIMITS.maxFindingFingerprints,
+    INSPECTOR_LIMITS.maxRounds * INSPECTOR_LIMITS.maxCommentsPerRound,
+  );
+  const findingFingerprints = Array.from(
+    { length: INSPECTOR_LIMITS.maxFindingFingerprints },
+    (_, index) => `finding-${index}`,
+  );
+  const parsed = WorkflowInspectorGateStateSchema.parse({
+    prKey: "owner/repo#1",
+    prUrl: "https://github.com/owner/repo/pull/1",
+    targetHeadSha: "head",
+    failedHeadSha: "head",
+    enteredAt: 1,
+    lastObservedAt: 2,
+    observedHeadSha: "head",
+    reviewPosture: "live",
+    waitReason: "findings",
+    findingFingerprints,
+  });
+  assert.equal(parsed.findingFingerprints.length, INSPECTOR_LIMITS.maxFindingFingerprints);
+  assert.throws(() =>
+    WorkflowInspectorGateStateSchema.parse({
+      ...parsed,
+      findingFingerprints: [...findingFingerprints, "overflow"],
     }),
   );
 });

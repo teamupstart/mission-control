@@ -14,13 +14,16 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-bypass-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb } = await import("../src/server/db.ts");
+const { adoptInspectorPr, openDb } = await import("../src/server/db.ts");
+const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { priorFindingFingerprintAudit } = await import("../src/server/workflows/finding-audit.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 
 const db = openDb();
+setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
 const policy = JSON.stringify({
   kind: "inspector",
   onFindings: "inspector_only",
@@ -52,6 +55,31 @@ db.prepare(
 ).run(graph, policy, defaults);
 
 const store = new WorkflowStore(db);
+adoptInspectorPr({
+  key: "owner/repo#44",
+  url: "https://github.com/owner/repo/pull/44",
+  owner: "owner",
+  repo: "repo",
+  number: 44,
+  repoRoot: "/repo",
+  cwd: "/repo",
+  sessionId: "session",
+  source: "hook",
+  state: "open",
+  headSha: null,
+  reviewPosture: "live",
+  round: 1,
+  lastReviewedAt: null,
+  lastError: null,
+  failCount: 0,
+  lastFailKind: null,
+  nextAttemptAt: null,
+  lastAttemptSha: null,
+  mergedAt: null,
+  mergeBlock: null,
+  adoptedAt: 1,
+  updatedAt: 1,
+});
 const binding = store.insertBinding({
   id: "b",
   workflowVersionId: "v",
@@ -91,6 +119,19 @@ const initial: WorkflowInspectorGateState = {
 store.setSubmissionState("full-1", "completed", 3);
 db.prepare(`UPDATE workflow_submissions SET pr_head_sha = 'old-head' WHERE id = 'full-1'`).run();
 store.setRunState("run", "waiting_for_new_head", "inspector_findings", initial as never, 3);
+
+test("large bypass audits retain identity without exceeding event limits", () => {
+  const fingerprints = Array.from(
+    { length: 2_000 },
+    (_, index) => `${index.toString(16).padStart(64, "0")}`,
+  );
+  const audit = priorFindingFingerprintAudit(fingerprints);
+  assert.equal(audit.priorFindingFingerprints.length, 100);
+  assert.equal(audit.priorFindingFingerprintsTruncated, true);
+  assert.equal(audit.priorFindingFingerprintCount, fingerprints.length);
+  assert.match(audit.priorFindingFingerprintsSha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.ok(Buffer.byteLength(JSON.stringify(audit), "utf8") < 64_000);
+});
 
 test("same-head retry fails closed and a new head creates an attempt-free audited submission", () => {
   const same = store.createInspectorOnlySubmission({
@@ -141,7 +182,7 @@ test("same-head retry fails closed and a new head creates an attempt-free audite
   });
 });
 
-test("repeat findings respect the round cap and cannot reuse any reviewed head", () => {
+test("repeat findings keep waiting on known heads and cannot reuse any reviewed head", async () => {
   const current = store.getRun("run")!.gateState as unknown as WorkflowInspectorGateState;
   const findingsAgain: WorkflowInspectorGateState = {
     ...current,
@@ -158,6 +199,14 @@ test("repeat findings respect the round cap and cannot reuse any reviewed head",
     now: 6,
   });
   assert.ok(waiting);
+  const manager = new WorkflowManager(new Registry(), store);
+  await (manager as unknown as {
+    evaluateInspectorGate(id: string, observation: null): Promise<void>;
+  }).evaluateInspectorGate("run", null);
+  assert.equal(store.getRun("run")?.status, "waiting_for_new_head");
+  assert.equal(store.getRun("run")?.currentPhase, "inspector_findings");
+  await manager.stop();
+
   const reused = store.createInspectorOnlySubmission({
     id: "reused",
     runId: "run",

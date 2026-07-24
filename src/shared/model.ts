@@ -108,7 +108,8 @@ export interface ModelChoice {
 export const MODEL_CATALOG: Record<AgentType, readonly ModelChoice[]> = {
   claude: [
     { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work" },
-    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "strong all-rounder" },
+    { id: "claude-opus-5", label: "Opus 5", hint: "strong all-rounder" },
+    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "previous-generation Opus" },
     { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper" },
     { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks" },
   ],
@@ -157,7 +158,7 @@ export function providerModelDefault(
   if (provider === "codex") {
     return tier === "deep" ? "gpt-5.6-sol" : tier === "balanced" ? "gpt-5.6-terra" : "gpt-5.6-luna";
   }
-  return tier === "deep" ? "claude-opus-4-8" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
+  return tier === "deep" ? "claude-opus-5" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
 }
 
 /**

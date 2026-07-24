@@ -267,7 +267,11 @@ the config that owns it:</p>
   <li><strong>R8:</strong> A <code>trust</code> category (group <em>Leaves the
   machine</em>) renders the matrix over the three <code>repoAllowlist</code>s; adding a
   repo resolves through <code>POST /api/repos/resolve</code> first and grants nothing
-  until a cell is clicked ("adding is configuration; enabling is consent").</li>
+  until a cell is clicked ("adding is configuration; enabling is consent"). Because an
+  ungranted repo exists in no allowlist, staged rows persist as a
+  <code>trustStaged</code> key on the existing <code>UiConfig</code> blob - durable per
+  machine, pruned on first grant or row removal - so "add grants nothing" survives a
+  reload.</li>
   <li><strong>R9:</strong> A cell edit patches only the owning subsystem's config and
   survives the panels' 4s config polls (same stale-closure guard the three panels use
   today).</li>
@@ -325,8 +329,9 @@ the config that owns it:</p>
   <li>Folding the Foreman popover's enable/mode/queues into the panel (F7 stays a
   link).</li>
   <li>Inline palette editing of non-boolean scalars (soak, intervals) - those jump.</li>
-  <li>New persistence, new tables, or any change to allowlist storage or consent
-  semantics.</li>
+  <li>New tables or routes, and any change to allowlist storage or consent semantics
+  (the staged-repo list in R8 rides the existing <code>UiConfig</code> blob as one new
+  schema key).</li>
   <li>The Electron capability surface: <code>mission:open-settings</code> is reused
   as-is.</li>
 </ul>

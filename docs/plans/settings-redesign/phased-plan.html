@@ -75,8 +75,8 @@ merge-safe phases.</p>
   <code>AppPageShell</code>, App's <code>route.page === "workflows"</code> guard), so
   the container is a self-contained first phase.</li>
   <li>The three allowlists share schemas, routes, and the add/patch/stale-guard
-  pattern; Trust needs no daemon change, making it a pure-web phase gated only on the
-  page.</li>
+  pattern; Trust needs no new route or table (staged, ungranted repos ride the existing
+  <code>UiConfig</code> blob), keeping it a phase gated only on the page.</li>
   <li><code>cost_fleet</code> is the worked example for a scalar SSE status frame;
   <code>settings_status</code> follows it exactly (event + snapshot +
   <code>MissionState</code> + <code>useEventStream</code> case), so status is an
@@ -139,16 +139,19 @@ ships with its complete index.</p>
 <p>Owned by the earliest phase; later phases consume, never redefine.</p>
 <ul>
   <li><strong>Phase 1 owns</strong>: the <code>MissionRoute</code> settings variant and
-  hash grammar; the <code>SETTINGS_CATEGORIES</code> entry shape (<code>id</code>,
-  <code>label</code>, <code>icon</code>, <code>group</code>, <code>scope</code>,
-  <code>keywords</code>) and the ordered <code>SETTINGS_GROUPS</code> registry; the
+  hash grammar; the registry module <code>src/web/lib/settings-registry.ts</code> (pure
+  data, imported at runtime by the router); the <code>SETTINGS_CATEGORIES</code> entry
+  shape (<code>id</code>, <code>label</code>, <code>icon</code>, <code>group</code>,
+  <code>scope</code>, <code>keywords</code>) and the ordered
+  <code>SETTINGS_GROUPS</code> registry; the
   <code>data-anchor="&lt;category&gt;/&lt;slug&gt;"</code> convention with its
   uniqueness test; the rule that <code>SettingsPage</code> owns the five
   category-scoped hooks and receives App-owned state (<code>foreman</code>,
   <code>cost</code>, <code>llm</code>, <code>layout</code>) as props.</li>
   <li><strong>Phase 2 owns</strong>: the <code>trust</code> category id and its
-  anchors; the rule that the three panels summarize and link rather than edit repo
-  lists.</li>
+  anchors; the <code>trustStaged</code> <code>UiConfig</code> key (persisted once
+  shipped, append-only in practice); the rule that the three panels summarize and link
+  rather than edit repo lists.</li>
   <li><strong>Phase 3 owns</strong>: the per-harness card anchors
   (<code>harnesses/&lt;agent&gt;</code>).</li>
   <li><strong>Phase 4 owns</strong>: the <code>SettingsStatus</code> shape, the

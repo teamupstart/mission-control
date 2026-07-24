@@ -23,7 +23,8 @@ This index decomposes it into five merge-safe phases.
   `route.page === "workflows"` guard), so the container is a self-contained first
   phase.
 - The three allowlists share schemas, routes, and the add/patch/stale-guard pattern;
-  Trust needs no daemon change, making it a pure-web phase gated only on the page.
+  Trust needs no new route or table (staged, ungranted repos ride the existing
+  `UiConfig` blob), keeping it a phase gated only on the page.
 - `cost_fleet` is the worked example for a scalar SSE status frame; `settings_status`
   follows it exactly (event + snapshot + `MissionState` + `useEventStream` case), so
   status is an independent daemon+web phase.
@@ -70,14 +71,16 @@ ships with its complete index.
 
 Owned by the earliest phase; later phases consume, never redefine.
 
-- **Phase 1 owns**: the `MissionRoute` settings variant and hash grammar; the
-  `SETTINGS_CATEGORIES` entry shape (`id`, `label`, `icon`, `group`, `scope`,
-  `keywords`) and the ordered `SETTINGS_GROUPS` registry; the
+- **Phase 1 owns**: the `MissionRoute` settings variant and hash grammar; the registry
+  module `src/web/lib/settings-registry.ts` (pure data, imported at runtime by the
+  router); the `SETTINGS_CATEGORIES` entry shape (`id`, `label`, `icon`, `group`,
+  `scope`, `keywords`) and the ordered `SETTINGS_GROUPS` registry; the
   `data-anchor="<category>/<slug>"` convention with its uniqueness test; the rule that
   `SettingsPage` owns the five category-scoped hooks and receives App-owned state
   (`foreman`, `cost`, `llm`, `layout`) as props.
-- **Phase 2 owns**: the `trust` category id and its anchors; the rule that the three
-  panels summarize and link rather than edit repo lists.
+- **Phase 2 owns**: the `trust` category id and its anchors; the `trustStaged`
+  `UiConfig` key (persisted once shipped, append-only in practice); the rule that the
+  three panels summarize and link rather than edit repo lists.
 - **Phase 3 owns**: the per-harness card anchors (`harnesses/<agent>`).
 - **Phase 4 owns**: the `SettingsStatus` shape, the `settings_status` event, and
   `MissionState.settingsStatus` as the only client-side source of those facts.

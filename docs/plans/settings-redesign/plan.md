@@ -152,7 +152,9 @@ flowchart LR
 - R8: A `trust` category (group *Leaves the machine*) renders the matrix over the three
   `repoAllowlist`s; adding a repo resolves through `POST /api/repos/resolve` first and
   grants nothing until a cell is clicked ("adding is configuration; enabling is
-  consent").
+  consent"). Because an ungranted repo exists in no allowlist, staged rows persist as a
+  `trustStaged` key on the existing `UiConfig` blob - durable per machine, pruned on
+  first grant or row removal - so "add grants nothing" survives a reload.
 - R9: A cell edit patches only the owning subsystem's config and survives the panels'
   4s config polls (same stale-closure guard the three panels use today).
 - R10: The merge-without-review blind spot renders on the matrix (amber cell + footnote
@@ -197,7 +199,8 @@ flowchart LR
 - The hub landing page (mockup C) and any status rollup banner.
 - Folding the Foreman popover's enable/mode/queues into the panel (F7 stays a link).
 - Inline palette editing of non-boolean scalars (soak, intervals) - those jump.
-- New persistence, new tables, or any change to allowlist storage or consent semantics.
+- New tables or routes, and any change to allowlist storage or consent semantics (the
+  staged-repo list in R8 rides the existing `UiConfig` blob as one new schema key).
 - The Electron capability surface: `mission:open-settings` is reused as-is.
 
 ## Phasing

@@ -65,9 +65,14 @@ until the palette exists), any change to what a panel says or writes.
    - `parseMissionRoute`: `/settings` → default category `"display"`;
      `/settings/<id>` → that category when it is in `SETTINGS_CATEGORIES`, else the
      default. `missionRouteHash` emits `#/settings/<category>`.
-   - Import type only from the settings registry to avoid a cycle (registry is
-     data-only).
-2. **Registry** (in the settings page module): `SETTINGS_CATEGORIES` entries gain
+   - The membership check is a RUNTIME check, so the router imports the registry
+     values, not just the type - which is why the registry moves into its own pure-data
+     module (step 2): the router must not import the page component, and a type-only
+     import would be erased before it could validate anything.
+2. **Registry** (new `src/web/lib/settings-registry.ts` - a pure-data module with no
+   React and no component imports, so the router, the page, the render test, and later
+   the search index all import the same runtime list): `SETTINGS_CATEGORIES` moves
+   here from the page module, and its entries gain
    `group: "screen" | "sessions" | "background" | "outbound"`,
    `scope: "browser" | "machine" | "home" | "github"`, and `keywords: string[]`
    (keywords may start minimal; Phase 5 consumes them). Add an ordered
@@ -143,6 +148,8 @@ rich-text keys in localStorage are untouched).
 ## Downstream handoff (later phases rely on; do not change)
 
 - `MissionRoute`'s settings variant shape and hash grammar.
+- `src/web/lib/settings-registry.ts` as the registry's home: pure data, importable at
+  runtime by the router and any later consumer without touching a component module.
 - `SETTINGS_CATEGORIES` entry shape `{ id, label, icon, group, scope, keywords }` and
   the ordered `SETTINGS_GROUPS` registry.
 - The `data-anchor="<category>/<slug>"` convention and its uniqueness test.
@@ -155,3 +162,9 @@ rich-text keys in localStorage are untouched).
 - 2026-07-23: initial version. Reviewed against plan decisions D1/D2/D7 and later-phase
   needs (anchors for Phase 5, group registry for Phases 2/5, prop-owned foreman state
   for Phase 2's Trust writes). No conflicts.
+- 2026-07-23 (Inspector round 1): the router's category validation is a runtime
+  membership check, and the registry previously lived in the page module with the
+  router told to import "type only" - erased at runtime, so the check was
+  unimplementable as written. The registry now lives in
+  `src/web/lib/settings-registry.ts` (pure data) and the router imports its values.
+  Phase 5's index sits beside it unchanged.

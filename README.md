@@ -296,13 +296,14 @@ effort controls, a command that clears its context, an MCP client. Absent is a f
 answer.
 
 That is why the differences you see are consistent rather than piecemeal. A Codex card
-draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
-Codex has no mode cycle to walk; its work-queue drawer is available once that session's
-launch-scoped hooks have reported, so [Foreman](#foreman-auto-responder) can observe and
-drive it; and the [skills](#skills-every-session-mixed-reload-behavior) catalog links a skill into
-each harness's own directory while nudging only the one that needs telling. Where the
-capability *is* there the branch disappears entirely: a **reset** of a Codex checkout clears
-its context with the same `/clear` a Claude one gets, because Codex declares that command too.
+draws its permission picker using Codex's native `/permissions` menu, while
+<kbd>⇧</kbd><kbd>Tab</kbd> still does nothing because Codex has no mode cycle to walk; its
+work-queue drawer is available once that session's launch-scoped hooks have reported, so
+[Foreman](#foreman-auto-responder) can observe and drive it; and the
+[skills](#skills-every-session-mixed-reload-behavior) catalog links a skill into each
+harness's own directory while nudging only the one that needs telling. Where the capability
+*is* there the branch disappears entirely: a **reset** of a Codex checkout clears its
+context with the same `/clear` a Claude one gets, because Codex declares that command too.
 
 The declarations move as the harness does, and a capability is filled in only after it has
 been pointed at a real install. Several of Codex's were `null` on the strength of a
@@ -525,13 +526,16 @@ running forever. **Needs input / needs review** still comes from hooks or a revi
 The small colored dot next to each title is *not* a status - it's the brand color the agent
 declares for itself (terracotta for Claude Code, green for Codex, blue for Pi).
 
-A Claude session also carries a **permission mode** chip once Mission Control observes one -
-`manual`, `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't
-ask` for sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the
-keystroke would in the session's own terminal, and clicking the chip opens a picker that
-jumps straight to the mode you choose. Like the thinking badge, it appears on Cards, in
-Console detail, and on Board tiles, so triaging from the board does not mean opening a
-session to put it back in `plan`. When the pane cannot be written the chip stays read-only.
+Claude and Codex sessions carry a **permission mode** chip. Claude offers `manual`, `accept
+edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for sessions
+that enable them; <kbd>⇧</kbd><kbd>Tab</kbd> still cycles those modes. Codex offers its
+native **Ask for approval**, **Approve for me**, **Full Access**, and **Read Only** profiles
+through `/permissions`.
+Clicking either chip opens the same dashboard picker and drives the harness's own control.
+Like the thinking badge, it appears on Cards, in Console detail, and on Board tiles, so
+triaging from the board does not mean opening a session to change its permissions. Before
+Codex writes its first observable mode, the neutral `permissions` chip still opens the
+picker. When the pane cannot be written the chip stays read-only.
 
 ### Answer a session's menu from the dashboard
 

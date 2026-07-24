@@ -246,7 +246,7 @@ export function SessionTile({
             mount, so
             the three cannot drift on what a mode is called or how it is driven; it draws
             nothing for a harness with no permission modes, and degrades to a read-only
-            chip when there is no pane to send Shift+Tab into. */}
+            chip when there is no pane to drive its native control. */}
         <ModePicker session={session} />
         <CostChip cost={session.cost} />
       </span>

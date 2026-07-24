@@ -14,8 +14,8 @@ import { join } from "node:path";
 //     in auto mode with no post-launch keystrokes and no readable footer required (a
 //     fresh session's folder-trust dialog hides that footer, which is what broke the old
 //     Shift+Tab walk);
-//   - ON + codex -> no permission-mode flag: codex has no such mode, and its autonomous
-//     launch is a widened sandbox its own builder applies, not a `--permission-mode`;
+//   - ON + codex -> no permission-mode flag: Codex exposes live native modes but declares
+//     no autonomous on-dispatch mode, while its launch builder applies a widened sandbox;
 //   - ON + pi -> no flag: pi declares no permission modes at all;
 //   - OFF (or unconfigured) -> nothing, for every agent.
 
@@ -38,10 +38,10 @@ test("setting ON + claude: the launch carries --permission-mode auto", () => {
   assert.deepEqual(dispatchPermissionModeArgs("claude"), ["--permission-mode", "auto"]);
 });
 
-test("setting ON + codex: no permission-mode flag - codex has none (its auto launch is a sandbox)", () => {
+test("setting ON + codex: its native picker is not armed at launch", () => {
   setHarnessesConfig({ autoModeOnDispatch: true });
-  // The absence is the point: codex's autonomous posture is `prepareCodexLaunch`'s widened
-  // sandbox, not a permission mode, so this axis must add nothing rather than a stray flag.
+  // The absence is the point: Codex has live modes but no autonomous `onDispatch` mode;
+  // its widened launch sandbox remains the responsibility of `prepareCodexLaunch`.
   assert.deepEqual(dispatchPermissionModeArgs("codex"), []);
 });
 

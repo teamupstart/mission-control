@@ -7,6 +7,8 @@ import {
   findRolloutForSession,
   readHeadLine,
   parseRolloutMeta,
+  parseRolloutPermissionMode,
+  parseRolloutPermissionModeRead,
   parseRolloutRateLimits,
   parseSessionMeta,
   readRolloutPassive,
@@ -18,6 +20,22 @@ const sessionMeta = (cwd: string, ts: string): string =>
   JSON.stringify({ timestamp: ts, type: "session_meta", payload: { id: "x", timestamp: ts, cwd, cli_version: "1", source: "cli", thread_source: "user" } });
 const turnContext = (model: string, effort: string | null, timestamp = "t"): string =>
   JSON.stringify({ timestamp, type: "turn_context", payload: { model, effort } });
+const permissionContext = (
+  sandbox: string,
+  approval: string,
+  reviewer = "user",
+): string =>
+  JSON.stringify({
+    timestamp: "t",
+    type: "turn_context",
+    payload: {
+      model: "gpt-5.6-sol",
+      effort: "high",
+      sandbox_policy: { type: sandbox },
+      approval_policy: approval,
+      approvals_reviewer: reviewer,
+    },
+  });
 const tokenCount = (current: number, window: number, cumulative = current): string =>
   JSON.stringify({
     timestamp: "t",
@@ -120,6 +138,31 @@ test("parseRolloutMeta normalizes effort variants and handles emptiness", () => 
   assert.equal(parseRolloutMeta([turnContext("gpt-5", "ultra")])?.thinkingLevel, "max");
   assert.equal(parseRolloutMeta([turnContext("gpt-5", "bogus")])?.thinkingLevel, null);
   assert.equal(parseRolloutMeta(["", "{}"]), null);
+});
+
+test("Codex rollout permissions map to the native picker profiles", () => {
+  assert.equal(parseRolloutPermissionMode([
+    permissionContext("workspace-write", "on-request"),
+  ]), "askForApproval");
+  assert.equal(parseRolloutPermissionMode([
+    permissionContext("workspace-write", "on-request", "auto_review"),
+  ]), "approveForMe");
+  assert.equal(parseRolloutPermissionMode([
+    permissionContext("danger-full-access", "never"),
+  ]), "fullAccess");
+  assert.equal(parseRolloutPermissionMode([
+    permissionContext("read-only", "on-request"),
+  ]), "readOnly");
+  assert.equal(parseRolloutPermissionMode([
+    permissionContext("workspace-write", "never"),
+  ]), null, "a custom combination must not masquerade as a built-in profile");
+  assert.deepEqual(
+    parseRolloutPermissionModeRead([
+      permissionContext("read-only", "on-request"),
+    ]),
+    { mode: "readOnly", revision: "t" },
+    "the record timestamp travels with the mode so an old tail cannot undo a live change",
+  );
 });
 
 // ---- findRolloutForSession (filesystem) ----

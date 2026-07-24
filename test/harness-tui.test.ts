@@ -15,6 +15,8 @@ import { mkSession } from "./helpers/session-fixture.ts";
 import { PERMISSION, MULTI_SELECT } from "./fixtures/claude-panes.ts";
 import {
   CODEX_COMMAND_APPROVAL,
+  CODEX_FULL_ACCESS_CONFIRMATION,
+  CODEX_PERMISSIONS_PICKER,
   CODEX_TRUST_DIALOG,
   CODEX_UPDATE_PROMPT,
 } from "./fixtures/codex-panes.ts";
@@ -102,6 +104,18 @@ test("a Codex menu with no question mark above it still gets a caption", () => {
   assert.ok((d.prompt ?? "").length > 0);
 });
 
+test("Codex's native permissions picker and Full Access confirmation stay parseable", () => {
+  const permissions = parsePaneDialog(CODEX_PERMISSIONS_PICKER, codexTui.dialog!);
+  const permissionLabels = permissions?.options.map((option) => option.label) ?? [];
+  assert.equal(permissionLabels.length, 4);
+  for (const [index, label] of ["Ask for approval (current)", "Approve for me", "Full Access", "Read Only"].entries()) {
+    assert.match(permissionLabels[index] ?? "", new RegExp(`^${label.replace(/[()]/g, "\\$&")}(?: |$)`));
+  }
+  const confirmation = parsePaneDialog(CODEX_FULL_ACCESS_CONFIRMATION, codexTui.dialog!);
+  assert.match(confirmation?.options[0]?.label ?? "", /^Yes, continue anyway(?: |$)/);
+  assert.match(confirmation?.options[1]?.label ?? "", /^Cancel(?: |$)/);
+});
+
 test("a harness with no form vocabulary never reads a bracketed row as a checkbox", () => {
   const codex = codexTui.dialog!;
   assert.equal(codex.form, null);
@@ -119,12 +133,12 @@ test("a harness with no form vocabulary never reads a bracketed row as a checkbo
 });
 
 test("no mode line means no invented mode, not a mode read with someone else's words", () => {
-  assert.equal(modeLineSpecFor("codex"), null, "Codex has no permission modes");
+  assert.equal(modeLineSpecFor("codex"), null, "Codex has no Shift+Tab mode footer");
   assert.ok(modeLineSpecFor("claude"), "Claude does");
 
   // Claude's footer, read with Claude's spec, is a mode. There is no Codex spec to read it
-  // with at all - which is the refusal `setPermissionMode` turns into "no permission modes"
-  // rather than walking a cycle that does not exist.
+  // with at all: Codex's separate `/permissions` menu control must not make the pane
+  // parser read Claude's footer vocabulary.
   const line = parsePaneModeLine("⏸ manual mode on · ← 3 agents", claudeTui.modeLine!);
   assert.equal(line?.mode, "default");
 });

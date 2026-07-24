@@ -12,6 +12,7 @@ import {
   autoModeAgents,
   autoModeUnsupportedWhy,
 } from "../src/shared/harness-capabilities.ts";
+import { hasTooltip } from "./helpers/markup.ts";
 
 /** Who the switch reaches, from the same declaration the panel reads. */
 const AUTO = autoModeAgents();
@@ -184,7 +185,7 @@ test("a harness the switch leaves alone carries the reason on its own card", () 
   // would leave stale.
   const html = render({ autoModeOnDispatch: true });
   for (const a of EXCLUDED) {
-    assert.match(html, new RegExp(reEscape(autoModeUnsupportedWhy(a)!)));
+    assert.equal(hasTooltip(html, autoModeUnsupportedWhy(a)!), true);
   }
   // The visible badge itself names no harness.
   if (EXCLUDED.length > 0) assert.match(html, />no auto mode</);

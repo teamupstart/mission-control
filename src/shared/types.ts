@@ -76,17 +76,25 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
- * Claude's permission mode - the state cycled by Shift+Tab. These are the exact
- * strings Claude reports on its hook payloads (`permission_mode`). Codex has no
- * equivalent, so a Codex session's mode is always null.
+ * A harness's live permission posture.
+ *
+ * The first six values are Claude's exact hook/footer strings. The remaining four
+ * represent Codex's built-in `/permissions` profiles; they stay distinct because
+ * Read Only is not Claude Plan mode, and Approve for me is not Claude Auto mode.
  */
-export type PermissionMode =
-  | "default"
-  | "plan"
-  | "acceptEdits"
-  | "auto"
-  | "dontAsk"
-  | "bypassPermissions";
+export const PERMISSION_MODES = [
+  "default",
+  "plan",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "bypassPermissions",
+  "askForApproval",
+  "approveForMe",
+  "fullAccess",
+  "readOnly",
+] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
  * Where a session's runtime metadata came from, in descending authority:
@@ -270,10 +278,9 @@ export interface Session {
   /** Controlling tty, normalized without the /dev/ prefix (e.g. "ttys012"). */
   tty: string | null;
   /**
-   * Claude's live permission mode, from its hooks (`permission_mode`). Null until
-   * a hook reports it, and always null for Codex (no such concept). Hook-sourced
-   * rather than from the statusLine, which doesn't carry it - so it refreshes on
-   * the next hook event after a Shift+Tab, not the instant the mode changes.
+   * The harness's live permission posture. Claude is observed from hooks and its pane
+   * footer; Codex is observed from rollout turn_context records. Null until one of that
+   * harness's authoritative sources reports a known built-in mode.
    */
   permissionMode: PermissionMode | null;
   /**

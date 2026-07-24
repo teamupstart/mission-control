@@ -274,6 +274,10 @@ const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
   auto: { label: "auto", tone: "accept", title: "Auto - the agent proceeds autonomously" },
   dontAsk: { label: "don't ask", tone: "accept", title: "Don't ask - runs without prompting" },
   bypassPermissions: { label: "bypass", tone: "bypass", title: "Bypass permissions - all permission checks skipped" },
+  askForApproval: { label: "ask", tone: "default", title: "Ask for approval - Codex asks before leaving the workspace boundary" },
+  approveForMe: { label: "approve", tone: "accept", title: "Approve for me - Codex auto-reviews potentially unsafe actions" },
+  fullAccess: { label: "full access", tone: "bypass", title: "Full Access - Codex can edit outside the workspace and use the network" },
+  readOnly: { label: "read only", tone: "plan", title: "Read Only - Codex can read the workspace but must ask before edits" },
 };
 
 /** How to render a session's permission mode, or null when it's unknown. */
@@ -282,8 +286,8 @@ export function permissionModeDisplay(mode: PermissionMode | null): PermissionMo
 }
 
 /**
- * The modes the picker offers for an agent, in that harness's own Shift+Tab cycle order -
- * the list reads in the same order as the keystroke it replaces.
+ * The modes the picker offers for an agent, in that harness's native control order: the
+ * Shift+Tab cycle for Claude or the `/permissions` menu for Codex.
  *
  * Empty for a harness with no `permissionModes` capability, which is also what makes the
  * picker draw nothing: one declaration (`@shared/harness-capabilities.ts`) answers both

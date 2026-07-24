@@ -131,9 +131,9 @@ export const HookIngestSchema = z.object({
   message: z.string().optional(),
   source: z.string().optional(),
   reason: z.string().optional(),
-  // Claude's current permission mode (the Shift+Tab state). Left as a free string
-  // on the wire - the registry normalizes it to a known PermissionMode - so a mode
-  // a newer Claude adds never fails hook ingest, it just doesn't render yet.
+  // The harness's current permission mode, when its hook reports one. Left as a free
+  // string on the wire - the registry normalizes it to a known PermissionMode - so a
+  // mode a newer harness adds never fails hook ingest, it just doesn't render yet.
   permissionMode: z.string().optional(),
   // A GitHub PR URL the hook sniffed out of a PostToolUse tool result (e.g. the
   // link `gh pr create` prints). Optimistically decorates the session's card;
@@ -528,13 +528,19 @@ export const ResetSchema = z.object({
 });
 export type ResetInput = z.infer<typeof ResetSchema>;
 
-/**
- * Drive a Claude session to a named permission mode. Closed to the modes Shift+Tab
- * can actually reach: `dontAsk` is settable only at startup, so accepting it here
- * would promise a walk that can never arrive.
- */
+/** Drive a live session to one of its harness's pickable permission modes. */
 export const SetPermissionModeSchema = z.object({
-  mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions", "auto"]),
+  mode: z.enum([
+    "default",
+    "acceptEdits",
+    "plan",
+    "bypassPermissions",
+    "auto",
+    "askForApproval",
+    "approveForMe",
+    "fullAccess",
+    "readOnly",
+  ]),
 });
 export type SetPermissionModeInput = z.infer<typeof SetPermissionModeSchema>;
 
@@ -1261,8 +1267,9 @@ export const HarnessesConfigSchema = z.object({
   /**
    * When on, every Claude session dispatched from Mission Control is launched directly
    * in `auto` permission mode (`--permission-mode auto`) - so it works through its task
-   * without pausing on permission prompts. Codex has no permission mode; the same switch
-   * still reaches it, as a widened sandbox its launch builder applies (`prepareCodexLaunch`).
+   * without pausing on permission prompts. Codex dispatches use their launch-scoped
+   * workspace-write/on-request posture instead; its native, feature-gated Approve for me
+   * menu is deliberately not selected after launch.
    */
   autoModeOnDispatch: z.boolean().default(false),
   /**

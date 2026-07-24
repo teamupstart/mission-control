@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PermissionMode, Session } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
@@ -8,13 +9,12 @@ import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The shared permission-mode chip, clickable to pick a different mode instead of
- * reaching for Shift+Tab in the terminal.
+ * reaching for the agent's own terminal control.
  *
- * Choosing a mode doesn't set it directly - Claude has no such API. The daemon
- * walks the Shift+Tab cycle for us, reading the pane after each step (see
- * `setPermissionMode`). That walk can legitimately fail: the mode may not be
- * enabled for the session, or a dialog may be open and eating the keystroke. So
- * the popover stays open on failure and shows why, rather than closing on a lie.
+ * The daemon uses the harness's declared live mechanism: Claude's verified Shift+Tab
+ * walk or Codex's native `/permissions` picker. Either can legitimately fail because
+ * a mode is unavailable or another dialog owns the terminal, so the popover stays open
+ * on failure and shows why rather than closing on a lie.
  *
  * Renders nothing for a harness that declares no `permissionModes`, so mounting it
  * unconditionally is safe and the layouts do not each carry their own agent check.
@@ -39,8 +39,13 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
   const popRef = useRef<HTMLDivElement>(null);
 
   const modes = pickableModes(session.agent);
-  const current = permissionModeDisplay(session.permissionMode);
-  // Driving the mode means sending a keystroke, which needs a live pane to send into.
+  const liveControl = capabilitiesFor(session.agent).permissionModes?.liveControl;
+  const current = permissionModeDisplay(session.permissionMode) ?? {
+    label: "permissions",
+    tone: "default" as const,
+    title: "Permission mode has not been observed yet",
+  };
+  // Driving the mode writes to the agent TUI, which needs a live pane.
   const canPick = session.state !== "exited" && canWriteTo(session);
 
   const place = useCallback(() => {
@@ -82,10 +87,10 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
 
   // A harness with no permission modes has nothing to draw, and says so HERE rather than
   // at each of the three layouts that mount this - which is what lets those call sites
-  // drop their own `agent === "claude"`. A session that reports no mode has no chip to
-  // hang this on either; with the mode read off the pane each poll, that now only happens
-  // when the agent is showing a dialog over its own mode line.
-  if (modes.length === 0 || !current) return null;
+  // drop their own agent checks. A capable session whose current mode is not observable
+  // still gets a neutral picker: Codex may have a custom profile, or may not have written
+  // its first turn_context yet, but the user can still choose a built-in profile.
+  if (modes.length === 0) return null;
 
   if (!canPick) {
     return (
@@ -106,7 +111,11 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
 
   return (
     <>
-      <Tooltip label={`${current.title} - click to change (or Shift+Tab in the terminal)`}>
+      <Tooltip
+        label={`${current.title} - click to change${
+          liveControl?.kind === "cycle" ? " (or Shift+Tab in the terminal)" : ""
+        }`}
+      >
         <button
           ref={chipRef}
           className={`mode mode-${current.tone} mode-btn${open ? " open" : ""}`}

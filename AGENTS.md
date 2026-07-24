@@ -408,8 +408,8 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   difference there, since Codex writes one registration and has no `-s user|project` to
   choose between. `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) went null with the first of
   those: an entry there and its harness's `messages` capability are ONE fact in two files,
-  and `harness-transcript.test.ts` fails until they agree. Codex is down to one top-level
-  null, `permissionModes`.
+  and `harness-transcript.test.ts` fails until they agree. Codex now has no top-level null
+  in this shared record; `permissionModes` declares its measured `/permissions` menu.
   The nulls on this axis that ARE still true are the ones someone pointed at a real install:
   `control.pastePlaceholder` (below), and `skills.reloadCommand`, which is the whole
   difference between "this harness has no skills" and "this harness needs no nudge" - Codex
@@ -479,10 +479,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   numbered, single-cursor menus and differs by ONE token, the cursor glyph (U+203A against
   U+276F), so `DialogSpec` carries the glyph and `discovery/pane-dialog.ts` stays
   harness-neutral machinery - the same split `transcript.ts` makes. Note the restatement
-  that came before it, `capabilitiesFor(s.agent).permissionModes`, was not a fix: Codex has
-  no permission modes, so gating the DIALOG on them skipped exactly the sessions whose
-  dialogs are the only signal they can produce. **A capability is null only after you point
-  it at a real capture**; `test/fixtures/codex-panes.ts` is what that costs, and those
+  that came before it, `capabilitiesFor(s.agent).permissionModes`, was not a fix: Codex had
+  no mode-line capability, so gating the DIALOG on it skipped exactly the sessions whose
+  dialogs are the only signal they could produce. **A capability is null only after you
+  point it at a real capture**; `test/fixtures/codex-panes.ts` is what that costs, and those
   fixtures are verbatim, never hand-written. Getting it wrong is expensive in one specific
   way here, and hooks narrowed that rather than removing it: Codex's hooks are launch-scoped,
   so for a Codex session an OPERATOR started `activePaneDialog` is still the only "needs you"

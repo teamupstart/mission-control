@@ -59,7 +59,18 @@ function modeOf(r: InstanceType<typeof Registry>, id = "s1"): string | null {
 }
 
 test("normalizePermissionMode keeps known modes and rejects everything else", () => {
-  for (const m of ["default", "plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"]) {
+  for (const m of [
+    "default",
+    "plan",
+    "acceptEdits",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+    "askForApproval",
+    "approveForMe",
+    "fullAccess",
+    "readOnly",
+  ]) {
     assert.equal(normalizePermissionMode(m), m);
   }
   assert.equal(normalizePermissionMode("yolo"), null); // a mode we don't know
@@ -243,6 +254,21 @@ test("re-observing the same mode emits nothing (no pointless re-render)", () => 
   });
   r.recordObservedPermissionMode("s1", "plan");
   assert.equal(emitted, 0);
+});
+
+test("a verified Codex menu selection outranks its stale rollout until the next turn", (t) => {
+  const changedAt = Date.parse("2026-07-24T20:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: changedAt });
+  const r = new Registry();
+  r.applyDiscovery([disco({ agent: "codex" })]);
+
+  r.applyPassivePermissionMode("s1", "askForApproval", "2026-07-24T19:59:00.000Z");
+  r.recordObservedPermissionMode("s1", "fullAccess");
+  r.applyPassivePermissionMode("s1", "askForApproval", "2026-07-24T19:59:00.000Z");
+  assert.equal(modeOf(r), "fullAccess", "the old turn context must not undo the menu result");
+
+  r.applyPassivePermissionMode("s1", "readOnly", "2026-07-24T20:01:00.000Z");
+  assert.equal(modeOf(r), "readOnly", "a later turn context becomes authoritative again");
 });
 
 test("an observed mode never revives an overlay that aged past its TTL", (t) => {

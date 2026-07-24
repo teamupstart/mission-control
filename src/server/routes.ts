@@ -313,15 +313,21 @@ function retractByline(rowId: number): void {
 /**
  * Why this session's permission mode cannot be driven, or null when it can be.
  *
- * The refusal is a CAPABILITY answer, not an agent-id one: both mode routes walk the
- * Shift+Tab cycle and read the result back off a footer line, and a harness that renders
- * no such line has nothing for the walk to verify against - so it is refused here rather
- * than left to time out having typed Shift+Tab into somebody's editor. Named from
- * `AGENT_IDENTITY` so a fourth harness gets a true sentence instead of inheriting "Claude".
+ * The refusal is a CAPABILITY answer, not an agent-id one: a harness may expose a verified
+ * footer cycle or a verified native picker, while one declaring neither is refused before
+ * any terminal input. Named from `AGENT_IDENTITY` so a fourth harness gets a true sentence
+ * instead of inheriting "Claude".
  */
 function noPermissionModes(session: Session): string | null {
   if (harnessFor(session.agent).permissionModes) return null;
   return `${AGENT_IDENTITY[session.agent].label} has no permission modes`;
+}
+
+function noPermissionModeCycle(session: Session): string | null {
+  const modes = harnessFor(session.agent).permissionModes;
+  if (!modes) return `${AGENT_IDENTITY[session.agent].label} has no permission modes`;
+  if (modes.liveControl.kind === "cycle") return null;
+  return `${AGENT_IDENTITY[session.agent].label} changes permission modes through its picker`;
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -1489,12 +1495,12 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Cycle the session's permission mode one Shift+Tab step - only for a harness that
-  // declares `permissionModes`.
+  // Cycle the session's permission mode one Shift+Tab step - only for a harness whose
+  // live control is a cycle. Menu-based harnesses use the named-mode route below.
   app.post("/api/sessions/:id/mode/cycle", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const refusal = noPermissionModes(session);
+    const refusal = noPermissionModeCycle(session);
     if (refusal) return c.json({ error: refusal }, 400);
     const r = await cyclePermissionMode(session);
     // `r.mode` was read back off the pane, so recording it can't diverge from
@@ -1503,9 +1509,8 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Drive the session to a specific permission mode. Walks the Shift+Tab cycle,
-  // verifying against the pane at each step; see `setPermissionMode` for why the
-  // distance can't just be computed.
+  // Drive the session to a specific permission mode through the harness's declared
+  // live control: a verified Shift+Tab walk or a verified native picker selection.
   app.post("/api/sessions/:id/mode", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -1514,9 +1519,13 @@ export function buildApp(
     const parsed = await parseBody(c, SetPermissionModeSchema);
     if (!parsed.ok) return parsed.res;
     const r = await setPermissionMode(session, parsed.data.mode);
-    // Record on failure too: a walk that stops early still leaves the session in a
-    // mode we observed, and the chip should show where it actually ended up.
-    registry.recordObservedPermissionMode(session.id, r.mode ?? null);
+    // A cycle walk can stop early in a mode it read off the footer, so retain that
+    // observation even on failure. A menu failure observed no new mode: recording its
+    // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
+    const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
+    if (r.ok || liveControl?.kind === "cycle") {
+      registry.recordObservedPermissionMode(session.id, r.mode ?? null);
+    }
     return c.json(r, r.ok ? 200 : 409);
   });
 

@@ -430,7 +430,7 @@ test("the board tile's permission mode is the shared ModePicker", () => {
   // The card grew the picker first, so the board could show a mode it refused to change -
   // or, worse, grow a second chip that drifts from the card's on what a mode is called.
   // Both states are pinned: the pickable one, and the degradation a paneless session takes
-  // (no composer to send Shift+Tab into, so the same read-only chip on every surface).
+  // (no writable pane to drive the native control, so the same read-only chip everywhere).
   const cases: Partial<Session>[] = [
     { permissionMode: "acceptEdits" },
     { permissionMode: "plan", terminals: [] },

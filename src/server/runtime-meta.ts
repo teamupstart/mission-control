@@ -51,6 +51,11 @@ export function startRuntimeMetaPoller(registry: Registry): () => void {
         // (Codex: metadata, no turns) needs no branch here.
         registry.applyRuntimeMeta(s.id, read.meta, spec.metaSource);
         registry.applyPassiveActivity(s, read.activity);
+        registry.applyPassivePermissionMode(
+          s.id,
+          read.permissionMode ?? null,
+          read.permissionModeRevision ?? null,
+        );
         registry.applyPassiveUsage(s.id, read.usage ?? null);
         registry.applyPassiveRateLimits(read.rateLimits ?? null);
       }

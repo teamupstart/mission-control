@@ -1199,9 +1199,10 @@ Three deltas from the sketch above:
   (`submit answers`, `type something`, `have not answered all questions`) is one agent's
   own. Codex declares `form: null`, so a bracketed row keeps its brackets in the label -
   the same path a Claude permission prompt quoting a `[ ]` already took.
-- **`modeLine: null` for Codex is a real refusal, not a gap.** `setPermissionMode` now
-  answers "this agent has no permission modes" by declaration rather than walking a cycle
-  that does not exist, and no mode chip is invented for a card that has no modes.
+- **`modeLine: null` for Codex is a pane-parser answer, not a permission-capability
+  refusal.** Codex has no footer cycle, but `PermissionModeSpec.liveControl` declares its
+  measured `/permissions` menu and the rollout supplies the passive observation. The chip
+  therefore appears before the first observation and never routes Shift+Tab to Codex.
 
 The ask channel (`docs/plans/ask-channel/plan.md`) landed first, which was the right order
 and did not shrink this item the way it was expected to: it disallows `AskUserQuestion` only

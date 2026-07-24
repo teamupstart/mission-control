@@ -8716,9 +8716,27 @@ kbd {
 .rail-row:hover {
   background: color-mix(in oklab, var(--panel) 65%, transparent);
 }
+/* The selected row wears a full green selector frame, not the thin left edge it used to
+   carry - a 2px inset that read as barely-there against a busy "working" row. The green
+   is the same `--select` the grid's card and the board's tile use, and it stands clear of
+   the blue "working" tone, so the selection is unmistakable in every state. The outline is
+   inset (negative offset) so the dense list never clips it and it frames cleanly over the
+   left tone bar. */
 .rail-row.selected {
+  background: color-mix(in oklab, var(--select) 9%, var(--panel));
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+/* Focus handed to the reader with Tab: the selection stays marked so you don't lose your
+   place in the rail, but it steps back to a quiet outline while the conversation pane
+   takes the bright ring - so it is always clear which surface the vertical arrows move. */
+.console[data-zone="detail"] .rail-row.selected {
   background: var(--panel);
-  box-shadow: inset 2px 0 0 var(--select);
+  outline-color: color-mix(in oklab, var(--select) 40%, transparent);
+}
+.console[data-zone="detail"] .console-detail {
+  outline: 2px solid color-mix(in oklab, var(--select) 45%, transparent);
+  outline-offset: -2px;
 }
 .rail-row.tone-attention::before {
   box-shadow: 0 0 12px var(--attention);

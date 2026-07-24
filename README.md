@@ -2485,11 +2485,19 @@ earns two surfaces a card has nowhere to put:
   command bar are unique to it. In the console, and in the board once you're drilled in, the
   open detail *is* the selected session, so there is nothing to expand, and its controls are
   on screen permanently instead of on a bar that floats over them.
-- **Selecting is opening in the console**: click a rail row to switch sessions. Once a
-  detail is open, <kbd>↑</kbd>/<kbd>↓</kbd> scroll its active Conversation or Files reader
-  instead of changing the selection. In the focused inline Diff reader they move through
-  its file list instead; that navigation stays scoped to the reader. <kbd>Esc</kbd>
-  deselects, emptying the pane.
+- **Selecting is opening in the console**, and the keyboard lives in one of two zones.
+  Click a rail row - or walk it with <kbd>↑</kbd>/<kbd>↓</kbd> - to switch sessions; the
+  selected row wears a bright selector frame so it never gets lost against a busy state.
+  That is the **rail** zone. Press <kbd>Tab</kbd> to hand focus to the open conversation
+  (the **reader** zone): the pane takes the ring, and <kbd>↑</kbd>/<kbd>↓</kbd> now scroll
+  its active Conversation or Files reader instead of moving the selection. <kbd>⇧</kbd><kbd>Tab</kbd>
+  hands it back to the rail. These handoffs apply only while focus is inside the rail or
+  reader; ordinary browser tabbing elsewhere is untouched. Once focus is in the reader,
+  ordinary browser tabbing continues through its tabs, reply box and controls. In the
+  focused inline Diff reader the arrows move through its file list instead; that navigation
+  stays scoped to the reader.
+  <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
+  the pane.
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
@@ -2629,15 +2637,16 @@ without one, or if a native `title` attribute creeps back in.
 
 ## Keyboard shortcuts
 
-The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, or to
-scroll the active Console reader, then act without reaching for the mouse. Every shortcut
-works in every layout:
+The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, to walk
+the Console rail or scroll its open reader, then act without reaching for the mouse. Every
+shortcut works in every layout:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; <kbd>↑</kbd>/<kbd>↓</kbd> scroll the selected session's active Conversation or Files reader in **Console**, or move through files while its inline Diff reader is focused; along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the selected session's active Conversation or Files reader once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>Tab</kbd> | **Console:** hand the keyboard from the rail selector into the open conversation, so <kbd>↑</kbd>/<kbd>↓</kbd> scroll it; <kbd>⇧</kbd><kbd>Tab</kbd> (or <kbd>Esc</kbd>) hands it back. The selected row keeps its selector frame, dimmed, while the reader holds the ring | Selected Console session |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
-| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**) or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
+| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
@@ -2648,7 +2657,7 @@ works in every layout:
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
-| <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
+| <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only). In a **Console** reader it first hands focus back to the rail (press again to cycle); from the rail it cycles as everywhere | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task - record an outcome, then close the session (confirms first). Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Kill the selected session (confirms first) | Selected session |
@@ -2662,8 +2671,9 @@ Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
 (<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
-them) to its default. The arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> drive layout
-navigation and Console reading, and can't be reassigned.
+them) to its default. The arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and bare
+<kbd>Tab</kbd> drive layout navigation and Console reading, and can't be reassigned;
+<kbd>⇧</kbd><kbd>Tab</kbd> remains bindable.
 
 ## Inspector (automated PR review)
 

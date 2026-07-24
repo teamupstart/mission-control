@@ -22,9 +22,17 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
   const groups = groupByTone(props.sessions, props.gateAlerts).filter((g) => g.sessions.length > 0);
 
+  // The zone only reads on screen once a session is open beside the rail; with an empty
+  // pane there is no reader to hand focus to, so it always presents as the rail.
+  const zone = active ? props.consoleZone : "rail";
+
   return (
-    <div className="console">
-      <nav className="console-rail" aria-label="Sessions">
+    <div className="console" data-zone={zone}>
+      <nav
+        className="console-rail"
+        aria-label="Sessions"
+        onFocusCapture={() => props.onConsoleZoneChange("rail")}
+      >
         {groups.map((g) => (
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
@@ -38,6 +46,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 selected={s.id === props.selectedId}
                 gateNeedsYou={props.gateAlerts.has(s.id)}
                 onSelect={() => props.onSelect(s.id)}
+                registerEl={props.registerEl}
                 workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                 onOpenWorkflowRun={props.onOpenWorkflowRun}
               />
@@ -46,7 +55,11 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
         ))}
       </nav>
 
-      <section className="console-detail">
+      <section
+        className="console-detail"
+        tabIndex={active ? -1 : undefined}
+        onFocusCapture={() => props.onConsoleZoneChange("detail")}
+      >
         {active ? (
           // Keyed by id so switching sessions remounts: the tab resets to the
           // conversation and the transcript starts clean, instead of showing the

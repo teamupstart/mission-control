@@ -271,7 +271,7 @@ export function formatChord(chord: string): string {
 
 /** True when a chord targets a reserved navigation key and so can't be bound. */
 export function isReservedChord(chord: string): boolean {
-  return RESERVED_KEYS.has(parseChord(chord).key);
+  return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
 }
 
 // ---- store ----------------------------------------------------------------
@@ -291,7 +291,9 @@ function sanitize(raw: Record<string, string>): Overrides {
   const clean: Overrides = {};
   for (const a of ACTIONS) {
     const v = raw[a.id];
-    if (typeof v === "string" && v && v !== a.defaultBinding) clean[a.id] = v;
+    if (typeof v === "string" && v && v !== a.defaultBinding && !isReservedChord(v)) {
+      clean[a.id] = v;
+    }
   }
   return clean;
 }
@@ -318,7 +320,7 @@ function commit(next: Overrides): void {
 /** Rebind an action. Setting it back to its default clears the override. */
 export function setBinding(id: ActionId, chord: string): void {
   const def = ACTION_BY_ID.get(id);
-  if (!def) return;
+  if (!def || isReservedChord(chord)) return;
   const next: Overrides = { ...currentOverrides() };
   if (chord === def.defaultBinding) delete next[id];
   else next[id] = chord;

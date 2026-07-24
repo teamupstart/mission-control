@@ -24,6 +24,8 @@ function props(sessions: Session[]): SessionViewProps {
     backlogPlan: null,
     gateAlerts: new Set<string>(),
     selectedId: null,
+    consoleZone: "rail",
+    onConsoleZoneChange: () => {},
     onSelect: () => {},
     onDeselect: () => {},
     expandedId: null,

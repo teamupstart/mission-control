@@ -32,10 +32,14 @@ export function moveSelection(opts: MoveOptions): string | null {
 
   if (mode === "board") return moveOnBoard(opts);
   if (mode === "console") {
-    // Once its detail is open the Console is a reader: vertical arrows scroll that
-    // detail (routed by App), and horizontal arrows have no spatial destination.
-    // Selection therefore stays parked until the rail is clicked.
-    return null;
+    // The console rail is a single vertical column: Up/Down walk it a row at a time,
+    // and horizontal arrows have no spatial destination. This is the RAIL cursor's
+    // answer only - when the operator has Tabbed focus into the open detail, App
+    // routes vertical arrows to scroll that reader BEFORE reaching here, so this stays
+    // the pure "where does the rail selection land" question the two focus zones share.
+    if (key === "ArrowLeft" || key === "ArrowRight") return null;
+    const idx = ids.indexOf(currentId);
+    return ids[key === "ArrowDown" ? idx + 1 : idx - 1] ?? null;
   }
 
   // grid: walk the flat list, a row at a time for vertical moves.

@@ -41,11 +41,16 @@ test("grid: the edges stay put rather than wrapping", () => {
   assert.equal(move("grid", "ArrowDown", "e"), null); // e + 2 is past the end
 });
 
-test("console: arrows leave selection parked while the detail reader scrolls", () => {
-  assert.equal(move("console", "ArrowDown", "a"), null);
-  assert.equal(move("console", "ArrowUp", "b"), null);
+test("console: up/down walk the single-column rail, horizontal arrows do nothing", () => {
+  // The rail cursor's answer only. Scrolling the open detail is the detail focus zone's
+  // job and is routed by App before this is reached (see console-zone-nav.test.ts), so
+  // here the rail is just a flat vertical list.
+  assert.equal(move("console", "ArrowDown", "a"), "b");
+  assert.equal(move("console", "ArrowUp", "b"), "a");
+  // Edges stay put rather than wrapping, like the grid.
   assert.equal(move("console", "ArrowUp", "a"), null);
   assert.equal(move("console", "ArrowDown", "e"), null);
+  // No spatial destination sideways in a one-column rail.
   assert.equal(move("console", "ArrowRight", "a"), null);
   assert.equal(move("console", "ArrowLeft", "a"), null);
 });

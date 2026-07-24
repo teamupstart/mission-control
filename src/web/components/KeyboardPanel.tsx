@@ -150,8 +150,8 @@ export function KeyboardPanel(): React.JSX.Element {
       ))}
 
       <p className="settings-hint">
-        Click a shortcut, then press the new key. Esc and the arrow keys drive grid
-        navigation and can't be reassigned.
+        Click a shortcut, then press the new key. Esc, the arrow keys and bare Tab drive
+        layout navigation and can't be reassigned; modified Tab chords remain available.
       </p>
     </section>
   );

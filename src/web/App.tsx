@@ -132,6 +132,12 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Which half of the Console holds the keyboard: the rail selector, or the open
+  // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
+  // decides what the vertical arrows do and which surface wears the active focus treatment,
+  // so it means nothing in the other layouts and is reset to "rail" whenever the selection
+  // or layout changes (a fresh detail is never opened mid-read).
+  const [consoleZone, setConsoleZone] = useState<"rail" | "detail">("rail");
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Board keyboard selection is deliberately separate from its open console detail:
@@ -251,6 +257,17 @@ export function App(): React.JSX.Element {
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) cardEls.current.set(id, el);
     else cardEls.current.delete(id);
+  }, []);
+
+  const focusConsoleRail = useCallback((id: string) => {
+    const active = document.activeElement as HTMLElement | null;
+    const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
+    if (activeEditor && !active?.closest(".console-detail")) return;
+    cardEls.current.get(id)?.focus({ preventScroll: true });
+  }, []);
+
+  const focusConsoleDetail = useCallback(() => {
+    document.querySelector<HTMLElement>(".console-detail")?.focus({ preventScroll: true });
   }, []);
 
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
@@ -525,6 +542,7 @@ export function App(): React.JSX.Element {
   const modalOpen = Boolean(modalSession && modalReviews.length > 0);
 
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
+  const visibleSelectedId = selected?.id ?? null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
@@ -554,6 +572,8 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
+    consoleZone,
+    onConsoleZoneChange: setConsoleZone,
     onSelect:
       layout === "board"
         ? (id) => {
@@ -643,6 +663,15 @@ export function App(): React.JSX.Element {
     cardEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selectedId]);
 
+  // The Console's keyboard lands on the rail whenever the selection or the layout
+  // changes or the selected session leaves the filtered view: opening a different
+  // session, filtering it away, or leaving Console and coming back all start from the
+  // rail selector rather than dropping the operator mid-scroll into a reader they never
+  // Tabbed into.
+  useEffect(() => {
+    setConsoleZone("rail");
+  }, [visibleSelectedId, layout]);
+
   // Move DOM focus with the board's arrow cursor, onto the tile's own stretched open
   // button - the keyboard half SessionTile already draws for exactly this.
   //
@@ -695,6 +724,8 @@ export function App(): React.JSX.Element {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      const inConsoleRail = Boolean(target?.closest(".console-rail"));
+      const inConsoleDetail = Boolean(target?.closest(".console-detail"));
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
       // An embedded session surface can own navigation without being a screen-owning
@@ -727,7 +758,33 @@ export function App(): React.JSX.Element {
 
       // Stand down while any overlay owns the screen (or a card's title is being
       // edited), so grid shortcuts don't drive a background card behind it.
-      if (overlaysRef.current.anyOpen || renamingId || typing) return;
+      if (overlaysRef.current.anyOpen || renamingId) return;
+
+      if (layout === "console" && selected) {
+        if (chord === "shift+Tab" && inConsoleDetail) {
+          e.preventDefault();
+          setConsoleZone("rail");
+          focusConsoleRail(selected.id);
+          return;
+        }
+        if (chord === "Tab" && inConsoleRail) {
+          e.preventDefault();
+          setConsoleZone("detail");
+          focusConsoleDetail();
+          return;
+        }
+      }
+
+      if (
+        layout === "console" &&
+        (chord === "Tab" || chord === "shift+Tab") &&
+        !inConsoleRail &&
+        !inConsoleDetail
+      ) {
+        return;
+      }
+
+      if (typing) return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
       // guard so dispatch still opens when there are no sessions yet.
@@ -765,6 +822,15 @@ export function App(): React.JSX.Element {
             setBoardOpen(false);
             return;
           }
+          // Console's reader zone sits above its selection the way grid focus and the
+          // board drill-in do: hand the keyboard back to the rail first, and only drop
+          // the selection on the next press.
+          if (layout === "console" && selected && consoleZone === "detail") {
+            e.preventDefault();
+            setConsoleZone("rail");
+            focusConsoleRail(selected.id);
+            return;
+          }
           if (!selectedId) return;
           e.preventDefault();
           handle()?.cancel();
@@ -775,16 +841,18 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          // An open Console detail is a reader, so vertical arrows move its active
-          // content instead of replacing it with the previous/next session. The
-          // detail owns the actual scroll node because Conversation and Files use
-          // different nested containers. With no selection there is no reader yet,
-          // so the first arrow retains its old job of selecting the first session.
-          if (layout === "console" && selectedId && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-            const detailScroll = detailScrollers.current.get(selectedId);
-            if (detailScroll) {
-              detailScroll(e.key === "ArrowUp" ? -1 : 1);
-              return;
+          // In Console the vertical arrows do one of two things by focus zone. Once the
+          // operator has Tabbed into the detail it is a reader, so they scroll its active
+          // content; the detail owns the actual scroll node because Conversation and Files
+          // use different nested containers. In the rail zone (the default) they fall
+          // through to `moveSelection`, which walks the rail a row at a time.
+          if (layout === "console" && selected && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            if (consoleZone === "detail") {
+              const detailScroll = detailScrollers.current.get(selected.id);
+              if (detailScroll) {
+                detailScroll(e.key === "ArrowUp" ? -1 : 1);
+                return;
+              }
             }
           }
           const nextId = moveSelection({
@@ -797,6 +865,7 @@ export function App(): React.JSX.Element {
           });
           if (nextId) {
             setSelectedId(nextId);
+            if (layout === "console" && consoleZone === "rail") focusConsoleRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
@@ -907,7 +976,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, focusConsoleRail, focusConsoleDetail]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

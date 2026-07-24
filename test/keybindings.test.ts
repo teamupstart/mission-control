@@ -48,6 +48,7 @@ const {
   resetBinding,
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
+const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
 /** The resolved map the runtime handler and the settings editor both read. */
@@ -162,6 +163,12 @@ test("every default binding is bindable and round-trips through its chord form",
   }
 });
 
+test("bare Tab is reserved while modified Tab chords remain bindable", () => {
+  assert.equal(isReservedChord("Tab"), true);
+  assert.equal(isReservedChord("shift+Tab"), false);
+  assert.equal(isReservedChord("ctrl+Tab"), false);
+});
+
 test("file actions own f and Shift+O and every default round-trips from a keypress", () => {
   const rename = ACTIONS.find((a) => a.id === "rename");
   const files = ACTIONS.find((a) => a.id === "files");
@@ -233,6 +240,18 @@ test("complete is a first-class action defaulting to c, and sits just before kil
 });
 
 // ---- the override store ----
+
+test("persisted reserved chords are dropped while modified Tab survives", async () => {
+  await updateUiConfig({ keybindings: { filter: "Tab", send: "shift+Tab" } });
+  setBinding("reset", "cmd+Backspace");
+  assert.equal(sent().filter, undefined);
+  assert.equal(sent().send, "shift+Tab");
+
+  const before = puts.length;
+  setBinding("filter", "Tab");
+  assert.equal(puts.length, before);
+  resetAll();
+});
 
 test("reset rebinds and returns to its default like any other action", () => {
   // The settings modal drives rebinds through exactly these calls.

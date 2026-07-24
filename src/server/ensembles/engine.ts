@@ -398,6 +398,12 @@ export class EnsembleEngine {
       this.publish(state.run.id);
       return false;
     }
+    this.interruptRunningReviews(
+      state.run.id,
+      reason ?? "the run was cancelled while this comparison was in flight",
+      now,
+      "cancelled",
+    );
     this.clearDeadline(state.run.id);
     this.store.setRunStatus(state.run.id, ["cancelling"], "cancelled", { error: reason, completedAt: now }, now);
     this.event(state.run.id, "run_cancelled", { reason }, `run_cancelled:${state.run.id}`);
@@ -687,43 +693,13 @@ export class EnsembleEngine {
         }
       }
 
-      // Recover an interrupted comparison. A review stage attempt left `running`, with its
-      // evaluation and any open call rows still `running`, is one whose provider child the restart
-      // severed. Mark the calls and the evaluation `interrupted` - retryable, never `failed`,
-      // because nobody read a malformed answer - and fail the stage attempt so the ordinary retry
-      // re-runs it against the SAME immutable subjects and snapshot guidance. Completed calls and
-      // the immutable subject set are preserved untouched.
-      for (const stageAttempt of reconciledState.stageAttempts) {
-        if (stageAttempt.driverKind !== "review" || stageAttempt.status !== "running") continue;
-        const calls = this.store.listLlmCalls(runId);
-        for (const evaluation of this.store.listEvaluations(runId)) {
-          if (evaluation.stageAttemptId !== stageAttempt.id || evaluation.status !== "running") continue;
-          for (const call of calls) {
-            if (call.evaluationId !== evaluation.id || call.state !== "running") continue;
-            this.store.finishLlmCall(call.id, ["running"], "interrupted", {
-              finishedAt: now,
-              durationMs: Math.max(0, now - call.startedAt),
-              inputBytes: call.inputBytes,
-              outputBytes: call.outputBytes,
-              costUsd: null,
-              errorCode: "review_interrupted",
-            });
-          }
-          this.store.finishEvaluation(
-            evaluation.id,
-            ["running"],
-            "interrupted",
-            { error: "the daemon exited while this comparison was in flight" },
-            now,
-          );
-        }
-        this.store.finishStageAttempt(
-          stageAttempt.id,
-          ["running"],
-          "failed",
-          { error: "the daemon exited while this comparison was in flight" },
-          now,
-        );
+      const interrupted = this.interruptRunningReviews(
+        runId,
+        "the daemon exited while this comparison was in flight",
+        now,
+        "failed",
+      );
+      for (const stageAttempt of interrupted) {
         this.event(runId, "review_interrupted", { stageId: stageAttempt.stageId }, `review_interrupted:${stageAttempt.id}:${now}`);
       }
 
@@ -1160,6 +1136,9 @@ export class EnsembleEngine {
         execution: null,
       };
     }
+    // The provider ledger is written outside the run lock through single-row transactions. Only
+    // the final result and status transition are persisted under the lock; terminal transitions
+    // reconcile the ledger, and the active-run precondition below rejects a late outcome.
     await this.withRunLock(runId, () => this.applyReviewOutcome(runId, stageId, stageAttemptId, outcome));
   }
 
@@ -1307,6 +1286,25 @@ export class EnsembleEngine {
   ): Promise<void> {
     this.reviewAborts.delete(runId);
     const now = this.now();
+    const run = this.store.getRun(runId);
+    const stageAttempt = this.store.listStageAttempts(runId).find((attempt) => attempt.id === stageAttemptId);
+    if (
+      run?.status !== "evaluating" ||
+      stageAttempt?.status !== "running" ||
+      stageAttempt.stageId !== stageId ||
+      stageAttempt.driverKind !== "review"
+    ) {
+      if (outcome.evaluationId) {
+        this.store.finishEvaluation(
+          outcome.evaluationId,
+          ["running"],
+          "interrupted",
+          { error: "the review outcome arrived after its run or stage attempt stopped" },
+          now,
+        );
+      }
+      return;
+    }
     if (outcome.ok) {
       if (outcome.evaluationId) {
         this.store.finishEvaluation(
@@ -1849,9 +1847,45 @@ export class EnsembleEngine {
         await this.settleMemberTask(member, now);
       }
     }
+    this.interruptRunningReviews(runId, reason, now, "failed");
     this.clearDeadline(runId);
     this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "failed", { error: reason, completedAt: now }, now);
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
+  }
+
+  private interruptRunningReviews(
+    runId: string,
+    reason: string,
+    now: number,
+    stageStatus: "failed" | "cancelled",
+  ): EnsembleStageAttempt[] {
+    const stageAttempts = this.store
+      .listStageAttempts(runId)
+      .filter((attempt) => attempt.driverKind === "review" && attempt.status === "running");
+    if (stageAttempts.length === 0) return [];
+    const stageAttemptIds = new Set(stageAttempts.map((attempt) => attempt.id));
+    const evaluations = this.store
+      .listEvaluations(runId)
+      .filter((evaluation) => stageAttemptIds.has(evaluation.stageAttemptId) && evaluation.status === "running");
+    const evaluationIds = new Set(evaluations.map((evaluation) => evaluation.id));
+    for (const call of this.store.listLlmCalls(runId)) {
+      if (!evaluationIds.has(call.evaluationId) || call.state !== "running") continue;
+      this.store.finishLlmCall(call.id, ["running"], "interrupted", {
+        finishedAt: now,
+        durationMs: Math.max(0, now - call.startedAt),
+        inputBytes: call.inputBytes,
+        outputBytes: call.outputBytes,
+        costUsd: null,
+        errorCode: "review_interrupted",
+      });
+    }
+    for (const evaluation of evaluations) {
+      this.store.finishEvaluation(evaluation.id, ["running"], "interrupted", { error: reason }, now);
+    }
+    return stageAttempts.filter(
+      (attempt) =>
+        this.store.finishStageAttempt(attempt.id, ["running"], stageStatus, { error: reason }, now).ok,
+    );
   }
 
   /**

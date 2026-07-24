@@ -270,7 +270,7 @@ export const BestOfNSubjectResultSchema = z.object({
   risks: z.array(z.string().max(BEST_OF_N_RESULT_LIMITS.risk)).max(BEST_OF_N_RESULT_LIMITS.risks),
   rationale: z.string().max(BEST_OF_N_RESULT_LIMITS.rationale),
   confidence: z.number().finite(),
-});
+}).strict();
 export type BestOfNSubjectResult = z.infer<typeof BestOfNSubjectResultSchema>;
 
 /**
@@ -286,7 +286,7 @@ export const BestOfNComparisonResultSchema = z.object({
   comparison: z.string().max(BEST_OF_N_RESULT_LIMITS.comparison),
   caveats: z.array(z.string().max(BEST_OF_N_RESULT_LIMITS.caveat)).max(BEST_OF_N_RESULT_LIMITS.caveats),
   subjects: z.array(BestOfNSubjectResultSchema).min(2).max(ENSEMBLE_HARD_LIMITS.maxMembers),
-});
+}).strict();
 export type BestOfNComparisonResult = z.infer<typeof BestOfNComparisonResultSchema>;
 
 /**

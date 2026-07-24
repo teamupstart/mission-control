@@ -118,7 +118,13 @@ function resolveGuidance(
       ? { label: "the built-in rubric", text: BEST_OF_N_BUILTIN_RUBRIC_TEXT, fenced: false }
       : null;
   }
-  return { label: `the "${guidance.name}" Persona`, text: guidance.guidanceMarkdown, fenced: true };
+  const name = guidance.name
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return { label: `the "${name}" Persona`, text: guidance.guidanceMarkdown, fenced: true };
 }
 
 /**
@@ -287,6 +293,15 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
 
   // Persist the evaluation BEFORE any provider work; the first call row is opened by the observer's
   // first `start`, which also runs before the provider is asked.
+  if (context.signal.aborted || !context.stillActive()) {
+    return {
+      ok: false,
+      kind: "interrupted",
+      detail: "the review stage stopped before evaluation began",
+      evaluationId: null,
+      execution,
+    };
+  }
   const evaluationId = context.persist.beginEvaluation({
     runnerId: execution.runnerId,
     modelId: execution.modelId,

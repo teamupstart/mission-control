@@ -325,6 +325,58 @@ test("with the switch off, a merge leaves the session alone", () => {
   assert.ok(f.registry.getSession(f.id), "the session should still be here");
 });
 
+test("closing after merge records completion before it terminates the agent", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const closeAttempted = deferred();
+  let statusAtClose: string | undefined;
+  let outcomeAtClose: string | null | undefined;
+  const f = fleet("s-complete-before-close", false, {
+    // Keep the fake checkout out of reclaim; this test is about lifecycle ordering.
+    resetWouldDestroyWork: async () => "an untracked test file",
+    kill: async () => {
+      statusAtClose = f.registry.getTask(f.taskId)?.status;
+      outcomeAtClose = f.registry.getTask(f.taskId)?.outcome;
+      closeAttempted.resolve();
+      return { ok: true };
+    },
+  });
+
+  merge(f);
+  await closeAttempted.promise;
+
+  assert.equal(statusAtClose, "done");
+  assert.match(outcomeAtClose ?? "", /merged/);
+});
+
+test("a merged session awaiting input is not killed as a substitute for completion", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const killed: string[] = [];
+  const f = fleet("s-awaiting-input", false, {
+    resetWouldDestroyWork: async () => null,
+    kill: async (session) => {
+      killed.push(session.id);
+      return { ok: true };
+    },
+  });
+  f.registry.applyHook({
+    agent: "claude",
+    event: "Notification",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    message: "Approve this action?",
+  });
+  assert.equal(f.registry.getSession(f.id)?.state, "awaiting_input");
+
+  merge(f);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(killed, []);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.ok(f.registry.getSession(f.id), "the unfinished session remains live");
+});
+
 test("work resuming during the close probe cancels the pending session close", async () => {
   setShippingConfig({ closeSessionAfterMerge: true });
   const probeStarted = deferred();

@@ -126,6 +126,14 @@ test("it states that completing also closes the session", () => {
   assert.match(renderComplete(sessionWithTask()), /closes this session/);
 });
 
+test("completion needs no written justification and Enter submits it", () => {
+  const html = renderComplete(sessionWithTask());
+  assert.match(html, /<form>/);
+  assert.match(html, /Outcome \(optional\)/);
+  assert.doesNotMatch(html, /class="complete-outcome"[^>]*required/);
+  assert.match(html, /<button type="submit" class="btn btn-primary"/);
+});
+
 // ---- kill: naming the consequence, and pointing at the other door -----------------------
 
 test("kill warns that the task will settle as failed, and offers Complete instead", () => {
@@ -150,6 +158,14 @@ test("kill keeps the checkout, and says so", () => {
     withOverlayHost(createElement(KillModal, { session: sessionWithTask(), onClose: () => {} })),
   );
   assert.match(html, /checkout is kept/);
+});
+
+test("Enter submits the Kill confirmation", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(KillModal, { session: sessionWithTask(), onClose: () => {} })),
+  );
+  assert.match(html, /<form>/);
+  assert.match(html, /<button type="submit" class="btn btn-danger" autofocus=""/);
 });
 
 test("with no task, kill neither warns about one nor offers Complete", () => {

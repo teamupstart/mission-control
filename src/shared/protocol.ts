@@ -1214,7 +1214,8 @@ export const ShippingConfigSchema = z.object({
    */
   repoAllowlist: z.array(z.string().min(1)).default([]),
   /**
-   * End a task's session once its pull request merges, freeing a fleet slot.
+   * Close a task's session after its pull request merges and the task is marked done,
+   * freeing a fleet slot.
    *
    * The pairing with the rest of this object is deliberate but LOOSE, and the asymmetry
    * is the point. Settling a merged task is unconditional and lives outside this config
@@ -1222,9 +1223,10 @@ export const ShippingConfigSchema = z.object({
    * however the merge happened. This flag only decides what becomes of the AGENT, which
    * is a genuine preference rather than a defect.
    *
-   * Off by default. On, a merge kills the session and reclaims its worktree, so the next
-   * dispatch cuts a fresh checkout: `activeAgentCount` counts live sessions whole, so an
-   * agent that finished otherwise holds a slot against `maxSessions` indefinitely.
+   * Off by default. On, a merge first completes the task and then closes its idle
+   * session, reclaiming its worktree when safe, so the next dispatch cuts a fresh
+   * checkout: `activeAgentCount` counts live sessions whole, so an agent that finished
+   * otherwise holds a slot against `maxSessions` indefinitely.
    *
    * Off is NOT "nothing happens". The task still settles, which is what makes that agent
    * pass `agentIsFree`, so the backlog autopilot may hand it the next task in the same

@@ -66,13 +66,21 @@ export function CompleteModal({
       )
     : [];
 
-  const canComplete = Boolean(task) && outcome.trim().length > 0 && !busy;
+  const canComplete = Boolean(task) && !busy;
 
   async function confirm(): Promise<void> {
     if (!canComplete || !task) return;
     setBusy(true);
     setError(null);
-    const completed = await api.completeTask(task.id, outcome.trim(), undefined, satisfy);
+    // An outcome is useful context, not permission to finish. Keep the wire contract's
+    // non-empty outcome by supplying the plain status when the operator has nothing to
+    // add; callers that do have a result still preserve it verbatim.
+    const completed = await api.completeTask(
+      task.id,
+      outcome.trim() || "completed",
+      undefined,
+      satisfy,
+    );
     if (!completed.ok) {
       setBusy(false);
       setError(completed.error ?? "could not complete the task");
@@ -100,113 +108,123 @@ export function CompleteModal({
       ariaLabel="Complete task and close session"
       closable={!busy}
     >
-      <header className="modal-head">
-        <h2>Complete {task ? "task" : "session"}</h2>
-        <Tooltip label="Close without completing (Escape)">
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-            ✕
-          </button>
-        </Tooltip>
-      </header>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void confirm();
+        }}
+      >
+        <header className="modal-head">
+          <h2>Complete {task ? "task" : "session"}</h2>
+          <Tooltip label="Close without completing (Escape)">
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Close"
+              onClick={onClose}
+              disabled={busy}
+            >
+              ✕
+            </button>
+          </Tooltip>
+        </header>
 
-      <div className="complete-body">
-        <p className="complete-lead">
-          <AgentDot agent={session.agent} />
-          <span className="complete-name">{session.name || "(unnamed)"}</span>
-        </p>
-
-        {task ? (
-          <>
-            <p className="complete-task">
-              Marks <strong>{task.title}</strong> done, then closes this session.
-            </p>
-
-            <label className="complete-field">
-              <span>Outcome</span>
-              <input
-                className="complete-outcome"
-                autoFocus
-                value={outcome}
-                disabled={busy}
-                placeholder="What happened? e.g. shipped in PR #193"
-                onChange={(e) => setOutcome(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && canComplete) void confirm();
-                }}
-              />
-            </label>
-
-            {dependents.length > 0 && (
-              <label className="complete-satisfy">
-                <Tooltip
-                  label={
-                    session.prState === "merged"
-                      ? "Satisfies their dependency on this task, which its merged pull request already evidences"
-                      : "Satisfies their dependency on this task without a merged pull request - they will be cut from the default branch, which may not hold its commits"
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    checked={satisfy}
-                    disabled={busy}
-                    onChange={(e) => setSatisfy(e.target.checked)}
-                  />
-                </Tooltip>
-                <span>
-                  Unblock the <strong>{dependents.length}</strong> task
-                  {dependents.length === 1 ? "" : "s"} waiting on this
-                </span>
-              </label>
-            )}
-            {dependents.length > 0 && (
-              <p className="complete-satisfy-why">
-                {!satisfy
-                  ? "They stay blocked until a pull request from this work is merged."
-                  : session.prState === "open"
-                    ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
-                    : "Mission Control has not seen a merge for this work, so those tasks may be cut from a branch without its commits."}
-              </p>
-            )}
-            {dependents.length > 0 && (
-              <ul className="complete-dependents">
-                {dependents.slice(0, 5).map((d) => (
-                  <li key={d.id}>{d.title}</li>
-                ))}
-                {dependents.length > 5 && (
-                  <li className="complete-more">…and {dependents.length - 5} more</li>
-                )}
-              </ul>
-            )}
-          </>
-        ) : (
-          <p className="complete-none">
-            This session has no Mission Control task, so there is nothing to mark done.
-            Use Kill to close it.
+        <div className="complete-body">
+          <p className="complete-lead">
+            <AgentDot agent={session.agent} />
+            <span className="complete-name">{session.name || "(unnamed)"}</span>
           </p>
-        )}
 
-        {error && <p className="complete-error">{error}</p>}
-      </div>
+          {task ? (
+            <>
+              <p className="complete-task">
+                Marks <strong>{task.title}</strong> done, then closes this session.
+              </p>
 
-      <footer className="modal-foot">
-        <span className="actions-spacer" />
-        <Tooltip label="Leave the task and the agent alone">
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-        </Tooltip>
-        <Tooltip
-          label={
-            task
-              ? "Record the outcome, then terminate this agent"
-              : "This session has no task to complete"
-          }
-        >
-          <button className="btn btn-primary" onClick={() => void confirm()} disabled={!canComplete}>
-            {busy ? "Completing…" : "Complete & close"}
-          </button>
-        </Tooltip>
-      </footer>
+              <label className="complete-field">
+                <span>Outcome (optional)</span>
+                <input
+                  className="complete-outcome"
+                  autoFocus
+                  value={outcome}
+                  disabled={busy}
+                  placeholder="Add a note, e.g. shipped in PR #193"
+                  onChange={(e) => setOutcome(e.target.value)}
+                />
+              </label>
+
+              {dependents.length > 0 && (
+                <label className="complete-satisfy">
+                  <Tooltip
+                    label={
+                      session.prState === "merged"
+                        ? "Satisfies their dependency on this task, which its merged pull request already evidences"
+                        : "Satisfies their dependency on this task without a merged pull request - they will be cut from the default branch, which may not hold its commits"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={satisfy}
+                      disabled={busy}
+                      onChange={(e) => setSatisfy(e.target.checked)}
+                    />
+                  </Tooltip>
+                  <span>
+                    Unblock the <strong>{dependents.length}</strong> task
+                    {dependents.length === 1 ? "" : "s"} waiting on this
+                  </span>
+                </label>
+              )}
+              {dependents.length > 0 && (
+                <p className="complete-satisfy-why">
+                  {!satisfy
+                    ? "They stay blocked until a pull request from this work is merged."
+                    : session.prState === "open"
+                      ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
+                      : "Mission Control has not seen a merge for this work, so those tasks may be cut from a branch without its commits."}
+                </p>
+              )}
+              {dependents.length > 0 && (
+                <ul className="complete-dependents">
+                  {dependents.slice(0, 5).map((d) => (
+                    <li key={d.id}>{d.title}</li>
+                  ))}
+                  {dependents.length > 5 && (
+                    <li className="complete-more">…and {dependents.length - 5} more</li>
+                  )}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p className="complete-none">
+              This session has no Mission Control task, so there is nothing to mark done.
+              Use Kill to close it.
+            </p>
+          )}
+
+          {error && <p className="complete-error">{error}</p>}
+        </div>
+
+        <footer className="modal-foot">
+          <span className="actions-spacer" />
+          <Tooltip label="Leave the task and the agent alone">
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+          </Tooltip>
+          <Tooltip
+            label={
+              task
+                ? "Mark the task done, then terminate this agent"
+                : "This session has no task to complete"
+            }
+          >
+            <button type="submit" className="btn btn-primary" disabled={!canComplete}>
+              {busy ? "Completing…" : "Complete & close"}
+            </button>
+          </Tooltip>
+        </footer>
+      </form>
     </Overlay>
   );
 }

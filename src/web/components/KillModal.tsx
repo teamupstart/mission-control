@@ -65,69 +65,83 @@ export function KillModal({
       ariaLabel="Kill session"
       closable={!busy}
     >
-      <header className="modal-head">
-        <h2>Kill session</h2>
-        <Tooltip label="Close without killing (Escape)">
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-            ✕
-          </button>
-        </Tooltip>
-      </header>
-
-      <div className="kill-body">
-        <p className="kill-lead">
-          <AgentDot agent={session.agent} />
-          <span className="kill-name">{session.name || "(unnamed)"}</span>
-        </p>
-
-        <p className="kill-what">
-          Terminates the agent process
-          {killsMux ? (
-            <>
-              {" "}
-              and kills its {killsMux.backend} session <code>{killsMux.session}</code>
-            </>
-          ) : null}
-          . Its checkout is kept - free it later with Clean up.
-        </p>
-
-        {task && (
-          <p className="kill-task-warn">
-            <strong>{task.title}</strong> will settle as failed, which blocks any task
-            waiting on it. If the work is finished, use Complete instead.
-          </p>
-        )}
-
-        {error && <p className="kill-error">{error}</p>}
-      </div>
-
-      <footer className="modal-foot">
-        <span className="actions-spacer" />
-        <Tooltip label="Leave the agent running">
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-        </Tooltip>
-        {task && onComplete && (
-          <Tooltip label="Record an outcome and close the session instead">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void confirm();
+        }}
+      >
+        <header className="modal-head">
+          <h2>Kill session</h2>
+          <Tooltip label="Close without killing (Escape)">
             <button
-              className="btn"
-              onClick={() => {
-                onClose();
-                onComplete();
-              }}
+              type="button"
+              className="icon-btn"
+              aria-label="Close"
+              onClick={onClose}
               disabled={busy}
             >
-              Complete instead
+              ✕
             </button>
           </Tooltip>
-        )}
-        <Tooltip label="Terminate this agent now">
-          <button className="btn btn-danger" onClick={() => void confirm()} disabled={busy}>
-            {busy ? "Killing…" : "Kill"}
-          </button>
-        </Tooltip>
-      </footer>
+        </header>
+
+        <div className="kill-body">
+          <p className="kill-lead">
+            <AgentDot agent={session.agent} />
+            <span className="kill-name">{session.name || "(unnamed)"}</span>
+          </p>
+
+          <p className="kill-what">
+            Terminates the agent process
+            {killsMux ? (
+              <>
+                {" "}
+                and kills its {killsMux.backend} session <code>{killsMux.session}</code>
+              </>
+            ) : null}
+            . Its checkout is kept - free it later with Clean up.
+          </p>
+
+          {task && (
+            <p className="kill-task-warn">
+              <strong>{task.title}</strong> will settle as failed, which blocks any task
+              waiting on it. If the work is finished, use Complete instead.
+            </p>
+          )}
+
+          {error && <p className="kill-error">{error}</p>}
+        </div>
+
+        <footer className="modal-foot">
+          <span className="actions-spacer" />
+          <Tooltip label="Leave the agent running">
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+          </Tooltip>
+          {task && onComplete && (
+            <Tooltip label="Mark the task done and close the session instead">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  onClose();
+                  onComplete();
+                }}
+                disabled={busy}
+              >
+                Complete instead
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip label="Terminate this agent now">
+            <button type="submit" className="btn btn-danger" autoFocus disabled={busy}>
+              {busy ? "Killing…" : "Kill"}
+            </button>
+          </Tooltip>
+        </footer>
+      </form>
     </Overlay>
   );
 }

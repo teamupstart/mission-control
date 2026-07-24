@@ -88,6 +88,13 @@ test("fully on and trusted: no warning about the Inspector at all", () => {
   assert.doesNotMatch(html, /not allowed to review/i);
 });
 
+test("after-merge wording promises completion before closing, never a Kill outcome", () => {
+  const html = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+  assert.match(html, /Complete the task, then close its session/);
+  assert.match(html, /never gives the task Kill/);
+  assert.doesNotMatch(html, /Kill the agent once/);
+});
+
 // A worktree of a trusted repo is trusted everywhere else in the app; a warning that did
 // not use the shared predicate would cry wolf on every pooled checkout.
 test("the warning uses the shared allowlist rule, so a parent trusts its worktrees", () => {

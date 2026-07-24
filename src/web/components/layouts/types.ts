@@ -92,6 +92,9 @@ export interface SessionViewProps {
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
   /** Register the open detail pane's vertical reader for Console arrow-key scrolling. */
   registerDetailScroll: (id: string, scroll: ((direction: -1 | 1) => void) | null) => void;
+  /** Register the open detail's tab stepper, so Tab/Shift+Tab can cycle its tabs. Returns
+   *  "edge" when there is no next/previous tab (App clamps forward, exits to the rail back). */
+  registerReaderTab: (id: string, nav: ((dir: -1 | 1) => "moved" | "edge") | null) => void;
   renamingId: string | null;
   onRenameStart: (id: string) => void;
   onRenameClose: () => void;

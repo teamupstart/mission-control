@@ -177,6 +177,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       selected={s.id === props.selectedId}
                       gateNeedsYou={props.gateAlerts.has(s.id)}
                       onSelect={() => props.onSelect(s.id)}
+                      // Register the element like the console rail does, so Shift+Tab/Escape
+                      // out of the reader can land focus back on the selected row here.
+                      registerEl={props.registerEl}
                       workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                       onOpenWorkflowRun={props.onOpenWorkflowRun}
                     />

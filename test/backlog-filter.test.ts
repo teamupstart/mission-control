@@ -54,6 +54,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     registerEl: () => {},
     registerActions: () => {},
     registerDetailScroll: () => {},
+    registerReaderTab: () => {},
     renamingId: null,
     onRenameStart: () => {},
     onRenameClose: () => {},

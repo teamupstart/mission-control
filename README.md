@@ -2491,9 +2491,11 @@ earns two surfaces a card has nowhere to put:
   That is the **rail** zone. Press <kbd>Tab</kbd> to hand focus to the open conversation
   (the **reader** zone): the pane takes the ring, and <kbd>↑</kbd>/<kbd>↓</kbd> now scroll
   its active Conversation or Files reader instead of moving the selection. <kbd>⇧</kbd><kbd>Tab</kbd>
-  hands it back to the rail. In the focused inline Diff reader the arrows move through its
-  file list instead; that navigation stays scoped to the reader. <kbd>Esc</kbd> peels back
-  one layer at a time - reader to rail, then deselect, emptying the pane.
+  hands it back to the rail. Once focus is in the reader, ordinary browser tabbing continues
+  through its tabs, reply box and controls. In the focused inline Diff reader the arrows
+  move through its file list instead; that navigation stays scoped to the reader.
+  <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
+  the pane.
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
@@ -2667,8 +2669,9 @@ Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
 (<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
-them) to its default. The arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and <kbd>Tab</kbd>
-drive layout navigation and Console reading, and can't be reassigned.
+them) to its default. The arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and bare
+<kbd>Tab</kbd> drive layout navigation and Console reading, and can't be reassigned;
+<kbd>⇧</kbd><kbd>Tab</kbd> remains bindable.
 
 ## Inspector (automated PR review)
 

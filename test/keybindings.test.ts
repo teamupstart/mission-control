@@ -162,6 +162,12 @@ test("every default binding is bindable and round-trips through its chord form",
   }
 });
 
+test("bare Tab is reserved while modified Tab chords remain bindable", () => {
+  assert.equal(isReservedChord("Tab"), true);
+  assert.equal(isReservedChord("shift+Tab"), false);
+  assert.equal(isReservedChord("ctrl+Tab"), false);
+});
+
 test("file actions own f and Shift+O and every default round-trips from a keypress", () => {
   const rename = ACTIONS.find((a) => a.id === "rename");
   const files = ACTIONS.find((a) => a.id === "files");

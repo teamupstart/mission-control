@@ -14,7 +14,7 @@ const source = (relative: string): string => readFileSync(
 
 test("Console vertical arrows scroll the active detail only once focus is in it", () => {
   const app = source("App.tsx");
-  const route = app.indexOf('layout === "console" && selectedId');
+  const route = app.indexOf('layout === "console" && selected && (e.key');
   const navigation = app.indexOf("const nextId = moveSelection", route);
   assert.ok(route >= 0, "Console has no detail-scroll arrow branch");
   assert.ok(navigation > route, "rail navigation still runs when the detail is not focused");
@@ -22,7 +22,7 @@ test("Console vertical arrows scroll the active detail only once focus is in it"
   // The scroll is gated on the reader zone: in the rail zone the same arrows fall
   // through to moveSelection and walk the rail instead.
   assert.match(branch, /consoleZone === "detail"/);
-  assert.match(branch, /detailScrollers\.current\.get\(selectedId\)/);
+  assert.match(branch, /detailScrollers\.current\.get\(selected\.id\)/);
   assert.match(branch, /if \(detailScroll\)[\s\S]*detailScroll\([\s\S]*return/);
 });
 

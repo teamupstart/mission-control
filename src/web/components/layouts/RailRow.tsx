@@ -18,6 +18,7 @@ import { Tooltip } from "../Tooltip.tsx";
 export function RailRow({
   session,
   selected,
+  focusSelected = false,
   gateNeedsYou,
   onSelect,
   workflowRun = null,
@@ -25,6 +26,7 @@ export function RailRow({
 }: {
   session: Session;
   selected: boolean;
+  focusSelected?: boolean;
   gateNeedsYou: boolean;
   onSelect: () => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -37,8 +39,10 @@ export function RailRow({
   // because the rail scrolls independently of the detail beside it - App's map holds
   // the card element, which in this layout is the pane, not the row.
   useEffect(() => {
-    if (selected) ref.current?.scrollIntoView({ block: "nearest" });
-  }, [selected]);
+    if (!selected) return;
+    ref.current?.scrollIntoView({ block: "nearest" });
+    if (focusSelected) ref.current?.focus({ preventScroll: true });
+  }, [selected, focusSelected]);
 
   const marks: string[] = [];
   if (session.nomistakesGated) marks.push("◇");

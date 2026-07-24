@@ -531,6 +531,7 @@ export function App(): React.JSX.Element {
   const modalOpen = Boolean(modalSession && modalReviews.length > 0);
 
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
+  const visibleSelectedId = selected?.id ?? null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
@@ -651,12 +652,13 @@ export function App(): React.JSX.Element {
   }, [selectedId]);
 
   // The Console's keyboard lands on the rail whenever the selection or the layout
-  // changes: opening a different session, or leaving Console and coming back, both
-  // start from the rail selector rather than dropping the operator mid-scroll into a
-  // reader they never Tabbed into.
+  // changes or the selected session leaves the filtered view: opening a different
+  // session, filtering it away, or leaving Console and coming back all start from the
+  // rail selector rather than dropping the operator mid-scroll into a reader they never
+  // Tabbed into.
   useEffect(() => {
     setConsoleZone("rail");
-  }, [selectedId, layout]);
+  }, [visibleSelectedId, layout]);
 
   // Move DOM focus with the board's arrow cursor, onto the tile's own stretched open
   // button - the keyboard half SessionTile already draws for exactly this.
@@ -742,7 +744,22 @@ export function App(): React.JSX.Element {
 
       // Stand down while any overlay owns the screen (or a card's title is being
       // edited), so grid shortcuts don't drive a background card behind it.
-      if (overlaysRef.current.anyOpen || renamingId || typing) return;
+      if (overlaysRef.current.anyOpen || renamingId) return;
+
+      if (layout === "console" && selected) {
+        if (chord === "shift+Tab" && consoleZone === "detail") {
+          e.preventDefault();
+          setConsoleZone("rail");
+          return;
+        }
+        if (chord === "Tab" && consoleZone === "rail") {
+          e.preventDefault();
+          setConsoleZone("detail");
+          return;
+        }
+      }
+
+      if (typing) return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
       // guard so dispatch still opens when there are no sessions yet.
@@ -783,7 +800,7 @@ export function App(): React.JSX.Element {
           // Console's reader zone sits above its selection the way grid focus and the
           // board drill-in do: hand the keyboard back to the rail first, and only drop
           // the selection on the next press.
-          if (layout === "console" && consoleZone === "detail") {
+          if (layout === "console" && selected && consoleZone === "detail") {
             e.preventDefault();
             setConsoleZone("rail");
             return;
@@ -803,9 +820,9 @@ export function App(): React.JSX.Element {
           // content; the detail owns the actual scroll node because Conversation and Files
           // use different nested containers. In the rail zone (the default) they fall
           // through to `moveSelection`, which walks the rail a row at a time.
-          if (layout === "console" && selectedId && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+          if (layout === "console" && selected && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
             if (consoleZone === "detail") {
-              const detailScroll = detailScrollers.current.get(selectedId);
+              const detailScroll = detailScrollers.current.get(selected.id);
               if (detailScroll) {
                 detailScroll(e.key === "ArrowUp" ? -1 : 1);
                 return;
@@ -827,25 +844,6 @@ export function App(): React.JSX.Element {
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
             if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
           }
-          return;
-        }
-        case "Tab": {
-          // Console focus zones. Tab hands the keyboard from the rail selector to the
-          // open conversation (so the vertical arrows scroll it); Shift+Tab hands it
-          // back. Only meaningful once a session is open beside the rail - elsewhere Tab
-          // is left to the browser and Shift+Tab to its `mode` binding below.
-          if (layout !== "console" || !selectedId) break;
-          if (e.shiftKey) {
-            // Shift+Tab returns to the rail from the reader. In the rail zone there is
-            // nothing to step back to, so it falls through to the `mode` chord below -
-            // which keeps that shortcut working in Console like every other layout.
-            if (consoleZone !== "detail") break;
-            e.preventDefault();
-            setConsoleZone("rail");
-            return;
-          }
-          e.preventDefault();
-          setConsoleZone("detail");
           return;
         }
         case "Enter":

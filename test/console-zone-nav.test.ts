@@ -82,6 +82,7 @@ test("the rail hands its focus zone to the console via a data attribute", () => 
     createElement(ConsoleView, props({ sessions: [session], selectedId: session.id, consoleZone: "detail" })),
   );
   assert.match(detailFocused, /class="console" data-zone="detail"/);
+  assert.match(detailFocused, /class="console-detail" tabindex="-1"/);
 });
 
 test("with nothing open the zone is the rail, whatever App last held", () => {
@@ -95,17 +96,17 @@ test("with nothing open the zone is the rail, whatever App last held", () => {
 
 test("App wires Tab and Shift+Tab to the console focus zones", () => {
   const app = source("App.tsx");
-  const start = app.indexOf('case "Tab":');
-  assert.ok(start >= 0, "no Tab case in the key handler");
-  const body = app.slice(start, app.indexOf('case "Enter":', start));
-  // Only meaningful in the Console, and only once a session is open beside the rail.
-  assert.match(body, /layout !== "console" \|\| !selectedId/);
-  // Plain Tab hands focus to the reader; Shift+Tab hands it back.
+  const start = app.indexOf('if (layout === "console" && selected)');
+  assert.ok(start >= 0, "no Console zone branch in the key handler");
+  const body = app.slice(start, app.indexOf("if (typing) return;", start));
+  assert.match(body, /chord === "Tab" && consoleZone === "rail"/);
+  assert.match(body, /chord === "shift\+Tab" && consoleZone === "detail"/);
   assert.match(body, /setConsoleZone\("detail"\)/);
   assert.match(body, /setConsoleZone\("rail"\)/);
-  // Shift+Tab only steps back FROM the reader; in the rail zone it falls through so the
-  // `mode` binding on Shift+Tab keeps working in Console like every other layout.
-  assert.match(body, /consoleZone !== "detail"\) break/);
+  assert.ok(
+    app.indexOf("if (typing) return;", start) > app.indexOf('chord === "shift+Tab"', start),
+    "Shift+Tab from a detail composer does not return focus to the rail",
+  );
 });
 
 test("Escape peels the reader zone back to the rail before dropping the selection", () => {
@@ -116,5 +117,15 @@ test("Escape peels the reader zone back to the rail before dropping the selectio
   // The zone step-back sits above the selection-clearing return, so one Escape returns to
   // the rail and only a second clears the selection - the layered peel the grid and board
   // already do.
-  assert.match(branch, /consoleZone === "detail"[\s\S]*setConsoleZone\("rail"\)/);
+  assert.match(branch, /selected && consoleZone === "detail"[\s\S]*setConsoleZone\("rail"\)/);
+});
+
+test("zone transitions move DOM focus and hidden selections reset to the rail", () => {
+  const app = source("App.tsx");
+  const consoleView = source("components/layouts/ConsoleView.tsx");
+  const railRow = source("components/layouts/RailRow.tsx");
+  assert.match(app, /setConsoleZone\("rail"\);[\s\S]*\[visibleSelectedId, layout\]/);
+  assert.match(consoleView, /zone === "detail"[\s\S]*detailRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(consoleView, /focusSelected=\{s\.id === props\.selectedId && zone === "rail"\}/);
+  assert.match(railRow, /if \(focusSelected\) ref\.current\?\.focus\(\{ preventScroll: true \}\)/);
 });

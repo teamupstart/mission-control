@@ -271,7 +271,7 @@ export function formatChord(chord: string): string {
 
 /** True when a chord targets a reserved navigation key and so can't be bound. */
 export function isReservedChord(chord: string): boolean {
-  return RESERVED_KEYS.has(parseChord(chord).key);
+  return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
 }
 
 // ---- store ----------------------------------------------------------------

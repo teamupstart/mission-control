@@ -848,6 +848,16 @@ function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
+function identityKey(value: string, max: number, field: string): string {
+  if (value.length === 0) throw new RangeError(`${field} must not be empty`);
+  if (value.length > max) throw new RangeError(`${field} exceeds ${max} characters`);
+  return value;
+}
+
+function identityConflict(field: string, key: string): never {
+  throw new Error(`${field} ${key} is already owned by a different ensemble record`);
+}
+
 function boundedOrNull(value: string | null, max: number): string | null {
   return value === null ? null : bounded(value, max);
 }
@@ -923,8 +933,9 @@ export class EnsembleStore {
    * run it already made, which is what stops one retry from launching another N agents.
    */
   createRun(input: EnsembleRunInsert, now = Date.now()): EnsembleCreateWrite {
+    const sourceKey = identityKey(input.sourceKey, ENSEMBLE_LIMITS.sourceKey, "source key");
     return this.inTransaction(() => {
-      const existing = this.runBySource(input.sourceKind, input.sourceKey);
+      const existing = this.runBySource(input.sourceKind, sourceKey);
       if (existing) {
         return { run: existing, members: this.listMembers(existing.id), created: false };
       }
@@ -940,7 +951,7 @@ export class EnsembleStore {
         .run(
           id,
           input.sourceKind,
-          bounded(input.sourceKey, ENSEMBLE_LIMITS.sourceKey),
+          sourceKey,
           boundedOrNull(input.sourceId, ENSEMBLE_LIMITS.sourceId),
           input.strategyId,
           input.strategyVersion,
@@ -1323,6 +1334,19 @@ export class EnsembleStore {
         values.push(patch.taskId ?? "");
       }
       if ("selectedAttemptId" in patch) {
+        if (
+          patch.selectedAttemptId !== null &&
+          patch.selectedAttemptId !== undefined &&
+          !this.db
+            .prepare(
+              `SELECT 1 FROM ensemble_attempts WHERE id = ? AND member_id = ? AND run_id = ?`,
+            )
+            .get(patch.selectedAttemptId, current.id, current.runId)
+        ) {
+          throw new Error(
+            `attempt ${patch.selectedAttemptId} does not belong to ensemble member ${current.id}`,
+          );
+        }
         sets.push("selected_attempt_id = ?");
         values.push(patch.selectedAttemptId ?? null);
       }
@@ -1392,7 +1416,17 @@ export class EnsembleStore {
       const existing = this.db
         .prepare(`SELECT * FROM ensemble_attempts WHERE member_id = ? AND attempt = ?`)
         .get(input.memberId, input.attempt) as unknown;
-      if (existing) return rowToAttempt(existing);
+      if (existing) {
+        const attempt = rowToAttempt(existing);
+        if (
+          attempt.runId !== input.runId ||
+          attempt.memberId !== input.memberId ||
+          attempt.attempt !== input.attempt
+        ) {
+          identityConflict("attempt identity", `${input.memberId}:${input.attempt}`);
+        }
+        return attempt;
+      }
       const id = randomUUID();
       this.db
         .prepare(
@@ -1492,11 +1526,27 @@ export class EnsembleStore {
    * must be one. Only the caller knows which it is holding, so only the caller can name it.
    */
   recordArtifact(input: EnsembleArtifactInsert, now = Date.now()): EnsembleArtifact {
+    const operationKey = identityKey(
+      input.operationKey,
+      ENSEMBLE_LIMITS.operationKey,
+      "operation key",
+    );
     return this.inTransaction(() => {
       const existing = this.db
         .prepare(`SELECT * FROM ensemble_artifacts WHERE operation_key = ?`)
-        .get(input.operationKey) as unknown;
-      if (existing) return rowToArtifact(existing);
+        .get(operationKey) as unknown;
+      if (existing) {
+        const artifact = rowToArtifact(existing);
+        if (
+          artifact.runId !== input.runId ||
+          artifact.attemptId !== input.attemptId ||
+          artifact.kind !== input.kind ||
+          artifact.attempt !== input.attempt
+        ) {
+          identityConflict("operation key", operationKey);
+        }
+        return artifact;
+      }
       if (input.attemptId !== null) {
         const owner = this.db
           .prepare(`SELECT 1 FROM ensemble_attempts WHERE id = ? AND run_id = ?`)
@@ -1533,7 +1583,7 @@ export class EnsembleStore {
           locator,
           input.digest,
           metadata,
-          bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
+          operationKey,
           now,
           input.readyAt,
         );
@@ -1550,9 +1600,23 @@ export class EnsembleStore {
    * rather than issuing the command a second time.
    */
   startStageAttempt(input: EnsembleStageAttemptInsert, now = Date.now()): EnsembleStageAttempt {
+    const commandKey = identityKey(
+      input.commandKey,
+      ENSEMBLE_LIMITS.commandKey,
+      "command key",
+    );
     return this.inTransaction(() => {
-      const existing = this.stageAttemptByCommand(input.commandKey);
-      if (existing) return existing;
+      const existing = this.stageAttemptByCommand(commandKey);
+      if (existing) {
+        if (
+          existing.runId !== input.runId ||
+          existing.stageId !== input.stageId ||
+          existing.attempt !== input.attempt
+        ) {
+          identityConflict("command key", commandKey);
+        }
+        return existing;
+      }
       const id = randomUUID();
       this.db
         .prepare(
@@ -1568,7 +1632,7 @@ export class EnsembleStore {
           input.driverKind,
           bounded(input.driverKey, ENSEMBLE_LIMITS.strategyKey),
           input.attempt,
-          bounded(input.commandKey, ENSEMBLE_LIMITS.commandKey),
+          commandKey,
           input.status,
           serializedJson(input.input, ENSEMBLE_LIMITS.stagePayloadJsonBytes, "stage input"),
           now,
@@ -1636,7 +1700,20 @@ export class EnsembleStore {
       const existing = this.db
         .prepare(`SELECT * FROM ensemble_evaluations WHERE stage_attempt_id = ? AND attempt = ?`)
         .get(input.stageAttemptId, input.attempt) as unknown;
-      if (existing) return rowToEvaluation(existing);
+      if (existing) {
+        const evaluation = rowToEvaluation(existing);
+        if (
+          evaluation.runId !== input.runId ||
+          evaluation.stageAttemptId !== input.stageAttemptId ||
+          evaluation.attempt !== input.attempt
+        ) {
+          identityConflict(
+            "evaluation identity",
+            `${input.stageAttemptId}:${input.attempt}`,
+          );
+        }
+        return evaluation;
+      }
       const id = randomUUID();
       this.db
         .prepare(
@@ -1810,11 +1887,20 @@ export class EnsembleStore {
    * records a decision is the click that starts destroying loser worktrees.
    */
   recordDecision(input: EnsembleDecisionInsert, now = Date.now()): EnsembleDecision {
+    const operationKey = identityKey(
+      input.operationKey,
+      ENSEMBLE_LIMITS.operationKey,
+      "operation key",
+    );
     return this.inTransaction(() => {
       const existing = this.db
         .prepare(`SELECT * FROM ensemble_decisions WHERE operation_key = ?`)
-        .get(input.operationKey) as unknown;
-      if (existing) return rowToDecision(existing);
+        .get(operationKey) as unknown;
+      if (existing) {
+        const decision = rowToDecision(existing);
+        if (decision.runId !== input.runId) identityConflict("operation key", operationKey);
+        return decision;
+      }
       const selection = serializedJson(
         input.selection,
         ENSEMBLE_LIMITS.decisionSelectionJsonBytes,
@@ -1846,7 +1932,7 @@ export class EnsembleStore {
           input.actorId,
           selection,
           bounded(input.rationale, ENSEMBLE_LIMITS.rationale),
-          bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
+          operationKey,
           now,
           now,
         );
@@ -1879,11 +1965,22 @@ export class EnsembleStore {
    * timeline an operator reads to work out what happened.
    */
   appendEvent(input: EnsembleEventInsert, now = Date.now()): EnsembleEvent | null {
+    const operationKey = identityKey(
+      input.operationKey,
+      ENSEMBLE_LIMITS.operationKey,
+      "operation key",
+    );
     return this.inTransaction(() => {
       const existing = this.db
         .prepare(`SELECT * FROM ensemble_events WHERE operation_key = ?`)
-        .get(input.operationKey) as unknown;
-      if (existing) return rowToEvent(existing);
+        .get(operationKey) as unknown;
+      if (existing) {
+        const event = rowToEvent(existing);
+        if (event.runId !== input.runId || event.kind !== input.kind) {
+          identityConflict("operation key", operationKey);
+        }
+        return event;
+      }
       const payload = serializedJson(
         input.payload,
         ENSEMBLE_LIMITS.eventPayloadJsonBytes,
@@ -1899,7 +1996,7 @@ export class EnsembleStore {
           now,
           input.kind,
           payload,
-          bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
+          operationKey,
         );
       const row = this.db
         .prepare(`SELECT * FROM ensemble_events WHERE id = ?`)

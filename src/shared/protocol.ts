@@ -42,6 +42,7 @@ import {
   ENSEMBLE_LLM_CALL_STATES,
   ENSEMBLE_LLM_PURPOSES,
   ENSEMBLE_MEMBER_STATUSES,
+  ENSEMBLE_OUTCOME_KINDS,
   ENSEMBLE_PLAN_VERSION,
   ENSEMBLE_SOURCE_KINDS,
   ENSEMBLE_STAGE_DRIVER_KINDS,
@@ -49,7 +50,21 @@ import {
   ENSEMBLE_STATUSES,
   ENSEMBLE_STRATEGY_IDS,
 } from "./ensemble.ts";
-import type { EnsembleJson } from "./ensemble.ts";
+import type {
+  EnsembleArtifact,
+  EnsembleAttempt,
+  EnsembleDecision,
+  EnsembleEvaluation,
+  EnsembleEvent,
+  EnsembleJson,
+  EnsembleLlmCall,
+  EnsembleMember,
+  EnsembleRun,
+  EnsembleRunDetail,
+  EnsembleStageAttempt,
+  EnsembleSummary,
+  EnsembleUnreadable,
+} from "./ensemble.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -2778,6 +2793,204 @@ export const EnsembleOutcomeSchema = z.discriminatedUnion("kind", [
     reason: z.string().max(ENSEMBLE_LIMITS.rationale),
   }),
 ]);
+
+export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable> = z.object({
+  reason: z.string(),
+  fields: z.array(z.string()),
+});
+
+export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
+  id: ensembleId,
+  sourceKind: EnsembleSourceKindSchema.nullable(),
+  sourceKey: z.string(),
+  sourceId: z.string().nullable(),
+  strategyId: EnsembleStrategyIdSchema.nullable(),
+  strategyKey: z.string(),
+  strategyVersion: z.number().int(),
+  strategyLabel: z.string(),
+  title: z.string(),
+  intent: z.string(),
+  repoRoot: z.string(),
+  baseBranch: z.string().nullable(),
+  baseSha: z.string().nullable(),
+  plan: CompiledEnsemblePlanSchema.nullable(),
+  strategyConfig: EnsembleJsonSchema,
+  status: EnsembleStatusSchema.nullable(),
+  activeStageId: z.string().nullable(),
+  outcome: EnsembleOutcomeSchema.nullable(),
+  unreadable: EnsembleUnreadableSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+
+export const EnsembleMemberSchema: z.ZodType<EnsembleMember> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  roleKey: z.string(),
+  roleLabel: z.string(),
+  ordinal: z.number().int(),
+  wave: z.number().int(),
+  taskId: z.string().nullable(),
+  status: EnsembleMemberStatusSchema.nullable(),
+  selectedAttemptId: z.string().nullable(),
+  resultLabel: z.string().nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export const EnsembleAttemptSchema: z.ZodType<EnsembleAttempt> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  memberId: ensembleId,
+  attempt: z.number().int(),
+  taskId: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  agent: z.enum(AGENT_TYPES).nullable(),
+  requestedModel: z.string().nullable(),
+  requestedEffort: EffortLevelSchema.nullable(),
+  observedModel: z.string().nullable(),
+  baseSha: z.string().nullable(),
+  worktreePath: z.string().nullable(),
+  branch: z.string().nullable(),
+  status: EnsembleAttemptStatusSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  startedAt: z.number().int().nullable(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleArtifactSchema: z.ZodType<EnsembleArtifact> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  attemptId: z.string().nullable(),
+  kind: EnsembleArtifactKindSchema.nullable(),
+  formatVersion: z.number().int(),
+  attempt: z.number().int(),
+  status: EnsembleArtifactStatusSchema.nullable(),
+  locator: EnsembleJsonSchema,
+  digest: z.string(),
+  metadata: EnsembleJsonSchema,
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  readyAt: z.number().int().nullable(),
+});
+
+export const EnsembleStageAttemptSchema: z.ZodType<EnsembleStageAttempt> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageId: z.string(),
+  driverKind: EnsembleStageDriverKindSchema.nullable(),
+  driverKey: EnsembleDriverKeySchema.nullable(),
+  attempt: z.number().int(),
+  commandKey: z.string(),
+  status: EnsembleStageStatusSchema.nullable(),
+  input: EnsembleJsonSchema,
+  output: EnsembleJsonSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  startedAt: z.number().int().nullable(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleEvaluationSchema: z.ZodType<EnsembleEvaluation> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageAttemptId: ensembleId,
+  attempt: z.number().int(),
+  method: z.string(),
+  runnerId: z.string().nullable(),
+  modelId: z.string().nullable(),
+  inputFingerprint: z.string(),
+  subjectArtifactIds: z.array(z.string()),
+  result: EnsembleJsonSchema.nullable(),
+  status: EnsembleEvaluationStatusSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  finishedAt: z.number().int().nullable(),
+});
+
+export const EnsembleLlmCallSchema: z.ZodType<EnsembleLlmCall> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  stageAttemptId: z.string().nullable(),
+  evaluationId: z.string().nullable(),
+  purpose: EnsembleLlmPurposeSchema.nullable(),
+  runnerId: z.string(),
+  modelId: z.string(),
+  attempt: z.number().int(),
+  state: EnsembleLlmCallStateSchema.nullable(),
+  startedAt: z.number().int(),
+  finishedAt: z.number().int().nullable(),
+  durationMs: z.number().int().nullable(),
+  inputBytes: z.number().int(),
+  outputBytes: z.number().int(),
+  costUsd: z.number().nullable(),
+  errorCode: z.string().nullable(),
+});
+
+export const EnsembleDecisionSchema: z.ZodType<EnsembleDecision> = z.object({
+  id: ensembleId,
+  runId: ensembleId,
+  version: z.number().int(),
+  actor: EnsembleDecisionActorSchema.nullable(),
+  actorId: z.string().nullable(),
+  status: EnsembleDecisionStatusSchema.nullable(),
+  selection: EnsembleJsonSchema,
+  rationale: z.string(),
+  finalizationStageAttemptId: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export const EnsembleEventSchema: z.ZodType<EnsembleEvent> = z.object({
+  id: z.number().int(),
+  runId: ensembleId,
+  ts: z.number().int(),
+  kind: z.string(),
+  payload: EnsembleJsonSchema,
+});
+
+export const EnsembleSummarySchema: z.ZodType<EnsembleSummary> = z.object({
+  id: ensembleId,
+  title: z.string(),
+  repoRoot: z.string(),
+  strategyId: EnsembleStrategyIdSchema.nullable(),
+  strategyKey: z.string(),
+  strategyLabel: z.string(),
+  strategyVersion: z.number().int(),
+  status: EnsembleStatusSchema.nullable(),
+  activeStageId: z.string().nullable(),
+  memberCount: z.number().int().nonnegative(),
+  launchedMembers: z.number().int().nonnegative(),
+  maxMembers: z.number().int().nonnegative(),
+  readyArtifacts: z.number().int().nonnegative(),
+  selectedMemberId: z.string().nullable(),
+  outcomeKind: z.enum(ENSEMBLE_OUTCOME_KINDS).nullable(),
+  unreadable: EnsembleUnreadableSchema.nullable(),
+  attention: z.boolean(),
+  error: z.string().nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  completedAt: z.number().int().nullable(),
+});
+
+export const EnsembleRunDetailSchema: z.ZodType<EnsembleRunDetail> = z.object({
+  run: EnsembleRunSchema,
+  members: z.array(EnsembleMemberSchema),
+  attempts: z.array(EnsembleAttemptSchema),
+  artifacts: z.array(EnsembleArtifactSchema),
+  stageAttempts: z.array(EnsembleStageAttemptSchema),
+  evaluations: z.array(EnsembleEvaluationSchema),
+  decisions: z.array(EnsembleDecisionSchema),
+  llmCalls: z.array(EnsembleLlmCallSchema),
+  events: z.array(EnsembleEventSchema),
+});
 
 /**
  * What a caller asks for.

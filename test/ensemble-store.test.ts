@@ -174,6 +174,43 @@ test("two different source keys are two different runs", () => {
   assert.equal(store.listRuns().length, 2);
 });
 
+test("identity keys are rejected rather than truncated or aliased", () => {
+  const store = new EnsembleStore(db);
+  const tooLongSource = "s".repeat(ENSEMBLE_LIMITS.sourceKey + 1);
+  assert.throws(() => insert(store, tooLongSource), /source key exceeds/);
+  assert.equal(store.listRuns().length, 0);
+
+  const sourceKey = "s".repeat(ENSEMBLE_LIMITS.sourceKey);
+  const { run } = insert(store, sourceKey);
+  assert.equal(run.sourceKey, sourceKey);
+  assert.throws(
+    () =>
+      store.startStageAttempt({
+        runId: run.id,
+        stageId: "stage-1",
+        driverKind: "member",
+        driverKey: "member_wave@1",
+        attempt: 1,
+        commandKey: "c".repeat(ENSEMBLE_LIMITS.commandKey + 1),
+        status: "running",
+        input: {},
+      }),
+    /command key exceeds/,
+  );
+  assert.throws(
+    () =>
+      store.appendEvent({
+        runId: run.id,
+        kind: "created",
+        payload: {},
+        operationKey: "o".repeat(ENSEMBLE_LIMITS.operationKey + 1),
+      }),
+    /operation key exceeds/,
+  );
+  assert.equal(store.listStageAttempts(run.id).length, 0);
+  assert.equal(store.listEvents(run.id).length, 0);
+});
+
 // ---- compare and set ----
 
 test("a status only moves from a state the caller said it expected", () => {
@@ -225,6 +262,63 @@ test("a member transition takes the same precondition, and normalizes its task b
   // Two unlaunched members must be able to coexist: the partial unique index is written
   // against the empty string, so a null here would defeat it.
   assert.equal(store.setMemberStatus(members[1]!.id, ["pending"], "failed", { taskId: null }).ok, true);
+});
+
+test("a member can select only one of its own attempts", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const first = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: null,
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "submitted",
+  });
+  const other = store.insertAttempt({
+    runId: run.id,
+    memberId: members[1]!.id,
+    attempt: 1,
+    taskId: null,
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "submitted",
+  });
+
+  assert.throws(
+    () =>
+      store.setMemberStatus(
+        members[0]!.id,
+        ["pending"],
+        "advanced",
+        { selectedAttemptId: other.id },
+        200,
+      ),
+    /does not belong to ensemble member/,
+  );
+  assert.equal(store.getMember(members[0]!.id)?.status, "pending");
+  assert.equal(store.getMember(members[0]!.id)?.selectedAttemptId, null);
+
+  const selected = store.setMemberStatus(
+    members[0]!.id,
+    ["pending"],
+    "advanced",
+    { selectedAttemptId: first.id },
+    300,
+  );
+  assert.equal(selected.ok, true);
+  if (selected.ok) assert.equal(selected.value.selectedAttemptId, first.id);
 });
 
 test("the pinned base is write-once and an identical retry is idempotent", () => {
@@ -408,6 +502,131 @@ test("an evaluation is one row per stage attempt and attempt number, and reports
   assert.deepEqual(done.value.subjectArtifactIds, ["art-1", "art-2"]);
   assert.equal(store.finishEvaluation(first.id, ["running"], "failed").ok, false);
   assert.equal(store.finishEvaluation(first.id, ["succeeded"], "running").ok, false);
+});
+
+test("idempotency keys cannot resolve to records owned by another run", () => {
+  const store = new EnsembleStore(db);
+  const firstRun = insert(store, "manual:first");
+  const secondRun = insert(store, "manual:second");
+  const attempt = store.insertAttempt({
+    runId: firstRun.run.id,
+    memberId: firstRun.members[0]!.id,
+    attempt: 1,
+    taskId: null,
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "running",
+  });
+  assert.throws(
+    () =>
+      store.insertAttempt({
+        runId: secondRun.run.id,
+        memberId: firstRun.members[0]!.id,
+        attempt: 1,
+        taskId: null,
+        sessionId: null,
+        agent: null,
+        requestedModel: null,
+        requestedEffort: null,
+        baseSha: null,
+        worktreePath: null,
+        branch: null,
+        status: "running",
+      }),
+    /attempt identity/,
+  );
+
+  const artifact = {
+    runId: firstRun.run.id,
+    attemptId: attempt.id,
+    kind: "commit" as const,
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready" as const,
+    locator: {},
+    digest: "sha256:first",
+    metadata: {},
+    operationKey: "shared-artifact-operation",
+    readyAt: 200,
+  };
+  store.recordArtifact(artifact);
+  assert.throws(
+    () => store.recordArtifact({ ...artifact, runId: secondRun.run.id }),
+    /operation key/,
+  );
+
+  const stage = store.startStageAttempt({
+    runId: firstRun.run.id,
+    stageId: "stage-review",
+    driverKind: "review",
+    driverKey: "comparative_review@1",
+    attempt: 1,
+    commandKey: "shared-stage-command",
+    status: "running",
+    input: {},
+  });
+  assert.throws(
+    () =>
+      store.startStageAttempt({
+        runId: secondRun.run.id,
+        stageId: "stage-review",
+        driverKind: "review",
+        driverKey: "comparative_review@1",
+        attempt: 1,
+        commandKey: "shared-stage-command",
+        status: "running",
+        input: {},
+      }),
+    /command key/,
+  );
+
+  const evaluation = {
+    runId: firstRun.run.id,
+    stageAttemptId: stage.id,
+    attempt: 1,
+    method: "comparative_llm",
+    runnerId: null,
+    modelId: null,
+    inputFingerprint: "sha256:packet",
+    subjectArtifactIds: [],
+    status: "running" as const,
+  };
+  store.recordEvaluation(evaluation);
+  assert.throws(
+    () => store.recordEvaluation({ ...evaluation, runId: secondRun.run.id }),
+    /evaluation identity/,
+  );
+
+  const decision = {
+    runId: firstRun.run.id,
+    actor: "human" as const,
+    actorId: null,
+    selection: {},
+    rationale: "",
+    operationKey: "shared-decision-operation",
+  };
+  store.recordDecision(decision);
+  assert.throws(
+    () => store.recordDecision({ ...decision, runId: secondRun.run.id }),
+    /operation key/,
+  );
+
+  const event = {
+    runId: firstRun.run.id,
+    kind: "created",
+    payload: {},
+    operationKey: "shared-event-operation",
+  };
+  store.appendEvent(event);
+  assert.throws(
+    () => store.appendEvent({ ...event, runId: secondRun.run.id }),
+    /operation key/,
+  );
 });
 
 test("a model call's unknown cost stays null, because unknown is not zero", () => {

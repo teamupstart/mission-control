@@ -22,11 +22,15 @@ import {
   readEnsembleEnum,
   type CompiledEnsemblePlan,
   type EnsembleRun,
+  type EnsembleSummary,
 } from "../src/shared/ensemble.ts";
 import {
   CompiledEnsemblePlanSchema,
   EnsembleActionSchema,
   EnsembleCreateInputSchema,
+  EnsembleEventSchema,
+  EnsembleRunDetailSchema,
+  EnsembleSummarySchema,
 } from "../src/shared/protocol.ts";
 
 /**
@@ -328,6 +332,59 @@ test("attention is derived once, so the daemon and the browser cannot disagree",
     ensembleNeedsAttention({ status: "running", unreadable: { reason: "x", fields: [] } }),
     true,
   );
+});
+
+test("summary, detail, and event wire schemas match their shared contracts", () => {
+  const summary: EnsembleSummary = {
+    id: "run-1",
+    title: "Try two approaches",
+    repoRoot: "/repo",
+    strategyId: "best_of_n",
+    strategyKey: "best_of_n@1",
+    strategyLabel: "Best of N",
+    strategyVersion: 1,
+    status: "running",
+    activeStageId: "stage-1",
+    memberCount: 2,
+    launchedMembers: 1,
+    maxMembers: 2,
+    readyArtifacts: 0,
+    selectedMemberId: null,
+    outcomeKind: null,
+    unreadable: null,
+    attention: false,
+    error: null,
+    createdAt: 1,
+    updatedAt: 2,
+    completedAt: null,
+  };
+  assert.deepEqual(EnsembleSummarySchema.parse(summary), summary);
+  assert.equal(
+    EnsembleSummarySchema.safeParse({ ...summary, launchedMembers: -1 }).success,
+    false,
+  );
+  assert.equal(EnsembleSummarySchema.safeParse({ ...summary, status: "future" }).success, false);
+
+  const event = {
+    id: 1,
+    runId: "run-1",
+    ts: 2,
+    kind: "created",
+    payload: { members: 2 },
+  };
+  assert.deepEqual(EnsembleEventSchema.parse(event), event);
+  const detail = {
+    run: run(),
+    members: [],
+    attempts: [],
+    artifacts: [],
+    stageAttempts: [],
+    evaluations: [],
+    decisions: [],
+    llmCalls: [],
+    events: [event],
+  };
+  assert.deepEqual(EnsembleRunDetailSchema.parse(detail), detail);
 });
 
 // ---- create input and actions ----

@@ -6,11 +6,13 @@ import { join } from "node:path";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PrMatch } from "../src/server/registry.ts";
+import type { Session } from "../src/shared/types.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-merge-settles-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 
@@ -375,6 +377,50 @@ test("a merged session awaiting input is not killed as a substitute for completi
   assert.deepEqual(killed, []);
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
   assert.ok(f.registry.getSession(f.id), "the unfinished session remains live");
+});
+
+test("a merged session awaiting review is not completed or closed", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const killed: string[] = [];
+  const f = fleet("s-awaiting-review", false, {
+    resetWouldDestroyWork: async () => null,
+    kill: async (session) => {
+      killed.push(session.id);
+      return { ok: true };
+    },
+  });
+  const sessions = (f.registry as unknown as { sessions: Map<string, Session> }).sessions;
+  const session = sessions.get(f.id)!;
+  sessions.set(f.id, { ...session, state: "awaiting_review" });
+
+  merge(f);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(killed, []);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.equal(f.registry.getSession(f.id)?.state, "awaiting_review");
+});
+
+test("a merged idle session carrying queued work is not completed or closed", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const killed: string[] = [];
+  const f = fleet("s-queued-work", false, {
+    resetWouldDestroyWork: async () => null,
+    kill: async (session) => {
+      killed.push(session.id);
+      return { ok: true };
+    },
+  });
+  const queues = new QueueManager(f.registry);
+  assert.ok(queues.add(f.id, "finish the queued follow-up"));
+  assert.equal(f.registry.getSession(f.id)?.queue?.openCount, 1);
+
+  merge(f);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(killed, []);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  assert.equal(f.registry.getSession(f.id)?.queue?.openCount, 1);
 });
 
 test("work resuming during the close probe cancels the pending session close", async () => {

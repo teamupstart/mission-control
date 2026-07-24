@@ -17,35 +17,24 @@ const { ShippingConfigSchema } = await import("../src/shared/protocol.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /**
- * A task whose work SHIPPED has to end as `done`, not as `failed`.
- *
- * Nothing used to end a task on merge at all - `maybeMerge` retires its own ledger row
- * and returns, and no poller touched the task - so a shipped task sat `running` until
- * its agent went away and then settled as `failed`, "ended with no outcome recorded".
- * That is wrong twice: the outcome exists (it is the pull request), and `failed` reports
- * as a `stopped` blocker, so every task declared to wait on it deadlocks behind work that
- * actually landed.
- *
- * The interesting part is WHEN it may be concluded, and two wrong answers were tried
- * before this one. Completing when the merge is observed - or a fixed delay afterwards -
- * treats a timeout as proof the episode ended, and it is not: an agent routinely lands an
- * intermediate pull request and carries on, and an operator can merge, read the diff for
- * a minute, and only then say continue. Any fixed window is outrunnable. But waiting only
- * for the agent to EXIT never fires for the ordinary case, where an agent ships and then
- * sits idle forever - leaving exactly the stall this change exists to remove.
- *
- * So the merge is recorded durably when it happens, and the task is concluded on evidence
- * that the episode FINISHED: the agent idle, its queue empty, no rollover onto new work.
- * Nothing is counted. A prompt after all of that is new work following a task that
- * genuinely shipped, and because the agent goes `working` the moment it lands, the
- * autopilot cannot have taken the agent in between either.
- *
- * Both ends are pinned below - the idle-but-live agent and the one that went away - along
- * with the two that must NOT conclude: mid-turn, and rolled onto later work that never
- * landed.
+ * Regression coverage for merged-task settlement. README's "When a task's pull request
+ * merges" section owns the user-facing behavior; these cases pin its local mechanics:
+ * idle completion is reversible, working and rolled-over episodes stay running, and a
+ * departed agent settles from only its current work-episode binding.
  */
 
 const PR = "https://github.com/example/repo/pull/77";
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function discovered(id: string, cwd: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -93,9 +82,13 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
  * episode and its task lands, while a working one has not and must be left alone
  * whatever its pull request did.
  */
-function fleet(id: string, busy = false) {
+function fleet(
+  id: string,
+  busy = false,
+  closeDeps?: ConstructorParameters<typeof TaskManager>[1],
+) {
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const tasks = new TaskManager(registry, closeDeps);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({
@@ -330,4 +323,226 @@ test("with the switch off, a merge leaves the session alone", () => {
   const f = fleet("s-keep");
   merge(f);
   assert.ok(f.registry.getSession(f.id), "the session should still be here");
+});
+
+test("work resuming during the close probe cancels the pending session close", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const probeStarted = deferred();
+  const releaseProbe = deferred();
+  const killed: string[] = [];
+  const f = fleet("s-close-race", false, {
+    resetWouldDestroyWork: async () => {
+      probeStarted.resolve();
+      await releaseProbe.promise;
+      return null;
+    },
+    kill: async (session) => {
+      killed.push(session.id);
+      return { ok: true };
+    },
+  });
+
+  merge(f);
+  await probeStarted.promise;
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "now do the follow-up",
+  });
+  releaseProbe.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(killed, []);
+  assert.ok(f.registry.getSession(f.id), "the working session remains live");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+test("a failed session close keeps the inferred completion reversible", async () => {
+  setShippingConfig({ closeSessionAfterMerge: true });
+  const closeAttempted = deferred();
+  const f = fleet("s-close-failed", false, {
+    resetWouldDestroyWork: async () => null,
+    kill: async () => {
+      closeAttempted.resolve();
+      return { ok: false, error: "agent refused to stop" };
+    },
+  });
+  const active = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...active,
+    worktreePath: null,
+    updatedAt: active.updatedAt + 1,
+  });
+
+  merge(f);
+  await closeAttempted.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const completed = f.registry.getTask(f.taskId)!;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.sessionId, f.id, "a failed close must not reclaim or unbind the task");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue after the failed close",
+  });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+// ---- the conclusion is reversible --------------------------------------------------------
+
+test("an agent that resumes work reopens the task we concluded from its idleness", () => {
+  // The one thing an idle agent cannot tell us: whether it is finished, or merely
+  // waiting to be typed at. Landing a pull request, reading the diff, then saying "now
+  // the follow-up" is ordinary - and it produces a terminal task while its agent works
+  // on. Rather than guess for longer before concluding (every fixed window is
+  // outrunnable, which is what the timer this replaced got wrong), the conclusion is
+  // undone the moment the agent contradicts it.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-resumed");
+  merge(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "now do the follow-up",
+  });
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "running");
+  assert.equal(t.outcome, null, "a reopened task carries no outcome");
+  assert.equal(t.outcomeUrl, null);
+});
+
+test("a HUMAN's completion is never reopened by the agent going busy again", () => {
+  // The guard that keeps the above from overwriting somebody's recorded outcome. Only
+  // conclusions this class drew from idleness are reversible; a human's is a statement
+  // about the work, not an inference.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-human-done", true);
+  f.tasks.complete(f.taskId, "shipped, and I say so");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "something else entirely",
+  });
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, "shipped, and I say so");
+});
+
+test("a human completion supersedes an earlier reversible idle completion", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-human-overrides-idle");
+  merge(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  f.tasks.complete(f.taskId, "verified and completed by hand");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "start something new",
+  });
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcome, "verified and completed by hand");
+});
+
+test("unbinding an inferred completion releases its reopening provenance", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-unbound-completion");
+  merge(f);
+  const provenance = f.tasks as unknown as {
+    autoCompleted: Map<string, string>;
+  };
+  assert.equal(provenance.autoCompleted.size, 1);
+  const completed = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...completed,
+    sessionId: null,
+    updatedAt: completed.updatedAt + 1,
+  });
+  assert.equal(provenance.autoCompleted.size, 0);
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+    prompt: "start the next assignment",
+  });
+  const released = f.registry.getTask(f.taskId)!;
+  assert.equal(released.status, "done");
+  assert.equal(released.outcomeUrl, PR, "later work must not erase the released task's outcome");
+});
+
+test("pruning an inferred completion does not recreate its reopening provenance", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-pruned-completion");
+  const active = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...active,
+    worktreePath: null,
+    updatedAt: active.updatedAt + 1,
+  });
+  const future = Date.now() + 60_000;
+  for (let i = 0; i < 50; i++) {
+    f.registry.upsertTask(baseTask({
+      id: `newer-terminal-${i}`,
+      status: "done",
+      completedAt: future + i,
+      updatedAt: future + i,
+    }));
+  }
+
+  merge(f);
+
+  assert.equal(f.registry.getTask(f.taskId), undefined, "the bounded task list evicts the older row");
+  const provenance = f.tasks as unknown as {
+    autoCompleted: Map<string, string>;
+  };
+  assert.equal(provenance.autoCompleted.size, 0);
+});
+
+test("a reopened task stays running when its next idle turn is on an unmerged episode", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-recycle");
+  merge(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
+  const hook = (event: "UserPromptSubmit" | "Stop") =>
+    f.registry.applyHook({
+      agent: "claude",
+      event,
+      sessionId: `${f.id}-episode`,
+      cwd: `/repo/${f.id}`,
+      transcriptPath: null,
+      env: {},
+      ...(event === "UserPromptSubmit" ? { prompt: "more" } : {}),
+    });
+  hook("UserPromptSubmit");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+  hook("Stop");
+  // Idle again on a rolled-over episode with no merge of its own: it stays running,
+  // which is `mergedPrFor`'s current-binding rule doing its job.
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });

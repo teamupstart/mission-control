@@ -141,6 +141,16 @@ export interface AssignOptions {
   rename?: (session: Session, name: string) => Promise<ActionResult>;
 }
 
+export interface CloseMergedSessionDeps {
+  resetWouldDestroyWork: typeof resetWouldDestroyWork;
+  kill: typeof kill;
+}
+
+const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
+  resetWouldDestroyWork,
+  kill,
+};
+
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
  * to say yes - exactly what saying yes would spend.
@@ -193,7 +203,12 @@ export class TaskManager {
   private titling = new Map<string, Promise<void>>();
   private assigningTasks = new Set<string>();
   private assigningSessions = new Set<string>();
-  constructor(private registry: Registry) {
+  /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
+  private autoCompleted = new Map<string, string>();
+  constructor(
+    private registry: Registry,
+    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+  ) {
     this.dispatcher = new Dispatcher(registry);
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -218,9 +233,21 @@ export class TaskManager {
     // by one sweep and rediscovered by the next never reaches it.
     registry.subscribe((e) => {
       if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+      if (e.type === "task_remove") this.autoCompleted.delete(e.id);
+      if (
+        e.type === "task_upsert" &&
+        this.autoCompleted.has(e.task.id) &&
+        (e.task.status !== "done" ||
+          e.task.sessionId !== this.autoCompleted.get(e.task.id))
+      ) {
+        this.autoCompleted.delete(e.task.id);
+      }
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
-      if (e.type === "session_upsert") this.settleIfEpisodeFinished(e.session);
+      if (e.type === "session_upsert") {
+        this.settleIfEpisodeFinished(e.session);
+        this.reopenIfWorkResumed(e.session);
+      }
     });
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
@@ -235,26 +262,20 @@ export class TaskManager {
   }
 
   /**
-   * A task's pull request merged. End its agent, if the operator asked for that.
+   * A task's pull request merged. Settle it if its episode appears finished, and end its
+   * agent if the operator asked for that.
    *
-   * Note what this does NOT do: complete the task. That was the first design and it was
-   * wrong for a reason worth recording, because it looks right and passes its own tests.
-   * A merge is not proof the task is over - an agent routinely lands an intermediate pull
-   * request and carries on - and no check made when the merge is OBSERVED can see a
-   * prompt that has not arrived yet. Deferring the check by a timer only moves the
-   * guess: an operator who merges, reads the diff for a minute, and then tells the agent
-   * to continue outruns any fixed window, and their task is already terminal.
+   * A merge is not proof the task is over: an agent may be mid-turn or roll onto more
+   * work, and no timer can rule out a prompt that has not arrived yet. An idle, empty,
+   * still-current episode is enough to conclude provisionally; `reopenIfWorkResumed`
+   * reverses that inference if the agent contradicts it by working again. A working
+   * session is left alone, while a session that later disappears settles through
+   * `agentWentAway`.
    *
-   * So completion moved to the one boundary a later prompt cannot outrun - the agent
-   * actually going away - and reads the merge from the durable record rather than from a
-   * clock. See `agentWentAway`.
-   *
-   * What is left here is the disposition of the agent, which is a preference and is
-   * behind a switch. `closeSessionAfterMerge` means "this agent's job was that pull
-   * request", so landing it ends the session; the completion then happens through
-   * `agentWentAway` like any other. A session still WORKING is left alone even so: the
-   * merge is durably recorded either way, so whenever that agent does finish its task
-   * settles correctly, and we never kill an agent mid-turn to satisfy a setting.
+   * The disposition of the agent remains a separate preference. With
+   * `closeSessionAfterMerge` enabled, an idle merged session is closed only if it still
+   * matches this task and episode after the asynchronous checkout-safety probe. Work
+   * resuming during that probe cancels the close.
    *
    * Errors are swallowed to a log line: this runs inside the PR poller's reconciliation,
    * where a throw would abandon the rest of the sweep.
@@ -296,9 +317,9 @@ export class TaskManager {
    *    new work (which `agentWentAway` deliberately reports as a failure);
    *  - and a merge is durably recorded against that binding.
    *
-   * A prompt arriving after all four hold is new work following a task that genuinely
-   * shipped, not a continuation of it - and because the agent goes `working` the instant
-   * it lands, the autopilot cannot have taken the agent in between either.
+   * An idle agent can still be wrong about being finished - it may be idle only because
+   * nobody has typed yet. That is why this conclusion is REVERSIBLE: see
+   * `reopenIfWorkResumed`. Every other route to `done` is a human's and stays put.
    */
   private settleIfEpisodeFinished(s: Session): void {
     if (s.state !== "idle") return;
@@ -312,7 +333,53 @@ export class TaskManager {
     // Rolled onto new work since the merge - not ours to conclude. See `mergedPrFor`.
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
-    this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+    const completed = this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+    // `complete` broadcasts synchronously and may evict this row from the bounded
+    // in-memory task list before it returns. Do not recreate provenance after the
+    // corresponding `task_remove` already cleared it.
+    if (completed && this.registry.getTask(t.id) === completed) {
+      this.autoCompleted.set(t.id, s.id);
+    }
+  }
+
+  /**
+   * Put back a task this class concluded, when its agent turns out to be working again.
+   *
+   * The honest answer to the one thing an idle agent cannot tell us. Concluding on
+   * idleness is what makes a shipped agent reusable at all, but idleness is not proof
+   * the work is over - the operator may simply not have typed yet. Landing an
+   * intermediate pull request, reading the diff, and then saying "now do the follow-up"
+   * is an ordinary sequence, and it produces a terminal task while its agent works on.
+   *
+   * Rather than guess for longer before concluding - every fixed window is outrunnable,
+   * which is what the timer this replaced got wrong - the conclusion is simply undone
+   * once the agent contradicts it. The evidence is unambiguous and it is the agent's
+   * own: it is working again on the very task we called finished.
+   *
+   * Only tasks THIS class auto-completed are eligible, tracked in `autoCompleted`. An
+   * outcome a human recorded is a statement about the work, not an inference from
+   * idleness, and nothing here may overwrite one. The set is in memory on purpose: after
+   * a restart nothing is reopened, which is the conservative direction - a task that
+   * stays `done` is the state the whole feature exists to reach.
+   */
+  private reopenIfWorkResumed(s: Session): void {
+    if (s.state !== "working") return;
+    const t = this.registry.listTasks().find(
+      (task) =>
+        task.sessionId === s.id &&
+        task.status === "done" &&
+        this.autoCompleted.get(task.id) === s.id,
+    );
+    if (!t) return;
+    this.autoCompleted.delete(t.id);
+    this.registry.upsertTask({
+      ...t,
+      status: "running",
+      outcome: null,
+      outcomeUrl: null,
+      completedAt: null,
+      updatedAt: Date.now(),
+    });
   }
 
   /**
@@ -339,9 +406,11 @@ export class TaskManager {
   /**
    * End the agent of a task that just merged, and reclaim its checkout if that is safe.
    *
-   * Two separate judgements, and only the second is conditional. Killing is safe by
-   * construction here - the work is on the default branch - so it is unconditional once
-   * the operator has switched this on.
+   * Two separate judgements. Killing is allowed only while the session is still idle and
+   * still owns this task and merged episode. The checkout-safety probe awaits filesystem
+   * work, so all three facts are re-read afterwards; a follow-up prompt during the probe
+   * reopens an inferred completion and cancels the close instead of killing a working
+   * agent.
    *
    * Reclaiming is not. A merge proves the COMMITTED work landed; it says nothing about
    * uncommitted edits or untracked files still sitting in that checkout, and `reclaim`
@@ -361,8 +430,27 @@ export class TaskManager {
     }
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
     // the reason readable in the log even when the kill races the process away.
-    const holding = await resetWouldDestroyWork(session);
-    await kill(session);
+    const completionWasInferred = this.autoCompleted.get(e.taskId) === e.sessionId;
+    const holding = await this.closeMergedSessionDeps.resetWouldDestroyWork(session);
+    const currentSession = this.registry.getSession(e.sessionId);
+    const currentTask = this.registry.getTask(e.taskId);
+    const currentEpisode = this.registry.workEpisodeForSession(e.sessionId);
+    if (
+      !currentSession ||
+      currentSession.state === "working" ||
+      currentTask?.sessionId !== e.sessionId ||
+      currentEpisode?.episodeId !== e.episodeId ||
+      (completionWasInferred
+        ? currentTask.status !== "done" ||
+          this.autoCompleted.get(e.taskId) !== e.sessionId
+        : currentTask.status !== "running" && currentTask.status !== "dispatching")
+    ) {
+      return;
+    }
+    const killed = await this.closeMergedSessionDeps.kill(currentSession);
+    if (!killed.ok) {
+      throw new Error(killed.error ?? "could not close the merged task's session");
+    }
     if (holding !== null) {
       console.log(
         `[merge] task ${e.taskId}: session closed, checkout kept - ${holding}. ` +
@@ -420,6 +508,7 @@ export class TaskManager {
    * Clean up when it is not.
    */
   private agentWentAway(t: Task): void {
+    this.autoCompleted.delete(t.id);
     if (t.status !== "running" && t.status !== "dispatching") return;
     // The agent is gone AND its work landed, which is the one combination that means the
     // task finished rather than merely stopped. This is the boundary a later prompt
@@ -1246,6 +1335,7 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    this.autoCompleted.delete(id);
 
     if (t.sessionId && t.homeName) {
       const s = this.registry.getSession(t.sessionId);
@@ -1297,6 +1387,7 @@ export class TaskManager {
     outcomeUrl?: string,
     satisfyDependents = false,
   ): Task | null {
+    this.autoCompleted.delete(id);
     const t = this.registry.getTask(id);
     if (!t) return null;
     const now = Date.now();
@@ -1356,6 +1447,7 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    this.autoCompleted.delete(id);
     try {
       await teardownWorktree(this.registry.getTask(id) ?? t);
     } catch (error) {
@@ -1384,6 +1476,7 @@ export class TaskManager {
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
+    this.autoCompleted.delete(id);
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {

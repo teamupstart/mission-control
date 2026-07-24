@@ -48,7 +48,10 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
   }
 
   async cancel(taskId: string): Promise<void> {
-    await this.tasks.cancel(taskId);
+    const result = await this.tasks.cancel(taskId);
+    if (!result.ok) {
+      throw new Error(result.error ?? `could not cancel member Task ${taskId}`);
+    }
   }
 
   status(taskId: string): TaskGatewayStatus | null {

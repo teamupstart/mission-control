@@ -19,6 +19,7 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { TaskManagerGateway } = await import("../src/server/ensembles/member-launch.ts");
 const { FakeGateway, stubAdapters, singleWavePlan, runInsert } = await import("./ensemble-fixture.ts");
 
 const db = openDb();
@@ -335,6 +336,17 @@ test("recovery after a submission neither re-captures nor duplicates the ready a
 });
 
 // ---- the internal actions delegate Task/worktree effects to their owners ----
+
+test("the production gateway propagates an unsuccessful Task cancellation", async () => {
+  const gateway = new TaskManagerGateway(
+    {
+      cancel: async () => ({ ok: false, error: "resources remain tracked" }),
+    } as never,
+    {} as never,
+  );
+
+  await assert.rejects(() => gateway.cancel("task-1"), /resources remain tracked/);
+});
 
 test("cancelRun cancels every live member Task through its owner and keeps refs", async () => {
   const { store, gateway, engine } = makeEngine();

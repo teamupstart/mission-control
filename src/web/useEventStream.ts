@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { FleetCost, ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
+import type { FleetCost, ReviewItem, ServerEvent, Session, SettingsStatus, Task } from "@shared/types.ts";
 import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
@@ -33,6 +33,13 @@ export interface MissionState {
    * which is the ordinary state for anyone who hasn't switched telemetry on.
    */
   fleetCost: FleetCost | null;
+  /**
+   * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
+   * YOLO armed, failing task sources). The ONE client-side source of these facts - no
+   * surface re-polls for them. Null until the first snapshot lands, which is "unknown",
+   * NOT "all off": a null renders no gear dot rather than a green all-clear.
+   */
+  settingsStatus: SettingsStatus | null;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -55,6 +62,7 @@ export function useEventStream(): MissionState {
   const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
+  const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -90,6 +98,9 @@ export function useEventStream(): MissionState {
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
           setFleetCost(msg.fleetCost);
+          // Same reasoning for the settings dots: seed them from the snapshot so they are
+          // right on the first render instead of blank until the next config write.
+          setSettingsStatus(msg.settingsStatus);
           setConnected(true);
           setHasSnapshot(true);
           break;
@@ -170,6 +181,9 @@ export function useEventStream(): MissionState {
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
+        case "settings_status":
+          setSettingsStatus(msg.status);
+          break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
           // grows a variant this switch doesn't handle. Without it the new variant
@@ -205,6 +219,7 @@ export function useEventStream(): MissionState {
     workflowRunSummaries: [...workflowRuns.values()],
     ensembleSummaries: [...ensembles.values()],
     fleetCost,
+    settingsStatus,
     connected,
     hasSnapshot,
   };

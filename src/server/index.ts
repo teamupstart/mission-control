@@ -32,6 +32,7 @@ import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
+import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -109,7 +110,7 @@ const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
 // loop's pane gate because it never types (see src/shared/task-source.ts).
-const stopTaskSources = startTaskSourceSweeper(tasks);
+const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatus(registry));
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -
 // Foreman is still the only autonomous path to a running agent. Inert until an operator

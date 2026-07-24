@@ -141,6 +141,16 @@ export interface AssignOptions {
   rename?: (session: Session, name: string) => Promise<ActionResult>;
 }
 
+export interface CloseMergedSessionDeps {
+  resetWouldDestroyWork: typeof resetWouldDestroyWork;
+  kill: typeof kill;
+}
+
+const defaultCloseMergedSessionDeps: CloseMergedSessionDeps = {
+  resetWouldDestroyWork,
+  kill,
+};
+
 /**
  * An assign's answer. A refusal says whose fault it is, and - when the caller only has
  * to say yes - exactly what saying yes would spend.
@@ -195,7 +205,10 @@ export class TaskManager {
   private assigningSessions = new Set<string>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
   private autoCompleted = new Set<string>();
-  constructor(private registry: Registry) {
+  constructor(
+    private registry: Registry,
+    private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+  ) {
     this.dispatcher = new Dispatcher(registry);
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -404,8 +417,23 @@ export class TaskManager {
     }
     // Probed BEFORE the kill: the answer is about the checkout, and asking first keeps
     // the reason readable in the log even when the kill races the process away.
-    const holding = await resetWouldDestroyWork(session);
-    await kill(session);
+    const completionWasInferred = this.autoCompleted.has(e.taskId);
+    const holding = await this.closeMergedSessionDeps.resetWouldDestroyWork(session);
+    const currentSession = this.registry.getSession(e.sessionId);
+    const currentTask = this.registry.getTask(e.taskId);
+    const currentEpisode = this.registry.workEpisodeForSession(e.sessionId);
+    if (
+      !currentSession ||
+      currentSession.state === "working" ||
+      currentTask?.sessionId !== e.sessionId ||
+      currentEpisode?.episodeId !== e.episodeId ||
+      (completionWasInferred
+        ? currentTask.status !== "done" || !this.autoCompleted.has(e.taskId)
+        : currentTask.status !== "running" && currentTask.status !== "dispatching")
+    ) {
+      return;
+    }
+    await this.closeMergedSessionDeps.kill(currentSession);
     if (holding !== null) {
       console.log(
         `[merge] task ${e.taskId}: session closed, checkout kept - ${holding}. ` +
@@ -463,6 +491,7 @@ export class TaskManager {
    * Clean up when it is not.
    */
   private agentWentAway(t: Task): void {
+    this.autoCompleted.delete(t.id);
     if (t.status !== "running" && t.status !== "dispatching") return;
     // The agent is gone AND its work landed, which is the one combination that means the
     // task finished rather than merely stopped. This is the boundary a later prompt
@@ -1289,6 +1318,7 @@ export class TaskManager {
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    this.autoCompleted.delete(id);
 
     if (t.sessionId && t.homeName) {
       const s = this.registry.getSession(t.sessionId);
@@ -1340,6 +1370,7 @@ export class TaskManager {
     outcomeUrl?: string,
     satisfyDependents = false,
   ): Task | null {
+    this.autoCompleted.delete(id);
     const t = this.registry.getTask(id);
     if (!t) return null;
     const now = Date.now();
@@ -1399,6 +1430,7 @@ export class TaskManager {
   async reclaim(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    this.autoCompleted.delete(id);
     try {
       await teardownWorktree(this.registry.getTask(id) ?? t);
     } catch (error) {
@@ -1427,6 +1459,7 @@ export class TaskManager {
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
+    this.autoCompleted.delete(id);
     // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {

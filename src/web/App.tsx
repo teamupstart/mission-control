@@ -134,9 +134,9 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
-  // decides only what the vertical arrows do - move the rail selection, or scroll the
-  // detail - so it means nothing in the other layouts and is reset to "rail" whenever
-  // the selection or layout changes (a fresh detail is never opened mid-read).
+  // decides what the vertical arrows do and which surface wears the active focus treatment,
+  // so it means nothing in the other layouts and is reset to "rail" whenever the selection
+  // or layout changes (a fresh detail is never opened mid-read).
   const [consoleZone, setConsoleZone] = useState<"rail" | "detail">("rail");
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);

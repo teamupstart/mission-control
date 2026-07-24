@@ -100,8 +100,8 @@ export function startScheduleManager(
       // window would leave a task the last run reserved uncreated for five more minutes.
       // Afterwards only stale claims are swept, so a Run now in flight is never stolen.
       if (first) {
-        first = false;
         await manager.recover(now(), "open");
+        first = false;
       }
       await manager.tick(now());
     } catch (err) {

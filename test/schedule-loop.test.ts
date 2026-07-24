@@ -94,6 +94,39 @@ test("the startup sweep happens once; later passes leave a live claim alone", as
   stop();
 });
 
+test("a failed startup sweep is retried before ordinary ticks begin", async () => {
+  const timers = fakeTimers();
+  const calls: string[] = [];
+  let recoveries = 0;
+  const manager = {
+    tick: async () => {
+      calls.push("tick");
+    },
+    recover: async (_now?: number, scope?: "open" | "stale") => {
+      calls.push(`recover:${scope ?? "stale"}`);
+      recoveries++;
+      if (recoveries === 1) throw new Error("the database is locked");
+    },
+  };
+
+  const stop = startScheduleManager(manager, {
+    now: () => 1_000,
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    dueAt: () => null,
+  });
+  await flush();
+
+  assert.deepEqual(calls, ["recover:open"]);
+  assert.equal(timers.state.scheduled.length, 1, "a failed recovery must reschedule");
+
+  timers.state.scheduled.pop()!.fn();
+  await flush();
+  assert.deepEqual(calls, ["recover:open", "recover:open", "tick"]);
+
+  stop();
+});
+
 test("a tick that throws is contained, and the loop keeps its next appointment", async () => {
   const timers = fakeTimers();
   let ticks = 0;

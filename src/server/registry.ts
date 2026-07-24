@@ -2035,12 +2035,33 @@ export class Registry extends EventEmitter {
       } else if (existing.awaitingAgentRebind && evidence.kind === "none") {
         return existing;
       } else {
+        // A session id is `proc:tty:pid:start`, so reaching here means the SAME live
+        // process reported a different agent session id - our own read of a running
+        // agent changed, not the agent. Dropping task ownership on that reading cancels
+        // a task whose agent never stopped working, and the same write clears
+        // `sessionId`, so nothing can reconcile the task back to the session still
+        // sitting in its worktree: the agent ends up unable to be prompted at all, with
+        // no cleanup that does not kill it.
+        //
+        // Giving up the task follows the AGENT saying it is someone new - a hook it
+        // emitted - or an episode already awaiting a reset it cannot prove, where the
+        // reset was asked for and an unproven identity must not inherit what it was
+        // giving up.
+        //
+        // `none` and `passive_identity` are neither: they are our own passive read of a
+        // process that never stopped working (for Codex, whichever rollout it had open
+        // when we looked). Dropping ownership on our own re-read cancels a task whose
+        // agent is mid-work, and the same write clears `sessionId`, so nothing can
+        // reconcile the task back to the session still sitting in its worktree - the
+        // agent ends up unpromptable, with no cleanup that does not kill it.
+        const agentAnnouncedNewIdentity =
+          evidence.kind !== "none" && evidence.kind !== "passive_identity";
         return this.startWorkEpisode(
           session.id,
           session.agentSessionId,
           session.gitBranch,
           now,
-          true,
+          agentAnnouncedNewIdentity || existing.awaitingAgentRebind,
           false,
           null,
           evidence.kind === "new_work" ? now : null,
@@ -3174,9 +3195,39 @@ export class Registry extends EventEmitter {
     return [...this.tasks.values()];
   }
 
+  /**
+   * True when a terminal task's resources passed to the session's CURRENT work rather
+   * than being stranded by an outcome the session predates.
+   *
+   * An episode rollover - the agent restarts under a new session id - invalidates task
+   * ownership in the same transaction that opens the new episode, so the two share a
+   * timestamp. The session still holding the worktree there is the live agent that never
+   * stopped working, not a leftover squatter, and it is the only session that can ever
+   * hold those resources: the rollover cleared `sessionId` too, so nothing can reconcile
+   * the task back to it and no "clean up" exists that does not kill the running agent.
+   *
+   * A session whose work began BEFORE the outcome is the case the barrier is for - the
+   * operator cancelled a task, teardown failed, and the resources it named are still on
+   * disk under an agent nobody meant to keep talking to.
+   *
+   * The task keeps naming its resources either way, deliberately: `reconcileOnStartup`
+   * reclaims the worktree once the agent's home is gone, so clearing them here to settle
+   * the barrier would leak the lease instead.
+   *
+   * Only prompt delivery reads this. Handing the agent a DIFFERENT task is a separate
+   * question - `assign` still refuses, because reusing an agent whose last outcome left
+   * resources behind is exactly the reset it is guarding.
+   */
+  private outcomePrecedesSessionWork(task: Task, sessionId: string): boolean {
+    if (task.completedAt === null) return false;
+    const episode = sessionWorkEpisodeFor(sessionId);
+    return episode !== null && episode.startedAt >= task.completedAt;
+  }
+
   taskResourceOwnerForSession(
     sessionId: string,
     status?: Task["status"],
+    accept: (task: Task) => boolean = () => true,
   ): Task | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
@@ -3188,12 +3239,17 @@ export class Registry extends EventEmitter {
       (task.sessionId === sessionId ||
         (task.terminalResourceId !== null && resourceIds.has(task.terminalResourceId)) ||
         (Boolean(session.cwd) && task.worktreePath === session.cwd) ||
-        (task.homeName !== null && homeNames.has(task.homeName)))
+        (task.homeName !== null && homeNames.has(task.homeName))) &&
+      accept(task)
     );
   }
 
   promptResourceBlockerForSession(sessionId: string): string | null {
-    const owner = this.taskResourceOwnerForSession(sessionId, "cancelled");
+    const owner = this.taskResourceOwnerForSession(
+      sessionId,
+      "cancelled",
+      (task) => !this.outcomePrecedesSessionWork(task, sessionId),
+    );
     return owner
       ? `this session still holds resources for ${owner.title} - clean up that cancelled task before sending new work`
       : null;

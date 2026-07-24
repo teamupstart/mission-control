@@ -488,8 +488,12 @@ test("an evaluation is one row per stage attempt and attempt number, and reports
   };
   const first = store.recordEvaluation(input);
   assert.equal(store.recordEvaluation(input).id, first.id);
-  // Not resolved yet is null on the record, never a plausible provider name.
   assert.equal(first.runnerId, null);
+  const persisted = db
+    .prepare(`SELECT runner_id, model_id FROM ensemble_evaluations WHERE id = ?`)
+    .get(first.id) as { runner_id: string | null; model_id: string | null };
+  assert.equal(persisted.runner_id, null);
+  assert.equal(persisted.model_id, null);
 
   const done = store.finishEvaluation(first.id, ["running"], "succeeded", {
     runnerId: "claude",
@@ -854,6 +858,23 @@ test("a detail read returns every record the run owns", () => {
   assert.equal(store.detail("no-such-run"), null);
 });
 
+test("a detail read returns the complete audit history", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  for (let index = 0; index < ENSEMBLE_LIMITS.detailPageSize + 5; index += 1) {
+    store.appendEvent({
+      runId: run.id,
+      kind: `event-${index}`,
+      payload: { index },
+      operationKey: `event-${index}`,
+    });
+  }
+  const events = store.detail(run.id)?.events;
+  assert.equal(events?.length, ENSEMBLE_LIMITS.detailPageSize + 5);
+  assert.equal(events?.[0]?.kind, "event-0");
+  assert.equal(events?.at(-1)?.kind, `event-${ENSEMBLE_LIMITS.detailPageSize + 4}`);
+});
+
 test("the compact summary counts progress without loading the run's children", () => {
   const store = new EnsembleStore(db);
   const { run, members } = insert(store);
@@ -901,6 +922,16 @@ test("the compact summary counts progress without loading the run's children", (
   assert.equal(store.summary(run.id)?.attention, true, "a run waiting on a person needs attention");
 });
 
+test("the compact summary does not treat an unknown member status as launched", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  db.prepare(`UPDATE ensemble_members SET status = 'future' WHERE id = ?`).run(members[0]!.id);
+  assert.equal(store.summary(run.id)?.launchedMembers, 0);
+
+  store.setMemberStatus(members[1]!.id, ["pending"], "active");
+  assert.equal(store.summary(run.id)?.launchedMembers, 1);
+});
+
 test("a completed run reports the member its outcome selected", () => {
   const store = new EnsembleStore(db);
   const { run, members } = insert(store);
@@ -937,6 +968,20 @@ test("the task projection names the member, its place in the roster, and nothing
     resultLabel: "rank 1",
   });
   assert.deepEqual(store.listTaskLinks(), [{ taskId: "task-9", link }]);
+});
+
+test("projection rebuilding skips malformed linked members without weakening detail reads", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  store.setMemberStatus(members[0]!.id, ["pending"], "active", { taskId: "task-bad" });
+  store.setMemberStatus(members[1]!.id, ["pending"], "active", { taskId: "task-good" });
+  db.prepare(`UPDATE ensemble_members SET ordinal = 'invalid' WHERE id = ?`).run(members[0]!.id);
+
+  assert.deepEqual(
+    store.listTaskLinks().map(({ taskId }) => taskId),
+    ["task-good"],
+  );
+  assert.throws(() => store.listMembers(run.id), EnsembleRowError);
 });
 
 // ---- restart and version skew ----

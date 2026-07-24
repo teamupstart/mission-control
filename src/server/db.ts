@@ -1055,10 +1055,8 @@ export function openDb(): DatabaseSync {
       stage_attempt_id  TEXT NOT NULL,
       attempt           INTEGER NOT NULL,
       method            TEXT NOT NULL,
-      -- What actually ran, resolved at attempt time. Empty string means "not resolved yet",
-      -- never "unknown provider".
-      runner_id         TEXT NOT NULL DEFAULT '',
-      model_id          TEXT NOT NULL DEFAULT '',
+      runner_id         TEXT,
+      model_id          TEXT,
       input_fingerprint TEXT NOT NULL,
       subjects_json     TEXT NOT NULL,
       result_json       TEXT,

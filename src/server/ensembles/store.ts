@@ -309,8 +309,8 @@ const EvaluationRowSchema = z.object({
   stage_attempt_id: idText,
   attempt: integer,
   method: z.string(),
-  runner_id: z.string(),
-  model_id: z.string(),
+  runner_id: nullableText,
+  model_id: nullableText,
   input_fingerprint: z.string(),
   subjects_json: z.string(),
   result_json: nullableText,
@@ -633,8 +633,8 @@ function rowToEvaluation(value: unknown): EnsembleEvaluation {
     stageAttemptId: row.stage_attempt_id,
     attempt: row.attempt,
     method: row.method,
-    runnerId: row.runner_id === "" ? null : row.runner_id,
-    modelId: row.model_id === "" ? null : row.model_id,
+    runnerId: row.runner_id,
+    modelId: row.model_id,
     inputFingerprint: row.input_fingerprint,
     subjectArtifactIds: parseJson(
       "ensemble_evaluations",
@@ -891,6 +891,8 @@ const TERMINAL_LLM_CALL_STATES: readonly EnsembleLlmCallState[] = [
   "failed",
   "interrupted",
 ];
+const LAUNCHED_MEMBER_STATUSES: readonly EnsembleMemberStatus[] =
+  ENSEMBLE_MEMBER_STATUSES.filter((status) => status !== "pending");
 
 export class EnsembleStore {
   private readonly taskLinkListeners = new Set<() => void>();
@@ -1122,14 +1124,12 @@ export class EnsembleStore {
     ).map(rowToDecision);
   }
 
-  listEvents(runId: string, limit = ENSEMBLE_LIMITS.detailPageSize): EnsembleEvent[] {
+  listEvents(runId: string): EnsembleEvent[] {
     return (
       this.db
-        .prepare(`SELECT * FROM ensemble_events WHERE run_id = ? ORDER BY id DESC LIMIT ?`)
-        .all(runId, limit) as unknown[]
-    )
-      .map(rowToEvent)
-      .reverse();
+        .prepare(`SELECT * FROM ensemble_events WHERE run_id = ? ORDER BY id ASC`)
+        .all(runId) as unknown[]
+    ).map(rowToEvent);
   }
 
   /** Everything one run is. HTTP-only by design; SSE carries `summary` instead. */
@@ -1168,13 +1168,16 @@ export class EnsembleStore {
   }
 
   private summaryFor(run: EnsembleRun): EnsembleSummary {
+    const launchedSlots = LAUNCHED_MEMBER_STATUSES.map(() => "?").join(",");
     const counts = this.db
       .prepare(
         `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN status <> 'pending' THEN 1 ELSE 0 END) AS launched
+                SUM(CASE WHEN status IN (${launchedSlots}) THEN 1 ELSE 0 END) AS launched
            FROM ensemble_members WHERE run_id = ?`,
       )
-      .get(run.id) as unknown as { total: number; launched: number | null } | undefined;
+      .get(...LAUNCHED_MEMBER_STATUSES, run.id) as unknown as
+      | { total: number; launched: number | null }
+      | undefined;
     const ready = this.db
       .prepare(`SELECT COUNT(*) AS ready FROM ensemble_artifacts WHERE run_id = ? AND status = 'ready'`)
       .get(run.id) as unknown as { ready: number } | undefined;
@@ -1244,8 +1247,12 @@ export class EnsembleStore {
       .all() as unknown as Array<{ task_id: string }>;
     const links: Array<{ taskId: string; link: TaskEnsembleLink }> = [];
     for (const row of rows) {
-      const link = this.taskLink(row.task_id);
-      if (link) links.push({ taskId: row.task_id, link });
+      try {
+        const link = this.taskLink(row.task_id);
+        if (link) links.push({ taskId: row.task_id, link });
+      } catch (err) {
+        if (!(err instanceof EnsembleRowError)) throw err;
+      }
     }
     return links;
   }
@@ -1728,8 +1735,8 @@ export class EnsembleStore {
           input.stageAttemptId,
           input.attempt,
           input.method,
-          input.runnerId ?? "",
-          input.modelId ?? "",
+          input.runnerId,
+          input.modelId,
           input.inputFingerprint,
           JSON.stringify(input.subjectArtifactIds),
           input.status,
@@ -1776,11 +1783,11 @@ export class EnsembleStore {
       ];
       if ("runnerId" in patch) {
         sets.push("runner_id = ?");
-        values.push(patch.runnerId ?? "");
+        values.push(patch.runnerId ?? null);
       }
       if ("modelId" in patch) {
         sets.push("model_id = ?");
-        values.push(patch.modelId ?? "");
+        values.push(patch.modelId ?? null);
       }
       if ("result" in patch) {
         sets.push("result_json = ?");

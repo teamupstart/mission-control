@@ -263,7 +263,7 @@ export const ENSEMBLE_LIMITS = {
   rationale: 8_000,
   errorText: 4_000,
   resultLabel: 60,
-  /** Rows one detail read may return per child collection. */
+  /** Page size reserved for the later HTTP detail surface. */
   detailPageSize: 200,
 } as const;
 

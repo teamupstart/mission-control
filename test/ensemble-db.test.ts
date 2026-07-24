@@ -252,7 +252,7 @@ test("child ownership cannot cross ensemble runs", () => {
         `INSERT INTO ensemble_evaluations (id, run_id, stage_attempt_id, attempt, method,
            runner_id, model_id, input_fingerprint, subjects_json, status, created_at, updated_at)
          VALUES ('cross-evaluation', 'owner-a', 'stage-b', 1, 'comparative_llm',
-                 '', '', 'f', '[]', 'running', 1, 1)`,
+                 NULL, NULL, 'f', '[]', 'running', 1, 1)`,
       ).run(),
     /FOREIGN KEY/i,
   );
@@ -263,6 +263,12 @@ test("child ownership cannot cross ensemble runs", () => {
 test("a monetary cost is nullable, because unknown and zero are different facts", () => {
   const cost = columns("ensemble_llm_calls").find((column) => column.name === "cost_usd");
   assert.equal(cost?.notnull, 0);
+});
+
+test("an unresolved evaluation runner and model are nullable", () => {
+  const evaluationColumns = columns("ensemble_evaluations");
+  assert.equal(evaluationColumns.find((column) => column.name === "runner_id")?.notnull, 0);
+  assert.equal(evaluationColumns.find((column) => column.name === "model_id")?.notnull, 0);
 });
 
 test("the pinned base is nullable, because a run has none until the launch runtime pins one", () => {

@@ -2433,9 +2433,9 @@ export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATE
 // The durable half of `@shared/ensemble.ts`. Row parsers in `src/server/ensembles/store.ts`
 // classify every TEXT enum and validate every JSON column before a typed record exists:
 // unknown enums degrade to null for version skew, while malformed JSON fails at ONE boundary
-// rather than surfacing as an undefined three call sites later. No route consumes them yet -
-// Phase 3 launches nothing - but the shapes are fixed now because they are what a later route,
-// the MCP submission tool and the dashboard all have to agree with.
+// rather than surfacing as an undefined three call sites later. The store, read routes, MCP
+// submission tool and eventual dashboard all consume these shapes rather than inventing a
+// second wire vocabulary.
 
 /** Recursive, JSON-only durable payload validation. */
 export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
@@ -2521,6 +2521,10 @@ export const EnsembleInformationPolicySchema = z.discriminatedUnion("kind", [
 
 export const EnsembleMemberInputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("run_base") }),
+  z.object({
+    kind: z.literal("parent_artifacts"),
+    roleKeys: z.array(ensembleRoleKey).min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
 ]);
 
 export const EnsembleRoleSpecSchema = z.object({
@@ -2667,6 +2671,7 @@ export const CompiledEnsemblePlanSchema = z
         message: "concurrent members cannot exceed the plan's member cap",
       });
     }
+    const waveOf = new Map(plan.roles.map((role) => [role.key, role.wave]));
     plan.roles.forEach((role, index) => {
       if (role.wave > plan.budget.maxWaves) {
         ctx.addIssue({
@@ -2674,6 +2679,28 @@ export const CompiledEnsemblePlanSchema = z
           path: ["roles", index, "wave"],
           message: `role ${role.key} exceeds the plan's wave cap`,
         });
+      }
+      // A parent-artifact input names the roles whose immutable artifacts this member starts
+      // from. Each parent must exist and must launch in an EARLIER wave, or the launch runtime
+      // would wait on an artifact from a member that has not run - the same forever-blocked
+      // barrier the checks above rule out, arriving through the input edge instead.
+      if (role.input.kind === "parent_artifacts") {
+        for (const parentKey of role.input.roleKeys) {
+          const parentWave = waveOf.get(parentKey);
+          if (parentWave === undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["roles", index, "input", "roleKeys"],
+              message: `role ${role.key} starts from unknown role ${parentKey}`,
+            });
+          } else if (parentWave >= role.wave) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["roles", index, "input", "roleKeys"],
+              message: `role ${role.key} starts from ${parentKey}, which is not in an earlier wave`,
+            });
+          }
+        }
       }
     });
     const stageIds = new Set(plan.stages.map((stage) => stage.id));
@@ -3202,3 +3229,55 @@ export const ScheduleHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(SCHEDULE_HISTORY_MAX_LIMIT).optional(),
 });
 export type ScheduleHistoryQuery = z.infer<typeof ScheduleHistoryQuerySchema>;
+
+/**
+ * The bounded, member-authored content of one submission - and NOTHING that names a subject.
+ *
+ * There is no ensemble, member, task, session, worktree, artifact or ref id here, by design:
+ * attribution is the daemon's job, derived from the authenticated runtime, and a caller-supplied
+ * id would be an invitation to submit for a sibling by guessing its name. What a member CAN say
+ * is what it did and which checks it actually ran, and both are labelled as CLAIMS downstream -
+ * "reported by the member", never "observed by Mission Control".
+ */
+export const EnsembleSubmissionClaimsSchema = z.object({
+  summary: z.string().trim().min(1).max(ENSEMBLE_LIMITS.submissionSummary),
+  /** The checks the member says it ran. Claims, not evidence. */
+  checks: z
+    .array(z.string().trim().min(1).max(ENSEMBLE_LIMITS.submissionCheck))
+    .max(ENSEMBLE_LIMITS.submissionChecks)
+    .default([]),
+  /** Optional free-text test output the member chose to include. */
+  testEvidence: z.string().max(ENSEMBLE_LIMITS.submissionTestEvidence).nullable().default(null),
+});
+export type EnsembleSubmissionClaims = z.infer<typeof EnsembleSubmissionClaimsSchema>;
+
+/**
+ * The MCP `submit_ensemble_result` request.
+ *
+ * Carries the same pane/session/cwd evidence every other MCP tool sends - `findSessionByEnv`
+ * turns it into the one live session, and the daemon walks that session to its Task and its
+ * active member. The member NEVER names itself: the whole submission tool exists so that a
+ * ready-for-comparison signal cannot be forged for a sibling, and the only way to keep that
+ * true is to refuse to read an id off the wire.
+ */
+export const SubmitEnsembleResultSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  result: EnsembleSubmissionClaimsSchema,
+});
+export type SubmitEnsembleResultInput = z.infer<typeof SubmitEnsembleResultSchema>;
+
+/**
+ * The manual submission fallback body.
+ *
+ * The member is named in the URL because this is an explicit operator action, not a message
+ * from an agent - but the daemon still verifies the member is active and its Task and worktree
+ * still match the record before it captures anything, and it labels the result `operator`
+ * rather than impersonating a session's provenance. The content it accepts is the same claims
+ * shape, so both paths run one capture service.
+ */
+export const EnsembleMemberSubmitSchema = z.object({
+  result: EnsembleSubmissionClaimsSchema,
+});
+export type EnsembleMemberSubmitBody = z.infer<typeof EnsembleMemberSubmitSchema>;

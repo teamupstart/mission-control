@@ -439,19 +439,26 @@ test("a create request without an idempotency key, a title or a known strategy i
   }
 });
 
-test("nothing a user can reach can start an ensemble yet", () => {
-  // The merge criterion for this phase, and it needs a test because it is an ABSENCE: the
-  // engine, the launch path and the finalization are later phases, so a route or an MCP tool
-  // that reached `EnsembleManager.create` now would expose orchestration that cannot finish.
+test("no production route can create an ensemble yet, though members submit and detail is read", () => {
+  // The merge criterion for this phase, and it needs a test because it is an ABSENCE. The runtime,
+  // submission and read surfaces exist now - a member can submit, an operator can read detail - but
+  // the CREATE path stays unreachable until Best-of-N's evaluator lands: a route that reached
+  // `createAndLaunch` (or a bare `POST /api/ensembles`) would launch a run that cannot finish.
   // Grepping the two front doors is crude and exact, which is what this claim needs.
-  for (const file of ["../src/server/routes.ts", "../src/mcp/server.ts"]) {
-    const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
-    assert.doesNotMatch(
-      source,
-      /ensemble/i,
-      `${file} mentions ensembles - this phase must expose no way to start one`,
-    );
-  }
+  const routes = readFileSync(fileURLToPath(new URL("../src/server/routes.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(routes, /createAndLaunch/, "routes.ts must not reach the ensemble launch path");
+  assert.doesNotMatch(
+    routes,
+    /app\.(post|put)\(\s*["'`]\/api\/ensembles["'`]/,
+    "routes.ts must expose no ensemble create route",
+  );
+  // The MCP server exposes only the submission tool - never one that creates or launches a run.
+  const mcp = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(
+    mcp,
+    /create[_-]?ensemble|ensembles?\/create|createAndLaunch/i,
+    "the MCP server must expose no ensemble-creation tool",
+  );
 });
 
 test("the operator authorities are one closed union a new strategy must not need to widen", () => {

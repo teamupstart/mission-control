@@ -3711,6 +3711,19 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * The task a live session is running, for a server-side attribution boundary.
+   *
+   * The same correlation `taskSummaryFor` decorates a card with, exposed for the one caller
+   * that needs the whole Task rather than the compact summary: an MCP submission resolves its
+   * session through `findSessionByEnv`, then this to the member Task it is running, then the
+   * ensemble member off that Task's id. Public because attribution must come from the live
+   * session and its worktree, never from an id a caller could name.
+   */
+  taskForSession(sessionId: string, cwd: string | null): Task | undefined {
+    return this.activeTaskFor(sessionId, cwd);
+  }
+
+  /**
    * Most-recently-updated task whose worktree matches this cwd. A backlog task has
    * no worktree; a cancelled or cleanly-failed task cleared its worktree fields, so
    * it can't match a cwd here. A failed-but-alive task keeps its worktree, so it

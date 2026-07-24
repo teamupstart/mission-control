@@ -360,16 +360,16 @@ run was for.
 
 **`TaskManager.create`'s second argument is the only internal door, and the refusals live
 behind it, not at the caller.** `InternalCreateOptions` (`src/server/tasks.ts`) supplies a
-preallocated id and schedule provenance; an id that already carries THIS occurrence's
-provenance returns the existing task untouched (the crash window closing), and an id
-carrying anything else throws `TaskIdCollisionError` rather than adopting a stranger's task.
-That idempotency is what makes the ledger exactly-once, so it must stay in `TaskManager` -
-a caller that has to remember to check first is one that will one day forget. The two
-assertions beside it are the same argument: an internal create must be `backlog` (a
-schedule files work, it never launches it - Foreman stays the only autonomous dispatch path,
-with its capacity, allowlist and pane gates) and must carry a title (a blank one puts the
-model titler on the path of every single run, deriving the same string for ever). Ordinary
-callers pass no second argument and are unchanged. Test: `schedule-task-create.test.ts`.
+preallocated id, plus schedule provenance only for the scheduler; ensemble ownership stays
+normalized in `ensemble_members`. A retry returns the existing task untouched only when its
+owner-specific identity still matches - the same schedule occurrence, or the same ensemble
+member Task inputs - and anything else throws `TaskIdCollisionError` rather than adopting a
+stranger's task. That idempotency is what closes both recovery windows, so it must stay in
+`TaskManager`; a caller-side check will eventually drift. Every internal create must first
+persist a titled `backlog` Task. A schedule stops there (Foreman remains its only autonomous
+dispatch path); the ensemble engine dispatches separately through `TaskManager` only after
+the complete wave exists. Ordinary callers pass no second argument and are unchanged. Test:
+`schedule-task-create.test.ts`, `ensemble-engine.test.ts`, `ensemble-recovery.test.ts`.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
 marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are

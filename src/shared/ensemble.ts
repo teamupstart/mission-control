@@ -110,6 +110,7 @@ export const ENSEMBLE_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "cancelling",
 ] as const;
 export type EnsembleStatus = (typeof ENSEMBLE_STATUSES)[number];
 
@@ -233,13 +234,13 @@ export type EnsembleOutcomeKind = (typeof ENSEMBLE_OUTCOME_KINDS)[number];
 // ---- bounds ----
 
 /**
- * Every durable text/JSON cap in one place, so a store, a compiler and a later route cannot
+ * Every durable text/JSON cap in one place, so stores, compilers and routes cannot
  * disagree about what "bounded" means. Byte caps are UTF-8 bytes, not code units.
  */
 export const ENSEMBLE_LIMITS = {
   title: 200,
   intent: 20_000,
-  /** One member's declarative prompt appendix. Fencing and evidence land in later phases. */
+  /** One member's declarative appendix, rendered into its bounded launch prompt. */
   rolePrompt: 8_000,
   roleKey: 120,
   roleLabel: 120,
@@ -266,6 +267,11 @@ export const ENSEMBLE_LIMITS = {
   resultLabel: 60,
   /** Page size reserved for the later HTTP detail surface. */
   detailPageSize: 200,
+  /** One member submission's own bounded, member-authored content. */
+  submissionSummary: 4_000,
+  submissionCheck: 400,
+  submissionChecks: 40,
+  submissionTestEvidence: 8_000,
 } as const;
 
 /**
@@ -337,10 +343,20 @@ export interface EnsembleBudget {
  */
 export type EnsembleInformationPolicy = { kind: "isolated" };
 
-/** Where a member's checkout starts. */
+/**
+ * Where a member's checkout starts.
+ *
+ * `run_base` is the run's single pinned base commit, and every Best-of-N member verifies the
+ * same one. `parent_artifacts` is the second-wave case: a revision or synthesis member starts
+ * from the immutable artifacts a PRIOR wave produced, named by the compiled ROLE keys of those
+ * parents rather than by runtime ids the compiler cannot know. The launch runtime resolves
+ * those role keys to the ready commit each parent submitted and pins the member to the first of
+ * them - which is what makes "a second wave from parent artifact inputs" an ordinary pinned
+ * dispatch rather than a new lifecycle. Append-only, for the reason the whole file is.
+ */
 export type EnsembleMemberInput =
-  /** The run's single pinned base commit. Every Best-of-N member verifies the same one. */
-  { kind: "run_base" };
+  | { kind: "run_base" }
+  | { kind: "parent_artifacts"; roleKeys: string[] };
 
 /**
  * One member template, in stable compiled order.
@@ -589,7 +605,7 @@ export interface EnsembleRun {
 /**
  * A run this build can execute.
  *
- * The type every later phase's engine works in. Reaching it costs one call to
+ * The type the engine works in. Reaching it costs one call to
  * `ensembleIsRunnable`, and that call is the fail-closed gate: there is no other way to get
  * a non-null plan out of an `EnsembleRun`.
  */
@@ -804,7 +820,7 @@ export interface EnsembleSummary {
   completedAt: number | null;
 }
 
-/** Everything one run is, for the HTTP detail read a later phase serves. */
+/** Everything one run is, returned by its bounded HTTP detail read. */
 export interface EnsembleRunDetail {
   run: EnsembleRun;
   members: EnsembleMember[];
@@ -930,5 +946,5 @@ export function ensembleNeedsAttention(input: {
 }): boolean {
   if (input.unreadable !== null) return true;
   if (input.status === null) return true;
-  return input.status === "failed" || input.status === "awaiting_decision";
+  return input.status === "failed" || input.status === "awaiting_decision" || input.status === "cancelling";
 }

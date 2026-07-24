@@ -268,7 +268,7 @@ export class ScheduleManager {
     if (!result.ok) return result;
 
     const standby =
-      result.standby && input.missedPolicy
+      result.standby && input.missedPolicy && !result.standby.truncated
         ? {
             ...result.standby,
             plan: missedDecisionsFor(result.standby.missed, input.missedPolicy),
@@ -288,10 +288,10 @@ export class ScheduleManager {
   /**
    * Which live schedules also fire at one of these instants.
    *
-   * Bounded by construction: the window is the preview's own span, each schedule is
-   * enumerated once against it, and the whole thing is skipped when the preview is empty.
-   * A schedule whose stored cadence this build cannot read contributes nothing rather than
-   * being guessed at - it is not going to run either.
+   * Bounded by construction: the window is the preview's own span, each schedule is paged
+   * under the same accounting ceiling as a catch-up, and the whole thing is skipped when
+   * the preview is empty. A schedule whose stored cadence this build cannot read contributes
+   * nothing rather than being guessed at - it is not going to run either.
    */
   private collisionsFor(
     instants: number[],
@@ -305,15 +305,45 @@ export class ScheduleManager {
     for (const schedule of store.listSchedules(this.now())) {
       if (!schedule.enabled || schedule.id === excludeId) continue;
       if (!scheduleIsRunnable(schedule)) continue;
-      const at = this.recurrence
-        .between(
+      const at: number[] = [];
+      let after = first - 1;
+      let enumerated = 0;
+      while (enumerated < SCHEDULE_CATCHUP_ACCOUNTING_MAX) {
+        const limit = Math.min(
+          SCHEDULE_BETWEEN_MAX,
+          SCHEDULE_CATCHUP_ACCOUNTING_MAX - enumerated,
+        );
+        const page = this.recurrence.between(
           schedule.expression,
           schedule.timezone,
-          first - 1,
+          after,
           last,
-          SCHEDULE_BETWEEN_MAX,
-        )
-        .filter((instant) => wanted.has(instant));
+          limit,
+        );
+        for (const instant of page) {
+          if (wanted.has(instant)) at.push(instant);
+        }
+        enumerated += page.length;
+        if (page.length < limit) break;
+        after = page[page.length - 1]!;
+      }
+      if (
+        enumerated === SCHEDULE_CATCHUP_ACCOUNTING_MAX &&
+        this.recurrence.between(
+          schedule.expression,
+          schedule.timezone,
+          after,
+          last,
+          1,
+        ).length > 0
+      ) {
+        this.log("preview-collisions-capped", {
+          schedule: schedule.id,
+          from: first,
+          through: last,
+          limit: SCHEDULE_CATCHUP_ACCOUNTING_MAX,
+        });
+      }
       if (at.length > 0)
         collisions.push({ scheduleId: schedule.id, name: schedule.name, at });
     }

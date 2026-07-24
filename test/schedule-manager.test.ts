@@ -1062,6 +1062,40 @@ test("preview leaves the standby plan null when no policy was named", async () =
   assert.equal(result.standby?.plan, null);
 });
 
+test("preview leaves a truncated standby plan null even when a policy was named", async () => {
+  const h = harness("preview-truncated");
+  const result = h.manager.preview({
+    expression: "0 * * * *",
+    timezone: "UTC",
+    after: T0,
+    sleepStartedAt: T0,
+    resumedAt: T0 + 600 * HOUR,
+    missedPolicy: "coalesce-latest",
+  });
+
+  assert.ok(result.ok);
+  assert.equal(result.standby?.missed.length, 500);
+  assert.equal(result.standby?.truncated, true);
+  assert.equal(result.standby?.plan, null);
+});
+
+test("preview reports dense schedule collisions beyond the first recurrence page", async () => {
+  const h = harness("preview-collision-pages");
+  const dense = ok(
+    await h.manager.create(definition({ expression: "0 * * * *" })),
+  ).schedule;
+  const result = h.manager.preview({
+    expression: "0 0 1 1 *",
+    timezone: "UTC",
+    after: T0,
+    count: 2,
+  });
+
+  assert.ok(result.ok);
+  const collision = result.collisions.find((item) => item.scheduleId === dense.id);
+  assert.deepEqual(collision?.at, result.instants.map((instant) => instant.at));
+});
+
 test("editing a live schedule recomputes the cursor from the edit, not the old cadence", async () => {
   const h = harness("edit");
   const created = ok(await h.manager.create(definition())).schedule;

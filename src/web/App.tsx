@@ -132,6 +132,12 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Which half of the Console holds the keyboard: the rail selector, or the open
+  // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
+  // decides only what the vertical arrows do - move the rail selection, or scroll the
+  // detail - so it means nothing in the other layouts and is reset to "rail" whenever
+  // the selection or layout changes (a fresh detail is never opened mid-read).
+  const [consoleZone, setConsoleZone] = useState<"rail" | "detail">("rail");
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Board keyboard selection is deliberately separate from its open console detail:
@@ -554,6 +560,7 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
+    consoleZone,
     onSelect:
       layout === "board"
         ? (id) => {
@@ -642,6 +649,14 @@ export function App(): React.JSX.Element {
     if (!selectedId) return;
     cardEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selectedId]);
+
+  // The Console's keyboard lands on the rail whenever the selection or the layout
+  // changes: opening a different session, or leaving Console and coming back, both
+  // start from the rail selector rather than dropping the operator mid-scroll into a
+  // reader they never Tabbed into.
+  useEffect(() => {
+    setConsoleZone("rail");
+  }, [selectedId, layout]);
 
   // Move DOM focus with the board's arrow cursor, onto the tile's own stretched open
   // button - the keyboard half SessionTile already draws for exactly this.
@@ -765,6 +780,14 @@ export function App(): React.JSX.Element {
             setBoardOpen(false);
             return;
           }
+          // Console's reader zone sits above its selection the way grid focus and the
+          // board drill-in do: hand the keyboard back to the rail first, and only drop
+          // the selection on the next press.
+          if (layout === "console" && consoleZone === "detail") {
+            e.preventDefault();
+            setConsoleZone("rail");
+            return;
+          }
           if (!selectedId) return;
           e.preventDefault();
           handle()?.cancel();
@@ -775,16 +798,18 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          // An open Console detail is a reader, so vertical arrows move its active
-          // content instead of replacing it with the previous/next session. The
-          // detail owns the actual scroll node because Conversation and Files use
-          // different nested containers. With no selection there is no reader yet,
-          // so the first arrow retains its old job of selecting the first session.
+          // In Console the vertical arrows do one of two things by focus zone. Once the
+          // operator has Tabbed into the detail it is a reader, so they scroll its active
+          // content; the detail owns the actual scroll node because Conversation and Files
+          // use different nested containers. In the rail zone (the default) they fall
+          // through to `moveSelection`, which walks the rail a row at a time.
           if (layout === "console" && selectedId && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-            const detailScroll = detailScrollers.current.get(selectedId);
-            if (detailScroll) {
-              detailScroll(e.key === "ArrowUp" ? -1 : 1);
-              return;
+            if (consoleZone === "detail") {
+              const detailScroll = detailScrollers.current.get(selectedId);
+              if (detailScroll) {
+                detailScroll(e.key === "ArrowUp" ? -1 : 1);
+                return;
+              }
             }
           }
           const nextId = moveSelection({
@@ -802,6 +827,25 @@ export function App(): React.JSX.Element {
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
             if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
           }
+          return;
+        }
+        case "Tab": {
+          // Console focus zones. Tab hands the keyboard from the rail selector to the
+          // open conversation (so the vertical arrows scroll it); Shift+Tab hands it
+          // back. Only meaningful once a session is open beside the rail - elsewhere Tab
+          // is left to the browser and Shift+Tab to its `mode` binding below.
+          if (layout !== "console" || !selectedId) break;
+          if (e.shiftKey) {
+            // Shift+Tab returns to the rail from the reader. In the rail zone there is
+            // nothing to step back to, so it falls through to the `mode` chord below -
+            // which keeps that shortcut working in Console like every other layout.
+            if (consoleZone !== "detail") break;
+            e.preventDefault();
+            setConsoleZone("rail");
+            return;
+          }
+          e.preventDefault();
+          setConsoleZone("detail");
           return;
         }
         case "Enter":
@@ -907,7 +951,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page]);
+  }, [visible, selectedId, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

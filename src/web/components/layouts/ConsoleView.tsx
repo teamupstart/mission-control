@@ -22,8 +22,12 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
   const groups = groupByTone(props.sessions, props.gateAlerts).filter((g) => g.sessions.length > 0);
 
+  // The zone only reads on screen once a session is open beside the rail; with an empty
+  // pane there is no reader to hand focus to, so it always presents as the rail.
+  const zone = active ? props.consoleZone : "rail";
+
   return (
-    <div className="console">
+    <div className="console" data-zone={zone}>
       <nav className="console-rail" aria-label="Sessions">
         {groups.map((g) => (
           <div key={g.tone}>

@@ -33,6 +33,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     backlogPlan: null,
     gateAlerts: new Set<string>(),
     selectedId: null,
+    consoleZone: "rail",
     onSelect: () => {},
     onDeselect: () => {},
     expandedId: null,

@@ -45,6 +45,13 @@ export interface SessionViewProps {
   /** Sessions whose parked no-mistakes gate actually needs you (computed cross-session). */
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;
+  /**
+   * Which half of the Console holds the keyboard - the rail selector or the open
+   * conversation reader. Console-only: the grid and board ignore it. Drives whether the
+   * rail's selected row reads as active or handed-off, and which surface shows the focus
+   * ring. App owns the transition (Tab / Shift+Tab / Escape); the view only reflects it.
+   */
+  consoleZone: "rail" | "detail";
   onSelect: (id: string) => void;
   /** Close the current detail: reverses the board drill-in or empties the console. */
   onDeselect: () => void;

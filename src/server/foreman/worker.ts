@@ -48,7 +48,6 @@ import {
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import { decideReviewFollowup } from "./review-followup.ts";
-import type { ReviewFollowupMarker, ReviewFollowupSignal } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
@@ -661,7 +660,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
 }
 
 /**
- * Session id -> the review and CI episodes we last nudged it about.
+ * Session id -> the PR-scoped feedback signature we last nudged it about.
  *
  * In-memory, like `recentlyActed` and the failure trackers, and justified the same way:
  * the lease guarantees a single worker, so this is the only reader/writer, and the cost
@@ -672,18 +671,14 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
  * not a repeated pull request. Pruned to the live session set each pass so it cannot grow
  * without bound.
  */
-const reviewNudged = new Map<string, ReviewFollowupMarker>();
+const reviewNudged = new Map<string, string>();
 
-function storeReviewMarker(id: string, marker: ReviewFollowupMarker | null): void {
-  if (!marker || (marker.findingsRound === null && !marker.ciFailing)) {
+function storeReviewSignature(id: string, sig: string | null): void {
+  if (!sig) {
     reviewNudged.delete(id);
     return;
   }
-  reviewNudged.set(id, marker);
-}
-
-function sameReviewSignal(a: ReviewFollowupSignal, b: ReviewFollowupSignal): boolean {
-  return a.findingsRound === b.findingsRound && a.ciFailing === b.ciFailing;
+  reviewNudged.set(id, sig);
 }
 
 /**
@@ -722,21 +717,17 @@ async function runReviewFollowup(
 
   const now = Date.now();
   for (const session of sessions) {
-    const previousMarker = reviewNudged.get(session.id) ?? null;
     const decision = decideReviewFollowup({
       session,
       // The real fleet, not a one-element list: `reportBucket` needs it to tell a gate
       // this session is driving from one that needs a human.
       bucket: reportBucket(session, sessions),
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
-      marker: previousMarker,
+      lastSig: reviewNudged.get(session.id) ?? null,
       cfg: { enabled: cfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now,
     });
-    if (decision.kind === "skip") {
-      if (decision.marker) storeReviewMarker(session.id, decision.marker);
-      continue;
-    }
+    if (decision.kind === "skip") continue;
 
     const [freshCfg, freshSessions] = await Promise.all([
       client.getConfig().catch(() => null),
@@ -746,27 +737,27 @@ async function runReviewFollowup(
 
     const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
     if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) continue;
+    const freshLastSig =
+      reviewNudged.get(fresh.id) ??
+      (fresh.id !== session.id ? reviewNudged.get(session.id) : undefined) ??
+      null;
 
     const freshDecision = decideReviewFollowup({
       session: fresh,
       bucket: reportBucket(fresh, freshSessions),
       mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
-      marker: previousMarker,
+      lastSig: freshLastSig,
       cfg: { enabled: freshCfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now: Date.now(),
     });
-    if (freshDecision.kind === "skip") {
-      if (freshDecision.marker) storeReviewMarker(fresh.id, freshDecision.marker);
-      continue;
-    }
-    if (!sameReviewSignal(decision.signal, freshDecision.signal) || !isLeader) continue;
+    if (freshDecision.kind === "skip" || !isLeader) continue;
 
     // Stamp BEFORE the inject, then retract ONLY on positive evidence nothing landed -
     // the `recentlyActed` discipline. A request whose outcome we never learn keeps the
     // stamp, because a lost response must not become a second nudge; a delivery the
     // daemon reports as refused clears it to retry on a later pass.
     if (fresh.id !== session.id) reviewNudged.delete(session.id);
-    storeReviewMarker(fresh.id, freshDecision.marker);
+    storeReviewSignature(fresh.id, freshDecision.sig);
     try {
       await client.inject(fresh.id, freshDecision.payload);
     } catch (err) {
@@ -777,7 +768,7 @@ async function runReviewFollowup(
       // reading `queue-apply`'s `mayHaveLanded` makes): keep the marker and claim the pane,
       // so nothing types a wrap-up on top of a follow-up that might already be sitting there.
       const confirmedUndelivered = err instanceof InjectError && !err.mayHaveLanded;
-      if (confirmedUndelivered) storeReviewMarker(fresh.id, previousMarker);
+      if (confirmedUndelivered) storeReviewSignature(fresh.id, freshLastSig);
       else {
         nudged.add(session.id);
         nudged.add(fresh.id);

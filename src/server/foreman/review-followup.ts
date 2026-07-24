@@ -38,32 +38,16 @@ export interface ReviewFollowupInput {
   bucket: ReportBucket;
   /** Whether Foreman is cleared to type here (live + allowlisted) - the same gate a send passes. */
   mayActLive: boolean;
-  marker: ReviewFollowupMarker | null;
+  lastSig: string | null;
   cfg: ReviewFollowupConfig;
   now: number;
 }
 
-export interface ReviewFollowupMarker {
-  findingsRound: number | null;
-  ciFailing: boolean;
-}
-
-export interface ReviewFollowupSignal {
-  findingsRound: number | null;
-  ciFailing: boolean;
-}
-
 export type ReviewFollowupDecision =
   /** Not a candidate. `why` is for the tests/log - every skip is explicable. */
-  | { kind: "skip"; why: string; marker?: ReviewFollowupMarker }
-  /** Type the follow-up. Carries the marker to stamp and the exact payload to inject. */
-  | {
-      kind: "nudge";
-      signal: ReviewFollowupSignal;
-      marker: ReviewFollowupMarker;
-      reason: string;
-      payload: string;
-    };
+  | { kind: "skip"; why: string }
+  /** Type the follow-up. Carries the signature to stamp and the exact payload to inject. */
+  | { kind: "nudge"; sig: string; reason: string; payload: string };
 
 /** What is actionable on this session's PR right now. */
 interface Feedback {
@@ -78,6 +62,13 @@ function feedbackState(s: Session): Feedback {
   return { findings, ciFailing: s.prChecks === "failing" };
 }
 
+export function reviewFollowupSignature(s: Session): string {
+  const fb = feedbackState(s);
+  const prKey = s.inspector?.prKey ?? (s.prNumber !== null ? `#${s.prNumber}` : "pr");
+  const round = s.inspector?.round ?? 0;
+  return `${prKey}:r${round}:${fb.findings ? "F" : "-"}${fb.ciFailing ? "C" : "-"}`;
+}
+
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
  * return and the order is the policy.
@@ -87,86 +78,70 @@ function feedbackState(s: Session): Feedback {
  * dealt with - and there is no model call here to catch a mistake the gates let through.
  */
 export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowupDecision {
-  const { session: s, bucket, mayActLive, marker: lastMarker, cfg, now } = input;
-  const previous = lastMarker ?? { findingsRound: null, ciFailing: false };
-  const marker = {
-    ...previous,
-    ciFailing: s.prChecks === "failing" ? previous.ciFailing : false,
-  };
-  const markerChanged =
-    marker.findingsRound !== previous.findingsRound || marker.ciFailing !== previous.ciFailing;
-  const hold = (why: string): ReviewFollowupDecision =>
-    markerChanged ? { kind: "skip", why, marker } : { kind: "skip", why };
+  const { session: s, bucket, mayActLive, lastSig, cfg, now } = input;
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
-  if (!cfg.enabled) return hold("review follow-through is off");
+  if (!cfg.enabled) return skip("review follow-through is off");
 
   // 2. Only a harness Foreman can actually drive, and only a live one. No `workQueue`
   //    capability means no hooks and no reliable state to read; an exited session has
   //    nothing left to type into.
   // `workQueue` is the reliable-idle/drivable proxy for this automation.
   if (!capabilitiesFor(s.agent).workQueue) {
-    return hold(`${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`);
+    return skip(`${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`);
   }
-  if (s.state === "exited") return hold("the session exited");
+  if (s.state === "exited") return skip("the session exited");
+  if (!s.hooksSeen) return skip("the session is not hook-instrumented");
 
   // 3. There has to be an OPEN pull request on this session's branch. A merged one is
   //    done; a closed-unmerged one is dropped like no PR at all (see `Session.prUrl`).
-  if (s.prState !== "open" || !s.prUrl) return hold("no open pull request");
+  if (s.prState !== "open" || !s.prUrl) return skip("no open pull request");
 
   // 4. Something needs a human. An unanswered question or an input wait means the agent
   //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
-  if (bucket === "needs-you") return hold("the session needs a human");
-  if (s.state === "awaiting_input") return hold("the session is waiting on input");
+  if (bucket === "needs-you") return skip("the session needs a human");
+  if (s.state === "awaiting_input") return skip("the session is waiting on input");
 
   // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
   //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary
   //    already on the session - a row exists for any session Foreman ever touched.
   if ((s.queue?.openCount ?? 0) > 0) {
-    return hold("this checkout has a work queue - the drain trigger owns it");
+    return skip("this checkout has a work queue - the drain trigger owns it");
   }
 
   // 6. A no-mistakes run is still driving this branch (it opens the PR and then waits on
   //    CI and the merge itself). Relaying feedback now would fight the pipeline that is
   //    already handling it; wait for it to finish and park.
-  if (s.nomistakes?.status === "running") return hold("a no-mistakes run is in progress");
+  if (s.nomistakes?.status === "running") return skip("a no-mistakes run is in progress");
 
   // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
   //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
   const fb = feedbackState(s);
-  if (!fb.findings && !fb.ciFailing) return hold("no open review comments or failing CI");
+  if (!fb.findings && !fb.ciFailing) return skip("no open review comments or failing CI");
 
   // 8. Only a settled-idle session, and only one with a pane. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
   //    it is no longer idle, so it is not re-selected until it parks again.
-  if (!settledIdle(s, now, cfg.settleMs)) return hold("still working");
-  if (!hasPane(s)) return hold("no pane to type into");
+  if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");
+  if (!hasPane(s)) return skip("no pane to type into");
 
   // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
   //    on an allowlisted repo. Dry-run means dry-run: no card to fall back to here, so it
   //    simply holds.
-  if (!mayActLive) return hold("dry-run or off-allowlist - won't type");
+  if (!mayActLive) return skip("dry-run or off-allowlist - won't type");
 
-  const findingsRound =
-    fb.findings && s.inspector!.round !== marker.findingsRound ? s.inspector!.round : null;
-  const ciFailing = fb.ciFailing && !marker.ciFailing;
-  if (findingsRound === null && !ciFailing) {
-    return hold("already nudged this round of feedback");
-  }
+  // Inspector rounds normally advance with every push that can change CI, so one PR-scoped
+  // signature follows the real feedback cadence. A CI-only flaky rerun may re-nudge or miss
+  // once; that bounded tradeoff is preferable to a separate CI-episode state machine.
+  const sig = reviewFollowupSignature(s);
+  if (lastSig === sig) return skip("already nudged this round of feedback");
 
-  const signal = { findingsRound, ciFailing };
-  const actionable = { findings: findingsRound !== null, ciFailing };
-  return {
-    kind: "nudge",
-    signal,
-    marker: {
-      findingsRound: findingsRound ?? marker.findingsRound,
-      ciFailing: ciFailing || marker.ciFailing,
-    },
-    reason: describe(s, actionable),
-    payload: buildPayload(s, actionable),
-  };
+  return { kind: "nudge", sig, reason: describe(s, fb), payload: buildPayload(s, fb) };
+}
+
+function skip(why: string): ReviewFollowupDecision {
+  return { kind: "skip", why };
 }
 
 /** One-line reason for the worker's log. */

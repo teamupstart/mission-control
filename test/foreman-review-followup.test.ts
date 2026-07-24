@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildPayload,
   decideReviewFollowup,
+  reviewFollowupSignature,
 } from "../src/server/foreman/review-followup.ts";
 import type { ReviewFollowupInput } from "../src/server/foreman/review-followup.ts";
 import type { InspectorSummary, Session, SessionQueueSummary } from "../src/shared/types.ts";
@@ -114,7 +115,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     session,
     bucket: "idle",
     mayActLive: true,
-    marker: null,
+    lastSig: null,
     cfg: { enabled: true, settleMs: SETTLE },
     now: NOW,
     ...over,
@@ -235,6 +236,17 @@ test("an exited session has nothing to type into", () => {
   assert.deepEqual(d, { kind: "skip", why: "the session exited" });
 });
 
+test("an operator-started Codex session without hooks is not automated", () => {
+  const d = decide({
+    session: mkSession({
+      agent: "codex",
+      hooksSeen: false,
+      inspector: inspector({ open: 2 }),
+    }),
+  });
+  assert.deepEqual(d, { kind: "skip", why: "the session is not hook-instrumented" });
+});
+
 test("typing is a live act - dry-run or off-allowlist holds", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 2 }) }), mayActLive: false });
   assert.match((d as { why: string }).why, /won't type/);
@@ -247,72 +259,42 @@ test("the same feedback state, already nudged, stays quiet", () => {
   const first = decide({ session });
   assert.equal(first.kind, "nudge");
   if (first.kind !== "nudge") return;
-  const again = decide({ session, marker: first.marker });
+  const again = decide({ session, lastSig: first.sig });
   assert.deepEqual(again, { kind: "skip", why: "already nudged this round of feedback" });
 });
 
-test("CI clearing does not re-nudge unchanged findings", () => {
-  const failing = mkSession({
-    inspector: inspector({ open: 2, round: 1 }),
+test("a later PR cannot collide with the prior PR at the same round", () => {
+  const firstSession = mkSession({ inspector: inspector({ open: 2, round: 1 }) });
+  const first = decide({ session: firstSession });
+  assert.equal(first.kind, "nudge");
+  if (first.kind !== "nudge") return;
+
+  const nextSession = mkSession({
+    prUrl: "https://github.com/owner/repo/pull/8",
+    prNumber: 8,
+    inspector: inspector({
+      prKey: "owner/repo#8",
+      url: "https://github.com/owner/repo/pull/8",
+      open: 2,
+      round: 1,
+    }),
+  });
+  const next = decide({ session: nextSession, lastSig: first.sig });
+  assert.equal(next.kind, "nudge");
+  if (next.kind !== "nudge") return;
+  assert.notEqual(next.sig, first.sig);
+});
+
+test("the signature scopes current feedback to the PR and Inspector round", () => {
+  const session = mkSession({
+    inspector: inspector({ open: 1, round: 3 }),
     prChecks: "failing",
   });
-  const first = decide({ session: failing });
-  assert.equal(first.kind, "nudge");
-  if (first.kind !== "nudge") return;
-
-  const cleared = decide({
-    session: mkSession({
-      inspector: inspector({ open: 2, round: 1 }),
-      prChecks: "passing",
-    }),
-    marker: first.marker,
-  });
-  assert.equal(cleared.kind, "skip");
-  if (cleared.kind !== "skip") return;
-  assert.equal(cleared.why, "already nudged this round of feedback");
-  assert.deepEqual(cleared.marker, { findingsRound: 1, ciFailing: false });
-});
-
-test("CI passing then failing re-arms a new CI episode", () => {
-  const first = decide({ session: mkSession({ prChecks: "failing" }) });
-  assert.equal(first.kind, "nudge");
-  if (first.kind !== "nudge") return;
-
-  const passing = decide({
-    session: mkSession({ prChecks: "passing" }),
-    marker: first.marker,
-  });
-  assert.equal(passing.kind, "skip");
-  if (passing.kind !== "skip") return;
-  if (!passing.marker) return assert.fail("passing CI should re-arm the marker");
-
-  const failingAgain = decide({
-    session: mkSession({ prChecks: "failing" }),
-    marker: passing.marker,
-  });
-  assert.equal(failingAgain.kind, "nudge");
-  if (failingAgain.kind !== "nudge") return;
-  assert.deepEqual(failingAgain.signal, { findingsRound: null, ciFailing: true });
-});
-
-test("a nudge only names feedback newly actionable in this episode", () => {
-  const findings = mkSession({ inspector: inspector({ open: 1, round: 1 }) });
-  const first = decide({ session: findings });
-  assert.equal(first.kind, "nudge");
-  if (first.kind !== "nudge") return;
-
-  const ciJoined = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1, round: 1 }),
-      prChecks: "failing",
-    }),
-    marker: first.marker,
-  });
-  assert.equal(ciJoined.kind, "nudge");
-  if (ciJoined.kind !== "nudge") return;
-  assert.deepEqual(ciJoined.signal, { findingsRound: null, ciFailing: true });
-  assert.doesNotMatch(ciJoined.payload, /review comment/);
-  assert.match(ciJoined.payload, /CI/);
+  assert.equal(reviewFollowupSignature(session), "owner/repo#7:r3:FC");
+  assert.equal(
+    reviewFollowupSignature(mkSession({ inspector: null, prChecks: "failing" })),
+    "#7:r0:-C",
+  );
 });
 
 test("a new Inspector round with posted findings re-arms the nudge", () => {
@@ -323,10 +305,10 @@ test("a new Inspector round with posted findings re-arms the nudge", () => {
 
   // Agent pushed, the Inspector reviewed again and still found two things: new round.
   const round2 = mkSession({ inspector: inspector({ open: 2, round: 2 }) });
-  const d2 = decide({ session: round2, marker: d1.marker });
+  const d2 = decide({ session: round2, lastSig: d1.sig });
   assert.equal(d2.kind, "nudge");
   if (d2.kind !== "nudge") return;
-  assert.deepEqual(d2.signal, { findingsRound: 2, ciFailing: false });
+  assert.notEqual(d2.sig, d1.sig);
 });
 
 // ---- the payload ----

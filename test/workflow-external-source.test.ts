@@ -420,6 +420,162 @@ test("a restart between every durable step resumes the same run rather than star
   await afterActivation.stop();
 });
 
+test("the pinned artifact cannot be swapped by a later call under the same result id", async () => {
+  seedVersion("pin");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("pin-session")]);
+  const personas = new PersonaManager(registry);
+  const state = { headSha: OTHER_HEAD, dirty: false, reads: 0 };
+  const workflows = new WorkflowManager(registry, personas.store, {
+    readContextRaw: capture(state),
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+  });
+  const source = { kind: "ensemble" as const, sourceId: "ens-pin", resultId: "member-1" };
+  const bound = workflows.ensureExternalBinding({
+    source,
+    workflowVersionId: "v-pin",
+    sessionId: "pin-session",
+  });
+  assert.equal(bound.ok, true);
+  if (!bound.ok) return;
+  const bindingId = bound.value.binding.id;
+
+  // Blocked on the wrong commit, which is where a caller is most tempted to "fix" it by
+  // naming whatever the session now holds.
+  const blocked = await workflows.submitExternal(bindingId, { source, expectation });
+  assert.equal(blocked.ok, false);
+
+  state.headSha = OTHER_HEAD;
+  const swapped = await workflows.submitExternal(bindingId, {
+    source,
+    expectation: { expectedHeadSha: OTHER_HEAD, requireCleanWorktree: true },
+  });
+  assert.equal(swapped.ok, false);
+  if (swapped.ok) return;
+  assert.equal(swapped.reason, "conflict");
+  assert.match(swapped.message, /already pinned a different commit/);
+  // The run stayed blocked on its original artifact rather than reviewing the new one.
+  const run = workflows.store.listRuns().find((candidate) => candidate.bindingId === bindingId)!;
+  assert.equal(run.status, "blocked");
+  assert.equal(workflows.store.externalExpectationFor(run.id)?.expectedHeadSha, EXPECTED_HEAD);
+  assert.deepEqual(counts(bindingId), { runs: 1, submissions: 1, claims: 1 });
+
+  // And after the run completes on its real artifact, a swapped retry is still refused
+  // rather than answered as idempotent success for a commit this run never saw.
+  state.headSha = EXPECTED_HEAD;
+  const restored = await workflows.submitExternal(bindingId, { source, expectation });
+  assert.equal(restored.ok, true);
+  assert.equal(workflows.store.getRun(run.id)?.status, "completed");
+  const afterCompletion = await workflows.submitExternal(bindingId, {
+    source,
+    expectation: { expectedHeadSha: OTHER_HEAD, requireCleanWorktree: true },
+  });
+  assert.equal(afterCompletion.ok, false);
+  await workflows.stop();
+});
+
+test("the manual re-capture paths refuse a run whose evidence is an external artifact", async () => {
+  seedVersion("manual-bypass");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("bypass-session")]);
+  const personas = new PersonaManager(registry);
+  const state = { headSha: OTHER_HEAD, dirty: false, reads: 0 };
+  const workflows = new WorkflowManager(registry, personas.store, {
+    readContextRaw: capture(state),
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+  });
+  const source = { kind: "ensemble" as const, sourceId: "ens-bypass", resultId: "member-1" };
+  const bound = workflows.ensureExternalBinding({
+    source,
+    workflowVersionId: "v-manual-bypass",
+    sessionId: "bypass-session",
+  });
+  assert.equal(bound.ok, true);
+  if (!bound.ok) return;
+  const blocked = await workflows.submitExternal(bound.value.binding.id, { source, expectation });
+  assert.equal(blocked.ok, false);
+  const run = workflows.store.listRuns().find((c) => c.bindingId === bound.value.binding.id)!;
+  assert.equal(run.currentPhase, "external_artifact_mismatch");
+
+  // `/api/workflow-runs/:id/resubmit` reaches this method, and it captures the session's
+  // CURRENT state with no expectation. On this run that would be one click around exact-clean
+  // capture, reviewing a working tree the external caller never selected.
+  state.headSha = "c".repeat(40);
+  state.dirty = true;
+  const resubmitted = await workflows.resubmit(run.id, { requestId: "bypass", resubmitUnchanged: false });
+  assert.equal(resubmitted.ok, false);
+  if (resubmitted.ok) return;
+  assert.equal(resubmitted.reason, "unsupported_mode");
+  assert.match(resubmitted.message, /one exact external result/);
+  assert.deepEqual(counts(bound.value.binding.id), { runs: 1, submissions: 1, claims: 1 });
+  assert.equal(workflows.store.getRun(run.id)?.currentPhase, "external_artifact_mismatch");
+  await workflows.stop();
+});
+
+test("an external binding refuses Live or Foreman defaults rather than downgrading them", async () => {
+  const db = openDb();
+  const graph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [{ id: "end", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" }],
+  };
+  // A published version whose own defaults ask for Live delivery: the mode arrives without
+  // anyone requesting it here, which is exactly how a terminal write could reach this path.
+  const liveDefaults = JSON.stringify({
+    triggerMode: "manual",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+  });
+  db.prepare(
+    `INSERT INTO workflow_definitions (
+       id, name, normalized_name, description, draft_graph_json, completion_policy_json,
+       binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
+     ) VALUES ('w-live', 'W live', 'w live', '', ?, '{"kind":"none"}', ?, 1, 'v-live', NULL, 1, 1)`,
+  ).run(JSON.stringify(graph), liveDefaults);
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, workflow_id, version, source_draft_revision, graph_json,
+       completion_policy_json, binding_defaults_json, published_at
+     ) VALUES ('v-live', 'w-live', 1, 1, ?, '{"kind":"none"}', ?, 1)`,
+  ).run(JSON.stringify(graph), liveDefaults);
+
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("live-session")]);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  const refused = workflows.ensureExternalBinding({
+    source: { kind: "ensemble", sourceId: "ens-live", resultId: "member-1" },
+    workflowVersionId: "v-live",
+    sessionId: "live-session",
+  });
+  assert.equal(refused.ok, false);
+  if (refused.ok) return;
+  assert.equal(refused.reason, "unsupported_mode");
+  assert.match(refused.message, /Preview and Manual only/);
+  // Refused, not quietly downgraded: no binding was created under a mode the caller did not
+  // choose, and nothing was written.
+  assert.equal(
+    (db.prepare(`SELECT COUNT(*) AS n FROM workflow_binding_claims WHERE source_id = 'ens-live'`)
+      .get() as { n: number }).n,
+    0,
+  );
+  const foreman = workflows.ensureExternalBinding({
+    source: { kind: "ensemble", sourceId: "ens-live", resultId: "member-2" },
+    workflowVersionId: "v-live",
+    sessionId: "live-session",
+    deliveryMode: "preview",
+    triggerMode: "foreman_complete",
+  });
+  assert.equal(foreman.ok, false);
+  if (foreman.ok) return;
+  assert.equal(foreman.reason, "unsupported_mode");
+  await workflows.stop();
+});
+
 test("run detail carries display provenance and never the opaque idempotency key", async () => {
   seedVersion("detail");
   const registry = new Registry();
@@ -484,6 +640,17 @@ test("run detail carries display provenance and never the opaque idempotency key
   if (!manualSubmit.ok) return;
   assert.equal(workflows.run(manualSubmit.value.run.id)?.externalSource, null);
   assert.equal(workflows.store.getRun(manualSubmit.value.run.id)?.triggerSource, "manual");
+
+  // A CLAIMED binding stays usable by the manual path, and a later manual run on it is
+  // genuinely not the external one. Provenance follows the run's own trigger source, so an
+  // operator's run never renders under somebody else's name.
+  const laterManual = await workflows.submit(bound.value.binding.id, { requestId: "detail-later" });
+  assert.equal(laterManual.ok, true);
+  if (!laterManual.ok) return;
+  assert.equal(workflows.store.getRun(laterManual.value.run.id)?.triggerSource, "manual");
+  assert.equal(workflows.run(laterManual.value.run.id)?.externalSource, null);
+  // The external run on that same binding still reports its provenance.
+  assert.equal(workflows.run(submitted.value.run.id)?.externalSource?.sourceId, "ens-detail");
   await workflows.stop();
 });
 

@@ -32,6 +32,7 @@ import type {
   Persona,
   WorkflowBinding,
   WorkflowBindingClaim,
+  WorkflowCaptureExpectation,
   WorkflowDefinition,
   WorkflowDelivery,
   WorkflowEdgeReceipt,
@@ -1815,6 +1816,45 @@ export class WorkflowStore {
   }
 
   /**
+   * Record, once, the exact artifact an externally sourced run is entitled to review.
+   *
+   * The expectation has to be DURABLE, not merely re-validated per call: the idempotency key
+   * names a result, and a retry that supplied a different commit under that same key would
+   * resume the same submission against evidence nobody selected - and after completion would
+   * be answered as idempotent success for a commit this run never saw. Pinned here, the run
+   * carries its own answer to "which artifact was this?" across restarts.
+   *
+   * It lives in the event ledger rather than a column because it is written exactly once, at
+   * run creation, and only ever read back for comparison - the same shape as the other
+   * once-only facts this table already holds.
+   */
+  pinExternalExpectation(
+    runId: string,
+    expectation: WorkflowCaptureExpectation,
+    now = Date.now(),
+  ): void {
+    if (this.externalExpectationFor(runId)) return;
+    this.appendEvent(runId, "external_expectation_pinned", {
+      expectedHeadSha: expectation.expectedHeadSha,
+      requireCleanWorktree: expectation.requireCleanWorktree,
+    }, now);
+  }
+
+  /** The pinned expectation for a run, or null when it was not externally sourced. */
+  externalExpectationFor(runId: string): WorkflowCaptureExpectation | null {
+    const row = this.db.prepare(
+      `SELECT json_extract(payload_json, '$.expectedHeadSha') AS expected_head_sha
+         FROM workflow_events
+        WHERE run_id = ? AND event_kind = 'external_expectation_pinned'
+        ORDER BY id ASC LIMIT 1`,
+    ).get(runId) as { expected_head_sha: string | null } | undefined;
+    if (!row?.expected_head_sha) return null;
+    // requireCleanWorktree is the literal true in the wire type, so the pin restates the
+    // requirement rather than storing a choice; there is no stored value that could relax it.
+    return { expectedHeadSha: row.expected_head_sha, requireCleanWorktree: true };
+  }
+
+  /**
    * Return one blocked submission to evidence capture without starting a second family.
    *
    * The externally sourced path needs this and `reviveFailedSubmission` cannot serve it:
@@ -2605,14 +2645,21 @@ export class WorkflowStore {
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
       deliveries: this.listDeliveries(id),
       events: this.listEvents(id),
-      externalSource: this.externalSourceForBinding(binding.id),
+      externalSource: this.externalSourceForRun(run, binding.id),
     };
   }
 
-  /** Display provenance only - the opaque idempotency key never leaves the store. */
-  private externalSourceForBinding(bindingId: string): WorkflowExternalSource | null {
+  /**
+   * Display provenance only - the opaque idempotency key never leaves the store.
+   *
+   * Matched on the RUN's own trigger source, not merely on the binding having a claim. A
+   * claimed binding stays usable by the manual and Foreman paths, so a later run on it is
+   * genuinely not the external one, and reading provenance off the binding alone would put
+   * somebody else's name on an operator's own run.
+   */
+  private externalSourceForRun(run: WorkflowRun, bindingId: string): WorkflowExternalSource | null {
     const claim = this.claimForBinding(bindingId);
-    return claim
+    return claim && claim.kind === run.triggerSource
       ? { kind: claim.kind, sourceId: claim.sourceId, createdAt: claim.createdAt }
       : null;
   }

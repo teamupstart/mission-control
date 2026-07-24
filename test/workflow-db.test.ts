@@ -121,17 +121,22 @@ test("an external claim is unique by source key and owns at most one binding", (
   assert.throws(() => insert.run("ensemble:e1:result:m2:workflow:v1", "e1", "b1"));
   insert.run("ensemble:e1:result:m2:workflow:v1", "e1", "b2");
 
-  const notNull = (db.prepare(`PRAGMA table_info(workflow_binding_claims)`).all() as Array<{
+  const columns = (db.prepare(`PRAGMA table_info(workflow_binding_claims)`).all() as Array<{
     name: string;
     notnull: number;
     pk: number;
   }>);
   // Every column is NOT NULL: SQLite treats NULLs as distinct inside a unique index, so a
-  // nullable half would make the retry insert instead of collide.
-  for (const column of notNull) {
-    assert.equal(column.notnull === 1 || column.pk === 1, true, `${column.name} is nullable`);
+  // nullable half would make the retry insert instead of collide. The primary key is asserted
+  // the same way as the rest and NOT excused by `pk`, because on a non-STRICT rowid table
+  // SQLite does not imply NOT NULL from PRIMARY KEY.
+  for (const column of columns) {
+    assert.equal(column.notnull, 1, `${column.name} is nullable`);
   }
-  assert.equal(notNull.find((column) => column.name === "source_key")?.pk, 1);
+  assert.equal(columns.find((column) => column.name === "source_key")?.pk, 1);
+  // The quirk itself, exercised: without the explicit NOT NULL these would both insert, and
+  // several claims with no key would each be a distinct identity nothing could resolve.
+  assert.throws(() => insert.run(null, "e1", "b3"));
 });
 
 test("delivery identity cannot duplicate an immutable packet", () => {

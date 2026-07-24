@@ -116,6 +116,33 @@ test("the scheduler is a shared ceiling, not one budget per caller", async () =>
   assert.equal(DEFAULT_REVIEW_CONCURRENCY, 3);
 });
 
+test("an engine-level scheduler option cannot split the budget in two", async () => {
+  // The manager passes its scheduler to the engine, so the two options name ONE budget. If
+  // `engine.schedule` won for Persona attempts while compaction kept the manager's, a manager
+  // built with both would run one of each concurrently despite either ceiling - the exact
+  // split this resolution exists to prevent.
+  const seen: string[] = [];
+  const tagged = (name: string) => <T,>(fn: () => Promise<T>): Promise<T> => {
+    seen.push(name);
+    return fn();
+  };
+  const registry = new Registry();
+  const personas = new PersonaManager(registry);
+  const manager = new WorkflowManager(registry, personas.store, {
+    reviewScheduler: tagged("manager"),
+    engine: { schedule: tagged("engine") },
+  });
+  await manager.engine.stop();
+  // Both halves reach for the same function object, so whichever one wins, they agree.
+  const engineSchedule = (manager.engine as unknown as { limit: <T>(fn: () => Promise<T>) => Promise<T> }).limit;
+  const managerSchedule = (manager as unknown as { schedule: <T>(fn: () => Promise<T>) => Promise<T> }).schedule;
+  assert.equal(engineSchedule, managerSchedule);
+  await engineSchedule(async () => {});
+  await managerSchedule(async () => {});
+  assert.deepEqual(seen, ["manager", "manager"]);
+  await manager.stop();
+});
+
 test("context compaction and Persona attempts spend one injected daemon budget", async () => {
   seedVersion();
   const registry = new Registry();

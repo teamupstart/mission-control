@@ -1418,8 +1418,22 @@ The evidence must be exactly what was selected. Before anything is stored and be
 provider token is spent, the capture has to observe the expected commit **and** a clean
 working tree - matching HEAD with uncommitted changes beside it is not the selected result.
 A mismatch blocks visibly and says what it saw; restoring the exact result and asking again
-resumes that same submission instead of opening a new round. Run detail names the feature
-that started it, and Reset removes the claim with the rest of the run family.
+resumes that same submission instead of opening a new round.
+
+That commit is pinned to the run at creation and cannot be changed afterwards. A repeat call
+naming a different commit is refused rather than accepted, so one result id always means one
+artifact. For the same reason the ordinary **Preview fresh evidence** and discard-and-resend
+actions refuse on these runs: they re-read whatever the session holds right now, which is not
+what this run is reviewing.
+
+These runs are Preview and Manual only for now. If the pinned workflow version's defaults ask
+for Live delivery or Foreman completion, the request is refused rather than quietly downgraded
+to Preview - being handed a review that silently never reaches the session would be worse than
+being told no.
+
+Run detail names the feature that started a run, matched on that run's own source, so an
+ordinary manual run on the same session is never labelled as someone else's. Reset removes the
+claim with the rest of the run family.
 
 ### Live repair delivery and Foreman completion
 

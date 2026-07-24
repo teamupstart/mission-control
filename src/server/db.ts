@@ -542,9 +542,12 @@ export function openDb(): DatabaseSync {
     -- opaque source_key back into ids; that spelling is internal and may change.
     --
     -- Every column is NOT NULL: SQLite treats NULLs as distinct inside a unique index, so a
-    -- nullable half would let the row multiply on retry rather than collide.
+    -- nullable half would let the row multiply on retry rather than collide. source_key says
+    -- NOT NULL explicitly even though it is the primary key, because on a non-STRICT rowid
+    -- table SQLite does NOT imply it - a long-standing compatibility quirk - so PRIMARY KEY
+    -- alone would admit several NULL keys and lose the one-claim-per-source identity.
     CREATE TABLE IF NOT EXISTS workflow_binding_claims (
-      source_key  TEXT PRIMARY KEY,
+      source_key  TEXT NOT NULL PRIMARY KEY,
       source_kind TEXT NOT NULL,
       source_id   TEXT NOT NULL,
       binding_id  TEXT NOT NULL,

@@ -218,6 +218,23 @@ test("preview accepts the same definition as save and writes nothing", async () 
   assert.equal((await post("/api/schedules", definition())).status, 201);
 });
 
+test("preview refuses exactly what save refuses - a non-repository root, on its field", async () => {
+  resetCatalog();
+  // The parity that matters: a definition save would reject at repo canonicalization must
+  // not preview clean, or the UI shows a schedule as previewable that it cannot store.
+  const bad = definition({
+    template: { ...(definition().template as Record<string, unknown>), repoRoot: "/tmp/not-a-repo" },
+  });
+  const preview = await post("/api/schedules/preview", bad);
+  assert.equal(preview.status, 400);
+  const body = (await preview.json()) as { field?: string };
+  assert.equal(body.field, "repoRoot");
+  // And save refuses the same definition on the same field - the two answers cannot diverge.
+  const save = await post("/api/schedules", bad);
+  assert.equal(save.status, 400);
+  assert.equal(((await save.json()) as { field?: string }).field, "repoRoot");
+});
+
 test("preview bounds the count and validates the standby window", async () => {
   resetCatalog();
   assert.equal((await post("/api/schedules/preview", definition({ count: 5 }))).status, 400);

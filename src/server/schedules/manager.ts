@@ -134,6 +134,26 @@ export interface CreateScheduleInput extends ScheduleDefinitionInput {
 export type UpdateScheduleInput = ScheduleDefinitionInput;
 
 /**
+ * A preview of an unsaved definition: the whole editable definition, plus the knobs a
+ * preview alone needs.
+ *
+ * It carries the FULL definition, not just the cadence, because preview and save must
+ * refuse the same things: a preview that validated only the expression would greenlight a
+ * `repoRoot` that is not a repository, then save would reject it - the UI showing a schedule
+ * as previewable that it cannot store. `previewDefinition` runs the same `prepareDefinition`
+ * gate save does, so the two answers cannot diverge.
+ */
+export interface SchedulePreviewDefinitionInput extends ScheduleDefinitionInput {
+  /** Anchor; instants are strictly after it. Defaults to now. */
+  after?: number;
+  count?: number;
+  sleepStartedAt?: number;
+  resumedAt?: number;
+  /** The schedule being edited, so a cadence never collides with its own saved self. */
+  excludeScheduleId?: string;
+}
+
+/**
  * A refusal carries the field it belongs to, so Phase 3's route can answer 400 and the
  * form can put the sentence under the input that caused it.
  */
@@ -222,7 +242,12 @@ export interface ScheduleService {
   list(): MissionSchedule[];
   get(id: string): MissionSchedule | null;
   history(id: string, cursor: ScheduleHistoryCursor): ScheduleHistoryPage | null;
-  preview(input: SchedulePreviewInput): SchedulePreviewResult;
+  /**
+   * Preview an unsaved definition with the SAME validation save applies, repo root included,
+   * so the browser cannot preview a schedule the save route would refuse. Async because that
+   * validation resolves the repository.
+   */
+  previewDefinition(input: SchedulePreviewDefinitionInput): Promise<SchedulePreviewResult>;
   create(input: CreateScheduleInput): Promise<ScheduleSaveResult>;
   update(id: string, input: UpdateScheduleInput): Promise<ScheduleSaveResult>;
   setEnabled(id: string, enabled: boolean): Promise<ScheduleSaveResult>;
@@ -273,12 +298,45 @@ export class ScheduleManager implements ScheduleService {
   }
 
   /**
+   * Preview an unsaved definition with the exact validation save applies.
+   *
+   * This is the door Phase 3's route uses, and the reason it exists beside the cadence-only
+   * `preview` below: preview and save must refuse the same definition. `prepareDefinition`
+   * is the one gate both go through - it validates the name, title, intent, cadence AND
+   * resolves the repository through the same resolver `create` uses - so a `repoRoot` that
+   * is not a repository fails here just as it would on save, rather than previewing clean
+   * and then being rejected. It writes nothing: the repo resolve is a read, and the cadence
+   * work below touches no row. On success the cadence is previewed from the CANONICAL
+   * expression `prepareDefinition` produced, so the instants match what save would store.
+   */
+  async previewDefinition(
+    input: SchedulePreviewDefinitionInput,
+  ): Promise<SchedulePreviewResult> {
+    const prepared = await this.prepareDefinition(input, this.now());
+    if (!prepared.ok) return { ok: false, error: prepared.error };
+    const def = prepared.definition;
+    return this.preview({
+      expression: def.expression,
+      timezone: def.timezone,
+      after: input.after,
+      count: input.count,
+      sleepStartedAt: input.sleepStartedAt,
+      resumedAt: input.resumedAt,
+      missedPolicy: def.missedPolicy,
+      excludeScheduleId: input.excludeScheduleId,
+    });
+  }
+
+  /**
    * What this cadence would do, writing nothing at all.
    *
    * Three answers in one call, and each comes from the component that owns it: the future
    * instants from `recurrence`, the standby outcome from the same `planMissedInstants` the
    * scheduler decides with, and the collisions from the catalog. Nothing is recomputed
    * here, which is what makes the preview a promise rather than an illustration.
+   *
+   * Cadence-only and synchronous - the Phase 2 contract. `previewDefinition` above wraps it
+   * with the full save-time validation Phase 3's route needs.
    */
   preview(input: SchedulePreviewInput): SchedulePreviewResult {
     const result = this.recurrence.preview(input, this.now());

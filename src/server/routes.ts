@@ -2187,26 +2187,31 @@ export function buildApp(
   });
 
   // Preview is a READ: no schedule, revision, occurrence, or task is written and no
-  // ServerEvent is emitted. It accepts the exact save definition (plus preview-only knobs)
-  // so the browser can never preview a cadence the save route would refuse.
+  // ServerEvent is emitted. It forwards the WHOLE definition and the service runs the same
+  // validation save does - cadence, name, title, intent, and repo-root resolution - so the
+  // browser can never preview a definition the save route would then refuse.
   app.post("/api/schedules/preview", async (c) => {
     const svc = scheduleService();
     if (!svc) return c.json({ error: "Schedule service unavailable" }, 503);
     const parsed = await parseBody(c, SchedulePreviewSchema);
     if (!parsed.ok) return parsed.res;
     const d = parsed.data;
-    const result = svc.preview({
+    const result = await svc.previewDefinition({
+      name: d.name,
       expression: d.expression,
       timezone: d.timezone,
+      overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      template: d.template,
       after: d.after,
       count: d.count,
       sleepStartedAt: d.sleepStartedAt,
       resumedAt: d.resumedAt,
       excludeScheduleId: d.excludeScheduleId,
     });
-    // A cadence the shape layer passed but the evaluator rejects (a bad IANA zone, a sub-hour
-    // interval) returns `ok:false` with the offending field - a 400, not a 500.
+    // A definition the shape layer passed but the service rejects (a bad IANA zone, a
+    // sub-hour interval, a non-repository root) returns `ok:false` with the offending field -
+    // a 400, not a 500.
     return result.ok ? c.json(result) : scheduleValidationFailure(c, result.error);
   });
 

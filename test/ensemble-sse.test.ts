@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
-import type { ServerEvent } from "../src/shared/types.ts";
+import type { ServerEvent, Task } from "../src/shared/types.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 
 /**
  * What is at stake: ensembles are SSE state, not a second polling subsystem, and the
@@ -43,6 +45,34 @@ const request = {
   strategyId: "best_of_n" as const,
   strategyConfig: { members: [{}, {}] },
 };
+
+function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
+  return {
+    syntheticId: "ensemble-session",
+    agent: "claude",
+    name: "Ensemble member",
+    nameSource: "process",
+    cwd: "/ensemble-worktree",
+    gitBranch: null,
+    gitRoot: null,
+    repoRoot: null,
+    nomistakesGated: false,
+    pid: 1,
+    tty: "ttys1",
+    terminals: [],
+    startedAt: 0,
+    ...over,
+  };
+}
+
+const task = (over: Partial<Task> = {}): Task =>
+  baseTask({
+    id: "task-1",
+    title: "Candidate",
+    status: "running",
+    worktreePath: "/ensemble-worktree",
+    ...over,
+  });
 
 test("snapshot, upsert, remove and reconnect produce one equivalent ensemble catalog", () => {
   const registry = new Registry();
@@ -144,6 +174,32 @@ test("an idempotent create republishes the same run rather than adding a second 
   assert.equal(registry.snapshot().ensembleSummaries.length, 1);
 });
 
+test("a source-key retry resolves before mutable compilation prerequisites", () => {
+  const store = new EnsembleStore(db);
+  const firstManager = new EnsembleManager(new Registry(), store, {
+    resolvePersona: (id) => ({ id, revision: 3 }),
+  });
+  const personaRequest = {
+    ...request,
+    sourceKey: "manual:persona-retry",
+    strategyConfig: {
+      members: [{}, {}],
+      evaluator: { personaId: "judge" },
+    },
+  };
+  const first = firstManager.create(personaRequest, 100);
+  assert.equal(first.ok, true);
+
+  const retryManager = new EnsembleManager(new Registry(), store, {
+    resolvePersona: () => null,
+  });
+  const retry = retryManager.create({ ...personaRequest, strategyVersion: 99 }, 200);
+  assert.equal(retry.ok, true);
+  if (!first.ok || !retry.ok) return;
+  assert.equal(retry.created, false);
+  assert.equal(retry.run.id, first.run.id);
+});
+
 test("a create the strategy refuses persists nothing and publishes nothing", () => {
   const registry = new Registry();
   const manager = new EnsembleManager(registry, new EnsembleStore(db));
@@ -173,11 +229,13 @@ test("a session's task summary names its ensemble member, and no Session field d
   assert.equal(created.ok, true);
   if (!created.ok) return;
 
+  registry.upsertTask(task());
+  registry.applyDiscovery([discovered()]);
+  assert.equal(registry.snapshot().sessions[0]?.task?.ensemble, null);
+
   const members = store.listMembers(created.run.id);
   store.setMemberStatus(members[0]!.id, ["pending"], "active", { taskId: "task-1", resultLabel: "rank 1" });
-  // Registered rather than imported: the registry knows nothing about ensembles, and the
-  // manager hands it one lookup.
-  registry.registerEnsembleProjection((taskId) => store.taskLink(taskId));
+  registry.applyDiscovery([discovered()]);
 
   assert.deepEqual(store.taskLink("task-1"), {
     runId: created.run.id,
@@ -193,4 +251,5 @@ test("a session's task summary names its ensemble member, and no Session field d
     resultLabel: "rank 1",
   });
   assert.equal(store.taskLink("task-unrelated"), null);
+  assert.deepEqual(registry.snapshot().sessions[0]?.task?.ensemble, store.taskLink("task-1"));
 });

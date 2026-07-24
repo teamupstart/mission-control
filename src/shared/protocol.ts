@@ -2369,11 +2369,11 @@ export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATE
 // ---- multi-agent ensembles ----
 //
 // The durable half of `@shared/ensemble.ts`. Row parsers in `src/server/ensembles/store.ts`
-// validate every TEXT enum and JSON column through these before a typed record exists, so a
-// blob written by another build fails at ONE boundary rather than surfacing as an undefined
-// three call sites later. No route consumes them yet - Phase 3 launches nothing - but the
-// shapes are fixed now because they are what a later route, the MCP submission tool and the
-// dashboard all have to agree with.
+// classify every TEXT enum and validate every JSON column before a typed record exists:
+// unknown enums degrade to null for version skew, while malformed JSON fails at ONE boundary
+// rather than surfacing as an undefined three call sites later. No route consumes them yet -
+// Phase 3 launches nothing - but the shapes are fixed now because they are what a later route,
+// the MCP submission tool and the dashboard all have to agree with.
 
 /** Recursive, JSON-only durable payload validation. */
 export const EnsembleJsonSchema: z.ZodType<EnsembleJson> = z.lazy(() =>
@@ -2593,11 +2593,34 @@ export const CompiledEnsemblePlanSchema = z
         message: "the compiled roster is larger than the plan's own hard member cap",
       });
     }
+    if (plan.budget.maxConcurrentMembers > plan.budget.maxMembers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["budget", "maxConcurrentMembers"],
+        message: "concurrent members cannot exceed the plan's member cap",
+      });
+    }
+    plan.roles.forEach((role, index) => {
+      if (role.wave > plan.budget.maxWaves) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["roles", index, "wave"],
+          message: `role ${role.key} exceeds the plan's wave cap`,
+        });
+      }
+    });
     const stageIds = new Set(plan.stages.map((stage) => stage.id));
     if (stageIds.size !== plan.stages.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["stages"], message: "stage ids must be unique" });
     }
     plan.stages.forEach((stage, index) => {
+      if (stage.maxAttempts > plan.budget.maxStageAttempts) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stages", index, "maxAttempts"],
+          message: `stage ${stage.id} exceeds the plan's attempt cap`,
+        });
+      }
       for (const dependency of stage.dependsOn) {
         if (!stageIds.has(dependency)) {
           ctx.addIssue({
@@ -2622,6 +2645,65 @@ export const CompiledEnsemblePlanSchema = z
           });
         }
       }
+      if (stage.driverKind === "member") {
+        if (stage.wave > plan.budget.maxWaves) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "wave"],
+            message: `stage ${stage.id} exceeds the plan's wave cap`,
+          });
+        }
+        if (new Set(stage.roleKeys).size !== stage.roleKeys.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "roleKeys"],
+            message: `stage ${stage.id} role keys must be unique`,
+          });
+        }
+      }
+      if (stage.barrier.kind === "members_settled") {
+        const barrierRoles = new Set(stage.barrier.roleKeys);
+        if (barrierRoles.size !== stage.barrier.roleKeys.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "barrier", "roleKeys"],
+            message: `stage ${stage.id} barrier role keys must be unique`,
+          });
+        }
+        if (stage.barrier.minEligible > barrierRoles.size) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "barrier", "minEligible"],
+            message: `stage ${stage.id} requires more eligible members than it names`,
+          });
+        }
+      }
+      if (stage.driverKind === "review") {
+        if (stage.subjects.minSubjects > stage.subjects.maxSubjects) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "subjects", "minSubjects"],
+            message: `stage ${stage.id} minimum subjects exceed its maximum`,
+          });
+        }
+        if (stage.subjects.maxSubjects > plan.budget.maxMembers) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["stages", index, "subjects", "maxSubjects"],
+            message: `stage ${stage.id} subjects exceed the plan's member cap`,
+          });
+        }
+      }
+      if (
+        stage.driverKind === "decision" &&
+        stage.decision.minEligibleSubjects > plan.budget.maxMembers
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stages", index, "decision", "minEligibleSubjects"],
+          message: `stage ${stage.id} eligible subjects exceed the plan's member cap`,
+        });
+      }
       if (stage.barrier.kind === "stages_succeeded") {
         for (const dependency of stage.barrier.stageIds) {
           if (!stageIds.has(dependency)) {
@@ -2634,6 +2716,42 @@ export const CompiledEnsemblePlanSchema = z
         }
       }
     });
+
+    const dependencies = new Map(
+      plan.stages.map((stage) => [
+        stage.id,
+        [
+          ...stage.dependsOn,
+          ...(stage.barrier.kind === "stages_succeeded" ? stage.barrier.stageIds : []),
+        ],
+      ]),
+    );
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const cyclic = new Set<string>();
+    const visit = (stageId: string): void => {
+      if (visited.has(stageId)) return;
+      if (visiting.has(stageId)) {
+        cyclic.add(stageId);
+        return;
+      }
+      visiting.add(stageId);
+      for (const dependency of dependencies.get(stageId) ?? []) {
+        if (!dependencies.has(dependency)) continue;
+        visit(dependency);
+        if (cyclic.has(dependency)) cyclic.add(stageId);
+      }
+      visiting.delete(stageId);
+      visited.add(stageId);
+    };
+    for (const stage of plan.stages) visit(stage.id);
+    if (cyclic.size > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stages"],
+        message: `stage dependencies must be acyclic: ${[...cyclic].join(", ")}`,
+      });
+    }
   });
 
 export const EnsembleOutcomeSchema = z.discriminatedUnion("kind", [

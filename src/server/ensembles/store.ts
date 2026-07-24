@@ -21,6 +21,7 @@ import {
   ensembleNeedsAttention,
   knownDriverKey,
   missingDriverKeys,
+  parseEnsembleStrategyKey,
   readEnsembleEnum,
   type CompiledEnsemblePlan,
   type EnsembleArtifact,
@@ -47,7 +48,7 @@ import {
   type EnsembleUnreadable,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
-import { knownStrategyId } from "@shared/ensemble-strategies.ts";
+import { ENSEMBLE_STRATEGY_INFO, knownStrategyId } from "@shared/ensemble-strategies.ts";
 import {
   CompiledEnsemblePlanSchema,
   EnsembleJsonSchema,
@@ -67,8 +68,9 @@ import { openDb } from "../db.ts";
  * Two rules this module exists to enforce:
  *
  *  - **Every durable TEXT enum and JSON column is validated before a typed record exists.**
- *    A blob written by another build fails at ONE boundary, with the table and row named,
- *    rather than surfacing as an `undefined` three call sites later.
+ *    Unknown persisted enums degrade to null. Malformed child row shapes and JSON fail at
+ *    ONE boundary, with the table and row named, rather than surfacing as an `undefined`
+ *    three call sites later.
  *  - **A row this build cannot execute still LOADS.** An unknown strategy, an unreadable
  *    plan, a driver version we no longer ship - each becomes `unreadable` on the record, and
  *    `ensembleIsRunnable` is the single gate that stops it being run. A run nobody can see
@@ -172,6 +174,61 @@ const RunRowSchema = z.object({
   error: nullableText,
 });
 type RunRow = z.infer<typeof RunRowSchema>;
+type RunRowIssue = [field: string, detail: string];
+
+function persistedValue(value: unknown): string {
+  if (value === undefined) return "(missing)";
+  if (typeof value === "string") return value.slice(0, 120);
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "(unreadable value)";
+}
+
+function readRunRow(value: unknown): { row: RunRow; issues: RunRowIssue[] } {
+  const parsed = RunRowSchema.safeParse(value);
+  if (parsed.success) return { row: parsed.data, issues: [] };
+
+  const raw =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const issues: RunRowIssue[] = [];
+  const read = <T>(column: string, schema: z.ZodType<T>, fallback: T): T => {
+    const field = schema.safeParse(raw[column]);
+    if (field.success) return field.data;
+    issues.push([column, persistedValue(raw[column])]);
+    return fallback;
+  };
+
+  return {
+    row: {
+      id: read("id", idText, rowIdOf(value) || "(unknown)"),
+      source_kind: read("source_kind", z.string(), ""),
+      source_key: read("source_key", z.string(), ""),
+      source_id: read("source_id", nullableText, null),
+      strategy_id: read("strategy_id", z.string(), ""),
+      strategy_version: read("strategy_version", integer, 0),
+      strategy_key: read("strategy_key", z.string(), ""),
+      strategy_label: read("strategy_label", z.string(), ""),
+      title: read("title", z.string(), ""),
+      intent: read("intent", z.string(), ""),
+      repo_root: read("repo_root", z.string(), ""),
+      base_branch: read("base_branch", nullableText, null),
+      base_sha: read("base_sha", nullableText, null),
+      compiled_plan_json: read("compiled_plan_json", z.string(), ""),
+      strategy_config_json: read("strategy_config_json", z.string(), ""),
+      status: read("status", z.string(), ""),
+      active_stage_id: read("active_stage_id", nullableText, null),
+      outcome_json: read("outcome_json", nullableText, null),
+      created_at: read("created_at", integer, 0),
+      updated_at: read("updated_at", integer, 0),
+      completed_at: read("completed_at", integer.nullable(), null),
+      error: read("error", nullableText, null),
+    },
+    issues,
+  };
+}
 
 const MemberRowSchema = z.object({
   id: idText,
@@ -343,7 +400,8 @@ function readJsonColumn<T>(
  * that is stopping it. One bad row costs THAT run its runnability and nothing else, the same
  * stance `parseTemplate` takes in the schedule store.
  *
- * The child tables deliberately keep throwing (see `parseJson`). A corrupt artifact locator or
+ * Malformed child row shapes and JSON deliberately keep throwing (see `parseJson`). Unknown
+ * child enum values degrade to null for version-skew tolerance. A corrupt artifact locator or
  * stage input fails one HTTP detail read, names its table and row, and leaves the rest of the
  * daemon standing; it is not on the boot path.
  *
@@ -357,7 +415,7 @@ function readJsonColumn<T>(
  * different facts and collapsing them would cost an operator the only description of a run
  * they are being asked to cancel.
  */
-function readRunSnapshot(row: RunRow): {
+function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
   sourceKind: EnsembleSourceKind | null;
   strategyId: ReturnType<typeof knownStrategyId>;
   status: EnsembleStatus | null;
@@ -376,16 +434,48 @@ function readRunSnapshot(row: RunRow): {
       ? { value: null, detail: null }
       : readJsonColumn(row.outcome_json, EnsembleOutcomeSchema, "its outcome");
 
-  const bad: Array<[string, string]> = [];
-  if (sourceKind === null) bad.push(["source_kind", row.source_kind]);
-  if (strategyId === null) bad.push(["strategy_id", row.strategy_id]);
-  if (status === null) bad.push(["status", row.status]);
-  if (config.detail !== null) bad.push(["strategy_config_json", config.detail]);
-  if (outcome.detail !== null) bad.push(["outcome_json", outcome.detail]);
-  if (plan.value === null) bad.push(["compiled_plan_json", plan.detail ?? "unreadable"]);
+  const bad: RunRowIssue[] = [...rowIssues];
+  const addBad = (field: string, detail: string): void => {
+    if (!bad.some(([existing]) => existing === field)) bad.push([field, detail]);
+  };
+  if (sourceKind === null) addBad("source_kind", row.source_kind);
+  if (strategyId === null) addBad("strategy_id", row.strategy_id);
+  if (status === null) addBad("status", row.status);
+  if (config.detail !== null) addBad("strategy_config_json", config.detail);
+  if (outcome.detail !== null) addBad("outcome_json", outcome.detail);
+
+  const storedStrategy = parseEnsembleStrategyKey(row.strategy_key);
+  const storedStrategyId = storedStrategy ? knownStrategyId(storedStrategy.id) : null;
+  if (storedStrategy === null) {
+    addBad("strategy_key", row.strategy_key);
+  } else if (storedStrategyId === null) {
+    addBad("strategy_key", `it names unknown strategy ${storedStrategy.id}`);
+  } else {
+    if (storedStrategy.version > ENSEMBLE_STRATEGY_INFO[storedStrategyId].currentVersion) {
+      addBad("strategy_key", `it needs ${row.strategy_key}`);
+    }
+    if (strategyId !== null && storedStrategyId !== strategyId) {
+      addBad("strategy_key", `it disagrees with strategy_id ${row.strategy_id}`);
+    }
+    if (row.strategy_version !== storedStrategy.version) {
+      addBad("strategy_version", `${row.strategy_version} disagrees with ${row.strategy_key}`);
+    }
+  }
+
+  if (plan.value === null) addBad("compiled_plan_json", plan.detail ?? "unreadable");
   else {
+    const planStrategy = parseEnsembleStrategyKey(plan.value.strategyKey);
+    const planStrategyId = planStrategy ? knownStrategyId(planStrategy.id) : null;
+    const planStrategyUnreadable =
+      planStrategy === null ||
+      planStrategyId === null ||
+      (planStrategyId !== null &&
+        planStrategy.version > ENSEMBLE_STRATEGY_INFO[planStrategyId].currentVersion);
+    if (planStrategyUnreadable || plan.value.strategyKey !== row.strategy_key) {
+      addBad("compiled_plan_json", `its strategy key is ${plan.value.strategyKey}`);
+    }
     const missing = missingDriverKeys(plan.value);
-    if (missing.length > 0) bad.push(["compiled_plan_json", `it needs ${missing.join(", ")}`]);
+    if (missing.length > 0) addBad("compiled_plan_json", `it needs ${missing.join(", ")}`);
   }
 
   const unreadable: EnsembleUnreadable | null =
@@ -413,8 +503,9 @@ function readRunSnapshot(row: RunRow): {
   };
 }
 
-function rowToRun(row: RunRow): EnsembleRun {
-  const snapshot = readRunSnapshot(row);
+function rowToRun(value: unknown): EnsembleRun {
+  const { row, issues } = readRunRow(value);
+  const snapshot = readRunSnapshot(row, issues);
   return {
     id: row.id,
     sourceKind: snapshot.sourceKind,
@@ -761,8 +852,49 @@ function boundedOrNull(value: string | null, max: number): string | null {
   return value === null ? null : bounded(value, max);
 }
 
+function serializedJson(
+  value: EnsembleJson | CompiledEnsemblePlan,
+  maxBytes: number,
+  field: string,
+): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError(`${field} is not serializable JSON`);
+  if (Buffer.byteLength(serialized, "utf8") > maxBytes) {
+    throw new RangeError(`${field} exceeds ${maxBytes} UTF-8 bytes`);
+  }
+  return serialized;
+}
+
+const TERMINAL_ATTEMPT_STATUSES: readonly EnsembleAttemptStatus[] = [
+  "submitted",
+  "failed",
+  "cancelled",
+];
+const TERMINAL_STAGE_STATUSES: readonly EnsembleStageStatus[] = ["succeeded", "failed", "cancelled"];
+const TERMINAL_EVALUATION_STATUSES: readonly EnsembleEvaluationStatus[] = [
+  "succeeded",
+  "failed",
+  "interrupted",
+];
+const TERMINAL_LLM_CALL_STATES: readonly EnsembleLlmCallState[] = [
+  "succeeded",
+  "failed",
+  "interrupted",
+];
+
 export class EnsembleStore {
+  private readonly taskLinkListeners = new Set<() => void>();
+
   constructor(private readonly db: DatabaseSync = openDb()) {}
+
+  onTaskLinksChanged(listener: () => void): () => void {
+    this.taskLinkListeners.add(listener);
+    return () => this.taskLinkListeners.delete(listener);
+  }
+
+  private notifyTaskLinksChanged(): void {
+    for (const listener of this.taskLinkListeners) listener();
+  }
 
   /** Run `fn` in a transaction, joining one already in progress rather than nesting. */
   private inTransaction<T>(fn: () => T): T {
@@ -819,8 +951,12 @@ export class EnsembleStore {
           input.repoRoot,
           input.baseBranch,
           input.baseSha,
-          JSON.stringify(input.plan),
-          JSON.stringify(input.strategyConfig),
+          serializedJson(input.plan, ENSEMBLE_LIMITS.compiledPlanJsonBytes, "compiled plan"),
+          serializedJson(
+            input.strategyConfig,
+            ENSEMBLE_LIMITS.strategyConfigJsonBytes,
+            "strategy config",
+          ),
           input.status,
           now,
           now,
@@ -852,20 +988,20 @@ export class EnsembleStore {
 
   getRun(id: string): EnsembleRun | null {
     const row = this.db.prepare(`SELECT * FROM ensemble_runs WHERE id = ?`).get(id) as unknown;
-    return row ? rowToRun(parseShape("ensemble_runs", RunRowSchema, row)) : null;
+    return row ? rowToRun(row) : null;
   }
 
   runBySource(sourceKind: string, sourceKey: string): EnsembleRun | null {
     const row = this.db
       .prepare(`SELECT * FROM ensemble_runs WHERE source_kind = ? AND source_key = ?`)
       .get(sourceKind, sourceKey) as unknown;
-    return row ? rowToRun(parseShape("ensemble_runs", RunRowSchema, row)) : null;
+    return row ? rowToRun(row) : null;
   }
 
   listRuns(): EnsembleRun[] {
     return (
       this.db.prepare(`SELECT * FROM ensemble_runs ORDER BY created_at DESC`).all() as unknown[]
-    ).map((row) => rowToRun(parseShape("ensemble_runs", RunRowSchema, row)));
+    ).map(rowToRun);
   }
 
   /**
@@ -883,7 +1019,7 @@ export class EnsembleStore {
           `SELECT * FROM ensemble_runs WHERE status NOT IN (${placeholders}) ORDER BY created_at ASC`,
         )
         .all(...ENSEMBLE_TERMINAL_STATUSES) as unknown[]
-    ).map((row) => rowToRun(parseShape("ensemble_runs", RunRowSchema, row)));
+    ).map(rowToRun);
   }
 
   listMembers(runId: string): EnsembleMember[] {
@@ -1174,7 +1310,7 @@ export class EnsembleStore {
     } = {},
     now = Date.now(),
   ): EnsembleTransition<EnsembleMember> {
-    return this.inTransaction(() => {
+    const transition = this.inTransaction((): EnsembleTransition<EnsembleMember> => {
       const current = this.getMember(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       const placeholders = expected.map(() => "?").join(",");
@@ -1209,14 +1345,37 @@ export class EnsembleStore {
         ? { ok: true, value: updated }
         : { ok: false, reason: "not_found", current: null };
     });
+    if (transition.ok) this.notifyTaskLinksChanged();
+    return transition;
   }
 
   /** Record the pinned base once the launch runtime has resolved and verified it. */
-  setBase(id: string, baseSha: string, baseBranch: string | null, now = Date.now()): EnsembleRun | null {
-    this.db
-      .prepare(`UPDATE ensemble_runs SET base_sha = ?, base_branch = ?, updated_at = ? WHERE id = ?`)
-      .run(baseSha, baseBranch, now, id);
-    return this.getRun(id);
+  setBase(
+    id: string,
+    baseSha: string,
+    baseBranch: string | null,
+    now = Date.now(),
+  ): EnsembleTransition<EnsembleRun> {
+    return this.inTransaction(() => {
+      const current = this.getRun(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.baseSha !== null) {
+        return current.baseSha === baseSha
+          ? { ok: true, value: current }
+          : { ok: false, reason: "precondition_failed", current };
+      }
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_runs SET base_sha = ?, base_branch = ?, updated_at = ?
+             WHERE id = ? AND base_sha IS NULL`,
+        )
+        .run(baseSha, baseBranch, now, id).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const updated = this.getRun(id);
+      return updated
+        ? { ok: true, value: updated }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   // ---- idempotent appends ----
@@ -1266,6 +1425,7 @@ export class EnsembleStore {
 
   setAttemptStatus(
     id: string,
+    expected: readonly EnsembleAttemptStatus[],
     next: EnsembleAttemptStatus,
     patch: {
       sessionId?: string | null;
@@ -1276,36 +1436,52 @@ export class EnsembleStore {
       error?: string | null;
     } = {},
     now = Date.now(),
-  ): EnsembleAttempt | null {
-    const sets = ["status = ?", "updated_at = ?"];
-    const values: Array<string | number | null> = [next, now];
-    if ("sessionId" in patch) {
-      sets.push("session_id = ?");
-      values.push(patch.sessionId ?? null);
-    }
-    if ("observedModel" in patch) {
-      sets.push("observed_model = ?");
-      values.push(patch.observedModel ?? null);
-    }
-    if ("baseSha" in patch) {
-      sets.push("base_sha = ?");
-      values.push(patch.baseSha ?? null);
-    }
-    if ("startedAt" in patch) {
-      sets.push("started_at = ?");
-      values.push(patch.startedAt ?? null);
-    }
-    if ("finishedAt" in patch) {
-      sets.push("finished_at = ?");
-      values.push(patch.finishedAt ?? null);
-    }
-    if ("error" in patch) {
-      sets.push("error = ?");
-      values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
-    }
-    this.db.prepare(`UPDATE ensemble_attempts SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
-    const row = this.db.prepare(`SELECT * FROM ensemble_attempts WHERE id = ?`).get(id) as unknown;
-    return row ? rowToAttempt(row) : null;
+  ): EnsembleTransition<EnsembleAttempt> {
+    return this.inTransaction(() => {
+      const before = this.db.prepare(`SELECT * FROM ensemble_attempts WHERE id = ?`).get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToAttempt(before);
+      if (expected.length === 0) return { ok: false, reason: "precondition_failed", current };
+      const sets = ["status = ?", "updated_at = ?"];
+      const values: Array<string | number | null> = [next, now];
+      if ("sessionId" in patch) {
+        sets.push("session_id = ?");
+        values.push(patch.sessionId ?? null);
+      }
+      if ("observedModel" in patch) {
+        sets.push("observed_model = ?");
+        values.push(patch.observedModel ?? null);
+      }
+      if ("baseSha" in patch) {
+        sets.push("base_sha = ?");
+        values.push(patch.baseSha ?? null);
+      }
+      if ("startedAt" in patch) {
+        sets.push("started_at = ?");
+        values.push(patch.startedAt ?? null);
+      }
+      if ("finishedAt" in patch) {
+        sets.push("finished_at = ?");
+        values.push(patch.finishedAt ?? null);
+      }
+      if ("error" in patch) {
+        sets.push("error = ?");
+        values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
+      }
+      const expectedSlots = expected.map(() => "?").join(",");
+      const terminalSlots = TERMINAL_ATTEMPT_STATUSES.map(() => "?").join(",");
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_attempts SET ${sets.join(", ")}
+             WHERE id = ? AND status IN (${expectedSlots}) AND status NOT IN (${terminalSlots})`,
+        )
+        .run(...values, id, ...expected, ...TERMINAL_ATTEMPT_STATUSES).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db.prepare(`SELECT * FROM ensemble_attempts WHERE id = ?`).get(id) as unknown;
+      return row
+        ? { ok: true, value: rowToAttempt(row) }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   /**
@@ -1321,6 +1497,24 @@ export class EnsembleStore {
         .prepare(`SELECT * FROM ensemble_artifacts WHERE operation_key = ?`)
         .get(input.operationKey) as unknown;
       if (existing) return rowToArtifact(existing);
+      if (input.attemptId !== null) {
+        const owner = this.db
+          .prepare(`SELECT 1 FROM ensemble_attempts WHERE id = ? AND run_id = ?`)
+          .get(input.attemptId, input.runId);
+        if (!owner) {
+          throw new Error(`attempt ${input.attemptId} does not belong to ensemble ${input.runId}`);
+        }
+      }
+      const locator = serializedJson(
+        input.locator,
+        ENSEMBLE_LIMITS.artifactLocatorJsonBytes,
+        "artifact locator",
+      );
+      const metadata = serializedJson(
+        input.metadata,
+        ENSEMBLE_LIMITS.artifactMetadataJsonBytes,
+        "artifact metadata",
+      );
       const id = randomUUID();
       this.db
         .prepare(
@@ -1336,9 +1530,9 @@ export class EnsembleStore {
           input.formatVersion,
           input.attempt,
           input.status ?? "capturing",
-          bounded(JSON.stringify(input.locator), ENSEMBLE_LIMITS.artifactLocatorJsonBytes),
+          locator,
           input.digest,
-          bounded(JSON.stringify(input.metadata), ENSEMBLE_LIMITS.artifactMetadataJsonBytes),
+          metadata,
           bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
           now,
           input.readyAt,
@@ -1376,7 +1570,7 @@ export class EnsembleStore {
           input.attempt,
           bounded(input.commandKey, ENSEMBLE_LIMITS.commandKey),
           input.status,
-          bounded(JSON.stringify(input.input), ENSEMBLE_LIMITS.stagePayloadJsonBytes),
+          serializedJson(input.input, ENSEMBLE_LIMITS.stagePayloadJsonBytes, "stage input"),
           now,
           now,
           input.status === "queued" ? null : now,
@@ -1388,31 +1582,52 @@ export class EnsembleStore {
 
   finishStageAttempt(
     id: string,
+    expected: readonly EnsembleStageStatus[],
     next: EnsembleStageStatus,
     patch: { output?: EnsembleJson | null; error?: string | null } = {},
     now = Date.now(),
-  ): EnsembleStageAttempt | null {
-    const sets = ["status = ?", "updated_at = ?", "finished_at = ?"];
-    const values: Array<string | number | null> = [
-      next,
-      now,
-      next === "running" || next === "waiting" || next === "queued" ? null : now,
-    ];
-    if ("output" in patch) {
-      sets.push("output_json = ?");
-      values.push(
-        patch.output === undefined || patch.output === null
-          ? null
-          : bounded(JSON.stringify(patch.output), ENSEMBLE_LIMITS.stagePayloadJsonBytes),
-      );
-    }
-    if ("error" in patch) {
-      sets.push("error = ?");
-      values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
-    }
-    this.db.prepare(`UPDATE ensemble_stage_attempts SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
-    const row = this.db.prepare(`SELECT * FROM ensemble_stage_attempts WHERE id = ?`).get(id) as unknown;
-    return row ? rowToStageAttempt(row) : null;
+  ): EnsembleTransition<EnsembleStageAttempt> {
+    const output =
+      patch.output === undefined || patch.output === null
+        ? null
+        : serializedJson(patch.output, ENSEMBLE_LIMITS.stagePayloadJsonBytes, "stage output");
+    return this.inTransaction(() => {
+      const before = this.db
+        .prepare(`SELECT * FROM ensemble_stage_attempts WHERE id = ?`)
+        .get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToStageAttempt(before);
+      if (expected.length === 0) return { ok: false, reason: "precondition_failed", current };
+      const sets = ["status = ?", "updated_at = ?", "finished_at = ?"];
+      const values: Array<string | number | null> = [
+        next,
+        now,
+        next === "running" || next === "waiting" || next === "queued" ? null : now,
+      ];
+      if ("output" in patch) {
+        sets.push("output_json = ?");
+        values.push(output);
+      }
+      if ("error" in patch) {
+        sets.push("error = ?");
+        values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
+      }
+      const expectedSlots = expected.map(() => "?").join(",");
+      const terminalSlots = TERMINAL_STAGE_STATUSES.map(() => "?").join(",");
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_stage_attempts SET ${sets.join(", ")}
+             WHERE id = ? AND status IN (${expectedSlots}) AND status NOT IN (${terminalSlots})`,
+        )
+        .run(...values, id, ...expected, ...TERMINAL_STAGE_STATUSES).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db
+        .prepare(`SELECT * FROM ensemble_stage_attempts WHERE id = ?`)
+        .get(id) as unknown;
+      return row
+        ? { ok: true, value: rowToStageAttempt(row) }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   /** Idempotent on `(stage_attempt_id, attempt)`: a retry of the same attempt is one row. */
@@ -1451,6 +1666,7 @@ export class EnsembleStore {
 
   finishEvaluation(
     id: string,
+    expected: readonly EnsembleEvaluationStatus[],
     next: EnsembleEvaluationStatus,
     patch: {
       runnerId?: string | null;
@@ -1459,36 +1675,58 @@ export class EnsembleStore {
       error?: string | null;
     } = {},
     now = Date.now(),
-  ): EnsembleEvaluation | null {
-    const sets = ["status = ?", "updated_at = ?", "finished_at = ?"];
-    const values: Array<string | number | null> = [
-      next,
-      now,
-      next === "queued" || next === "running" ? null : now,
-    ];
-    if ("runnerId" in patch) {
-      sets.push("runner_id = ?");
-      values.push(patch.runnerId ?? "");
-    }
-    if ("modelId" in patch) {
-      sets.push("model_id = ?");
-      values.push(patch.modelId ?? "");
-    }
-    if ("result" in patch) {
-      sets.push("result_json = ?");
-      values.push(
-        patch.result === undefined || patch.result === null
-          ? null
-          : bounded(JSON.stringify(patch.result), ENSEMBLE_LIMITS.evaluationResultJsonBytes),
-      );
-    }
-    if ("error" in patch) {
-      sets.push("error = ?");
-      values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
-    }
-    this.db.prepare(`UPDATE ensemble_evaluations SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
-    const row = this.db.prepare(`SELECT * FROM ensemble_evaluations WHERE id = ?`).get(id) as unknown;
-    return row ? rowToEvaluation(row) : null;
+  ): EnsembleTransition<EnsembleEvaluation> {
+    const result =
+      patch.result === undefined || patch.result === null
+        ? null
+        : serializedJson(
+            patch.result,
+            ENSEMBLE_LIMITS.evaluationResultJsonBytes,
+            "evaluation result",
+          );
+    return this.inTransaction(() => {
+      const before = this.db
+        .prepare(`SELECT * FROM ensemble_evaluations WHERE id = ?`)
+        .get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToEvaluation(before);
+      if (expected.length === 0) return { ok: false, reason: "precondition_failed", current };
+      const sets = ["status = ?", "updated_at = ?", "finished_at = ?"];
+      const values: Array<string | number | null> = [
+        next,
+        now,
+        next === "queued" || next === "running" ? null : now,
+      ];
+      if ("runnerId" in patch) {
+        sets.push("runner_id = ?");
+        values.push(patch.runnerId ?? "");
+      }
+      if ("modelId" in patch) {
+        sets.push("model_id = ?");
+        values.push(patch.modelId ?? "");
+      }
+      if ("result" in patch) {
+        sets.push("result_json = ?");
+        values.push(result);
+      }
+      if ("error" in patch) {
+        sets.push("error = ?");
+        values.push(boundedOrNull(patch.error ?? null, ENSEMBLE_LIMITS.errorText));
+      }
+      const expectedSlots = expected.map(() => "?").join(",");
+      const terminalSlots = TERMINAL_EVALUATION_STATUSES.map(() => "?").join(",");
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_evaluations SET ${sets.join(", ")}
+             WHERE id = ? AND status IN (${expectedSlots}) AND status NOT IN (${terminalSlots})`,
+        )
+        .run(...values, id, ...expected, ...TERMINAL_EVALUATION_STATUSES).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db.prepare(`SELECT * FROM ensemble_evaluations WHERE id = ?`).get(id) as unknown;
+      return row
+        ? { ok: true, value: rowToEvaluation(row) }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   /** Opened BEFORE the call, so an interrupted one is still on the ledger afterwards. */
@@ -1519,6 +1757,7 @@ export class EnsembleStore {
 
   finishLlmCall(
     id: string,
+    expected: readonly EnsembleLlmCallState[],
     state: EnsembleLlmCallState,
     patch: {
       finishedAt: number;
@@ -1529,24 +1768,38 @@ export class EnsembleStore {
       costUsd: number | null;
       errorCode: string | null;
     },
-  ): EnsembleLlmCall | null {
-    this.db
-      .prepare(
-        `UPDATE ensemble_llm_calls SET state = ?, finished_at = ?, duration_ms = ?,
-           input_bytes = ?, output_bytes = ?, cost_usd = ?, error_code = ? WHERE id = ?`,
-      )
-      .run(
-        state,
-        patch.finishedAt,
-        patch.durationMs,
-        patch.inputBytes,
-        patch.outputBytes,
-        patch.costUsd,
-        boundedOrNull(patch.errorCode, 200),
-        id,
-      );
-    const row = this.db.prepare(`SELECT * FROM ensemble_llm_calls WHERE id = ?`).get(id) as unknown;
-    return row ? rowToLlmCall(row) : null;
+  ): EnsembleTransition<EnsembleLlmCall> {
+    return this.inTransaction(() => {
+      const before = this.db.prepare(`SELECT * FROM ensemble_llm_calls WHERE id = ?`).get(id) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToLlmCall(before);
+      if (expected.length === 0) return { ok: false, reason: "precondition_failed", current };
+      const expectedSlots = expected.map(() => "?").join(",");
+      const terminalSlots = TERMINAL_LLM_CALL_STATES.map(() => "?").join(",");
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_llm_calls SET state = ?, finished_at = ?, duration_ms = ?,
+             input_bytes = ?, output_bytes = ?, cost_usd = ?, error_code = ?
+             WHERE id = ? AND state IN (${expectedSlots}) AND state NOT IN (${terminalSlots})`,
+        )
+        .run(
+          state,
+          patch.finishedAt,
+          patch.durationMs,
+          patch.inputBytes,
+          patch.outputBytes,
+          patch.costUsd,
+          boundedOrNull(patch.errorCode, 200),
+          id,
+          ...expected,
+          ...TERMINAL_LLM_CALL_STATES,
+        ).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db.prepare(`SELECT * FROM ensemble_llm_calls WHERE id = ?`).get(id) as unknown;
+      return row
+        ? { ok: true, value: rowToLlmCall(row) }
+        : { ok: false, reason: "not_found", current: null };
+    });
   }
 
   /**
@@ -1562,6 +1815,11 @@ export class EnsembleStore {
         .prepare(`SELECT * FROM ensemble_decisions WHERE operation_key = ?`)
         .get(input.operationKey) as unknown;
       if (existing) return rowToDecision(existing);
+      const selection = serializedJson(
+        input.selection,
+        ENSEMBLE_LIMITS.decisionSelectionJsonBytes,
+        "decision selection",
+      );
       const highest = this.db
         .prepare(`SELECT MAX(version) AS highest FROM ensemble_decisions WHERE run_id = ?`)
         .get(input.runId) as unknown as { highest: number | null } | undefined;
@@ -1586,7 +1844,7 @@ export class EnsembleStore {
           version,
           input.actor,
           input.actorId,
-          bounded(JSON.stringify(input.selection), ENSEMBLE_LIMITS.decisionSelectionJsonBytes),
+          selection,
           bounded(input.rationale, ENSEMBLE_LIMITS.rationale),
           bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
           now,
@@ -1626,6 +1884,11 @@ export class EnsembleStore {
         .prepare(`SELECT * FROM ensemble_events WHERE operation_key = ?`)
         .get(input.operationKey) as unknown;
       if (existing) return rowToEvent(existing);
+      const payload = serializedJson(
+        input.payload,
+        ENSEMBLE_LIMITS.eventPayloadJsonBytes,
+        "event payload",
+      );
       const result = this.db
         .prepare(
           `INSERT INTO ensemble_events (run_id, ts, event_kind, payload_json, operation_key)
@@ -1635,7 +1898,7 @@ export class EnsembleStore {
           input.runId,
           now,
           input.kind,
-          bounded(JSON.stringify(input.payload), ENSEMBLE_LIMITS.eventPayloadJsonBytes),
+          payload,
           bounded(input.operationKey, ENSEMBLE_LIMITS.operationKey),
         );
       const row = this.db
@@ -1654,7 +1917,9 @@ export class EnsembleStore {
    * caller owns that, because removing a restorable snapshot is a separate confirmation.
    */
   deleteRun(id: string): boolean {
-    return this.db.prepare(`DELETE FROM ensemble_runs WHERE id = ?`).run(id).changes > 0;
+    const removed = this.db.prepare(`DELETE FROM ensemble_runs WHERE id = ?`).run(id).changes > 0;
+    if (removed) this.notifyTaskLinksChanged();
+    return removed;
   }
 }
 

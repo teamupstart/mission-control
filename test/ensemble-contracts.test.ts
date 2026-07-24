@@ -180,6 +180,72 @@ test("duplicate role keys and duplicate stage ids are refused", () => {
   assert.equal(CompiledEnsemblePlanSchema.safeParse(duplicateStage).success, false);
 });
 
+test("plan dependencies, cardinalities, and per-stage limits must be satisfiable", () => {
+  const member = plan().stages[0]!;
+  const cycle = plan({
+    stages: [
+      { ...member, dependsOn: ["stage-2"] },
+      { ...member, id: "stage-2", ordinal: 2, dependsOn: ["stage-1"] },
+    ],
+  });
+  assert.equal(CompiledEnsemblePlanSchema.safeParse(cycle).success, false);
+
+  const impossibleBarrier = plan({
+    stages: [
+      {
+        ...member,
+        barrier: {
+          kind: "members_settled",
+          roleKeys: ["candidate-1", "candidate-2"],
+          minEligible: 3,
+          requiredArtifacts: ["commit"],
+        },
+      },
+    ],
+  });
+  assert.equal(CompiledEnsemblePlanSchema.safeParse(impossibleBarrier).success, false);
+
+  const impossibleSubjects = plan({
+    stages: [
+      {
+        id: "review",
+        ordinal: 1,
+        label: "Review",
+        driverKind: "review",
+        driverKey: "comparative_review@1",
+        dependsOn: [],
+        barrier: { kind: "none" },
+        maxAttempts: 1,
+        evaluator: {
+          kind: "comparative_llm",
+          guidance: { kind: "builtin", rubricId: "default" },
+          runner: null,
+          model: null,
+          anonymizeSubjects: true,
+          materialBudgetBytes: 1_000,
+        },
+        subjects: {
+          kind: "ready_artifacts",
+          artifactKind: "commit",
+          minSubjects: 2,
+          maxSubjects: 1,
+        },
+      },
+    ],
+  });
+  assert.equal(CompiledEnsemblePlanSchema.safeParse(impossibleSubjects).success, false);
+
+  const overStageBudget = plan({
+    stages: [{ ...member, maxAttempts: plan().budget.maxStageAttempts + 1 }],
+  });
+  assert.equal(CompiledEnsemblePlanSchema.safeParse(overStageBudget).success, false);
+
+  const overWaveBudget = plan({
+    roles: [{ ...plan().roles[0]!, wave: 2 }, plan().roles[1]!],
+  });
+  assert.equal(CompiledEnsemblePlanSchema.safeParse(overWaveBudget).success, false);
+});
+
 test("no plan may exceed the hard fleet ceilings, whatever its strategy asked for", () => {
   const tooMany = plan({
     budget: { ...plan().budget, maxMembers: ENSEMBLE_HARD_LIMITS.maxMembers + 1 },

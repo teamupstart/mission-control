@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ENSEMBLE_PLAN_VERSION, type CompiledEnsemblePlan } from "../src/shared/ensemble.ts";
+import {
+  ENSEMBLE_LIMITS,
+  ENSEMBLE_PLAN_VERSION,
+  ensembleIsRunnable,
+  type CompiledEnsemblePlan,
+} from "../src/shared/ensemble.ts";
 
 /**
  * What is at stake: this store is the durable memory of work that spends real money on an
@@ -222,6 +227,19 @@ test("a member transition takes the same precondition, and normalizes its task b
   assert.equal(store.setMemberStatus(members[1]!.id, ["pending"], "failed", { taskId: null }).ok, true);
 });
 
+test("the pinned base is write-once and an identical retry is idempotent", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const first = store.setBase(run.id, "a".repeat(40), "main", 200);
+  assert.equal(first.ok, true);
+  const retry = store.setBase(run.id, "a".repeat(40), "moved", 300);
+  assert.equal(retry.ok, true);
+  if (retry.ok) assert.equal(retry.value.baseBranch, "main");
+  const repin = store.setBase(run.id, "b".repeat(40), "main", 400);
+  assert.equal(repin.ok, false);
+  assert.equal(store.getRun(run.id)?.baseSha, "a".repeat(40));
+});
+
 // ---- idempotent appends ----
 
 test("attempt numbers start at one and a repeat of the same number is one row", () => {
@@ -263,6 +281,17 @@ test("attempt numbers start at one and a repeat of the same number is one row", 
   assert.equal(store.listAttempts(run.id).length, 1);
   assert.equal(first.agent, "claude");
   assert.equal(first.requestedEffort, "high");
+
+  const submitted = store.setAttemptStatus(first.id, ["launching"], "submitted", {
+    finishedAt: 300,
+  });
+  assert.equal(submitted.ok, true);
+  assert.equal(store.setAttemptStatus(first.id, ["launching"], "running").ok, false);
+  assert.equal(
+    store.setAttemptStatus(first.id, ["submitted"], "running").ok,
+    false,
+    "even a bad caller cannot move a terminal attempt backward",
+  );
 });
 
 test("an artifact is keyed by the operation that captured it, not by its contents", () => {
@@ -327,10 +356,16 @@ test("a command key is spent once, however many times the daemon replays it", ()
   assert.equal(store.listStageAttempts(run.id).length, 1);
   assert.equal(store.stageAttemptByCommand(command.commandKey)?.id, first.id);
 
-  const finished = store.finishStageAttempt(first.id, "succeeded", { output: { launched: 2 } });
-  assert.equal(finished?.status, "succeeded");
-  assert.ok(finished?.finishedAt);
-  assert.deepEqual(finished?.output, { launched: 2 });
+  const finished = store.finishStageAttempt(first.id, ["running"], "succeeded", {
+    output: { launched: 2 },
+  });
+  assert.equal(finished.ok, true);
+  if (!finished.ok) return;
+  assert.equal(finished.value.status, "succeeded");
+  assert.ok(finished.value.finishedAt);
+  assert.deepEqual(finished.value.output, { launched: 2 });
+  assert.equal(store.finishStageAttempt(first.id, ["running"], "waiting").ok, false);
+  assert.equal(store.finishStageAttempt(first.id, ["succeeded"], "running").ok, false);
 });
 
 test("an evaluation is one row per stage attempt and attempt number, and reports what ran", () => {
@@ -362,13 +397,17 @@ test("an evaluation is one row per stage attempt and attempt number, and reports
   // Not resolved yet is null on the record, never a plausible provider name.
   assert.equal(first.runnerId, null);
 
-  const done = store.finishEvaluation(first.id, "succeeded", {
+  const done = store.finishEvaluation(first.id, ["running"], "succeeded", {
     runnerId: "claude",
     modelId: "claude-opus-4-8",
     result: { recommendedArtifactId: "art-1" },
   });
-  assert.equal(done?.runnerId, "claude");
-  assert.deepEqual(done?.subjectArtifactIds, ["art-1", "art-2"]);
+  assert.equal(done.ok, true);
+  if (!done.ok) return;
+  assert.equal(done.value.runnerId, "claude");
+  assert.deepEqual(done.value.subjectArtifactIds, ["art-1", "art-2"]);
+  assert.equal(store.finishEvaluation(first.id, ["running"], "failed").ok, false);
+  assert.equal(store.finishEvaluation(first.id, ["succeeded"], "running").ok, false);
 });
 
 test("a model call's unknown cost stays null, because unknown is not zero", () => {
@@ -385,7 +424,7 @@ test("a model call's unknown cost stays null, because unknown is not zero", () =
     state: "running",
     startedAt: 100,
   });
-  const done = store.finishLlmCall(call.id, "succeeded", {
+  const done = store.finishLlmCall(call.id, ["running"], "succeeded", {
     finishedAt: 200,
     durationMs: 100,
     inputBytes: 10,
@@ -393,8 +432,67 @@ test("a model call's unknown cost stays null, because unknown is not zero", () =
     costUsd: null,
     errorCode: null,
   });
-  assert.equal(done?.costUsd, null);
-  assert.equal(done?.state, "succeeded");
+  assert.equal(done.ok, true);
+  if (!done.ok) return;
+  assert.equal(done.value.costUsd, null);
+  assert.equal(done.value.state, "succeeded");
+  assert.equal(
+    store.finishLlmCall(call.id, ["running"], "failed", {
+      finishedAt: 300,
+      durationMs: 200,
+      inputBytes: 10,
+      outputBytes: 0,
+      costUsd: null,
+      errorCode: "late",
+    }).ok,
+    false,
+  );
+  assert.equal(
+    store.finishLlmCall(call.id, ["succeeded"], "running", {
+      finishedAt: 300,
+      durationMs: 200,
+      inputBytes: 10,
+      outputBytes: 0,
+      costUsd: null,
+      errorCode: null,
+    }).ok,
+    false,
+  );
+});
+
+test("oversized UTF-8 JSON is refused before it can corrupt a row", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const stage = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-large",
+    driverKind: "review",
+    driverKey: "comparative_review@1",
+    attempt: 1,
+    commandKey: "stage-large:1",
+    status: "running",
+    input: {},
+  });
+  const oversized = { value: "💥".repeat(ENSEMBLE_LIMITS.stagePayloadJsonBytes / 4) };
+  assert.throws(
+    () => store.finishStageAttempt(stage.id, ["running"], "succeeded", { output: oversized }),
+    /UTF-8 bytes/,
+  );
+  const unchanged = store.listStageAttempts(run.id).find((row) => row.id === stage.id);
+  assert.equal(unchanged?.status, "running");
+  assert.equal(unchanged?.output, null);
+
+  assert.throws(
+    () =>
+      store.appendEvent({
+        runId: run.id,
+        kind: "too_large",
+        payload: { value: "💥".repeat(ENSEMBLE_LIMITS.eventPayloadJsonBytes / 4) },
+        operationKey: "too-large-event",
+      }),
+    /UTF-8 bytes/,
+  );
+  assert.equal(store.listEvents(run.id).length, 0);
 });
 
 test("a decision is versioned, supersedes its predecessor, and is spent once", () => {
@@ -434,9 +532,19 @@ test("a decision is versioned, supersedes its predecessor, and is spent once", (
   assert.equal(decisions[0]?.status, "superseded");
   assert.equal(decisions[1]?.status, "recorded");
 
-  const applied = store.applyDecision(second.id, "stage-attempt-1");
+  const finalization = store.startStageAttempt({
+    runId: run.id,
+    stageId: "stage-finalize",
+    driverKind: "finalize",
+    driverKey: "select_one_finalize@1",
+    attempt: 1,
+    commandKey: `${run.id}:finalize:1`,
+    status: "running",
+    input: {},
+  });
+  const applied = store.applyDecision(second.id, finalization.id);
   assert.equal(applied.ok, true);
-  assert.equal(store.applyDecision(second.id, "stage-attempt-1").ok, false);
+  assert.equal(store.applyDecision(second.id, finalization.id).ok, false);
 });
 
 test("a replayed audit record does not double the timeline an operator reads", () => {
@@ -645,6 +753,31 @@ test("a run written by a newer build loads, and says exactly why it will not run
   assert.equal(store.listNonTerminalRuns().some((r) => r.id === run.id), true);
 });
 
+test("a newer persisted strategy version stays visible but is not runnable", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  const future = plan({ strategyKey: "best_of_n@2" });
+  db.prepare(
+    `UPDATE ensemble_runs
+        SET strategy_version = 2, strategy_key = 'best_of_n@2', compiled_plan_json = ?
+      WHERE id = ?`,
+  ).run(JSON.stringify(future), run.id);
+  const loaded = store.getRun(run.id);
+  assert.ok(loaded?.plan);
+  assert.equal(loaded.plan.strategyKey, "best_of_n@2");
+  assert.ok(loaded.unreadable?.fields.includes("strategy_key"));
+  assert.equal(ensembleIsRunnable(loaded), false);
+});
+
+test("a strategy version that disagrees with its persisted key degrades", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  db.prepare(`UPDATE ensemble_runs SET strategy_version = 9 WHERE id = ?`).run(run.id);
+  const loaded = store.getRun(run.id);
+  assert.ok(loaded?.unreadable?.fields.includes("strategy_version"));
+  assert.equal(loaded && ensembleIsRunnable(loaded), false);
+});
+
 test("a plan needing a driver this build does not ship stays readable and is still refused", () => {
   const store = new EnsembleStore(db);
   const { run } = insert(store);
@@ -695,6 +828,49 @@ test("a corrupt column on the RUN degrades it, because the daemon boots through 
   assert.equal(store.listSummaries().length, 2);
   assert.equal(store.summary(broken.id)?.attention, true);
   assert.equal(store.summary(healthy.id)?.unreadable, null);
+});
+
+test("malformed scalar run fields degrade instead of escaping the boot summary read", () => {
+  const store = new EnsembleStore(db);
+  const broken = insert(store, "manual:broken-scalars").run;
+  insert(store, "manual:healthy-scalars");
+  db.prepare(
+    `UPDATE ensemble_runs SET strategy_version = 'future', created_at = 'yesterday' WHERE id = ?`,
+  ).run(broken.id);
+
+  const loaded = store.getRun(broken.id);
+  assert.ok(loaded);
+  assert.equal(loaded.strategyVersion, 0);
+  assert.equal(loaded.createdAt, 0);
+  assert.ok(loaded.unreadable?.fields.includes("strategy_version"));
+  assert.ok(loaded.unreadable?.fields.includes("created_at"));
+  assert.equal(store.listSummaries().length, 2);
+});
+
+test("unknown child enums degrade to null while malformed child JSON still throws", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store);
+  store.recordArtifact({
+    runId: run.id,
+    attemptId: null,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready",
+    locator: {},
+    digest: "d",
+    metadata: {},
+    operationKey: "op-future-kind",
+    readyAt: 1,
+  });
+  db.prepare(
+    `UPDATE ensemble_artifacts SET kind = 'future_artifact' WHERE operation_key = 'op-future-kind'`,
+  ).run();
+  assert.equal(store.listArtifacts(run.id)[0]?.kind, null);
+  db.prepare(
+    `UPDATE ensemble_artifacts SET locator_json = '{' WHERE operation_key = 'op-future-kind'`,
+  ).run();
+  assert.throws(() => store.listArtifacts(run.id), EnsembleRowError);
 });
 
 test("a corrupt column on a CHILD throws, naming the table and row", () => {

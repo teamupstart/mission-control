@@ -62,7 +62,7 @@ function seedPreFeatureDb(): void {
 seedPreFeatureDb();
 
 const { openDb } = await import("../src/server/db.ts");
-const { ENSEMBLE_TABLES } = await import("../src/server/ensembles/store.ts");
+const { ENSEMBLE_TABLES, EnsembleStore } = await import("../src/server/ensembles/store.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -195,6 +195,69 @@ test("many members may have no task, but a task belongs to at most one member", 
     .prepare(`SELECT COUNT(*) AS count FROM ensemble_members WHERE run_id = 'run-part'`)
     .get() as { count: number };
   assert.equal(orphans.count, 0, "deleting a run must collect its members");
+});
+
+test("child ownership cannot cross ensemble runs", () => {
+  const insertRun = db.prepare(
+    `INSERT INTO ensemble_runs (id, source_kind, source_key, source_id, strategy_id, strategy_version,
+       strategy_key, strategy_label, title, intent, repo_root, base_branch, base_sha,
+       compiled_plan_json, strategy_config_json, status, created_at, updated_at)
+     VALUES (?, 'manual', ?, NULL, 'best_of_n', 1, 'best_of_n@1', 'Best of N',
+             'T', 'I', '/repo', NULL, NULL, '{}', '{}', 'planning', 1, 1)`,
+  );
+  insertRun.run("owner-a", "owner-a");
+  insertRun.run("owner-b", "owner-b");
+  const insertMember = db.prepare(
+    `INSERT INTO ensemble_members (id, run_id, role_key, role_label, ordinal, wave, task_id,
+       status, created_at, updated_at) VALUES (?, ?, 'candidate', 'Candidate', 1, 1, '', 'pending', 1, 1)`,
+  );
+  insertMember.run("member-a", "owner-a");
+  insertMember.run("member-b", "owner-b");
+
+  const insertAttempt = db.prepare(
+    `INSERT INTO ensemble_attempts (id, run_id, member_id, attempt, status, created_at, updated_at)
+     VALUES (?, ?, ?, 1, 'running', 1, 1)`,
+  );
+  assert.throws(() => insertAttempt.run("cross-attempt", "owner-a", "member-b"), /FOREIGN KEY/i);
+  insertAttempt.run("attempt-b", "owner-b", "member-b");
+
+  const store = new EnsembleStore(db);
+  assert.throws(
+    () =>
+      store.recordArtifact({
+        runId: "owner-a",
+        attemptId: "attempt-b",
+        kind: "commit",
+        formatVersion: 1,
+        attempt: 1,
+        status: "ready",
+        locator: {},
+        digest: "d",
+        metadata: {},
+        operationKey: "cross-artifact",
+        readyAt: 1,
+      }),
+    /does not belong/,
+  );
+
+  db.prepare(
+    `INSERT INTO ensemble_stage_attempts (id, run_id, stage_id, driver_kind, driver_key, attempt,
+       command_key, status, input_json, created_at, updated_at)
+     VALUES ('stage-b', 'owner-b', 'stage', 'review', 'comparative_review@1', 1,
+             'stage-b:1', 'running', '{}', 1, 1)`,
+  ).run();
+  assert.throws(
+    () =>
+      db.prepare(
+        `INSERT INTO ensemble_evaluations (id, run_id, stage_attempt_id, attempt, method,
+           runner_id, model_id, input_fingerprint, subjects_json, status, created_at, updated_at)
+         VALUES ('cross-evaluation', 'owner-a', 'stage-b', 1, 'comparative_llm',
+                 '', '', 'f', '[]', 'running', 1, 1)`,
+      ).run(),
+    /FOREIGN KEY/i,
+  );
+
+  db.prepare(`DELETE FROM ensemble_runs WHERE id IN ('owner-a', 'owner-b')`).run();
 });
 
 test("a monetary cost is nullable, because unknown and zero are different facts", () => {

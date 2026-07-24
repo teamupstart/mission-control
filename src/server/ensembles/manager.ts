@@ -1,5 +1,8 @@
 import {
+  ENSEMBLE_LIMITS,
+  ENSEMBLE_SOURCE_KINDS,
   ensembleStrategyKey,
+  readEnsembleEnum,
   type EnsembleCreateInput,
   type EnsembleRun,
   type EnsembleRunDetail,
@@ -83,13 +86,18 @@ export class EnsembleManager {
     // the registry free of an ensemble dependency and keeps the lookup on the daemon side of
     // one seam. It is an in-memory map read, not a query: `taskSummaryFor` runs for every
     // session on every discovery sweep.
-    this.registry.registerEnsembleProjection((taskId) => this.links.get(taskId) ?? null);
-    this.refreshLinks();
+    this.store.onTaskLinksChanged(() => this.refreshLinks());
+    this.refreshProjection();
   }
 
   /** Rebuilt rather than patched: a member LOSING its task matters as much as gaining one. */
   private refreshLinks(): void {
     this.links = new Map(this.store.listTaskLinks().map((row) => [row.taskId, row.link]));
+  }
+
+  private refreshProjection(): void {
+    this.refreshLinks();
+    this.registry.registerEnsembleProjection((taskId) => this.links.get(taskId) ?? null);
   }
 
   /** Every run, as the compact projection. */
@@ -121,6 +129,23 @@ export class EnsembleManager {
    * nothing at all. There is no third outcome where agents exist and the group does not.
    */
   create(input: EnsembleCreateInput, now = Date.now()): EnsembleCreateOutcome {
+    const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, input.sourceKind);
+    const sourceKey =
+      typeof input.sourceKey === "string" &&
+      input.sourceKey.length > 0 &&
+      input.sourceKey.length <= ENSEMBLE_LIMITS.sourceKey
+        ? input.sourceKey
+        : null;
+    const existing =
+      sourceKind !== null && sourceKey !== null
+        ? this.store.runBySource(sourceKind, sourceKey)
+        : null;
+    if (existing) {
+      const summary = this.publish(existing.id);
+      if (!summary) throw new Error(`ensemble ${existing.id} has no summary for its source claim`);
+      return { ok: true, run: existing, summary, created: false };
+    }
+
     const parsed = EnsembleCreateInputSchema.safeParse(input);
     if (!parsed.success) {
       return {
@@ -205,7 +230,6 @@ export class EnsembleManager {
       },
       now,
     );
-    this.refreshLinks();
     const summary = this.publish(write.run.id);
     if (!summary) {
       throw new Error(`ensemble ${write.run.id} has no summary immediately after creation`);
@@ -220,6 +244,7 @@ export class EnsembleManager {
    * write that can still fail must not be the thing that announced itself.
    */
   publish(id: string): EnsembleSummary | null {
+    this.refreshProjection();
     const summary = this.store.summary(id);
     if (summary) this.registry.upsertEnsemble(summary);
     return summary;

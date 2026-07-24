@@ -947,6 +947,7 @@ export function openDb(): DatabaseSync {
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL,
       error               TEXT,
+      UNIQUE (id, run_id),
       UNIQUE (run_id, ordinal),
       UNIQUE (run_id, role_key)
     );
@@ -958,7 +959,7 @@ export function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS ensemble_attempts (
       id               TEXT NOT NULL PRIMARY KEY,
       run_id           TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
-      member_id        TEXT NOT NULL REFERENCES ensemble_members(id) ON DELETE CASCADE,
+      member_id        TEXT NOT NULL,
       attempt          INTEGER NOT NULL,
       task_id          TEXT,
       session_id       TEXT,
@@ -978,6 +979,9 @@ export function openDb(): DatabaseSync {
       started_at       INTEGER,
       finished_at      INTEGER,
       error            TEXT,
+      UNIQUE (id, run_id),
+      FOREIGN KEY (member_id, run_id)
+        REFERENCES ensemble_members(id, run_id) ON DELETE CASCADE,
       UNIQUE (member_id, attempt)
     );
     CREATE INDEX IF NOT EXISTS idx_ensemble_attempts_run
@@ -1036,6 +1040,7 @@ export function openDb(): DatabaseSync {
       started_at  INTEGER,
       finished_at INTEGER,
       error       TEXT,
+      UNIQUE (id, run_id),
       UNIQUE (run_id, stage_id, attempt)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_stage_attempts_command
@@ -1047,7 +1052,7 @@ export function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS ensemble_evaluations (
       id                TEXT NOT NULL PRIMARY KEY,
       run_id            TEXT NOT NULL REFERENCES ensemble_runs(id) ON DELETE CASCADE,
-      stage_attempt_id  TEXT NOT NULL REFERENCES ensemble_stage_attempts(id) ON DELETE CASCADE,
+      stage_attempt_id  TEXT NOT NULL,
       attempt           INTEGER NOT NULL,
       method            TEXT NOT NULL,
       -- What actually ran, resolved at attempt time. Empty string means "not resolved yet",
@@ -1062,6 +1067,9 @@ export function openDb(): DatabaseSync {
       updated_at        INTEGER NOT NULL,
       finished_at       INTEGER,
       error             TEXT,
+      UNIQUE (id, run_id),
+      FOREIGN KEY (stage_attempt_id, run_id)
+        REFERENCES ensemble_stage_attempts(id, run_id) ON DELETE CASCADE,
       UNIQUE (stage_attempt_id, attempt)
     );
 
@@ -1085,7 +1093,11 @@ export function openDb(): DatabaseSync {
       input_bytes      INTEGER NOT NULL DEFAULT 0,
       output_bytes     INTEGER NOT NULL DEFAULT 0,
       cost_usd         REAL,
-      error_code       TEXT
+      error_code       TEXT,
+      FOREIGN KEY (stage_attempt_id, run_id)
+        REFERENCES ensemble_stage_attempts(id, run_id) ON DELETE CASCADE,
+      FOREIGN KEY (evaluation_id, run_id)
+        REFERENCES ensemble_evaluations(id, run_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_ensemble_llm_calls_run
       ON ensemble_llm_calls(run_id, started_at);
@@ -1121,6 +1133,8 @@ export function openDb(): DatabaseSync {
       operation_key                 TEXT NOT NULL,
       created_at                    INTEGER NOT NULL,
       updated_at                    INTEGER NOT NULL,
+      FOREIGN KEY (finalization_stage_attempt_id, run_id)
+        REFERENCES ensemble_stage_attempts(id, run_id) ON DELETE CASCADE,
       UNIQUE (run_id, version)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_decisions_operation

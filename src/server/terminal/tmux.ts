@@ -305,7 +305,15 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     // tmux resolves both the buffer and the pane BEFORE writing, so a non-zero exit here
     // means nothing reached the pane - the one thing a caller most needs to be true.
     // -d: drop the buffer after, so a pane's buffer never outlives the write.
-    return cmd(["paste-buffer", ...pasteFlags, "-d", "-b", buf, "-t", paneTarget(t)], fail);
+    const pasted = await cmd(
+      ["paste-buffer", ...pasteFlags, "-d", "-b", buf, "-t", paneTarget(t)],
+      fail,
+    );
+    if (!pasted.ok) {
+      // A failed paste never reached -d, so the buffer would otherwise outlive the write.
+      await cmd(["delete-buffer", "-b", buf], "tmux delete-buffer failed");
+    }
+    return pasted;
   };
 
   return {

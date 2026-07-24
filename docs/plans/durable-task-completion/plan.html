@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Durable, PR-driven task completion</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2024; --muted: #5b6470; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --warn: #b4690e; --ok: #1a7f37;
+    --box: #ffffff; --box-stroke: #c7ccd3; --box-bad: #fbeaea; --box-good: #e9f5ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa4b2; --rule: #262c34;
+      --card: #161b22; --accent: #6ea8fe; --warn: #e0a955; --ok: #57ab5a;
+      --box: #1b2129; --box-stroke: #3a434f; --box-bad: #3a2224; --box-good: #1f3326;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 22px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--rule); letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); font-size: 17px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 5px; padding: 0.05em 0.35em; }
+  a { color: var(--accent); }
+  ul, ol { padding-left: 1.2em; }
+  li { margin: 5px 0; }
+  strong { font-weight: 650; }
+  .fig { margin: 18px 0 6px; padding: 14px; background: var(--card); border: 1px solid var(--rule);
+    border-radius: 10px; overflow-x: auto; }
+  .fig svg { display: block; min-width: 640px; width: 100%; height: auto; color: var(--fg); }
+  .cap { color: var(--muted); font-size: 13px; margin: 4px 2px 0; }
+  .callout { margin: 16px 0; padding: 12px 14px; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 8px 8px 0; }
+  .callout.req { border-left-color: var(--warn); }
+  .callout.ok { border-left-color: var(--ok); }
+  .box-fill { fill: var(--box); stroke: var(--box-stroke); }
+  .box-bad { fill: var(--box-bad); stroke: var(--box-stroke); }
+  .box-good { fill: var(--box-good); stroke: var(--box-stroke); }
+  text { fill: var(--fg); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .lbl { font-size: 12.5px; }
+  .sub { fill: var(--muted); font-size: 11px; }
+  .edge { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .edge-bad { stroke: var(--warn); stroke-width: 1.4; fill: none; }
+  .phase { fill: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+  footer { margin-top: 46px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Durable, PR-driven task completion</h1>
+<p class="lede">Decouple a task's <em>completion</em> from the state of the session that ran it. Decisions resolved - this is the approved plan.</p>
+<p>A task whose work shipped - a pull request we opened for it got merged - must reach
+<code>done</code> and stop blocking the backlog, whether its session is still idle, was
+killed, rolled onto new work, or landed in some invalid state. Whether to also <em>close the
+agent</em> stays a separate preference and must never gate completion.</p>
+
+<h2>The problem</h2>
+<p>Today a task's terminal state is derived from <strong>live session state plus the current
+work episode</strong>. When the session attributed to a task moves on, dies, or goes weird,
+the task can sit in <code>running</code> (or get marked <code>failed</code>) even though its
+work is done. A task that is not <code>done</code> has two downstream costs:</p>
+<ul>
+  <li><strong>It blocks its dependents.</strong> <code>blockersIn</code>
+    (<code>@shared/backlog.ts</code>) clears a task dependency only when the depended-on task
+    is <code>done</code>; a <code>running</code>, <code>failed</code>, or
+    <code>cancelled</code> dependency stays a blocker, so anything waiting on it never gets
+    scheduled.</li>
+  <li><strong>It occupies its agent.</strong> <code>agentIsFree</code>
+    (<code>src/server/foreman/backlog-machine.ts</code>) refuses a session that still has a
+    <code>running</code>/<code>dispatching</code> task bound to it, so the backlog autopilot
+    will not reuse that agent.</li>
+</ul>
+<p>Observed instance: the session that shipped PR #220 stayed <code>running</code> with its
+task never settling, because it kept working long after the PR was created - so its
+<em>current</em> work episode is no longer the one that merged.</p>
+
+<h2>Why it happens</h2>
+<p>The merge is recorded against <strong>one specific work episode</strong>, and every
+completion path reads only the <strong>current</strong> episode:</p>
+<ul>
+  <li><code>mergedPrFor(taskId)</code> reads only the <em>current</em> task&#8596;episode
+    binding and returns a merged PR only if <strong>that</strong> binding has
+    <code>mergedAt</code>. Retained <strong>historical</strong> bindings are ignored.</li>
+  <li>Merge attribution (<code>reconcileWorkEpisodeMerge</code>) fires
+    <code>task_pr_merged</code> only when the current binding matches the merged episode.</li>
+  <li><code>settleIfEpisodeFinished</code> and <code>closeMergedSession</code> both gate on
+    <code>episodeId === current</code>.</li>
+</ul>
+<p>So a merge on a <strong>rolled-past</strong> episode is invisible to completion. When the
+session later goes away, <code>agentWentAway</code> calls <code>mergedPrFor</code> (the
+current, unmerged binding), finds nothing, and marks the task <code>failed</code> - stranding
+every dependent behind a <code>stopped</code> blocker for work that shipped.</p>
+<p>The machinery to fix this <strong>already exists but is only half-wired</strong>:
+work-episode&#8596;task bindings are retained as <em>historical</em>, and the <em>dependency</em>
+merge path already reads current <strong>and</strong> historical bindings. Standalone task
+completion simply does not.</p>
+
+<div class="callout req"><strong>Requirement.</strong> If a task's work was satisfied by a
+merged PR, the task is <code>done</code> and does not block backlog scheduling - regardless of
+whether its session is idle, was cancelled/killed, or is invalid. Session disposition is a
+separate preference and must not gate task completion.</div>
+
+<h2>Adopted decisions</h2>
+<div class="callout ok">Resolved via the Mission Control dashboard review (2026-07-24).</div>
+<ol>
+  <li><strong>The durable PR&#8596;task link is the work-episode bindings (current +
+    historical).</strong> No new <code>Task.prs</code> field or table. The bindings are
+    already retained and already carry <code>prUrl</code>/<code>mergedAt</code>; completion
+    learns to read the whole record instead of only its head. A first-class field can still
+    be layered on later without migration pain.</li>
+  <li><strong>A merged PR always upgrades the task to <code>done</code> - even one the
+    operator explicitly cancelled.</strong> The work shipped; a row that says otherwise
+    blocks scheduling for work that landed. Only a <strong>merged</strong> PR upgrades - a
+    closed-unmerged PR changes nothing, and a cancelled task with no merged PR stays
+    cancelled. The upgrade records the merged PR as the outcome so the row says <em>why</em>
+    it moved.</li>
+  <li><strong>Formalize multiple tasks per session in this change.</strong>
+    <code>Task.sessionId</code> becomes a mutable "currently executing on" pointer; the
+    durable task&#8596;episode bindings are the provenance record linking each task to the
+    work (and PRs) it produced. A session runs tasks <strong>serially</strong> - at most one
+    <code>running</code>/<code>dispatching</code> task at a time, unchanged - but completed
+    tasks no longer pin the session, and the session's task history remains queryable
+    through the bindings rather than a single live pointer.</li>
+</ol>
+
+<h2>Design: completion follows the durable PR, not the session</h2>
+<p>Pull apart two things that are currently entangled:</p>
+<ul>
+  <li><strong>Task completion</strong> - a durable fact: <em>this task's work was satisfied by
+    a merged PR we opened for it</em>. Independent of session liveness and episode currency.</li>
+  <li><strong>Session disposition</strong> - <em>should the agent be closed</em> - stays gated
+    on session state (idle <strong>and</strong> not moved on) and never blocks completion.</li>
+</ul>
+
+<div class="fig">
+<svg viewBox="0 0 720 430" role="img" aria-label="Before and after flow of task completion">
+  <defs>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto">
+      <path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="var(--muted)"/>
+    </marker>
+    <marker id="arwbad" markerWidth="9" markerHeight="9" refX="7.5" refY="3.2" orient="auto">
+      <path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="var(--warn)"/>
+    </marker>
+  </defs>
+
+  <!-- BEFORE -->
+  <text class="phase" x="20" y="24">Before &#183; gated on the current episode</text>
+  <rect class="box-fill" x="20" y="38" width="120" height="46" rx="8"/>
+  <text class="lbl" x="80" y="66" text-anchor="middle">PR merged</text>
+
+  <rect class="box-fill" x="180" y="38" width="150" height="46" rx="8"/>
+  <text class="lbl" x="255" y="60" text-anchor="middle">current episode</text>
+  <text class="lbl" x="255" y="76" text-anchor="middle">binding?</text>
+
+  <rect class="box-good" x="372" y="20" width="150" height="46" rx="8"/>
+  <text class="lbl" x="447" y="42" text-anchor="middle">settle if idle</text>
+  <text class="sub" x="447" y="57" text-anchor="middle">&#8594; task done</text>
+
+  <rect class="box-bad" x="372" y="80" width="150" height="60" rx="8"/>
+  <text class="lbl" x="447" y="103" text-anchor="middle">stuck: running</text>
+  <text class="lbl" x="447" y="119" text-anchor="middle">or failed</text>
+
+  <rect class="box-bad" x="548" y="80" width="150" height="60" rx="8"/>
+  <text class="sub" x="623" y="103" text-anchor="middle">blocks dependents</text>
+  <text class="sub" x="623" y="119" text-anchor="middle">occupies agent</text>
+
+  <path class="edge" d="M140,61 L176,61" marker-end="url(#arw)"/>
+  <path class="edge" d="M330,52 C352,46 352,44 368,43" marker-end="url(#arw)"/>
+  <text class="sub" x="351" y="38" text-anchor="middle">matches</text>
+  <path class="edge-bad" d="M330,70 C352,86 352,100 368,104" marker-end="url(#arwbad)"/>
+  <text class="sub" x="300" y="150" text-anchor="start">rolled / killed / idle-moved-on</text>
+  <path class="edge-bad" d="M522,110 L544,110" marker-end="url(#arwbad)"/>
+
+  <!-- divider -->
+  <line x1="20" y1="196" x2="700" y2="196" stroke="var(--rule)" stroke-width="1"/>
+
+  <!-- AFTER -->
+  <text class="phase" x="20" y="228">After &#183; follows the durable PR</text>
+  <rect class="box-fill" x="20" y="244" width="120" height="46" rx="8"/>
+  <text class="lbl" x="80" y="272" text-anchor="middle">PR merged</text>
+
+  <rect class="box-fill" x="176" y="240" width="176" height="54" rx="8"/>
+  <text class="lbl" x="264" y="262" text-anchor="middle">record merge on the</text>
+  <text class="lbl" x="264" y="278" text-anchor="middle">task's binding</text>
+  <text class="sub" x="264" y="291" text-anchor="middle">current or historical</text>
+
+  <rect class="box-fill" x="388" y="240" width="176" height="54" rx="8"/>
+  <text class="lbl" x="476" y="262" text-anchor="middle">completion reconciler</text>
+  <text class="sub" x="476" y="277" text-anchor="middle">any binding merged?</text>
+  <text class="sub" x="476" y="290" text-anchor="middle">session-independent</text>
+
+  <rect class="box-good" x="388" y="320" width="176" height="52" rx="8"/>
+  <text class="lbl" x="476" y="342" text-anchor="middle">task done</text>
+  <text class="sub" x="476" y="358" text-anchor="middle">resources kept</text>
+
+  <rect class="box-good" x="600" y="320" width="104" height="52" rx="8"/>
+  <text class="sub" x="652" y="336" text-anchor="middle">dependents</text>
+  <text class="sub" x="652" y="349" text-anchor="middle">unblocked, agent</text>
+  <text class="sub" x="652" y="362" text-anchor="middle">free for next task</text>
+
+  <rect class="box-fill" x="176" y="320" width="176" height="52" rx="8" stroke-dasharray="4 3"/>
+  <text class="sub" x="264" y="340" text-anchor="middle">optionally close agent</text>
+  <text class="sub" x="264" y="356" text-anchor="middle">still gated: idle + not moved on</text>
+
+  <path class="edge" d="M140,267 L172,267" marker-end="url(#arw)"/>
+  <path class="edge" d="M352,267 L384,267" marker-end="url(#arw)"/>
+  <path class="edge" d="M476,294 L476,316" marker-end="url(#arw)"/>
+  <path class="edge" d="M564,346 L596,346" marker-end="url(#arw)"/>
+  <path class="edge" d="M388,346 L356,346" marker-end="url(#arw)" stroke-dasharray="4 3"/>
+</svg>
+</div>
+<p class="cap">Completion stops depending on which episode is current or whether the session
+is alive; closing the agent becomes an optional, separately-gated side effect.</p>
+
+<p>Concrete changes:</p>
+<ul>
+  <li><strong>Durable merge lookup.</strong> <code>mergedPrFor(taskId)</code> consults the
+    task's current <strong>and historical</strong> bindings. (Reads a record already retained.)</li>
+  <li><strong>Durable merge recording.</strong> Record an observed merge on the task's binding
+    even after the session rolled to a new episode - the way the dependency path already does.</li>
+  <li><strong>A completion reconciler that ignores session state.</strong> One predicate -
+    <em>does any binding for this task show a merged PR?</em> - run on a merge observation, a
+    session going idle, a session removed, the first discovery sweep, startup, and a periodic
+    backstop. Never reads the current episode or requires the session to be alive.</li>
+  <li><strong>Terminal-state upgrade.</strong> The reconciler applies to
+    <code>running</code>/<code>dispatching</code> tasks AND to
+    <code>failed</code>/<code>cancelled</code> ones: any task whose binding shows a merged PR
+    is upgraded to <code>done</code> with the PR recorded as the outcome (adopted decision 2).
+    <code>done</code> rows are never touched.</li>
+  <li><strong>Completion keeps resources.</strong> <code>complete</code> marks the task
+    <code>done</code>, records the merged PR, and <strong>keeps</strong> the worktree/home for
+    the operator's Clean up. <code>git worktree remove --force</code> stays a human click.</li>
+  <li><strong>Session-kill unchanged in spirit.</strong> Close-after-merge still only fires
+    for an idle session that has <strong>not</strong> moved on; a session that rolled to new
+    work is never killed. Completion no longer waits on it.</li>
+</ul>
+
+<h3>Multiple tasks per session (adopted decision 3)</h3>
+<ul>
+  <li><strong><code>Task.sessionId</code> is "currently executing on"</strong> - mutable and
+    nullable. Nothing may read it as "the session that produced this work"; provenance
+    questions go to the bindings.</li>
+  <li><strong>Serial execution is the invariant:</strong> at most one
+    <code>running</code>/<code>dispatching</code> task per session at any moment
+    (<code>agentIsFree</code> already refuses otherwise). No concurrent tasks in one pane.</li>
+  <li><strong>A completed task frees its agent immediately.</strong> Once the reconciler moves
+    a task to <code>done</code>, the backlog autopilot may hand the session its next task -
+    the N-tasks-over-a-session's-life flow this formalizes.</li>
+  <li><strong>PRs associate with tasks through bindings, never retracted.</strong> The live
+    card's <code>prUrl</code> may come and go with episode currency (a decoration); the
+    binding record is what completion, dependencies, and history read.</li>
+  <li><strong>Audit every reader of <code>Task.sessionId</code> and
+    <code>Session.task</code></strong> for the 1:1-for-life assumption - the card's task
+    chip, <code>reconcileTasksBoundTo</code>, <code>agentWentAway</code>,
+    <code>reopenIfWorkResumed</code>, the Foreman backlog machine, and the reset path - and
+    repoint any that wanted "running <em>now</em>" vs "ever ran".</li>
+</ul>
+
+<h2>Invariants honored</h2>
+<ul>
+  <li><strong>PR provenance.</strong> Only PRs Mission Control opened are ever considered.</li>
+  <li><strong>Reclaim is a human click.</strong> <code>complete</code> never tears down a
+    worktree - and the cancelled&#8594;done upgrade changes the row, never the resources.</li>
+  <li><strong>Dependency resolution unchanged.</strong> It already reads historical bindings;
+    this brings standalone completion to parity.</li>
+  <li><strong>Serial execution.</strong> One running task per session at a time, before and
+    after.</li>
+</ul>
+
+<h2>Tests</h2>
+<ul>
+  <li>A task whose merged PR is on a <strong>historical</strong> episode completes to <code>done</code>.</li>
+  <li>A <code>running</code> task whose session was <strong>killed</strong>, with a merged PR, completes (not <code>failed</code>).</li>
+  <li>A completed-by-merge task <strong>stops blocking</strong> a dependent and <strong>frees</strong>
+    its agent - and the freed agent can be <strong>handed a second task</strong>, whose completion
+    reads its own bindings.</li>
+  <li>A <code>failed</code>-for-no-outcome task is <strong>upgraded to <code>done</code></strong>
+    when its PR is later seen merged.</li>
+  <li>An operator-<strong>cancelled</strong> task whose PR later merges is <strong>upgraded to
+    <code>done</code></strong> with the PR as the outcome; one with a closed-unmerged PR
+    <strong>stays cancelled</strong>.</li>
+  <li>Session-kill still <strong>refuses</strong> a session that moved on to new work.</li>
+  <li>Completion <strong>keeps</strong> worktree/home; existing <code>task-merge-settles</code> /
+    <code>task-session-orphan</code> stay green.</li>
+</ul>
+
+<footer>
+Source of truth: <code>docs/plans/durable-task-completion/plan.md</code>. This page is a
+rendering of it. Decisions were resolved via the Mission Control dashboard on 2026-07-24;
+implementation proceeds as a phased plan beside this document.
+</footer>
+
+</div>
+</body>
+</html>

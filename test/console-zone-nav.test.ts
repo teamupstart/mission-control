@@ -97,17 +97,17 @@ test("with nothing open the zone is the rail, whatever App last held", () => {
 
 test("App wires Tab and Shift+Tab to the console focus zones", () => {
   const app = source("App.tsx");
-  const start = app.indexOf('if (layout === "console" && selected)');
-  assert.ok(start >= 0, "no Console zone branch in the key handler");
+  // The `!typing` in the guard is load-bearing: it is what keeps native Tab in the topbar
+  // filter and the reply composer instead of hijacking it into a zone switch.
+  const start = app.indexOf('if (layout === "console" && selected && !typing)');
+  assert.ok(start >= 0, "no typing-guarded Console zone branch in the key handler");
   const body = app.slice(start, app.indexOf("if (typing) return;", start));
-  assert.match(body, /chord === "Tab" && inConsoleRail/);
-  assert.match(body, /chord === "shift\+Tab" && inConsoleDetail/);
+  // The handoff is gated on the logical zone, not on which element holds DOM focus, so one
+  // Tab enters the reader whatever the last click left focused.
+  assert.match(body, /chord === "Tab" && consoleZone === "rail"/);
+  assert.match(body, /chord === "shift\+Tab" && consoleZone === "detail"/);
   assert.match(body, /setConsoleZone\("detail"\)/);
   assert.match(body, /setConsoleZone\("rail"\)/);
-  assert.ok(
-    app.indexOf("if (typing) return;", start) > app.indexOf('chord === "shift+Tab"', start),
-    "Shift+Tab from a detail composer does not return focus to the rail",
-  );
 });
 
 test("Escape peels the reader zone back to the rail before dropping the selection", () => {
@@ -134,15 +134,18 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   assert.doesNotMatch(railRow, /focusSelected/);
 });
 
-test("Console handoffs are scoped to the DOM zone that owns focus", () => {
+test("Tab enters the reader from the rail zone whatever element holds focus", () => {
+  // The regression this pins: gating the handoff on DOM focus (`inConsoleRail`) meant a bare
+  // Tab did nothing but native browser tabbing unless focus already sat on a rail row - so
+  // opening a session and pressing Tab walked the buttons instead of the conversation. The
+  // gate must be the logical zone, and no focus-scoped early return may let Tab escape to
+  // the browser while a session is open.
   const app = source("App.tsx");
-  assert.match(app, /target\?\.closest\("\.console-rail"\)/);
-  assert.match(app, /target\?\.closest\("\.console-detail"\)/);
-  assert.match(app, /chord === "Tab" && inConsoleRail/);
-  assert.match(app, /chord === "shift\+Tab" && inConsoleDetail/);
+  assert.match(app, /chord === "Tab" && consoleZone === "rail"/);
+  assert.match(app, /chord === "shift\+Tab" && consoleZone === "detail"/);
+  assert.doesNotMatch(app, /inConsoleRail/);
+  assert.doesNotMatch(app, /inConsoleDetail/);
+  // focusConsoleRail still refuses to steal focus from an editor outside the detail (the
+  // topbar filter), so arrow-walking the rail never yanks the cursor out of the filter box.
   assert.match(app, /activeEditor && !active\?\.closest\("\.console-detail"\)/);
-  assert.match(
-    app,
-    /\(chord === "Tab" \|\| chord === "shift\+Tab"\)[\s\S]*!inConsoleRail[\s\S]*!inConsoleDetail[\s\S]*return/,
-  );
 });

@@ -724,8 +724,6 @@ export function App(): React.JSX.Element {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
-      const inConsoleRail = Boolean(target?.closest(".console-rail"));
-      const inConsoleDetail = Boolean(target?.closest(".console-detail"));
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
       // An embedded session surface can own navigation without being a screen-owning
@@ -760,28 +758,29 @@ export function App(): React.JSX.Element {
       // edited), so grid shortcuts don't drive a background card behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
 
-      if (layout === "console" && selected) {
-        if (chord === "shift+Tab" && inConsoleDetail) {
-          e.preventDefault();
-          setConsoleZone("rail");
-          focusConsoleRail(selected.id);
-          return;
-        }
-        if (chord === "Tab" && inConsoleRail) {
+      // Console focus zones. Tab hands the keyboard from the rail selector to the open
+      // conversation so the vertical arrows scroll it; Shift+Tab (and Escape) hand it back.
+      // The gate is the logical zone, NOT where DOM focus happens to sit: once a session is
+      // open the operator's one Tab has to reach the reader whether the last click left
+      // focus on a rail row, on the body, or nowhere. Gating instead on the focused
+      // element's rail/detail ancestry was the regression that made a bare Tab fall through
+      // to native browser tabbing unless focus already sat on a rail button, walking the
+      // buttons rather than the conversation. `!typing` keeps native Tab in the topbar filter
+      // and the reply composer; Shift+Tab from the rail zone falls through to the `mode`
+      // binding below, so that shortcut still works in Console like every other layout.
+      if (layout === "console" && selected && !typing) {
+        if (chord === "Tab" && consoleZone === "rail") {
           e.preventDefault();
           setConsoleZone("detail");
           focusConsoleDetail();
           return;
         }
-      }
-
-      if (
-        layout === "console" &&
-        (chord === "Tab" || chord === "shift+Tab") &&
-        !inConsoleRail &&
-        !inConsoleDetail
-      ) {
-        return;
+        if (chord === "shift+Tab" && consoleZone === "detail") {
+          e.preventDefault();
+          setConsoleZone("rail");
+          focusConsoleRail(selected.id);
+          return;
+        }
       }
 
       if (typing) return;

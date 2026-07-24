@@ -4,22 +4,30 @@ import { autoModeAgents, autoModeUnsupportedWhy, capabilitiesFor } from "@shared
 import { modelChoicesFor } from "@shared/model.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
+import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
-// launches - the auto-mode master toggle, then model and effort defaults per harness.
-// The master-toggle shape is the skills/Foreman pattern - an `.alert-row` checkbox
-// styled as a switch - because that is what this is: a durable on/off that changes
-// what happens to every future dispatch.
+// launches - the auto-mode master toggle, then ONE CARD PER HARNESS carrying that
+// harness's model and effort together, its accent, a capability-derived badge, and a
+// sentence restating what a dispatch will actually do.
+//
+// Cards, not two parallel per-setting lists: a harness's model and its effort are one
+// harness's defaults, and the old layout drew each harness twice - once under "Default
+// model", once under "Default effort" - so reading "what will a dispatched Codex do"
+// meant scanning two lists and joining them by eye. A card is that join, drawn. The
+// master-toggle shape above them stays the skills/Foreman pattern - an `.alert-row`
+// checkbox styled as a switch - because that is what it is: a durable on/off that
+// changes what happens to every future dispatch.
 
 /**
- * One model and effort row per harness, derived from the union rather than listed here.
+ * One card per harness, derived from the union rather than listed here.
  *
- * A hand-kept list is how a harness ends up dispatchable but missing settings rows,
+ * A hand-kept list is how a harness ends up dispatchable but missing its settings card,
  * with nothing failing to compile to say so. Order is `AGENT_TYPES`' order, which is
  * the order this section has always shown.
  */
-const MODEL_ROWS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent) => ({
+const HARNESS_CARDS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent) => ({
   agent,
   label: AGENT_IDENTITY[agent].label,
 }));
@@ -53,89 +61,115 @@ const AUTO_MODE_LABEL = ((): string | null => {
 })();
 
 /**
- * One harness's default-model picker. The empty value is a real choice, not a
- * placeholder: it means Mission Control passes no `--model` at all, leaving the CLI
- * on whatever the operator configured in the harness itself - so the row can always
- * be put back to "don't interfere", which is how it ships.
+ * The badge on a harness's card, capability-derived and never a literal harness name.
+ *
+ * Two mutually exclusive states, both read off the same `onDispatch` capability the
+ * master toggle reaches by:
+ *  - a harness the switch REACHES wears "auto mode on" only while the switch is on, so
+ *    the card says what a dispatch will do right now rather than what it could;
+ *  - a harness the switch LEAVES ALONE wears "no auto mode", carrying
+ *    `autoModeUnsupportedWhy` as its title - the sentence saying which of the two
+ *    absences this is - so the reason is on the card, not just in the master row.
  */
-function DefaultModelRow({
+function CardBadge({
   agent,
   label,
-  value,
-  disabled,
-  onChange,
+  autoMode,
 }: {
   agent: AgentType;
   label: string;
-  value: string | null;
-  disabled: boolean;
-  onChange: (id: string | null) => void;
-}): React.JSX.Element {
+  autoMode: boolean;
+}): React.JSX.Element | null {
+  const why = autoModeUnsupportedWhy(agent);
+  if (why) {
+    return (
+      <Tooltip label={why}>
+        <span className="skill-badge skill-badge-agent">no auto mode</span>
+      </Tooltip>
+    );
+  }
+  if (!autoMode) return null;
   return (
-    <div className="kb-row harnesses-row" data-anchor={`harnesses/model-${agent}`}>
-      <div className="kb-row-text">
-        <span className="kb-row-label">{label}</span>
-        <span className="kb-row-desc">
-          {value
-            ? `Dispatched ${label} sessions are launched with --model ${value}.`
-            : `Dispatched ${label} sessions are launched with no --model flag, so ${label} uses its own configured model.`}
-        </span>
-      </div>
-      <div className="kb-row-controls">
-        <Tooltip label={`Which model every dispatched ${label} session launches with`}>
-        <select
-          className="harnesses-select"
-          value={value ?? ""}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value || null)}
-          aria-label={`Default model for dispatched ${label} sessions`}
-        >
-          <option value="">Harness default</option>
-          {/* `value` is passed as `extra` so a default set by another build stays
-              selectable here instead of reading as "no model chosen" - and so
-              picking a different row can't silently drop it. */}
-          {modelChoicesFor(agent, value).map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label} - {m.hint}
-            </option>
-          ))}
-        </select>
-        </Tooltip>
-      </div>
-    </div>
+    <Tooltip
+      label={`Dispatched ${label} sessions are switched to ${AUTO_MODE_LABEL ?? "their most autonomous"} permission mode once ready.`}
+    >
+      <span className="skill-badge skill-badge-always-on">auto mode on</span>
+    </Tooltip>
   );
 }
 
-function DefaultEffortRow({
+/**
+ * One harness's card: its default model and effort together, and a sentence composed
+ * from the current values restating what a dispatch will do.
+ *
+ * The empty model value is a real choice, not a placeholder: it means Mission Control
+ * passes no `--model` at all, leaving the CLI on whatever the operator configured in the
+ * harness itself - so the card can always be put back to "don't interfere", which is how
+ * it ships. Same for effort: blank keeps whatever the harness has.
+ */
+function HarnessCard({
   agent,
   label,
-  value,
+  model,
+  effort,
+  autoMode,
   disabled,
-  onChange,
+  onModel,
+  onEffort,
 }: {
   agent: AgentType;
   label: string;
-  value: ThinkingLevel | null;
+  model: string | null;
+  effort: ThinkingLevel | null;
+  autoMode: boolean;
   disabled: boolean;
-  onChange: (level: ThinkingLevel | null) => void;
+  onModel: (id: string | null) => void;
+  onEffort: (level: ThinkingLevel | null) => void;
 }): React.JSX.Element {
+  const modelId = `harness-model-${agent}`;
+  const effortId = `harness-effort-${agent}`;
   return (
-    <div className="kb-row harnesses-row" data-anchor={`harnesses/effort-${agent}`}>
-      <div className="kb-row-text">
-        <span className="kb-row-label">{label}</span>
-        <span className="kb-row-desc">
-          {value
-            ? `Dispatched ${label} sessions start with ${value} reasoning effort.`
-            : `Dispatched ${label} sessions keep the effort configured by ${label}.`}
-        </span>
+    <div className="harness-card" data-anchor={`harnesses/${agent}`} style={agentAccentStyle(agent)}>
+      <div className="harness-card-head">
+        <AgentDot agent={agent} />
+        <b className="harness-card-name">{label}</b>
+        <span className="harness-card-spacer" />
+        <CardBadge agent={agent} label={label} autoMode={autoMode} />
       </div>
-      <div className="kb-row-controls">
+      <div className="harness-card-grid">
+        <label className="harness-card-field-label" htmlFor={modelId}>
+          Model
+        </label>
+        <Tooltip label={`Which model every dispatched ${label} session launches with`}>
+          <select
+            id={modelId}
+            className="harnesses-select"
+            value={model ?? ""}
+            disabled={disabled}
+            onChange={(e) => onModel(e.target.value || null)}
+            aria-label={`Default model for dispatched ${label} sessions`}
+          >
+            <option value="">Harness default</option>
+            {/* `model` is passed as `extra` so a default set by another build stays
+                selectable here instead of reading as "no model chosen" - and so
+                picking a different row can't silently drop it. */}
+            {modelChoicesFor(agent, model).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} - {m.hint}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+        <label className="harness-card-field-label" htmlFor={effortId}>
+          Effort
+        </label>
         <Tooltip label={`How much reasoning effort every dispatched ${label} session starts with`}>
           <select
+            id={effortId}
             className="harnesses-select"
-            value={value ?? ""}
+            value={effort ?? ""}
             disabled={disabled}
-            onChange={(e) => onChange((e.target.value || null) as ThinkingLevel | null)}
+            onChange={(e) => onEffort((e.target.value || null) as ThinkingLevel | null)}
             aria-label={`Default effort for dispatched ${label} sessions`}
           >
             <option value="">Harness default</option>
@@ -147,6 +181,14 @@ function DefaultEffortRow({
           </select>
         </Tooltip>
       </div>
+      <p className="harness-card-note">
+        {model
+          ? `Dispatched ${label} sessions are launched with --model ${model}.`
+          : `Dispatched ${label} sessions are launched with no --model flag, so ${label} uses its own configured model.`}{" "}
+        {effort
+          ? `They start with ${effort} reasoning effort.`
+          : `Effort stays whatever ${label} has configured.`}
+      </p>
     </div>
   );
 }
@@ -202,41 +244,28 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
       </div>
 
       <div className="settings-section-head harnesses-subhead">
-        <h4>Default model</h4>
+        <h4>Per harness</h4>
       </div>
-      <p className="settings-hint harnesses-blurb">
-        The model each harness is launched on when a dispatch doesn't name one. The
-        dispatch form starts on this and lets you pick a different model per task, so a
-        one-off that needs more (or less) horsepower doesn't mean changing the default.
-      </p>
-      {MODEL_ROWS.map((row) => (
-        <DefaultModelRow
-          key={row.agent}
-          agent={row.agent}
-          label={row.label}
-          value={config?.defaultModel[row.agent] ?? null}
-          disabled={!config}
-          onChange={(id) => void update({ defaultModel: { [row.agent]: id } })}
-        />
-      ))}
-
-      <div className="settings-section-head harnesses-subhead">
-        <h4>Default effort</h4>
+      <div className="harness-cards">
+        {HARNESS_CARDS.map((card) => (
+          <HarnessCard
+            key={card.agent}
+            agent={card.agent}
+            label={card.label}
+            model={config?.defaultModel[card.agent] ?? null}
+            effort={config?.defaultEffort[card.agent] ?? null}
+            autoMode={autoMode}
+            disabled={!config}
+            onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
+            onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
+          />
+        ))}
       </div>
-      <p className="settings-hint harnesses-blurb">
-        The reasoning effort each harness starts with when a dispatch doesn't name one.
-        Each task can override this immediately after its model selection.
+      <p className="settings-hint harnesses-cards-hint">
+        The dispatch form starts on these values and lets you pick a different model and
+        effort per task, so a one-off that needs more (or less) horsepower doesn't mean
+        changing the default.
       </p>
-      {MODEL_ROWS.map((row) => (
-        <DefaultEffortRow
-          key={row.agent}
-          agent={row.agent}
-          label={row.label}
-          value={config?.defaultEffort[row.agent] ?? null}
-          disabled={!config}
-          onChange={(level) => void update({ defaultEffort: { [row.agent]: level } })}
-        />
-      ))}
     </section>
   );
 }

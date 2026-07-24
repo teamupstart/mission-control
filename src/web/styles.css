@@ -6891,8 +6891,10 @@ kbd {
 }
 
 /* ---- Harnesses (dispatch-time defaults) ----
-   Reuses the skills panel's row shape: a `.kb-row` with a `.skill-switch` control.
-   Only the label's badge alignment is section-specific. */
+   The auto-mode master toggle reuses the skills panel's row shape: a `.kb-row` with a
+   `.skill-switch` control, section-specific only in its label's badge alignment. Below
+   it the per-harness defaults are cards (`.harness-card*`), one per harness, so a
+   harness's model and effort read as one thing. */
 .harnesses-row .kb-row-label {
   display: flex;
   align-items: center;
@@ -6927,6 +6929,64 @@ kbd {
 }
 .harnesses-select:disabled {
   opacity: 0.55;
+}
+/* One card per harness: its model and effort belong together, and the flat two-list
+   layout drew each harness twice. The frame matches `.ts-card` - the app's other
+   settings card - and grows a left rule in the harness's own accent, which arrives as an
+   inline `--agent-accent` custom property (never a per-agent rule; `agent-accent.test.ts`
+   pins that the stylesheet names no harness). The `--neutral` fallback is the same one
+   `.agent-dot` uses, so a harness that forgot to set the accent reads unremarkable rather
+   than borrowing a vendor's colour. */
+.harness-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.harness-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--agent-accent, var(--neutral));
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 13px 16px 14px;
+}
+.harness-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 11px;
+}
+.harness-card-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+/* Pushes the badge to the card's trailing edge without a margin auto fight with the dot. */
+.harness-card-spacer {
+  flex: 1;
+}
+/* Label column then control column, so the two selects line up whatever their labels say. */
+.harness-card-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+.harness-card-field-label {
+  font-size: 11px;
+  color: var(--dim);
+}
+/* The composed sentence: what a dispatch of this harness will actually do, restated from
+   the two selects above it so the effect is legible without reading option values. */
+.harness-card-note {
+  margin: 11px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+/* The one closing hint under the whole grid - reuses `.settings-hint` and only adds the
+   room the grid above it needs. */
+.harnesses-cards-hint {
+  margin-top: 14px;
 }
 
 /* ---- Task sources (pulling work into the backlog) ----

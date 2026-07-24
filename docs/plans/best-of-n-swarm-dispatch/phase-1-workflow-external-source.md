@@ -165,3 +165,30 @@ phase may:
   would be a dead surface. Source metadata lands here; navigation lands with Phase 7.
 - 2026-07-23: Made `source_id` explicit so later UI never parses idempotency keys.
 - 2026-07-23: Added clean-worktree enforcement after inspecting the implemented context capture.
+
+### Implementation record
+
+- 2026-07-23: `WorkflowRunInsert` / `WorkflowSubmissionInsert` already carried an OPTIONAL
+  `triggerSource` that the store defaulted to `manual`, so the finding above understated the
+  hazard: a new caller was one forgotten argument away from filing its runs as an operator's
+  own. Both fields are now REQUIRED, which cost each existing manual call site one explicit
+  word and makes a missing source a typecheck failure rather than durable misattribution.
+- 2026-07-23: Typed `WorkflowCaptureExpectation.requireCleanWorktree` as the literal `true`
+  rather than a boolean, in the interface and in its Zod schema. There is no valid request
+  that waives it, and a literal is what makes the downstream "no phase may skip exact-clean
+  capture" rule compile-enforced instead of a convention.
+- 2026-07-23: Added `WorkflowStore.resumeCapture` instead of reusing `reviveFailedSubmission`.
+  The existing helper resumes a submission whose evidence is already captured and lands it in
+  `running`; a refused external expectation has no evidence yet and must re-enter `capturing`.
+  It is guarded on the exact blocked phases the capture path produces
+  (`external_artifact_mismatch`, `capture_interrupted`, `capture_error`, `stale_capture`), so
+  a restart mid-capture resumes the same run, round and model-call family as a mismatch does.
+- 2026-07-23: `submitExternal` ASSIGNS the external source kind to the trigger source rather
+  than restating `"ensemble"`, so a future external kind that nobody appended to
+  `WORKFLOW_TRIGGER_SOURCES` fails to compile here rather than filing runs under another name.
+- 2026-07-23: The review scheduler is injected into the manager, which passes the same
+  function to its engine. The engine keeps its `concurrency` option as the no-scheduler
+  fallback so a direct `new WorkflowEngine(...)` in a test stays one line.
+- 2026-07-23: The scheduler test counts concurrency INSIDE the compaction and Persona work
+  rather than inside the scheduler, and was verified to fail when compaction bypasses the
+  scheduler - the exact defect this phase was asked to close.

@@ -134,9 +134,10 @@ function seedSubmission(
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run-${id}`, binding, triggerKey: `manual:${id}:request`, now: 2 },
+    { id: `run-${id}`, binding, triggerSource: "manual", triggerKey: `manual:${id}:request`, now: 2 },
     {
       id: `submission-${id}`,
+      triggerSource: "manual",
       triggerKey: `manual:${id}:request`,
       context: {},
       evidence: {},
@@ -178,8 +179,15 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
     now: 1,
   });
   const created = store.createInitialSubmission(
-    { id: "run", binding, triggerKey: "manual:binding:req", now: 2 },
-    { id: "submission", triggerKey: "manual:binding:req", context: {}, evidence: {}, now: 2 },
+    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:binding:req", now: 2 },
+    {
+      id: "submission",
+      triggerSource: "manual",
+      triggerKey: "manual:binding:req",
+      context: {},
+      evidence: {},
+      now: 2,
+    },
   );
   store.updateSubmissionCapture(created.submission.id, {
     context: workflowJson(context),

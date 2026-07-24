@@ -530,6 +530,29 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_workflow_events_run
       ON workflow_events(run_id, id);
 
+    -- One external orchestrator's durable claim on exactly one Workflow binding.
+    --
+    -- source_key is the PRIMARY KEY because it is the idempotency key: a caller that lost
+    -- our response, or that retried after a daemon restart, derives the same key and gets
+    -- the same binding back instead of creating a second one. binding_id is UNIQUE because
+    -- a binding has at most one owner, so two orchestrators cannot both believe they
+    -- started the same review.
+    --
+    -- source_id is stored separately and is display identity only. Nothing parses the
+    -- opaque source_key back into ids; that spelling is internal and may change.
+    --
+    -- Every column is NOT NULL: SQLite treats NULLs as distinct inside a unique index, so a
+    -- nullable half would let the row multiply on retry rather than collide.
+    CREATE TABLE IF NOT EXISTS workflow_binding_claims (
+      source_key  TEXT PRIMARY KEY,
+      source_kind TEXT NOT NULL,
+      source_id   TEXT NOT NULL,
+      binding_id  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_binding_claims_binding
+      ON workflow_binding_claims(binding_id);
+
     -- What each task source has already filed, and will never file again.
     --
     -- Its OWN table rather than de-duplicating against the three columns on tasks, and

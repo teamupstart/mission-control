@@ -17,6 +17,7 @@ import type {
   PersonaFeedbackSummary,
   PersonaVerdict,
   WorkflowBinding,
+  WorkflowCaptureExpectation,
   WorkflowContextSnapshot,
   WorkflowDefinition,
   WorkflowDetail,
@@ -33,9 +34,10 @@ import type {
   WorkflowDelivery,
   WorkflowCompletionClaim,
   WorkflowCompletionClaimResult,
+  WorkflowTriggerSource,
 } from "@shared/workflow.ts";
 import { normalizeWorkflowName } from "@shared/workflow.ts";
-import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { PersonaVerdictSchema, WorkflowCaptureExpectationSchema } from "@shared/protocol.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -46,6 +48,7 @@ import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
+import { createReviewScheduler, type ReviewScheduler } from "../llm/review-scheduler.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
@@ -54,6 +57,13 @@ import {
   workflowContextFingerprint,
 } from "./context.ts";
 import { WorkflowEngine, type WorkflowEngineOptions } from "./engine.ts";
+import {
+  externalSourceKey,
+  type EnsureExternalBindingInput,
+  type ExternalBindingEligibility,
+  type ExternalBindingResult,
+  type SubmitExternalInput,
+} from "./external-binding.ts";
 import {
   WorkflowStore,
   type WorkflowPublishWrite,
@@ -103,7 +113,9 @@ export type WorkflowRuntimeMutation<T> =
         | "not_infrastructure_failure"
         | "stale_capture"
         | "invalid_delivery_state"
-        | "confirmation_required";
+        | "confirmation_required"
+        | "ineligible_session"
+        | "artifact_mismatch";
       message: string;
       current?: unknown;
     };
@@ -121,10 +133,63 @@ export interface WorkflowManagerOptions {
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
   recordInjection?: typeof recordInjection;
+  /**
+   * The daemon's shared review budget, spent by Persona attempts and context compaction
+   * alike. Constructed here only so a test or a second embedder still gets a real ceiling.
+   */
+  reviewScheduler?: ReviewScheduler;
+  /**
+   * Whether an external orchestrator may claim this session right now.
+   *
+   * Injected rather than imported: the owner of that answer is the orchestrator holding the
+   * session, and a Workflow module that reached into its store to ask would be exactly the
+   * dependency this boundary exists to prevent. Returns one sentence for a human, or null.
+   */
+  externalBindingEligibility?: ExternalBindingEligibility;
 }
 
 function runIsTerminal(run: WorkflowRun): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
+}
+
+/**
+ * The blocked phases an externally sourced submission may resume capture from.
+ *
+ * Every one of them is produced by the capture path itself and leaves the round's evidence
+ * unwritten, which is what makes resuming the SAME submission correct rather than a way to
+ * paper over a run that failed for some other reason.
+ */
+const EXTERNAL_RESUMABLE_PHASES = [
+  "external_artifact_mismatch",
+  "capture_interrupted",
+  "capture_error",
+  "stale_capture",
+] as const;
+
+/** The exact facts that refused an externally sourced capture, or null when it may proceed. */
+type CaptureExpectationMismatch = {
+  expectedHeadSha: string;
+  headSha: string | null;
+  headMatches: boolean;
+  workingTreeDirty: boolean;
+  requireCleanWorktree: true;
+};
+
+function expectationMismatch(
+  expectation: WorkflowCaptureExpectation,
+  context: WorkflowContextSnapshot,
+): CaptureExpectationMismatch | null {
+  const headSha = context.evidence.headSha;
+  const workingTreeDirty = context.evidence.workingTreeDirty;
+  const headMatches = headSha === expectation.expectedHeadSha;
+  if (headMatches && !(expectation.requireCleanWorktree && workingTreeDirty)) return null;
+  return {
+    expectedHeadSha: expectation.expectedHeadSha,
+    headSha,
+    headMatches,
+    workingTreeDirty,
+    requireCleanWorktree: expectation.requireCleanWorktree,
+  };
 }
 
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
@@ -137,6 +202,7 @@ export class WorkflowManager {
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
   private readonly rememberInjection: typeof recordInjection;
+  private readonly schedule: ReviewScheduler;
 
   constructor(
     private readonly registry: Registry,
@@ -146,12 +212,17 @@ export class WorkflowManager {
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
     this.rememberInjection = options.recordInjection ?? recordInjection;
+    // One scheduler for this manager AND its engine: compaction used to run outside the
+    // engine's limiter, so two submissions capturing at once could exceed the ceiling the
+    // engine was enforcing. An engine option still wins, so a test may observe either half.
+    this.schedule = options.reviewScheduler ?? createReviewScheduler();
     this.registry.initializeWorkflows(this.list(true));
     const configuredWaiting = options.engine?.onSubmissionWaiting;
     this.engine = new WorkflowEngine(
       this.store,
       (runId) => this.publishRun(runId),
       {
+        schedule: this.schedule,
         ...options.engine,
         onSubmissionWaiting: (submissionId) => {
           this.scheduleWaitingDelivery(submissionId);
@@ -921,6 +992,224 @@ export class WorkflowManager {
     return stored.result;
   }
 
+  /**
+   * Resolve one external orchestrator's binding, creating it or returning the same one.
+   *
+   * There is deliberately NO route for this. An HTTP endpoint that started arbitrary
+   * Workflow runs on a caller's say-so would let a client target somebody else's session;
+   * every identity here is resolved server-side instead - the immutable version from the
+   * store, the live session and its noteKey from the registry, and the idempotency key from
+   * the supplied reference. Later Ensemble code calls this method in-process.
+   */
+  ensureExternalBinding(
+    input: EnsureExternalBindingInput,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<ExternalBindingResult> {
+    const version = this.store.getWorkflowVersionById(input.workflowVersionId);
+    if (!version) {
+      return { ok: false, reason: "not_found", message: "No such immutable workflow version" };
+    }
+    const triggerMode = input.triggerMode ?? version.bindingDefaults.triggerMode;
+    const deliveryMode = input.deliveryMode ?? version.bindingDefaults.deliveryMode;
+    const maxRepairRounds = input.maxRepairRounds ?? version.bindingDefaults.maxRepairRounds;
+    let sourceKey: string;
+    try {
+      sourceKey = externalSourceKey(input.source, version.id);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    // A claim outlives the session it was made for, so answer the idempotent case before
+    // asking anything about live state: a retry after a restart must return the same
+    // binding even while its session is being rediscovered.
+    const claimed = this.store.claimBySourceKey(sourceKey);
+    if (claimed) {
+      const binding = this.store.getBinding(claimed.bindingId);
+      if (binding) return { ok: true, value: { binding, claim: claimed, created: false }, idempotent: true };
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "The claimed workflow binding is missing",
+        current: claimed,
+      };
+    }
+    const session = this.registry.getSession(input.sessionId);
+    if (!session || session.state === "exited") {
+      return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
+    }
+    const prerequisite = this.bindingModeBlock(session, triggerMode, deliveryMode);
+    if (prerequisite) return prerequisite;
+    const ineligible = this.options.externalBindingEligibility?.({
+      sessionId: session.id,
+      source: input.source,
+    });
+    if (ineligible) {
+      return { ok: false, reason: "ineligible_session", message: ineligible };
+    }
+    const resolved = this.store.ensureExternalBindingClaim({
+      sourceKind: input.source.kind,
+      sourceKey,
+      sourceId: input.source.sourceId,
+      binding: {
+        id: randomUUID(),
+        workflowVersionId: version.id,
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: session.cwd,
+        sessionRepoRoot: session.repoRoot,
+        triggerMode,
+        deliveryMode,
+        maxRepairRounds,
+        now,
+      },
+      now,
+    });
+    if (!resolved.ok) {
+      return resolved.reason === "note_conflict"
+        ? {
+            ok: false,
+            reason: "conflict",
+            message: "This conversation already has an active workflow binding",
+            current: resolved.conflict,
+          }
+        : { ok: false, reason: "not_found", message: "The claimed workflow binding is missing" };
+    }
+    return {
+      ok: true,
+      value: { binding: resolved.binding, claim: resolved.claim, created: resolved.created },
+      idempotent: !resolved.created,
+    };
+  }
+
+  /**
+   * Start, or resume, the ONE initial submission an external result is entitled to.
+   *
+   * The claim's own key is the trigger key, so a lost response, a repeat call and a restart
+   * all resolve to the same run, round and model-call family. A submission still capturing
+   * from an earlier attempt is resumed in place rather than replaced - that is the whole
+   * difference between "the caller restored its artifact and asked again" and "the caller
+   * started a second review".
+   */
+  async submitExternal(
+    bindingId: string,
+    input: SubmitExternalInput,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const binding = this.store.getBinding(bindingId);
+    if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
+    if (binding.state !== "active") {
+      return { ok: false, reason: "inactive_binding", message: "The workflow binding is not active" };
+    }
+    // The commit id is the one free-form value here. An abbreviated or upper-case sha would
+    // simply never equal what capture read, so the run would block forever with a message
+    // that blamed the session rather than the request.
+    const expectation = WorkflowCaptureExpectationSchema.safeParse(input.expectation);
+    if (!expectation.success) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "An external capture expectation needs one complete lowercase commit id",
+      };
+    }
+    const claim = this.store.claimForBinding(binding.id);
+    if (!claim || claim.kind !== input.source.kind) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This workflow binding is not owned by that external source",
+        current: claim,
+      };
+    }
+    let key: string;
+    try {
+      key = externalSourceKey(input.source, binding.workflowVersionId);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (key !== claim.sourceKey) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "The supplied external result does not match this binding's claim",
+        current: claim,
+      };
+    }
+    const existing = this.store.submissionByTrigger(key);
+    if (existing) {
+      const existingRun = this.store.getRun(existing.runId);
+      if (!existingRun) {
+        return { ok: false, reason: "not_found", message: "The idempotent run is missing" };
+      }
+      if (existing.status !== "failed") {
+        return {
+          ok: true,
+          value: { run: existingRun, submission: existing },
+          idempotent: true,
+        };
+      }
+      const resumed = this.store.resumeCapture(
+        existingRun.id,
+        existing.id,
+        EXTERNAL_RESUMABLE_PHASES,
+        now,
+      );
+      if (!resumed) {
+        return {
+          ok: true,
+          value: { run: existingRun, submission: existing },
+          idempotent: true,
+        };
+      }
+      this.publishRun(resumed.run.id);
+      return this.captureAndActivate(
+        binding,
+        resumed.run,
+        resumed.submission,
+        undefined,
+        false,
+        expectation.data,
+      );
+    }
+    const active = this.store.activeRunForBinding(binding.id);
+    if (active) {
+      return {
+        ok: false,
+        reason: "run_active",
+        message: "This binding already has an active run",
+        current: active,
+      };
+    }
+    // The external source kind IS the trigger source. Assigning rather than restating it
+    // means a future external kind that nobody appended to WORKFLOW_TRIGGER_SOURCES fails
+    // to compile here instead of filing its runs under somebody else's name.
+    const triggerSource: WorkflowTriggerSource = input.source.kind;
+    const created = this.store.createInitialSubmission(
+      { id: randomUUID(), binding, triggerSource, triggerKey: key, now },
+      { id: randomUUID(), triggerSource, triggerKey: key, context: {}, evidence: {}, now },
+    );
+    if (created.idempotent) {
+      return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
+    }
+    this.publishRun(created.run.id);
+    return this.captureAndActivate(
+      binding,
+      created.run,
+      created.submission,
+      undefined,
+      false,
+      expectation.data,
+    );
+  }
+
   private bindingModeBlock(
     session: Session,
     triggerMode: WorkflowBinding["triggerMode"],
@@ -1161,6 +1450,7 @@ export class WorkflowManager {
     submission: WorkflowSubmission,
     previousFingerprint?: string,
     allowUnchanged = false,
+    expectation?: WorkflowCaptureExpectation,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     try {
       return await this.withCaptureLock(binding.noteKey, async () => {
@@ -1205,14 +1495,39 @@ export class WorkflowManager {
           message: "The session changed during evidence capture; submit again when it is stable",
         };
       }
+      // An externally sourced submission proves it captured the artifact it was told to,
+      // and it proves it HERE: before the raw evidence is persisted and before a single
+      // provider token is spent. A matching HEAD is not enough - uncommitted changes would
+      // put work into the review that the caller never selected - so the tree must be clean
+      // too. Blocking is visible, typed and resumable rather than fatal, because the fix is
+      // for the caller to restore its artifact and ask again on this same submission.
+      const mismatch = expectation ? expectationMismatch(expectation, captured.context) : null;
+      if (mismatch) {
+        this.store.setSubmissionState(submission.id, "failed", Date.now());
+        this.store.setRunState(run.id, "blocked", "external_artifact_mismatch", mismatch, Date.now());
+        this.store.appendEvent(run.id, "external_artifact_mismatch", {
+          submissionId: submission.id,
+          ...mismatch,
+        }, Date.now());
+        this.publishRun(run.id);
+        return {
+          ok: false,
+          reason: "artifact_mismatch",
+          message:
+            "The session is not at the expected commit with a clean working tree; "
+            + "restore the exact artifact and submit the same result again",
+          current: mismatch,
+        };
+      }
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(captured.context),
         evidence: workflowJson(captured.context.evidence),
       }, Date.now());
       let context: WorkflowContextSnapshot;
-      if (this.options.compactContext) {
-        context = await this.options.compactContext(captured.raw);
+      const compact = this.options.compactContext;
+      if (compact) {
+        context = await this.schedule(() => compact(captured.raw));
       } else {
         const config = getLlmConfig();
         const contextRunner = llmRunnerChoice(config);
@@ -1258,11 +1573,11 @@ export class WorkflowManager {
             );
           },
         };
-        context = await compactWorkflowContext(captured.raw, {
+        context = await this.schedule(() => compactWorkflowContext(captured.raw, {
           runner: contextRunner.id,
           model: contextModel.id,
           observer,
-        });
+        }));
       }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);

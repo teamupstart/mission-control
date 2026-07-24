@@ -15,8 +15,10 @@ import type {
   PersonaExecutionView,
 } from "@shared/workflow.ts";
 import { llmRunner } from "../llm/index.ts";
-import { createLimiter, runStructured } from "../llm/structured.ts";
+import { runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
+import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
+import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
@@ -27,6 +29,12 @@ const PERSONA_TIMEOUT_MS = 120_000;
 const RETRY_BASE_MS = 1_000;
 
 export interface WorkflowEngineOptions {
+  /**
+   * The daemon's shared review budget. Injected from `src/server/index.ts` so Persona
+   * attempts and context compaction cannot each spend a private ceiling of their own.
+   */
+  schedule?: ReviewScheduler;
+  /** Only consulted when no scheduler is injected, which keeps test construction one line. */
   concurrency?: number;
   now?: () => number;
   retryBaseMs?: number;
@@ -65,7 +73,7 @@ function edgesFrom(graph: PublishedWorkflowGraph, nodeId: string, port: "submitt
 }
 
 export class WorkflowEngine {
-  private readonly limit: <T>(fn: () => Promise<T>) => Promise<T>;
+  private readonly limit: ReviewScheduler;
   private readonly now: () => number;
   private readonly retryBaseMs: number;
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
@@ -82,7 +90,8 @@ export class WorkflowEngine {
     private readonly onRunChanged: (runId: string) => void = () => {},
     options: WorkflowEngineOptions = {},
   ) {
-    this.limit = createLimiter(options.concurrency ?? 3);
+    this.limit = options.schedule
+      ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.now = options.now ?? Date.now;
     this.retryBaseMs = options.retryBaseMs ?? RETRY_BASE_MS;
     this.runnerFor = options.runnerFor ?? llmRunner;

@@ -71,8 +71,8 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     now: 1,
   });
   workflows.store.createInitialSubmission(
-    { id: "run", binding, triggerKey: "manual:b:req", now: 2 },
-    { id: "sub", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
+    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   workflows.store.insertAttempt({
     id: "attempt",
@@ -164,8 +164,15 @@ test("failed reset clears no workflow state", async () => {
     now: 3,
   });
   workflows.store.createInitialSubmission(
-    { id: "failed-run", binding, triggerKey: "manual:failed-b:req", now: 4 },
-    { id: "failed-sub", triggerKey: "manual:failed-b:req", context: {}, evidence: {}, now: 4 },
+    { id: "failed-run", binding, triggerSource: "manual", triggerKey: "manual:failed-b:req", now: 4 },
+    {
+      id: "failed-sub",
+      triggerSource: "manual",
+      triggerKey: "manual:failed-b:req",
+      context: {},
+      evidence: {},
+      now: 4,
+    },
   );
   workflows.store.prepareDelivery({
     id: "failed-delivery",

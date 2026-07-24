@@ -284,9 +284,10 @@ test("the first completed discovery orphans bindings whose sessions disappeared 
     now: 1,
   });
   workflows.store.createInitialSubmission(
-    { id: "run-missing-at-startup", binding, triggerKey: "startup:missing", now: 2 },
+    { id: "run-missing-at-startup", binding, triggerSource: "manual", triggerKey: "startup:missing", now: 2 },
     {
       id: "submission-missing-at-startup",
+      triggerSource: "manual",
       triggerKey: "startup:missing",
       context: {},
       evidence: {},

@@ -3,6 +3,7 @@ import type {
   EvidenceRef,
   PersonaVerdict,
   WorkflowContextSnapshot,
+  WorkflowExternalSource,
   WorkflowRunDetail,
   WorkflowRunSummary,
 } from "@shared/workflow.ts";
@@ -12,6 +13,30 @@ import { Tooltip } from "../components/Tooltip.tsx";
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
+}
+
+const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
+  ensemble: "Ensemble",
+};
+
+/**
+ * Where a run came from, when something other than an operator started it.
+ *
+ * Deliberately not a link: the route that would open the source does not exist yet, and a
+ * dead navigation target reads as a broken product rather than an unfinished one. The id is
+ * shown as text so an operator can still find the record it names.
+ */
+function ExternalProvenance({
+  source,
+}: {
+  source: WorkflowExternalSource;
+}): React.JSX.Element {
+  return (
+    <p className="workflow-run-provenance">
+      Started by {EXTERNAL_SOURCE_LABELS[source.kind]} <code>{source.sourceId}</code>
+      {" · "}{when(source.createdAt)}
+    </p>
+  );
 }
 
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Element | null {
@@ -140,6 +165,7 @@ export function WorkflowRunView({
           </p>
           <h3>{detail.summary.workflowName}</h3>
           <p>{detail.binding.sessionName} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}</p>
+          {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {when(detail.run.updatedAt)}</small>
         </div>
         <span className={`workflow-run-state wrs-${detail.run.status}`}>{detail.run.status.replaceAll("_", " ")}</span>

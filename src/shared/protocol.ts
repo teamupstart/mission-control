@@ -23,6 +23,8 @@ import {
   WORKFLOW_SUBMISSION_STATUSES,
   WORKFLOW_TARGET_PORTS,
   WORKFLOW_TRIGGER_MODES,
+  WORKFLOW_TRIGGER_SOURCES,
+  WORKFLOW_EXTERNAL_SOURCE_KINDS,
 } from "./workflow.ts";
 import type { WorkflowJson } from "./workflow.ts";
 
@@ -2221,6 +2223,26 @@ export const ResolveWorkflowDeliverySchema = z.discriminatedUnion("resolution", 
   }),
 ]);
 export type ResolveWorkflowDelivery = z.infer<typeof ResolveWorkflowDeliverySchema>;
+
+export const WorkflowTriggerSourceSchema = z.enum(WORKFLOW_TRIGGER_SOURCES);
+export const WorkflowExternalSourceKindSchema = z.enum(WORKFLOW_EXTERNAL_SOURCE_KINDS);
+
+/**
+ * What an externally sourced submission must observe before its evidence becomes durable.
+ *
+ * `expectedHeadSha` is a complete lowercase SHA-1 or SHA-256 commit id. An abbreviated one is
+ * refused rather than resolved: the daemon compares it against exactly what it captured, so a
+ * prefix would simply never match and the run would block with a message that blamed the
+ * session rather than the request.
+ *
+ * `requireCleanWorktree` is `z.literal(true)`, matching the wire type: a matching HEAD with
+ * uncommitted changes is not the artifact the caller selected, so there is no valid request
+ * that turns the check off.
+ */
+export const WorkflowCaptureExpectationSchema = z.object({
+  expectedHeadSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+  requireCleanWorktree: z.literal(true),
+});
 
 // Exported closed schemas make durable row parsers reject unknown values before constructing
 // typed runtime records.

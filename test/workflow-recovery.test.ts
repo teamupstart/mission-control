@@ -95,8 +95,8 @@ function seed(): InstanceType<typeof WorkflowStore> {
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "run", binding, triggerKey: "manual:b:req", now: 2 },
-    { id: "sub", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
+    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   store.updateSubmissionCapture("sub", {
     context: workflowJson(context),
@@ -219,8 +219,21 @@ test("manager startup preserves prepared packets and makes every surviving send 
     now: 20,
   });
   store.createInitialSubmission(
-    { id: "delivery-recovery-run", binding, triggerKey: "manual:delivery-recovery", now: 21 },
-    { id: "delivery-recovery-sub", triggerKey: "manual:delivery-recovery", context: {}, evidence: {}, now: 21 },
+    {
+      id: "delivery-recovery-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "manual:delivery-recovery",
+      now: 21,
+    },
+    {
+      id: "delivery-recovery-sub",
+      triggerSource: "manual",
+      triggerKey: "manual:delivery-recovery",
+      context: {},
+      evidence: {},
+      now: 21,
+    },
   );
   const prepared = store.prepareDelivery({
     id: "delivery-prepared",

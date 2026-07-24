@@ -132,8 +132,8 @@ test("compact workflow run summaries converge through snapshot, incremental SSE,
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "run", binding, triggerKey: "manual:b:req", now: 2 },
-    { id: "sub", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
+    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   const registry = new Registry();
   new PersonaManager(registry, store);

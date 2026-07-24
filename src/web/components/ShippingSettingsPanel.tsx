@@ -1,14 +1,12 @@
-import { useEffect, useRef, useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import { MERGE_BLOCK_LABEL } from "@shared/shipping.ts";
 import type { MergeBlock } from "@shared/shipping.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import type { ShippingState } from "../useShipping.ts";
-import { fetchRepos, resolveRepo } from "../lib/api.ts";
-import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { candidateRepos } from "./ForemanSettingsPanel.tsx";
+import { TrustGrantSummary } from "./TrustPanel.tsx";
+import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { NumberSetting } from "./ForemanBar.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
 
@@ -53,6 +51,7 @@ function when(row: InspectorInspection, now: number): string {
 export function ShippingSettingsPanel({
   state,
   inspectorConfig,
+  onNavigate,
 }: {
   state: ShippingState;
   /**
@@ -67,28 +66,14 @@ export function ShippingSettingsPanel({
    * refuses to act on. Without saying so, all three read as a feature that is broken.
    */
   inspectorConfig: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist"> | null;
+  onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, inspections, update, error } = state;
-  const [repos, setRepos] = useState<string[]>([]);
-  const [draft, setDraft] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void fetchRepos().then(setRepos);
-  }, []);
-
   const autoMerge = config?.autoMerge ?? false;
   const soakMinutes = config?.soakMinutes ?? 10;
   const method = config?.method ?? "squash";
   const allowlist = config?.repoAllowlist ?? [];
   const closeAfterMerge = config?.closeSessionAfterMerge ?? false;
-  // Same stale-closure guard as the Foreman and Inspector panels: `add` does a server
-  // round-trip while the config polls underneath it, so the write must extend whatever is
-  // in force when it lands rather than what was on screen when the button was clicked.
-  const allowlistRef = useRef(allowlist);
-  allowlistRef.current = allowlist;
-  const candidates = candidateRepos(repos, allowlist);
   const now = Date.now();
   // Repos this panel would merge in that the Inspector may not review. Computed with the
   // same predicate the daemon gates on, so the warning cannot claim a repo is covered
@@ -98,30 +83,6 @@ export function ShippingSettingsPanel({
     inspectorConfig?.enabled === true && inspectorConfig.mode === "live"
       ? allowlist.filter((p) => !repoAllowlisted(p, null, inspectorConfig.repoAllowlist))
       : [];
-
-  async function add(): Promise<void> {
-    const path = draft.trim();
-    if (!path || adding || !config) return;
-    setAdding(true);
-    setAddError(null);
-    const res = await resolveRepo(path);
-    setAdding(false);
-    if (!res.ok) {
-      setAddError(res.error);
-      return;
-    }
-    const current = allowlistRef.current;
-    if (current.includes(res.repoRoot)) {
-      setAddError(`${res.repoRoot} is already trusted`);
-      return;
-    }
-    setDraft("");
-    await update({ repoAllowlist: [...current, res.repoRoot] });
-  }
-
-  function remove(path: string): void {
-    void update({ repoAllowlist: allowlist.filter((p) => p !== path) });
-  }
 
   return (
     <section className="settings-section">
@@ -171,23 +132,52 @@ export function ShippingSettingsPanel({
       {autoMerge && inspectorConfig?.enabled === false && (
         <p className="settings-warn ship-needs-inspector">
           The Inspector is switched off, so no pull request is being reviewed and none will
-          qualify. Turn it on in Settings → Inspector.
+          qualify.{" "}
+          <Tooltip label="Open the Inspector panel and flash its master switch">
+            <button
+              type="button"
+              className="settings-link"
+              onClick={() => onNavigate("inspector", "inspector/enabled")}
+            >
+              Turn it on in Inspector →
+            </button>
+          </Tooltip>
         </p>
       )}
 
       {autoMerge && inspectorConfig?.enabled === true && inspectorConfig.mode !== "live" && (
         <p className="settings-warn ship-needs-inspector">
           The Inspector is in dry run, so it reviews but publishes nothing - and YOLO mode
-          will not merge on a review nobody can see. Set it to live in Settings → Inspector.
+          will not merge on a review nobody can see.{" "}
+          <Tooltip label="Open the Inspector panel and flash its mode control">
+            <button
+              type="button"
+              className="settings-link"
+              onClick={() => onNavigate("inspector", "inspector/mode")}
+            >
+              Set it to live in Inspector →
+            </button>
+          </Tooltip>
         </p>
       )}
 
       {/* The two allowlists are separate on purpose (see below), so this is the one state
-          where both features are fully on and a specific repo still never merges. */}
+          where both features are fully on and a specific repo still never merges. It is
+          fixed on the Trust matrix - grant the review, or revoke the merge - so the link
+          lands there rather than on the Inspector's (now editor-less) panel. */}
       {autoMerge && untrustedByInspector.length > 0 && (
         <p className="settings-warn ship-needs-inspector">
           The Inspector is not allowed to review {untrustedByInspector.join(", ")}, so
-          nothing there will merge. Add it in Settings → Inspector.
+          nothing there will merge.{" "}
+          <Tooltip label="Open the Trust matrix - grant the review, or revoke the merge">
+            <button
+              type="button"
+              className="settings-link"
+              onClick={() => onNavigate("trust", "trust/matrix")}
+            >
+              Fix in Trust →
+            </button>
+          </Tooltip>
         </p>
       )}
 
@@ -259,58 +249,19 @@ export function ShippingSettingsPanel({
 
       <div className="foreman-repos" data-anchor="shipping/merge-repos">
         <p className="settings-group-label">Repositories that may merge themselves</p>
+        {/* The consent copy stays with the count: its own list, not the Inspector's -
+            letting it comment on a repo is not the same permission as letting it merge
+            there. That distinction is the whole point of a separate column in Trust. */}
         <p className="settings-hint foreman-repos-hint">
           Its own list, not the Inspector's - letting it comment on a repo is not the same
           permission as letting it merge there. Worktrees of a trusted repo count too.
         </p>
-
-        {allowlist.length === 0 ? (
-          <p className="settings-hint foreman-repos-empty">
-            {config
-              ? "No repos yet - nothing will merge itself anywhere."
-              : "Unknown - the daemon hasn't said which repos are trusted."}
-          </p>
-        ) : (
-          <ul className="foreman-repo-list">
-            {allowlist.map((path) => (
-              <li className="foreman-repo-row" key={path}>
-                <Tooltip label={path}>
-                  <span className="foreman-repo-path">{path}</span>
-                </Tooltip>
-                <Tooltip label="Stop auto-merging in this repo">
-                  <button
-                    className="foreman-repo-remove"
-                    onClick={() => remove(path)}
-                    aria-label={`Stop auto-merging in ${path}`}
-                  >
-                    ✕
-                  </button>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="foreman-repo-add">
-          <RepoCombobox
-            repos={candidates}
-            value={draft}
-            onChange={(v) => {
-              setDraft(v);
-              setAddError(null);
-            }}
-          />
-          <Tooltip label="Let clean pull requests merge themselves in this repo">
-            <button
-              className="btn"
-              disabled={!config || !draft.trim() || adding}
-              onClick={() => void add()}
-            >
-              {adding ? "Adding…" : "Add"}
-            </button>
-          </Tooltip>
-        </div>
-        {addError && <p className="settings-error">{addError}</p>}
+        <TrustGrantSummary
+          configured={Boolean(config)}
+          count={allowlist.length}
+          subject="YOLO may merge in"
+          onNavigate={onNavigate}
+        />
       </div>
 
       {/* An auto-merger's failure mode is not merging the wrong thing - it is merging

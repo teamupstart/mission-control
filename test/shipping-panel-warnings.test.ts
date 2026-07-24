@@ -33,7 +33,7 @@ type Posture = Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist">;
 
 function render(inspectorConfig: Posture | null, state: ShippingState = SHIPPING): string {
   return renderToStaticMarkup(
-    createElement(ShippingSettingsPanel, { state, inspectorConfig }),
+    createElement(ShippingSettingsPanel, { state, inspectorConfig, onNavigate: () => {} }),
   );
 }
 
@@ -55,6 +55,30 @@ test("a repo missing from the INSPECTOR's allowlist is named, by path", () => {
   const html = render({ enabled: true, mode: "live", repoAllowlist: [] });
   assert.match(html, /not allowed to review/i);
   assert.match(html, /\/repo/);
+});
+
+// R11: the three warnings became navigations, not prose. Each still says what is wrong (the
+// text above pins that); this pins that each now carries a real control to act on, and the
+// two Inspector-posture ones point at the Inspector while the untrusted-repo one points at
+// Trust (where the fix - grant the review, or revoke the merge - actually lives).
+test("the Inspector-off and dry-run warnings carry a link, the untrusted one a Trust link", () => {
+  const off = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
+  assert.match(off, /class="settings-link"[^>]*>Turn it on in Inspector/);
+
+  const dry = render({ enabled: true, mode: "dry-run", repoAllowlist: ["/repo"] });
+  assert.match(dry, /class="settings-link"[^>]*>Set it to live in Inspector/);
+
+  const untrusted = render({ enabled: true, mode: "live", repoAllowlist: [] });
+  assert.match(untrusted, /class="settings-link"[^>]*>Fix in Trust/);
+});
+
+// The merge-repos editor moved to Trust; the panel summarizes the grant and links there.
+test("the merge-repos section is a grant count that deep-links to Trust, not an editor", () => {
+  const html = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+  assert.match(html, /YOLO may merge in 1 repository\b/);
+  assert.match(html, /Manage in Trust/);
+  assert.doesNotMatch(html, /placeholder="search repos or type a path…"/);
+  assert.doesNotMatch(html, /aria-label="Stop auto-merging/);
 });
 
 test("fully on and trusted: no warning about the Inspector at all", () => {

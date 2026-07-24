@@ -1801,12 +1801,11 @@ pick a mode.
 | **semi-auto** | drafts a reply with a one-click **Approve & send** on the card |
 | **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
 
-Live sending is gated by an explicit **repo allowlist**, managed in **Settings → Foreman**:
-each trusted repo is a row you can remove, and the picker adds one from the workspace's git
-repos (a typed path is validated and canonicalized first, so a typo is refused rather than
-sitting inert on the list). In Live mode the popover shows a read-only **Live in N repos ·
-manage in Settings →** link straight to it. With an empty allowlist Foreman never types into
-any live session. An entry allowlists the **repo**, not just the directory: a session in a
+Live sending is gated by an explicit **repo allowlist**, granted in
+**Settings → [Trust](#trust-who-may-act-in-which-repository)** (the Foreman panel shows the
+count and links there). With an empty allowlist Foreman never types into any live session. In
+Live mode the popover shows a read-only **Live in N repos · manage in Settings →** link
+straight to it. An entry allowlists the **repo**, not just the directory: a session in a
 *worktree* of an allowlisted repo is cleared too, wherever that worktree sits on disk.
 That's what makes live mode usable - dispatched agents and treehouse checkouts run in
 worktrees parked far from the repo, so a directory-only rule would draft forever on the
@@ -2368,7 +2367,7 @@ these stays in this browser, and which of them acts publicly under your account.
 | **This screen** | This browser | **Display** (layout + message formatting), **Keyboard** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
 | **Background work** | This machine | **Foreman**, **Task sources**, **Models** |
-| **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping** |
+| **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
@@ -2386,6 +2385,31 @@ Deep links work for every category, and the whole list is stable enough to paste
 issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming
 a category this build does not have falls back to Display rather than a blank pane - the one
 browser-scoped category, so a stale link can never open a panel that acts on GitHub.
+
+### Trust (who may act in which repository)
+
+Three subsystems act on GitHub under your account, and each keeps its own list of the repos
+it is allowed to act in: Foreman sends live, the Inspector posts reviews, and Shipping
+(YOLO) merges. **Settings → Trust** (`#/settings/trust`) is one table over all three - a row
+per repository, a column per grant - so the whole surface of "what may act where" is on one
+screen instead of scattered across three panels.
+
+- **It is a view, not a new store.** Each column is the subsystem's existing allowlist;
+  ticking a cell writes to that subsystem's own config through the same route its panel used
+  to, and the daemon's three consent gates are unchanged. The Foreman, Inspector and Shipping
+  panels now show a grant **count** and a **Manage in Trust** link where their repo editors
+  used to be - a grant is not the same permission in each column, which is the whole reason
+  they stay three lists.
+- **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
+  first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
+  off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
+  survives a reload before you come back to grant it.
+- **Worktrees count too.** A grant names the **repo**, so a session in any worktree of a
+  granted repo is covered, wherever that worktree lives on disk.
+- **The blind spot is visible.** If YOLO may merge in a repo the Inspector may not review,
+  nothing there can ever qualify - the merge cell and the empty review cell both go amber, and
+  a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.
+  Shipping's own dependency warnings link straight here.
 
 ## Layout (cards, console, or board)
 
@@ -2613,7 +2637,9 @@ head saying the pull request is safe to merge.
 
 It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
 separate acts in Settings → Inspector, and the first two are reversible without anyone
-else seeing anything.
+else seeing anything. Enabling and mode live on the Inspector panel; which repos it may post
+in is a column of **Settings → [Trust](#trust-who-may-act-in-which-repository)** now (the
+panel shows the count and links there), the same list `mode` is checked against below.
 
 ### Only our pull requests
 
@@ -2767,7 +2793,7 @@ Every one of these, on the same read of the pull request:
 | **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |
 | GitHub says it merges cleanly | `CONFLICTING` blocks, and so does mergeability it has not computed yet |
 | Open for the **soak** | the window in which somebody can look and say no |
-| The repo is on the **Shipping allowlist** | its own list, not the Inspector's |
+| The repo holds the **merge grant** | its own column in [Trust](#trust-who-may-act-in-which-repository), not the Inspector's |
 
 The soak is measured from when the pull request was opened, and defaults to 10 minutes.
 Zero means "merge as soon as everything else passes". A push resets the review gate rather
@@ -2812,7 +2838,10 @@ an older build have no recorded posture and fail closed through the same re-revi
 
 The two allowlists stay separate: letting the Inspector comment on a repo is a smaller
 grant than letting it merge there, so a repo has to be on both. Shipping's list does not
-stand in for the Inspector's.
+stand in for the Inspector's. Both are columns of
+**Settings → [Trust](#trust-who-may-act-in-which-repository)** now (the Shipping panel shows
+the merge count and links there); the separation is exactly why Trust draws them as two
+columns and flags the one dangerous combination - merge granted, review not - in amber.
 
 ### Why it did not merge
 

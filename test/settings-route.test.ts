@@ -46,7 +46,7 @@ test("every category round-trips through its own hash", () => {
 });
 
 test("an unknown category falls back to the default panel, not to a blank one", () => {
-  for (const bad of ["#/settings/trust", "#/settings/nonsense", "#/settings/%20"]) {
+  for (const bad of ["#/settings/notacategory", "#/settings/nonsense", "#/settings/%20"]) {
     assert.deepEqual(
       parseMissionRoute(bad),
       { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },

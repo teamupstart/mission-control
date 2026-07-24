@@ -178,6 +178,15 @@ export const SETTINGS_CATEGORIES = [
     scope: "github",
     keywords: ["yolo", "auto merge", "soak", "squash", "rebase"],
   },
+  {
+    id: "trust",
+    label: "Trust",
+    icon: "⛨",
+    blurb: "Which repositories each subsystem may act in",
+    group: "outbound",
+    scope: "github",
+    keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix", "merge", "review"],
+  },
 ] as const satisfies readonly {
   id: string;
   label: string;
@@ -189,6 +198,18 @@ export const SETTINGS_CATEGORIES = [
 }[];
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
+
+/**
+ * How a panel asks the page to move: to another category, and optionally to flash one
+ * anchored control there once it renders.
+ *
+ * The optional `anchor` is a transient UI concern, never part of the route/hash (that
+ * grammar is Phase 1's, category-only): `SettingsPage` changes the route and, after the
+ * target panel is on screen, scrolls its `data-anchor` target into view and flashes it.
+ * The three outbound panels use this to deep-link into Trust, and Shipping's dependency
+ * warnings use it to land on the exact Inspector control they name.
+ */
+export type SettingsNavigate = (category: SettingsCategoryId, anchor?: string) => void;
 
 /**
  * Where `#/settings` with no category lands, and where an unknown one falls back to.

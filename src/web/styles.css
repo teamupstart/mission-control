@@ -6706,6 +6706,54 @@ kbd {
   line-height: 1.5;
   color: var(--dim);
 }
+/* The one link style for in-page settings navigation and in-place fixes: the outbound
+   panels' "Manage in Trust", Shipping's dependency warnings, and Trust's dagger fixes. A
+   button, not an `<a>`, because these are `onNavigate` route changes and config writes, not
+   hrefs; it wraps on its own so it never widens a warning past the pane. Reads as blue
+   inside body copy and inherits the amber inside a `.settings-warn`, since it borrows the
+   underline from a currentColor tint. */
+.settings-link {
+  font: inherit;
+  color: var(--working);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 1px solid color-mix(in oklab, currentColor 45%, transparent);
+}
+.settings-warn .settings-link {
+  color: inherit;
+}
+.settings-link:hover {
+  border-bottom-color: currentColor;
+}
+/* The flash a deep-link leaves on the control it lands on, so a cross-category jump does
+   not drop the operator beside a row they then have to hunt for. Applied by `SettingsPage`
+   for the animation's length (see `FLASH_MS`); Phase 5's search palette reuses the same
+   path. Two amber passes, matching the approved prototype's `.flash`. */
+@keyframes settings-flash {
+  0% {
+    outline-color: var(--attention);
+    background: color-mix(in oklab, var(--attention) 14%, transparent);
+  }
+  100% {
+    outline-color: transparent;
+    background: transparent;
+  }
+}
+.settings-flash {
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  border-radius: 9px;
+  animation: settings-flash 1.6s ease 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-flash {
+    animation: none;
+    outline-color: var(--attention);
+  }
+}
 
 /* ---- skills (the dashboard-wide skill catalog) ----
    Rows are `.kb-row` with a switch instead of a key capture - same label +
@@ -7371,36 +7419,9 @@ kbd {
 .foreman-repos-hint {
   margin: 4px 0 10px;
 }
-.foreman-repos-empty {
-  margin: 8px 0 0;
-}
-.foreman-repo-list {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.foreman-repo-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-}
-.foreman-repo-path {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The repo-list editor that lived here (`.foreman-repo-list/-row/-path/-empty`) moved to
+   the Trust matrix; these three panels now summarize and deep-link. `.foreman-repo-remove`
+   and `.foreman-repo-add` stay because Task sources still maps repos with them. */
 .foreman-repo-remove {
   flex: none;
   font: inherit;
@@ -7778,6 +7799,161 @@ kbd {
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* ---- Trust matrix (the view over the three allowlists) ----
+   Beside Shipping deliberately: it is the other half of the same feature - Shipping's,
+   Inspector's and Foreman's repo editors collapsed into one repository x grant table. No
+   vendor and no agent id appears here; the grant pills are state tones (`--idle` allowed,
+   `--attention` trapped) the whole app already speaks. */
+.trust-unknown {
+  color: var(--muted);
+  background: var(--panel-2);
+  border-color: color-mix(in oklab, var(--muted) 28%, transparent);
+}
+.trust-matrix {
+  margin-top: 14px;
+  max-width: 860px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  overflow: hidden;
+}
+/* One grid for the whole table so every column line stays true down the rows: repo path
+   takes the flexible track, the three grants are fixed to their label widths, and the
+   remove button gets a hairline column of its own. */
+.trust-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 168px 130px 44px;
+  align-items: stretch;
+}
+.trust-h {
+  padding: 9px 12px;
+  background: var(--panel-2);
+  font-size: 10px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+  text-align: center;
+}
+.trust-h-repo {
+  text-align: left;
+  padding-left: 14px;
+}
+.trust-c {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.trust-repo {
+  justify-content: flex-start;
+  padding-left: 14px;
+  min-width: 0;
+}
+.trust-repo-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The trapped merge cell and the empty inspector cell that would untrap it. The amber wash
+   is the structural version of the prose warning the Shipping panel used to carry alone. */
+.trust-c.is-trap {
+  background: color-mix(in oklab, var(--attention) 7%, transparent);
+}
+.trust-grant {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.trust-grant-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.trust-grant.is-on {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 35%, transparent);
+  background: color-mix(in oklab, var(--idle) 8%, transparent);
+}
+.trust-grant.is-on .trust-grant-dot {
+  background: var(--idle);
+}
+.trust-grant.is-off {
+  color: var(--dim);
+  border-color: var(--border-soft);
+}
+.trust-grant.is-off .trust-grant-dot {
+  background: var(--exited);
+}
+.trust-grant.is-trapped {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, transparent);
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+.trust-grant.is-trapped .trust-grant-dot {
+  background: var(--attention);
+}
+.trust-grant:hover:not(:disabled) {
+  border-color: var(--dim);
+}
+.trust-grant:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.trust-remove {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 7px;
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.trust-remove:hover {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, transparent);
+}
+.trust-empty {
+  margin: 0;
+  padding: 14px;
+}
+/* The dagger footnote: the same amber as a trapped cell, since it names the same fact. */
+.trust-trap-note {
+  margin-top: 10px;
+}
+.trust-add {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 14px;
+  max-width: 860px;
+}
+.trust-add .combobox {
+  flex: 1;
+  min-width: 0;
+}
+.trust-add-note {
+  margin-top: 8px;
+}
+/* The grant-count summary that replaced the repo editors on the three outbound panels. */
+.trust-summary {
+  margin-top: 8px;
 }
 
 /* ---- tooltip (reusable, see components/Tooltip.tsx) ---- */

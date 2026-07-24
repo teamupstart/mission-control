@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -11,6 +11,7 @@ import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
+import { TrustPanel } from "./TrustPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
@@ -33,6 +34,12 @@ import { Tooltip } from "./Tooltip.tsx";
 function tabDomId(id: SettingsCategoryId): string {
   return `settings-tab-${id}`;
 }
+
+/**
+ * How long the `settings-flash` class stays on a deep-linked control - the full length of
+ * its CSS animation (two 1.6s passes), matched here so the class is not stripped mid-fade.
+ */
+const FLASH_MS = 3200;
 
 /** How far this category's writes reach, as the badge the rail and the panel head carry. */
 function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.JSX.Element {
@@ -120,6 +127,44 @@ export function SettingsPage({
   const taskSources = useTaskSources();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
+  // Deep-link with a flash: a panel (Shipping's dependency warnings, the outbound panels'
+  // "Manage in Trust") asks to move to a category and light up one control there. The route
+  // change is App's `onNavigate`; the flash is this page's, because the anchor is a
+  // transient pointer at a control and was deliberately kept out of the hash grammar (which
+  // is Phase 1's, and category-only). `flashRef` holds the pending anchor and `flashNonce`
+  // re-fires the effect. Phase 5's search palette drives the same path.
+  const flashRef = useRef<string | null>(null);
+  const [flashNonce, setFlashNonce] = useState(0);
+  const navigateWithAnchor = useCallback(
+    (cat: SettingsCategoryId, anchor?: string): void => {
+      onNavigate(cat);
+      if (anchor) {
+        flashRef.current = anchor;
+        setFlashNonce((n) => n + 1);
+      }
+    },
+    [onNavigate],
+  );
+  useEffect(() => {
+    const anchor = flashRef.current;
+    if (!anchor) return;
+    // A cross-category jump lands here twice: once still on the source category (the anchor
+    // prefix won't match, so wait), and once the route caught up and the target panel is
+    // mounted (prefix matches, and the control exists to scroll to and flash). Keyed on
+    // `category` as well as the nonce so that second render re-runs it.
+    if (anchor.split("/")[0] !== category) return;
+    flashRef.current = null;
+    const el = document.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("settings-flash");
+    const timer = window.setTimeout(() => el.classList.remove("settings-flash"), FLASH_MS);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove("settings-flash");
+    };
+  }, [flashNonce, category]);
+
   // Escape returns to the fleet, which is the modal's muscle memory kept intact now that
   // there is no backdrop to dismiss.
   //
@@ -203,11 +248,11 @@ export function SettingsPage({
       case "models":
         return <LlmSettingsPanel state={llm} />;
       case "foreman":
-        return <ForemanSettingsPanel state={foreman} />;
+        return <ForemanSettingsPanel state={foreman} onNavigate={navigateWithAnchor} />;
       case "cost":
         return <CostSettingsPanel state={cost} />;
       case "inspector":
-        return <InspectorSettingsPanel state={inspector} />;
+        return <InspectorSettingsPanel state={inspector} onNavigate={navigateWithAnchor} />;
       case "shipping":
         // Handed the Inspector's `enabled` because YOLO mode merges what the Inspector
         // reviewed clean: with it off, nothing qualifies and the panel has to say so
@@ -217,8 +262,14 @@ export function SettingsPage({
           <ShippingSettingsPanel
             state={shipping}
             inspectorConfig={inspector.config ?? null}
+            onNavigate={navigateWithAnchor}
           />
         );
+      case "trust":
+        // The one view over the three allowlists. It gets all three states rather than its
+        // own hooks: Foreman's is App's, the Inspector's and Shipping's are this page's, and
+        // a fourth poll of the same routes would let a cell and a panel disagree about a list.
+        return <TrustPanel foreman={foreman} inspector={inspector} shipping={shipping} />;
     }
   }
 

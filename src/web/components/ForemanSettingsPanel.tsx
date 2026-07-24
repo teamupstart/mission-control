@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
-import { fetchRepos, resolveRepo } from "../lib/api.ts";
-import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
+import { TrustGrantSummary } from "./TrustPanel.tsx";
+import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanConfigPatch } from "@shared/protocol.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -45,68 +44,20 @@ const BACKLOG_TASK_MODEL_SPECS: Record<(typeof AGENT_TYPES)[number], ModelChoice
   },
 };
 
-/** Repos worth offering in the picker: known repos, minus the ones already trusted. */
-export function candidateRepos(repos: string[], allowlist: string[]): string[] {
-  return repos.filter((r) => !allowlist.includes(r));
-}
-
-export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.JSX.Element {
+export function ForemanSettingsPanel({
+  state,
+  onNavigate,
+}: {
+  state: ForemanState;
+  onNavigate: SettingsNavigate;
+}): React.JSX.Element {
   const { config, status, update, error } = state;
   // The provider actually in force, not `config.runner ?? "claude"`. An unset `runner`
   // falls to the app-wide ladder, whose env layer the browser cannot see - so the daemon
   // reports the resolution and this renders it. See `ForemanStatus.runner`.
   const runner = config?.runner ?? status?.runner ?? "claude";
-  const [repos, setRepos] = useState<string[]>([]);
-  const [draft, setDraft] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-
-  // The workspace's git repos, for the picker. `/api/repos` scans the workspace roots,
-  // so it offers repos that have no live session yet - exactly the ones you'd want to
-  // trust before dispatching into them, which a session-derived list would miss.
-  useEffect(() => {
-    void fetchRepos().then(setRepos);
-  }, []);
-
   const allowlist = config?.repoAllowlist ?? [];
   const triage = config?.triage ?? "shadow";
-  // `add` resolves the path server-side before it writes, and the config polls every 4s
-  // underneath that round-trip. Reading the list from a ref rather than the render closure
-  // means the write extends whatever is in force when it lands, not what was on screen
-  // when the button was clicked.
-  const allowlistRef = useRef(allowlist);
-  allowlistRef.current = allowlist;
-  // Don't offer a repo that's already trusted.
-  const candidates = candidateRepos(repos, allowlist);
-
-  async function add(): Promise<void> {
-    const path = draft.trim();
-    if (!path || adding || !config) return;
-    setAdding(true);
-    setAddError(null);
-    // Validate + canonicalize server-side so the stored path is the realpath the daemon
-    // gates on, and a typo is refused here instead of sitting inert on the list.
-    const res = await resolveRepo(path);
-    setAdding(false);
-    if (!res.ok) {
-      setAddError(res.error);
-      return;
-    }
-    const current = allowlistRef.current;
-    // A subdirectory of a trusted repo resolves back to that repo's root, so this is
-    // reachable from a typed path even though the picker hides trusted repos. Say so
-    // against the input the human typed, rather than clearing it like a success.
-    if (current.includes(res.repoRoot)) {
-      setAddError(`${res.repoRoot} is already trusted`);
-      return;
-    }
-    setDraft("");
-    await update({ repoAllowlist: [...current, res.repoRoot] });
-  }
-
-  function remove(path: string): void {
-    void update({ repoAllowlist: allowlist.filter((p) => p !== path) });
-  }
 
   return (
     <section className="settings-section">
@@ -218,58 +169,19 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
 
       <div className="foreman-repos" data-anchor="foreman/live-repos">
         <p className="settings-group-label">Live repositories</p>
-        {/* Worktrees of these repos count too - the same thing the old popover textarea
-            said, kept because "I set it live and it still asks me" reads as a bug otherwise. */}
+        {/* The scope-of-consent sentence stays here beside the count even though editing
+            moved to Trust: it is about the grant, not the editor. "I set it live and it
+            still asks me" reads as a bug without it. */}
         <p className="settings-hint foreman-repos-hint">
           When Foreman is Live it only sends on your behalf in these repos - their worktrees
-          count too, wherever they live on disk. Add the ones you trust.
+          count too, wherever they live on disk.
         </p>
-
-        {allowlist.length === 0 ? (
-          <p className="settings-hint foreman-repos-empty">
-            No repos yet - Foreman won't act live anywhere.
-          </p>
-        ) : (
-          <ul className="foreman-repo-list">
-            {allowlist.map((path) => (
-              <li className="foreman-repo-row" key={path}>
-                <Tooltip label={path}>
-                  <span className="foreman-repo-path">{path}</span>
-                </Tooltip>
-                <Tooltip label="Remove from the trusted list">
-                  <button
-                    className="foreman-repo-remove"
-                    onClick={() => remove(path)}
-                    aria-label={`Stop trusting ${path}`}
-                  >
-                    ✕
-                  </button>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="foreman-repo-add">
-          <RepoCombobox
-            repos={candidates}
-            value={draft}
-            onChange={(v) => {
-              setDraft(v);
-              setAddError(null);
-            }}
-          />
-          <Tooltip label="Trust this repo - Foreman may send live in it">
-            <button
-              className="btn"
-              disabled={!config || !draft.trim() || adding}
-              onClick={() => void add()}
-            >
-              {adding ? "Adding…" : "Add"}
-            </button>
-          </Tooltip>
-        </div>
-        {addError && <p className="settings-error">{addError}</p>}
+        <TrustGrantSummary
+          configured={Boolean(config)}
+          count={allowlist.length}
+          subject="Foreman may send live in"
+          onNavigate={onNavigate}
+        />
       </div>
 
       {error && <p className="settings-error">{error}</p>}

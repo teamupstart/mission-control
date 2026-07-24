@@ -1555,6 +1555,68 @@ state stay on the selected run's HTTP detail, so the browser adds no polling. Re
 session-bound workflow gate, submissions, packets, and events, but retains Inspector's adopted PR
 and comment ledgers because those records outlive a session.
 
+### Retention, history, exports, and workflow health
+
+Workflow retention is configured under **Workflows → Workflow settings**. It has two stages:
+
+1. Raw evidence is compacted from eligible completed or cancelled runs after 30 days by default.
+   The diff, transcript, status paths, standards bodies, and delivered or refused packet text are
+   removed. Their hashes, counts, truncation flags, HEAD, branch, timestamps, goals, decisions,
+   compacted constraints, immutable Persona snapshots, verdicts, Inspector fingerprints,
+   delivery state, event history, and model-call records remain.
+2. A complete eligible run family can be removed after 180 days, but only when it is also outside
+   the newest 1,000 completed or cancelled runs.
+
+The settings allow 1–365 raw-evidence days, 30–3,650 completed-run days, and a newest-run cap of
+100–10,000. Shortening any boundary requires confirmation. Active, waiting, blocked, failed,
+orphaned, and delivery-uncertain work is never age-pruned. In particular, an uncertain delivery
+keeps its exact payload until a human resolves it. The daemon runs one non-overlapping sweep after
+workflow recovery and then hourly. A sweep failure stops only that sweep and appears in Workflow
+health; it never stops execution or delivery.
+
+Run history is loaded 50 rows at a time and can be filtered by state, workflow id, or session.
+Filters are part of the bookmarkable hash. A selected run stays selected as SSE updates arrive.
+Events and workflow-owned model calls load in pages of at most 200 durable records. Raw run and
+immutable version exports are versioned JSON downloads from the Run detail. A retained run export
+marks pruned evidence explicitly, so an empty diff is never confused with a review that saw no
+diff.
+
+Workflow-owned model calls record the actual runner, model, attempt, state, timing, input bytes,
+output bytes, retry, and classified error. The local runner returns text but no authoritative
+price, so the monetary field remains `null` and the UI says **Cost unavailable from this runner**.
+It is never displayed as zero, inferred from the fleet ledger, or estimated.
+
+Workflow health is fetched only when the settings drawer opens or **Refresh health** is clicked.
+It reports active runs, queued and running Persona calls, waiting and uncertain deliveries,
+Inspector gates, retained run count, recovery time, retention time, the last retention error code,
+and the last compacted and deleted counts. It contains no prompt, diff, transcript, Persona
+guidance, model output, or delivery payload.
+
+For an offline backup, stop Mission Control and copy
+`$MISSION_HOME/harness.db` (by default `~/.mission-control/harness.db`) together with its `-wal`
+and `-shm` files when present. Run and version exports are portable audit artifacts, not a database
+restore format. Restore the SQLite files only into a stopped daemon using the same or a newer
+Mission Control build.
+
+### Canvas and accessibility controls
+
+Palette buttons add a node at the current viewport center; pointer drag remains available.
+The canvas snaps to its visible grid and includes zoom in, zoom out, fit, 100% reset, and a
+pannable minimap. **Auto-layout** changes positions only, then fits once. Local draft undo and redo
+hold the last 50 meaningful edits and use <kbd>⌘/Ctrl</kbd><kbd>Z</kbd> and
+<kbd>⌘/Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd>. Autosave does not consume history entries.
+Duplicate applies to Persona, Join, and End nodes, never Session.
+
+Tab enters the graph through one roving node focus. Selected nodes move one grid unit with an Arrow
+key and ten grid units with Shift+Arrow. Press <kbd>C</kbd> on one selected non-terminal node, or choose
+**Connect…**, to open the keyboard connection form; it uses the same port validator as pointer
+connections. Delete or Backspace shows the number of selected nodes and connected edges before
+removal. Every edge is also focusable and removable in the Properties drawer. Port names appear
+on hover and focus, failure paths are dashed and text-labelled, state changes use live regions,
+focus returns after dialogs, and reduced-motion preferences disable canvas and panel animation.
+At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
+drawers.
+
 ## Models (what the app's own model work runs on)
 
 Mission Control does a little model work of its own - naming an untitled [dispatch](#dispatch-an-agent),

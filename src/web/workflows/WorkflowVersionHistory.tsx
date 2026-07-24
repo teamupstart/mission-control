@@ -3,6 +3,10 @@ import type { PersonaView, WorkflowVersion, WorkflowVersionMetadata } from "@sha
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  clearRequestedWorkflowVersion,
+  readRequestedWorkflowVersion,
+} from "./workflowSelection.ts";
 
 export function WorkflowVersionDetail({
   version,
@@ -57,10 +61,12 @@ export function WorkflowVersionDetail({
 }
 
 export function WorkflowVersionHistory({
+  workflowId,
   versions,
   personas,
   onBindVersion = () => {},
 }: {
+  workflowId?: string;
   versions: WorkflowVersionMetadata[];
   personas: PersonaView[];
   onBindVersion?: (version: WorkflowVersion) => void;
@@ -69,6 +75,15 @@ export function WorkflowVersionHistory({
   const [selected, setSelected] = useState<WorkflowVersion | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workflowId || selectedId) return;
+    const requested = readRequestedWorkflowVersion(workflowId);
+    const metadata = versions.find((version) => version.version === requested);
+    if (!metadata) return;
+    clearRequestedWorkflowVersion();
+    setSelectedId(metadata.id);
+  }, [selectedId, versions, workflowId]);
 
   useEffect(() => {
     const metadata = versions.find((version) => version.id === selectedId);

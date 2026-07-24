@@ -35,6 +35,24 @@ export function importMayReplaceEditor(
   return startedAtGeneration === currentGeneration;
 }
 
+export function filterPersonas(
+  personas: readonly PersonaView[],
+  state: "active" | "archived",
+  search: string,
+): PersonaView[] {
+  const needle = search.trim().toLocaleLowerCase("en-US");
+  return personas.filter((persona) => {
+    const stateMatches = state === "active"
+      ? persona.archivedAt === null
+      : persona.archivedAt !== null;
+    return stateMatches && (
+      needle.length === 0
+      || persona.name.toLocaleLowerCase("en-US").includes(needle)
+      || persona.description.toLocaleLowerCase("en-US").includes(needle)
+    );
+  });
+}
+
 export function PersonaLibrary({
   personas,
   providers,
@@ -53,7 +71,8 @@ export function PersonaLibrary({
     [personas],
   );
   const active = useMemo(() => ordered.filter((persona) => persona.archivedAt === null), [ordered]);
-  const [includeArchived, setIncludeArchived] = useState(false);
+  const [personaState, setPersonaState] = useState<"active" | "archived">("active");
+  const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(() => active[0]?.id ?? null);
   const [seed, setSeed] = useState<PersonaDraftSeed | null>(null);
   const [localPersona, setLocalPersona] = useState<PersonaView | null>(null);
@@ -63,7 +82,10 @@ export function PersonaLibrary({
   const editorGeneration = useRef(0);
   const importRef = useRef<HTMLInputElement>(null);
 
-  const listed = includeArchived ? ordered : active;
+  const listed = useMemo(
+    () => filterPersonas(ordered, personaState, search),
+    [ordered, personaState, search],
+  );
   const streamedPersona = ordered.find((persona) => persona.id === selectedId) ?? null;
   // The route response can beat its SSE event. Keep the acknowledged revision visible until
   // the stream catches up, especially for archive where falling back would briefly re-enable edits.
@@ -154,14 +176,16 @@ export function PersonaLibrary({
             <button className="btn btn-ghost" onClick={() => importRef.current?.click()}>Import .md</button>
           </Tooltip>
           <label>
-            <Tooltip label="Include archived Personas in this list">
-              <input
-                type="checkbox"
-                checked={includeArchived}
-                onChange={(event) => setIncludeArchived(event.target.checked)}
-              />
+            State
+            <Tooltip label="Choose whether to browse active or archived Personas">
+              <select
+                value={personaState}
+                onChange={(event) => setPersonaState(event.target.value as "active" | "archived")}
+              >
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+              </select>
             </Tooltip>
-            Archived
           </label>
           <input
             ref={importRef}
@@ -175,8 +199,25 @@ export function PersonaLibrary({
             }}
           />
         </div>
+        <label className="persona-search">
+          <span className="sr-only">Search Personas by name or description</span>
+          <input
+            type="search"
+            value={search}
+            placeholder="Search Personas"
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
         <div className="persona-list">
-          {listed.length === 0 && <p className="persona-list-empty">No saved Personas yet.</p>}
+          {listed.length === 0 && (
+            <p className="persona-list-empty">
+              {search.trim()
+                ? "No Personas match this search."
+                : personaState === "archived"
+                  ? "No archived Personas."
+                  : "No saved Personas yet."}
+            </p>
+          )}
           {listed.map((persona) => (
             <Tooltip key={persona.id} label={`Open ${persona.name} in the editor`}>
               <button

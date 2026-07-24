@@ -6,6 +6,8 @@ export type WorkflowCanvasNodeData = {
   subtitle: string;
   readOnly: boolean;
   runtimeStatus?: string | null;
+  incomingCount?: number;
+  outgoingCount?: number;
 } & Record<string, unknown>;
 
 export type WorkflowCanvasNode = Node<WorkflowCanvasNodeData>;
@@ -13,11 +15,18 @@ export type WorkflowCanvasNode = Node<WorkflowCanvasNodeData>;
 /** The one shared custom leaf for every workflow node kind. */
 export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX.Element {
   return (
-    <article className={`workflow-node workflow-node-${data.kind}`} data-node-kind={data.kind}>
-      {data.kind === "session" && <Handle type="target" id="return_for_changes" position={Position.Left} isConnectable={!data.readOnly} />}
-      {data.kind === "persona" && <Handle type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
-      {data.kind === "all_pass" && <Handle type="target" id="result" position={Position.Left} isConnectable={!data.readOnly} />}
-      {data.kind === "end" && <Handle type="target" id="terminal" position={Position.Left} isConnectable={!data.readOnly} />}
+    <article
+      className={`workflow-node workflow-node-${data.kind}`}
+      data-node-kind={data.kind}
+      aria-description={`${data.incomingCount ?? 0} incoming and ${data.outgoingCount ?? 0} outgoing connections`}
+    >
+      {data.kind === "session" && <Handle aria-label="Return for changes input" type="target" id="return_for_changes" position={Position.Left} isConnectable={!data.readOnly} />}
+      {data.kind === "persona" && <Handle aria-label="Activate input" type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
+      {data.kind === "all_pass" && <Handle aria-label="Result input" type="target" id="result" position={Position.Left} isConnectable={!data.readOnly} />}
+      {data.kind === "end" && <Handle aria-label="Terminal input" type="target" id="terminal" position={Position.Left} isConnectable={!data.readOnly} />}
+      <span className="workflow-port-label workflow-port-input">
+        {data.kind === "session" ? "return for changes" : data.kind === "persona" ? "activate" : data.kind === "all_pass" ? "result" : "terminal"}
+      </span>
       <span className="workflow-node-kind">{data.kind === "all_pass" ? "All-pass Join" : data.kind}</span>
       <strong>{data.label}</strong>
       <small>{data.subtitle}</small>
@@ -26,11 +35,16 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
           {data.runtimeStatus.replaceAll("_", " ")}
         </span>
       )}
-      {data.kind === "session" && <Handle type="source" id="submitted" position={Position.Right} isConnectable={!data.readOnly} />}
+      {data.kind === "session" && (
+        <>
+          <Handle aria-label="Submitted output" type="source" id="submitted" position={Position.Right} isConnectable={!data.readOnly} />
+          <span className="workflow-port-label workflow-port-submitted">submitted</span>
+        </>
+      )}
       {(data.kind === "persona" || data.kind === "all_pass") && (
         <>
-          <Handle type="source" id="pass" position={Position.Right} style={{ top: "38%" }} isConnectable={!data.readOnly} />
-          <Handle type="source" id="fail" position={Position.Right} style={{ top: "72%" }} isConnectable={!data.readOnly} />
+          <Handle aria-label="Pass output" type="source" id="pass" position={Position.Right} style={{ top: "38%" }} isConnectable={!data.readOnly} />
+          <Handle aria-label="Fail output" type="source" id="fail" position={Position.Right} style={{ top: "72%" }} isConnectable={!data.readOnly} />
           <span className="workflow-port-label workflow-port-pass">pass</span>
           <span className="workflow-port-label workflow-port-fail">fail</span>
         </>

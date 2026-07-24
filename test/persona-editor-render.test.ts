@@ -325,9 +325,7 @@ test("Workflows and the Phase 3 Runs surface are both active", () => {
     onTab: () => {},
     onDirtyChange: () => {},
   }));
-  assert.match(runs, /No workflow runs yet/);
-  assert.match(runs, /Bind an immutable published version/);
-  assert.match(runs, /manual Preview/);
+  assert.match(runs, /Loading workflow runs/);
 });
 
 test("Markdown import derives a name without changing the body", () => {

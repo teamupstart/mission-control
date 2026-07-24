@@ -421,7 +421,8 @@ export function openDb(): DatabaseSync {
       gate_state_json       TEXT,
       started_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
-      completed_at          INTEGER
+      completed_at          INTEGER,
+      evidence_pruned_at    INTEGER
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -499,7 +500,8 @@ export function openDb(): DatabaseSync {
       error          TEXT,
       created_at     INTEGER NOT NULL,
       updated_at     INTEGER NOT NULL,
-      delivered_at   INTEGER
+      delivered_at   INTEGER,
+      payload_pruned_at INTEGER
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_deliveries_identity
       ON workflow_deliveries(submission_id, kind, payload_sha256);
@@ -883,6 +885,11 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_bindings", "session_repo_root", "TEXT");
   addColumn(d, "workflow_node_attempts", "runner_id", "TEXT");
   addColumn(d, "workflow_node_attempts", "model_id", "TEXT");
+  // Phase 6 retention markers are nullable because pre-retention rows contain full
+  // evidence and delivery payloads. The sweep fills them only after its transaction
+  // has appended the durable audit event and compacted that exact run family.
+  addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
+  addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
 
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the

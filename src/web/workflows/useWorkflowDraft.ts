@@ -18,14 +18,32 @@ interface WorkflowPublishResponse extends WorkflowWriteResponse {
   idempotent: boolean;
 }
 
-export function editableFingerprint(workflow: WorkflowDefinition): string {
-  return JSON.stringify({
+type WorkflowEditableSnapshot = Pick<
+  WorkflowDefinition,
+  "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults"
+>;
+
+export function workflowEditableSnapshot(
+  workflow: WorkflowDefinition,
+): WorkflowEditableSnapshot {
+  return {
     name: workflow.name,
     description: workflow.description,
     draft: workflow.draft,
     completionPolicy: workflow.completionPolicy,
     bindingDefaults: workflow.bindingDefaults,
-  });
+  };
+}
+
+export function restoreWorkflowEditableSnapshot(
+  current: WorkflowDefinition,
+  snapshot: WorkflowEditableSnapshot,
+): WorkflowDefinition {
+  return { ...current, ...snapshot };
+}
+
+export function editableFingerprint(workflow: WorkflowDefinition): string {
+  return JSON.stringify(workflowEditableSnapshot(workflow));
 }
 
 export function reconcileWorkflowSave(
@@ -118,6 +136,10 @@ export interface WorkflowDraftState {
   publish: () => Promise<WorkflowVersion | null>;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   clearConflict: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  undo: () => void;
+  redo: () => void;
 }
 
 /** One-workflow CAS autosave state machine. No second save starts while one is in flight. */
@@ -143,6 +165,12 @@ export function useWorkflowDraft(
   const conflictRef = useRef(currentConflict);
   const versionRefreshRef = useRef<string | null>(null);
   const inFlight = useRef<Promise<boolean> | null>(null);
+  // History contains editable fields only. The CAS revision is server metadata and must
+  // stay current after autosave, otherwise the first Undo after a successful save would
+  // submit the obsolete revision and manufacture a conflict.
+  const history = useRef<WorkflowEditableSnapshot[]>([]);
+  const future = useRef<WorkflowEditableSnapshot[]>([]);
+  const [historyVersion, setHistoryVersion] = useState(0);
   workflowRef.current = currentWorkflow;
   savedFingerprintRef.current = savedFingerprint;
   conflictRef.current = currentConflict;
@@ -175,6 +203,9 @@ export function useWorkflowDraft(
     }
     setLoading(true);
     setError(null);
+    history.current = [];
+    future.current = [];
+    setHistoryVersion((value) => value + 1);
     try {
       const detail = await workflowRequest<WorkflowDetail>(`/api/workflows/${requestedId}`);
       if (loadGeneration.current !== generation || workflowIdRef.current !== requestedId) return;
@@ -209,11 +240,30 @@ export function useWorkflowDraft(
   }, [dirty, reload, saving, streamedSummary]);
 
   const update = useCallback((patch: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults">>): void => {
-    setWorkflow((current) => {
-      const next = current ? { ...current, ...patch } : current;
-      if (next?.id === workflowIdRef.current) workflowRef.current = next;
-      return next;
-    });
+    const current = workflowRef.current;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    if (editableFingerprint(current) === editableFingerprint(next)) return;
+    history.current = [...history.current.slice(-49), workflowEditableSnapshot(current)];
+    future.current = [];
+    workflowRef.current = next;
+    setWorkflow(next);
+    setHistoryVersion((value) => value + 1);
+  }, []);
+
+  const restoreHistory = useCallback((direction: "undo" | "redo"): void => {
+    const current = workflowRef.current;
+    if (!current) return;
+    const source = direction === "undo" ? history : future;
+    const target = direction === "undo" ? future : history;
+    const next = source.current.at(-1);
+    if (!next) return;
+    source.current = source.current.slice(0, -1);
+    target.current = [...target.current.slice(-49), workflowEditableSnapshot(current)];
+    const restored = restoreWorkflowEditableSnapshot(current, next);
+    workflowRef.current = restored;
+    setWorkflow(restored);
+    setHistoryVersion((value) => value + 1);
   }, []);
 
   const saveNow = useCallback(async (): Promise<boolean> => {
@@ -369,5 +419,9 @@ export function useWorkflowDraft(
       conflictRef.current = null;
       setConflict(null);
     },
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, loading, publish, reload, saveNow, saving, update, versions, workflowId]);
+    canUndo: history.current.length > 0,
+    canRedo: future.current.length > 0,
+    undo: () => restoreHistory("undo"),
+    redo: () => restoreHistory("redo"),
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saving, update, versions, workflowId]);
 }

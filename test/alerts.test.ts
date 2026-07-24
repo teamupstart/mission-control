@@ -22,6 +22,7 @@ import type {
   SessionState,
   Task,
 } from "../src/shared/types.ts";
+import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -73,11 +74,44 @@ function mkSession(over: Partial<Session> = {}): Session {
 const mkTask = (over: Partial<Task> = {}): Task =>
   baseTask({ id: "t", intent: "do", status: "running", createdAt: 0, updatedAt: 0, ...over });
 
-const scope = (sessions: Session[], tasks: Task[] = [], stalls: Stall[] = []): AlertScope => ({
+const scope = (
+  sessions: Session[],
+  tasks: Task[] = [],
+  stalls: Stall[] = [],
+  workflowRuns: WorkflowRunSummary[] = [],
+): AlertScope => ({
   sessions,
   tasks,
   stalls,
+  workflowRuns,
 });
+
+function workflowRun(over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary {
+  return {
+    id: "workflow-run",
+    bindingId: "binding",
+    workflowId: "workflow",
+    workflowName: "Review flow",
+    workflowVersion: 1,
+    sessionId: "session",
+    noteKey: "note",
+    status: "running",
+    phase: "persona_review",
+    round: 1,
+    maxRepairRounds: 5,
+    activePersonaNames: [],
+    failedPersonaCount: 0,
+    bypassedPersonaReview: false,
+    gate: "none",
+    gatePrNumber: null,
+    gateHeadShort: null,
+    reviewPosture: null,
+    uncertainDeliveryCount: 0,
+    refusedDeliveryCount: 0,
+    updatedAt: 1,
+    ...over,
+  };
+}
 
 test("a session entering awaiting_input alerts once (attention), then stays quiet", () => {
   const working = mkSession({ id: "a", state: "working" });
@@ -588,4 +622,54 @@ test("answering an ask is not itself an alert", () => {
     queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 300, wrapupAnswered: true }),
   });
   assert.equal(detectAlerts(scope([done]), scope([fresh])).length, 0);
+});
+
+test("workflow transitions use the shared edge-triggered alert engine", () => {
+  const base = workflowRun();
+  const cases: Array<{
+    next: WorkflowRunSummary;
+    id: string;
+    severity: "attention" | "info";
+  }> = [
+    {
+      next: workflowRun({ uncertainDeliveryCount: 1, phase: "delivery_uncertain" }),
+      id: "workflow:workflow-run:uncertain",
+      severity: "attention",
+    },
+    {
+      next: workflowRun({ status: "failed", phase: "persona_error" }),
+      id: "workflow:workflow-run:failed",
+      severity: "attention",
+    },
+    {
+      next: workflowRun({ status: "waiting_for_session", phase: "unchanged_evidence" }),
+      id: "workflow:workflow-run:manual-resubmit",
+      severity: "attention",
+    },
+    {
+      next: workflowRun({ gate: "waiting_pr", phase: "waiting_for_pr" }),
+      id: "workflow:workflow-run:missing-pr",
+      severity: "attention",
+    },
+    {
+      next: workflowRun({ gate: "waiting_inspector", phase: "inspector_disabled" }),
+      id: "workflow:workflow-run:inspector-enablement",
+      severity: "attention",
+    },
+    {
+      next: workflowRun({ status: "completed", phase: "complete" }),
+      id: "workflow:workflow-run:completed",
+      severity: "info",
+    },
+  ];
+  for (const item of cases) {
+    const previous = scope([], [], [], [base]);
+    const next = scope([], [], [], [item.next]);
+    const alerts = detectAlerts(previous, next);
+    assert.equal(alerts.length, 1, item.id);
+    assert.equal(alerts[0]?.id, item.id);
+    assert.equal(alerts[0]?.severity, item.severity);
+    assert.equal(alerts[0]?.workflowRunId, "workflow-run");
+    assert.deepEqual(detectAlerts(next, next), [], `${item.id} repeated without an edge`);
+  }
 });

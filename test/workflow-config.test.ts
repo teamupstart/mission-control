@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
+import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
 process.env.MISSION_HOME = home;
@@ -14,14 +15,14 @@ const { getWorkflowConfig, setWorkflowConfig } = await import("../src/server/wor
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
 test("workflow live consent defaults off and parsed writes replace the allowlist", () => {
-  assert.deepEqual(getWorkflowConfig(), { liveEnabled: false, repoAllowlist: [] });
+  assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] }),
-    { liveEnabled: true, repoAllowlist: ["/repo"] },
+    { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: true, repoAllowlist: ["/repo"] },
   );
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] }),
-    { liveEnabled: false, repoAllowlist: [] },
+    DEFAULT_WORKFLOW_CONFIG,
   );
   assert.throws(() => setWorkflowConfig({ liveEnabled: true, repoAllowlist: [""] }));
 });
@@ -51,12 +52,16 @@ test("workflow config HTTP writes use the shared parser and replace the complete
     body: JSON.stringify({ liveEnabled: true, repoAllowlist: ["/one", "/two"] }),
   });
   assert.equal(written.status, 200);
-  assert.deepEqual(await written.json(), { liveEnabled: true, repoAllowlist: ["/one", "/two"] });
+  assert.deepEqual(await written.json(), {
+    ...DEFAULT_WORKFLOW_CONFIG,
+    liveEnabled: true,
+    repoAllowlist: ["/one", "/two"],
+  });
   assert.deepEqual(
     await (await app.request("/api/workflows/config", {
       headers: { host: "127.0.0.1:7317" },
     })).json(),
-    { liveEnabled: true, repoAllowlist: ["/one", "/two"] },
+    { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: true, repoAllowlist: ["/one", "/two"] },
   );
 });
 

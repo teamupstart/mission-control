@@ -2102,6 +2102,17 @@ export const WorkflowContextSnapshotSchema = z.object({
       fingerprint: z.string().min(1).max(200),
     })).max(200),
     standardsTruncated: z.boolean(),
+    retention: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("full") }),
+      z.object({
+        state: z.literal("pruned"),
+        prunedAt: z.number().int().nonnegative(),
+        diffBytes: z.number().int().nonnegative(),
+        workingTreeStatusEntries: z.number().int().nonnegative(),
+        transcriptMessages: z.number().int().nonnegative(),
+        standardsDocuments: z.number().int().nonnegative(),
+      }),
+    ]).default({ state: "full" }),
   }),
   compaction: z.object({
     status: z.enum(["model", "fallback"]),
@@ -2241,8 +2252,16 @@ export const WorkflowInspectorGateStateSchema = z.object({
 export const WorkflowConfigSchema = z.object({
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
+  retention: z.object({
+    rawEvidenceDays: z.number().int().min(1).max(365)
+      .default(DEFAULT_WORKFLOW_CONFIG.retention.rawEvidenceDays),
+    completedRunDays: z.number().int().min(30).max(3_650)
+      .default(DEFAULT_WORKFLOW_CONFIG.retention.completedRunDays),
+    maxCompletedRuns: z.number().int().min(100).max(10_000)
+      .default(DEFAULT_WORKFLOW_CONFIG.retention.maxCompletedRuns),
+  }).default(DEFAULT_WORKFLOW_CONFIG.retention),
 });
-export type WorkflowConfigInput = z.infer<typeof WorkflowConfigSchema>;
+export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
 
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),

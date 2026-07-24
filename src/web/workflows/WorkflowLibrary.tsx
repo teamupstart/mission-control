@@ -4,16 +4,28 @@ import {
   WORKFLOW_LIMITS,
   type PersonaView,
   type WorkflowDraftNode,
+  type WorkflowEdge,
+  type WorkflowSourcePort,
   type WorkflowSummary,
+  type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
-import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
-import { WorkflowCanvas, type WorkflowSelection } from "./WorkflowCanvas.tsx";
+import { connectionAllowed, validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import {
+  autoLayoutWorkflow,
+  WorkflowCanvas,
+  type WorkflowCanvasHandle,
+  type WorkflowSelection,
+} from "./WorkflowCanvas.tsx";
 import { WorkflowProperties } from "./WorkflowProperties.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
 import { workflowRequest } from "./workflowApi.ts";
-import { readLastWorkflowId, rememberWorkflowId } from "./workflowSelection.ts";
+import {
+  readLastWorkflowId,
+  readRequestedWorkflowVersion,
+  rememberWorkflowId,
+} from "./workflowSelection.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 
 interface CreateResponse { summary: WorkflowSummary }
@@ -39,9 +51,15 @@ export function workflowSelectionRestore(
   selectedId: string | null,
   active: WorkflowSummary[],
   rememberedId: string | null,
+  all: WorkflowSummary[] = active,
+  explicitlyRequestedId: string | null = null,
 ): string | undefined {
-  if (initialized || selectedId !== null || active.length === 0) return undefined;
-  return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]!.id;
+  if (initialized || selectedId !== null || all.length === 0) return undefined;
+  if (rememberedId === explicitlyRequestedId) {
+    const requested = all.find((workflow) => workflow.id === explicitlyRequestedId);
+    if (requested) return requested.id;
+  }
+  return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]?.id;
 }
 
 export function WorkflowLoadError({
@@ -89,25 +107,63 @@ export function WorkflowLibrary({
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
   const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
   const workflow = draft.workflow;
-  const validation = workflow ? validateWorkflowGraph({ graph: workflow.draft, personas, completionPolicy: workflow.completionPolicy }) : null;
+  const validation = useMemo(
+    () => workflow
+      ? validateWorkflowGraph({
+          graph: workflow.draft,
+          personas,
+          completionPolicy: workflow.completionPolicy,
+        })
+      : null,
+    [personas, workflow?.completionPolicy, workflow?.draft],
+  );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
   const activePersonas = personas.filter((persona) => persona.archivedAt === null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
+  const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
+  const connectTrigger = useRef<HTMLButtonElement | null>(null);
+  const [connectSource, setConnectSource] = useState<string | null>(null);
+  const [connectSourcePort, setConnectSourcePort] = useState<WorkflowSourcePort>("pass");
+  const [connectTarget, setConnectTarget] = useState("");
+  const [connectTargetPort, setConnectTargetPort] = useState<WorkflowTargetPort>("activate");
+  const [announcement, setAnnouncement] = useState("");
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
+  const previousValidationErrors = useRef(new Set<string>());
+  const [mobileDrawer, setMobileDrawer] = useState<"library" | "properties" | null>(null);
   useEffect(() => {
+    const explicitlyRequestedId = ordered.find((summary) =>
+      readRequestedWorkflowVersion(summary.id) !== null)?.id ?? null;
     const next = workflowSelectionRestore(
       selectionInitialized.current,
       selectedId,
       active,
       readLastWorkflowId(),
+      ordered,
+      explicitlyRequestedId,
     );
     if (next === undefined) return;
     selectionInitialized.current = true;
     rememberWorkflowId(next);
+    if (ordered.find((workflow) => workflow.id === next)?.archivedAt !== null) {
+      setShowArchived(true);
+    }
     setSelectedId(next);
-  }, [active, selectedId]);
+  }, [active, ordered, selectedId]);
   useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
+  useEffect(() => {
+    const current = new Set((validation?.diagnostics ?? [])
+      .filter((item) => item.severity === "error")
+      .map((item) => `${item.code}:${item.nodeId ?? ""}:${item.edgeId ?? ""}`));
+    const introduced = [...current].filter((key) => !previousValidationErrors.current.has(key));
+    previousValidationErrors.current = current;
+    if (introduced.length > 0) {
+      setAssertiveAnnouncement(
+        `${introduced.length} workflow validation error${introduced.length === 1 ? "" : "s"} introduced`,
+      );
+    }
+  }, [validation?.diagnostics]);
 
   const openWorkflow = (id: string | null): void => {
     selectionInitialized.current = true;
@@ -162,17 +218,219 @@ export function WorkflowLibrary({
     if (kind === "persona" && !personaId) return;
     const offset = workflow.draft.nodes.length * 26;
     const id = crypto.randomUUID();
-    const position = at ?? { x: 220 + offset, y: 100 + offset };
+    const center = canvasRef.current?.viewportCenter();
+    const requestedPosition = at ?? center ?? { x: 220 + offset, y: 100 + offset };
+    const position = {
+      x: Math.max(
+        -WORKFLOW_LIMITS.canvasCoordinateAbs,
+        Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, requestedPosition.x),
+      ),
+      y: Math.max(
+        -WORKFLOW_LIMITS.canvasCoordinateAbs,
+        Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, requestedPosition.y),
+      ),
+    };
     const node: WorkflowDraftNode = kind === "persona"
       ? { id, kind, personaId, position }
       : kind === "all_pass" ? { id, kind, position } : { id, kind, outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
+    setAnnouncement(`${kind === "all_pass" ? "All-pass Join" : kind} node added at the viewport center`);
+  };
+
+  const selectedIds = selection?.kind === "multi"
+    ? selection.nodeIds
+    : selection?.kind === "node"
+      ? [selection.id]
+      : [];
+
+  const removeCanvasSelection = (nodeIds: string[], edgeIds: string[]): void => {
+    if (!workflow) return;
+    const removable = new Set(nodeIds.filter((id) =>
+      workflow.draft.nodes.find((node) => node.id === id)?.kind !== "session"));
+    const touching = workflow.draft.edges.filter((edge) =>
+      removable.has(edge.source) || removable.has(edge.target));
+    const removedEdges = new Set([...edgeIds, ...touching.map((edge) => edge.id)]);
+    if (removable.size === 0 && removedEdges.size === 0) return;
+    if (
+      !window.confirm(
+        `Delete ${removable.size} node${removable.size === 1 ? "" : "s"} and ${removedEdges.size} connected edge${removedEdges.size === 1 ? "" : "s"}?`,
+      )
+    ) return;
+    draft.update({
+      draft: {
+        nodes: workflow.draft.nodes.filter((node) => !removable.has(node.id)),
+        edges: workflow.draft.edges.filter((edge) => !removedEdges.has(edge.id)),
+      },
+    });
+    setSelection(null);
+    setAnnouncement(`Deleted ${removable.size} nodes and ${removedEdges.size} edges`);
+  };
+
+  const duplicateNodes = (): void => {
+    if (!workflow) return;
+    const originals = workflow.draft.nodes.filter((node) =>
+      selectedIds.includes(node.id) && node.kind !== "session");
+    if (originals.length === 0) return;
+    const ids = new Map(originals.map((node) => [node.id, crypto.randomUUID()]));
+    const copies = originals.map((node) => ({
+      ...node,
+      id: ids.get(node.id)!,
+      position: {
+        x: Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, node.position.x + 36),
+        y: Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, node.position.y + 36),
+      },
+    })) as WorkflowDraftNode[];
+    const copiedEdges = workflow.draft.edges.flatMap((edge) => {
+      const source = ids.get(edge.source);
+      const target = ids.get(edge.target);
+      return source && target
+        ? [{ ...edge, id: crypto.randomUUID(), source, target }]
+        : [];
+    });
+    draft.update({
+      draft: {
+        nodes: [...workflow.draft.nodes, ...copies],
+        edges: [...workflow.draft.edges, ...copiedEdges],
+      },
+    });
+    setSelection(copies.length === 1
+      ? { kind: "node", id: copies[0]!.id }
+      : { kind: "multi", nodeIds: copies.map((node) => node.id), edgeIds: [] });
+    setAnnouncement(`Duplicated ${copies.length} node${copies.length === 1 ? "" : "s"}`);
+  };
+
+  const startKeyboardConnect = (sourceId?: string): void => {
+    const source = sourceId ?? selectedIds[0];
+    if (!source) return;
+    const node = workflow?.draft.nodes.find((candidate) => candidate.id === source);
+    if (!node || node.kind === "end") return;
+    const sourcePort: WorkflowSourcePort = node.kind === "session" ? "submitted" : "pass";
+    const target = workflow?.draft.nodes.find((candidate) => {
+      if (candidate.id === source) return false;
+      const targetPort: WorkflowTargetPort = candidate.kind === "session"
+        ? "return_for_changes"
+        : candidate.kind === "persona"
+          ? "activate"
+          : candidate.kind === "all_pass"
+            ? "result"
+            : "terminal";
+      return connectionAllowed(node, sourcePort, candidate, targetPort);
+    });
+    setConnectSource(source);
+    setConnectSourcePort(sourcePort);
+    setConnectTarget(target?.id ?? "");
+    setConnectTargetPort(target?.kind === "session"
+      ? "return_for_changes"
+      : target?.kind === "all_pass"
+        ? "result"
+        : target?.kind === "end"
+          ? "terminal"
+          : "activate");
+    window.setTimeout(() => {
+      document.querySelector<HTMLSelectElement>("#workflow-connect-source")?.focus();
+    });
+  };
+
+  const finishKeyboardConnect = (): void => {
+    if (!workflow || !connectSource) return;
+    const source = workflow.draft.nodes.find((node) => node.id === connectSource);
+    const target = workflow.draft.nodes.find((node) => node.id === connectTarget);
+    if (!source || !target) return;
+    if (!connectionAllowed(source, connectSourcePort, target, connectTargetPort)) {
+      setAnnouncement("That connection is not allowed by the workflow validator");
+      return;
+    }
+    const edge: WorkflowEdge = {
+      id: crypto.randomUUID(),
+      source: source.id,
+      sourcePort: connectSourcePort,
+      target: target.id,
+      targetPort: connectTargetPort,
+    };
+    draft.update({ draft: { ...workflow.draft, edges: [...workflow.draft.edges, edge] } });
+    setConnectSource(null);
+    setSelection({ kind: "edge", id: edge.id });
+    setAnnouncement(`Connected ${source.id} ${connectSourcePort} to ${target.id} ${connectTargetPort}`);
+    connectTrigger.current?.focus();
+  };
+
+  const sourceNode = workflow?.draft.nodes.find((node) => node.id === connectSource) ?? null;
+  const targetNode = workflow?.draft.nodes.find((node) => node.id === connectTarget) ?? null;
+  const sourcePortOptions: WorkflowSourcePort[] = sourceNode?.kind === "session"
+    ? ["submitted"]
+    : sourceNode?.kind === "persona" || sourceNode?.kind === "all_pass"
+      ? ["pass", "fail"]
+      : [];
+  const targetPortOptions: WorkflowTargetPort[] = targetNode?.kind === "session"
+    ? ["return_for_changes"]
+    : targetNode?.kind === "persona"
+      ? ["activate"]
+      : targetNode?.kind === "all_pass"
+        ? ["result"]
+        : targetNode?.kind === "end"
+          ? ["terminal"]
+          : [];
+  const connectTargets = sourceNode
+    ? workflow?.draft.nodes.filter((candidate) => {
+        if (candidate.id === sourceNode.id) return false;
+        const candidatePorts: WorkflowTargetPort[] = candidate.kind === "session"
+          ? ["return_for_changes"]
+          : candidate.kind === "persona"
+            ? ["activate"]
+            : candidate.kind === "all_pass"
+              ? ["result"]
+              : ["terminal"];
+        return candidatePorts.some((port) =>
+          connectionAllowed(sourceNode, connectSourcePort, candidate, port));
+      }) ?? []
+    : [];
+
+  const downloadLocalDraft = (): void => {
+    if (!workflow) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(workflow, null, 2)], {
+      type: "application/json",
+    }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `workflow-draft-${workflow.id}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <section className="workflow-builder">
-      <aside className="workflow-library-sidebar" aria-label="Workflow library and node palette">
+    <section
+      className="workflow-builder"
+      onKeyDown={(event) => {
+        if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+        const target = event.target as HTMLElement;
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
+        event.preventDefault();
+        if (event.shiftKey) draft.redo();
+        else draft.undo();
+      }}
+    >
+      <div className="workflow-mobile-drawers">
+        <Tooltip label="Show or hide the workflow library and node palette">
+          <button
+            className="btn btn-ghost"
+            aria-expanded={mobileDrawer === "library"}
+            onClick={() => setMobileDrawer((value) => value === "library" ? null : "library")}
+          >
+            Library
+          </button>
+        </Tooltip>
+        <Tooltip label="Show or hide properties for the current workflow selection">
+          <button
+            className="btn btn-ghost"
+            aria-expanded={mobileDrawer === "properties"}
+            onClick={() => setMobileDrawer((value) => value === "properties" ? null : "properties")}
+          >
+            Properties
+          </button>
+        </Tooltip>
+      </div>
+      <aside className={`workflow-library-sidebar${mobileDrawer === "library" ? " mobile-open" : ""}`} aria-label="Workflow library and node palette">
         <header><div><h3>Workflows</h3><p>Drafts and published versions</p></div><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New</button></Tooltip></header>
         <div className="workflow-library-list">
           {listed.length === 0 && <p>No workflow drafts yet.</p>}
@@ -224,6 +482,43 @@ export function WorkflowLibrary({
               <Tooltip label="Copy this workflow into a new draft">
                 <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
               </Tooltip>
+              <Tooltip label={draft.canUndo ? "Undo the last local draft edit" : "Nothing to undo"}>
+                <button className="btn btn-ghost" disabled={!draft.canUndo} onClick={draft.undo}>
+                  Undo
+                </button>
+              </Tooltip>
+              <Tooltip label={draft.canRedo ? "Redo the last undone draft edit" : "Nothing to redo"}>
+                <button className="btn btn-ghost" disabled={!draft.canRedo} onClick={draft.redo}>
+                  Redo
+                </button>
+              </Tooltip>
+              <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, Join, or End nodes" : "Select a Persona, Join, or End node first"}>
+                <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
+                  Duplicate nodes
+                </button>
+              </Tooltip>
+              <Tooltip label="Arrange the graph visually without changing its meaning">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    draft.update({ draft: autoLayoutWorkflow(workflow.draft) });
+                    window.requestAnimationFrame(() => canvasRef.current?.fit());
+                    setAnnouncement("Workflow auto-layout complete");
+                  }}
+                >
+                  Auto-layout
+                </button>
+              </Tooltip>
+              <Tooltip label={selectedIds.length === 1 ? "Connect the selected node with a keyboard dialog" : "Select one non-terminal node first"}>
+                <button
+                  ref={connectTrigger}
+                  className="btn btn-ghost"
+                  disabled={selectedIds.length !== 1 || workflow.draft.nodes.find((node) => node.id === selectedIds[0])?.kind === "end"}
+                  onClick={() => startKeyboardConnect()}
+                >
+                  Connect…
+                </button>
+              </Tooltip>
               <Tooltip label="Archive this workflow - published versions stay readable">
                 <button className="btn btn-danger" disabled={transitioning || workflow.archivedAt !== null} onClick={() => {
                 if (!window.confirm(`Archive ${workflow.name}? Published versions remain readable.`)) return;
@@ -241,17 +536,165 @@ export function WorkflowLibrary({
               </Tooltip>
             </header>
             {draft.conflict && (
-              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><Tooltip label="Discard your unsaved edits and load the newer revision"><button onClick={() => void draft.reload()}>Reload latest</button></Tooltip><Tooltip label="Keep your edits by copying them into a new workflow"><button onClick={() => void duplicate()}>Duplicate my draft</button></Tooltip></div>
+              <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><Tooltip label="Download your local draft before deciding how to resolve the conflict"><button onClick={downloadLocalDraft}>Download local draft</button></Tooltip><Tooltip label="Discard your unsaved edits and load the newer revision"><button onClick={() => void draft.reload()}>Reload latest</button></Tooltip><Tooltip label="Keep your edits by copying them into a new workflow"><button onClick={() => void duplicate()}>Duplicate my draft</button></Tooltip></div>
             )}
-            <WorkflowCanvas graph={workflow.draft} personas={personas} readOnly={transitioning || workflow.archivedAt !== null} onChange={(graph) => draft.update({ draft: graph })} onSelection={setSelection} onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)} />
+            {connectSource && (
+              <form
+                className="workflow-connect-dialog"
+                role="group"
+                aria-labelledby="workflow-connect-title"
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  setConnectSource(null);
+                  connectTrigger.current?.focus();
+                }}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  finishKeyboardConnect();
+                }}
+              >
+                <h4 id="workflow-connect-title">Connect selected node</h4>
+                <label>
+                  Source
+                  <Tooltip label="Choose the node where this connection starts">
+                    <select
+                      id="workflow-connect-source"
+                      value={connectSource}
+                      onChange={(event) => startKeyboardConnect(event.target.value)}
+                    >
+                      {workflow.draft.nodes.filter((node) => node.kind !== "end").map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.kind === "all_pass" ? "All-pass Join" : node.kind} · {node.id}
+                        </option>
+                      ))}
+                    </select>
+                  </Tooltip>
+                </label>
+                <label>
+                  Output
+                  <Tooltip label="Choose which outcome leaves the source node">
+                    <select
+                      value={connectSourcePort}
+                      onChange={(event) => {
+                        const port = event.target.value as WorkflowSourcePort;
+                        setConnectSourcePort(port);
+                        if (!sourceNode || !targetNode) return;
+                        const nextTargetPort: WorkflowTargetPort = targetNode.kind === "session"
+                          ? "return_for_changes"
+                          : targetNode.kind === "persona"
+                            ? "activate"
+                            : targetNode.kind === "all_pass"
+                              ? "result"
+                              : "terminal";
+                        if (!connectionAllowed(sourceNode, port, targetNode, nextTargetPort)) {
+                          const nextTarget = workflow.draft.nodes.find((candidate) => {
+                            if (candidate.id === sourceNode.id) return false;
+                            const candidatePort: WorkflowTargetPort = candidate.kind === "session"
+                              ? "return_for_changes"
+                              : candidate.kind === "persona"
+                                ? "activate"
+                                : candidate.kind === "all_pass"
+                                  ? "result"
+                                  : "terminal";
+                            return connectionAllowed(sourceNode, port, candidate, candidatePort);
+                          });
+                          setConnectTarget(nextTarget?.id ?? "");
+                          setConnectTargetPort(nextTarget?.kind === "session"
+                            ? "return_for_changes"
+                            : nextTarget?.kind === "all_pass"
+                              ? "result"
+                              : nextTarget?.kind === "end"
+                                ? "terminal"
+                                : "activate");
+                        }
+                      }}
+                    >
+                      {sourcePortOptions.map((port) => <option key={port} value={port}>{port}</option>)}
+                    </select>
+                  </Tooltip>
+                </label>
+                <label>
+                  Target
+                  <Tooltip label="Choose the node this connection reaches">
+                    <select
+                      id="workflow-connect-target"
+                      value={connectTarget}
+                      onChange={(event) => {
+                        const id = event.target.value;
+                        const target = workflow.draft.nodes.find((node) => node.id === id);
+                        setConnectTarget(id);
+                        setConnectTargetPort(target?.kind === "session"
+                          ? "return_for_changes"
+                          : target?.kind === "all_pass"
+                            ? "result"
+                            : target?.kind === "end"
+                              ? "terminal"
+                              : "activate");
+                      }}
+                    >
+                      {connectTargets.map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.kind === "all_pass" ? "All-pass Join" : node.kind} · {node.id}
+                        </option>
+                      ))}
+                    </select>
+                  </Tooltip>
+                </label>
+                <label>
+                  Input
+                  <Tooltip label="Choose which input receives the connection">
+                    <select
+                      value={connectTargetPort}
+                      onChange={(event) => setConnectTargetPort(event.target.value as WorkflowTargetPort)}
+                    >
+                      {targetPortOptions.map((port) => <option key={port} value={port}>{port}</option>)}
+                    </select>
+                  </Tooltip>
+                </label>
+                <Tooltip label="Create this validated workflow connection">
+                  <button className="btn" type="submit" disabled={!sourceNode || !targetNode}>
+                    Connect
+                  </button>
+                </Tooltip>
+                <Tooltip label="Close the keyboard connection form without changing the graph">
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    onClick={() => {
+                      setConnectSource(null);
+                      connectTrigger.current?.focus();
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </Tooltip>
+              </form>
+            )}
+            <WorkflowCanvas
+              key={workflow.id}
+              ref={canvasRef}
+              graph={workflow.draft}
+              personas={personas}
+              readOnly={transitioning || workflow.archivedAt !== null}
+              onChange={(graph) => draft.update({ draft: graph })}
+              onSelection={setSelection}
+              onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
+              onDeleteSelection={removeCanvasSelection}
+              onKeyboardConnect={startKeyboardConnect}
+              onAnnounce={setAnnouncement}
+            />
+            <p className="sr-only" aria-live="polite">{announcement}</p>
+            <p className="sr-only" aria-live="assertive">{assertiveAnnouncement}</p>
           </>
         )}
       </div>
 
       {workflow && validation && (
-        <div className="workflow-builder-right">
+        <div className={`workflow-builder-right${mobileDrawer === "properties" ? " mobile-open" : ""}`}>
           <WorkflowProperties workflow={workflow} personas={personas} diagnostics={validation.diagnostics} selection={selection} readOnly={transitioning || workflow.archivedAt !== null} onUpdate={draft.update} />
           <WorkflowVersionHistory
+            workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
             onBindVersion={onBindVersion}

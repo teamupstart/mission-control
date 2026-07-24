@@ -14,6 +14,7 @@ import {
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
 // timer, runs the stall rules against a real clock, and folds what happened into
@@ -30,7 +31,11 @@ const AWAY_POLL_MS = Number(envVar("AWAY_POLL_MS") ?? 5000);
 
 /** Just the slice of the registry this needs - narrowed so tests can supply a fake. */
 export interface AwaySource {
-  snapshot(): { sessions: Session[]; tasks: Task[] };
+  snapshot(): {
+    sessions: Session[];
+    tasks: Task[];
+    workflowRunSummaries?: WorkflowRunSummary[];
+  };
 }
 
 export interface AwayWatcher {
@@ -102,7 +107,12 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
         ? detectStalls(snap.sessions, t, stallThresholds(cfg), parked)
         : [];
 
-      const scope: AlertScope = { sessions: snap.sessions, tasks: snap.tasks, stalls };
+      const scope: AlertScope = {
+        sessions: snap.sessions,
+        tasks: snap.tasks,
+        stalls,
+        workflowRuns: snap.workflowRunSummaries ?? [],
+      };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than
       // dropping it, because the digest that renders it is necessarily read after you

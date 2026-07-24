@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import type { WorkflowDefinition } from "../src/shared/workflow.ts";
 import {
   editableFingerprint,
+  restoreWorkflowEditableSnapshot,
   reconcileWorkflowSave,
+  workflowEditableSnapshot,
   workflowDraftLoading,
   workflowPublishMetadataChanged,
   workflowPublishBlocked,
@@ -36,6 +38,17 @@ test("save reconciliation preserves edits made while the request is in flight", 
     "save",
     "the flush must persist an edit that arrived during the first PATCH",
   );
+});
+
+test("undo snapshots preserve the newest server CAS metadata after autosave", () => {
+  const original = workflow("before", 1);
+  const snapshot = workflowEditableSnapshot(original);
+  const stored = { ...workflow("after", 2), currentVersionId: "v1", updatedAt: 20 };
+  const restored = restoreWorkflowEditableSnapshot(stored, snapshot);
+  assert.equal(restored.description, "before");
+  assert.equal(restored.draftRevision, 2);
+  assert.equal(restored.currentVersionId, "v1");
+  assert.equal(restored.updatedAt, 20);
 });
 
 test("Publish guards cover dirty, saving, conflict, invalid, duplicate-revision, and archive states", () => {

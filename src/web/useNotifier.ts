@@ -14,7 +14,7 @@ function canNotify(): boolean {
   return typeof Notification !== "undefined" && Notification.permission === "granted";
 }
 
-function notify(title: string, body: string, tag: string): void {
+function notify(title: string, body: string, tag: string, workflowRunId?: string | null): void {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
@@ -22,6 +22,9 @@ function notify(title: string, body: string, tag: string): void {
     const n = new Notification(title, { body, tag });
     n.onclick = () => {
       window.focus();
+      if (workflowRunId) {
+        window.location.hash = `#/workflows/runs/${encodeURIComponent(workflowRunId)}`;
+      }
       n.close();
     };
   } catch {
@@ -104,7 +107,7 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
     if (alerts.length === 0) return;
     if (settings.notifications && canNotify()) {
-      for (const a of alerts) notify(a.title, a.body, a.id);
+      for (const a of alerts) notify(a.title, a.body, a.id, a.workflowRunId);
     }
     // One chime per batch at the most urgent severity, so a same-tick "info" alert
     // can't swallow the "attention" tone via the chime's rate limit.

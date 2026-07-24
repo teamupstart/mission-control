@@ -895,12 +895,14 @@ launching it yet.
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
 is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
 forced into the backlog. Every task or standalone active session completes only when its
-PR is observed **merged**; marking a task done or merely opening its PR does not release
-dependents. Active sessions without observable hook instrumentation are not eligible
-dependencies because Mission Control cannot distinguish their next work episode from an
-earlier merged PR. The board and Sitrep name what a task is waiting for, and neither manual
-launch, drag-to-assign, nor Foreman can start it early. Reopen the backlog task to add or
-remove dependencies; cycles are refused.
+PR is observed **merged**; merely opening its PR does not release dependents, and an
+ordinary **Mark done** does not either. The explicit completion override is the exception:
+use it only when the prerequisite's work is already in place (see [Resolve a stopped
+dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
+instrumentation are not eligible dependencies because Mission Control cannot distinguish
+their next work episode from an earlier merged PR. The board and Sitrep name what a task is
+waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
+Reopen the backlog task to add or remove dependencies; cycles are refused.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can glance at
@@ -1079,18 +1081,20 @@ is *in* the backlog; there's nothing left to schedule once it has started.
 
 A dependency is satisfied when it reaches `done`, or when it leaves the task list
 entirely. A **cancelled or failed** prerequisite is neither: it will never finish on its
-own, so everything declared to wait on it sits in the backlog forever - the state the
-[backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) reports as `blocked`
-with nothing in `ready`. It is a common way to arrive at a backlog that looks full and
-schedules nothing: a prerequisite whose work merged under another PR, and whose task row
-was then cancelled rather than marked done, strands every phase behind it.
+own, so everything declared or planned to wait on it sits in the backlog forever - the
+state the [backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) reports as
+`blocked` with nothing in `ready`. It is a common way to arrive at a backlog that looks
+full and schedules nothing: a prerequisite whose work merged under another PR, and whose
+task row was then cancelled rather than marked done, strands every phase behind it.
 
 So a dependent card carries a **warning button** (the danger-tone triangle) whenever a
-stopped task is blocking it - **directly, or anywhere up its chain**. The chain part
-matters: the card that *declared* the dead edge is not always the one you are looking at,
-and a phase three links downstream is just as stuck without knowing why. The warning
-follows the whole downstream, on the board's backlog card and on the same row in
-[Sitrep](#roundup), so the fix is reachable from wherever you are reading the list.
+stopped task is blocking it - **directly, or anywhere up its still-backlogged chain**.
+The chain part matters: the card that *declared* the dead edge is not always the one you
+are looking at, and a phase three links downstream is just as stuck without knowing why.
+The walk stops at a prerequisite that already launched, because its earlier dependencies
+no longer gate downstream work. The warning follows the blocked downstream on the board's
+backlog card and on the same row in [Sitrep](#roundup), so the fix is reachable from
+wherever you are reading the list.
 
 Opening it names the stopped prerequisite and offers two ways out:
 

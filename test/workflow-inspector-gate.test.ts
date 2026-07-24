@@ -214,9 +214,16 @@ async function seed(over: SeedOptions = {}) {
     now,
   });
   store.createInitialSubmission(
-    { id: ids.run, binding, triggerKey: `manual:${ids.binding}:request`, now },
+    {
+      id: ids.run,
+      binding,
+      triggerSource: "manual",
+      triggerKey: `manual:${ids.binding}:request`,
+      now,
+    },
     {
       id: ids.submission,
+      triggerSource: "manual",
       triggerKey: `manual:${ids.binding}:request`,
       context: {},
       evidence: {},

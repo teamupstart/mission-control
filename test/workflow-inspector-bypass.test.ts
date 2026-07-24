@@ -95,9 +95,10 @@ const binding = store.insertBinding({
   now: 1,
 });
 store.createInitialSubmission(
-  { id: "run", binding, triggerKey: "manual:b:first", now: 2 },
+  { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:first", now: 2 },
   {
     id: "full-1",
+    triggerSource: "manual",
     triggerKey: "manual:b:first",
     context: {},
     evidence: {},

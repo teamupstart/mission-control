@@ -147,8 +147,15 @@ test("daemon restart clears observation freshness and waits for Inspector again"
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "update-run", binding, triggerKey: "manual:update", now: 2 },
-    { id: "update-sub", triggerKey: "manual:update", context: {}, evidence: {}, now: 2 },
+    { id: "update-run", binding, triggerSource: "manual", triggerKey: "manual:update", now: 2 },
+    {
+      id: "update-sub",
+      triggerSource: "manual",
+      triggerKey: "manual:update",
+      context: {},
+      evidence: {},
+      now: 2,
+    },
   );
   const state: WorkflowInspectorGateState = {
     prKey: key,

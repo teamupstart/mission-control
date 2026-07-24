@@ -1888,12 +1888,12 @@ The two automated actions type something that *pushes*, so they only fire in **l
 on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
 letting a selected radio quietly do nothing.
 
-**The gate instruction is spelled per harness**, because running a skill by name is: it is
-`/no-mistakes` at Claude, `$no-mistakes …` at Codex and `/skill:no-mistakes` at pi. Each
-harness declares its own grammar (`SkillsSpec.invoke`), and the trailing clause on Codex's
-is load-bearing rather than decorative - a bare `$name` at the end of Codex's composer
-leaves its skill-mention popup open, and that popup swallows the Enter that would have sent
-the message. The same rule reaches the **Ship it?** card, so the button and the automation
+**The gate instruction is spelled per harness**: `/no-mistakes` for Claude and a
+`$no-mistakes` instruction with a trailing clause for Codex. The clause is load-bearing
+rather than decorative - a bare `$name` at the end of Codex's composer leaves its
+skill-mention popup open, and that popup swallows the Enter that would have sent the
+message. Pi's invocation is `/skill:no-mistakes`, though Pi work queues are not currently
+supported. The same rule reaches the **Ship it?** card, so the button and the automation
 send identical bytes.
 
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does

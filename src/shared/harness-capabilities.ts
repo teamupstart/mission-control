@@ -59,12 +59,12 @@ export interface PermissionModeSpec {
 }
 
 /**
- * Loading skills into a live session.
+ * Installing skills for a harness and invoking them in a live session.
  *
- * Null means both halves are absent: nothing to symlink into, and no command that would
- * make a running session notice if there were. Typing a reload command at a harness that
- * has none puts a stray line in someone's prompt and changes nothing, which is exactly
- * the silent no-op the capability exists to prevent.
+ * Null means the harness does not load Mission Control-managed skills. Within a
+ * non-null spec, reload and typed invocation are independent capabilities: a harness
+ * may watch its directory without a reload command, or load skills without exposing a
+ * composer syntax that runs one by name.
  */
 export interface SkillsSpec {
   /**
@@ -73,14 +73,14 @@ export interface SkillsSpec {
    * reached its prompt is picked up by this and nothing else - there is no watcher on the
    * skills directory.
    *
-   * Spelled once, here, for the same reason `WRAPUP_NO_MISTAKES` is: it is typed into a
-   * live pane, so the bytes must have exactly one definition. It must also stay a SINGLE
-   * LINE - a slash command carrying a newline is two submissions.
+   * Spelled once here because it is typed into a live pane, so the bytes must have
+   * exactly one definition. It must also stay a SINGLE LINE - a slash command carrying
+   * a newline is two submissions.
    *
    * Do NOT parse what comes back. On a REMOVAL the count correctly dropped (the skill
    * really did unload) while the label still read "(no changes)". The unload is real; the
    * message is not trustworthy. Treat delivery as fire-and-forget.
-  */
+   */
   reloadCommand: string | null;
   reloadIdleSource: "hooks" | "transcript" | null;
   /**

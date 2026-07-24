@@ -669,10 +669,12 @@ the two subsystems actively fight.
   consent to a *specific* prompt, and from round 1 that prompt is the rendered fix prompt rather than
   the item's intent - so the card has to show it, or Approve means consenting to text never read.
 - **Wrap-up block** at drained: two checkboxes (Create PR / Run no-mistakes) over an editable
-  prefilled textarea, plus Send and Dismiss. Both ticked prefills `/no-mistakes` (the pipeline
-  pushes and opens the PR itself); PR-only prefills a PR instruction; Dismiss closes and sends
-  nothing. Editable because the composed text is a guess. **The human's "yes" arrives later**, so
-  Send re-runs `queueSendStillValid` rather than trusting the drain-time snapshot.
+  prefilled textarea, plus Send and Dismiss. Both ticked prefills the harness-specific gate
+  instruction (the pipeline pushes and opens the PR itself); the
+  [README's Work queues section](../../README.md#work-queues-load-a-session-up-and-walk-away)
+  owns the current invocation behavior. PR-only prefills a PR instruction; Dismiss closes and
+  sends nothing. Editable because the composed text is a guess. **The human's "yes" arrives
+  later**, so Send re-runs `queueSendStillValid` rather than trusting the drain-time snapshot.
 - **Allowlist honesty.** `foremanMayActLive`'s prefix match (`verdict.ts:288`) does not cover
   dispatched-task worktrees under `WORKTREES_DIR` - they are not under the repo root. A queue on a
   dispatched agent would silently never go live and every item would sit `proposed`, reading as a

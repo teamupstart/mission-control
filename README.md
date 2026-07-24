@@ -2597,12 +2597,12 @@ session counts against the `maxSessions` ceiling, *and* the backlog autopilot re
 hand work to an agent that still has a non-terminal task bound to it, so a finished agent
 both occupies a slot and is ineligible to use it.
 
-**The merge alone does not end the task** - the agent going away does. An agent routinely
-lands an intermediate pull request and carries on, and you might merge, read the diff for
-a minute, and only then tell it to continue; no delay after the merge is long enough to
-rule that out. So the merge is recorded durably when it happens, and the conclusion is
-drawn at the one boundary a later prompt cannot outrun. While an agent is still being
-given work it is still there, and nothing concludes anything.
+**The merge alone does not end the task.** An agent routinely lands an intermediate pull
+request and carries on, and you might merge, read the diff for a minute, and only then
+tell it to continue - so no delay after the merge is long enough to rule more work out.
+The merge is recorded when it happens, and the task is concluded only once its agent has
+**finished the episode**: idle, nothing queued, and not rolled onto new work. An agent
+that is mid-turn is left alone whatever its pull request did.
 
 An agent that was given **new work after its merge** and then vanished mid-flight still
 fails, rather than reporting the earlier merge as its outcome: that later work never

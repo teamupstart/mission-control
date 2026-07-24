@@ -26,17 +26,23 @@ after(() => rmSync(home, { recursive: true, force: true }));
  * as a `stopped` blocker, so every task declared to wait on it deadlocks behind work that
  * actually landed.
  *
- * The interesting part is WHEN it may be concluded, and the first design got it wrong in
- * a way that looked right. Completing when the merge is observed - or a fixed delay
- * afterwards - treats a timeout as proof the episode ended. It is not: an agent routinely
- * lands an intermediate pull request and carries on, and an operator can merge, read the
- * diff for a minute, and only then tell the agent to continue. Any fixed window is
- * outrunnable, and the task is already terminal when the prompt arrives.
+ * The interesting part is WHEN it may be concluded, and two wrong answers were tried
+ * before this one. Completing when the merge is observed - or a fixed delay afterwards -
+ * treats a timeout as proof the episode ended, and it is not: an agent routinely lands an
+ * intermediate pull request and carries on, and an operator can merge, read the diff for
+ * a minute, and only then say continue. Any fixed window is outrunnable. But waiting only
+ * for the agent to EXIT never fires for the ordinary case, where an agent ships and then
+ * sits idle forever - leaving exactly the stall this change exists to remove.
  *
- * So the conclusion is drawn at a boundary a later prompt CANNOT outrun - the agent
- * actually going away - and the merge is read from the durable binding row rather than
- * from a clock. While an agent is still being given work it is still here, so nothing
- * concludes anything; once it is gone, no prompt is coming.
+ * So the merge is recorded durably when it happens, and the task is concluded on evidence
+ * that the episode FINISHED: the agent idle, its queue empty, no rollover onto new work.
+ * Nothing is counted. A prompt after all of that is new work following a task that
+ * genuinely shipped, and because the agent goes `working` the moment it lands, the
+ * autopilot cannot have taken the agent in between either.
+ *
+ * Both ends are pinned below - the idle-but-live agent and the one that went away - along
+ * with the two that must NOT conclude: mid-turn, and rolled onto later work that never
+ * landed.
  */
 
 const PR = "https://github.com/example/repo/pull/77";
@@ -79,19 +85,27 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
   return match;
 }
 
-/** A session with a running task bound to its current work episode. */
-function fleet(id: string) {
+/**
+ * A session with a running task bound to its current work episode.
+ *
+ * `busy` is what separates "this turn is over" from "this agent is mid-turn", and the
+ * distinction is load-bearing: an idle agent whose pull request merged has finished the
+ * episode and its task lands, while a working one has not and must be left alone
+ * whatever its pull request did.
+ */
+function fleet(id: string, busy = false) {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const cwd = `/repo/${id}`;
   registry.applyDiscovery([discovered(id, cwd)]);
   registry.applyHook({
     agent: "claude",
-    event: "Stop",
+    event: busy ? "UserPromptSubmit" : "Stop",
     sessionId: `${id}-episode`,
     cwd,
     transcriptPath: null,
     env: {},
+    ...(busy ? { prompt: "get on with it" } : {}),
   });
   registry.upsertTask(baseTask({
     id: `task-${id}`,
@@ -124,19 +138,19 @@ function agentGone(f: ReturnType<typeof fleet>): void {
 
 // ---- a merge alone concludes nothing -----------------------------------------------------
 
-test("a merge does NOT complete the task while its agent is still here", () => {
-  // The heart of the Inspector's finding. The agent may have landed an intermediate pull
-  // request and be about to be told to carry on; nothing observable at merge time can
-  // rule that out, so the merge alone must not be terminal.
+test("a merge does NOT complete the task while its agent is mid-turn", () => {
+  // An agent that lands an intermediate pull request and keeps going has not finished
+  // the episode, so the merge alone is never terminal. Nothing observable at merge time
+  // can rule out more work; only the agent's own idleness says the turn is over.
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-alive");
+  const f = fleet("s-alive", true);
   merge(f);
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
 test("an agent prompted long after its merge still owns a running task", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-late-prompt");
+  const f = fleet("s-late-prompt", true);
   const episode = f.registry.workEpisodeForSession(f.id)!;
   const mergedAt = episode.startedAt + 10;
   f.registry.reconcilePrs(
@@ -160,6 +174,47 @@ test("an agent prompted long after its merge still owns a running task", () => {
     env: {},
     prompt: "now do the follow-up",
     ts: mergedAt + 60_000,
+  });
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+});
+
+// ---- the agent that ships and then just sits there ---------------------------------------
+
+test("an idle agent whose PR merged lands its task, so the backlog can reuse it", () => {
+  // The ordinary case, and the one waiting for the agent to exit never reaches: it ships
+  // its pull request and then sits idle indefinitely. Left `running`, that task makes
+  // `agentIsFree` refuse the agent forever - the exact stall this whole change is about.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-idle-live");
+  merge(f);
+  // The agent finishes its turn. Nothing is queued and it has not rolled over.
+  f.registry.applyDiscovery([discovered(f.id, `/repo/${f.id}`)]);
+  f.registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
+  });
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  assert.ok(f.registry.getSession(f.id), "the agent itself is left alone");
+});
+
+test("an idle agent with NO merge keeps its running task", () => {
+  // The guard that keeps the above from settling every idle agent: idleness alone says
+  // the turn ended, not that the work shipped.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-idle-unmerged");
+  f.registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${f.id}-episode`,
+    cwd: `/repo/${f.id}`,
+    transcriptPath: null,
+    env: {},
   });
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
@@ -205,7 +260,7 @@ test("an agent that rolled onto new work and then vanished fails, not lands", ()
   // finished. Only the episode the agent was actually on may conclude the task, which is
   // why `mergedPrFor` reads the current binding and not the historical ones.
   setShippingConfig({ closeSessionAfterMerge: false });
-  const f = fleet("s-rolled");
+  const f = fleet("s-rolled", true);
   const episode = f.registry.workEpisodeForSession(f.id)!;
   const mergedAt = episode.startedAt + 10;
   f.registry.reconcilePrs(

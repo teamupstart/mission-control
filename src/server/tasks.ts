@@ -218,6 +218,9 @@ export class TaskManager {
     // by one sweep and rediscovered by the next never reaches it.
     registry.subscribe((e) => {
       if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+      // The other end of a merged task's life, for an agent that is still here. See
+      // `settleIfEpisodeFinished`.
+      if (e.type === "session_upsert") this.settleIfEpisodeFinished(e.session);
     });
 
     // And one that went away while the daemon was DOWN is in no map at all until discovery
@@ -267,6 +270,43 @@ export class TaskManager {
     } catch (error) {
       console.error("[merge] closing merged session failed:", e.taskId, error);
     }
+  }
+
+  /**
+   * Land a merged task whose agent is still here but has finished the episode.
+   *
+   * The counterpart to `agentWentAway`, and the reason both exist: waiting for the agent
+   * to go away is unimpeachable but it never arrives for the ordinary case, where an
+   * agent ships its pull request and then sits idle forever. That session keeps a
+   * `running` task, so `agentIsFree` refuses it and the backlog cannot reuse the agent -
+   * which is the whole problem this change is about, left in place by the safe half of
+   * the fix.
+   *
+   * So the episode is concluded on EVIDENCE that it finished, never on a clock:
+   *
+   *  - the agent is idle, so its turn is over rather than merely paused;
+   *  - its work queue is empty, so nothing pending is about to continue this task;
+   *  - the merged episode is still its CURRENT one, so it has not already rolled onto
+   *    new work (which `agentWentAway` deliberately reports as a failure);
+   *  - and a merge is durably recorded against that binding.
+   *
+   * A prompt arriving after all four hold is new work following a task that genuinely
+   * shipped, not a continuation of it - and because the agent goes `working` the instant
+   * it lands, the autopilot cannot have taken the agent in between either.
+   */
+  private settleIfEpisodeFinished(s: Session): void {
+    if (s.state !== "idle") return;
+    if (s.queue && s.queue.openCount > 0) return;
+    const t = this.registry.listTasks().find(
+      (task) => task.sessionId === s.id && (task.status === "running" || task.status === "dispatching"),
+    );
+    if (!t) return;
+    const binding = taskWorkEpisodeForTask(t.id);
+    if (!binding?.mergedAt || !binding.prUrl) return;
+    // Rolled onto new work since the merge - not ours to conclude. See `mergedPrFor`.
+    const current = this.registry.workEpisodeForSession(s.id);
+    if (current && current.episodeId !== binding.episodeId) return;
+    this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
   }
 
   /**

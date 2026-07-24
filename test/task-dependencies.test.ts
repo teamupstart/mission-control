@@ -1334,7 +1334,12 @@ test("post-merge episode rollover preserves running task ownership", () => {
   const nextEpisode = registry.workEpisodeForSession(id)!;
   const owner = registry.getTask("owned-rollover-task")!;
   assert.notEqual(nextEpisode.episodeId, originalEpisode.episodeId);
-  assert.equal(owner.status, "running");
+  // OWNERSHIP is what this case is about, and it is unchanged: the task keeps its session
+  // and the session keeps its task across the rollover. Its STATUS is now `done` rather
+  // than `running`, deliberately - this agent was idle when its pull request merged, which
+  // is the evidence that the episode finished, and a merged task that stays `running`
+  // makes `agentIsFree` refuse its own agent forever. See `task-merge-settles.test.ts`.
+  assert.equal(owner.status, "done");
   assert.equal(owner.sessionId, id);
   assert.equal(registry.getSession(id)?.task?.id, owner.id);
   const dependent = tasks.create({

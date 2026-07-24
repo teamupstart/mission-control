@@ -1223,7 +1223,7 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
-## Recurring missions (no UI yet)
+## Recurring missions (control plane, no UI yet)
 
 A **recurring mission** is a durable template that files an ordinary backlog task on a
 cadence: "audit dependencies every Monday at 8am". It is deliberately not a
@@ -1231,13 +1231,30 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-**The engine runs; there is still no way to reach it.** The daemon now carries the
-scheduler itself - a self-rescheduling loop that accounts for every crossed instant exactly
-once, applies the missed-run and overlap policies, recovers both crash windows around task
-creation, and files backlog tasks and nothing else. It still has no HTTP route, SSE
-collection or screen, so with no way to *create* a schedule the tables stay empty and
-the product behaves exactly as before. The catalog and the Missions overlay arrive in later
-phases; the plan is
+**The engine and its control plane run; there is still no screen.** Under the scheduler -
+a self-rescheduling loop that accounts for every crossed instant exactly once, applies the
+missed-run and overlap policies, recovers both crash windows around task creation, and files
+backlog tasks and nothing else - sits a validated localhost HTTP surface:
+
+```text
+GET  /api/schedules                        the live catalog
+POST /api/schedules/preview                enumerate a cadence, writing nothing
+POST /api/schedules                        create (save paused or enabled)
+POST /api/schedules/:id/update             apply an edit as a new revision
+POST /api/schedules/:id/set-enabled        pause or resume
+POST /api/schedules/:id/run-now            file this mission's work now, paused or not
+POST /api/schedules/:id/archive            retire it, keeping its history
+GET  /api/schedules/:id/occurrences        paginated run history (includes archived schedules)
+```
+
+Every mutation is validated by a shared zod schema and preview accepts the exact save
+definition, so the browser cannot preview a cadence the save route would refuse. The catalog
+is **live over the existing SSE stream** - a top-level `schedules` collection in the
+snapshot, plus `schedule_upsert` / `schedule_remove` events - so it never polls; occurrence
+history is the one page-oriented read, fetched on demand. Archiving emits a removal from the
+live catalog *after* the durable write, and the archived schedule stays reachable through its
+history route so a generated task can still deep-link to it. The Missions overlay and its
+screens arrive in the next phase; the plan is
 [`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).
 
 Three decisions are worth knowing now, because everything later is built on them:

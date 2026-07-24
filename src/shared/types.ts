@@ -5,6 +5,9 @@
 // Type-only both ways: `ensemble.ts` needs `AgentType`/`ThinkingLevel` from here. Both
 // imports are erased at emit (verbatimModuleSyntax), so there is no runtime cycle.
 import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
+// Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
+// `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
+import type { MissionSchedule } from "./schedules.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
@@ -1864,6 +1867,12 @@ export type ServerEvent =
        */
       ensembleSummaries: EnsembleSummary[];
       /**
+       * Live Recurring Missions catalog: non-archived schedules only. Archived ones leave
+       * the collection via `schedule_remove` and are reachable afterwards only through the
+       * page-oriented occurrence-history route, which is why history is not in the snapshot.
+       */
+      schedules: MissionSchedule[];
+      /**
        * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
@@ -1890,6 +1899,13 @@ export type ServerEvent =
   | { type: "workflow_run_remove"; id: WorkflowRunId }
   | { type: "ensemble_upsert"; ensemble: EnsembleSummary }
   | { type: "ensemble_remove"; id: string }
+  /**
+   * A schedule was created, edited, enabled/paused, or had a live occurrence settle -
+   * anything the catalog must reflect. Carries the whole `MissionSchedule`, so a browser
+   * never fetches to reconcile. `schedule_remove` fires on archive, AFTER the durable write.
+   */
+  | { type: "schedule_upsert"; schedule: MissionSchedule }
+  | { type: "schedule_remove"; id: string }
   /**
    * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
    * not a per-session field: the rate limits are account-global, so hanging them off each

@@ -114,11 +114,22 @@ const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatu
 // Recurring Missions, for the same two reasons as the sweeper above: it writes to the DB,
 // and the port bind guarantees exactly one of it. It files backlog tasks and stops there -
 // Foreman is still the only autonomous path to a running agent. Inert until an operator
-// saves a schedule, which no route can do yet.
-const schedules = new ScheduleManager({ tasks });
+// saves a schedule through the routes below.
+//
+// The Registry is its live-state notifier: the manager announces a durable schedule change
+// through `upsert`/`remove`, and the Registry both caches it and emits the SSE variant. The
+// adapter is thin because the two names differ (the Registry's methods are `*Schedule`, so
+// they sit beside `upsertEnsemble` / `upsertWorkflow`), but it IS the Registry.
+const schedules = new ScheduleManager({
+  tasks,
+  notifier: {
+    upsert: (schedule) => registry.upsertSchedule(schedule),
+    remove: (id) => registry.removeSchedule(id),
+  },
+});
 let stopSchedules = () => {};
 
-const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows);
+const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows, schedules);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

@@ -67,6 +67,15 @@ import type {
   EnsembleSummary,
   EnsembleUnreadable,
 } from "./ensemble.ts";
+import {
+  SCHEDULE_CRON_FIELD_COUNT,
+  SCHEDULE_HISTORY_MAX_LIMIT,
+  SCHEDULE_MISSED_POLICIES,
+  SCHEDULE_OVERLAP_POLICIES,
+  SCHEDULE_PREVIEW_DEFAULT_COUNT,
+  SCHEDULE_PREVIEW_MAX_COUNT,
+  cronFieldCount,
+} from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -3056,3 +3065,119 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
 ]);
 export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;
+
+// ---- Recurring Missions (schedule catalog) ----
+
+/**
+ * The mission a due instant files, validated to the SHAPE a `ScheduleTemplate` needs.
+ *
+ * `title` is required here for the reason it is required nowhere else a task is created: a
+ * recurring mission files the same work over and over, and an untitled task takes the
+ * model-titling path, spending an LLM call on every single run to derive the same string.
+ * `labels` normalizes in the schema, like `TASK_TRIAGE_FIELDS`, so no writer reaches the
+ * store with duplicated or unbounded tags.
+ */
+const ScheduleTemplateSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    intent: z.string().trim().min(1),
+    repoRoot: z.string().min(1),
+    kind: z.enum(["ship", "scout"]).default("ship"),
+    agent: z.enum(AGENT_TYPES).default("claude"),
+    priority: z.enum(TASK_PRIORITIES).nullable().default(null),
+    labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
+    model: ModelIdSchema.nullable().default(null),
+    effort: EffortLevelSchema.nullable().default(null),
+  })
+  .refine((t) => t.effort === null || supportsEffort(t.agent, t.effort), {
+    path: ["effort"],
+    message: "reasoning effort is not supported by this harness",
+  });
+
+/**
+ * The one editable definition preview, create, and update all share, so the browser can
+ * never preview a value the save route would refuse.
+ *
+ * Shape only. The cron is checked for exactly five fields HERE - `cron-parser` accepts
+ * three through six, so a six-field seconds expression would otherwise parse and schedule
+ * a mission every second - but its semantics, the IANA zone, and the minimum interval stay
+ * with the Phase 2 service, which owns the recurrence evaluator. `executionMode` and
+ * `runnerId` are pinned to their only V1 values rather than dropped: a form that offered
+ * `remote-runner` would be offering a promise this build does not keep, and the schema is
+ * where that is refused, not the manager.
+ */
+const ScheduleDefinitionSchema = z.object({
+  name: z.string().trim().min(1),
+  expression: z
+    .string()
+    .min(1)
+    .refine((expr) => cronFieldCount(expr) === SCHEDULE_CRON_FIELD_COUNT, {
+      message: "a cron expression must have exactly five space-separated fields",
+    }),
+  timezone: z.string().trim().min(1),
+  overlapPolicy: z.enum(SCHEDULE_OVERLAP_POLICIES),
+  missedPolicy: z.enum(SCHEDULE_MISSED_POLICIES),
+  executionMode: z.literal("local-catchup").optional().default("local-catchup"),
+  runnerId: z.null().optional().default(null),
+  template: ScheduleTemplateSchema,
+});
+export type ScheduleDefinitionBody = z.infer<typeof ScheduleDefinitionSchema>;
+
+/** Create a schedule. `enabled` defaults to true; save paused sends `enabled: false`. */
+export const CreateScheduleSchema = ScheduleDefinitionSchema.extend({
+  enabled: z.boolean().optional().default(true),
+});
+export type CreateScheduleBody = z.infer<typeof CreateScheduleSchema>;
+
+/** Edit a schedule. The same definition, applied as a new immutable revision by the service. */
+export const UpdateScheduleSchema = ScheduleDefinitionSchema;
+export type UpdateScheduleBody = z.infer<typeof UpdateScheduleSchema>;
+
+/**
+ * Preview an unsaved definition, plus the knobs a preview alone needs.
+ *
+ * It IS the save definition with preview-only fields added, so the same shape validation
+ * runs. `count` is bounded to the 10-50 the source plan promised. The standby simulation is
+ * both-or-neither and ordered: a lone `sleepStartedAt` describes no window, and a
+ * `resumedAt` before it describes one that ran backwards.
+ */
+export const SchedulePreviewSchema = ScheduleDefinitionSchema.extend({
+  count: z.number().int().min(SCHEDULE_PREVIEW_DEFAULT_COUNT).max(SCHEDULE_PREVIEW_MAX_COUNT).optional(),
+  after: z.number().int().nonnegative().optional(),
+  sleepStartedAt: z.number().int().nonnegative().optional(),
+  resumedAt: z.number().int().nonnegative().optional(),
+  excludeScheduleId: z.string().min(1).optional(),
+})
+  .refine((v) => (v.sleepStartedAt === undefined) === (v.resumedAt === undefined), {
+    path: ["resumedAt"],
+    message: "a standby simulation needs both sleepStartedAt and resumedAt, or neither",
+  })
+  .refine((v) => v.sleepStartedAt === undefined || v.resumedAt === undefined || v.resumedAt > v.sleepStartedAt, {
+    path: ["resumedAt"],
+    message: "resumedAt must be after sleepStartedAt",
+  });
+export type SchedulePreviewBody = z.infer<typeof SchedulePreviewSchema>;
+
+/** Pause or resume. The service recomputes the cursor from the correct anchor. */
+export const SetScheduleEnabledSchema = z.object({ enabled: z.boolean() });
+export type SetScheduleEnabledBody = z.infer<typeof SetScheduleEnabledSchema>;
+
+/**
+ * Run now and Archive carry no body, but they still go through `parseBody`: a `.strict()`
+ * empty object refuses a stray key rather than hand-parsing arbitrary JSON, so a caller
+ * that thinks it is passing an argument learns it is not.
+ */
+export const RunScheduleNowSchema = z.object({}).strict();
+export const ArchiveScheduleSchema = z.object({}).strict();
+
+/**
+ * The occurrence-history query. `before` is the opaque cursor a prior page returned - a
+ * numeric instant - and `limit` is bounded; an unparseable cursor or an out-of-range limit
+ * is REFUSED, not clamped, because a history route that silently reinterpreted a bad cursor
+ * would page through the wrong window and look like it worked.
+ */
+export const ScheduleHistoryQuerySchema = z.object({
+  before: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce.number().int().min(1).max(SCHEDULE_HISTORY_MAX_LIMIT).optional(),
+});
+export type ScheduleHistoryQuery = z.infer<typeof ScheduleHistoryQuerySchema>;

@@ -44,6 +44,16 @@ import type {
   TaskDependencyInput,
 } from "@shared/protocol.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
+import type {
+  MissionSchedule,
+  ScheduleHistoryPage,
+  ScheduleMissedPolicy,
+  ScheduleOccurrence,
+  ScheduleOverlapPolicy,
+  SchedulePreviewResult,
+  ScheduleTemplate,
+  ScheduleValidationField,
+} from "@shared/schedules.ts";
 import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
@@ -259,6 +269,140 @@ const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown
   request<T>("PUT", path, body);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+// ---- Recurring Missions ----
+//
+// Typed helpers over the schedule routes, everything Phase 4 needs to preview, save,
+// enable/pause, Run now, archive, and page history without inventing a payload. Preview
+// returns the daemon's own `SchedulePreviewResult` - the browser does no date math - and the
+// mutations PRESERVE the validation field so the editor can put a refusal under the input
+// that caused it. History is on-demand only: no interval, no effect poller, no global
+// collection. The live catalog is SSE-owned (see `useEventStream`).
+
+/** The editable definition the preview, create, and update routes accept. */
+export interface ScheduleDefinitionPayload {
+  name: string;
+  expression: string;
+  timezone: string;
+  overlapPolicy: ScheduleOverlapPolicy;
+  missedPolicy: ScheduleMissedPolicy;
+  template: ScheduleTemplate;
+}
+
+/** The definition plus the knobs a preview alone needs (count, standby window, self-exclude). */
+export interface SchedulePreviewPayload extends ScheduleDefinitionPayload {
+  count?: number;
+  after?: number;
+  sleepStartedAt?: number;
+  resumedAt?: number;
+  excludeScheduleId?: string;
+}
+
+export interface ScheduleMutationResult extends ActionResult {
+  schedule?: MissionSchedule;
+  /** The input a validation refusal belongs to, so the editor can attach the message. */
+  field?: ScheduleValidationField;
+}
+
+export interface RunScheduleNowResult extends ActionResult {
+  /** The occurrence the run recorded - its own status says whether work was filed or skipped. */
+  occurrence?: ScheduleOccurrence;
+  schedule?: MissionSchedule;
+}
+
+/** A create/update/enable/archive that returns the canonical schedule, field errors intact. */
+async function scheduleMutation(path: string, body?: unknown): Promise<ScheduleMutationResult> {
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: body ? { "content-type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<MissionSchedule> & {
+      error?: string;
+      field?: ScheduleValidationField;
+    };
+    if (!res.ok) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}`, field: data.field, status: res.status };
+    }
+    return { ok: true, schedule: data as MissionSchedule, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Enumerate an unsaved cadence without writing anything. Returns the daemon's own result. */
+export async function previewSchedule(payload: SchedulePreviewPayload): Promise<SchedulePreviewResult> {
+  try {
+    const res = await fetch("/api/schedules/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = (await res.json().catch(() => ({}))) as SchedulePreviewResult & {
+      error?: string;
+      field?: ScheduleValidationField;
+    };
+    if (!res.ok) {
+      return { ok: false, error: { field: data.field ?? "expression", message: data.error ?? `HTTP ${res.status}` } };
+    }
+    return data;
+  } catch (err) {
+    return { ok: false, error: { field: "expression", message: err instanceof Error ? err.message : String(err) } };
+  }
+}
+
+/** Save a new schedule. `enabled` is explicit: Save paused sends false, Save & enable true. */
+export const createSchedule = (payload: ScheduleDefinitionPayload & { enabled: boolean }) =>
+  scheduleMutation("/api/schedules", payload);
+
+export const updateSchedule = (id: string, payload: ScheduleDefinitionPayload) =>
+  scheduleMutation(`/api/schedules/${encodeURIComponent(id)}/update`, payload);
+
+export const setScheduleEnabled = (id: string, enabled: boolean) =>
+  scheduleMutation(`/api/schedules/${encodeURIComponent(id)}/set-enabled`, { enabled });
+
+export const archiveSchedule = (id: string) =>
+  scheduleMutation(`/api/schedules/${encodeURIComponent(id)}/archive`, {});
+
+/** File this mission's work now, paused or not, without touching the cron cursor. */
+export async function runScheduleNow(id: string): Promise<RunScheduleNowResult> {
+  try {
+    const res = await fetch(`/api/schedules/${encodeURIComponent(id)}/run-now`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      occurrence?: ScheduleOccurrence;
+      schedule?: MissionSchedule;
+      error?: string;
+    };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    return { ok: true, occurrence: data.occurrence, schedule: data.schedule, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * One page of a schedule's occurrence history, newest first, paged by an opaque `before`
+ * cursor. On-demand only - deliberately not wired into any interval, effect poller, or
+ * global collection - and it carries the schedule (including an archived one) so a
+ * generated task can deep-link here after the schedule leaves the catalog.
+ */
+export function fetchScheduleHistory(
+  id: string,
+  cursor: { before?: number | null; limit?: number } = {},
+): Promise<ScheduleHistoryPage | null> {
+  const params = new URLSearchParams();
+  if (cursor.before != null) params.set("before", String(cursor.before));
+  if (cursor.limit != null) params.set("limit", String(cursor.limit));
+  const query = params.toString();
+  return fetchJson<ScheduleHistoryPage>(
+    `/api/schedules/${encodeURIComponent(id)}/occurrences${query ? `?${query}` : ""}`,
+  );
+}
 
 /**
  * Fetch a session's work queue, saying WHICH kind of nothing it got.

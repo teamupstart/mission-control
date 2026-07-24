@@ -200,8 +200,8 @@ from the run's own DB and appended within a body budget. Creates or updates the 
 falls back to deterministic content if the agent fails; skipped on the default branch.
 
 **Translation: stays with the existing wrap-up paths.** The workflow-builder plan already
-resolves this: a run whose final gate needs a PR shows `awaiting_pr` and offers the
-existing no-mistakes or direct PR wrap-up action. Note the provenance rule this
+resolves this: a run whose final gate needs a PR shows a missing-PR wait and offers the
+existing `/no-mistakes` or direct PR wrap-up action. Note the provenance rule this
 preserves: only `prCreated` and no-mistakes' own `pr:` line prove authorship, and only
 those reach `adoptPr` - a workflow node opening PRs would need to re-earn that trust for
 nothing.
@@ -237,8 +237,8 @@ Session repairing on delivered findings. Nothing new to build beyond phase 5 its
 | document | Agent editor under policy | **Documentation Steward Persona** judges; Session edits | Yes |
 | lint | Command gate / agent fixer | Deterministic tooling or CI; Persona fit is poor | No; Lint Persona not adopted |
 | push | Git delivery machinery | Session / no-mistakes wrap-up; never the engine | Not a node, by design |
-| pr | Agent drafting + host API | `awaiting_pr` + existing no-mistakes / PR wrap-up action | As planned (phase 5) |
-| ci | Monitor + bounded fixer | **Inspector final gate** + findings policies | Phase 5 (planned) |
+| pr | Agent drafting + host API | Missing-PR wait + existing `/no-mistakes` / PR wrap-up action | [Workflow Phase 5](../workflow-builder/phase-5-inspector-gate.md) |
+| ci | Monitor + bounded fixer | **Inspector final gate** + findings policies | [Workflow Phase 5](../workflow-builder/phase-5-inspector-gate.md) |
 
 Gate-semantics dictionary, for completeness:
 
@@ -330,7 +330,7 @@ Submitted through the Mission Control dashboard review on 2026-07-23:
    Evidence Auditor, Documentation Steward. The Lint/Housekeeping option was not adopted.
 2. **Deterministic test/lint command gates**: leave outside the graph. CI enforces them at
    the PR head; the Inspector final gate makes them binding. No check-node kind is planned.
-3. **Ship tail**: as planned - graph success shows `awaiting_pr` offering the existing
+3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: seed `.md` files shipped in-repo (`docs/personas/`), importable from
    the Personas tab.

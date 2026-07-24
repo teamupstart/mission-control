@@ -33,6 +33,7 @@ import type {
   WorkItemState,
   InspectorInspection,
   InspectorSummary,
+  InspectionUpdated,
 } from "@shared/types.ts";
 import type {
   HookIngest,
@@ -502,6 +503,48 @@ export class Registry extends EventEmitter {
   onPrOpened(fn: (e: PrOpened) => void): () => void {
     this.on("pr_opened", fn);
     return () => this.off("pr_opened", fn);
+  }
+
+  /** Internal Inspector-to-workflow wakeup. This is deliberately not browser SSE. */
+  onInspectionUpdated(fn: (e: InspectionUpdated) => void): () => void {
+    this.on("inspection_updated", fn);
+    return () => this.off("inspection_updated", fn);
+  }
+
+  /**
+   * Refresh one adopted ledger row and report the GitHub observation that caused it.
+   * Finding bodies stay in SQLite; the signal carries only the compact inspection row.
+   */
+  inspectionUpdated(
+    prKey: string,
+    observedHeadSha: string | null,
+    observedState: InspectionUpdated["observedState"],
+    observedAt = Date.now(),
+  ): void {
+    const ledger = loadInspectorInspections().find((row) => row.key === prKey);
+    if (!ledger) return;
+    this.inspections.set(prKey, ledger);
+    this.emit("inspection_updated", {
+      prKey,
+      observedHeadSha,
+      observedState,
+      observedAt,
+      ledger,
+    } satisfies InspectionUpdated);
+  }
+
+  /** Wake adopted gates after settings change without pretending GitHub was observed. */
+  inspectorConfigChanged(now = Date.now()): void {
+    for (const row of loadInspectorInspections()) {
+      this.inspections.set(row.key, row);
+      this.emit("inspection_updated", {
+        prKey: row.key,
+        observedHeadSha: null,
+        observedState: null,
+        observedAt: now,
+        ledger: row,
+      } satisfies InspectionUpdated);
+    }
   }
 
   private emitEvent(e: ServerEvent): void {

@@ -66,12 +66,14 @@ import {
   CancelWorkflowRunSchema,
   CreateWorkflowBindingSchema,
   ReattachWorkflowBindingSchema,
+  RestartFullWorkflowSchema,
   ResubmitWorkflowSchema,
   RetryWorkflowRunSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
   WorkflowCompletionClaimSchema,
   WorkflowConfigSchema,
+  WorkflowRunActionSchema,
   SubmitWorkflowSchema,
   UpdateWorkflowBindingSchema,
   WrapupSchema,
@@ -631,6 +633,36 @@ export function buildApp(
     const result = manager.cancel(c.req.param("id"), parsed.data.requestId);
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, WorkflowRunActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.preparePr(c.req.param("id"), parsed.data.requestId);
+    return result.ok
+      ? c.json({ delivery: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/recheck-inspector", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, WorkflowRunActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/restart-full", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, RestartFullWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.restartFull(c.req.param("id"), parsed.data);
+    return result.ok
+      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-deliveries/:id/retry", async (c) => {
@@ -1760,6 +1792,7 @@ export function buildApp(
     // posted publicly, and flipping enabled -> off freezes the chips in whatever mode
     // was in force, indefinitely. This chip's whole job is that distinction.
     registry.refreshInspections();
+    registry.inspectorConfigChanged();
     return c.json(next);
   });
   // The ledger, newest first. This is what makes dry-run legible: without somewhere to

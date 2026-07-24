@@ -232,6 +232,7 @@ test("clean review is live-only, follows resolution, and is not duplicated after
     path: "src/example.ts",
     line: 1,
     title: "Prior issue",
+    body: "Already scrubbed prior finding detail.",
     severity: "major",
     round: 1,
     status: "open",

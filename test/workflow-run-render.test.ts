@@ -27,6 +27,10 @@ const detail: WorkflowRunDetail = {
     activePersonaNames: [],
     failedPersonaCount: 1,
     bypassedPersonaReview: false,
+    gate: "none",
+    gatePrNumber: null,
+    gateHeadShort: null,
+    reviewPosture: null,
     updatedAt: 10,
   },
   binding: {
@@ -173,6 +177,7 @@ const detail: WorkflowRunDetail = {
   receipts: [],
   deliveries: [],
   events: [{ id: 1, runId: "run", timestamp: 1, kind: "persona_verdict", payload: { verdict: "fail" } }],
+  inspectorGate: null,
 };
 
 test("run detail renders raw context, fallback, verdict, Join packet, waiting actions, and timeline", () => {
@@ -302,6 +307,135 @@ test("run detail renders exact delivery audit and only explicit recovery control
   assert.match(html, /1234567890ab/);
   assert.match(html, /Foreman proved the queue complete/);
   assert.doesNotMatch(html, /Retry refused delivery/);
+});
+
+test("Inspector final gate renders provenance, heads, policies, findings, actions, and bypass audit", () => {
+  const state = {
+    prKey: "owner/repo#91",
+    prUrl: "https://github.com/owner/repo/pull/91",
+    targetHeadSha: "new-head",
+    failedHeadSha: "new-head",
+    enteredAt: 8,
+    lastObservedAt: 9,
+    observedHeadSha: "new-head",
+    reviewPosture: "live" as const,
+    waitReason: "findings" as const,
+    findingFingerprints: ["finding"],
+  };
+  const inspectorOnly = {
+    ...detail.submissions[0]!,
+    id: "inspector-only",
+    round: 2,
+    mode: "inspector_only" as const,
+    context: {
+      bypassReason: "Published Inspector-only findings policy",
+      failedHeadSha: "old-head",
+      newHeadSha: "new-head",
+      priorFindingFingerprints: ["finding"],
+    },
+    evidence: { prHeadSha: "new-head" },
+    prHeadSha: "new-head",
+    status: "completed" as const,
+  };
+  const gated: WorkflowRunDetail = {
+    ...detail,
+    summary: {
+      ...detail.summary,
+      status: "waiting_for_new_head",
+      phase: "inspector_findings",
+      round: 2,
+      bypassedPersonaReview: true,
+      gate: "findings",
+      gatePrNumber: 91,
+      gateHeadShort: "new-head",
+      reviewPosture: "live",
+    },
+    version: {
+      ...detail.version!,
+      completionPolicy: {
+        kind: "inspector",
+        onFindings: "inspector_only",
+        missingPrAction: "offer_prepare_pr",
+      },
+    },
+    run: {
+      ...detail.run,
+      status: "waiting_for_new_head",
+      currentPhase: "inspector_findings",
+      inspectorPrKey: state.prKey,
+      inspectorHeadSha: state.targetHeadSha,
+      gateState: state,
+    },
+    submissions: [detail.submissions[0]!, inspectorOnly],
+    inspectorGate: {
+      state,
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: {
+        key: state.prKey,
+        url: state.prUrl,
+        owner: "owner",
+        repo: "repo",
+        number: 91,
+        repoRoot: "/repo",
+        cwd: "/repo",
+        sessionId: "session",
+        source: "no-mistakes",
+        state: "open",
+        headSha: "new-head",
+        reviewPosture: "live",
+        round: 3,
+        lastReviewedAt: 9,
+        lastError: "waiting on retry",
+        failCount: 1,
+        lastFailKind: "persistent",
+        nextAttemptAt: 11,
+        lastAttemptSha: "new-head",
+        mergedAt: null,
+        mergeBlock: "workflow-gate-pending",
+        adoptedAt: 2,
+        updatedAt: 9,
+        openFindings: 1,
+        resolvedFindings: 0,
+      },
+      findings: [{
+        id: "finding",
+        prKey: state.prKey,
+        fingerprint: "finding",
+        path: "src/gate.ts",
+        line: 42,
+        title: "Preserve provenance",
+        body: null,
+        severity: "major",
+        round: 3,
+        status: "open",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 9,
+        updatedAt: 9,
+      }],
+    },
+  };
+  const html = renderToStaticMarkup(createElement(WorkflowRunView, {
+    detail: gated,
+    onResubmit: async () => {},
+    onRetry: async () => {},
+    onCancel: async () => {},
+  }));
+  assert.match(html, /Final gate/);
+  assert.match(html, /#91/);
+  assert.match(html, /no-mistakes/);
+  assert.match(html, /Target head/);
+  assert.match(html, /Observed head/);
+  assert.match(html, /Reviewed head/);
+  assert.match(html, /inspector only/);
+  assert.match(html, /offer prepare pr/);
+  assert.match(html, /Preserve provenance/);
+  assert.match(html, /Legacy finding: detail was not persisted/);
+  assert.match(html, /Persona review bypassed for Inspector repair/);
+  assert.match(html, /audited repair submission moved from old-head to new-head/);
+  assert.match(html, /Recheck Inspector/);
+  assert.match(html, /Restart full workflow/);
+  assert.match(html, /Open Inspector settings/);
 });
 
 test("binding selection reuses only the requested immutable version", () => {

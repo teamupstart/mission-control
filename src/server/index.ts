@@ -78,7 +78,9 @@ const stopPoller = startPoller(registry);
 const stopAgentsShadow = startAgentsShadow(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
-const stopInspector = startInspector(registry);
+const stopInspector = startInspector(registry, {
+  workflowGatePending: (prKey) => workflows.blocksMerge(prKey),
+});
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopUsage = startUsagePoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);

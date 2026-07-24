@@ -338,8 +338,8 @@
   the run's own DB and appended within a body budget. Creates or updates the PR; falls back to
   deterministic content if the agent fails; skipped on the default branch.</p>
   <p><b>Translation: stays with the existing wrap-up paths.</b> The workflow-builder plan
-  already resolves this: a run whose final gate needs a PR shows <code>awaiting_pr</code> and
-  offers the existing no-mistakes or direct PR wrap-up action. Note the
+  already resolves this: a run whose final gate needs a PR shows a missing-PR wait and
+  offers the existing <code>/no-mistakes</code> or direct PR wrap-up action. Note the
   provenance rule this preserves: only <code>prCreated</code> and no-mistakes' own
   <code>pr:</code> line prove authorship, and only those reach <code>adoptPr</code> - a
   workflow node opening PRs would need to re-earn that trust for nothing.</p>
@@ -375,8 +375,8 @@
         <tr><td>document</td><td>Agent editor under policy</td><td><b>Documentation Steward Persona</b> judges; Session edits</td><td>Yes</td></tr>
         <tr><td>lint</td><td>Command gate / agent fixer</td><td>Deterministic tooling or CI; Persona fit is poor</td><td>No; Lint Persona not adopted</td></tr>
         <tr><td>push</td><td>Git delivery machinery</td><td>Session / no-mistakes wrap-up; never the engine</td><td>Not a node, by design</td></tr>
-        <tr><td>pr</td><td>Agent drafting + host API</td><td><code>awaiting_pr</code> + existing no-mistakes / PR wrap-up action</td><td>As planned (phase 5)</td></tr>
-        <tr><td>ci</td><td>Monitor + bounded fixer</td><td><b>Inspector final gate</b> + findings policies</td><td>Phase 5 (planned)</td></tr>
+        <tr><td>pr</td><td>Agent drafting + host API</td><td>Missing-PR wait + existing <code>/no-mistakes</code> / PR wrap-up action</td><td><a href="../workflow-builder/phase-5-inspector-gate.md">Workflow Phase 5</a></td></tr>
+        <tr><td>ci</td><td>Monitor + bounded fixer</td><td><b>Inspector final gate</b> + findings policies</td><td><a href="../workflow-builder/phase-5-inspector-gate.md">Workflow Phase 5</a></td></tr>
       </tbody>
     </table>
   </div>
@@ -525,7 +525,7 @@
     <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
       them at the PR head; the Inspector final gate makes them binding. No check-node kind is
       planned.</li>
-    <li><b>Ship tail</b>: as planned - graph success shows <code>awaiting_pr</code> offering
+    <li><b>Ship tail</b>: as planned - graph success shows a missing-PR wait offering
       the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
       delivery nodes.</li>
     <li><b>Persona texts</b>: seed <code>.md</code> files shipped in-repo

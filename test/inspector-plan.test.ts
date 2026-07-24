@@ -59,6 +59,7 @@ function row(over: Partial<InspectorComment> = {}): InspectorComment {
     path: "src/a.ts",
     line: 2,
     title: "Reaches into the concrete type",
+    body: null,
     severity: "major",
     round: 1,
     status: "open",

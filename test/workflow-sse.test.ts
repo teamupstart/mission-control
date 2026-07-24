@@ -135,12 +135,28 @@ test("compact workflow run summaries converge through snapshot, incremental SSE,
     { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
     { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
+  store.setRunState("run", "waiting_for_inspector", "inspector_review", {
+    prKey: "owner/repo#88",
+    prUrl: "https://github.com/owner/repo/pull/88",
+    targetHeadSha: "abcdef1234567890",
+    failedHeadSha: null,
+    enteredAt: 2,
+    lastObservedAt: 3,
+    observedHeadSha: "abcdef1234567890",
+    reviewPosture: "live",
+    waitReason: "review_pending",
+    findingFingerprints: [],
+  }, 3);
   const registry = new Registry();
   new PersonaManager(registry, store);
   const manager = new WorkflowManager(registry, store);
   assert.equal(registry.snapshot().workflowRunSummaries.length, 1);
   assert.equal("version" in registry.snapshot().workflowRunSummaries[0]!, false);
   assert.equal("context" in registry.snapshot().workflowRunSummaries[0]!, false);
+  assert.equal(registry.snapshot().workflowRunSummaries[0]?.gate, "waiting_inspector");
+  assert.equal(registry.snapshot().workflowRunSummaries[0]?.gatePrNumber, 88);
+  assert.equal(registry.snapshot().workflowRunSummaries[0]?.gateHeadShort, "abcdef12");
+  assert.equal(registry.snapshot().workflowRunSummaries[0]?.reviewPosture, "live");
   const listRunSummaries = store.listRunSummaries;
   store.listRunSummaries = () => {
     throw new Error("incremental publication scanned workflow history");

@@ -37,6 +37,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
     inspector: "live",
     reviewedSha: "abc",
     reviewPosture: "live",
+    workflowGatePending: false,
     rounds: 1,
     openFindings: 0,
     now: NOW,
@@ -122,6 +123,12 @@ test("shipping's allowlist does not stand in for the Inspector's", () => {
 
 test("a draft is never merged", () => {
   assert.equal(blockOf(ready({ pr: { ...ready().pr, isDraft: true } })), "draft");
+});
+
+test("an active workflow final gate narrowly vetoes YOLO merge", () => {
+  assert.equal(blockOf(ready({ workflowGatePending: true })), "workflow-gate-pending");
+  assert.equal(mergeVerdict(ready({ workflowGatePending: false })).merge, true);
+  assert.match(MERGE_BLOCK_LABEL["workflow-gate-pending"], /workflow/i);
 });
 
 // The whole point of the feature is that the Inspector looked at THIS code. A review of a
@@ -223,6 +230,7 @@ test("every block code the gate can return has a sentence for the panel", () => 
     "review-unpublished",
     "not-open",
     "draft",
+    "workflow-gate-pending",
     "not-reviewed",
     "findings",
     "threads",

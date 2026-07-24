@@ -1731,6 +1731,8 @@ export interface InspectorComment {
   path: string | null;
   line: number | null;
   title: string;
+  /** Already-scrubbed finding detail. Null only for rows created before body persistence. */
+  body: string | null;
   severity: InspectorSeverity;
   round: number;
   status: InspectorCommentStatus;
@@ -1764,6 +1766,15 @@ export interface InspectorSummary {
 export interface InspectorInspection extends InspectorPr {
   openFindings: number;
   resolvedFindings: number;
+}
+
+/** Server-internal wakeup after Inspector observes or updates one adopted PR. */
+export interface InspectionUpdated {
+  prKey: string;
+  observedHeadSha: string | null;
+  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  observedAt: number;
+  ledger: InspectorInspection;
 }
 
 /**

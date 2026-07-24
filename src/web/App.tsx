@@ -1051,6 +1051,10 @@ export function App(): React.JSX.Element {
                 setSelectedId(sessionId);
                 if (layout === "board") setBoardOpen(true);
               }}
+              onOpenInspectorSettings={() => {
+                setSettingsCategory("inspector");
+                setSettingsOpen(true);
+              }}
               onBindVersion={(version) => setWorkflowBindingTarget({
                 workflowVersionId: version.id,
                 workflowId: version.workflowId,

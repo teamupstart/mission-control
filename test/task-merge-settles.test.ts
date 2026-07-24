@@ -448,6 +448,34 @@ test("unbinding an inferred completion releases its reopening provenance", () =>
   assert.equal(provenance.autoCompleted.size, 0);
 });
 
+test("pruning an inferred completion does not recreate its reopening provenance", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-pruned-completion");
+  const active = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...active,
+    worktreePath: null,
+    updatedAt: active.updatedAt + 1,
+  });
+  const future = Date.now() + 60_000;
+  for (let i = 0; i < 50; i++) {
+    f.registry.upsertTask(baseTask({
+      id: `newer-terminal-${i}`,
+      status: "done",
+      completedAt: future + i,
+      updatedAt: future + i,
+    }));
+  }
+
+  merge(f);
+
+  assert.equal(f.registry.getTask(f.taskId), undefined, "the bounded task list evicts the older row");
+  const provenance = f.tasks as unknown as {
+    autoCompleted: Map<string, string>;
+  };
+  assert.equal(provenance.autoCompleted.size, 0);
+});
+
 test("a reopened task stays running when its next idle turn is on an unmerged episode", () => {
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-recycle");

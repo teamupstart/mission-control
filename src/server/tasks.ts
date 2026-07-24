@@ -333,8 +333,13 @@ export class TaskManager {
     // Rolled onto new work since the merge - not ours to conclude. See `mergedPrFor`.
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
-    this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
-    this.autoCompleted.set(t.id, s.id);
+    const completed = this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
+    // `complete` broadcasts synchronously and may evict this row from the bounded
+    // in-memory task list before it returns. Do not recreate provenance after the
+    // corresponding `task_remove` already cleared it.
+    if (completed && this.registry.getTask(t.id) === completed) {
+      this.autoCompleted.set(t.id, s.id);
+    }
   }
 
   /**

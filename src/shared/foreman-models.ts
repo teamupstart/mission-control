@@ -47,14 +47,14 @@ export const FOREMAN_MODEL_SPECS: Record<ForemanModelRole, ForemanModelSpec> = {
   review: {
     configKey: "reviewModel",
     envVar: "FOREMAN_REVIEW_MODEL",
-    fallback: "claude-opus-4-8",
+    fallback: "claude-opus-5",
     label: "Review",
     blurb: "Judges a stuck session's pending question - answer, escalate, or leave it.",
   },
   verify: {
     configKey: "verifyModel",
     envVar: "FOREMAN_VERIFY_MODEL",
-    fallback: "claude-opus-4-8",
+    fallback: "claude-opus-5",
     label: "Verify",
     blurb: "Reads the diff and decides whether a queued work item is actually done.",
   },

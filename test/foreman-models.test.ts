@@ -6,6 +6,7 @@ import {
   resolveForemanModel,
   resolveForemanModels,
 } from "../src/shared/foreman-models.ts";
+import { providerModelDefault } from "../src/shared/model.ts";
 import type { ForemanModelRole } from "../src/shared/foreman-models.ts";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import { DEFAULT_TRIAGE_MODEL } from "../src/server/foreman/triage.ts";
@@ -128,6 +129,12 @@ test("the deep calls default to a deeper model than the cheap ones", () => {
   // anything else.
   assert.notEqual(FOREMAN_MODEL_SPECS.review.fallback, FOREMAN_MODEL_SPECS.triage.fallback);
   assert.notEqual(FOREMAN_MODEL_SPECS.review.fallback, FOREMAN_MODEL_SPECS.backlog.fallback);
+});
+
+test("Review and Verify fallbacks move in lockstep with Claude's deep default", () => {
+  const deepDefault = providerModelDefault("claude", "deep");
+  assert.equal(FOREMAN_MODEL_SPECS.review.fallback, deepDefault);
+  assert.equal(FOREMAN_MODEL_SPECS.verify.fallback, deepDefault);
 });
 
 // ---- what the panel says ---------------------------------------------------------------

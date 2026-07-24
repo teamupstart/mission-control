@@ -108,7 +108,8 @@ export interface ModelChoice {
 export const MODEL_CATALOG: Record<AgentType, readonly ModelChoice[]> = {
   claude: [
     { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work" },
-    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "strong all-rounder" },
+    { id: "claude-opus-5", label: "Opus 5", hint: "strong all-rounder" },
+    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "previous-generation Opus" },
     { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper" },
     { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks" },
   ],
@@ -157,7 +158,7 @@ export function providerModelDefault(
   if (provider === "codex") {
     return tier === "deep" ? "gpt-5.6-sol" : tier === "balanced" ? "gpt-5.6-terra" : "gpt-5.6-luna";
   }
-  return tier === "deep" ? "claude-opus-4-8" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
+  return tier === "deep" ? "claude-opus-5" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
 }
 
 /**
@@ -178,7 +179,7 @@ export function parseContextWindowSize(id: string | null | undefined): {
 /**
  * The context window a model runs at when its id carries no explicit size marker.
  * Claude Code enables the 1M (`[1m]`) window by default for its long-context
- * models - Opus 4.x and Sonnet 4.x/5 - but the transcript records the bare id with
+ * models - Opus 4+ and Sonnet 4+ - but the transcript records the bare id with
  * the marker stripped, so those families would otherwise read as the 200k default
  * and their context% would be ~5x too high. Map them to 1M here; everything else
  * (Haiku, Claude 3.x, unknown ids) keeps the standard 200k window.

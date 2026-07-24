@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { PERMISSION_MODES } from "@shared/types.ts";
 import type {
   AgentType,
   ForemanEpisode,
@@ -49,7 +50,7 @@ import type {
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
-import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
@@ -391,6 +392,16 @@ export class Registry extends EventEmitter {
     modelId: string | null;
     effortRevision: string | null;
     statusLineTimestamp: number | null;
+    verifiedAt: number;
+  }>();
+  /**
+   * A menu selection is visible immediately, but Codex does not append its new
+   * `turn_context` until the next turn. Hold that verified selection over passive
+   * rollout reads until their own timestamp proves they happened afterwards.
+   */
+  private permissionModeFreshnessGuards = new Map<string, {
+    agentSessionId: string | null;
+    transcriptPath: string | null;
     verifiedAt: number;
   }>();
   /**
@@ -1233,11 +1244,54 @@ export class Registry extends EventEmitter {
   recordObservedPermissionMode(sessionId: string, mode: PermissionMode | null): void {
     if (!mode) return;
     const s = this.sessions.get(sessionId);
-    if (!s || s.permissionMode === mode) return;
+    if (!s) return;
+    if (capabilitiesFor(s.agent).permissionModes?.liveControl.kind === "menu") {
+      this.permissionModeFreshnessGuards.set(sessionId, {
+        agentSessionId: s.agentSessionId,
+        transcriptPath: s.transcriptPath,
+        verifiedAt: Date.now(),
+      });
+    }
+    this.applyObservedPermissionMode(s, mode);
+  }
+
+  /**
+   * Apply a mode from a harness-owned append-only file. This is deliberately separate
+   * from `recordObservedPermissionMode`: passive reads must not start a freshness guard
+   * of their own, and must respect the guard made by a just-completed menu selection.
+   */
+  applyPassivePermissionMode(
+    sessionId: string,
+    mode: PermissionMode | null,
+    revision: string | null,
+  ): void {
+    if (!mode) return;
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    const guard = this.permissionModeFreshnessGuards.get(sessionId);
+    if (guard) {
+      const identityChanged =
+        (guard.agentSessionId !== null &&
+          s.agentSessionId !== null &&
+          guard.agentSessionId !== s.agentSessionId) ||
+        (guard.transcriptPath !== null &&
+          s.transcriptPath !== null &&
+          guard.transcriptPath !== s.transcriptPath);
+      if (!identityChanged) {
+        const revisionTime = revision === null ? NaN : Date.parse(revision);
+        if (!Number.isFinite(revisionTime) || revisionTime <= guard.verifiedAt) return;
+      }
+      this.permissionModeFreshnessGuards.delete(sessionId);
+    }
+    this.applyObservedPermissionMode(s, mode);
+  }
+
+  private applyObservedPermissionMode(s: Session, mode: PermissionMode): void {
+    if (s.permissionMode === mode) return;
     const overlay = this.overlayFor(s);
     if (overlay) overlay.permissionMode = mode;
     const updated: Session = { ...s, permissionMode: mode };
-    this.sessions.set(sessionId, updated);
+    this.sessions.set(s.id, updated);
     this.emitSession(updated);
   }
 
@@ -3206,6 +3260,7 @@ export class Registry extends EventEmitter {
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
+    this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
@@ -3313,6 +3368,7 @@ export class Registry extends EventEmitter {
         previous.transcriptPath !== next.transcriptPath);
     if (rebound) {
       this.clearSessionEffortTracking(next.id);
+      this.permissionModeFreshnessGuards.delete(next.id);
       next.effortBaselineReady = false;
     }
     return rebound;
@@ -4566,15 +4622,8 @@ export function sessionKey(s: Session): string | null {
   return paneToken(s);
 }
 
-/** The permission modes Claude reports; anything else is treated as unknown. */
-const PERMISSION_MODES = new Set<PermissionMode>([
-  "default",
-  "plan",
-  "acceptEdits",
-  "auto",
-  "dontAsk",
-  "bypassPermissions",
-]);
+/** Every permission mode this build knows; unknown newer values remain unreadable. */
+const KNOWN_PERMISSION_MODES = new Set<PermissionMode>(PERMISSION_MODES);
 
 /**
  * Narrow a raw `permission_mode` string to a known PermissionMode, or null when
@@ -4582,7 +4631,7 @@ const PERMISSION_MODES = new Set<PermissionMode>([
  * unknown mode never masquerades as a known one on the card.
  */
 export function normalizePermissionMode(raw: string | undefined | null): PermissionMode | null {
-  return raw && PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
+  return raw && KNOWN_PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
 }
 
 /**

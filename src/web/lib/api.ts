@@ -531,9 +531,8 @@ export const api = {
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
   /**
-   * Drive a session to a specific permission mode. Slower than it looks - the
-   * daemon walks the Shift+Tab cycle a step at a time, verifying against the pane
-   * - so callers should show a pending state while it runs.
+   * Drive a session to a specific permission mode through its harness's native live
+   * control (a verified Shift+Tab walk or a numbered permissions menu).
    */
   setMode: (id: string, mode: PermissionMode) =>
     post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),

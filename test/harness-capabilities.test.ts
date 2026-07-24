@@ -44,7 +44,7 @@ const { pickableModes } = await import("../src/web/lib/format.ts");
 const { reloadOwed, pendingReloads } = await import("../src/server/skills/reload.ts");
 const { tickTargets } = await import("../src/server/foreman/queue-machine.ts");
 const { decidePromptedWrapup } = await import("../src/server/foreman/prompted-wrapup.ts");
-const { resetToOrigin } = await import("../src/server/actions.ts");
+const { permissionRowMatches, resetToOrigin } = await import("../src/server/actions.ts");
 const { bindSession } = await import("../src/server/terminal/registry.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { meta, mkSession } = await import("./helpers/session-fixture.ts");
@@ -214,6 +214,37 @@ test("a harness with no permission modes offers none to pick, so the picker draw
     );
     assert.match(html, /mode-plan/, "the other half: a harness that HAS modes still renders them");
   }
+});
+
+test("a Codex session gets the shared picker before its first mode observation", () => {
+  assert.deepEqual(pickableModes("codex"), [
+    "askForApproval",
+    "approveForMe",
+    "fullAccess",
+    "readOnly",
+  ]);
+  const html = renderToStaticMarkup(
+    createElement(ModePicker, {
+      session: mkSession({ agent: "codex", permissionMode: null }),
+    }),
+  );
+  assert.match(html, /mode-btn/);
+  assert.match(html, />permissions</);
+});
+
+test("Codex permission rows match their identity without depending on description copy", () => {
+  assert.equal(
+    permissionRowMatches(
+      "Ask for approval (current) Codex can read and edit files in the current workspace.",
+      "Ask for approval",
+    ),
+    true,
+  );
+  assert.equal(
+    permissionRowMatches("Full Access Codex can edit files outside this workspace.", "Full Access"),
+    true,
+  );
+  assert.equal(permissionRowMatches("Full Accessory mode", "Full Access"), false);
 });
 
 test("each harness with session-only effort control renders a live picker", () => {

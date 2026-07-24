@@ -117,9 +117,10 @@ export async function readPaneModeLine(
  * The guard this replaces had already been restated once, as
  * `capabilitiesFor(s.agent).permissionModes`, with a note that the dialog half was riding
  * along on it until this slot landed. That restatement changed no behaviour and could not:
- * Codex has no permission modes, so gating the DIALOG on them skipped exactly the sessions
- * whose dialogs are the only signal they can produce. The two capabilities are now asked
- * for separately, which is the whole point of asking a capability rather than an id.
+ * Codex had no mode-line capability, so gating the DIALOG on it skipped exactly the
+ * sessions whose dialogs were the only signal they could produce. The two screen grammars
+ * are now asked for separately, which stays correct now that Codex also has a menu-based
+ * permission control.
  */
 export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
   // The token IS the handle check: a session with no pane has no token, and one without

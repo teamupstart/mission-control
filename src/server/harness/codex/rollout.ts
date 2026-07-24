@@ -1,7 +1,7 @@
 import { openSync, readSync, closeSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Session, ThinkingLevel } from "@shared/types.ts";
+import type { PermissionMode, Session, ThinkingLevel } from "@shared/types.ts";
 import { isLongContext } from "@shared/model.ts";
 import { readTailLines } from "../../util/file-tail.ts";
 import type { RuntimeMetaRead } from "../types.ts";
@@ -347,10 +347,55 @@ export function parseRolloutActivity(lines: string[]): import("../types.ts").Ses
   return latest;
 }
 
+/**
+ * Map Codex's newest turn_context permissions onto its four built-in `/permissions`
+ * choices. These fields are written on every turn by codex-cli 0.145.0, including after
+ * a live profile change; an unknown/custom combination remains null instead of being
+ * presented as the nearest built-in profile.
+ */
+export function parseRolloutPermissionModeRead(
+  lines: string[],
+): { mode: PermissionMode | null; revision: string | null } | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let o: Record<string, unknown>;
+    try { o = JSON.parse(lines[i]!) as Record<string, unknown>; } catch { continue; }
+    if (o.type !== "turn_context") continue;
+    const p = (o.payload ?? {}) as Record<string, unknown>;
+    const sandbox = (p.sandbox_policy ?? {}) as Record<string, unknown>;
+    const sandboxType = sandbox.type;
+    const approval = p.approval_policy;
+    const reviewer = p.approvals_reviewer;
+
+    let mode: PermissionMode | null = null;
+    if (sandboxType === "danger-full-access" && approval === "never") mode = "fullAccess";
+    if (sandboxType === "read-only" && approval === "on-request") mode = "readOnly";
+    if (sandboxType === "workspace-write" && approval === "on-request") {
+      mode = reviewer === "auto_review" ? "approveForMe" : "askForApproval";
+    }
+    return {
+      mode,
+      revision: typeof o.timestamp === "string" ? o.timestamp : null,
+    };
+  }
+  return null;
+}
+
+export function parseRolloutPermissionMode(lines: string[]): PermissionMode | null {
+  return parseRolloutPermissionModeRead(lines)?.mode ?? null;
+}
+
 /** Metadata and lifecycle from the same bounded filesystem read. */
 export function readRolloutPassive(path: string): import("../types.ts").TranscriptPassiveRead {
   const lines = readTailLines(path, ROLLOUT_TAIL_BYTES);
-  return { meta: readRetainedRolloutMeta(path, lines), activity: parseRolloutActivity(lines), usage: parseRolloutUsage(lines), rateLimits: parseRolloutRateLimits(lines) };
+  const permission = parseRolloutPermissionModeRead(lines);
+  return {
+    meta: readRetainedRolloutMeta(path, lines),
+    activity: parseRolloutActivity(lines),
+    permissionMode: permission?.mode ?? null,
+    permissionModeRevision: permission?.revision ?? null,
+    usage: parseRolloutUsage(lines),
+    rateLimits: parseRolloutRateLimits(lines),
+  };
 }
 
 export function parseRolloutRateLimits(lines: string[]): import("@shared/types.ts").RateLimitSource | null {

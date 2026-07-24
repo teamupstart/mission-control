@@ -1120,6 +1120,9 @@ async function awaitModeLineChange(session: Session, prev: string): Promise<Pane
  * actually landed on rather than guessing at it.
  */
 export async function cyclePermissionMode(session: Session): Promise<ModeResult> {
+  if (harnessFor(session.agent).permissionModes?.liveControl.kind !== "cycle") {
+    return { ok: false, error: NO_CYCLE, mode: session.permissionMode };
+  }
   return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => cycleLocked(session));
 }
 
@@ -1137,17 +1140,18 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
 /**
  * Drive a session to a specific permission mode.
  *
- * Shift+Tab is the only lever, and it only steps forward - so reaching a chosen
- * mode means walking the cycle to it. We can't precompute how far: the optional
+ * A menu-controlled harness takes its measured slash-command path below. For a
+ * cycle-controlled harness, Shift+Tab is the only lever and it only steps forward, so
+ * reaching a chosen mode means walking the cycle to it. We can't precompute how far:
+ * the optional
  * `bypassPermissions`/`auto` modes slot in after `plan` only when flags and
  * account settings we can't observe enable them, so the cycle's length is unknown
  * until we walk it. Instead of counting steps we read the pane after each one,
  * which makes every step self-verifying and needs no model of the cycle at all.
  *
  * Four ways this stops short, each fail-safe:
- *   - The harness has no permission modes (`tui.modeLine` is null). There is no
- *     cycle to walk and no footer to read it off, so this refuses by declaration
- *     rather than walking an agent around a loop it does not have.
+ *   - The cycle-controlled harness has no matching mode-line grammar. There is no
+ *     footer to verify, so this refuses rather than walking into the dark.
  *   - No mode line to start from. A dialog or menu is foreground, where the agent
  *     binds Tab itself and would swallow the keystroke (or worse, act on it). We
  *     refuse rather than fire blind keystrokes at a dialog.
@@ -1158,9 +1162,107 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
  *     fully has landed us back where we started. Nothing to undo.
  */
 export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
+  const permissionModes = harnessFor(session.agent).permissionModes;
+  if (!permissionModes) return { ok: false, error: NO_MODES, mode: null };
+  if (!permissionModes.pickable.includes(target)) {
+    return { ok: false, error: `${target} is not available for this agent`, mode: session.permissionMode };
+  }
   if (!bindSession(session)) return { ok: false, error: NO_HANDLE };
+  const liveControl = permissionModes.liveControl;
+  if (liveControl.kind === "menu") {
+    return withPaneLock<ModeResult>(
+      session,
+      () => ({ ok: false, error: PANE_BUSY }),
+      () => selectPermissionMenuModeLocked(session, target, liveControl, defaultPaneDeps),
+    );
+  }
   if (!modeLineSpecFor(session.agent)) return { ok: false, error: NO_MODES, mode: null };
   return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => walkToMode(session, target));
+}
+
+type PermissionMenuControl = Extract<
+  NonNullable<ReturnType<typeof harnessFor>["permissionModes"]>["liveControl"],
+  { kind: "menu" }
+>;
+
+/** Wait for a freshly-opened menu containing `label`, rather than assuming a row number. */
+async function awaitPermissionMenu(
+  session: Session,
+  label: string,
+  deps: PaneDeps,
+): Promise<PaneDialog | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const dialog = readPaneDialog(session, await deps.capture(session));
+    if (dialog?.options.some((option) => permissionRowMatches(option.label, label))) return dialog;
+    if (Date.now() >= deadline) return null;
+    await sleep(REPAINT_POLL_MS);
+  }
+}
+
+/**
+ * Codex appends both `(current)` and explanatory copy to a mode row. Match the
+ * harness-declared identity as a whole prefix so descriptions may change without
+ * making `Full Access` accidentally match a different, longer mode name.
+ */
+export function permissionRowMatches(rowLabel: string, targetLabel: string): boolean {
+  const normalized = rowLabel.replace(/\s+\(current\)(?=\s|$)/i, "");
+  return normalized === targetLabel || normalized.startsWith(`${targetLabel} `);
+}
+
+async function choosePermissionRowLocked(
+  session: Session,
+  dialog: PaneDialog,
+  label: string,
+  deps: PaneDeps,
+): Promise<ActionResult> {
+  const option = dialog.options.find((row) => permissionRowMatches(row.label, label));
+  if (!option) return { ok: false, error: `the agent's permissions menu does not offer ${label}` };
+  return selectOptionLocked(session, { number: option.number, label: option.label }, deps);
+}
+
+/**
+ * Drive a menu-based permission picker under the same pane lock as ordinary writes.
+ *
+ * Codex 0.145.0 opens this through `/permissions`. Rows are found by their measured
+ * labels rather than fixed numbers because Approve for me is feature-gated and custom
+ * profiles can extend the menu. Full Access then gets its native second confirmation.
+ */
+async function selectPermissionMenuModeLocked(
+  session: Session,
+  target: PermissionMode,
+  control: PermissionMenuControl,
+  deps: PaneDeps,
+): Promise<ModeResult> {
+  const label = control.labels[target];
+  if (!label) return { ok: false, error: `${target} has no menu label for this agent`, mode: session.permissionMode };
+  const opened = await sendTextLocked(session, control.command, true, deps);
+  if (!opened.ok) return { ...opened, mode: session.permissionMode };
+  const dialog = await awaitPermissionMenu(session, label, deps);
+  if (!dialog) {
+    return {
+      ok: false,
+      error: `the agent did not open a permissions menu offering ${label}`,
+      mode: session.permissionMode,
+    };
+  }
+  const selected = await choosePermissionRowLocked(session, dialog, label, deps);
+  if (!selected.ok) return { ...selected, mode: session.permissionMode };
+
+  const confirmation = control.confirmations?.[target];
+  if (confirmation) {
+    const confirmDialog = await awaitPermissionMenu(session, confirmation, deps);
+    if (!confirmDialog) {
+      return {
+        ok: false,
+        error: `the agent did not show the ${confirmation} confirmation`,
+        mode: session.permissionMode,
+      };
+    }
+    const confirmed = await choosePermissionRowLocked(session, confirmDialog, confirmation, deps);
+    if (!confirmed.ok) return { ...confirmed, mode: session.permissionMode };
+  }
+  return { ok: true, mode: target };
 }
 
 async function walkToMode(session: Session, target: PermissionMode): Promise<ModeResult> {
@@ -1194,6 +1296,7 @@ const CANNOT_SEE_MODE =
 const SWALLOWED = "the agent ignored Shift+Tab - a dialog may have opened in this session";
 /** Refused by declaration: this harness has no permission modes to drive. */
 const NO_MODES = "this agent has no permission modes";
+const NO_CYCLE = "this agent changes permission modes through a picker, not Shift+Tab";
 
 /** The row a caller wants selected: the number Claude printed, and the label it read there. */
 export interface OptionTarget {

@@ -1458,9 +1458,12 @@ function CommandBar({
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
-  // Cycling a mode needs a harness that has any, and a pane to send the keystroke into.
+  // The shortcut represents Shift+Tab, so menu-based permission controls stay on their
+  // card picker rather than receiving a keystroke their TUI gives another meaning.
   const canCycleMode =
-    live && Boolean(capabilitiesFor(session.agent).permissionModes) && canWriteTo(session);
+    live &&
+    capabilitiesFor(session.agent).permissionModes?.liveControl.kind === "cycle" &&
+    canWriteTo(session);
   const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 

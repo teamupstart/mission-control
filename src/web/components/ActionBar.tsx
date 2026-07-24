@@ -159,10 +159,13 @@ export function ActionBar({
     void run("focus", () => api.focus(session.id));
   }
 
-  // Cycle the permission mode (Shift+Tab) - only meaningful for a harness that has
-  // modes, and a pane to inject the keystroke into; a no-op otherwise.
+  // Cycle the permission mode (Shift+Tab) - only meaningful for a harness whose live
+  // control is that cycle, with a pane to inject the keystroke into.
   function cycleMode() {
-    if (!canSend || !capabilitiesFor(session.agent).permissionModes) return;
+    if (
+      !canSend ||
+      capabilitiesFor(session.agent).permissionModes?.liveControl.kind !== "cycle"
+    ) return;
     void run("mode", () => api.cycleMode(session.id));
   }
 

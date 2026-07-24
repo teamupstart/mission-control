@@ -274,6 +274,10 @@ const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
   auto: { label: "auto", tone: "accept", title: "Auto - the agent proceeds autonomously" },
   dontAsk: { label: "don't ask", tone: "accept", title: "Don't ask - runs without prompting" },
   bypassPermissions: { label: "bypass", tone: "bypass", title: "Bypass permissions - all permission checks skipped" },
+  askForApproval: { label: "ask", tone: "default", title: "Ask for approval - Codex asks before leaving the workspace boundary" },
+  approveForMe: { label: "approve", tone: "accept", title: "Approve for me - Codex auto-reviews potentially unsafe actions" },
+  fullAccess: { label: "full access", tone: "bypass", title: "Full Access - Codex can edit outside the workspace and use the network" },
+  readOnly: { label: "read only", tone: "plan", title: "Read Only - Codex can read the workspace but must ask before edits" },
 };
 
 /** How to render a session's permission mode, or null when it's unknown. */

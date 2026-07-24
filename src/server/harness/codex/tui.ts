@@ -41,10 +41,10 @@ export const codexTui: TuiSpec = {
   // measurement: nobody has timed its repaint. Erring long costs a walk some latency;
   // erring short confirms a row the cursor has already left.
   repaintTimeoutMs: 900,
-  // Codex has no permission-mode concept - no Shift+Tab cycle, and no footer naming a mode -
-  // so there is nothing to read and nothing to drive. Null rather than an empty spec: a mode
-  // chip must not be invented for an agent that has no modes, and `setPermissionMode` must
-  // refuse rather than walk a cycle that does not exist.
+  // Codex permission profiles live behind `/permissions`, not in a Shift+Tab cycle, and
+  // its ordinary footer does not name the active one. The menu-driving spec therefore
+  // lives in `HARNESS_CAPABILITIES.codex.permissionModes`; null HERE only says passive
+  // pane annotation has no mode line to parse (the rollout supplies the passive read).
   modeLine: null,
   dialog: CODEX_DIALOG,
 };

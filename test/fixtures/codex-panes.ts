@@ -94,3 +94,28 @@ export const CODEX_UPDATE_PROMPT = `
 
   Press enter to continue
 `;
+
+/** Codex 0.145.0's `/permissions` picker, with Guardian Approval enabled. */
+export const CODEX_PERMISSIONS_PICKER = `
+  Update Model Permissions
+
+› 1. Ask for approval (current)  Codex can read and edit files in the current
+                                 workspace, and run commands.
+  2. Approve for me              Only ask for actions detected as potentially
+                                 unsafe.
+  3. Full Access                 Codex can edit files outside this workspace
+                                 and access the internet without asking.
+  4. Read Only                   Codex can read files in the current workspace.
+
+  Press enter to confirm or esc to go back
+`;
+
+/** The second gate Codex shows after choosing Full Access. */
+export const CODEX_FULL_ACCESS_CONFIRMATION = `
+  Enable full access?
+
+› 1. Yes, continue anyway  Apply full access for this session
+  2. Cancel                Go back without enabling full access
+
+  Press enter to confirm or esc to go back
+`;

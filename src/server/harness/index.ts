@@ -81,8 +81,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
   // uninstrumented Codex session, reading its screen remains the only evidence of "parked
   // and waiting" it can produce at all - and the guard this capability replaced meant
   // nobody had ever pointed the parser at a Codex pane to find out whether it could. It
-  // can; see `codex/tui.ts`. Note this is NOT `permissionModes`, which Codex genuinely
-  // lacks: gating the dialog on that was the same skip wearing a capability's name.
+  // can; see `codex/tui.ts`. Note this is independent of `permissionModes`: Codex now
+  // declares its `/permissions` menu there, but option dialogs remain a separate screen
+  // grammar and must never be gated on whether a permission control exists.
   codex: {
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
@@ -220,10 +221,11 @@ export function dialogSpecFor(agent: AgentType): DialogSpec | null {
 }
 
 /**
- * How to read and drive this agent's permission-mode footer, or null when it has no modes.
+ * How to read and drive this agent's Shift+Tab permission-mode footer, or null when it
+ * changes permissions some other way (Codex's `/permissions` menu) or has no modes.
  *
- * Null is what the mode chip and `setPermissionMode` degrade on: an agent with no modes
- * gets no invented chip and no walk around a cycle it does not have.
+ * This is only the cycle mechanism. The card's capability and named-mode action read
+ * `permissionModes.liveControl`, so a null footer does not suppress a menu-based picker.
  */
 export function modeLineSpecFor(agent: AgentType): ModeLineSpec | null {
   return HARNESSES[agent].tui?.modeLine ?? null;

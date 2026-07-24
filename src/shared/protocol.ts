@@ -528,13 +528,19 @@ export const ResetSchema = z.object({
 });
 export type ResetInput = z.infer<typeof ResetSchema>;
 
-/**
- * Drive a Claude session to a named permission mode. Closed to the modes Shift+Tab
- * can actually reach: `dontAsk` is settable only at startup, so accepting it here
- * would promise a walk that can never arrive.
- */
+/** Drive a live session to one of its harness's pickable permission modes. */
 export const SetPermissionModeSchema = z.object({
-  mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions", "auto"]),
+  mode: z.enum([
+    "default",
+    "acceptEdits",
+    "plan",
+    "bypassPermissions",
+    "auto",
+    "askForApproval",
+    "approveForMe",
+    "fullAccess",
+    "readOnly",
+  ]),
 });
 export type SetPermissionModeInput = z.infer<typeof SetPermissionModeSchema>;
 
@@ -1259,8 +1265,9 @@ export const HarnessesConfigSchema = z.object({
   /**
    * When on, every Claude session dispatched from Mission Control is launched directly
    * in `auto` permission mode (`--permission-mode auto`) - so it works through its task
-   * without pausing on permission prompts. Codex has no permission mode; the same switch
-   * still reaches it, as a widened sandbox its launch builder applies (`prepareCodexLaunch`).
+   * without pausing on permission prompts. Codex dispatches use their launch-scoped
+   * workspace-write/on-request posture instead; its native, feature-gated Approve for me
+   * menu is deliberately not selected after launch.
    */
   autoModeOnDispatch: z.boolean().default(false),
   /**

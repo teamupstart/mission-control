@@ -74,6 +74,18 @@ export interface TranscriptPassiveRead {
    * that answered "nothing yet" forever.
    */
   activity: SessionActivityRead | null;
+  /**
+   * Permission posture observed from the harness-owned file, when that format records
+   * it. Omitted by harnesses whose passive source carries no such field; null means this
+   * read could not map a custom/newer posture and must not clear the last known value.
+   */
+  permissionMode?: PermissionMode | null;
+  /**
+   * Timestamp/revision of the record that supplied `permissionMode`. A live menu change
+   * is newer than the rollout until Codex writes its next turn context, so the registry
+   * uses this to keep the verified menu result from being overwritten by that stale tail.
+   */
+  permissionModeRevision?: string | null;
   /** Cumulative, harness-native token counters; deliberately not written to the daily ledger. */
   usage?: import("@shared/types.ts").SessionCost | null;
   rateLimits?: import("@shared/types.ts").RateLimitSource | null;

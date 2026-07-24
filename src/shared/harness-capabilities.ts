@@ -40,17 +40,31 @@ import { AGENT_IDENTITY } from "./agent.ts";
  */
 export interface PermissionModeSpec {
   /**
-   * The modes a picker offers, in the agent's own cycle order, so the list reads in the
-   * same order as the keystroke it replaces.
+   * The modes a picker offers, in the agent's native control order.
    *
    * Not every listed mode is reachable in every session - some are gated behind a launch
-   * flag or account support the daemon cannot see - and that is fine: the walk goes all
-   * the way around, lands back where it started, and says so.
+   * flag, feature, or account support the daemon cannot see. The live-control path verifies
+   * the option exists and reports a refusal instead of claiming it changed.
    */
   pickable: readonly PermissionMode[];
   /**
-   * The autonomous mode "auto mode on dispatch" requests for a freshly dispatched
-   * session, or null when this harness has modes but none that mean "proceed autonomously".
+   * How a live session changes modes.
+   *
+   * Claude exposes a one-way Shift+Tab cycle with a readable footer. Codex exposes a
+   * numbered `/permissions` menu instead. Keeping the mechanism here lets the shared
+   * card picker ask the harness rather than smuggling an agent-id check into each layout.
+   */
+  liveControl:
+    | { kind: "cycle" }
+    | {
+        kind: "menu";
+        command: string;
+        labels: Partial<Record<PermissionMode, string>>;
+        confirmations?: Partial<Record<PermissionMode, string>>;
+      };
+  /**
+   * The mode a freshly dispatched session is driven to when "auto mode on dispatch" is
+   * on, or null when this harness has modes but none that mean "proceed autonomously".
    *
    * Separate from `pickable` because the two answer different questions: `pickable` is
    * what a human may choose, this is what the setting promises on the operator's behalf.
@@ -330,6 +344,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // never reaches it, so offering it would promise a walk that cannot arrive. It
       // still renders on the chip when a session was started in it.
       pickable: ["default", "acceptEdits", "plan", "bypassPermissions", "auto"],
+      liveControl: { kind: "cycle" },
       onDispatch: "auto",
       // `--permission-mode <mode>` starts Claude in that mode (verified against 2.1.219;
       // choices: acceptEdits, auto, bypassPermissions, manual, dontAsk, plan). One token
@@ -364,9 +379,30 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
-    // No permission-mode concept: no footer mode line to read, and no Shift+Tab cycle to
-    // walk. `annotatePaneState` therefore has nothing to capture for it either.
-    permissionModes: null,
+    // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
+    // `/permissions` opens a numbered picker and applies the selected profile to the
+    // current conversation. The rollout's turn_context records the matching sandbox,
+    // approval policy and reviewer, so the card can also read the current value back.
+    permissionModes: {
+      pickable: ["askForApproval", "approveForMe", "fullAccess", "readOnly"],
+      liveControl: {
+        kind: "menu",
+        command: "/permissions",
+        labels: {
+          askForApproval: "Ask for approval",
+          approveForMe: "Approve for me",
+          fullAccess: "Full Access",
+          readOnly: "Read Only",
+        },
+        // Codex deliberately puts its most permissive profile behind a second menu.
+        confirmations: { fullAccess: "Yes, continue anyway" },
+      },
+      // `prepareCodexLaunch` owns the launch-time sandbox flags. This slot is about a
+      // post-launch mode to arm, and Approve for me may not even be offered unless the
+      // Guardian Approval feature is enabled, so dispatch does not drive this menu.
+      onDispatch: null,
+      launchArgs: null,
+    },
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
     // watches that directory itself, so the set it offers changes without anything being
     // typed at a running session. `skillsAgents()` therefore excludes it from the pane

@@ -129,7 +129,10 @@ test("an argv too large to spawn is a refusal, not a throw", async () => {
   const res = await run(process.execPath, ["-e", "0", "x".repeat(8 * 1024 * 1024)]);
 
   assert.notEqual(res.code, 0, "it must report failure");
-  assert.match(res.stderr, /E2BIG/, "and say why, so an operator sees more than a bare exit");
+  // The errno spelling is a platform/runtime detail: Unix reports E2BIG, while Windows
+  // can surface the same command-line refusal as EINVAL or ENAMETOOLONG.
+  const tooLarge = process.platform === "win32" ? /E2BIG|EINVAL|ENAMETOOLONG/ : /E2BIG/;
+  assert.match(res.stderr, tooLarge, "and say why, so an operator sees more than a bare exit");
   // The load-bearing half. Nothing spawned, so nothing ran and nothing was written - which
   // is the one direction a caller may safely retry from. Reported as an unknown outcome,
   // `injectPrompt` would refuse to re-send a prompt that never left this process.

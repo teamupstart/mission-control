@@ -42,6 +42,25 @@ export const BEST_OF_N_MAX_MATERIAL_BYTES = 2 * 1024 * 1024;
 export const BEST_OF_N_BUILTIN_RUBRIC = "best_of_n_v1";
 
 /**
+ * The built-in rubric's TEXT, versioned by the id above.
+ *
+ * Owned by `best_of_n@1`: a plan compiled with no Persona snapshots `{ kind: "builtin";
+ * rubricId: BEST_OF_N_BUILTIN_RUBRIC }` and the comparative reviewer resolves that id to
+ * exactly this text. It is append-only in the same sense the id is - a changed rubric is a
+ * NEW id beside this one, so a run compiled today keeps its exact rubric after the wording
+ * moves on. Order is priority order and the comparator is told to treat it as such.
+ */
+export const BEST_OF_N_BUILTIN_RUBRIC_TEXT = [
+  "Rank the submissions by the following criteria, in order of importance:",
+  "1. Correctness against the task and its acceptance criteria.",
+  "2. The strength of OBSERVED evidence and the quality of any relevant checks the author reports having run. Treat a reported check as a claim, not as proof it passed.",
+  "3. Maintainability, clarity, and fit with the repository's existing conventions.",
+  "4. Scope discipline, regression surface, and security risk.",
+  "5. Diff size only as a tie-breaker - never prefer a smaller diff that does less of the task.",
+  "Surface uncertainty explicitly wherever a truncated diff, a missing test, a binary change, or an incomparable approach makes a judgement less reliable.",
+].join("\n");
+
+/**
  * One roster row.
  *
  * Every override is nullable and null means "the daemon's default at launch", which is NOT
@@ -69,6 +88,13 @@ export const BestOfNEvaluatorSchema = z.object({
    * falling back to the built-in rubric on a run the operator configured differently.
    */
   personaId: z.string().min(1).max(200).nullable().default(null),
+  /**
+   * Optionally pin the Persona revision the operator built this request against. When set and
+   * the live Persona has since moved on, creation is REFUSED rather than snapshotting newer
+   * guidance under the request they made - the same drift a base-commit pin removes. Null
+   * snapshots whatever the current revision is at creation.
+   */
+  personaRevision: z.number().int().positive().nullable().default(null),
   runner: z.enum(LLM_RUNNER_IDS).nullable().default(null),
   model: ModelIdSchema.nullable().default(null),
   /** Hide agent, model and ordinal from the judge. On by default; bias is the default risk. */
@@ -200,4 +226,111 @@ export function bestOfNEstimate(raw: unknown): EnsembleLaunchEstimate | null {
     maxWaves: 1,
     evaluationCalls: 1,
   };
+}
+
+// ---- comparative result ----
+
+/**
+ * Every bound on the comparative result, in one place.
+ *
+ * These cap what the MODEL may return before the value is ever persisted or shown, which is
+ * one half of the honesty contract - a judge that pads its rationale to a megabyte must be
+ * refused, not stored. The other half is the semantic validation the server applies on top
+ * of a parse: exact labels once each, integer scores, contiguous ranks, a recommendation
+ * that actually holds rank 1. This schema does STRUCTURE and length; the server does meaning.
+ */
+export const BEST_OF_N_RESULT_LIMITS = {
+  label: 40,
+  comparison: 6_000,
+  caveat: 600,
+  caveats: 12,
+  strength: 600,
+  strengths: 12,
+  risk: 600,
+  risks: 12,
+  rationale: 3_000,
+} as const;
+
+/**
+ * One subject's scorecard AS THE MODEL RETURNS IT - keyed by an anonymous label, never an
+ * artifact or member id.
+ *
+ * `score`, `rank` and `confidence` are only `finite()` here on purpose: a score of 250 or a
+ * rank of 0 is a STRUCTURALLY valid number, and the reason it must be refused is a semantic
+ * one the server states with a precise message (an integer 0..100, contiguous ranks, a
+ * confidence in 0..1). Clamping them the way a Persona verdict clamps its confidence would
+ * turn a judge that misunderstood the scale into a plausible-looking ranking, which is the
+ * one thing a comparison that authorises a promotion may not do.
+ */
+export const BestOfNSubjectResultSchema = z.object({
+  label: z.string().min(1).max(BEST_OF_N_RESULT_LIMITS.label),
+  score: z.number().finite(),
+  rank: z.number().finite(),
+  strengths: z.array(z.string().max(BEST_OF_N_RESULT_LIMITS.strength)).max(BEST_OF_N_RESULT_LIMITS.strengths),
+  risks: z.array(z.string().max(BEST_OF_N_RESULT_LIMITS.risk)).max(BEST_OF_N_RESULT_LIMITS.risks),
+  rationale: z.string().max(BEST_OF_N_RESULT_LIMITS.rationale),
+  confidence: z.number().finite(),
+}).strict();
+export type BestOfNSubjectResult = z.infer<typeof BestOfNSubjectResultSchema>;
+
+/**
+ * The comparative result the MODEL is asked to produce.
+ *
+ * Anonymous by construction: `recommendation` and every subject's `label` are opaque display
+ * labels the server assigned, and the mapping back to artifact ids never enters the prompt.
+ * The array is bounded by the daemon's hard member cap rather than Best-of-N's roster max so
+ * the same schema serves any future comparison; the exact-count check is the server's.
+ */
+export const BestOfNComparisonResultSchema = z.object({
+  recommendation: z.string().min(1).max(BEST_OF_N_RESULT_LIMITS.label),
+  comparison: z.string().max(BEST_OF_N_RESULT_LIMITS.comparison),
+  caveats: z.array(z.string().max(BEST_OF_N_RESULT_LIMITS.caveat)).max(BEST_OF_N_RESULT_LIMITS.caveats),
+  subjects: z.array(BestOfNSubjectResultSchema).min(2).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+}).strict();
+export type BestOfNComparisonResult = z.infer<typeof BestOfNComparisonResultSchema>;
+
+/**
+ * The persisted, de-anonymised comparison. Its own version, so a later result shape is
+ * distinguishable from this one when read back off an evaluation row.
+ */
+export const BEST_OF_N_COMPARISON_VERSION = 1;
+
+export const BestOfNScorecardSchema = z.object({
+  artifactId: z.string().min(1),
+  score: z.number().int().min(0).max(100),
+  rank: z.number().int().positive(),
+  strengths: z.array(z.string()),
+  risks: z.array(z.string()),
+  rationale: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+export type BestOfNScorecard = z.infer<typeof BestOfNScorecardSchema>;
+
+/**
+ * The comparison as it is stored and rendered - labels resolved to the exact artifact ids the
+ * decision stage will offer, scorecards in ascending rank order, and the uncertainty the
+ * evaluator raised carried alongside.
+ */
+export const BestOfNComparisonSchema = z.object({
+  version: z.literal(BEST_OF_N_COMPARISON_VERSION),
+  recommendedArtifactId: z.string().min(1),
+  comparison: z.string(),
+  caveats: z.array(z.string()),
+  /** Ascending rank order. */
+  scorecards: z.array(BestOfNScorecardSchema),
+  /** True when any subject's diff was truncated for the evaluator - a reason to trust the ranking less. */
+  evidenceTruncated: z.boolean(),
+});
+export type BestOfNComparison = z.infer<typeof BestOfNComparisonSchema>;
+
+/**
+ * Read a stored comparison back, or null when the value is not one this build can render.
+ *
+ * A detail response derives its scorecards from the evaluation row through this, never by
+ * trusting the JSON's shape - a row written by a newer build, or a corrupt one, must degrade
+ * to "no readable result" rather than a half-rendered card. Mirrors `parsePersonaVerdict`.
+ */
+export function parseBestOfNComparison(body: unknown): BestOfNComparison | null {
+  const parsed = BestOfNComparisonSchema.safeParse(body);
+  return parsed.success ? parsed.data : null;
 }

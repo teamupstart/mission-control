@@ -200,14 +200,34 @@ test("with no Persona chosen, the built-in rubric is snapshotted into the plan",
   assert.equal(review.evaluator.anonymizeSubjects, true);
 });
 
-test("a chosen Persona is pinned to the exact revision the caller resolved", () => {
+test("a chosen Persona is snapshotted whole into the plan, not just pinned by id", () => {
   const plan = planOf(
     { evaluator: { personaId: "persona-1" } },
-    { ...context, persona: { id: "persona-1", revision: 4 } },
+    {
+      ...context,
+      persona: {
+        id: "persona-1",
+        revision: 4,
+        name: "Security",
+        guidanceMarkdown: "Weigh security risk heavily.",
+        runner: "codex",
+        model: "gpt-5.6-sol",
+      },
+    },
   );
   const review = plan.stages.find((stage) => stage.id === "stage-2-review");
   assert.ok(review && review.driverKind === "review");
-  assert.deepEqual(review.evaluator.guidance, { kind: "persona", personaId: "persona-1", revision: 4 });
+  // The whole snapshot - name, guidance text and overrides - is in the plan, so recovery never
+  // reloads the live Persona and a later edit cannot re-aim this run.
+  assert.deepEqual(review.evaluator.guidance, {
+    kind: "persona",
+    personaId: "persona-1",
+    revision: 4,
+    name: "Security",
+    guidanceMarkdown: "Weigh security risk heavily.",
+    runner: "codex",
+    model: "gpt-5.6-sol",
+  });
 });
 
 test("a Persona that could not be resolved refuses the run rather than falling back", () => {
@@ -220,7 +240,20 @@ test("a Persona that could not be resolved refuses the run rather than falling b
 test("a resolved Persona nobody asked for is refused too", () => {
   // The mirror image, and it matters for the same reason: it would mean the caller and the
   // config disagree about what is judging, and the plan would record the caller's answer.
-  const result = compile({}, { ...context, persona: { id: "persona-1", revision: 1 } });
+  const result = compile(
+    {},
+    {
+      ...context,
+      persona: {
+        id: "persona-1",
+        revision: 1,
+        name: "Security",
+        guidanceMarkdown: "Weigh security risk heavily.",
+        runner: null,
+        model: null,
+      },
+    },
+  );
   assert.equal(result.ok, false);
 });
 

@@ -9,11 +9,13 @@ import {
   type EnsembleCreateInput,
   type EnsembleDecision,
   type EnsembleJson,
+  type EnsembleReviewPersona,
   type EnsembleRun,
   type EnsembleRunDetail,
   type EnsembleSummary,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import {
   EnsembleCreateInputSchema,
   type EnsembleSubmissionClaims,
@@ -34,6 +36,7 @@ import {
 } from "./store.ts";
 import {
   EnsembleEngine,
+  type EnsembleReviewDeps,
   type EnsembleSubmitRefusal,
   type EnsembleTaskGateway,
 } from "./engine.ts";
@@ -90,17 +93,36 @@ export type EnsembleSubmitResult =
   | { ok: true; artifact: EnsembleArtifact; replayed: boolean }
   | { ok: false; reason: EnsembleSubmitReason; detail: string };
 
+/**
+ * A Persona looked up for review guidance, as the injected resolver reads it off the store.
+ *
+ * The whole live record's guidance fields plus whether it is archived - the manager, not the
+ * resolver, owns the policy over those (archived is a refusal, a pinned revision that no
+ * longer matches is a refusal). Untruncated: the manager caps the guidance to the plan's
+ * byte budget when it snapshots it.
+ */
+export interface ResolvedReviewPersona {
+  id: string;
+  revision: number;
+  name: string;
+  guidanceMarkdown: string;
+  runner: LlmRunnerId | null;
+  model: string | null;
+  archived: boolean;
+}
+
 export interface EnsembleManagerOptions {
   catalog?: StrategyCatalog;
   /**
-   * Resolve the Persona a strategy asked to judge with, to an exact revision.
+   * Resolve the Persona a strategy asked to judge with, to its live record.
    *
    * Injected rather than imported so compilation stays pure and the manager takes no
    * dependency on the Persona store it does not otherwise need. Absent means no Persona can
    * be resolved, and a config that names one is refused rather than quietly downgraded to a
-   * built-in rubric.
+   * built-in rubric. The manager applies the archived / revision-conflict policy; the
+   * resolver only reads.
    */
-  resolvePersona?: (personaId: string) => { id: string; revision: number } | null;
+  resolvePersona?: (personaId: string) => ResolvedReviewPersona | null;
   /**
    * The bridge the engine launches member Tasks through. Present only when the daemon wired one
    * in: without it the manager still validates, compiles and persists runs, but launches nothing -
@@ -109,6 +131,12 @@ export interface EnsembleManagerOptions {
   tasks?: EnsembleTaskGateway;
   /** Artifact adapters, for tests that drive capture against a fake instead of real Git. */
   adapters?: ArtifactAdapterRegistry;
+  /**
+   * The comparison executor - the shared review scheduler, the runner/model resolver, and the
+   * provider call. Present in the daemon; absent, a review stage parks at `evaluating` rather than
+   * running, which is exactly what the launch-only phases before this one did.
+   */
+  review?: EnsembleReviewDeps;
   agentBinPresent?: (agent: AgentType) => Promise<boolean>;
   missionMcpAvailable?: () => Promise<boolean>;
   now?: () => number;
@@ -117,7 +145,7 @@ export interface EnsembleManagerOptions {
 
 export class EnsembleManager {
   private readonly catalog: StrategyCatalog;
-  private readonly resolvePersona: (personaId: string) => { id: string; revision: number } | null;
+  private readonly resolvePersona: (personaId: string) => ResolvedReviewPersona | null;
   private readonly engine: EnsembleEngine | null;
   private readonly adapters: ArtifactAdapterRegistry;
   private readonly hasAgentBin: (agent: AgentType) => Promise<boolean>;
@@ -153,6 +181,7 @@ export class EnsembleManager {
           tasks: options.tasks,
           publish: (runId) => this.publish(runId),
           adapters: options.adapters,
+          review: options.review,
           now: this.now,
           log: options.log,
         })
@@ -614,23 +643,60 @@ export class EnsembleManager {
     now: number,
   ): { ok: true; value: StrategyCompileContext } | { ok: false; issues: StrategyIssue[] } {
     // The only impure part of compilation, lifted out of it: a Persona id in the config is
-    // resolved to an exact revision here, and the descriptor either receives that resolution
+    // resolved to an immutable snapshot here, and the descriptor either receives that snapshot
     // or refuses. Reading the id out of the raw blob is deliberate - the descriptor owns the
-    // config's type, and this only needs to know whether a name was mentioned.
-    const personaId =
+    // config's type, and this only needs to know whether a name (and an optional pinned
+    // revision) was mentioned. Every refusal lands BEFORE any member Task exists.
+    const evaluator =
       config && typeof config === "object" && "evaluator" in config
-        ? readPersonaId((config as { evaluator: unknown }).evaluator)
+        ? (config as { evaluator: unknown }).evaluator
         : null;
+    const personaId = readPersonaId(evaluator);
     if (personaId === null) {
       return { ok: true, value: { repoRoot, persona: null, now } };
     }
-    const persona = this.resolvePersona(personaId);
-    if (!persona) {
+    const resolved = this.resolvePersona(personaId);
+    if (!resolved) {
       return {
         ok: false,
         issues: [{ path: "strategyConfig.evaluator.personaId", message: `no Persona ${personaId}` }],
       };
     }
+    // Archived is a refusal, not a downgrade: a run whose judge has been retired must not fall
+    // back to the built-in rubric under the operator's Persona choice.
+    if (resolved.archived) {
+      return {
+        ok: false,
+        issues: [
+          { path: "strategyConfig.evaluator.personaId", message: `Persona ${personaId} is archived and cannot judge a comparison` },
+        ],
+      };
+    }
+    // A pinned revision that no longer matches is a refusal too: the operator built the request
+    // against guidance that has since changed, and snapshotting the new text under the old
+    // request is the silent substitution the whole resolve step exists to prevent.
+    const pinnedRevision = readPersonaRevision(evaluator);
+    if (pinnedRevision !== null && pinnedRevision !== resolved.revision) {
+      return {
+        ok: false,
+        issues: [
+          {
+            path: "strategyConfig.evaluator.personaRevision",
+            message: `Persona ${personaId} is at revision ${resolved.revision}, not the requested ${pinnedRevision}`,
+          },
+        ],
+      };
+    }
+    const persona: EnsembleReviewPersona = {
+      id: resolved.id,
+      revision: resolved.revision,
+      name: resolved.name,
+      // Truncated to the plan's byte budget HERE, once, so the plan cannot burst its cap and
+      // so the truncation is disclosed at the boundary that made it rather than at persistence.
+      guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, ENSEMBLE_LIMITS.reviewGuidanceBytes),
+      runner: resolved.runner,
+      model: resolved.model,
+    };
     return { ok: true, value: { repoRoot, persona, now } };
   }
 }
@@ -639,4 +705,26 @@ function readPersonaId(evaluator: unknown): string | null {
   if (!evaluator || typeof evaluator !== "object" || !("personaId" in evaluator)) return null;
   const value = (evaluator as { personaId: unknown }).personaId;
   return typeof value === "string" && value !== "" ? value : null;
+}
+
+function readPersonaRevision(evaluator: unknown): number | null {
+  if (!evaluator || typeof evaluator !== "object" || !("personaRevision" in evaluator)) return null;
+  const value = (evaluator as { personaRevision: unknown }).personaRevision;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+/** Truncate a string to at most `maxBytes` UTF-8 bytes without splitting a code point. */
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  // Slice by code points until the byte budget is reached; a surrogate pair never straddles
+  // the cut because iteration is over whole code points.
+  let bytes = 0;
+  let out = "";
+  for (const ch of value) {
+    const chBytes = Buffer.byteLength(ch, "utf8");
+    if (bytes + chBytes > maxBytes) break;
+    bytes += chBytes;
+    out += ch;
+  }
+  return out;
 }

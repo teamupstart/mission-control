@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { EnsembleStrategyInfo } from "@shared/ensemble-strategies/types.ts";
-import type { CompiledEnsemblePlan, EnsembleJson } from "@shared/ensemble.ts";
+import type { CompiledEnsemblePlan, EnsembleJson, EnsembleReviewPersona } from "@shared/ensemble.ts";
 
 /**
  * The seam a strategy plugs into: validate an operator's configuration, compile it once into
@@ -26,14 +26,17 @@ export interface StrategyCompileContext {
   /** Canonicalized repository root, already validated by the caller's repo policy. */
   repoRoot: string;
   /**
-   * A Persona the caller resolved to an exact revision, or null when none was requested.
+   * A Persona the caller resolved to an exact, immutable SNAPSHOT, or null when none was
+   * requested.
    *
-   * Resolved OUTSIDE compilation because looking one up reads SQLite. A descriptor that was
-   * asked for guidance and handed nothing must refuse rather than silently substitute its
-   * built-in rubric: a run judged by a different rubric than the operator chose is a much
-   * quieter failure than one that would not start.
+   * Resolved OUTSIDE compilation because looking one up reads SQLite. The whole snapshot -
+   * name, guidance text and runner/model overrides at the pinned revision - is handed in so
+   * the compiler can embed it in the plan and recovery never has to reload the live Persona.
+   * A descriptor that was asked for guidance and handed nothing must refuse rather than
+   * silently substitute its built-in rubric: a run judged by a different rubric than the
+   * operator chose is a much quieter failure than one that would not start.
    */
-  persona: { id: string; revision: number } | null;
+  persona: EnsembleReviewPersona | null;
   /** Wall clock, injected so a compiler stays deterministic under test. */
   now: number;
 }

@@ -200,7 +200,15 @@ test("the manager wraps raw decision input in the durable payload envelope", () 
 test("a source-key retry resolves before mutable compilation prerequisites", () => {
   const store = new EnsembleStore(db);
   const firstManager = new EnsembleManager(new Registry(), store, {
-    resolvePersona: (id) => ({ id, revision: 3 }),
+    resolvePersona: (id) => ({
+      id,
+      revision: 3,
+      name: "Judge",
+      guidanceMarkdown: "Rank fairly.",
+      runner: null,
+      model: null,
+      archived: false,
+    }),
   });
   const personaRequest = {
     ...request,

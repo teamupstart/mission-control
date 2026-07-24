@@ -36,7 +36,8 @@ export function untrustedBlock(
   body: string,
   max: number = REVIEW_LIMITS.section,
 ): string[] {
-  return ["```" + untrustedFence(name), boundedSection(body, max), "```"];
+  const bounded = boundedSection(body, max);
+  return fencedUntrusted(name, bounded);
 }
 
 /** The same block over a JSON value. */
@@ -45,5 +46,11 @@ export function untrustedJsonBlock(
   value: unknown,
   max: number = REVIEW_LIMITS.section,
 ): string[] {
-  return ["```" + untrustedFence(name), boundedJsonSection(value, max), "```"];
+  return fencedUntrusted(name, boundedJsonSection(value, max));
+}
+
+function fencedUntrusted(name: string, body: string): string[] {
+  const longestRun = body.match(/`+/g)?.reduce((longest, run) => Math.max(longest, run.length), 0) ?? 0;
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return [`${fence}${untrustedFence(name)}`, body, fence];
 }

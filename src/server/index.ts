@@ -12,7 +12,12 @@ import { HOST, PORT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { killLiveLlmRuns } from "./llm/index.ts";
+import { killLiveLlmRuns, llmRunner } from "./llm/index.ts";
+import { getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
+import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
+import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
+import { envVar } from "@shared/harness-runtime.mjs";
+import { resolveComparativeExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
@@ -79,22 +84,53 @@ const workflows = new WorkflowManager(registry, personas.store, {
 });
 workflows.start();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
-// is truthful, registers the task projection so a member's session card names its group, and -
-// now that a Task gateway is wired in - owns the engine that launches member waves, captures
-// submissions and recovers. No CREATE route is enabled yet (Best-of-N's evaluator lands in a
-// later phase), so on every existing machine these tables are empty and the product behaves
-// exactly as before; the runtime is proven by tests and the internal action surface.
+// is truthful, registers the task projection so a member's session card names its group, owns the
+// engine that launches member waves, captures submissions and recovers, and - now that the review
+// executor is wired in - runs the Best-of-N comparison through to the human-decision boundary. No
+// CREATE route is enabled yet (the human-decision and finalization API lands in a later phase), so
+// on every existing machine these tables are empty and the product behaves exactly as before; the
+// runtime is proven by tests and the internal action surface.
 //
-// Its Persona resolver is the manager's own store, so a comparison configured against a
-// Persona pins that Persona's exact revision at creation instead of re-reading a Markdown
-// file that may since have been edited. The gateway is how the engine reaches TaskManager for
-// every member Task's create/dispatch/cancel without learning its internals.
+// Its Persona resolver is the manager's own store, so a comparison configured against a Persona
+// snapshots that Persona's exact revision, name, guidance and overrides at creation instead of
+// re-reading a Markdown file that may since have been edited or archived. The review executor
+// shares the daemon-wide `reviewScheduler`, so a comparison counts against the SAME ceiling as
+// Workflow review and compaction; it resolves runner/model per attempt through the persona ladder
+// or the `ensemble-comparison` job, and its provider call is tool-less by construction.
 const ensembles = new EnsembleManager(registry, undefined, {
   resolvePersona: (personaId) => {
     const persona = personas.store.getPersona(personaId);
-    return persona ? { id: persona.id, revision: persona.revision } : null;
+    return persona
+      ? {
+          id: persona.id,
+          revision: persona.revision,
+          name: persona.name,
+          guidanceMarkdown: persona.guidanceMarkdown,
+          runner: persona.runner,
+          model: persona.model,
+          archived: persona.archivedAt !== null,
+        }
+      : null;
   },
   tasks: new TaskManagerGateway(tasks, registry),
+  review: {
+    scheduler: reviewScheduler,
+    resolveExecution: (guidance, policy) => {
+      const cfg = getLlmConfig();
+      return resolveComparativeExecution(guidance, policy, {
+        appRunner: llmRunnerChoice(cfg),
+        personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
+        jobModel: (runnerId) =>
+          resolveLlmJobModel(
+            "ensemble-comparison",
+            cfg.models,
+            envVar(LLM_JOB_SPECS["ensemble-comparison"].envKey),
+            runnerId,
+          ).id,
+      });
+    },
+    runModel: (runnerId, prompt, opts) => llmRunner(runnerId).run(prompt, { model: opts.modelId, timeoutMs: opts.timeoutMs }),
+  },
 });
 // Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
 // real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so

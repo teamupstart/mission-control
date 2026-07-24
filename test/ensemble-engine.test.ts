@@ -111,7 +111,8 @@ test("a threshold barrier reached with enough eligible members parks in front of
   const attempts = () => store.listAttempts(run.id);
 
   // Two submit with artifacts; the third fails. Two eligible >= minEligible 2, so the review barrier
-  // is satisfied and the run parks in `evaluating` (the review driver is not executable this phase).
+  // is satisfied and the run parks in `evaluating` - this harness has no review executor wired in, so
+  // the comparison never runs (the comparative_review path is exercised in ensemble-comparative-review).
   for (const dispatch of gateway.dispatched.slice(0, 2)) {
     const memberId = attempts().find((a) => a.taskId === dispatch.taskId)!.memberId;
     await activate(engine, gateway, run.id, dispatch.taskId);
@@ -122,7 +123,7 @@ test("a threshold barrier reached with enough eligible members parks in front of
   await engine.wake(run.id);
 
   const after = store.getRun(run.id)!;
-  assert.equal(after.status, "evaluating", "the run parks in front of the not-yet-executable review");
+  assert.equal(after.status, "evaluating", "the run parks in front of the review with no executor wired");
   assert.equal(after.activeStageId, "stage-2");
 });
 

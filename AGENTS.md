@@ -669,12 +669,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   answer in the browser, and `ENSEMBLE_STRATEGIES`
   (`src/server/ensembles/strategies/index.ts`) adds the pure compiler that turns config into
   a durable plan. Both are exhaustive `Record<EnsembleStrategyId, …>` registries, so a new id
-  cannot compile until both halves exist. The authoritative extension contract lives beside
-  `ENSEMBLE_STRATEGIES`; read it before changing strategy ids, driver keys, compilation,
-  persistence, or execution rather than duplicating that contract here. Test:
+  cannot compile until both halves exist. Review execution has its own exhaustive
+  `REVIEW_DRIVERS` registry (`src/server/ensembles/reviews/index.ts`), keyed by the compiled
+  plan's driver key rather than strategy id. The authoritative extension contracts live
+  beside those registries; read the applicable one before changing strategy ids, driver
+  keys, compilation, persistence, or execution rather than duplicating them here. Test:
   `ensemble-strategy-catalog.test.ts`, `ensemble-best-of-n.test.ts`,
   `ensemble-contracts.test.ts`, `ensemble-store.test.ts`, `ensemble-db.test.ts`,
-  `ensemble-sse.test.ts`.
+  `ensemble-sse.test.ts`, `ensemble-comparative-review.test.ts`.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.
@@ -688,9 +690,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 - **Which model a headless call spawns with**: one ladder, `resolveModelChoice`
   (`@shared/model-choice.ts`) - config, then env, then a NAMED fallback - and the roles stay
   with their subsystem: `FOREMAN_MODEL_SPECS` (Foreman's four), `INSPECTOR_MODEL_SPEC` (the
-  Inspector's one), `LLM_JOB_SPECS` (`@shared/llm-jobs.ts` - the daemon's own background
-  jobs: the titler, the goal refiner, the away digest). Three sets of roles, one ladder, and
-  a fourth resolver is the thing not to write. A `claude -p` that
+  Inspector's one), `LLM_JOB_SPECS` (`@shared/llm-jobs.ts` - the daemon's own
+  operator-configurable jobs). Three sets of roles, one ladder, and a fourth resolver is the
+  thing not to write. A `claude -p` that
   passes no `--model` inherits whatever the local CLI defaults to, which is the priciest tier
   and unanswerable from inside the app; every spec's `fallback` is what rules that out, so a
   new one is filled in rather than left blank. The panel PRINTS the resolution, source and

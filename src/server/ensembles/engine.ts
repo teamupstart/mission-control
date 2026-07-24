@@ -7,6 +7,8 @@ import {
   type EnsembleArtifact,
   type EnsembleAttempt,
   type EnsembleBarrierSpec,
+  type EnsembleEvaluatorGuidance,
+  type EnsembleEvaluatorPolicy,
   type EnsembleJson,
   type EnsembleMember,
   type EnsembleMemberStatus,
@@ -19,10 +21,40 @@ import {
   type RunnableEnsembleRun,
 } from "@shared/ensemble.ts";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import type { EnsembleSubmissionClaims } from "@shared/protocol.ts";
 import { EnsembleStore } from "./store.ts";
 import { artifactAdapterFor, type ArtifactAdapterRegistry } from "./artifacts/index.ts";
 import { buildMemberPrompt } from "./member-prompt.ts";
+import {
+  reviewDriverFor,
+  type ReviewDriver,
+  type ReviewExecution,
+  type ReviewOutcome,
+  type ReviewPersist,
+  type ReviewRuntime,
+  type ReviewSubject,
+} from "./reviews/index.ts";
+import type { ReviewScheduler } from "../llm/review-scheduler.ts";
+
+/** The wall-clock budget for one comparison provider call. Matches the Workflow Persona ceiling. */
+const DEFAULT_REVIEW_TIMEOUT_MS = 120_000;
+
+/**
+ * The review side of the engine's dependencies - present only when this build can execute a review
+ * stage. Absent, a review stage parks at `evaluating` exactly as it did before an executor existed,
+ * which keeps a launch-only build (and the member-launch tests) working unchanged.
+ */
+export interface EnsembleReviewDeps {
+  /** The daemon-owned ceiling shared with Workflow review and compaction. */
+  scheduler: ReviewScheduler;
+  /** Resolve runner+model at attempt time from the guidance overrides / app+job ladder. */
+  resolveExecution: (guidance: EnsembleEvaluatorGuidance, policy: EnsembleEvaluatorPolicy) => ReviewExecution;
+  /** The bound, tool-less provider call. Tests inject a fake instead of a real model. */
+  runModel: (runnerId: LlmRunnerId, prompt: string, opts: { modelId: string; timeoutMs: number }) => Promise<string>;
+  /** Per-attempt wall-clock budget; defaults to the Persona ceiling. */
+  timeoutMs?: number;
+}
 
 /**
  * The strategy-neutral execution engine.
@@ -108,6 +140,8 @@ export interface EnsembleEngineDeps {
   /** Re-read one run and push its compact summary + task projection onto the live channel. */
   publish: (runId: string) => void;
   adapters?: ArtifactAdapterRegistry;
+  /** The comparison executor. Absent, a review stage parks rather than runs. */
+  review?: EnsembleReviewDeps;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
   /**
@@ -210,6 +244,7 @@ export class EnsembleEngine {
   private readonly store: EnsembleStore;
   private readonly tasks: EnsembleTaskGateway;
   private readonly adapters: ArtifactAdapterRegistry | null;
+  private readonly review: EnsembleReviewDeps | null;
   private readonly publish: (runId: string) => void;
   private readonly now: () => number;
   private readonly log: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
@@ -217,11 +252,14 @@ export class EnsembleEngine {
   private readonly locks = new Map<string, Promise<void>>();
   /** One pending deadline wake per run, so a re-arm cancels the prior one and a terminal clears it. */
   private readonly deadlineTimers = new Map<string, () => void>();
+  /** The abort controller of the one in-flight review per run, so a cancel can stop its retry. */
+  private readonly reviewAborts = new Map<string, AbortController>();
 
   constructor(deps: EnsembleEngineDeps) {
     this.store = deps.store;
     this.tasks = deps.tasks;
     this.adapters = deps.adapters ?? null;
+    this.review = deps.review ?? null;
     this.publish = deps.publish;
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
@@ -345,6 +383,9 @@ export class EnsembleEngine {
   }
 
   private async cancelLocked(state: RawRunState, reason: string | null): Promise<boolean> {
+    // Stop an in-flight comparison from starting its next parse attempt; its own `stillActive`
+    // check would catch the cancel too, but aborting makes it prompt.
+    this.reviewAborts.get(state.run.id)?.abort();
     const now = this.now();
     if (state.run.status !== "cancelling") {
       this.store.setRunStatus(state.run.id, NON_TERMINAL_RUN_STATUSES, "cancelling", { error: reason }, now);
@@ -357,6 +398,12 @@ export class EnsembleEngine {
       this.publish(state.run.id);
       return false;
     }
+    this.interruptRunningReviews(
+      state.run.id,
+      reason ?? "the run was cancelled while this comparison was in flight",
+      now,
+      "cancelled",
+    );
     this.clearDeadline(state.run.id);
     this.store.setRunStatus(state.run.id, ["cancelling"], "cancelled", { error: reason, completedAt: now }, now);
     this.event(state.run.id, "run_cancelled", { reason }, `run_cancelled:${state.run.id}`);
@@ -645,6 +692,44 @@ export class EnsembleEngine {
           }
         }
       }
+
+      const evaluations = this.store.listEvaluations(runId);
+      for (const stageAttempt of reconciledState.stageAttempts) {
+        if (stageAttempt.driverKind !== "review" || stageAttempt.status !== "running") continue;
+        const succeeded = evaluations.find(
+          (evaluation) =>
+            evaluation.stageAttemptId === stageAttempt.id &&
+            evaluation.status === "succeeded",
+        );
+        if (!succeeded) continue;
+        const driver = stageAttempt.driverKey ? reviewDriverFor(stageAttempt.driverKey) : null;
+        const resultLabel =
+          driver && succeeded.result
+            ? driver.resultLabel({
+                result: succeeded.result,
+                subjectArtifactIds: succeeded.subjectArtifactIds,
+              })
+            : null;
+        this.completeReviewStage(
+          runId,
+          stageAttempt.stageId,
+          stageAttempt.id,
+          succeeded.id,
+          resultLabel,
+          now,
+        );
+      }
+
+      const interrupted = this.interruptRunningReviews(
+        runId,
+        "the daemon exited while this comparison was in flight",
+        now,
+        "failed",
+      );
+      for (const stageAttempt of interrupted) {
+        this.event(runId, "review_interrupted", { stageId: stageAttempt.stageId }, `review_interrupted:${stageAttempt.id}:${now}`);
+      }
+
       this.event(runId, "run_recovered", {}, `run_recovered:${runId}:${now}`);
       await this.advanceLocked(runId);
       this.publish(runId);
@@ -961,17 +1046,354 @@ export class EnsembleEngine {
       await this.startMemberStage(state, stage);
       return "progressed";
     }
-    // review / decision / finalize: recognized, but their drivers are not executable in this phase.
-    // The engine parks the run in the matching status and stops rather than best-efforting past a
-    // stage it cannot run - a later phase adds the executor that starts its stage attempt.
-    const parked: EnsembleStatus =
-      stage.driverKind === "review"
-        ? "evaluating"
-        : stage.driverKind === "decision"
-          ? "awaiting_decision"
-          : "finalizing";
+    if (stage.driverKind === "review") {
+      // Dispatch by the compiled driver key, never by asking what strategy the run is. A build with
+      // no review executor wired in - or a plan naming a review driver this build does not have -
+      // parks at `evaluating` exactly as before, rather than best-efforting past a stage it cannot run.
+      const driver = this.review ? reviewDriverFor(stage.driverKey) : null;
+      if (this.review && driver) {
+        this.startReviewStage(state, stage, driver);
+        return "published";
+      }
+      this.setRunStatus(state.run.id, "evaluating", { activeStageId: stage.id });
+      return "published";
+    }
+    // decision / finalize: recognized, but their drivers are not executable in this phase. The engine
+    // parks the run in the matching status - `awaiting_decision` is the durable human boundary this
+    // phase reaches - and a later phase adds the executor that starts its stage attempt.
+    const parked: EnsembleStatus = stage.driverKind === "decision" ? "awaiting_decision" : "finalizing";
     this.setRunStatus(state.run.id, parked, { activeStageId: stage.id });
     return "published";
+  }
+
+  // ---- review execution (comparative_review@1) ----
+
+  /**
+   * Start one review stage attempt and kick its async execution.
+   *
+   * The stage attempt and the `evaluating` status are persisted synchronously under the run lock,
+   * so a restart mid-review finds the running row rather than launching a second comparison. The
+   * comparison itself runs OUTSIDE the lock (a 120s model call must not hold a run's other actions),
+   * re-acquiring it only to persist the result. A fresh attempt number is used on every retry, so a
+   * failed comparison re-runs against the same immutable evidence rather than rewriting a plan.
+   */
+  private startReviewStage(
+    state: RunState,
+    stage: EnsembleStageSpec & { driverKind: "review" },
+    driver: ReviewDriver,
+  ): void {
+    const now = this.now();
+    const attemptNumber = (this.latestStageAttempt(state, stage.id)?.attempt ?? 0) + 1;
+    if (attemptNumber > stage.maxAttempts) {
+      void this.failRun(state.run.id, `review stage ${stage.id} exhausted its ${stage.maxAttempts} attempts`);
+      return;
+    }
+    const stageAttempt = this.store.startStageAttempt(
+      {
+        runId: state.run.id,
+        stageId: stage.id,
+        driverKind: "review",
+        driverKey: stage.driverKey,
+        attempt: attemptNumber,
+        commandKey: `review:${state.run.id}:${stage.id}:${attemptNumber}`,
+        status: "running",
+        input: { command: "comparative_review", attempt: attemptNumber } as EnsembleJson,
+      },
+      now,
+    );
+    this.setRunStatus(state.run.id, "evaluating", { activeStageId: stage.id });
+    this.event(state.run.id, "review_started", { stageId: stage.id, attempt: attemptNumber }, `review_started:${stageAttempt.id}`);
+    const abort = new AbortController();
+    this.reviewAborts.get(state.run.id)?.abort();
+    this.reviewAborts.set(state.run.id, abort);
+    void this.executeReview(state.run.id, stage.id, stageAttempt.id, driver, abort.signal).catch((err) =>
+      void this.onReviewCrashed(state.run.id, stage.id, stageAttempt.id, err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  private async executeReview(
+    runId: string,
+    stageId: string,
+    stageAttemptId: string,
+    driver: ReviewDriver,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const prepared = await this.withRunLock(runId, async () => this.prepareReview(runId, stageId, stageAttemptId));
+    if (prepared.kind === "abandon") return;
+    if (prepared.kind === "insufficient") {
+      await this.withRunLock(runId, async () => {
+        this.reviewAborts.delete(runId);
+        this.store.finishStageAttempt(
+          stageAttemptId,
+          ["running"],
+          "failed",
+          { error: `only ${prepared.count} eligible artifact(s) remain; a comparison needs at least ${prepared.min}` },
+          this.now(),
+        );
+        this.event(runId, "review_failed", { stageId, kind: "insufficient", count: prepared.count }, `review_failed:${stageAttemptId}:insufficient`);
+        await this.advanceLocked(runId);
+        this.publish(runId);
+      });
+      return;
+    }
+    const context = {
+      runId,
+      stageId,
+      stageAttemptId,
+      intent: prepared.intent,
+      baseSha: prepared.baseSha,
+      repoRoot: prepared.repoRoot,
+      guidance: prepared.guidance,
+      policy: prepared.policy,
+      subjects: prepared.subjects,
+      runtime: this.reviewRuntime(),
+      persist: this.reviewPersist(runId, stageAttemptId),
+      signal,
+      stillActive: () => this.reviewStillActive(runId, stageAttemptId),
+    };
+    let outcome: ReviewOutcome;
+    try {
+      outcome = await driver.run(context);
+    } catch (err) {
+      outcome = {
+        ok: false,
+        kind: "infrastructure",
+        detail: err instanceof Error ? err.message : String(err),
+        evaluationId: null,
+        execution: null,
+      };
+    }
+    // The provider ledger is written outside the run lock through single-row transactions. Only
+    // the final result and status transition are persisted under the lock; terminal transitions
+    // reconcile the ledger, and the active-run precondition below rejects a late outcome.
+    await this.withRunLock(runId, () => this.applyReviewOutcome(runId, stageId, stageAttemptId, outcome));
+  }
+
+  /** Gather one review's immutable inputs, or say why it cannot run. Under the run lock. */
+  private prepareReview(
+    runId: string,
+    stageId: string,
+    stageAttemptId: string,
+  ):
+    | {
+        kind: "run";
+        intent: string;
+        baseSha: string;
+        repoRoot: string;
+        guidance: EnsembleEvaluatorGuidance;
+        policy: EnsembleEvaluatorPolicy;
+        subjects: ReviewSubject[];
+      }
+    | { kind: "abandon" }
+    | { kind: "insufficient"; count: number; min: number } {
+    const state = this.load(runId);
+    if (!state || state.run.status !== "evaluating" || state.run.baseSha === null) return { kind: "abandon" };
+    const stage = state.run.plan.stages.find((s) => s.id === stageId);
+    if (!stage || stage.driverKind !== "review") return { kind: "abandon" };
+    const attempt = state.stageAttempts.find((a) => a.id === stageAttemptId);
+    if (!attempt || attempt.status !== "running") return { kind: "abandon" };
+    const subjects = this.reviewSubjects(state, stage);
+    if (subjects.length < stage.subjects.minSubjects) {
+      return { kind: "insufficient", count: subjects.length, min: stage.subjects.minSubjects };
+    }
+    return {
+      kind: "run",
+      intent: state.run.intent,
+      baseSha: state.run.baseSha,
+      repoRoot: state.run.repoRoot,
+      guidance: stage.evaluator.guidance,
+      policy: stage.evaluator,
+      subjects,
+    };
+  }
+
+  /** The ready artifacts a review judges - the declared kind, from the barrier's settled members. */
+  private reviewSubjects(state: RunState, stage: EnsembleStageSpec & { driverKind: "review" }): ReviewSubject[] {
+    const roleKeys =
+      stage.barrier.kind === "members_settled" ? stage.barrier.roleKeys : state.run.plan.roles.map((r) => r.key);
+    const kind = stage.subjects.artifactKind;
+    const subjects: ReviewSubject[] = [];
+    for (const member of this.membersForRoles(state, roleKeys)) {
+      const artifact = this.readyArtifactOfKind(state, member, kind);
+      if (!artifact) continue;
+      subjects.push({
+        artifactId: artifact.id,
+        kind,
+        locator: artifact.locator,
+        observed: readMetadataSection(artifact.metadata, "observed"),
+        reported: readMetadataSection(artifact.metadata, "reported"),
+      });
+    }
+    return subjects.slice(0, stage.subjects.maxSubjects);
+  }
+
+  private readyArtifactOfKind(state: RunState, member: EnsembleMember, kind: string): EnsembleArtifact | null {
+    const attemptIds = new Set(state.attempts.filter((a) => a.memberId === member.id).map((a) => a.id));
+    return (
+      state.artifacts.find(
+        (a) => a.status === "ready" && a.kind === kind && a.attemptId !== null && attemptIds.has(a.attemptId),
+      ) ?? null
+    );
+  }
+
+  /** Build the review runtime from the injected deps plus this engine's adapters and clock. */
+  private reviewRuntime(): ReviewRuntime {
+    const review = this.review!;
+    return {
+      scheduler: review.scheduler,
+      resolveExecution: review.resolveExecution,
+      runModel: review.runModel,
+      materialize: async (subject, repoRoot, maxPatchBytes) => {
+        const adapter = this.adapterFor(subject.kind);
+        if (!adapter) throw new Error(`no adapter for ${subject.kind} artifacts`);
+        return adapter.materialize(subject.locator, { repoPath: repoRoot, maxPatchBytes });
+      },
+      now: this.now,
+      timeoutMs: review.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+    };
+  }
+
+  /** The durable ledger the driver writes through, bound to this run and stage attempt. */
+  private reviewPersist(runId: string, stageAttemptId: string): ReviewPersist {
+    return {
+      beginEvaluation: (input) =>
+        this.store.recordEvaluation(
+          {
+            runId,
+            stageAttemptId,
+            attempt: 1,
+            method: "comparative_llm",
+            runnerId: input.runnerId,
+            modelId: input.modelId,
+            inputFingerprint: input.inputFingerprint,
+            subjectArtifactIds: input.subjectArtifactIds,
+            status: "running",
+          },
+          this.now(),
+        ).id,
+      startCall: (input) =>
+        this.store.startLlmCall({
+          runId,
+          stageAttemptId,
+          evaluationId: input.evaluationId,
+          purpose: "comparative_review",
+          runnerId: input.runnerId,
+          modelId: input.modelId,
+          attempt: input.attempt,
+          operationKey: `review_call:${input.evaluationId}:${input.attempt}`,
+          state: "running",
+          startedAt: input.startedAt,
+        }).id,
+      finishCall: (callId, input) => {
+        this.store.finishLlmCall(callId, ["running"], input.state, {
+          finishedAt: input.finishedAt,
+          durationMs: input.durationMs,
+          inputBytes: input.inputBytes,
+          outputBytes: input.outputBytes,
+          costUsd: input.costUsd,
+          errorCode: input.errorCode,
+        });
+      },
+    };
+  }
+
+  /** Whether an in-flight review may still proceed - re-read from durable state on every attempt. */
+  private reviewStillActive(runId: string, stageAttemptId: string): boolean {
+    const run = this.store.getRun(runId);
+    if (!run || run.status !== "evaluating") return false;
+    const attempt = this.store.listStageAttempts(runId).find((a) => a.id === stageAttemptId);
+    return attempt?.status === "running";
+  }
+
+  private async applyReviewOutcome(
+    runId: string,
+    stageId: string,
+    stageAttemptId: string,
+    outcome: ReviewOutcome,
+  ): Promise<void> {
+    this.reviewAborts.delete(runId);
+    const now = this.now();
+    const run = this.store.getRun(runId);
+    const stageAttempt = this.store.listStageAttempts(runId).find((attempt) => attempt.id === stageAttemptId);
+    if (
+      run?.status !== "evaluating" ||
+      stageAttempt?.status !== "running" ||
+      stageAttempt.stageId !== stageId ||
+      stageAttempt.driverKind !== "review"
+    ) {
+      if (outcome.evaluationId) {
+        this.store.finishEvaluation(
+          outcome.evaluationId,
+          ["running"],
+          "interrupted",
+          { error: "the review outcome arrived after its run or stage attempt stopped" },
+          now,
+        );
+      }
+      return;
+    }
+    if (outcome.ok) {
+      if (outcome.evaluationId) {
+        this.store.finishEvaluation(
+          outcome.evaluationId,
+          ["running"],
+          "succeeded",
+          { runnerId: outcome.execution.runnerId, modelId: outcome.execution.modelId, result: outcome.result },
+          now,
+        );
+      }
+      if (outcome.execution.unknownRunner) {
+        // The unknown-runner fallback is made visible rather than swallowed, consistent with LLM status.
+        this.event(
+          runId,
+          "review_runner_unknown",
+          { dropped: outcome.execution.unknownRunner, using: outcome.execution.runnerId },
+          `review_runner_unknown:${stageAttemptId}`,
+        );
+      }
+      this.completeReviewStage(
+        runId,
+        stageId,
+        stageAttemptId,
+        outcome.evaluationId,
+        outcome.resultLabel,
+        now,
+      );
+      await this.advanceLocked(runId);
+      this.publish(runId);
+      return;
+    }
+    // A failure. `interrupted` is retryable against the same immutable evidence; a malformed or
+    // infrastructure failure is too, bounded by the compiled attempt cap, and neither ever becomes
+    // a recommendation. The generic retry logic runs from the failed stage attempt.
+    const evalState = outcome.kind === "interrupted" ? "interrupted" : "failed";
+    if (outcome.evaluationId) {
+      this.store.finishEvaluation(
+        outcome.evaluationId,
+        ["running"],
+        evalState,
+        {
+          ...(outcome.execution ? { runnerId: outcome.execution.runnerId, modelId: outcome.execution.modelId } : {}),
+          error: outcome.detail,
+        },
+        now,
+      );
+    }
+    this.store.finishStageAttempt(stageAttemptId, ["running"], "failed", { error: `${outcome.kind}: ${outcome.detail}` }, now);
+    this.event(runId, "review_failed", { stageId, kind: outcome.kind, detail: outcome.detail }, `review_failed:${stageAttemptId}`);
+    await this.advanceLocked(runId);
+    this.publish(runId);
+  }
+
+  private async onReviewCrashed(runId: string, stageId: string, stageAttemptId: string, detail: string): Promise<void> {
+    await this.withRunLock(runId, async () => {
+      this.reviewAborts.delete(runId);
+      const now = this.now();
+      this.store.finishStageAttempt(stageAttemptId, ["running"], "failed", { error: `review crashed: ${detail}` }, now);
+      this.event(runId, "review_failed", { stageId, kind: "crashed", detail }, `review_failed:${stageAttemptId}:crash`);
+      await this.advanceLocked(runId);
+      this.publish(runId);
+    });
   }
 
   /**
@@ -1425,6 +1847,7 @@ export class EnsembleEngine {
    * because a terminal run is never reconciled again.
    */
   private async failRun(runId: string, reason: string): Promise<void> {
+    this.reviewAborts.get(runId)?.abort();
     const now = this.now();
     const raw = this.loadRaw(runId);
     for (const member of raw?.members ?? []) {
@@ -1444,9 +1867,76 @@ export class EnsembleEngine {
         await this.settleMemberTask(member, now);
       }
     }
+    this.interruptRunningReviews(runId, reason, now, "failed");
     this.clearDeadline(runId);
     this.store.setRunStatus(runId, NON_TERMINAL_RUN_STATUSES, "failed", { error: reason, completedAt: now }, now);
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
+  }
+
+  private completeReviewStage(
+    runId: string,
+    stageId: string,
+    stageAttemptId: string,
+    evaluationId: string,
+    resultLabel: string | null,
+    now: number,
+  ): boolean {
+    const finished = this.store.finishStageAttempt(
+      stageAttemptId,
+      ["running"],
+      "succeeded",
+      { output: { evaluationId, resultLabel } as EnsembleJson },
+      now,
+    );
+    if (!finished.ok) return false;
+    this.event(
+      runId,
+      "review_succeeded",
+      { stageId, evaluationId, resultLabel },
+      `review_succeeded:${stageAttemptId}`,
+    );
+    return true;
+  }
+
+  private interruptRunningReviews(
+    runId: string,
+    reason: string,
+    now: number,
+    stageStatus: "failed" | "cancelled",
+  ): EnsembleStageAttempt[] {
+    const stageAttempts = this.store
+      .listStageAttempts(runId)
+      .filter((attempt) => attempt.driverKind === "review" && attempt.status === "running");
+    if (stageAttempts.length === 0) return [];
+    const stageAttemptIds = new Set(stageAttempts.map((attempt) => attempt.id));
+    const evaluations = this.store
+      .listEvaluations(runId)
+      .filter((evaluation) => stageAttemptIds.has(evaluation.stageAttemptId) && evaluation.status === "running");
+    const evaluationIds = new Set(evaluations.map((evaluation) => evaluation.id));
+    for (const call of this.store.listLlmCalls(runId)) {
+      if (
+        call.evaluationId === null ||
+        !evaluationIds.has(call.evaluationId) ||
+        call.state !== "running"
+      ) {
+        continue;
+      }
+      this.store.finishLlmCall(call.id, ["running"], "interrupted", {
+        finishedAt: now,
+        durationMs: Math.max(0, now - call.startedAt),
+        inputBytes: call.inputBytes,
+        outputBytes: call.outputBytes,
+        costUsd: null,
+        errorCode: "review_interrupted",
+      });
+    }
+    for (const evaluation of evaluations) {
+      this.store.finishEvaluation(evaluation.id, ["running"], "interrupted", { error: reason }, now);
+    }
+    return stageAttempts.filter(
+      (attempt) =>
+        this.store.finishStageAttempt(attempt.id, ["running"], stageStatus, { error: reason }, now).ok,
+    );
   }
 
   /**
@@ -1526,4 +2016,12 @@ function readClaimsDigest(artifact: EnsembleArtifact): string | null {
 function recoveredMetadata(metadata: EnsembleJson, observed: EnsembleJson, capturedAt: number): EnsembleJson {
   const prior = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
   return { ...prior, observed, capturedAt };
+}
+
+/** One named section (`observed` / `reported`) of an artifact's metadata, or null if absent. */
+function readMetadataSection(metadata: EnsembleJson, key: string): EnsembleJson {
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata) && key in metadata) {
+    return metadata[key] ?? null;
+  }
+  return null;
 }

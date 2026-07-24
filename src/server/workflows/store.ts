@@ -3203,7 +3203,7 @@ export class WorkflowStore {
             );
             const fullContext = readFullWorkflowContext(context, row.status);
             if (fullContext.kind === "not_captured") continue;
-            if (fullContext.kind === "corrupt") {
+            if (fullContext.kind !== "captured") {
               throw new WorkflowRowError(
                 "workflow_submissions",
                 row.id,

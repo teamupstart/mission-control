@@ -712,7 +712,10 @@ test("run detail carries display provenance and never the opaque idempotency key
   assert.equal(submitted.ok, true);
   if (!submitted.ok) return;
 
-  const detail = workflows.run(submitted.value.run.id)!;
+  const result = workflows.run(submitted.value.run.id);
+  assert.equal(result.kind, "found");
+  if (result.kind !== "found") return;
+  const detail = result.detail;
   assert.deepEqual(detail.externalSource, {
     kind: "ensemble",
     sourceId: "ens-detail",
@@ -757,7 +760,10 @@ test("run detail carries display provenance and never the opaque idempotency key
   const manualSubmit = await workflows.submit(manual.value.id, { requestId: "detail-manual" });
   assert.equal(manualSubmit.ok, true);
   if (!manualSubmit.ok) return;
-  assert.equal(workflows.run(manualSubmit.value.run.id)?.externalSource, null);
+  const manualResult = workflows.run(manualSubmit.value.run.id);
+  assert.equal(manualResult.kind, "found");
+  if (manualResult.kind !== "found") return;
+  assert.equal(manualResult.detail.externalSource, null);
   assert.equal(workflows.store.getRun(manualSubmit.value.run.id)?.triggerSource, "manual");
 
   // A CLAIMED binding stays usable by the manual path, and a later manual run on it is
@@ -767,9 +773,15 @@ test("run detail carries display provenance and never the opaque idempotency key
   assert.equal(laterManual.ok, true);
   if (!laterManual.ok) return;
   assert.equal(workflows.store.getRun(laterManual.value.run.id)?.triggerSource, "manual");
-  assert.equal(workflows.run(laterManual.value.run.id)?.externalSource, null);
+  const laterManualResult = workflows.run(laterManual.value.run.id);
+  assert.equal(laterManualResult.kind, "found");
+  if (laterManualResult.kind !== "found") return;
+  assert.equal(laterManualResult.detail.externalSource, null);
   // The external run on that same binding still reports its provenance.
-  assert.equal(workflows.run(submitted.value.run.id)?.externalSource?.sourceId, "ens-detail");
+  const externalResult = workflows.run(submitted.value.run.id);
+  assert.equal(externalResult.kind, "found");
+  if (externalResult.kind !== "found") return;
+  assert.equal(externalResult.detail.externalSource?.sourceId, "ens-detail");
   await workflows.stop();
 });
 

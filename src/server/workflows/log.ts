@@ -8,6 +8,7 @@ const WORKFLOW_LOG_FIELDS = [
   "at",
   "compacted",
   "deleted",
+  "failed",
   "error",
   "call",
   "purpose",

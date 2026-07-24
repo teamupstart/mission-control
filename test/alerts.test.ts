@@ -652,7 +652,7 @@ test("workflow transitions use the shared edge-triggered alert engine", () => {
       severity: "attention",
     },
     {
-      next: workflowRun({ gate: "waiting_inspector", phase: "inspector_disabled" }),
+      next: workflowRun({ status: "blocked", gate: "blocked", phase: "inspector_disabled" }),
       id: "workflow:workflow-run:inspector-enablement",
       severity: "attention",
     },

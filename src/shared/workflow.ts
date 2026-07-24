@@ -1,5 +1,7 @@
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
+import type { InspectorPosture } from "./inspector.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
+import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
@@ -239,6 +241,44 @@ export const WORKFLOW_RUN_STATUSES = [
   "failed",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+
+export const WORKFLOW_GATE_WAIT_REASONS = [
+  "missing_pr",
+  "unadopted_pr",
+  "inspector_disabled",
+  "awaiting_fresh_observation",
+  "working_tree_not_pushed",
+  "head_mismatch",
+  "review_pending",
+  "review_backoff",
+  "review_error",
+  "findings",
+  "pr_closed",
+] as const;
+export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
+
+export interface WorkflowInspectorGateState {
+  prKey: string | null;
+  prUrl: string | null;
+  targetHeadSha: string | null;
+  failedHeadSha: string | null;
+  enteredAt: number;
+  lastObservedAt: number | null;
+  observedHeadSha: string | null;
+  reviewPosture: InspectorPosture | null;
+  waitReason: WorkflowGateWaitReason | null;
+  findingFingerprints: string[];
+}
+
+export const WORKFLOW_GATE_SUMMARIES = [
+  "none",
+  "waiting_pr",
+  "waiting_inspector",
+  "findings",
+  "clean",
+  "blocked",
+] as const;
+export type WorkflowGateSummary = (typeof WORKFLOW_GATE_SUMMARIES)[number];
 
 export const WORKFLOW_SUBMISSION_MODES = ["full_workflow", "inspector_only"] as const;
 export type WorkflowSubmissionMode = (typeof WORKFLOW_SUBMISSION_MODES)[number];
@@ -684,7 +724,22 @@ export interface WorkflowRunSummary {
   activePersonaNames: string[];
   failedPersonaCount: number;
   bypassedPersonaReview: boolean;
+  gate: WorkflowGateSummary;
+  gatePrNumber: number | null;
+  gateHeadShort: string | null;
+  reviewPosture: InspectorPosture | null;
   updatedAt: number;
+}
+
+export interface WorkflowInspectorGateDetail {
+  state: WorkflowInspectorGateState;
+  inspection: InspectorInspection | null;
+  findings: InspectorComment[];
+  inspector: {
+    enabled: boolean;
+    mode: InspectorMode;
+    posture: InspectorPosture | null;
+  };
 }
 
 export interface WorkflowRunDetail {
@@ -702,4 +757,5 @@ export interface WorkflowRunDetail {
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
    */
   externalSource?: WorkflowExternalSource | null;
+  inspectorGate: WorkflowInspectorGateDetail | null;
 }

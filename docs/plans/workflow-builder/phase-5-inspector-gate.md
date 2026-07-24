@@ -1,6 +1,6 @@
 # Phase 5 plan: Inspector final gate and PR repair policies
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 

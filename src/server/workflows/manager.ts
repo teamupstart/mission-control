@@ -9,6 +9,7 @@ import type {
   ResubmitWorkflow,
   RetryWorkflowDelivery,
   RetryWorkflowRun,
+  RestartFullWorkflow,
   SubmitWorkflow,
   UpdateWorkflow,
   UpdateWorkflowBinding,
@@ -35,9 +36,16 @@ import type {
   WorkflowCompletionClaim,
   WorkflowCompletionClaimResult,
   WorkflowTriggerSource,
+  WorkflowInspectorGateState,
 } from "@shared/workflow.ts";
 import { WORKFLOW_EXTERNAL_SOURCE_KINDS, normalizeWorkflowName } from "@shared/workflow.ts";
-import { PersonaVerdictSchema, WorkflowCaptureExpectationSchema } from "@shared/protocol.ts";
+import {
+  PersonaVerdictSchema,
+  WorkflowCaptureExpectationSchema,
+  WorkflowContextSnapshotSchema,
+  WorkflowInspectorGateStateSchema,
+} from "@shared/protocol.ts";
+import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -75,7 +83,20 @@ import {
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
 import { getWorkflowConfig } from "./config.ts";
-import { renderWorkflowFeedback } from "./feedback.ts";
+import {
+  renderInspectorFeedback,
+  renderPrHandoff,
+  renderWorkflowFeedback,
+} from "./feedback.ts";
+import { findingFingerprintAudit } from "./finding-audit.ts";
+import {
+  getInspectorPr,
+  loadInspectorComments,
+  loadInspectorInspections,
+} from "../db.ts";
+import { getInspectorConfig } from "../inspector/config.ts";
+import { parsePrUrl } from "../inspector/github.ts";
+import { inspectorPosture } from "@shared/inspector.ts";
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -219,7 +240,9 @@ export class WorkflowManager {
   readonly engine: WorkflowEngine;
   private unsubscribe: (() => void) | null = null;
   private discoveryUnsubscribe: (() => void) | null = null;
+  private inspectionUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
+  private readonly gateLocks = new Map<string, Promise<void>>();
   private readonly deliveryTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
@@ -248,6 +271,7 @@ export class WorkflowManager {
       ?? createReviewScheduler(options.engine?.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.registry.initializeWorkflows(this.list(true));
     const configuredWaiting = options.engine?.onSubmissionWaiting;
+    const configuredSucceeded = options.engine?.onSubmissionSucceeded;
     this.engine = new WorkflowEngine(
       this.store,
       (runId) => this.publishRun(runId),
@@ -258,6 +282,8 @@ export class WorkflowManager {
           this.scheduleWaitingDelivery(submissionId);
           configuredWaiting?.(submissionId);
         },
+        onSubmissionSucceeded: (submissionId) =>
+          this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
       },
     );
     this.registry.initializeWorkflowRuns(this.runs());
@@ -268,6 +294,12 @@ export class WorkflowManager {
   }
 
   start(): void {
+    if (!this.inspectionUnsubscribe) {
+      this.inspectionUnsubscribe = this.registry.onInspectionUpdated((event) => {
+        this.scheduleInspectionUpdate(event);
+      });
+    }
+    this.resetRecoveredGateObservations();
     for (const delivery of this.store.recoverSendingDeliveries()) {
       this.publishRun(delivery.runId);
     }
@@ -303,6 +335,7 @@ export class WorkflowManager {
             if (run) this.publishRun(run.id);
           }
         }
+        this.scheduleGatesForSession(event.session.id);
       });
     }
     if (this.registry.sessionsObserved()) {
@@ -324,6 +357,8 @@ export class WorkflowManager {
     this.unsubscribe = null;
     this.discoveryUnsubscribe?.();
     this.discoveryUnsubscribe = null;
+    this.inspectionUnsubscribe?.();
+    this.inspectionUnsubscribe = null;
     await this.engine.stop();
     await Promise.allSettled([...this.deliveryTasks]);
   }
@@ -415,7 +450,29 @@ export class WorkflowManager {
   }
 
   run(id: string): WorkflowRunDetail | null {
-    return this.store.runDetail(id);
+    const detail = this.store.runDetail(id);
+    if (!detail) return null;
+    const state = this.gateState(detail.run);
+    if (!state) return detail;
+    const inspection = state.prKey
+      ? loadInspectorInspections().find((row) => row.key === state.prKey) ?? null
+      : null;
+    const cfg = getInspectorConfig();
+    return {
+      ...detail,
+      inspectorGate: {
+        state,
+        inspection,
+        findings: state.prKey ? loadInspectorComments(state.prKey) : [],
+        inspector: {
+          enabled: cfg.enabled,
+          mode: cfg.mode,
+          posture: state.prKey
+            ? inspectorPosture(cfg, detail.binding.sessionCwd, detail.binding.sessionRepoRoot)
+            : null,
+        },
+      },
+    };
   }
 
   createBinding(input: CreateWorkflowBinding, now = Date.now()): WorkflowRuntimeMutation<WorkflowBinding> {
@@ -561,6 +618,21 @@ export class WorkflowManager {
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const activeGate = this.gateState(run);
+    const activeGateSubmission = activeGate ? this.store.latestSubmission(run.id) : null;
+    if (
+      activeGate
+      && (
+        run.status === "waiting_for_new_head"
+        || activeGateSubmission?.mode === "inspector_only"
+      )
+    ) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "Inspector-only repair resumes on a new head or through the confirmed full restart action",
+      };
+    }
     const binding = this.store.getBinding(run.bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "The run binding is missing" };
     if (externallySourced(run)) {
@@ -802,6 +874,255 @@ export class WorkflowManager {
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
   }
 
+  /**
+   * Claim a successful Persona End for the immutable Inspector completion policy.
+   * Session PR state is a lookup hint only; adoption is proved exclusively by inspector_prs.
+   */
+  private enterInspectorGate(submissionId: string, now = Date.now()): boolean {
+    const submission = this.store.getSubmission(submissionId);
+    const run = submission ? this.store.getRun(submission.runId) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    if (!submission || !run || !binding || version?.completionPolicy.kind !== "inspector") return false;
+    const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!context.success) {
+      this.store.setRunState(run.id, "blocked", "inspector_gate_context_invalid", {
+        error: "The successful submission has no valid immutable context snapshot",
+      }, now);
+      this.publishRun(run.id);
+      return true;
+    }
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    const candidateUrl = session?.state !== "exited" ? session?.prUrl ?? null : null;
+    const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
+    const adopted = candidate ? getInspectorPr(candidate.key) : null;
+    const cfg = getInspectorConfig();
+    const waitReason: WorkflowInspectorGateState["waitReason"] = !candidate
+      ? "missing_pr"
+      : !adopted
+        ? "unadopted_pr"
+        : !cfg.enabled
+          ? "inspector_disabled"
+          : "awaiting_fresh_observation";
+    const state: WorkflowInspectorGateState = {
+      prKey: adopted?.key ?? null,
+      prUrl: adopted?.url ?? candidateUrl,
+      targetHeadSha: null,
+      failedHeadSha: null,
+      enteredAt: now,
+      lastObservedAt: null,
+      observedHeadSha: null,
+      reviewPosture: null,
+      waitReason,
+      findingFingerprints: [],
+    };
+    const entered = this.store.enterInspectorGate({
+      runId: run.id,
+      submissionId,
+      headSha: context.data.evidence.headSha,
+      status: waitReason === "inspector_disabled"
+        ? "blocked"
+        : waitReason === "missing_pr" || waitReason === "unadopted_pr"
+          ? "waiting_for_pr"
+          : "waiting_for_inspector",
+      phase: `inspector_${waitReason}`,
+      state,
+      now,
+    });
+    if (entered) this.publishRun(run.id);
+    return true;
+  }
+
+  /** Shipping may only be vetoed by active Inspector-gated workflow ownership. */
+  blocksMerge(prKey: string): boolean {
+    for (const binding of this.store.listBindings()) {
+      if (binding.state !== "active") continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+      if (!run || version?.completionPolicy.kind !== "inspector") continue;
+      const gate = this.gateState(run);
+      if (gate?.prKey === prKey) return true;
+      const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+      const candidate = session?.state !== "exited" && session?.prUrl
+        ? parsePrUrl(session.prUrl)
+        : null;
+      if (candidate?.key === prKey) return true;
+    }
+    return false;
+  }
+
+  async preparePr(
+    runId: string,
+    requestId: string,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowDelivery>> {
+    const run = this.store.getRun(runId);
+    const gate = run ? this.gateState(run) : null;
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const submission = run ? this.store.latestSubmission(run.id) : null;
+    if (!run || !gate || !binding || !submission || version?.completionPolicy.kind !== "inspector") {
+      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+    }
+    const prior = this.store.listEvents(run.id).find((event) =>
+      event.kind === "pr_handoff_prepared"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === requestId
+      && typeof event.payload.deliveryId === "string");
+    if (
+      prior?.payload
+      && !Array.isArray(prior.payload)
+      && typeof prior.payload === "object"
+      && typeof prior.payload.deliveryId === "string"
+    ) {
+      const existing = this.store.getDelivery(prior.payload.deliveryId);
+      if (existing) return { ok: true, value: existing, idempotent: true };
+    }
+    if (
+      run.status !== "waiting_for_pr"
+      || version.completionPolicy.missingPrAction !== "offer_prepare_pr"
+      || !["missing_pr", "unadopted_pr"].includes(gate.waitReason ?? "")
+      || !binding.sessionId
+    ) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "This published workflow does not currently offer PR preparation",
+      };
+    }
+    const rendered = renderPrHandoff({
+      workflowName: this.store.runSummary(run.id)?.workflowName ?? "Workflow",
+      workflowVersion: version.version,
+      runId: run.id,
+      originalGoal: this.originalGoal(run.id),
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId: run.id,
+      submissionId: submission.id,
+      kind: "pr_handoff",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    }, now);
+    if (!prepared.idempotent) {
+      this.store.appendEvent(run.id, "pr_handoff_prepared", {
+        requestId,
+        deliveryId: prepared.delivery.id,
+        payloadSha256: prepared.delivery.payloadSha256,
+      }, now);
+    }
+    this.store.setRunState(run.id, "waiting_for_session", "pr_handoff", gate as unknown as WorkflowJson, now);
+    this.publishRun(run.id);
+    if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
+    return { ok: true, value: this.store.getDelivery(prepared.delivery.id) ?? prepared.delivery, idempotent: prepared.idempotent };
+  }
+
+  recheckInspector(
+    runId: string,
+    requestId: string,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<WorkflowRun> {
+    const run = this.store.getRun(runId);
+    if (!run || !this.gateState(run)) {
+      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+    }
+    if (runIsTerminal(run)) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "This Inspector gate is already terminal",
+      };
+    }
+    const repeated = this.store.listEvents(run.id).some((event) =>
+      event.kind === "inspector_recheck_requested"
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === requestId);
+    if (repeated) return { ok: true, value: run, idempotent: true };
+    this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
+    this.scheduleGateEvaluation(run.id, null);
+    return { ok: true, value: run };
+  }
+
+  async restartFull(
+    runId: string,
+    input: RestartFullWorkflow,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const run = this.store.getRun(runId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const triggerKey = binding
+      ? `manual:${binding.id}:restart-full:${input.requestId}`
+      : null;
+    const existing = triggerKey ? this.store.submissionByTrigger(triggerKey) : null;
+    if (run && existing?.runId === run.id) {
+      return {
+        ok: true,
+        value: { run, submission: existing },
+        idempotent: true,
+      };
+    }
+    const gate = run ? this.gateState(run) : null;
+    const latest = run ? this.store.latestSubmission(run.id) : null;
+    if (!run || !gate || !binding || !latest) {
+      return { ok: false, reason: "not_found", message: "No active Inspector gate exists" };
+    }
+    const abandoningBypass =
+      run.status === "waiting_for_new_head"
+      || latest.mode === "inspector_only";
+    if (!abandoningBypass) {
+      return {
+        ok: false,
+        reason: "run_not_waiting",
+        message: "Full restart is the explicit escape from an active Inspector-only repair",
+      };
+    }
+    if (input.confirmation !== "RESTART FULL WORKFLOW") {
+      return {
+        ok: false,
+        reason: "confirmation_required",
+        message: "Type RESTART FULL WORKFLOW to abandon the active Inspector-only repair",
+      };
+    }
+    if (latest.round > run.maxRepairRounds) {
+      this.store.setRunState(run.id, "blocked", "round_limit", gate as unknown as WorkflowJson, now);
+      this.publishRun(run.id);
+      return { ok: false, reason: "round_limit", message: "The workflow has exhausted its repair rounds" };
+    }
+    const created = this.store.createRepairSubmission({
+      id: randomUUID(),
+      runId: run.id,
+      round: latest.round + 1,
+      triggerSource: "manual",
+      triggerKey: triggerKey!,
+      context: {},
+      evidence: {},
+      now,
+    });
+    this.store.appendEvent(run.id, "inspector_only_abandoned_for_full_restart", {
+      requestId: input.requestId,
+      priorPrKey: gate.prKey,
+      priorHeadSha: gate.targetHeadSha,
+      submissionId: created.submission.id,
+    }, now);
+    this.publishRun(run.id);
+    if (created.idempotent && created.submission.status !== "capturing") {
+      return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
+    }
+    return this.captureAndActivate(
+      binding,
+      created.run,
+      created.submission,
+      latest.evidenceFingerprint,
+      false,
+    );
+  }
+
   async retryDelivery(
     deliveryId: string,
     input: RetryWorkflowDelivery,
@@ -870,6 +1191,23 @@ export class WorkflowManager {
     const run = this.store.getRun(delivery.runId);
     if (!run) return { ok: false, reason: "not_found", message: "The delivery has no workflow run" };
     const acknowledgementOnly = runIsTerminal(run);
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    const inspectorOnlyDelivery =
+      delivery.kind === "inspector_feedback"
+      && version?.completionPolicy.kind === "inspector"
+      && version.completionPolicy.onFindings === "inspector_only";
+    if (
+      input.resolution === "discard_and_new_round"
+      && inspectorOnlyDelivery
+      && !acknowledgementOnly
+    ) {
+      return {
+        ok: false,
+        reason: "invalid_delivery_state",
+        message: "Inspector-only repair can be abandoned only through the confirmed full restart action",
+        current: delivery,
+      };
+    }
     if (
       input.resolution === "discard_and_new_round"
       && input.confirmation !== "DISCARD AND SEND A NEW REPAIR ROUND"
@@ -1310,6 +1648,594 @@ export class WorkflowManager {
     );
   }
 
+  private gateState(run: WorkflowRun): WorkflowInspectorGateState | null {
+    const parsed = WorkflowInspectorGateStateSchema.safeParse(run.gateState);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private resetRecoveredGateObservations(): void {
+    const cfg = getInspectorConfig();
+    for (const run of this.store.listRuns()) {
+      if (runIsTerminal(run)) continue;
+      const state = this.gateState(run);
+      if (!state) continue;
+      const waitingForNewHead = run.status === "waiting_for_new_head";
+      const waitingForPr = run.status === "waiting_for_pr";
+      const waitingForSession = run.status === "waiting_for_session";
+      const blocked = run.status === "blocked";
+      const waitReason = waitingForNewHead
+        ? "findings"
+        : waitingForPr || waitingForSession || blocked
+          ? state.waitReason
+          : cfg.enabled
+            ? "awaiting_fresh_observation"
+            : "inspector_disabled";
+      const status: WorkflowRun["status"] = waitingForNewHead
+        ? "waiting_for_new_head"
+        : waitingForPr
+          ? "waiting_for_pr"
+          : waitingForSession
+            ? "waiting_for_session"
+            : blocked || !cfg.enabled
+              ? "blocked"
+              : "waiting_for_inspector";
+      const phase = waitingForNewHead
+        ? "inspector_findings"
+        : waitingForPr || waitingForSession || blocked
+          ? run.currentPhase
+          : cfg.enabled
+            ? "inspector_awaiting_fresh_observation"
+            : "inspector_disabled";
+      const next: WorkflowInspectorGateState = {
+        ...state,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        waitReason,
+      };
+      const updated = this.store.updateInspectorGate({
+        runId: run.id,
+        expectedState: state,
+        state: next,
+        status,
+        phase,
+        now: Date.now(),
+      });
+      if (updated) this.publishRun(run.id);
+    }
+  }
+
+  private scheduleInspectionUpdate(event: InspectionUpdated): void {
+    for (const run of this.store.listRuns()) {
+      if (runIsTerminal(run)) continue;
+      const state = this.gateState(run);
+      if (!state) continue;
+      if (state.prKey === event.prKey) {
+        this.scheduleGateEvaluation(run.id, event);
+        continue;
+      }
+      if (state.prKey) continue;
+      const binding = this.store.getBinding(run.bindingId);
+      const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+      const candidate = session?.prUrl ? parsePrUrl(session.prUrl) : null;
+      if (candidate?.key === event.prKey) this.scheduleGateEvaluation(run.id, event);
+    }
+  }
+
+  private scheduleGatesForSession(sessionId: string): void {
+    for (const binding of this.store.listBindings()) {
+      if (binding.sessionId !== sessionId) continue;
+      const run = this.store.activeRunForBinding(binding.id);
+      if (run && this.gateState(run)) this.scheduleGateEvaluation(run.id, null);
+    }
+  }
+
+  private scheduleGateEvaluation(runId: string, event: InspectionUpdated | null): void {
+    const task = this.withGateLock(runId, () => this.evaluateInspectorGate(runId, event))
+      .catch((error) => {
+        const run = this.store.getRun(runId);
+        if (!run || runIsTerminal(run)) return;
+        const state = this.gateState(run);
+        if (!state) return;
+        this.store.updateInspectorGate({
+          runId,
+          expectedState: state,
+          state: { ...state, waitReason: "review_error" },
+          status: "waiting_for_inspector",
+          phase: "inspector_adapter_error",
+          now: Date.now(),
+        });
+        this.store.appendEvent(runId, "inspector_adapter_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.publishRun(runId);
+      });
+    this.trackDeliveryTask(task);
+  }
+
+  private transitionInspectorGate(
+    run: WorkflowRun,
+    expectedState: WorkflowInspectorGateState,
+    state: WorkflowInspectorGateState,
+    status: WorkflowRun["status"],
+    phase: string,
+    eventKind: string | null,
+    eventPayload: WorkflowJson,
+    now: number,
+  ): WorkflowRun | null {
+    const updated = this.store.updateInspectorGate({
+      runId: run.id,
+      expectedState,
+      state,
+      status,
+      phase,
+      now,
+    });
+    if (!updated) return null;
+    if (eventKind) this.store.appendEvent(run.id, eventKind, eventPayload, now);
+    this.publishRun(run.id);
+    return updated;
+  }
+
+  private async evaluateInspectorGate(
+    runId: string,
+    observation: InspectionUpdated | null,
+  ): Promise<void> {
+    let run = this.store.getRun(runId);
+    let state = run ? this.gateState(run) : null;
+    if (!run || !state || runIsTerminal(run) || run.status === "waiting_for_session") return;
+    if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
+    const binding = this.store.getBinding(run.bindingId);
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (!binding || version?.completionPolicy.kind !== "inspector") return;
+    const now = Date.now();
+    const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+    const candidateUrl = session?.state !== "exited" ? session?.prUrl ?? null : null;
+    const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
+
+    if (state.prKey && candidate && candidate.key !== state.prKey) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "head_mismatch" },
+        "blocked",
+        "inspector_pr_switch_refused",
+        "inspector_pr_switch_refused",
+        { pinnedPrKey: state.prKey, candidatePrKey: candidate.key },
+        now,
+      );
+      return;
+    }
+    if (!state.prKey) {
+      if (!candidate) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, prUrl: null, waitReason: "missing_pr" },
+          "waiting_for_pr",
+          "inspector_missing_pr",
+          null,
+          null,
+          now,
+        );
+        return;
+      }
+      const adopted = getInspectorPr(candidate.key);
+      if (!adopted) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, prUrl: candidateUrl, waitReason: "unadopted_pr" },
+          "waiting_for_pr",
+          "inspector_unadopted_pr",
+          null,
+          null,
+          now,
+        );
+        return;
+      }
+      const pinned = {
+        ...state,
+        prKey: adopted.key,
+        prUrl: adopted.url,
+        waitReason: "awaiting_fresh_observation" as const,
+      };
+      const updated = this.transitionInspectorGate(
+        run,
+        state,
+        pinned,
+        "waiting_for_inspector",
+        "inspector_awaiting_fresh_observation",
+        "inspector_pr_pinned",
+        { prKey: adopted.key, source: adopted.source },
+        now,
+      );
+      if (!updated) return;
+      run = updated;
+      state = pinned;
+    }
+
+    const cfg = getInspectorConfig();
+    if (!cfg.enabled) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "inspector_disabled" },
+        "blocked",
+        "inspector_disabled",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+
+    const ledger = observation?.prKey === state.prKey
+      ? observation.ledger
+      : getInspectorPr(state.prKey!);
+    if (!ledger) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, prKey: null, targetHeadSha: null, waitReason: "unadopted_pr" },
+        "waiting_for_pr",
+        "inspector_unadopted_pr",
+        "inspector_adoption_missing",
+        { priorPrKey: state.prKey },
+        now,
+      );
+      return;
+    }
+    if (
+      observation
+      && observation.prKey === state.prKey
+      && observation.observedAt >= state.enteredAt
+      && observation.observedState !== null
+    ) {
+      const observed = {
+        ...state,
+        lastObservedAt: observation.observedAt,
+        observedHeadSha: observation.observedHeadSha,
+        reviewPosture: observation.ledger.reviewPosture,
+      };
+      const updated = this.transitionInspectorGate(
+        run,
+        state,
+        observed,
+        run.status,
+        run.currentPhase,
+        null,
+        null,
+        now,
+      );
+      if (!updated) return;
+      run = updated;
+      state = observed;
+    }
+    if (state.lastObservedAt === null || state.lastObservedAt < state.enteredAt || !state.observedHeadSha) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "awaiting_fresh_observation" },
+        "waiting_for_inspector",
+        "inspector_awaiting_fresh_observation",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (
+      ledger.state === "closed"
+      || (observation?.prKey === state.prKey && observation.observedState !== "OPEN")
+    ) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "pr_closed" },
+        "blocked",
+        "inspector_pr_closed",
+        "inspector_pr_closed",
+        { prKey: state.prKey },
+        now,
+      );
+      return;
+    }
+
+    let submission = this.store.latestSubmission(run.id);
+    if (!submission) return;
+    if (run.status === "waiting_for_new_head") {
+      const newHead = state.observedHeadSha;
+      const priorHeads = new Set(
+        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : []),
+      );
+      if (!state.failedHeadSha) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, waitReason: "head_mismatch" },
+          "blocked",
+          "inspector_gate_context_invalid",
+          null,
+          { failedHeadSha: state.failedHeadSha, observedHeadSha: newHead },
+          now,
+        );
+        return;
+      }
+      if (newHead === state.failedHeadSha || priorHeads.has(newHead)) return;
+      if (submission.round > run.maxRepairRounds) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          { ...state, waitReason: "findings" },
+          "blocked",
+          "round_limit",
+          "inspector_round_limit",
+          { maxRepairRounds: run.maxRepairRounds },
+          now,
+        );
+        return;
+      }
+      const nextState: WorkflowInspectorGateState = {
+        ...state,
+        targetHeadSha: newHead,
+        reviewPosture: ledger.reviewPosture,
+        waitReason: "review_pending",
+      };
+      const created = this.store.createInspectorOnlySubmission({
+        id: randomUUID(),
+        runId: run.id,
+        triggerKey: `inspector-head:${run.id}:${newHead}`,
+        newHeadSha: newHead,
+        failedHeadSha: state.failedHeadSha,
+        priorFindingFingerprints: state.findingFingerprints,
+        bypassReason: "Published Inspector-only findings policy",
+        expectedState: state,
+        state: nextState,
+        now,
+      });
+      if (!created) return;
+      run = created.run;
+      submission = created.submission;
+      state = nextState;
+      this.publishRun(run.id);
+    }
+
+    const fullContext = submission.mode === "full_workflow"
+      ? WorkflowContextSnapshotSchema.safeParse(submission.context)
+      : null;
+    if (fullContext && !fullContext.success) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "head_mismatch" },
+        "blocked",
+        "inspector_gate_context_invalid",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (fullContext?.success && fullContext.data.evidence.workingTreeDirty) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "working_tree_not_pushed" },
+        "waiting_for_session",
+        "inspector_working_tree_not_pushed",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    const submittedHead = submission.prHeadSha
+      ?? (fullContext?.success ? fullContext.data.evidence.headSha : null);
+    if (!submittedHead) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "head_mismatch" },
+        "blocked",
+        "inspector_gate_context_invalid",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (state.observedHeadSha !== submittedHead) {
+      const afterPin = state.targetHeadSha !== null;
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "head_mismatch" },
+        afterPin
+          ? submission.mode === "full_workflow" ? "waiting_for_session" : "blocked"
+          : "waiting_for_inspector",
+        "inspector_head_mismatch",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (state.targetHeadSha && state.targetHeadSha !== state.observedHeadSha) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, waitReason: "head_mismatch" },
+        submission.mode === "full_workflow" ? "waiting_for_session" : "blocked",
+        "inspector_head_mismatch",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (!state.targetHeadSha) {
+      const pinned = { ...state, targetHeadSha: submittedHead, waitReason: "review_pending" as const };
+      const updated = this.transitionInspectorGate(
+        run,
+        state,
+        pinned,
+        "waiting_for_inspector",
+        "inspector_review",
+        "inspector_head_pinned",
+        { prKey: state.prKey, targetHeadSha: submittedHead },
+        now,
+      );
+      if (!updated) return;
+      run = updated;
+      state = pinned;
+    }
+
+    if (ledger.lastAttemptSha === state.targetHeadSha && ledger.lastError) {
+      const backedOff = ledger.nextAttemptAt !== null && ledger.nextAttemptAt > now;
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, reviewPosture: ledger.reviewPosture, waitReason: backedOff ? "review_backoff" : "review_error" },
+        "waiting_for_inspector",
+        backedOff ? "inspector_review_backoff" : "inspector_review_error",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    if (ledger.headSha !== state.targetHeadSha) {
+      this.transitionInspectorGate(
+        run,
+        state,
+        { ...state, reviewPosture: ledger.reviewPosture, waitReason: "review_pending" },
+        "waiting_for_inspector",
+        "inspector_review",
+        null,
+        null,
+        now,
+      );
+      return;
+    }
+    const findings = loadInspectorComments(state.prKey!).filter((row) => row.status !== "resolved");
+    if (findings.length > 0) {
+      await this.handleInspectorFindings(run, submission, binding, version, state, ledger.round, findings, now);
+      return;
+    }
+    const cleanState: WorkflowInspectorGateState = {
+      ...state,
+      reviewPosture: ledger.reviewPosture,
+      waitReason: null,
+      findingFingerprints: [],
+    };
+    this.transitionInspectorGate(
+      run,
+      state,
+      cleanState,
+      "completed",
+      "complete",
+      "inspector_gate_clean",
+      { prKey: state.prKey, targetHeadSha: state.targetHeadSha, reviewPosture: ledger.reviewPosture },
+      now,
+    );
+  }
+
+  private async handleInspectorFindings(
+    run: WorkflowRun,
+    submission: WorkflowSubmission,
+    binding: WorkflowBinding,
+    version: WorkflowVersion,
+    state: WorkflowInspectorGateState,
+    inspectorRound: number,
+    findings: InspectorComment[],
+    now: number,
+  ): Promise<void> {
+    if (version.completionPolicy.kind !== "inspector") return;
+    const fingerprints = [...new Set(findings.map((row) => row.fingerprint))].sort();
+    const nextState: WorkflowInspectorGateState = {
+      ...state,
+      failedHeadSha: state.targetHeadSha,
+      reviewPosture: getInspectorPr(state.prKey!)?.reviewPosture ?? state.reviewPosture,
+      waitReason: "findings",
+      findingFingerprints: fingerprints,
+    };
+    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
+    const updated = this.transitionInspectorGate(
+      run,
+      state,
+      nextState,
+      inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
+      "inspector_findings",
+      "inspector_findings",
+      {
+        prKey: state.prKey,
+        targetHeadSha: state.targetHeadSha,
+        ...findingFingerprintAudit(fingerprints),
+        policy: version.completionPolicy.onFindings,
+      },
+      now,
+    );
+    if (!updated || !binding.sessionId || !state.prUrl || !state.targetHeadSha) return;
+    const summary = this.store.runSummary(run.id);
+    const rendered = renderInspectorFeedback({
+      workflowName: summary?.workflowName ?? "Workflow",
+      workflowVersion: version.version,
+      runId: run.id,
+      submissionRound: submission.round,
+      originalGoal: this.originalGoal(run.id),
+      prUrl: state.prUrl,
+      targetHeadSha: state.targetHeadSha,
+      inspectorRound,
+      reviewPosture: nextState.reviewPosture,
+      policy: version.completionPolicy.onFindings,
+      findings,
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId: run.id,
+      submissionId: submission.id,
+      kind: "inspector_feedback",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    }, now);
+    if (!prepared.idempotent) {
+      this.store.appendEvent(run.id, "inspector_feedback_prepared", {
+        deliveryId: prepared.delivery.id,
+        payloadSha256: prepared.delivery.payloadSha256,
+        ...findingFingerprintAudit(fingerprints),
+        policy: version.completionPolicy.onFindings,
+      }, now);
+    }
+    this.publishRun(run.id);
+    if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
+  }
+
+  private originalGoal(runId: string): string {
+    for (const submission of this.store.listSubmissions(runId)) {
+      if (submission.mode !== "full_workflow") continue;
+      const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+      if (parsed.success) return parsed.data.primaryGoal.rawPrompt;
+    }
+    return "(Original goal unavailable)";
+  }
+
+  private async withGateLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const before = this.gateLocks.get(runId) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = before.then(() => held, () => held);
+    this.gateLocks.set(runId, tail);
+    await before.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.gateLocks.get(runId) === tail) this.gateLocks.delete(runId);
+    }
+  }
+
   private bindingModeBlock(
     session: Session,
     triggerMode: WorkflowBinding["triggerMode"],
@@ -1454,10 +2380,15 @@ export class WorkflowManager {
         );
         if (!refused) return;
       }
-      this.store.setRunState(delivery.runId, "blocked", "delivery_blocked", {
-        deliveryId: delivery.id,
-        reason: initialBlock,
-      });
+      this.store.setRunState(
+        delivery.runId,
+        "blocked",
+        "delivery_blocked",
+        (this.deliveryGateState(delivery) as unknown as WorkflowJson | null) ?? {
+          deliveryId: delivery.id,
+          reason: initialBlock,
+        },
+      );
       this.store.appendEvent(delivery.runId, "delivery_refused", {
         deliveryId: delivery.id,
         reason: initialBlock,
@@ -1492,10 +2423,15 @@ export class WorkflowManager {
         const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
         const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
-        this.store.setRunState(sending.runId, "blocked", "delivery_refused", {
-          deliveryId: sending.id,
-          reason,
-        });
+        this.store.setRunState(
+          sending.runId,
+          "blocked",
+          "delivery_refused",
+          (this.deliveryGateState(sending) as unknown as WorkflowJson | null) ?? {
+            deliveryId: sending.id,
+            reason,
+          },
+        );
         this.store.appendEvent(sending.runId, "delivery_refused", {
           deliveryId: sending.id,
           reason,
@@ -1524,15 +2460,26 @@ export class WorkflowManager {
   private markDeliveryUncertain(delivery: WorkflowDelivery, reason: string): void {
     const uncertain = this.store.finishDeliverySend(delivery.id, "uncertain", reason);
     if (!uncertain) return;
-    this.store.setRunState(delivery.runId, "blocked", "delivery_uncertain", {
-      deliveryId: delivery.id,
-      reason,
-    });
+    this.store.setRunState(
+      delivery.runId,
+      "blocked",
+      "delivery_uncertain",
+      (this.deliveryGateState(delivery) as unknown as WorkflowJson | null) ?? {
+        deliveryId: delivery.id,
+        reason,
+      },
+    );
     this.store.appendEvent(delivery.runId, "delivery_uncertain", {
       deliveryId: delivery.id,
       reason,
     });
     this.publishRun(delivery.runId);
+  }
+
+  private deliveryGateState(delivery: WorkflowDelivery): WorkflowInspectorGateState | null {
+    if (delivery.kind === "persona_feedback") return null;
+    const run = this.store.getRun(delivery.runId);
+    return run ? this.gateState(run) : null;
   }
 
   private deliveryActionEvent(runId: string, kind: string, requestId: string): boolean {

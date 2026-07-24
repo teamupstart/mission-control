@@ -125,10 +125,6 @@ export function ShippingSettingsPanel({
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Shipping</h3>
-      </div>
-
       <p className="settings-hint">
         What lands without you. <strong>YOLO mode</strong> merges the pull requests Mission
         Control opened once the Inspector has reviewed the current push with nothing
@@ -147,7 +143,7 @@ export function ShippingSettingsPanel({
       )}
 
       <Tooltip label="Merge our pull requests automatically once CI is green and review is clean">
-        <label className="alert-row ship-toggle">
+        <label className="alert-row ship-toggle" data-anchor="shipping/yolo">
           <input
             type="checkbox"
             checked={autoMerge}
@@ -195,7 +191,7 @@ export function ShippingSettingsPanel({
         </p>
       )}
 
-      <div className="ship-soak">
+      <div className="ship-soak" data-anchor="shipping/soak">
         <p className="settings-group-label">Soak time</p>
         {/* Commits on blur, never per keystroke - see `NumberSetting`. It matters more
             here than where it came from: clearing the field to retype reads as `0`, which
@@ -215,7 +211,7 @@ export function ShippingSettingsPanel({
         </p>
       </div>
 
-      <fieldset className="ship-methods">
+      <fieldset className="ship-methods" data-anchor="shipping/method">
         <legend>How to merge</legend>
         {(["squash", "merge", "rebase"] as const).map((m) => (
           <Tooltip label={METHOD_LABEL[m]} key={m}>
@@ -261,7 +257,7 @@ export function ShippingSettingsPanel({
         </p>
       </div>
 
-      <div className="foreman-repos">
+      <div className="foreman-repos" data-anchor="shipping/merge-repos">
         <p className="settings-group-label">Repositories that may merge themselves</p>
         <p className="settings-hint foreman-repos-hint">
           Its own list, not the Inspector's - letting it comment on a repo is not the same
@@ -319,7 +315,7 @@ export function ShippingSettingsPanel({
 
       {/* An auto-merger's failure mode is not merging the wrong thing - it is merging
           nothing and never saying why. This is where that is said, per pull request. */}
-      <div className="ship-log">
+      <div className="ship-log" data-anchor="shipping/pr-status">
         <p className="settings-group-label">Where each pull request stands</p>
         {inspections.length === 0 ? (
           <p className="settings-hint">

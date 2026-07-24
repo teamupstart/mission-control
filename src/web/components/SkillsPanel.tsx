@@ -79,7 +79,7 @@ function SkillRowView({
   onToggle: (on: boolean) => void;
 }): React.JSX.Element {
   return (
-    <div className="kb-row skill-row">
+    <div className="kb-row skill-row" data-anchor={`skills/${row.id}`}>
       <div className="kb-row-text">
         <span className="kb-row-label">
           /{row.name}
@@ -127,10 +127,6 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Skills</h3>
-      </div>
-
       <p className="settings-hint skills-blurb">
         Skills switched on here are symlinked into{" "}
         {SKILLED_DIRS.map((dir, i) => (
@@ -161,7 +157,7 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       ))}
 
       <Tooltip label="Master switch - off means nothing is symlinked, whatever the rows below say">
-        <label className="alert-row skills-master">
+        <label className="alert-row skills-master" data-anchor="skills/enabled">
           <input
             type="checkbox"
             checked={view?.enabled ?? false}

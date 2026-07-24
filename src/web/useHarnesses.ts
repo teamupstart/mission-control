@@ -3,7 +3,7 @@ import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts"
 import { api, fetchHarnessesConfig } from "./lib/api.ts";
 
 // The "Harnesses" settings section's config: dispatch-time defaults the harness
-// applies to the sessions it launches. Owned locally by SettingsModal (like
+// applies to the sessions it launches. Owned locally by SettingsPage (like
 // useSkills), because nothing outside the panel reads it - unlike Foreman, whose
 // state the topbar control shares.
 //

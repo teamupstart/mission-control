@@ -13,7 +13,7 @@ the source plan:
 2. **Deterministic test/lint command gates**: leave outside the graph. CI enforces them at
    the PR head; the Inspector final gate (phase 5 of the workflow-builder plan) makes them
    binding. No check-node kind.
-3. **Ship tail**: as planned - graph success shows `awaiting_pr` offering the existing
+3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: seed `.md` files shipped in-repo under `docs/personas/`, importable
    from the Personas tab.

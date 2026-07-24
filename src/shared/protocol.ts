@@ -7,6 +7,7 @@ import { LLM_RUNNER_IDS } from "./llm.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
+import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_CONFIG,
@@ -16,6 +17,7 @@ import {
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RUN_STATUSES,
   WORKFLOW_SOURCE_PORTS,
@@ -1095,7 +1097,7 @@ export const InspectorConfigSchema = z.object({
    * push is one nobody reads, and the cap is what turns "be thorough" into "lead with
    * what matters" - the planner sorts by severity before it truncates.
    */
-  maxCommentsPerRound: z.number().int().min(1).max(20).default(8),
+  maxCommentsPerRound: z.number().int().min(1).max(INSPECTOR_LIMITS.maxCommentsPerRound).default(8),
 });
 export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
 
@@ -2209,6 +2211,31 @@ export type RetryWorkflowRun = z.infer<typeof RetryWorkflowRunSchema>;
 
 export const CancelWorkflowRunSchema = z.object({
   requestId: z.string().min(1).max(200),
+});
+
+export const WorkflowRunActionSchema = z.object({
+  requestId: z.string().min(1).max(200),
+});
+export type WorkflowRunAction = z.infer<typeof WorkflowRunActionSchema>;
+
+export const RestartFullWorkflowSchema = WorkflowRunActionSchema.extend({
+  confirmation: z.string().max(200).optional(),
+});
+export type RestartFullWorkflow = z.infer<typeof RestartFullWorkflowSchema>;
+
+export const WorkflowInspectorGateStateSchema = z.object({
+  prKey: z.string().min(1).max(1_000).nullable(),
+  prUrl: z.string().url().max(4_000).nullable(),
+  targetHeadSha: z.string().min(1).max(100).nullable(),
+  failedHeadSha: z.string().min(1).max(100).nullable(),
+  enteredAt: z.number().int().nonnegative(),
+  lastObservedAt: z.number().int().nonnegative().nullable(),
+  observedHeadSha: z.string().min(1).max(100).nullable(),
+  reviewPosture: z.enum(["off", "dry-run", "not-allowlisted", "live"]).nullable(),
+  waitReason: z.enum(WORKFLOW_GATE_WAIT_REASONS).nullable(),
+  findingFingerprints: z
+    .array(z.string().min(1).max(200))
+    .max(INSPECTOR_LIMITS.maxFindingFingerprints),
 });
 
 export const WorkflowConfigSchema = z.object({

@@ -25,6 +25,7 @@ export function WorkflowPage({
   onRun = () => {},
   onBindVersion = () => {},
   onOpenSession = () => {},
+  onOpenInspectorSettings = () => {},
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
@@ -38,6 +39,7 @@ export function WorkflowPage({
   onRun?: (id: string) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   onOpenSession?: (id: string) => void;
+  onOpenInspectorSettings?: () => void;
 }): React.JSX.Element {
   return (
     <main className="workflow-page">
@@ -91,6 +93,7 @@ export function WorkflowPage({
           selectedRunId={selectedRunId}
           onSelectRun={onRun}
           onOpenSession={onOpenSession}
+          onOpenInspectorSettings={onOpenInspectorSettings}
         />
       )}
     </main>

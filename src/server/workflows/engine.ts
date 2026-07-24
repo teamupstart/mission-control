@@ -42,6 +42,8 @@ export interface WorkflowEngineOptions {
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
   /** Called after the wait boundary is durable and before any later graph work can advance. */
   onSubmissionWaiting?: (submissionId: string) => void;
+  /** Claims a successful End for an external final gate. Returns true when claimed. */
+  onSubmissionSucceeded?: (submissionId: string) => boolean;
 }
 
 function isPersona(node: PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
@@ -79,6 +81,7 @@ export class WorkflowEngine {
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
+  private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private stopped = true;
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,6 +100,7 @@ export class WorkflowEngine {
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
+    this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
   }
 
   start(): void {
@@ -316,6 +320,14 @@ export class WorkflowEngine {
         if (existingEnd?.state === "completed") {
           const existingOutcome = outcome(existingEnd.output);
           if (existingOutcome) {
+            if (
+              existingOutcome === "pass"
+              && version.completionPolicy.kind === "inspector"
+              && this.onSubmissionSucceeded(submission.id)
+            ) {
+              this.onRunChanged(submission.runId);
+              return;
+            }
             this.store.setSubmissionState(
               submission.id,
               existingOutcome === "pass" ? "completed" : "failed",
@@ -354,6 +366,15 @@ export class WorkflowEngine {
           state: "completed",
           output: packet,
         }, this.now());
+        this.store.appendEvent(submission.runId, "workflow_end", packet, this.now());
+        if (
+          endOutcome === "pass"
+          && version.completionPolicy.kind === "inspector"
+          && this.onSubmissionSucceeded(submission.id)
+        ) {
+          this.onRunChanged(submission.runId);
+          return;
+        }
         this.store.setSubmissionState(submission.id, endOutcome === "pass" ? "completed" : "failed", this.now());
         this.store.setRunState(
           submission.runId,
@@ -361,13 +382,10 @@ export class WorkflowEngine {
           endOutcome === "pass" ? "complete" : "failed_outcome",
           {
             ...packet,
-            completionPolicy: version.completionPolicy.kind === "inspector"
-              ? "not active until Phase 5"
-              : "none",
+            completionPolicy: "none",
           },
           this.now(),
         );
-        this.store.appendEvent(submission.runId, "workflow_end", packet, this.now());
         this.onRunChanged(submission.runId);
         return;
       }

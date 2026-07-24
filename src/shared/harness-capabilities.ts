@@ -59,12 +59,12 @@ export interface PermissionModeSpec {
 }
 
 /**
- * Loading skills into a live session.
+ * Installing skills for a harness and invoking them in a live session.
  *
- * Null means both halves are absent: nothing to symlink into, and no command that would
- * make a running session notice if there were. Typing a reload command at a harness that
- * has none puts a stray line in someone's prompt and changes nothing, which is exactly
- * the silent no-op the capability exists to prevent.
+ * Null means the harness does not load Mission Control-managed skills. Within a
+ * non-null spec, reload and typed invocation are independent capabilities: a harness
+ * may watch its directory without a reload command, or load skills without exposing a
+ * composer syntax that runs one by name.
  */
 export interface SkillsSpec {
   /**
@@ -73,16 +73,55 @@ export interface SkillsSpec {
    * reached its prompt is picked up by this and nothing else - there is no watcher on the
    * skills directory.
    *
-   * Spelled once, here, for the same reason `WRAPUP_NO_MISTAKES` is: it is typed into a
-   * live pane, so the bytes must have exactly one definition. It must also stay a SINGLE
-   * LINE - a slash command carrying a newline is two submissions.
+   * Spelled once here because it is typed into a live pane, so the bytes must have
+   * exactly one definition. It must also stay a SINGLE LINE - a slash command carrying
+   * a newline is two submissions.
    *
    * Do NOT parse what comes back. On a REMOVAL the count correctly dropped (the skill
    * really did unload) while the label still read "(no changes)". The unload is real; the
    * message is not trustworthy. Treat delivery as fire-and-forget.
-  */
+   */
   reloadCommand: string | null;
   reloadIdleSource: "hooks" | "transcript" | null;
+  /**
+   * How a skill's NAME becomes the ONE line typed into this harness's composer to run
+   * it, or null when the harness loads skills but offers no typed invocation at all.
+   *
+   * The three shipped harnesses spell the same act three different ways, and the whole
+   * point of this slot is that no caller has to know which is which: Foreman's wrap-up
+   * used to type Claude's `/no-mistakes` at every agent, so a Codex session was handed a
+   * literal string its TUI has no command for and the gate ran only if the model happened
+   * to reach for the skill anyway.
+   *
+   * A line, not a token, because the invocation is not the only thing that has to be
+   * true: it must also SUBMIT. Measured against codex-cli 0.145.0, over the daemon's own
+   * delivery (tmux bracketed paste, then one Enter):
+   *
+   *  - `$name` at the end of the composer opens Codex's skill-mention popup ("Press enter
+   *    to insert or esc to close"). That popup EATS the first Enter to insert the
+   *    mention, so the message is still sitting unsubmitted afterwards - and Codex
+   *    declares `pastePlaceholder: null`, so delivery spends exactly one Enter and has no
+   *    evidence to retry on. The wrap-up would silently never be sent.
+   *  - Worse when the name matches nothing: the popup says "no matches" and Enter does
+   *    nothing AT ALL, so the composer can never be submitted without an Esc first.
+   *  - A SPACE (and only whitespace - a trailing `.` is read as part of the name and
+   *    lands back in "no matches") closes the popup. The token then stays plain text
+   *    rather than becoming a mention token, and one Enter submits it - and the skill is
+   *    still loaded and followed, because every skill's name and description are already
+   *    in Codex's system prompt.
+   *
+   * So Codex's line carries a trailing clause. It is not decoration: it is what keeps the
+   * line submittable by the one Enter this harness gets.
+   *
+   * Keep it a SINGLE LINE for `reloadCommand`'s reason - `sendText` submits on every
+   * embedded newline, so a wrapped invocation is two half-instructions.
+   *
+   * Changing what a harness returns here RETIRES a payload: `isWrapupPayload` recognises
+   * Foreman's own instruction coming back as a session's goal by composing this, so an
+   * older spelling still sitting in someone's DB has to be moved to
+   * `RETIRED_WRAPUP_PAYLOADS` (`@shared/queue.ts`) rather than dropped.
+   */
+  invoke: ((name: string) => string) | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -254,6 +293,10 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
   reloadIdleSource: "hooks",
+  // The shipped spelling, unchanged: a skill is a slash command, and the bare command
+  // submits. Claude also verifies its own submits (`pastePlaceholder` is non-null here),
+  // so this line does not have to survive a single unverified Enter the way Codex's does.
+  invoke: (name) => `/${name}`,
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
   isolatedDirName: "claude-skills",
@@ -302,6 +345,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
+      // `$name`, and then a clause, because the sigil alone does not submit here - see
+      // `SkillsSpec.invoke` for the capture this is read off. The clause is generic on
+      // purpose: it has to read correctly for whatever skill a caller names, and its job
+      // is the space in front of it.
+      invoke: (name) => `$${name} - run this skill now.`,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
@@ -360,6 +408,16 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skills: {
       reloadCommand: "/reload",
       reloadIdleSource: "transcript",
+      // Verified against pi 0.81.0: a skill is a NAMESPACED slash command, `/skill:<name>`
+      // (its own completion menu offers `skill:probe-echo` for a skill named
+      // `probe-echo`), and the bare command submits - pi's completion menu opens on typed
+      // keys, not on a bracketed paste, so nothing intercepts the Enter. Pasting
+      // `/skill:<name>` and pressing Enter once loaded the skill and ran it.
+      //
+      // Foreman never types this today (pi declares `workQueue: null`, so it holds no
+      // queue and raises no wrap-up), but the answer is measured rather than left out:
+      // a null here would claim pi cannot run a skill by name, which is false.
+      invoke: (name) => `/skill:${name}`,
       dirEnvVar: "PI_SKILLS_DIR",
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
@@ -466,6 +524,22 @@ export function workQueueBlockedReason(
  */
 export function skillLoadingAgents(): AgentType[] {
   return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].skills !== null);
+}
+
+/**
+ * The line that runs one named skill in this agent's composer, or null when it has no
+ * skills at all or no way to invoke one by typing.
+ *
+ * The one reader of `SkillsSpec.invoke`, so the three grammars are spelled once and a
+ * caller (Foreman's wrap-up, the Ship it? card) states WHICH SKILL it wants and never
+ * which sigil that harness puts in front of it.
+ *
+ * Null is not "nothing happens" - it is "there is no line to type", which a caller has
+ * to degrade on rather than send a blank. The wrap-up's degradation is the one it
+ * already has for `ask` mode: hand the decision to the human.
+ */
+export function skillCommand(agent: AgentType, name: string): string | null {
+  return HARNESS_CAPABILITIES[agent].skills?.invoke?.(name) ?? null;
 }
 
 /**

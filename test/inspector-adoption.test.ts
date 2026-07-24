@@ -1,6 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -108,6 +108,17 @@ test("only open PRs are handed to the tick", () => {
   );
   // Closed, not deleted: the audit trail of what was said on a landed PR is worth keeping.
   assert.equal(getInspectorPr("mancej/ai-harness#57")?.state, "closed");
+});
+
+test("workflow PR hints can look up provenance but have no adoption path", () => {
+  const manager = readFileSync(
+    new URL("../src/server/workflows/manager.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(manager, /session\?\.prUrl/);
+  assert.match(manager, /getInspectorPr/);
+  assert.doesNotMatch(manager, /\badoptPr\b|\badoptInspectorPr\b/);
+  assert.equal(loadOpenInspectorPrs().length, 0);
 });
 
 // ---- config ----

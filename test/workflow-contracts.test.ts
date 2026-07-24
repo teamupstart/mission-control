@@ -7,16 +7,20 @@ import {
   CreateWorkflowSchema,
   PublishedWorkflowGraphSchema,
   ReattachWorkflowBindingSchema,
+  RestartFullWorkflowSchema,
   UpdatePersonaSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
   WorkflowNodeAttemptStateSchema,
+  WorkflowInspectorGateStateSchema,
   WorkflowRunStatusSchema,
+  WorkflowRunActionSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
 } from "../src/shared/protocol.ts";
+import { INSPECTOR_LIMITS } from "../src/shared/inspector.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
   WORKFLOW_LIMITS,
@@ -199,6 +203,36 @@ test("Inspector is a closed workflow-level completion policy", () => {
   );
 });
 
+test("Inspector gate persistence covers the Inspector finding lifetime", () => {
+  assert.equal(
+    INSPECTOR_LIMITS.maxFindingFingerprints,
+    INSPECTOR_LIMITS.maxRounds * INSPECTOR_LIMITS.maxCommentsPerRound,
+  );
+  const findingFingerprints = Array.from(
+    { length: INSPECTOR_LIMITS.maxFindingFingerprints },
+    (_, index) => `finding-${index}`,
+  );
+  const parsed = WorkflowInspectorGateStateSchema.parse({
+    prKey: "owner/repo#1",
+    prUrl: "https://github.com/owner/repo/pull/1",
+    targetHeadSha: "head",
+    failedHeadSha: "head",
+    enteredAt: 1,
+    lastObservedAt: 2,
+    observedHeadSha: "head",
+    reviewPosture: "live",
+    waitReason: "findings",
+    findingFingerprints,
+  });
+  assert.equal(parsed.findingFingerprints.length, INSPECTOR_LIMITS.maxFindingFingerprints);
+  assert.throws(() =>
+    WorkflowInspectorGateStateSchema.parse({
+      ...parsed,
+      findingFingerprints: [...findingFingerprints, "overflow"],
+    }),
+  );
+});
+
 test("future engine states are closed before any route can write them", () => {
   for (const [schema, value] of [
     [WorkflowRunStatusSchema, "running"],
@@ -232,6 +266,21 @@ test("binding requests name the live session while the daemon owns durable note 
     },
   );
   assert.deepEqual(ReattachWorkflowBindingSchema.parse({ sessionId: "s2" }), { sessionId: "s2" });
+});
+
+test("Inspector run actions require parsed request identity and bound restart confirmation", () => {
+  assert.deepEqual(WorkflowRunActionSchema.parse({ requestId: "action-1" }), {
+    requestId: "action-1",
+  });
+  assert.deepEqual(RestartFullWorkflowSchema.parse({
+    requestId: "restart-1",
+    confirmation: "RESTART FULL WORKFLOW",
+  }), {
+    requestId: "restart-1",
+    confirmation: "RESTART FULL WORKFLOW",
+  });
+  assert.throws(() => WorkflowRunActionSchema.parse({ requestId: "" }));
+  assert.throws(() => RestartFullWorkflowSchema.parse({}));
 });
 
 test("Persona model role names the working environment variable and balanced fallback", () => {

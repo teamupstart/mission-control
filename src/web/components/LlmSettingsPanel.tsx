@@ -45,10 +45,6 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Models</h3>
-      </div>
-
       {/* Names no harness, deliberately. The point being made is that the two axes are
           independent, and an illustration spelled "review a Codex session with Claude" makes
           that point by enumerating two harnesses - wording Pi would silently have made stale.
@@ -74,7 +70,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         </p>
       )}
 
-      <fieldset className="inspector-modes llm-runners">
+      <fieldset className="inspector-modes llm-runners" data-anchor="models/provider">
         <legend>Provider</legend>
         {runners.length === 0 ? (
           <p className="settings-hint">
@@ -134,6 +130,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         {LLM_JOB_IDS.map((job) => (
           <ModelField
             key={job}
+            anchor={`models/job-${job}`}
             id={`llm-model-${job}`}
             spec={LLM_JOB_SPECS[job]}
             value={config?.models[job] ?? ""}

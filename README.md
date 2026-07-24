@@ -68,7 +68,9 @@ and get your decision back.
   Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
-  run concurrent, read-only Persona reviews against one immutable evidence snapshot.
+  run concurrent, read-only Persona reviews against one immutable evidence snapshot. A
+  published Inspector final gate can then require the exact clean PR head to pass before the
+  workflow completes.
 - **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
   sessions this app never launched. Claude reloads when idle, Codex watches automatically,
@@ -1153,12 +1155,13 @@ then read and delete. Auto-dispatching swept work is deliberately **not** a feat
 a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry
 run) of exactly the kind Foreman carries.
 
-**Settings → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures them. Its
-directory summarizes which sources are healthy, awaiting a current sweep, paused, or need
-attention; search it or filter by health and source type, then select a row to open that
-source's editor. Add one by picking a kind and the repo its tasks should be filed against;
-it arrives **switched off**, because adding a source is configuration and turning it on is
-consent. Per source:
+**[Settings](#settings) → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures
+them, as master-detail: a directory summarizing which sources are healthy, awaiting a current
+sweep, paused, or need attention, beside the editor for the one you selected. Search it or
+filter by health and source type; the metrics strip above counts the whole set either way.
+Add one from the inline form above the list by picking a kind and the repo its tasks should
+be filed against; it arrives **switched off**, because adding a source is configuration and
+turning it on is consent. Per source:
 
 | Control | What it does |
 |---|---|
@@ -1398,7 +1401,8 @@ entry fetches that immutable graph and its exact Persona Markdown from the versi
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
-optional Inspector final gate remains unavailable until its later workflow phase.
+optional Inspector final gate and its missing-PR and findings policies are immutable parts of
+each published version.
 
 ### Manual Preview runs
 
@@ -1506,6 +1510,50 @@ does not fall through to an unreviewed wrap-up. If no Foreman binding claims the
 the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
 session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered
 repair becomes the new captured goal.
+
+### Inspector final gate
+
+An Inspector completion policy adds a final stage after a successful End. End stays successful,
+but the run does not complete until Inspector has reviewed the exact PR head represented by that
+submission. A PR URL on the session is only a lookup hint. The gate can use it only when the
+durable Inspector ledger already says the hook saw `gh pr create` or no-mistakes reported its own
+PR. A URL alone never adopts a pull request and never grants permission to comment on it.
+
+Gate entry records the local committed HEAD, then waits for a normal Inspector sweep observed
+after entry. It does not start a second GitHub poller. The observed PR must still be open, its
+remote head must equal that captured HEAD, and the captured working tree must have no staged,
+unstaged, or untracked changes outside the commit. A dirty tree requires commit, push, and a fresh
+full submission. A pre-pin mismatch waits for Inspector to observe the captured committed head; a
+push after pinning requires a fresh full submission. A stale ledger timestamp or reviewed head
+alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
+Inspector observation must first prove which head is current.
+
+Once the matching head is pinned, the durable Inspector ledger decides the state:
+
+- A pending, failed, or backed-off review remains waiting and shows its current posture and retry.
+- Every non-resolved Inspector row remains a finding, including dry-run drafts and interrupted
+  posting rows. Run detail shows its stored scrubbed body, or an explicit fallback for legacy rows.
+- A completed current-head review with zero findings completes the workflow.
+- Closing or switching the PR blocks instead of accepting old approval.
+
+Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
+or safe Live delivery state machine as Persona repair. The published default,
+`restart_workflow`, requires fix, verify, commit, push, and a full resubmission that reruns every
+Persona. The narrower `inspector_only` policy waits for Inspector to observe a different pushed
+head, records an immutable attempt-free bypass submission, and reviews that head normally. It
+refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
+labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
+
+If no adopted PR exists, the published policy either waits or offers **Prepare PR in session**. That
+human action sends a deterministic commit, push, and PR prompt through Preview or Live delivery;
+the gate itself never pushes or opens a pull request. **Recheck Inspector** only reevaluates the
+current durable observation and remains waiting until Inspector's normal sweep has seen a new
+head.
+
+Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
+state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
+session-bound workflow gate, submissions, packets, and events, but retains Inspector's adopted PR
+and comment ledgers because those records outlive a session.
 
 ## Models (what the app's own model work runs on)
 
@@ -1881,15 +1929,23 @@ The action is the same whichever trigger fired:
 | Then | What it does |
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
-| **Run /no-mistakes** | types that instruction into the session itself |
+| **Run no-mistakes** | types the gate instruction into the session itself, spelled for that session's agent |
 | **Straight to PR** | explicitly skip no-mistakes; use git and `gh` directly to commit, push, and open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
 The two automated actions type something that *pushes*, so they only fire in **live** mode
 on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
 letting a selected radio quietly do nothing.
 
+**The gate instruction is spelled per harness**: `/no-mistakes` for Claude and a
+`$no-mistakes` instruction with a trailing clause for Codex. The clause is load-bearing
+rather than decorative - a bare `$name` at the end of Codex's composer leaves its
+skill-mention popup open, and that popup swallows the Enter that would have sent the
+message. Pi's invocation is `/skill:no-mistakes`, though Pi work queues are not currently
+supported. The same rule reaches the **Ship it?** card, so the button and the automation
+send identical bytes.
+
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does
-not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job
+not run tests. no-mistakes remains the gate that actually executes things; Foreman's job
 here is the narrower question no pipeline answers: *was the thing you asked for actually
 done?* Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
 lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman
@@ -2154,9 +2210,46 @@ on, and an isolated `MISSION_HOME` makes it *worse*, because its ack table is em
 believes every session is owed a reload. If you're testing against a spare port, know
 that its reload loop is live from the moment it boots.
 
+## Settings
+
+Settings is a **page**, not a modal: `#/settings/<category>` in the URL, reached from the ⚙
+gear in the top bar, from **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> in the
+desktop app, or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
+gear takes you back the same way, and browser back/forward walk the categories you visited.
+While the page is up the fleet's shortcuts stand down, exactly as they do on Workflows -
+nothing you type here can drive the session behind it.
+
+The rail is grouped by **blast radius**, and each group carries a badge saying how far its
+settings reach. That is the question a flat list of eleven peers could not answer: which of
+these stays in this browser, and which of them acts publicly under your account.
+
+| Group | Reach | Categories |
+|-------|-------|-----------|
+| **This screen** | This browser | **Display** (layout + message formatting), **Keyboard** |
+| **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
+| **Background work** | This machine | **Foreman**, **Task sources**, **Models** |
+| **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping** |
+
+The badge on a group is the general case; the badge in a panel's own header is that
+category's precise claim, which can be stronger - Skills sits under *This machine* and
+symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+
+Two things changed shape when the page arrived. **Layout and Appearance merged into
+Display**: both are one browser's preferences about how this screen draws the fleet, and a
+category holding a single checkbox sat as a visual equal of the one that merges pull
+requests. And **Task sources is master-detail** - the directory of configured sources beside
+the one you are editing, instead of a drill-in that hid the other three while you repaired
+the one that failed. Adding a source is an inline form above that list; it still resolves the
+repo before the source exists, and the source still starts switched off.
+
+Deep links work for every category, and the whole list is stable enough to paste into an
+issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming
+a category this build does not have falls back to Display rather than a blank pane - the one
+browser-scoped category, so a stale link can never open a panel that acts on GitHub.
+
 ## Layout (cards, console, or board)
 
-The same fleet, three shapes. **Settings** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) → **Layout**
+The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
 switches between them live, and the choice persists per machine:
 
 | Layout | Shape | Good for |
@@ -2280,7 +2373,7 @@ code blocks with syntax highlighting drawn from the dashboard's own palette. The
 renderer draws shared plans and Foreman's briefs, so a fence looks the same wherever you
 read it.
 
-**Settings → Appearance → Format messages** turns it off, and the choice persists per
+**Settings → Display → Format messages** turns it off, and the choice persists per
 machine. Off shows the literal text an agent emitted, backticks and all - useful when
 you're checking exactly what was said before pasting it somewhere that isn't a markdown
 renderer. Formatting is display-only either way: it never changes what the agent wrote or
@@ -2527,6 +2620,7 @@ Every one of these, on the same read of the pull request:
 |---|---|
 | The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
 | The Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| No active Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
 | No open Inspector findings | posted or previewed in dry run - a finding is a finding |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
@@ -2543,6 +2637,10 @@ The merge itself is a compare-and-swap against the head that was evaluated, so a
 landing in the seconds between the decision and the call makes GitHub refuse rather than
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
+
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller and the
+sole GitHub merge path. An active published Inspector gate vetoes its adopted or candidate PR;
+completed, cancelled, archived, and no-final-gate workflows do not.
 
 ### It needs the Inspector, fully on
 

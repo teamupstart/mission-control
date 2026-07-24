@@ -2,8 +2,8 @@ import { useRichText } from "../lib/rich-text.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * How messages are drawn. Applies live behind the modal, which is the fastest way to
- * see what you'd be trading - the transcript reflows the moment you toggle it.
+ * How messages are drawn. Applies live behind the settings page, which is the fastest way
+ * to see what you'd be trading - the transcript reflows the moment you toggle it.
  */
 export function AppearancePanel(): React.JSX.Element {
   const [richText, setRichText] = useRichText();
@@ -12,7 +12,10 @@ export function AppearancePanel(): React.JSX.Element {
       <div className="settings-section-head">
         <h3>Appearance</h3>
       </div>
-      <label className={`settings-toggle${richText ? " is-on" : ""}`}>
+      <label
+        className={`settings-toggle${richText ? " is-on" : ""}`}
+        data-anchor="display/format-messages"
+      >
         <Tooltip label="Render agent and human turns as markdown rather than literal text">
           <input type="checkbox" checked={richText} onChange={(e) => setRichText(e.target.checked)} />
         </Tooltip>

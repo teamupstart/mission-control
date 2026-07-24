@@ -2,7 +2,7 @@
 // install a full template that keeps the standard roles (edit/view/window - the
 // source of copy-paste, reload, devtools, etc.) and adds the conventional
 // App → Settings… entry bound to ⌘,. Choosing it just forwards to a handler; the
-// actual editor lives in the renderer (see App / SettingsModal).
+// actual editor lives in the renderer (see App / SettingsPage).
 
 import { app, Menu } from "electron";
 import type { MenuItemConstructorOptions } from "electron";

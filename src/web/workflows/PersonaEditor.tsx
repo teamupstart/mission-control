@@ -408,8 +408,11 @@ export function PersonaEditor({
         </div>
         <div className="persona-model-field">
           <ModelSuggestions providerLabel={providerLabel(providers, runnerForControls)} />
+          {/* `anchor` is null: this field is on the Workflows page, not in Settings, so
+              there is no settings anchor for search to jump to. */}
           <ModelField
             id={`persona-model-${persona?.id ?? "new"}`}
+            anchor={null}
             spec={WORKFLOW_PERSONA_MODEL_SPEC}
             value={draft.model ?? ""}
             resolved={effectiveModel}

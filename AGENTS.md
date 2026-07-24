@@ -8,8 +8,8 @@ how to run it, read `README.md`.
 
 ## IMPORTANT
 
-NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead always fix the inspector 
-issues, push the code, monitor the CI / PR for new inspector comments, and repeat until all inspector concerns are fixed.
+NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead, always fix the inspector 
+issues, resolve merge any conflicts, push the code, monitor the CI / PR for new inspector comments or conflicts, and repeat, conflicts, and repeat it's green.
 
 ## Architecture
 
@@ -370,6 +370,19 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   watches its own skills directory. What each of them buys is that every reader takes the
   one already-tested "unavailable" path instead of, say, an empty transcript window that
   reads as "this session said nothing".
+  **`skills.invoke` is the same shape at the other end: how a skill NAME becomes the one
+  line typed to RUN it**, which is a third thing again from where skills live and who
+  needs a nudge. It is a LINE, not a token, because the invocation also has to SUBMIT:
+  Claude's `/no-mistakes` and pi's `/skill:no-mistakes` do, but a bare `$no-mistakes` at
+  the end of Codex's composer leaves its skill-mention popup open and that popup eats the
+  Enter - and Codex declares `pastePlaceholder: null`, so delivery spends exactly one and
+  has no evidence to retry on. Only whitespace closes that popup (a trailing `.` is read as
+  part of the name), which is why Codex's line carries a trailing clause. Foreman's wrap-up
+  is the caller: it names the SKILL (`wrapupNoMistakes`, `@shared/queue.ts`) and never a
+  sigil. It was one constant carrying Claude's slash command typed at every agent, so a
+  Codex session ran the gate only if the model reached for the skill unprompted. Changing a
+  spelling RETIRES a payload - see `RETIRED_WRAPUP_PAYLOADS`. Test:
+  `harness-skill-invoke.test.ts`.
   `src/server/transcript.ts`'s `JsonlMessagesSpec` is where that landed for the second
   reader: a UNION, exactly one of `parse` or `parseBatch`, because a harness whose turns are
   independent lines supplies the first while one whose tool records extend the turn before

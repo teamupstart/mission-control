@@ -746,6 +746,7 @@ export function openDb(): DatabaseSync {
       path                TEXT,
       line                INTEGER,
       title               TEXT NOT NULL,
+      body                TEXT,
       severity            TEXT NOT NULL,
       round               INTEGER NOT NULL,
       status              TEXT NOT NULL,     -- drafted | posting | open | resolved
@@ -1081,6 +1082,9 @@ function migrate(d: DatabaseSync): void {
   // fail-closed for rows written by older builds: their reviewed head must be run again
   // before it can authorize a merge.
   addColumn(d, "inspector_prs", "review_posture", "TEXT");
+  // Finding bodies were historically posted and then discarded locally. Persist only
+  // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
+  addColumn(d, "inspector_comments", "body", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -3792,6 +3796,7 @@ interface InspectorCommentRow {
   path: string | null;
   line: number | null;
   title: string;
+  body: string | null;
   severity: string;
   round: number;
   status: string;
@@ -3809,6 +3814,7 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     path: r.path,
     line: r.line,
     title: r.title,
+    body: r.body,
     severity: r.severity as InspectorSeverity,
     round: r.round,
     status: r.status as InspectorCommentStatus,
@@ -3832,13 +3838,14 @@ export function upsertInspectorComment(c: InspectorComment): void {
   openDb()
     .prepare(
       `INSERT INTO inspector_comments
-         (id, pr_key, fingerprint, path, line, title, severity,
+         (id, pr_key, fingerprint, path, line, title, body, severity,
           round, status, replies, answered_comment_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
          title = excluded.title,
+         body = excluded.body,
          severity = excluded.severity,
          round = excluded.round,
          status = excluded.status,
@@ -3853,6 +3860,7 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.path,
       c.line,
       c.title,
+      c.body,
       c.severity,
       c.round,
       c.status,

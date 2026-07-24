@@ -5,6 +5,15 @@ import type { InspectorConfig } from "./protocol.ts";
 import { providerModelDefault } from "./model.ts";
 import type { LlmRunnerId } from "./llm.ts";
 
+const INSPECTOR_MAX_ROUNDS = 100;
+const INSPECTOR_MAX_COMMENTS_PER_ROUND = 20;
+
+export const INSPECTOR_LIMITS = {
+  maxRounds: INSPECTOR_MAX_ROUNDS,
+  maxCommentsPerRound: INSPECTOR_MAX_COMMENTS_PER_ROUND,
+  maxFindingFingerprints: INSPECTOR_MAX_ROUNDS * INSPECTOR_MAX_COMMENTS_PER_ROUND,
+} as const;
+
 // "Would the Inspector actually act on this pull request?" - asked once, here.
 //
 // The Inspector's consent is three independent switches (`enabled`, `mode`, its own

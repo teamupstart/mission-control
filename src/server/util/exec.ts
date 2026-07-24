@@ -119,6 +119,14 @@ export function run(
             !!err &&
             ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
               /maxBuffer/i.test(err.message ?? ""));
+          // Some pre-spawn failures arrive through this callback instead of throwing from
+          // `execFile` (ENOENT is the common example). There is no child stderr in that
+          // case, so preserve Node's error message just as the synchronous catch below
+          // does. This also keeps E2BIG legible on runtimes that report it asynchronously.
+          const spawnRefused =
+            !!err &&
+            typeof (err as { code?: unknown }).code === "string" &&
+            !overflowed;
           // `killed` alone is not enough: Node sets it only when NODE killed the child,
           // so a process the OOM killer or an operator took out arrives with
           // `killed: false` and a `signal`, and would otherwise read as an ordinary
@@ -129,7 +137,9 @@ export function run(
             !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
           resolve({
             stdout: stdout ?? "",
-            stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
+            stderr: overflowed
+              ? (err.message ?? "maxBuffer exceeded")
+              : (stderr ?? "") || (spawnRefused ? err.message : ""),
             code,
             outcomeUnknown,
             overflowed,

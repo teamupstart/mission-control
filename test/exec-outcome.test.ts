@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { run } from "../src/server/util/exec.ts";
 import { wasRefused } from "../src/server/inspector/github.ts";
 
@@ -132,4 +135,18 @@ test("an argv too large to spawn is a refusal, not a throw", async () => {
   // `injectPrompt` would refuse to re-send a prompt that never left this process.
   assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
   assert.equal(res.overflowed, false, "that flag is about stdout, not argv");
+});
+
+test("a callback-reported spawn refusal keeps its diagnostic", async () => {
+  // ENOENT takes `execFile`'s callback path rather than its synchronous-throw path. Both
+  // paths represent the same fact - no process existed - and both need to retain Node's
+  // message so an E2BIG reported this way does not degrade to a blank fallback on another
+  // runtime or operating system.
+  const missing = join(tmpdir(), `mission-control-missing-${randomUUID()}`);
+  const res = await run(missing, []);
+
+  assert.notEqual(res.code, 0);
+  assert.ok(res.stderr.trim(), "the spawn refusal must say why it could not start");
+  assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
+  assert.equal(res.overflowed, false);
 });

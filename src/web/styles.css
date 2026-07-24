@@ -286,12 +286,100 @@
 }
 
 .workflow-run-context,
+.workflow-inspector-gate,
 .workflow-verdicts,
 .workflow-run-timeline {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
   padding: 14px;
+}
+
+.workflow-inspector-gate {
+  display: grid;
+  gap: 12px;
+  border-left: 4px solid var(--working);
+}
+
+.workflow-inspector-gate > header,
+.workflow-inspector-finding > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workflow-inspector-gate h4,
+.workflow-inspector-gate p {
+  margin: 0;
+}
+
+.workflow-inspector-gate dl,
+.workflow-delivery dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 18px;
+}
+
+.workflow-inspector-gate dl > div,
+.workflow-delivery dl > div {
+  min-width: 0;
+}
+
+.workflow-inspector-gate dt,
+.workflow-delivery dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workflow-inspector-gate dd,
+.workflow-delivery dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-gate-findings,
+.workflow-gate-blocked {
+  border-left-color: var(--danger);
+}
+
+.workflow-gate-clean {
+  border-left-color: var(--idle);
+}
+
+.workflow-inspector-findings {
+  display: grid;
+  gap: 9px;
+}
+
+.workflow-inspector-finding {
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 11px;
+}
+
+.workflow-inspector-finding.finding-blocker,
+.workflow-inspector-finding.finding-major {
+  border-left-color: var(--danger);
+}
+
+.workflow-inspector-finding.finding-minor,
+.workflow-inspector-finding.finding-nit {
+  border-left-color: var(--attention);
+}
+
+.workflow-inspector-finding small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.workflow-inspector-bypass {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 60%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel));
+  padding: 12px;
 }
 
 .workflow-run-context > header,

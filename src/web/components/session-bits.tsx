@@ -74,7 +74,12 @@ export type WorkflowRunTone = "running" | "waiting" | "blocked" | "passed" | "fa
 
 export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
   if (run.status === "completed") return "passed";
-  if (run.status === "waiting_for_session") return "waiting";
+  if ([
+    "waiting_for_session",
+    "waiting_for_pr",
+    "waiting_for_inspector",
+    "waiting_for_new_head",
+  ].includes(run.status)) return "waiting";
   if (run.status === "blocked") return "blocked";
   if (run.status === "failed" || run.status === "cancelled") return "failed";
   return "running";
@@ -83,6 +88,9 @@ export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
 function workflowRunLabel(run: WorkflowRunSummary): string {
   const tone = workflowRunTone(run);
   if (tone === "passed") return "Approved";
+  if (run.gate === "waiting_pr") return "Waiting for PR";
+  if (run.gate === "waiting_inspector") return "Inspector gate";
+  if (run.gate === "findings") return "Inspector findings";
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";

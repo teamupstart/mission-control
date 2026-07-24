@@ -26,11 +26,26 @@ const run: WorkflowRunSummary = {
   activePersonaNames: [],
   failedPersonaCount: 1,
   bypassedPersonaReview: false,
+  gate: "none",
+  gatePrNumber: null,
+  gateHeadShort: null,
+  reviewPosture: null,
   updatedAt: 1,
 };
 
 test("workflow status helper drives card, tile, rail, and detail mark vocabularies", () => {
   assert.equal(workflowRunTone(run), "waiting");
+  assert.equal(workflowRunTone({ ...run, status: "waiting_for_pr", gate: "waiting_pr" }), "waiting");
+  assert.equal(workflowRunTone({
+    ...run,
+    status: "waiting_for_inspector",
+    gate: "waiting_inspector",
+  }), "waiting");
+  assert.equal(workflowRunTone({
+    ...run,
+    status: "waiting_for_new_head",
+    gate: "findings",
+  }), "waiting");
   assert.equal(workflowRunTone({ ...run, status: "completed" }), "passed");
   assert.equal(workflowRunTone({ ...run, status: "blocked" }), "blocked");
   assert.match(renderToStaticMarkup(createElement(WorkflowChip, { run })), /workflow-waiting/);

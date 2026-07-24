@@ -39,6 +39,7 @@ export type MergeBlock =
   | "review-unpublished"
   | "not-open"
   | "draft"
+  | "workflow-gate-pending"
   | "not-reviewed"
   | "findings"
   | "threads"
@@ -69,6 +70,7 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
     "this push was reviewed without live publishing; the Inspector must review it again live",
   "not-open": "the pull request is closed",
   draft: "still a draft",
+  "workflow-gate-pending": "an active workflow still owns the Inspector final gate",
   "not-reviewed": "the Inspector has not reviewed this push yet",
   findings: "the Inspector has open findings",
   threads: "there are unresolved review threads",
@@ -116,6 +118,8 @@ export interface MergeInput {
   rounds: number;
   /** Findings the Inspector is currently carrying: posted, previewed, or mid-post. */
   openFindings: number;
+  /** Pure veto from the workflow subsystem. It can never make a merge eligible. */
+  workflowGatePending: boolean;
   now: number;
 }
 
@@ -183,6 +187,7 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
 
   if (pr.state !== "OPEN") return blocked("not-open");
   if (pr.isDraft) return blocked("draft");
+  if (input.workflowGatePending) return blocked("workflow-gate-pending");
 
   // The review has to be of THIS push. `rounds` alone would let a PR that was reviewed
   // clean three force-pushes ago merge whatever is on the branch now.

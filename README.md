@@ -68,7 +68,9 @@ and get your decision back.
   Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
-  run concurrent, read-only Persona reviews against one immutable evidence snapshot.
+  run concurrent, read-only Persona reviews against one immutable evidence snapshot. A
+  published Inspector final gate can then require the exact clean PR head to pass before the
+  workflow completes.
 - **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
   sessions this app never launched. Claude reloads when idle, Codex watches automatically,
@@ -1398,7 +1400,8 @@ entry fetches that immutable graph and its exact Persona Markdown from the versi
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
-optional Inspector final gate remains unavailable until its later workflow phase.
+optional Inspector final gate and its missing-PR and findings policies are immutable parts of
+each published version.
 
 ### Manual Preview runs
 
@@ -1506,6 +1509,50 @@ does not fall through to an unreviewed wrap-up. If no Foreman binding claims the
 the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
 session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered
 repair becomes the new captured goal.
+
+### Inspector final gate
+
+An Inspector completion policy adds a final stage after a successful End. End stays successful,
+but the run does not complete until Inspector has reviewed the exact PR head represented by that
+submission. A PR URL on the session is only a lookup hint. The gate can use it only when the
+durable Inspector ledger already says the hook saw `gh pr create` or no-mistakes reported its own
+PR. A URL alone never adopts a pull request and never grants permission to comment on it.
+
+Gate entry records the local committed HEAD, then waits for a normal Inspector sweep observed
+after entry. It does not start a second GitHub poller. The observed PR must still be open, its
+remote head must equal that captured HEAD, and the captured working tree must have no staged,
+unstaged, or untracked changes outside the commit. A dirty tree requires commit, push, and a fresh
+full submission. A pre-pin mismatch waits for Inspector to observe the captured committed head; a
+push after pinning requires a fresh full submission. A stale ledger timestamp or reviewed head
+alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
+Inspector observation must first prove which head is current.
+
+Once the matching head is pinned, the durable Inspector ledger decides the state:
+
+- A pending, failed, or backed-off review remains waiting and shows its current posture and retry.
+- Every non-resolved Inspector row remains a finding, including dry-run drafts and interrupted
+  posting rows. Run detail shows its stored scrubbed body, or an explicit fallback for legacy rows.
+- A completed current-head review with zero findings completes the workflow.
+- Closing or switching the PR blocks instead of accepting old approval.
+
+Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
+or safe Live delivery state machine as Persona repair. The published default,
+`restart_workflow`, requires fix, verify, commit, push, and a full resubmission that reruns every
+Persona. The narrower `inspector_only` policy waits for Inspector to observe a different pushed
+head, records an immutable attempt-free bypass submission, and reviews that head normally. It
+refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
+labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
+
+If no adopted PR exists, the published policy either waits or offers **Prepare PR in session**. That
+human action sends a deterministic commit, push, and PR prompt through Preview or Live delivery;
+the gate itself never pushes or opens a pull request. **Recheck Inspector** only reevaluates the
+current durable observation and remains waiting until Inspector's normal sweep has seen a new
+head.
+
+Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
+state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
+session-bound workflow gate, submissions, packets, and events, but retains Inspector's adopted PR
+and comment ledgers because those records outlive a session.
 
 ## Models (what the app's own model work runs on)
 
@@ -2534,6 +2581,7 @@ Every one of these, on the same read of the pull request:
 |---|---|
 | The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
 | The Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| No active Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
 | No open Inspector findings | posted or previewed in dry run - a finding is a finding |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
@@ -2550,6 +2598,10 @@ The merge itself is a compare-and-swap against the head that was evaluated, so a
 landing in the seconds between the decision and the call makes GitHub refuse rather than
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
+
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller and the
+sole GitHub merge path. An active published Inspector gate vetoes its adopted or candidate PR;
+completed, cancelled, archived, and no-final-gate workflows do not.
 
 ### It needs the Inspector, fully on
 

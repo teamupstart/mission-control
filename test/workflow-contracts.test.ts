@@ -7,12 +7,14 @@ import {
   CreateWorkflowSchema,
   PublishedWorkflowGraphSchema,
   ReattachWorkflowBindingSchema,
+  RestartFullWorkflowSchema,
   UpdatePersonaSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowCompletionPolicySchema,
   WorkflowDraftGraphSchema,
   WorkflowNodeAttemptStateSchema,
   WorkflowRunStatusSchema,
+  WorkflowRunActionSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
@@ -232,6 +234,21 @@ test("binding requests name the live session while the daemon owns durable note 
     },
   );
   assert.deepEqual(ReattachWorkflowBindingSchema.parse({ sessionId: "s2" }), { sessionId: "s2" });
+});
+
+test("Inspector run actions require parsed request identity and bound restart confirmation", () => {
+  assert.deepEqual(WorkflowRunActionSchema.parse({ requestId: "action-1" }), {
+    requestId: "action-1",
+  });
+  assert.deepEqual(RestartFullWorkflowSchema.parse({
+    requestId: "restart-1",
+    confirmation: "RESTART FULL WORKFLOW",
+  }), {
+    requestId: "restart-1",
+    confirmation: "RESTART FULL WORKFLOW",
+  });
+  assert.throws(() => WorkflowRunActionSchema.parse({ requestId: "" }));
+  assert.throws(() => RestartFullWorkflowSchema.parse({}));
 });
 
 test("Persona model role names the working environment variable and balanced fallback", () => {

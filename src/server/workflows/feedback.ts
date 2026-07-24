@@ -9,6 +9,9 @@ import type {
   WorkflowSubmission,
   WorkflowVersion,
 } from "@shared/workflow.ts";
+import type { InspectorComment } from "@shared/types.ts";
+import type { InspectorPosture } from "@shared/inspector.ts";
+import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
 const FINAL_INSTRUCTION =
@@ -28,6 +31,27 @@ export interface WorkflowFeedbackInput {
   run: WorkflowRun;
   submission: WorkflowSubmission;
   attempts: WorkflowNodeAttempt[];
+}
+
+export interface InspectorFeedbackInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  submissionRound: number;
+  originalGoal: string;
+  prUrl: string;
+  targetHeadSha: string;
+  inspectorRound: number;
+  reviewPosture: InspectorPosture | null;
+  policy: InspectorFindingsPolicy;
+  findings: InspectorComment[];
+}
+
+export interface PrHandoffInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  originalGoal: string;
 }
 
 /** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
@@ -72,6 +96,26 @@ function latestAttempts(attempts: WorkflowNodeAttempt[]): Map<string, WorkflowNo
     if (!current || attempt.attempt > current.attempt) latest.set(attempt.nodeId, attempt);
   }
   return latest;
+}
+
+function finalizePacket(body: string, truncated: boolean, finalInstruction: string): {
+  payload: string;
+  payloadSha256: string;
+  truncated: boolean;
+} {
+  const cleanBody = sanitizeWorkflowFeedback(body).replace(/\s+$/u, "");
+  let payload = `${cleanBody}\n\n${finalInstruction}`;
+  if (encoder.encode(payload).byteLength > WORKFLOW_LIMITS.feedbackPayloadBytes) truncated = true;
+  if (truncated) {
+    const suffix = `\n\n${finalInstruction}${TRUNCATION_NOTICE}`;
+    const budget = WORKFLOW_LIMITS.feedbackPayloadBytes - encoder.encode(suffix).byteLength;
+    payload = clipUtf8(cleanBody, Math.max(0, budget)).value.replace(/\s+$/u, "") + suffix;
+  }
+  return {
+    payload,
+    payloadSha256: createHash("sha256").update(Buffer.from(payload, "utf8")).digest("hex"),
+    truncated,
+  };
 }
 
 /** Render one immutable Persona-failure packet. Model output supplies facts, never structure. */
@@ -122,16 +166,113 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
     "",
     ...blocks.flatMap((block, index) => index === 0 ? [block] : ["", block]),
   ];
-  const body = sanitizeWorkflowFeedback(bodyParts.join("\n")).replace(/\s+$/u, "");
-  let payload = `${body}\n\n${FINAL_INSTRUCTION}`;
-  if (encoder.encode(payload).byteLength > WORKFLOW_LIMITS.feedbackPayloadBytes) {
-    truncated = true;
+  return {
+    ...finalizePacket(bodyParts.join("\n"), truncated, FINAL_INSTRUCTION),
+    failedPersonaCount: blocks.length,
+  };
+}
+
+const INSPECTOR_SEVERITY: Record<InspectorComment["severity"], number> = {
+  blocker: 0,
+  major: 1,
+  minor: 2,
+  nit: 3,
+};
+
+/** Render one frozen Inspector finding snapshot without reusing model prose as framing. */
+export function renderInspectorFeedback(input: InspectorFeedbackInput): RenderedWorkflowFeedback {
+  let truncated = false;
+  const bounded = (value: string): string => {
+    const result = field(value);
+    truncated ||= result.truncated;
+    return result.value;
+  };
+  const unique = new Map<string, InspectorComment>();
+  for (const finding of input.findings) {
+    const prior = unique.get(finding.fingerprint);
+    if (!prior) {
+      unique.set(finding.fingerprint, finding);
+      continue;
+    }
+    // A unique DB index normally makes this branch unreachable. Keeping the renderer
+    // deterministic for a duplicated snapshot prevents caller order from changing the
+    // frozen packet if a joined or legacy input ever contains the same issue twice.
+    const stableFinding = (row: InspectorComment): string => JSON.stringify([
+      row.path,
+      row.line,
+      row.title,
+      row.body,
+      row.severity,
+      row.id,
+    ]);
+    if (stableFinding(finding) < stableFinding(prior)) {
+      unique.set(finding.fingerprint, finding);
+    }
   }
-  if (truncated) {
-    const suffix = `\n\n${FINAL_INSTRUCTION}${TRUNCATION_NOTICE}`;
-    const budget = WORKFLOW_LIMITS.feedbackPayloadBytes - encoder.encode(suffix).byteLength;
-    payload = clipUtf8(body, Math.max(0, budget)).value.replace(/\s+$/u, "") + suffix;
-  }
-  const payloadSha256 = createHash("sha256").update(Buffer.from(payload, "utf8")).digest("hex");
-  return { payload, payloadSha256, failedPersonaCount: blocks.length, truncated };
+  const findings = [...unique.values()].sort((a, b) =>
+    INSPECTOR_SEVERITY[a.severity] - INSPECTOR_SEVERITY[b.severity]
+    || (a.path ?? "").localeCompare(b.path ?? "")
+    || (a.line ?? Number.MAX_SAFE_INTEGER) - (b.line ?? Number.MAX_SAFE_INTEGER)
+    || a.fingerprint.localeCompare(b.fingerprint));
+  const policyInstruction = input.policy === "restart_workflow"
+    ? "Fix the findings, verify the work, commit and push it, then signal completion so every Persona reruns before Inspector."
+    : "This published policy permits bypassing Personas only for this Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for Inspector to review that new head.";
+  const body = [
+    "Inspector reviewed the pinned pull request head and found changes that are required.",
+    "",
+    "Original user goal:",
+    bounded(input.originalGoal),
+    "",
+    `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+    `PR: ${bounded(input.prUrl)}`,
+    `Pinned head: ${bounded(input.targetHeadSha)}`,
+    `Inspector round: ${input.inspectorRound}`,
+    `Review posture: ${input.reviewPosture ?? "unknown"}`,
+    "",
+    ...findings.flatMap((finding, index) => {
+      const location = finding.path
+        ? `${finding.path}${finding.line ? `:${finding.line}` : ""}`
+        : "general";
+      return [
+        ...(index === 0 ? [] : [""]),
+        `## ${finding.severity.toUpperCase()} - ${bounded(finding.title)}`,
+        `Location: ${bounded(location)}`,
+        bounded(
+          finding.body
+            ?? "Legacy finding detail is unavailable. Use the severity, title, and location above.",
+        ),
+        `Fingerprint: ${finding.fingerprint}`,
+      ];
+    }),
+  ].join("\n");
+  return {
+    ...finalizePacket(body, truncated, policyInstruction),
+    failedPersonaCount: findings.length,
+  };
+}
+
+/** Render the explicit human-chosen PR preparation handoff. */
+export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback {
+  let truncated = false;
+  const bounded = (value: string): string => {
+    const result = field(value);
+    truncated ||= result.truncated;
+    return result.value;
+  };
+  const body = [
+    "Prepare the reviewed work for the workflow's Inspector final gate.",
+    "",
+    "Original user goal:",
+    bounded(input.originalGoal),
+    "",
+    `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+  ].join("\n");
+  const instruction =
+    "Commit all reviewed work, push it, open the pull request through the normal harness or no-mistakes path, then signal completion so the full Persona workflow is submitted again.";
+  return {
+    ...finalizePacket(body, truncated, instruction),
+    failedPersonaCount: 0,
+  };
 }

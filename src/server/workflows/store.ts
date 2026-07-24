@@ -12,6 +12,7 @@ import {
   WorkflowJsonSchema,
   WorkflowNodeAttemptStateSchema,
   WorkflowRunStatusSchema,
+  WorkflowInspectorGateStateSchema,
   WorkflowSubmissionModeSchema,
   WorkflowSubmissionStatusSchema,
   WorkflowTriggerSourceSchema,
@@ -27,6 +28,8 @@ import {
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_TRIGGER_MODES,
   type WorkflowTriggerSource,
+  type WorkflowGateSummary,
+  type WorkflowInspectorGateState,
 } from "@shared/workflow.ts";
 import type {
   Persona,
@@ -69,6 +72,24 @@ const nullableText = text.nullable();
 const nullableInteger = integer.nullable();
 const boundedCode = text.max(200);
 const utf8 = new TextEncoder();
+
+function inspectorGateState(run: WorkflowRun): WorkflowInspectorGateState | null {
+  const parsed = WorkflowInspectorGateStateSchema.safeParse(run.gateState);
+  return parsed.success ? parsed.data : null;
+}
+
+function compactGate(run: WorkflowRun, gate: WorkflowInspectorGateState | null): WorkflowGateSummary {
+  if (!gate) return "none";
+  if (run.status === "completed") return "clean";
+  if (run.status === "blocked") return "blocked";
+  if (
+    run.status === "waiting_for_pr"
+    || gate.waitReason === "missing_pr"
+    || gate.waitReason === "unadopted_pr"
+  ) return "waiting_pr";
+  if (run.status === "waiting_for_new_head" || gate.waitReason === "findings") return "findings";
+  return "waiting_inspector";
+}
 
 export const WORKFLOW_TABLES = [
   "personas",
@@ -764,6 +785,10 @@ export interface WorkflowSubmissionInsert {
   triggerKey: string;
   context: WorkflowJson;
   evidence: WorkflowJson;
+  mode?: WorkflowSubmission["mode"];
+  evidenceFingerprint?: string;
+  prHeadSha?: string | null;
+  status?: WorkflowSubmission["status"];
   now: number;
 }
 
@@ -1467,6 +1492,10 @@ export class WorkflowStore {
         }
       }
       const attempts = [...latestAttempts.values()];
+      const gateState = inspectorGateState(run);
+      const gatePrNumber = gateState?.prKey
+        ? Number(gateState.prKey.match(/#(\d+)$/)?.[1] ?? NaN)
+        : NaN;
       return {
         id: run.id,
         bindingId: run.bindingId,
@@ -1496,7 +1525,11 @@ export class WorkflowStore {
             && verdict.verdict === "fail",
           );
         }).length,
-        bypassedPersonaReview: false,
+        bypassedPersonaReview: this.listSubmissions(run.id).some((item) => item.mode === "inspector_only"),
+        gate: compactGate(run, gateState),
+        gatePrNumber: Number.isInteger(gatePrNumber) ? gatePrNumber : null,
+        gateHeadShort: (gateState?.targetHeadSha ?? gateState?.observedHeadSha)?.slice(0, 8) ?? null,
+        reviewPosture: gateState?.reviewPosture ?? null,
         updatedAt: run.updatedAt,
       };
     } catch (error) {
@@ -1816,6 +1849,169 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
+  }
+
+  enterInspectorGate(input: {
+    runId: string;
+    submissionId: string;
+    headSha: string | null;
+    status: WorkflowRun["status"];
+    phase: string;
+    state: WorkflowInspectorGateState;
+    now: number;
+  }): { run: WorkflowRun; submission: WorkflowSubmission } | null {
+    return transaction(this.db, () => {
+      const submissionChanged = this.db.prepare(
+        `UPDATE workflow_submissions
+            SET status = 'completed', pr_head_sha = ?, updated_at = ?,
+                completed_at = COALESCE(completed_at, ?)
+          WHERE id = ? AND run_id = ? AND status = 'running'`,
+      ).run(input.headSha, input.now, input.now, input.submissionId, input.runId);
+      if (Number(submissionChanged.changes) !== 1) return null;
+      const runChanged = this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = ?, current_phase = ?, inspector_pr_key = ?,
+                inspector_head_sha = NULL, gate_state_json = ?, updated_at = ?,
+                completed_at = NULL
+          WHERE id = ? AND status = 'running'`,
+      ).run(
+        input.status,
+        input.phase,
+        input.state.prKey,
+        JSON.stringify(input.state),
+        input.now,
+        input.runId,
+      );
+      if (Number(runChanged.changes) !== 1) {
+        throw new Error(`Workflow run ${input.runId} cannot enter its Inspector gate`);
+      }
+      this.appendEvent(input.runId, "inspector_gate_entered", {
+        submissionId: input.submissionId,
+        prKey: input.state.prKey,
+        prUrl: input.state.prUrl,
+        submittedHeadSha: input.headSha,
+        enteredAt: input.state.enteredAt,
+        waitReason: input.state.waitReason,
+      }, input.now);
+      return {
+        run: this.mustRun(input.runId),
+        submission: this.mustSubmission(input.submissionId),
+      };
+    });
+  }
+
+  updateInspectorGate(input: {
+    runId: string;
+    expectedState: WorkflowInspectorGateState;
+    state: WorkflowInspectorGateState;
+    status: WorkflowRun["status"];
+    phase: string;
+    now: number;
+  }): WorkflowRun | null {
+    const expectedJson = JSON.stringify(input.expectedState);
+    const stateJson = JSON.stringify(input.state);
+    const completed = input.status === "completed";
+    const changed = this.db.prepare(
+      `UPDATE workflow_runs
+          SET status = ?, current_phase = ?, inspector_pr_key = ?,
+              inspector_head_sha = ?, gate_state_json = ?, updated_at = ?,
+              completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
+        WHERE id = ? AND gate_state_json = ?
+          AND status NOT IN ('completed', 'cancelled', 'failed')`,
+    ).run(
+      input.status,
+      input.phase,
+      input.state.prKey,
+      input.state.targetHeadSha,
+      stateJson,
+      input.now,
+      completed ? 1 : 0,
+      input.now,
+      input.runId,
+      expectedJson,
+    );
+    return Number(changed.changes) === 1 ? this.mustRun(input.runId) : null;
+  }
+
+  createInspectorOnlySubmission(input: {
+    id: string;
+    runId: string;
+    triggerKey: string;
+    newHeadSha: string;
+    failedHeadSha: string;
+    priorFindingFingerprints: string[];
+    bypassReason: string;
+    expectedState: WorkflowInspectorGateState;
+    state: WorkflowInspectorGateState;
+    now: number;
+  }): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } | null {
+    return transaction(this.db, () => {
+      const duplicate = this.submissionByTrigger(input.triggerKey);
+      if (duplicate) {
+        return { run: this.mustRun(duplicate.runId), submission: duplicate, idempotent: true };
+      }
+      const run = this.getRun(input.runId);
+      const latest = run ? this.latestSubmission(run.id) : null;
+      if (
+        !run
+        || !latest
+        || run.status !== "waiting_for_new_head"
+        || latest.round > run.maxRepairRounds
+        || input.newHeadSha === input.failedHeadSha
+        || this.listSubmissions(run.id).some((item) => item.prHeadSha === input.newHeadSha)
+      ) return null;
+      const currentGate = inspectorGateState(run);
+      if (!currentGate || JSON.stringify(currentGate) !== JSON.stringify(input.expectedState)) return null;
+      this.insertSubmissionInTransaction({
+        id: input.id,
+        runId: run.id,
+        round: latest.round + 1,
+        triggerSource: "manual",
+        triggerKey: input.triggerKey,
+        context: {
+          bypassReason: input.bypassReason,
+          failedHeadSha: input.failedHeadSha,
+          newHeadSha: input.newHeadSha,
+          priorFindingFingerprints: input.priorFindingFingerprints,
+        },
+        evidence: {
+          prHeadSha: input.newHeadSha,
+          priorFindingFingerprints: input.priorFindingFingerprints,
+        },
+        mode: "inspector_only",
+        evidenceFingerprint: `inspector:${input.newHeadSha}`,
+        prHeadSha: input.newHeadSha,
+        status: "completed",
+        now: input.now,
+      });
+      const changed = this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'waiting_for_inspector', current_phase = 'inspector_review',
+                inspector_head_sha = ?, gate_state_json = ?, updated_at = ?, completed_at = NULL
+          WHERE id = ? AND gate_state_json = ? AND status = 'waiting_for_new_head'`,
+      ).run(
+        input.newHeadSha,
+        JSON.stringify(input.state),
+        input.now,
+        run.id,
+        JSON.stringify(input.expectedState),
+      );
+      if (Number(changed.changes) !== 1) {
+        throw new Error(`Workflow run ${run.id} changed while creating an Inspector-only submission`);
+      }
+      this.appendEvent(run.id, "inspector_persona_bypass_used", {
+        submissionId: input.id,
+        failedHeadSha: input.failedHeadSha,
+        newHeadSha: input.newHeadSha,
+        priorFindingFingerprints: input.priorFindingFingerprints,
+        bypassReason: input.bypassReason,
+      }, input.now);
+      return {
+        run: this.mustRun(run.id),
+        submission: this.mustSubmission(input.id),
+        idempotent: false,
+      };
+    });
   }
 
   setSubmissionState(
@@ -2311,10 +2507,29 @@ export class WorkflowStore {
           WHERE id = ? AND state = 'sending'`,
       ).run(now, now, id);
       if (Number(changed.changes) !== 1) return null;
-      this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
-        deliveryId: delivery.id,
-        transcriptAnchor,
-      }, now);
+      const version = delivery.kind === "inspector_feedback"
+        ? this.getWorkflowVersionById(run.workflowVersionId)
+        : null;
+      const inspectorOnly =
+        version?.completionPolicy.kind === "inspector"
+        && version.completionPolicy.onFindings === "inspector_only";
+      const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
+        ? "waiting_for_new_head"
+        : "waiting_for_session";
+      const nextPhase = delivery.kind === "pr_handoff"
+        ? "pr_handoff"
+        : delivery.kind === "inspector_feedback"
+          ? "inspector_findings"
+          : "persona_feedback";
+      this.setRunState(
+        delivery.runId,
+        nextStatus,
+        nextPhase,
+        delivery.kind === "persona_feedback"
+          ? { deliveryId: delivery.id, transcriptAnchor }
+          : run.gateState,
+        now,
+      );
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
         transcriptAnchor,
@@ -2481,10 +2696,29 @@ export class WorkflowStore {
           && binding.sessionId === delivery.sessionId
           && binding.noteKey === delivery.noteKey
         ) {
-          this.setRunState(delivery.runId, "waiting_for_session", "persona_feedback", {
-            deliveryId: delivery.id,
-            resolvedByOperator: true,
-          }, now);
+          const version = delivery.kind === "inspector_feedback"
+            ? this.getWorkflowVersionById(run.workflowVersionId)
+            : null;
+          const inspectorOnly =
+            version?.completionPolicy.kind === "inspector"
+            && version.completionPolicy.onFindings === "inspector_only";
+          const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
+            ? "waiting_for_new_head"
+            : "waiting_for_session";
+          const nextPhase = delivery.kind === "pr_handoff"
+            ? "pr_handoff"
+            : delivery.kind === "inspector_feedback"
+              ? "inspector_findings"
+              : "persona_feedback";
+          this.setRunState(
+            delivery.runId,
+            nextStatus,
+            nextPhase,
+            delivery.kind === "persona_feedback"
+              ? { deliveryId: delivery.id, resolvedByOperator: true }
+              : run.gateState,
+            now,
+          );
           rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
           if (rearmedDrain) {
             this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
@@ -2651,6 +2885,7 @@ export class WorkflowStore {
       deliveries: this.listDeliveries(id),
       events: this.listEvents(id),
       externalSource: this.externalSourceForRun(run, binding.id),
+      inspectorGate: null,
     };
   }
 
@@ -2940,17 +3175,23 @@ export class WorkflowStore {
       `INSERT INTO workflow_submissions (
          id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
          context_json, evidence_json, pr_head_sha, status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, 'full_workflow', ?, ?, ?, ?, ?, NULL, 'capturing', ?, ?, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
     ).run(
       input.id,
       input.runId,
       input.round,
+      input.mode ?? "full_workflow",
       input.triggerSource,
       input.triggerKey,
-      `capturing:${input.id}`,
+      input.evidenceFingerprint ?? `capturing:${input.id}`,
       JSON.stringify(input.context),
       JSON.stringify(input.evidence),
+      input.prHeadSha ?? null,
+      input.status ?? "capturing",
       input.now,
+      input.now,
+      input.status ?? "capturing",
       input.now,
     );
   }

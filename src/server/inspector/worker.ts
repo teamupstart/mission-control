@@ -68,6 +68,23 @@ import type { PrSnapshot, ThreadSnapshot } from "./github.ts";
 
 /** How often to look at the adopted PRs. Slow: a review is expensive and a push is not frequent. */
 const POLL_MS = Number(envVar("INSPECTOR_POLL_MS") ?? 90_000);
+
+function notifyInspection(
+  registry: Registry,
+  prKey: string,
+  observedHeadSha: string | null,
+  observedState: PrSnapshot["state"] | null,
+  observedAt = Date.now(),
+): void {
+  // Production Registry always owns this signal. The guard keeps focused worker test
+  // doubles from having to implement a callback unrelated to the behavior they exercise.
+  (registry as Partial<Registry>).inspectionUpdated?.(
+    prKey,
+    observedHeadSha,
+    observedState,
+    observedAt,
+  );
+}
 /**
  * Sized for a whole-diff review WITH tool round-trips inside it, from measurement.
  *
@@ -374,7 +391,11 @@ function adoptFromSessions(registry: Registry, now: number): void {
   for (const s of registry.snapshot().sessions) {
     const url = s.nomistakes?.prUrl;
     if (!url) continue;
-    adoptPr(url, { sessionId: s.id, cwd: s.cwd, repoRoot: s.repoRoot }, "no-mistakes", now);
+    if (adoptPr(url, { sessionId: s.id, cwd: s.cwd, repoRoot: s.repoRoot }, "no-mistakes", now)) {
+      const parsed = parsePrUrl(url);
+      registry.refreshInspections();
+      if (parsed) notifyInspection(registry, parsed.key, null, null, now);
+    }
   }
 }
 
@@ -432,6 +453,8 @@ async function processPr(
   cfg: InspectorConfig,
   pr: InspectorPr,
   now: number,
+  onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
+  workflowGatePending: (prKey: string) => boolean = () => false,
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
   const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
@@ -453,6 +476,7 @@ async function processPr(
     return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
+  onObserved?.(s, now);
 
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
@@ -553,7 +577,7 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
-  if (await maybeMerge(cfg, pr, dir, s, rows, now)) return true;
+  if (await maybeMerge(cfg, pr, dir, s, rows, now, workflowGatePending)) return true;
 
   // 3. Nothing pushed since the last review: there is nothing new to say.
   //
@@ -844,6 +868,7 @@ async function reviewRound(
       path: c.path,
       line: c.line,
       title: c.title,
+      body: c.body,
       severity: c.severity,
       round,
       status: post ? "posting" : "drafted",
@@ -966,7 +991,11 @@ function reconcilePosting(
  * a single local insert, because that proof is transient and gating it would make every
  * PR opened before the feature was switched on permanently unreachable.
  */
-export function startInspector(registry: Registry): () => void {
+export interface InspectorStartOptions {
+  workflowGatePending?: (prKey: string) => boolean;
+}
+
+export function startInspector(registry: Registry, options: InspectorStartOptions = {}): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   // One PR at a time. A review is an Opus run with tool round-trips inside it; a
@@ -992,7 +1021,11 @@ export function startInspector(registry: Registry): () => void {
     // PR was adopted at all, and a card that shows a PR with no inspector chip means
     // something specific - "we didn't open this one" - so leaving it in that state for up
     // to a poll interval is not a delay, it is the wrong answer displayed confidently.
-    if (adopted) registry.refreshInspections();
+    if (adopted) {
+      registry.refreshInspections();
+      const parsed = parsePrUrl(e.url);
+      if (parsed) notifyInspection(registry, parsed.key, null, null);
+    }
   });
 
   const tick = async (): Promise<void> => {
@@ -1009,7 +1042,28 @@ export function startInspector(registry: Registry): () => void {
           if (!getInspectorConfig().enabled) break;
           // The row may have been written by an earlier PR in this same sweep.
           const fresh = getInspectorPr(pr.key) ?? pr;
-          await limit(() => processPr(getInspectorConfig(), fresh, Date.now()));
+          const observed: {
+            value: { headSha: string; state: PrSnapshot["state"]; at: number } | null;
+          } = { value: null };
+          await limit(() => processPr(
+            getInspectorConfig(),
+            fresh,
+            Date.now(),
+            (snapshot, observedAt) => {
+              observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
+              notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
+            },
+            options.workflowGatePending ?? (() => false),
+          ));
+          // Re-read after every completed review or failure. The immediate signal above
+          // reports the fetched GitHub head; this one carries the resulting durable ledger.
+          notifyInspection(
+            registry,
+            fresh.key,
+            observed.value?.headSha ?? null,
+            observed.value?.state ?? null,
+            observed.value?.at ?? Date.now(),
+          );
         }
         // Once per sweep, unconditionally. An earlier version did this only when a PR
         // "advanced", which quietly excluded the states most worth seeing: a PR whose

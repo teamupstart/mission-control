@@ -69,6 +69,7 @@ export async function maybeMerge(
   s: PrSnapshot,
   rows: Map<string, InspectorComment>,
   now: number,
+  workflowGatePending: (prKey: string) => boolean = () => false,
 ): Promise<boolean> {
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
@@ -92,6 +93,7 @@ export async function maybeMerge(
     reviewPosture: pr.reviewPosture,
     rounds: pr.round,
     openFindings: openFindings(rows),
+    workflowGatePending: workflowGatePending(pr.key),
     now,
   });
 

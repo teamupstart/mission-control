@@ -9,7 +9,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-reset-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb } = await import("../src/server/db.ts");
+const { adoptInspectorPr, openDb, upsertInspectorComment } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
@@ -52,6 +52,47 @@ function seedReusable(): void {
 
 test("successful reset uses resetSession to clear session workflow rows and preserve reusable definitions", async () => {
   seedReusable();
+  adoptInspectorPr({
+    key: "owner/repo#70",
+    url: "https://github.com/owner/repo/pull/70",
+    owner: "owner",
+    repo: "repo",
+    number: 70,
+    repoRoot: "/repo",
+    cwd: "/repo",
+    sessionId: "session",
+    source: "hook",
+    state: "open",
+    headSha: "reviewed-head",
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: 2,
+    lastError: null,
+    failCount: 0,
+    lastFailKind: null,
+    nextAttemptAt: null,
+    lastAttemptSha: "reviewed-head",
+    mergedAt: null,
+    mergeBlock: null,
+    adoptedAt: 1,
+    updatedAt: 2,
+  });
+  upsertInspectorComment({
+    id: "reset-finding",
+    prKey: "owner/repo#70",
+    fingerprint: "reset-finding",
+    path: "src/file.ts",
+    line: 8,
+    title: "Retain audit",
+    body: "Inspector rows outlive the session workflow.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: 2,
+    updatedAt: 2,
+  });
   const registry = new Registry();
   registry.applyDiscovery([discovered()]);
   const personas = new PersonaManager(registry);
@@ -142,6 +183,8 @@ test("successful reset uses resetSession to clear session workflow rows and pres
   }
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM workflow_definitions`).get() as { n: number }).n, 1);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM workflow_versions`).get() as { n: number }).n, 1);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM inspector_prs`).get() as { n: number }).n, 1);
+  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM inspector_comments`).get() as { n: number }).n, 1);
 });
 
 test("failed reset clears no workflow state", async () => {

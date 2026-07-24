@@ -95,7 +95,10 @@ function VerdictCard({
 export function workflowNodeStatuses(detail: WorkflowRunDetail): Record<string, string> {
   const statuses: Record<string, string> = {};
   const latestSubmission = detail.submissions.reduce<WorkflowRunDetail["submissions"][number] | null>(
-    (latest, submission) => latest === null || submission.round > latest.round ? submission : latest,
+    (latest, submission) => {
+      if (submission.mode !== "full_workflow") return latest;
+      return latest === null || submission.round > latest.round ? submission : latest;
+    },
     null,
   );
   if (!latestSubmission) return statuses;
@@ -120,6 +123,10 @@ export function WorkflowRunView({
   onCancel,
   onCopyFeedback = async () => {},
   onOpenSession = () => {},
+  onOpenInspectorSettings = () => {},
+  onPreparePr = async () => {},
+  onRecheckInspector = async () => {},
+  onRestartFull = async () => {},
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
 }: {
@@ -129,6 +136,10 @@ export function WorkflowRunView({
   onCancel: () => Promise<void>;
   onCopyFeedback?: () => Promise<void>;
   onOpenSession?: () => void;
+  onOpenInspectorSettings?: () => void;
+  onPreparePr?: () => Promise<void>;
+  onRecheckInspector?: () => Promise<void>;
+  onRestartFull?: (confirmation?: string) => Promise<void>;
   onRetryDelivery?: (deliveryId: string) => Promise<void>;
   onResolveDelivery?: (
     deliveryId: string,
@@ -137,9 +148,13 @@ export function WorkflowRunView({
   ) => Promise<void>;
 }): React.JSX.Element {
   const latest = detail.submissions.at(-1) ?? null;
-  const context = latest?.context as unknown as WorkflowContextSnapshot | null;
+  const latestFull = [...detail.submissions].reverse().find((submission) =>
+    submission.mode === "full_workflow") ?? null;
+  const context = latestFull?.context as unknown as WorkflowContextSnapshot | null;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const version = detail.version;
+  const inspectorGate = detail.inspectorGate;
+  const inspectorOnly = latest?.mode === "inspector_only";
   const completionClaims = detail.events.flatMap((event) => {
     if (
       event.kind !== "workflow_completion_claimed"
@@ -202,6 +217,36 @@ export function WorkflowRunView({
             </Tooltip>
           </>
         )}
+        {inspectorGate && inspectorGate.state.waitReason !== null && (
+          <Tooltip label="Evaluate the gate again from Inspector's current durable ledger">
+            <button className="btn btn-ghost" onClick={() => void onRecheckInspector()}>
+              Recheck Inspector
+            </button>
+          </Tooltip>
+        )}
+        {inspectorGate && detail.run.status === "waiting_for_pr"
+          && ["missing_pr", "unadopted_pr"].includes(inspectorGate.state.waitReason ?? "")
+          && version?.completionPolicy.kind === "inspector"
+          && version.completionPolicy.missingPrAction === "offer_prepare_pr" && (
+          <Tooltip label="Send the session an explicit commit, push, and PR handoff packet">
+            <button className="btn" onClick={() => void onPreparePr()}>Prepare PR in session</button>
+          </Tooltip>
+        )}
+        {inspectorGate && (inspectorOnly || detail.run.status === "waiting_for_new_head") && (
+          <Tooltip label="Abandon this repair path and rerun every Persona from fresh evidence">
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                const confirmation = window.prompt(
+                  "Type RESTART FULL WORKFLOW to abandon the Inspector-only repair.",
+                );
+                if (confirmation !== null) void onRestartFull(confirmation);
+              }}
+            >
+              Restart full workflow
+            </button>
+          </Tooltip>
+        )}
         {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
           <Tooltip label="The provider call failed rather than the review - try it again">
             <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
@@ -213,6 +258,79 @@ export function WorkflowRunView({
           </Tooltip>
         )}
       </header>
+
+      {inspectorOnly && (
+        <p className="workflow-inspector-bypass" role="status">
+          <strong>Persona review bypassed for Inspector repair</strong>
+          {" "}The audited repair submission moved from {inspectorGate?.state.failedHeadSha?.slice(0, 12) ?? "an earlier head"} to{" "}
+          {latest.prHeadSha?.slice(0, 12) ?? "a newly observed head"} without Persona attempts.
+        </p>
+      )}
+
+      {inspectorGate && (
+        <section className={`workflow-inspector-gate workflow-gate-${detail.summary.gate}`}>
+          <header>
+            <div>
+              <p className="workflow-eyebrow">Final gate</p>
+              <h4>Inspector · {inspectorGate.state.waitReason?.replaceAll("_", " ") ?? "complete"}</h4>
+            </div>
+            <span className={`workflow-run-state wrs-${detail.run.status}`}>
+              {detail.summary.gate.replaceAll("_", " ")}
+            </span>
+          </header>
+          <dl>
+            <div>
+              <dt>Pull request</dt>
+              <dd>
+                {inspectorGate.state.prUrl ? (
+                  <Tooltip label="Open the adopted pull request on GitHub">
+                    <a href={inspectorGate.state.prUrl} target="_blank" rel="noreferrer">
+                      #{inspectorGate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
+                    </a>
+                  </Tooltip>
+                ) : "not resolved"}
+              </dd>
+            </div>
+            <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source ?? "not adopted"}</dd></div>
+            <div><dt>Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
+            <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
+            <div><dt>Target head</dt><dd><code>{inspectorGate.state.targetHeadSha ?? "not pinned"}</code></dd></div>
+            <div><dt>Observed head</dt><dd><code>{inspectorGate.state.observedHeadSha ?? "not observed"}</code></dd></div>
+            <div><dt>Reviewed head</dt><dd><code>{inspectorGate.inspection?.headSha ?? "not reviewed"}</code></dd></div>
+            <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
+            <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
+          </dl>
+          {inspectorGate.inspection?.lastError && (
+            <p className="persona-error" role="alert">{inspectorGate.inspection.lastError}</p>
+          )}
+          <p>
+            Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.onFindings.replaceAll("_", " ")
+              : "none"}</strong>
+            {" · "}Missing PR: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
+              : "wait"}</strong>
+          </p>
+          <Tooltip label="Open Inspector settings to review its enablement, mode, and allowlist">
+            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open Inspector settings</button>
+          </Tooltip>
+          <div className="workflow-inspector-findings">
+            {inspectorGate.findings.length === 0 ? (
+              <p>No findings are recorded for this adopted pull request.</p>
+            ) : inspectorGate.findings.map((finding) => (
+              <article key={finding.id} className={`workflow-inspector-finding finding-${finding.severity}`}>
+                <header>
+                  <strong>{finding.severity} · {finding.title}</strong>
+                  <span>{finding.status}</span>
+                </header>
+                <code>{finding.path ?? "general"}{finding.line ? `:${finding.line}` : ""}</code>
+                <p>{finding.body ?? "Legacy finding: detail was not persisted by the Inspector version that created this row."}</p>
+                <small>{finding.fingerprint}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {completionClaims.length > 0 && (
         <section className="workflow-completion-claims">
@@ -346,7 +464,7 @@ export function WorkflowRunView({
                   {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
                 </dd>
               </div>
-              <div><dt>Fingerprint</dt><dd><code>{latest?.evidenceFingerprint}</code></dd></div>
+              <div><dt>Fingerprint</dt><dd><code>{latestFull?.evidenceFingerprint}</code></dd></div>
               <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
@@ -421,11 +539,13 @@ export function WorkflowRuns({
   selectedRunId,
   onSelectRun,
   onOpenSession = () => {},
+  onOpenInspectorSettings = () => {},
 }: {
   runs: WorkflowRunSummary[];
   selectedRunId: string | null;
   onSelectRun: (id: string) => void;
   onOpenSession?: (id: string) => void;
+  onOpenInspectorSettings?: () => void;
 }): React.JSX.Element {
   const ordered = useMemo(() => [...runs].sort((a, b) => b.updatedAt - a.updatedAt), [runs]);
   const [detail, setDetail] = useState<WorkflowRunDetail | null>(null);
@@ -539,6 +659,13 @@ export function WorkflowRuns({
             >
               <strong>{run.workflowName} · v{run.workflowVersion}</strong>
               <span>{run.noteKey} · {run.status.replaceAll("_", " ")}</span>
+              {run.gate !== "none" && (
+                <span>
+                  Inspector: {run.gate.replaceAll("_", " ")}
+                  {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
+                  {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
+                </span>
+              )}
               <small>{when(run.updatedAt)}</small>
             </button>
           </Tooltip>
@@ -563,6 +690,23 @@ export function WorkflowRuns({
               });
             }}
             onCopyFeedback={copyFeedback}
+            onPreparePr={async () => {
+              await mutate(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
+                requestId: crypto.randomUUID(),
+              });
+            }}
+            onRecheckInspector={async () => {
+              await mutate(`/api/workflow-runs/${detail.run.id}/recheck-inspector`, {
+                requestId: crypto.randomUUID(),
+              });
+            }}
+            onRestartFull={async (confirmation) => {
+              await mutate(`/api/workflow-runs/${detail.run.id}/restart-full`, {
+                requestId: crypto.randomUUID(),
+                ...(confirmation ? { confirmation } : {}),
+              });
+            }}
+            onOpenInspectorSettings={onOpenInspectorSettings}
             onRetryDelivery={async (deliveryId) => {
               if (!detail.binding.sessionId) return;
               await mutate(`/api/workflow-deliveries/${deliveryId}/retry`, {

@@ -134,7 +134,7 @@ test("run detail distinguishes malformed durable rows from expired history", asy
     id: "corrupt-binding",
     workflowVersionId: published.version.id,
     noteKey: "corrupt-note",
-    sessionId: null,
+    sessionId: "corrupt-session",
     sessionAgent: "codex",
     sessionName: "Corrupt worker",
     sessionCwd: "/repo",

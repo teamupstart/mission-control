@@ -1,6 +1,6 @@
 # Phase 6 plan: hardening, observability, and product polish
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 

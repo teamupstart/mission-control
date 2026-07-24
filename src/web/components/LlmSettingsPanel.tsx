@@ -120,9 +120,11 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
       <div className="foreman-models">
         <p className="settings-group-label">Background jobs</p>
         <p className="settings-hint foreman-models-hint">
-          Each is a single cheap call with a deterministic fallback behind it - if the model
-          can't be reached, you get a rougher title or a terser digest, never an error. Leave a
-          field empty to accept the value shown in it.
+          Most are a single cheap call with a deterministic fallback behind them - if the model
+          can't be reached, you get a rougher title or a terser digest, never an error. The
+          ensemble comparison is a review instead: if it can't produce a valid ranking, it fails
+          the comparison rather than guessing a winner. Leave a field empty to accept the value
+          shown in it.
         </p>
         <ModelSuggestions
           providerLabel={runners.find((provider) => provider.id === modelRunner)?.label ?? modelRunner}

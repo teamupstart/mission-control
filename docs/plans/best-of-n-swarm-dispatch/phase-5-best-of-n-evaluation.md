@@ -78,10 +78,10 @@ Out of scope:
 
 5. Assemble one anonymous evidence packet.
    - Require every subject artifact to be `ready`, declared by the stage, based on the run’s pinned SHA, and backed by a verified private ref.
-   - Sort by a stable server-side artifact key, then assign randomized opaque display labels independent of member ordinal, harness, model, and role.
-   - Include original task/acceptance intent, exact base SHA, snapshotted guidance, file statistics, bounded diff, binary markers, member-reported summary/checks clearly labeled as claims, observed no-mistakes/test evidence when present, cost telemetry when authoritative, and truncation metadata.
+   - Sort by stable artifact id, then deterministically assign opaque `Submission A/B/...` labels independent of member ordinal, harness, model, and role. Stable ordering makes a retry rebuild the exact same packet and input fingerprint.
+   - Include original task/acceptance intent, exact base SHA, snapshotted guidance, file statistics, bounded diff, binary markers, member-reported summary/checks/test evidence clearly labeled as claims, and truncation metadata.
    - Exclude agent name, model, member ordinal, session title, worktree path, ref name, and sibling transcript.
-   - Keep the label ↔ artifact mapping only in server memory and the persisted protected input fingerprint, not in the model prompt.
+   - Keep the label ↔ artifact mapping out of the model prompt. Persist the stable subject-artifact order on the evaluation and map labels back to artifact ids only after validation.
 
 6. Enforce input limits honestly.
    - Cap the whole packet around 400 KiB for v1, with a named constant and tests.
@@ -126,7 +126,7 @@ Out of scope:
 - The evaluation result is a versioned JSON envelope. The compact ensemble SSE summary may expose only `awaiting_decision`, eligible count, and a short result label; full scorecards stay in detail HTTP responses.
 - No mutating public route is added. Existing read-only detail routes may expose the completed evaluation.
 - Creation remains an internal manager/test path until Phase 6 registers every compiled production driver and the explicit human finalization API.
-- The evaluator does not execute repository commands. Reported commands remain claims; observed no-mistakes evidence is labeled separately.
+- The evaluator does not execute repository commands. Reported commands and test evidence remain claims; only repository-derived diff facts are observed evidence.
 
 ## 7. Tests and Verification
 

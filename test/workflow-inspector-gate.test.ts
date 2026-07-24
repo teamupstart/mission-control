@@ -671,6 +671,9 @@ test("finding state and its immutable repair packet survive insertion failure an
     () => seeded.store.getDelivery(committed.delivery.id)?.state === "delivered",
     "prepared Inspector feedback did not resume after restart",
   );
+  const recovered = seeded.store.getDelivery(committed.delivery.id);
+  assert.equal(recovered?.payload, "repair packet");
+  assert.equal(recovered?.payloadSha256, "repair-packet");
   assert.equal(
     injected.filter((payload) => payload === "repair packet").length,
     1,

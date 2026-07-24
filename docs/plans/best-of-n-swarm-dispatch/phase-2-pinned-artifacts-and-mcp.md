@@ -163,3 +163,41 @@ must not duplicate MCP runtime/config resolution.
   phase can merge independently of Ensemble persistence.
 - 2026-07-23: Kept launch options internal and restart behavior in the future Ensemble manager
   rather than adding denormalized Task columns.
+
+### Implementation record
+
+- 2026-07-23: `TaskDispatchOptions` is declared in `src/server/dispatcher.ts` and
+  `TaskManager.DispatchOptions` now extends it, so the launch options and the one
+  TaskManager-only decision (`overrideDisabled`) stay distinguishable while
+  `TaskManager.dispatch` forwards the object whole.
+- 2026-07-23: `MissionMcpRequirement` names tools from an explicit `MISSION_MCP_TOOLS`
+  vocabulary rather than free text. `mission-mcp.test.ts` scrapes the MCP server's own
+  `registerTool` calls and fails on drift, because a pre-approved tool name that does not
+  match what the server publishes pre-approves nothing while looking as if it did. Phase 4
+  appends its submission tool to that list when it adds it to `src/mcp/server.ts`.
+- 2026-07-23: Claude's launch-scoped MCP config keeps its existing
+  `<state>/ask-channel/mcp.json` path even though `mission-mcp.ts` now owns its bytes.
+  Renaming it would orphan the file every installed copy's argv already points at rather
+  than migrate it.
+- 2026-07-23: A required Mission MCP that a launch cannot carry (missing bundle, or a
+  harness with no MCP client) is a loud warning, not a failed dispatch. This layer is
+  mechanism; whether such a session is still worth launching is Phase 4's policy, and the
+  phase's own "degrades without aborting normal dispatch" rule points the same way. The
+  Dispatcher reads the fact off the argv it is about to spawn rather than off the agent id.
+- 2026-07-23: `resetWorktreeToCommit` in `src/server/git/ensemble-snapshot.ts` is the single
+  owner of "hard reset, then `clean -fd` and never `-fdx`", used by pinned Treehouse
+  provisioning and by artifact restore. Two copies of that flag is one copy that eventually
+  erases a pool's warm dependencies.
+- 2026-07-23: A pinned provisioning failure unwinds what it created before throwing - the
+  pool lease is returned, a git-fallback worktree is torn down through `teardownWorktree` -
+  because `provisionWorktree` throws before the Dispatcher records the path, so nothing
+  downstream could ever find it.
+- 2026-07-23: `materializeSnapshotDiff` refuses a patch larger than its subprocess buffer
+  instead of reporting a truncation whose omitted-byte count it would have to invent.
+- 2026-07-23: The Codex TOML override shape was re-probed against codex-cli 0.145.0 with
+  `codex mcp list --json`; command, args and env round-trip byte-for-byte, including paths
+  carrying spaces and single quotes and an empty `env={}` inline table. The suite keeps that
+  as a fixture and does not depend on an installed Codex.
+- 2026-07-23: The Treehouse arm of `provisionWorktree` is exercised through the exported
+  `pinLeasedWorktree` against a real linked worktree. Reaching it through `provisionWorktree`
+  would make the suite pass or fail on whether the pool binary is installed.

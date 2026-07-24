@@ -817,6 +817,13 @@ fine - it is a static instruction with no secrets in it.
 Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
+*Which* MCP server those flags point at is decided in one place, `src/server/mission-mcp.ts`:
+the built bundle's path, the runtime that can execute it (a real `node`, or the Electron
+binary in node mode when there isn't one), and the name it is registered under. Claude reads
+that as a `--mcp-config` file; Codex, when a launch asks for it, reads the same answer as
+`-c mcp_servers.mission-control.*` overrides. Either way it is scoped to that one launch and
+leaves whatever **Install integrations** registered machine-wide alone.
+
 ## Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋

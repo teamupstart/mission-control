@@ -28,9 +28,11 @@
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Long enough for a cold ESM load of a ~780KB bundle on a slow CI runner. */
 const BOOT_TIMEOUT_MS = 30_000;
@@ -135,7 +137,52 @@ async function smokeMcp() {
   console.log("[smoke] mcp bundle loads");
 }
 
+/**
+ * Prove the satellite paths the DAEMON BUNDLE computes land on the bundles we just built.
+ *
+ * The failure this catches has already shipped once, for the Codex hook bridge: the
+ * specifier was written from a module four levels down in the source tree, esbuild
+ * collapsed everything into `dist/server/index.mjs`, and `import.meta.url` became that one
+ * file's - so the path resolved above the repo, `existsSync` failed, and every packaged
+ * build silently launched Codex uninstrumented. The designed fallback, firing for a reason
+ * that is not the designed one. Nothing was looking: typecheck reads source, the unit tests
+ * import from `src/`, and a path that merely does not exist throws nothing.
+ *
+ * So this reads the specifiers out of the built bundle and resolves them relative to the
+ * bundle's own location, which is exactly what the daemon does at runtime. It is the one
+ * question a source-level suite cannot ask, and the two answers it checks - the MCP server
+ * a dispatched session is pointed at, and the hook bridge a dispatched Codex session runs -
+ * are both launch paths whose failure mode is silence.
+ */
+async function smokeSatellitePaths() {
+  const bundle = resolve("dist/server/index.mjs");
+  const source = await readFile(bundle, "utf8");
+  const expected = [
+    ["MCP server", "dist/mcp/server.mjs"],
+    ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
+  ];
+  for (const [label, built] of expected) {
+    const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[.\/]/g, "\\$&")})", *import\.meta\.url\)`)
+      .exec(source);
+    if (!m) {
+      fail(`the daemon bundle computes no path for the ${label} - has its resolver been renamed?`);
+      continue;
+    }
+    const resolved = fileURLToPath(new URL(m[1], pathToFileURL(bundle)));
+    if (resolved !== resolve(built)) {
+      fail(`the daemon bundle resolves the ${label} to ${resolved}, but it was built at ${resolve(built)}`);
+      continue;
+    }
+    if (!existsSync(resolved)) {
+      fail(`the daemon bundle resolves the ${label} to ${resolved}, which does not exist`);
+      continue;
+    }
+    console.log(`[smoke] daemon bundle resolves the ${label} to the built artifact`);
+  }
+}
+
 await smokeDaemon();
 await smokeMcp();
+await smokeSatellitePaths();
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[smoke] ok");

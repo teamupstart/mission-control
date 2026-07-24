@@ -13,7 +13,10 @@ import { harnessFor } from "./harness/index.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
+import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
+import type { MissionMcpRequirement } from "./mission-mcp.ts";
 import { run } from "./util/exec.ts";
+import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import {
@@ -41,6 +44,29 @@ const HOOK_READY_MS = Number(envVar("DISPATCH_HOOK_READY_MS") ?? 20000);
 const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
+ * What ONE launch may be asked for, beyond what the Task itself says.
+ *
+ * Deliberately ephemeral and server-only: nothing here is persisted on the Task, because
+ * these are properties of a launch attempt rather than of the work. A caller that needs a
+ * relaunch to make the same request holds that request in its own durable state and asks
+ * again - which is exactly what a restart-safe orchestrator has to do anyway, and what a
+ * nullable column on `tasks` would have quietly pretended was unnecessary.
+ *
+ * MECHANISM ONLY. `baseSha` says "start this worktree at exactly this commit"; it does not
+ * say why, and the Dispatcher never learns why. `missionMcp` says which of our own MCP
+ * tools the launched session has to be able to call, as capabilities rather than as flags -
+ * which flags that costs is each harness's answer (`mission-mcp.ts`).
+ */
+export interface TaskDispatchOptions {
+  /** A launch-time default model for an otherwise-unpinned backlog task. See `TaskManager.dispatch`. */
+  defaultModel?: string | null;
+  /** A full commit id in the task's `repoRoot` to provision the worktree at. */
+  baseSha?: string;
+  /** Mission MCP tools this launch requires. */
+  missionMcp?: MissionMcpRequirement;
+}
+
+/**
  * Turns a task into a live agent: provision an isolated worktree, launch the
  * agent in a detached terminal home there, wait for passive discovery and readiness to
  * bind that exact live session, then inject the task as its first prompt.
@@ -60,7 +86,7 @@ export class Dispatcher {
     } = {},
   ) {}
 
-  async dispatch(taskId: string): Promise<void> {
+  async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
@@ -82,8 +108,18 @@ export class Dispatcher {
       const label = sessionLabel(task.title);
       const shortId = taskId.slice(0, 6);
 
-      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, () =>
-        poolPins(this.registry),
+      // Resolved BEFORE anything is provisioned, so a caller that named a commit this
+      // repository does not have costs nothing but an error - rather than a worktree, a
+      // terminal home and an agent that has to be torn down again.
+      const baseSha = options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
+
+      const wt = await provisionWorktree(
+        task.repoRoot,
+        taskId,
+        slug,
+        shortId,
+        () => poolPins(this.registry),
+        baseSha,
       );
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
@@ -95,6 +131,9 @@ export class Dispatcher {
       const model = resolveDispatchModel(task.agent, task.model);
       const effort = resolveDispatchEffort(task.agent, task.effort);
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
+      // Which of OUR tools this launch has to be able to call, if the caller said. Passed to
+      // each harness's launch builder as a requirement, never as flags - see `mission-mcp.ts`.
+      const missionMcp = options.missionMcp ?? null;
       // The ask channel rides along on every dispatch: it takes Claude's built-in
       // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than
@@ -104,18 +143,33 @@ export class Dispatcher {
       // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
       // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
       const codexLaunch = task.agent === "codex"
-        ? prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch)
-        : { args: [] as string[], instrumented: true };
+        ? await prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch, missionMcp)
+        : { args: [] as string[], instrumented: true, missionMcp: false };
       const piLaunch = task.agent === "pi"
         ? preparePiLaunch()
         : { args: [] as string[], sessionId: null };
+      const askArgs = await askChannelArgs(task.agent, missionMcp);
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
-        ...(await askChannelArgs(task.agent)),
+        ...askArgs,
         ...codexLaunch.args,
         ...piLaunch.args,
       ];
+      // Claude's registration rides on the ask channel and Codex's is its own override
+      // block, so "did this launch get our MCP server" has two sources - but the question is
+      // asked of the ARGV that actually reaches the child rather than of the agent id,
+      // because that is the only reading a builder which failed halfway cannot contradict.
+      // Not fatal: this layer is mechanism, and whether a session without those tools is
+      // still worth launching is the caller's policy, not the Dispatcher's.
+      const missionMcpRegistered = codexLaunch.missionMcp || askArgs.includes("--mcp-config");
+      if (missionMcp && !missionMcpRegistered) {
+        console.warn(
+          `[mission-control] task ${taskId} asked for the Mission MCP tools ` +
+            `${missionMcp.tools.join(", ")}, but its ${task.agent} launch could not carry them - ` +
+            `it will run without them (is the MCP bundle built?).`,
+        );
+      }
 
       const homeName = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
       this.patch(taskId, { homeName });
@@ -486,11 +540,68 @@ export interface ProvisionedWorktree {
 }
 
 /**
+ * Confirm a caller's pinned base is a real commit in this repository, and return it.
+ *
+ * FULL ids only. A short id or a ref name would resolve here and still be the wrong
+ * contract: `main` means a different commit an hour later, which is precisely the drift a
+ * pinned base exists to remove, and a caller that persisted "main" would have no record of
+ * what its member actually started from. So the id has to name one immutable object and
+ * `rev-parse` has to hand back that same object - anything else is refused rather than
+ * quietly resolved to something near it.
+ */
+export async function verifyPinnedBase(repoRoot: string, baseSha: string): Promise<string> {
+  if (!/^[0-9a-f]{40}$/.test(baseSha)) {
+    throw new Error(`pinned base "${baseSha}" is not a full 40-character commit id`);
+  }
+  const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`]);
+  const resolved = r.stdout.trim();
+  if (r.code !== 0 || resolved !== baseSha) {
+    throw new Error(`pinned base ${baseSha} is not a commit in ${repoRoot}`);
+  }
+  return baseSha;
+}
+
+/**
+ * Point a leased pool worktree at one exact commit, or refuse to touch it.
+ *
+ * The ownership check is not paranoia about treehouse - it is the guard on a HARD RESET.
+ * `reset --hard` plus a clean is destructive by design, and the one thing that makes it
+ * safe is that the tree belongs to the repository whose commit we are about to force it
+ * to. A lease from a pool we could not prove is this repo's would be somebody else's
+ * checkout, and the reset would land in it.
+ *
+ * Exported because the pool binary is not a test dependency: `provisionWorktree` only
+ * reaches this arm on a machine with treehouse installed and a `treehouse.toml` repo, so
+ * the behaviour is exercised here directly against a real linked worktree instead.
+ */
+export async function pinLeasedWorktree(
+  repoRoot: string,
+  leasePath: string,
+  baseSha: string,
+): Promise<void> {
+  const owner = mainRepoRoot(leasePath);
+  const asked = mainRepoRoot(repoRoot) ?? realpathSync(repoRoot);
+  if (!owner || owner !== asked) {
+    throw new Error(
+      `the pooled worktree ${leasePath} belongs to ${owner ?? "no repository we can name"}, not ${asked} - ` +
+        "refusing to reset a checkout we cannot prove is this repository's",
+    );
+  }
+  await resetWorktreeToCommit(leasePath, baseSha);
+}
+
+/**
  * Give a task its own isolated tree. Repos that opted into treehouse (a
  * `treehouse.toml` at the root) get a pre-warmed pooled worktree; everything else
  * gets a plain `git worktree` on a fresh `harness/<slug>` branch. Either way the
  * agent never shares a working tree with another session - the whole reason this
  * harness exists.
+ *
+ * `baseSha` pins the tree's starting point. Absent - which is every ordinary dispatch -
+ * nothing about this function changes: the git fallback still cuts from `HEAD` and a pool
+ * lease is still taken as it comes. Present, both providers converge on that ONE commit and
+ * then re-read `HEAD` to prove they did, because a member that silently started somewhere
+ * else is not comparable with its siblings and nothing downstream could tell.
  */
 export async function provisionWorktree(
   repoRoot: string,
@@ -511,6 +622,8 @@ export async function provisionWorktree(
    * compile than one that reaps by omission.
    */
   pins: () => PoolPins,
+  /** The exact commit the tree must start at, verified by `verifyPinnedBase` already. */
+  baseSha: string | null = null,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (check.code !== 0 || check.stdout.trim() !== "true") {
@@ -535,11 +648,30 @@ export async function provisionWorktree(
       }
     }
     if (lease.path !== null) {
-      return {
-        path: realpathSync(lease.path),
-        branch: await currentBranch(lease.path),
-        provider: "treehouse",
-      };
+      const path = realpathSync(lease.path);
+      if (baseSha) {
+        try {
+          await pinLeasedWorktree(repoRoot, path, baseSha);
+          // Asserted again HERE, and not only inside the reset, so both arms of this
+          // function make the same promise in the same place - the guarantee belongs to
+          // provisioning rather than to whatever a helper happens to check today.
+          await verifyHeadIs(path, baseSha);
+        } catch (err) {
+          // The lease is LIVE and this function is about to throw, so nothing downstream
+          // will ever record this tree on a task - which means teardown will never see it
+          // and the pool loses a slot permanently. Hand it back here, while we still know
+          // it is ours and nothing has been launched into it. A return that itself fails is
+          // reported alongside the real cause rather than replacing it.
+          const returned = await returnLease(path);
+          const cause = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            returned.code === 0
+              ? cause
+              : `${cause} - and the pool lease could not be returned: ${returned.stderr.trim() || `exit ${returned.code}`}`,
+          );
+        }
+      }
+      return { path, branch: await currentBranch(path), provider: "treehouse" };
     }
     // Fall through to a plain worktree - but say so. This used to be silent, which
     // hid a full pool behind trees that merely looked unfamiliar; the fallback is a
@@ -561,11 +693,38 @@ export async function provisionWorktree(
   mkdirSync(WORKTREES_DIR, { recursive: true });
   const path = join(WORKTREES_DIR, taskId);
   const branch = `harness/${slug}-${shortId}`;
-  const add = await run("git", ["-C", repoRoot, "worktree", "add", path, "-b", branch, "HEAD"], {
-    timeoutMs: 60000,
-  });
+  const add = await run(
+    "git",
+    ["-C", repoRoot, "worktree", "add", path, "-b", branch, baseSha ?? "HEAD"],
+    { timeoutMs: 60000 },
+  );
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
-  return { path: realpathSync(path), branch, provider: "git" };
+  const real = realpathSync(path);
+  if (baseSha) {
+    try {
+      await verifyHeadIs(real, baseSha);
+    } catch (err) {
+      // Same rule as the pool arm: this tree exists on disk but no task will ever record
+      // it, so tear it down here rather than leave an unreferenced worktree and branch
+      // behind. `teardownWorktree` is the one owner of that removal, and a removal that
+      // itself fails rides along with the real cause instead of replacing or hiding it -
+      // somebody has a directory to delete by hand.
+      const cause = err instanceof Error ? err.message : String(err);
+      const cleanup = await teardownWorktree({
+        repoRoot, worktreePath: real, branch, provider: "git", homeName: null,
+      }).then(() => null, (e: unknown) => (e instanceof Error ? e.message : String(e)));
+      throw new Error(cleanup ? `${cause} - and its worktree could not be removed: ${cleanup}` : cause);
+    }
+  }
+  return { path: real, branch, provider: "git" };
+}
+
+/**
+ * Hand a pooled worktree back to the pool - the one spelling of that command, shared by
+ * ordinary teardown and by a pinned provisioning that has to unwind a lease it just took.
+ */
+function returnLease(path: string): ReturnType<typeof run> {
+  return run("treehouse", ["return", path], { timeoutMs: 30000 });
 }
 
 /**
@@ -643,7 +802,7 @@ export async function teardownWorktree(task: {
     // Hand the lease back to the pool. Never fall back to `git worktree remove` for
     // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
     // and leak the lease. If return fails, leave it for the pool to reconcile.
-    const returned = await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    const returned = await returnLease(task.worktreePath);
     if (returned.code !== 0) {
       throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
     }

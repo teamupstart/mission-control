@@ -674,11 +674,64 @@ test("a plan whose shape this build cannot parse degrades that run and no other"
   assert.equal(store.getRun(broken.id)?.plan, null);
 });
 
-test("a corrupt JSON column that is the run's own state throws, naming the table and row", () => {
+test("a corrupt column on the RUN degrades it, because the daemon boots through this read", () => {
+  // `EnsembleManager` builds the registry's summaries during daemon construction. A run row
+  // that threw here would stop the daemon starting, leaving no dashboard from which to delete
+  // the row that is stopping it - so one bad run costs that run its runnability and nothing
+  // else, and the list it is in still loads.
   const store = new EnsembleStore(db);
-  const { run } = insert(store);
-  db.prepare(`UPDATE ensemble_runs SET strategy_config_json = '{' WHERE id = ?`).run(run.id);
-  assert.throws(() => store.getRun(run.id), EnsembleRowError);
+  const broken = insert(store, "manual:broken-config").run;
+  const healthy = insert(store, "manual:healthy-config").run;
+  db.prepare(`UPDATE ensemble_runs SET strategy_config_json = '{', outcome_json = 'nope' WHERE id = ?`).run(
+    broken.id,
+  );
+
+  const loaded = store.getRun(broken.id);
+  assert.ok(loaded);
+  assert.equal(loaded.strategyConfig, null);
+  assert.equal(loaded.outcome, null);
+  assert.ok(loaded.unreadable?.fields.includes("strategy_config_json"));
+  assert.ok(loaded.unreadable?.fields.includes("outcome_json"));
+  assert.equal(store.listSummaries().length, 2);
+  assert.equal(store.summary(broken.id)?.attention, true);
+  assert.equal(store.summary(healthy.id)?.unreadable, null);
+});
+
+test("a corrupt column on a CHILD throws, naming the table and row", () => {
+  // The other half of the same decision. A child is read by an HTTP detail request, not at
+  // boot, so failing loudly with the row named is better than a silently empty artifact list
+  // that a later phase would read as "this member submitted nothing".
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  const attempt = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: "task-1",
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "running",
+  });
+  store.recordArtifact({
+    runId: run.id,
+    attemptId: attempt.id,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready",
+    locator: {},
+    digest: "d",
+    metadata: {},
+    operationKey: "op-corrupt",
+    readyAt: 1,
+  });
+  db.prepare(`UPDATE ensemble_artifacts SET locator_json = '{' WHERE operation_key = 'op-corrupt'`).run();
+  assert.throws(() => store.listArtifacts(run.id), EnsembleRowError);
 });
 
 test("deleting a run takes its whole history with it and leaves the others alone", () => {

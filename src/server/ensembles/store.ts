@@ -316,12 +316,40 @@ const subjectsSchema = z
 
 // ---- row -> record ----
 
+/** Parse one JSON column without throwing: the value, or null and a sentence saying why. */
+function readJsonColumn<T>(
+  raw: string,
+  schema: z.ZodType<T>,
+  what: string,
+): { value: T | null; detail: string | null } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { value: null, detail: `${what} could not be read` };
+  }
+  const checked = schema.safeParse(parsed);
+  return checked.success
+    ? { value: checked.data, detail: null }
+    : { value: null, detail: `${what} is in a shape this build does not understand` };
+}
+
 /**
- * Read the three facts a newer build could have written and this one may not understand.
+ * Read every field of a run that this build might not be able to make sense of.
  *
- * The `unreadable` this returns is what fails a run CLOSED: `ensembleIsRunnable` refuses it,
- * so nothing downstream can reach a plan without having handled the null. The mapper has no
- * branch that could pick a default, because the type has nowhere to put one.
+ * **Nothing in here throws, and that is the point.** `EnsembleManager` builds the registry's
+ * summaries during daemon construction, so a single unreadable run row that threw would stop
+ * the daemon from starting - leaving the operator no dashboard from which to delete the row
+ * that is stopping it. One bad row costs THAT run its runnability and nothing else, the same
+ * stance `parseTemplate` takes in the schedule store.
+ *
+ * The child tables deliberately keep throwing (see `parseJson`). A corrupt artifact locator or
+ * stage input fails one HTTP detail read, names its table and row, and leaves the rest of the
+ * daemon standing; it is not on the boot path.
+ *
+ * The `unreadable` this returns is what fails a run CLOSED: `ensembleIsRunnable` refuses it, so
+ * nothing downstream can reach a plan without having handled the null. The mapper has no branch
+ * that could pick a default, because the type has nowhere to put one.
  *
  * The plan is the interesting case. A plan whose SHAPE this build cannot parse degrades to
  * null; a plan that parses but names a driver version we no longer ship stays READABLE - so
@@ -334,29 +362,29 @@ function readRunSnapshot(row: RunRow): {
   strategyId: ReturnType<typeof knownStrategyId>;
   status: EnsembleStatus | null;
   plan: CompiledEnsemblePlan | null;
+  strategyConfig: EnsembleJson;
+  outcome: EnsembleOutcome | null;
   unreadable: EnsembleUnreadable | null;
 } {
   const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, row.source_kind);
   const strategyId = knownStrategyId(row.strategy_id);
   const status = readEnsembleEnum(ENSEMBLE_STATUSES, row.status);
-
-  let plan: CompiledEnsemblePlan | null = null;
-  let planDetail: string | null = null;
-  try {
-    const parsed = CompiledEnsemblePlanSchema.safeParse(JSON.parse(row.compiled_plan_json));
-    if (parsed.success) plan = parsed.data as CompiledEnsemblePlan;
-    else planDetail = "its compiled plan is in a shape this build does not understand";
-  } catch {
-    planDetail = "its compiled plan could not be read";
-  }
+  const plan = readJsonColumn(row.compiled_plan_json, CompiledEnsemblePlanSchema, "its compiled plan");
+  const config = readJsonColumn(row.strategy_config_json, EnsembleJsonSchema, "its strategy configuration");
+  const outcome =
+    row.outcome_json === null
+      ? { value: null, detail: null }
+      : readJsonColumn(row.outcome_json, EnsembleOutcomeSchema, "its outcome");
 
   const bad: Array<[string, string]> = [];
   if (sourceKind === null) bad.push(["source_kind", row.source_kind]);
   if (strategyId === null) bad.push(["strategy_id", row.strategy_id]);
   if (status === null) bad.push(["status", row.status]);
-  if (plan === null) bad.push(["compiled_plan_json", planDetail ?? "unreadable"]);
+  if (config.detail !== null) bad.push(["strategy_config_json", config.detail]);
+  if (outcome.detail !== null) bad.push(["outcome_json", outcome.detail]);
+  if (plan.value === null) bad.push(["compiled_plan_json", plan.detail ?? "unreadable"]);
   else {
-    const missing = missingDriverKeys(plan);
+    const missing = missingDriverKeys(plan.value);
     if (missing.length > 0) bad.push(["compiled_plan_json", `it needs ${missing.join(", ")}`]);
   }
 
@@ -365,13 +393,24 @@ function readRunSnapshot(row: RunRow): {
       ? null
       : {
           reason:
-            "This ensemble was written by a newer build of Mission Control: " +
+            "Mission Control cannot read this ensemble as it is stored - most likely a newer " +
+            "build wrote it: " +
             bad.map(([field, value]) => `${field} is "${value}"`).join(", ") +
             ". It will not run here.",
           fields: bad.map(([field]) => field),
         };
 
-  return { sourceKind, strategyId, status, plan, unreadable };
+  return {
+    sourceKind,
+    strategyId,
+    status,
+    plan: plan.value as CompiledEnsemblePlan | null,
+    // An unreadable config is history nobody can render, not a reason to hide the run; the
+    // `unreadable` above is what stops it being used for anything.
+    strategyConfig: config.value ?? null,
+    outcome: outcome.value as EnsembleOutcome | null,
+    unreadable,
+  };
 }
 
 function rowToRun(row: RunRow): EnsembleRun {
@@ -391,22 +430,10 @@ function rowToRun(row: RunRow): EnsembleRun {
     baseBranch: row.base_branch,
     baseSha: row.base_sha,
     plan: snapshot.plan,
-    strategyConfig: parseJson(
-      "ensemble_runs",
-      row.id,
-      "strategy_config_json",
-      row.strategy_config_json,
-      EnsembleJsonSchema,
-    ),
+    strategyConfig: snapshot.strategyConfig,
     status: snapshot.status,
     activeStageId: row.active_stage_id,
-    outcome: parseNullableJson(
-      "ensemble_runs",
-      row.id,
-      "outcome_json",
-      row.outcome_json,
-      EnsembleOutcomeSchema,
-    ) as EnsembleOutcome | null,
+    outcome: snapshot.outcome,
     unreadable: snapshot.unreadable,
     error: row.error,
     createdAt: row.created_at,

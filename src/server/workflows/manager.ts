@@ -2159,10 +2159,31 @@ export class WorkflowManager {
       waitReason: "findings",
       findingFingerprints: fingerprints,
     };
-    if (!binding.sessionId || !state.prUrl || !state.targetHeadSha) return;
+    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
+    const findingEvent = {
+      prKey: state.prKey,
+      targetHeadSha: state.targetHeadSha,
+      ...findingFingerprintAudit(fingerprints),
+      policy: version.completionPolicy.onFindings,
+    };
+    if (!binding.sessionId) {
+      if (inspectorOnly) {
+        this.transitionInspectorGate(
+          run,
+          state,
+          nextState,
+          "waiting_for_new_head",
+          "inspector_findings",
+          "inspector_findings",
+          findingEvent,
+          now,
+        );
+      }
+      return;
+    }
+    if (!state.prUrl || !state.targetHeadSha) return;
     const summary = this.store.runSummary(run.id);
     if (!summary) return;
-    const inspectorOnly = version.completionPolicy.onFindings === "inspector_only";
     const rendered = renderInspectorFeedback({
       workflowName: summary.workflowName,
       workflowVersion: version.version,
@@ -2184,12 +2205,7 @@ export class WorkflowManager {
         expectedState: state,
         state: nextState,
         status: inspectorOnly ? "waiting_for_new_head" : "waiting_for_session",
-        findingEvent: {
-          prKey: state.prKey,
-          targetHeadSha: state.targetHeadSha,
-          ...findingFingerprintAudit(fingerprints),
-          policy: version.completionPolicy.onFindings,
-        },
+        findingEvent,
         delivery: {
           id: deliveryId,
           runId: run.id,

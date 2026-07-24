@@ -412,6 +412,49 @@ test("current-head findings prepare one frozen packet and zero findings complete
   await clean.manager.stop();
 });
 
+test("sessionless Inspector-only findings still wait for a new head", async () => {
+  const seeded = await seed({ policy: "inspector_only" });
+  updateInspectorPr(seeded.key, {
+    headSha: seeded.head,
+    lastAttemptSha: seeded.head,
+    reviewPosture: "live",
+    round: 1,
+    lastReviewedAt: Date.now(),
+  }, Date.now());
+  upsertInspectorComment({
+    id: `sessionless-comment-${serial}`,
+    prKey: seeded.key,
+    fingerprint: `sessionless-finding-${serial}`,
+    path: "src/file.ts",
+    line: 10,
+    title: "Wait for the repair head",
+    body: "The bound session is no longer available.",
+    severity: "major",
+    round: 1,
+    status: "open",
+    replies: 0,
+    answeredCommentId: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  db.prepare(`UPDATE workflow_bindings SET session_id = NULL WHERE id = ?`).run(seeded.ids.binding);
+
+  signal(seeded, seeded.head);
+  await waitFor(
+    () => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_new_head",
+    "sessionless Inspector-only findings did not preserve the new-head policy",
+  );
+  const state = seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(state.waitReason, "findings");
+  assert.deepEqual(state.findingFingerprints, [`sessionless-finding-${serial}`]);
+  assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 0);
+  assert.equal(
+    seeded.store.listEvents(seeded.ids.run).filter((event) => event.kind === "inspector_findings").length,
+    1,
+  );
+  await seeded.manager.stop();
+});
+
 test("atomic repair-packet failure leaves the manager's prior gate untouched", async () => {
   const seeded = await seed();
   updateInspectorPr(seeded.key, {

@@ -77,6 +77,13 @@ export function useEventStream(): MissionState {
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
       // off it instead of storming for everything that changed during the gap.
       setHasSnapshot(false);
+      // Drop the settings status too: while the channel is down, Inspector/YOLO/task-source
+      // health may change and we would not hear it, so the dots must go dark ("unknown")
+      // rather than keep asserting the pre-drop state - the reconnect snapshot restores it.
+      // This is the status tuple's own contract, not fleet cost's: a stale "armed"/"failing"
+      // dot claims a subsystem posture that may no longer hold, where a stale cost figure is
+      // just a few-second-old estimate.
+      setSettingsStatus(null);
     };
 
     es.onmessage = (ev) => {

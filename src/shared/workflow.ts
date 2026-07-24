@@ -30,6 +30,9 @@ export const WORKFLOW_LIMITS = {
   repairRoundsMax: 20,
   feedbackFieldBytes: 4_000,
   feedbackPayloadBytes: 8_000,
+  externalSourceId: 200,
+  externalSourceSegment: 200,
+  externalSourceKey: 1_000,
 } as const;
 
 export const WORKFLOW_EXECUTION_LIMITS = {
@@ -293,7 +296,63 @@ export const WORKFLOW_LLM_CALL_STATES = [
 ] as const;
 export type WorkflowLlmCallState = (typeof WORKFLOW_LLM_CALL_STATES)[number];
 
-export type WorkflowTriggerSource = "manual" | "foreman";
+/**
+ * Who started one durable run and submission. APPEND-ONLY: these strings are persisted in
+ * `workflow_runs.trigger_source` and `workflow_submissions.trigger_source` on operators'
+ * machines, so renaming one does not migrate history, it makes it unparsable.
+ *
+ * Deliberately NOT the same axis as `WORKFLOW_TRIGGER_MODES`. A trigger mode is recurring
+ * binding behaviour an operator chose (answer manually, or let Foreman claim a completion);
+ * a trigger source records which caller actually produced a given submission, and `ensemble`
+ * is a server-owned handoff that starts exactly one initial submission and never recurs.
+ */
+export const WORKFLOW_TRIGGER_SOURCES = ["manual", "foreman", "ensemble"] as const;
+export type WorkflowTriggerSource = (typeof WORKFLOW_TRIGGER_SOURCES)[number];
+
+/**
+ * External orchestrators that may claim one Workflow binding through the server-owned
+ * boundary. Append-only for the `WORKFLOW_TRIGGER_SOURCES` reason: it is persisted in
+ * `workflow_binding_claims.source_kind`.
+ */
+export const WORKFLOW_EXTERNAL_SOURCE_KINDS = ["ensemble"] as const;
+export type WorkflowExternalSourceKind = (typeof WORKFLOW_EXTERNAL_SOURCE_KINDS)[number];
+
+/**
+ * Display provenance for a run whose binding was claimed by an external orchestrator.
+ *
+ * `sourceId` is DISPLAY identity - the id of the record a later phase can deep-link to.
+ * It is explicit precisely so no reader ever has to take the opaque idempotency key apart:
+ * that key is a server-derived string whose shape may change, and parsing it in the store
+ * or the browser would turn an internal spelling into a wire contract.
+ */
+export interface WorkflowExternalSource {
+  kind: WorkflowExternalSourceKind;
+  sourceId: string;
+  createdAt: number;
+}
+
+/** One external orchestrator's durable claim on exactly one Workflow binding. */
+export interface WorkflowBindingClaim {
+  kind: WorkflowExternalSourceKind;
+  /** Opaque, server-derived idempotency key. Never parsed by a reader. */
+  sourceKey: string;
+  sourceId: string;
+  bindingId: WorkflowBindingId;
+  createdAt: number;
+}
+
+/**
+ * What an externally sourced submission must observe before its evidence is durable.
+ *
+ * `requireCleanWorktree` is the literal `true` rather than a boolean because a matching HEAD
+ * alone is NOT the selected artifact: uncommitted changes would put evidence into the review
+ * that the external caller never selected. Typing it as a literal is what stops a later
+ * caller from opting out of exact-clean capture while still satisfying the contract.
+ */
+export interface WorkflowCaptureExpectation {
+  expectedHeadSha: string;
+  requireCleanWorktree: true;
+}
 
 export interface WorkflowConfig {
   liveEnabled: boolean;
@@ -638,4 +697,9 @@ export interface WorkflowRunDetail {
   receipts: WorkflowEdgeReceipt[];
   deliveries: WorkflowDelivery[];
   events: WorkflowEvent[];
+  /**
+   * Provenance for a run an external orchestrator started. Optional and detail-only: run
+   * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
+   */
+  externalSource?: WorkflowExternalSource | null;
 }

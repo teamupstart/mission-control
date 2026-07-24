@@ -1424,13 +1424,17 @@ details; a strict `fail` verdict requires concrete requested changes and evidenc
 Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
 fail verdicts.
 
-The durable engine runs up to three Persona calls concurrently, records attempts and edge
-receipts, waits for all inputs at an all-pass Join, retries transient infrastructure failures
-with bounded backoff, and stops at the binding's repair-round limit. A failing path back to
-Session waits for a manual resubmit. Resubmission captures fresh evidence and refuses an
-unchanged snapshot unless the operator explicitly confirms it, so an approval from an older
-round is never reused. Preview performs no terminal write, keystroke injection, Foreman
-action, Inspector action, or message delivery.
+The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
+Join, retries transient infrastructure failures with bounded backoff, and stops at the
+binding's repair-round limit. A failing path back to Session waits for a manual resubmit.
+Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
+explicitly confirms it, so an approval from an older round is never reused. Preview performs
+no terminal write, keystroke injection, Foreman action, Inspector action, or message delivery.
+
+The whole daemon runs at most three review calls at once, and Persona attempts and context
+compaction spend that one budget together rather than each holding a private ceiling. The
+Foreman is a separate process with its own serial queue, and the background jobs below keep
+their own limits, because they degrade differently and must not wait behind a Persona call.
 
 Run state survives daemon restarts. Interrupted provider calls become auditable errors and
 are retried without duplicating receipts; missing immutable data fails visibly instead of
@@ -1440,6 +1444,40 @@ then requires a fresh resubmit. Reset removes bindings, runs, submissions, attem
 captured context, and model-call metadata through the same session reset owner. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded only for the selected run. Cards, Console, and Board show the same workflow status.
+
+### Runs Mission Control started for itself
+
+Almost every run is one an operator submitted. A run can also be started by Mission Control
+on its own behalf, when one of its own features has already selected an exact result and
+wants it reviewed. That path is internal - there is no endpoint that starts arbitrary runs on
+a caller's say-so, and nothing can aim one at a session you did not choose. The daemon
+resolves the published version, the live conversation, and the idempotency key itself.
+
+Such a run is one run. Repeating the request, or restarting the daemon mid-flight, returns
+the same binding, the same run, and the same first submission rather than starting a second
+review of the same work. A conversation that already has an active binding is reported as a
+conflict: yours is never replaced or quietly taken over.
+
+The evidence must be exactly what was selected. Before anything is stored and before a single
+provider token is spent, the capture has to observe the expected commit **and** a clean
+working tree - matching HEAD with uncommitted changes beside it is not the selected result.
+A mismatch blocks visibly and says what it saw; restoring the exact result and asking again
+resumes that same submission instead of opening a new round.
+
+That commit is pinned to the run at creation and cannot be changed afterwards. A repeat call
+naming a different commit is refused rather than accepted, so one result id always means one
+artifact. For the same reason the ordinary **Preview fresh evidence** and discard-and-resend
+actions refuse on these runs: they re-read whatever the session holds right now, which is not
+what this run is reviewing.
+
+These runs are Preview and Manual only for now. If the pinned workflow version's defaults ask
+for Live delivery or Foreman completion, the request is refused rather than quietly downgraded
+to Preview - being handed a review that silently never reaches the session would be worse than
+being told no.
+
+Run detail names the feature that started a run, matched on that run's own source, so an
+ordinary manual run on the same session is never labelled as someone else's. Reset removes the
+claim with the rest of the run family.
 
 ### Live repair delivery and Foreman completion
 

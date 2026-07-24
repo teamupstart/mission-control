@@ -165,3 +165,69 @@ phase may:
   would be a dead surface. Source metadata lands here; navigation lands with Phase 7.
 - 2026-07-23: Made `source_id` explicit so later UI never parses idempotency keys.
 - 2026-07-23: Added clean-worktree enforcement after inspecting the implemented context capture.
+
+### Implementation record
+
+- 2026-07-23: `WorkflowRunInsert` / `WorkflowSubmissionInsert` already carried an OPTIONAL
+  `triggerSource` that the store defaulted to `manual`, so the finding above understated the
+  hazard: a new caller was one forgotten argument away from filing its runs as an operator's
+  own. Both fields are now REQUIRED, which cost each existing manual call site one explicit
+  word and makes a missing source a typecheck failure rather than durable misattribution.
+- 2026-07-23: Typed `WorkflowCaptureExpectation.requireCleanWorktree` as the literal `true`
+  rather than a boolean, in the interface and in its Zod schema. There is no valid request
+  that waives it, and a literal is what makes the downstream "no phase may skip exact-clean
+  capture" rule compile-enforced instead of a convention.
+- 2026-07-23: Added `WorkflowStore.resumeCapture` instead of reusing `reviveFailedSubmission`.
+  The existing helper resumes a submission whose evidence is already captured and lands it in
+  `running`; a refused external expectation has no evidence yet and must re-enter `capturing`.
+  It is guarded on the exact blocked phases the capture path produces
+  (`external_artifact_mismatch`, `capture_interrupted`, `capture_error`, `stale_capture`), so
+  a restart mid-capture resumes the same run, round and model-call family as a mismatch does.
+- 2026-07-23: `submitExternal` ASSIGNS the external source kind to the trigger source rather
+  than restating `"ensemble"`, so a future external kind that nobody appended to
+  `WORKFLOW_TRIGGER_SOURCES` fails to compile here rather than filing runs under another name.
+- 2026-07-23: The review scheduler is injected into the manager, which passes the same
+  function to its engine. The engine keeps its `concurrency` option as the no-scheduler
+  fallback so a direct `new WorkflowEngine(...)` in a test stays one line.
+- 2026-07-23: The scheduler test counts concurrency INSIDE the compaction and Persona work
+  rather than inside the scheduler, and was verified to fail when compaction bypasses the
+  scheduler - the exact defect this phase was asked to close.
+
+### Review findings, and what they changed
+
+Five defects were found by automated review after the first implementation. All five were
+real; each is now closed with its own regression test.
+
+- 2026-07-23: **The capture expectation had to become durable, not merely per-call.** It was
+  validated on every call but stored nowhere, so a retry under the same idempotency key could
+  name a different commit: while blocked, that resumed the round against evidence nobody
+  selected; after completion, it was answered as idempotent success for a commit the run had
+  never seen. `pinExternalExpectation` records it once at run creation and every later call
+  compares against the pinned copy. It lives in the event ledger rather than a new column
+  because it is written once and only read back for comparison - the shape the other once-only
+  facts in that table already use.
+- 2026-07-23: **The manual re-capture paths were a way around exact-clean capture.**
+  `WorkflowManager.resubmit` (reached by `/api/workflow-runs/:id/resubmit`) and the
+  discard-and-new-round branch of `resolveDelivery` both capture the session's CURRENT state
+  with no expectation attached, and both accept a blocked run - so one operator click could
+  review a working tree the external caller never selected. Both now refuse an externally
+  sourced run. Marking an ambiguous delivery delivered is still available; only re-capturing
+  is not.
+- 2026-07-23: **Preview/Manual is now enforced on the RESOLVED modes, not on the input.**
+  External bindings inherited `deliveryMode` / `triggerMode` from the pinned version's binding
+  defaults, so a version whose defaults said Live would have handed this path a terminal write
+  that no caller asked for. It refuses rather than downgrading, because the plan's own rule is
+  that a selected Live configuration must never be silently replaced with Preview.
+- 2026-07-23: **Provenance is matched on the run's trigger source, not on the binding.** A
+  claimed binding stays usable by the manual and Foreman paths, so reading the claim off the
+  binding alone put "Started by Ensemble" on an operator's own later run.
+- 2026-07-23: **One scheduler is now resolved once from all three options.** The first version
+  spread `options.engine` over an already-set `schedule`, so a caller passing `engine.schedule`
+  got that scheduler for Persona attempts while compaction kept the manager's - reintroducing
+  the exact split the phase existed to close - and `engine.concurrency` was silently ignored.
+- 2026-07-23: `source_key TEXT PRIMARY KEY` did NOT imply `NOT NULL`: on a non-STRICT rowid
+  table SQLite admits several NULL primary keys, so the one-claim-per-source identity was
+  unenforced. Declared `TEXT NOT NULL PRIMARY KEY`. The table's test previously excused the
+  primary key from its own not-null sweep, which is what hid it; the sweep is now uniform and
+  was verified to fail without the fix. The table is introduced by this phase and has never
+  shipped, so no migration is owed.

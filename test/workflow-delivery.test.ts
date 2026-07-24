@@ -31,8 +31,15 @@ function seededStore(suffix: string): InstanceType<typeof WorkflowStore> {
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run-${suffix}`, binding, triggerKey: `manual:${suffix}`, now: 2 },
-    { id: `submission-${suffix}`, triggerKey: `manual:${suffix}`, context: {}, evidence: {}, now: 2 },
+    { id: `run-${suffix}`, binding, triggerSource: "manual", triggerKey: `manual:${suffix}`, now: 2 },
+    {
+      id: `submission-${suffix}`,
+      triggerSource: "manual",
+      triggerKey: `manual:${suffix}`,
+      context: {},
+      evidence: {},
+      now: 2,
+    },
   );
   return store;
 }

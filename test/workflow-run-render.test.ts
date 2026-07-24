@@ -200,6 +200,28 @@ test("run detail renders raw context, fallback, verdict, Join packet, waiting ac
   assert.match(html, /Open session/);
   assert.match(html, /persona verdict/);
   assert.doesNotMatch(html, />Send</);
+  // A manually started run carries no provenance line at all rather than an empty one.
+  assert.doesNotMatch(html, /Started by/);
+});
+
+test("external provenance renders as text, not as a link to a route that does not exist", () => {
+  const html = renderToStaticMarkup(
+    createElement(WorkflowRunView, {
+      detail: {
+        ...detail,
+        externalSource: { kind: "ensemble" as const, sourceId: "ens-42", createdAt: 5 },
+      },
+      onResubmit: async () => {},
+      onRetry: async () => {},
+      onCancel: async () => {},
+    }),
+  );
+  assert.match(html, /Started by Ensemble/);
+  assert.match(html, /ens-42/);
+  // The Ensembles route lands with the dashboard that owns it. Shipping the link first
+  // would give an operator a control that goes nowhere.
+  assert.doesNotMatch(html, /<a [^>]*ens-42/);
+  assert.doesNotMatch(html, /#\/workflows\/ensembles/);
 });
 
 test("run canvas statuses come only from the latest repair submission", () => {

@@ -175,6 +175,7 @@ export interface ScheduleRecoverySummary {
   recoveredAfterTask: number;
   /** Terminal decisions that never got their closing write. */
   finishedTerminal: number;
+  alreadySettled: number;
   cancelled: number;
   failed: number;
   /** Rows this build cannot read, left exactly as found. */
@@ -187,6 +188,7 @@ function emptyRecovery(): ScheduleRecoverySummary {
     recoveredBeforeTask: 0,
     recoveredAfterTask: 0,
     finishedTerminal: 0,
+    alreadySettled: 0,
     cancelled: 0,
     failed: 0,
     unreadable: 0,
@@ -1003,9 +1005,14 @@ export class ScheduleManager {
     for (const occurrence of claims) {
       summary.claims++;
       try {
-        const wrote = await this.withScheduleLock(occurrence.scheduleId, () =>
-          this.recoverOne(occurrence, now, summary),
-        );
+        const wrote = await this.withScheduleLock(occurrence.scheduleId, async () => {
+          const current = store.getOccurrence(occurrence.id);
+          if (!current || current.status !== "claimed") {
+            summary.alreadySettled++;
+            return false;
+          }
+          return this.recoverOne(current, now, summary);
+        });
         if (wrote) affectedScheduleIds.add(occurrence.scheduleId);
       } catch (err) {
         summary.failed++;
@@ -1025,6 +1032,7 @@ export class ScheduleManager {
         beforeTask: summary.recoveredBeforeTask,
         afterTask: summary.recoveredAfterTask,
         terminal: summary.finishedTerminal,
+        alreadySettled: summary.alreadySettled,
         cancelled: summary.cancelled,
         failed: summary.failed,
         unreadable: summary.unreadable,

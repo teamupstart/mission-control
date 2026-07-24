@@ -683,6 +683,52 @@ test("recovery counts an archive during repository validation as cancelled", asy
   assert.deepEqual(h.removed, [created.id, created.id]);
 });
 
+test("recovery skips a snapshotted claim settled while its schedule lock is busy", async () => {
+  let blockFire = false;
+  let releaseFire!: () => void;
+  let fireStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    fireStarted = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseFire = resolve;
+  });
+  const h = harness("recovery-fresh-read", {
+    resolveRepoRoot: async (path) => {
+      if (blockFire) {
+        fireStarted();
+        await held;
+      }
+      return { ok: true, repoRoot: path };
+    },
+  });
+  const created = ok(await h.manager.create(definition())).schedule;
+  const occurrence = crashMidTick(created.id, NINE);
+
+  blockFire = true;
+  h.clock.now = NINE + 10 * 60_000;
+  const manual = h.manager.runNow(created.id);
+  await started;
+  const recovery = h.manager.recover(h.clock.now, "stale");
+  store.finishOccurrence({
+    id: occurrence.id,
+    status: "failed",
+    finishedAt: h.clock.now,
+    error: "settled by the live pass",
+  });
+  releaseFire();
+
+  ok(await manual);
+  const summary = await recovery;
+  assert.equal(summary.claims, 1);
+  assert.equal(summary.alreadySettled, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.recoveredBeforeTask, 0);
+  assert.equal(store.getOccurrence(occurrence.id)?.status, "failed");
+  assert.equal(db.getTask(occurrence.taskId!), undefined);
+  assert.equal(tasksFor(created.id).length, 1);
+});
+
 // ---- Run now ----
 
 test("Run now works while paused, is labelled manual, and never touches the cron cursor", async () => {

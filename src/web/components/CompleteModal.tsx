@@ -37,13 +37,17 @@ export function CompleteModal({
 }): React.JSX.Element {
   const task = session.task;
   const [outcome, setOutcome] = useState("");
-  // Pre-ticked ONLY on a positively observed merge. `null` is the trap: it means the
-  // poller has not answered yet - it runs seconds behind, and a failed poll clears the
-  // field - not that there is no pull request. Reading it as "nothing to worry about"
-  // pre-ticks the override in exactly the window right after an agent opens a PR, which
-  // is when releasing dependents onto a base without its commits does the most damage.
-  // Unknown gets the same answer as unmerged: leave it clear and let the operator say so.
-  const [satisfy, setSatisfy] = useState(session.prState === "merged");
+  // Never pre-ticked. Releasing dependents without a merge is a claim only a human can
+  // make, so it is always an explicit act.
+  //
+  // A `prState === "merged"` preselect was tried and removed: that value is not reachable
+  // here after the ordinary merge path, because `reconcileWorkEpisodeMerge` clears the
+  // session's PR match as it retires the episode. It would have preselected nothing while
+  // reading as though it sometimes did - and the other states are worse to trust. `null`
+  // is "the poller has not answered yet", which is at its most likely in exactly the
+  // window after an agent opens a pull request, when releasing dependents onto a base
+  // without its commits does the most damage.
+  const [satisfy, setSatisfy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -158,11 +162,9 @@ export function CompleteModal({
               <p className="complete-satisfy-why">
                 {!satisfy
                   ? "They stay blocked until a pull request from this work is merged."
-                  : session.prState === "merged"
-                    ? "This work is merged, so those tasks will be cut from a branch that contains it."
-                    : session.prState === "open"
-                      ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
-                      : "No merged pull request has been observed for this session, so those tasks may be cut from a branch without its commits."}
+                  : session.prState === "open"
+                    ? "This session has an open pull request. Those tasks will be cut from the default branch, which does not contain its unmerged commits."
+                    : "Mission Control has not seen a merge for this work, so those tasks may be cut from a branch without its commits."}
               </p>
             )}
             {dependents.length > 0 && (

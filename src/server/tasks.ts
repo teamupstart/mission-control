@@ -263,8 +263,14 @@ export class TaskManager {
     try {
       const t = this.registry.getTask(e.taskId);
       if (!t || (t.status !== "running" && t.status !== "dispatching")) return;
-      if (!getShippingConfig().closeSessionAfterMerge) return;
       const session = this.registry.getSession(e.sessionId);
+      // The common ordering, and the one a `session_upsert` listener alone misses: the
+      // agent finished its turn BEFORE the poller noticed the merge. Nothing further is
+      // guaranteed to touch that session, so the same finished-episode question has to be
+      // asked here too or the task stays running for ever. Both callers land on one
+      // predicate rather than two that could drift.
+      if (session) this.settleIfEpisodeFinished(session);
+      if (!getShippingConfig().closeSessionAfterMerge) return;
       if (session?.state === "working") return;
       await this.closeMergedSession(e);
     } catch (error) {

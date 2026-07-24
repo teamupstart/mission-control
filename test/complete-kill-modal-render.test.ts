@@ -17,11 +17,15 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
  * indistinguishable from abandoning it and the dependents deadlocked. That is what these
  * two dialogs exist to separate, so what is pinned here is that each one SAYS so.
  *
- * The checkbox default is the substantive assertion. A declared dependency is otherwise
- * satisfied only by a merged PR, because a dependent task cuts a fresh worktree from the
- * default branch and would not contain unmerged prerequisite work. So it may be
- * pre-ticked only where there is no unmerged PR standing in the way; a session with an
- * open one has to be ticked deliberately, and the dialog has to explain what that costs.
+ * The checkbox default is the substantive assertion, and the answer is that it is NEVER
+ * pre-ticked. A declared dependency is otherwise satisfied only by a merged PR, because a
+ * dependent task cuts a fresh worktree from the default branch and would not contain
+ * unmerged prerequisite work - so releasing dependents without one is a claim only a
+ * human can make. A preselect on `prState === "merged"` was tried and removed: that value
+ * is not reachable here after the ordinary merge path, since `reconcileWorkEpisodeMerge`
+ * clears the session's PR match as it retires the episode, so it would have fired for
+ * nobody while reading as though it sometimes fired. The dialog's job is to say what
+ * ticking it costs, which is what the rest of these pin.
  *
  * `createElement` rather than JSX because the runner's glob only matches .test.ts.
  */
@@ -82,6 +86,13 @@ test("an UNKNOWN pr state leaves the box clear - null is 'not polled yet', not '
   assert.match(html, /may not hold its commits/);
 });
 
+test("no PR state pre-ticks the box - none of them are evidence of a merge here", () => {
+  for (const prState of [null, "open", "merged", "closed"] as const) {
+    const html = renderComplete(sessionWithTask({ prState } as never));
+    assert.doesNotMatch(html, /type="checkbox"[^>]*checked=""/, String(prState));
+  }
+});
+
 test("an open PR leaves the box CLEAR, and says what ticking it would cost", () => {
   // The one case where satisfying the edge is a real risk: the dependent is cut from the
   // default branch, which does not have this session's unmerged commits.
@@ -90,10 +101,13 @@ test("an open PR leaves the box CLEAR, and says what ticking it would cost", () 
   assert.match(html, /until a pull request from this work is merged/);
 });
 
-test("only a positively observed merge pre-ticks the box", () => {
+test("even a merged PR does not pre-tick - the override is always an explicit act", () => {
+  // `prState === "merged"` is not even reachable here after the ordinary merge path:
+  // `reconcileWorkEpisodeMerge` clears the session's PR match as it retires the episode.
+  // A preselect keyed on it would have fired for nobody while reading as though it fired
+  // for someone, so there is no preselect at all.
   const html = renderComplete(sessionWithTask({ prState: "merged" }));
-  assert.match(html, /type="checkbox"[^>]*checked=""/);
-  assert.match(html, /will be cut from a branch that contains it/);
+  assert.doesNotMatch(html, /type="checkbox"[^>]*checked=""/);
 });
 
 test("with nothing waiting there is no checkbox to answer", () => {

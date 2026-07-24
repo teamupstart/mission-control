@@ -180,15 +180,28 @@ test("an agent prompted long after its merge still owns a running task", () => {
 
 // ---- the agent that ships and then just sits there ---------------------------------------
 
-test("an idle agent whose PR merged lands its task, so the backlog can reuse it", () => {
-  // The ordinary case, and the one waiting for the agent to exit never reaches: it ships
-  // its pull request and then sits idle indefinitely. Left `running`, that task makes
-  // `agentIsFree` refuse the agent forever - the exact stall this whole change is about.
+test("an agent already idle when the merge is observed lands its task there and then", () => {
+  // The ordinary ordering, and the one a `session_upsert` listener alone misses: the
+  // agent finished its turn BEFORE the poller caught up with GitHub, so nothing further
+  // is guaranteed to touch that session and no later event arrives to settle on. Left
+  // `running`, the task makes `agentIsFree` refuse its own agent for ever - the exact
+  // stall this whole change exists to remove. Nothing happens here after the merge.
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-idle-live");
   merge(f);
-  // The agent finishes its turn. Nothing is queued and it has not rolled over.
-  f.registry.applyDiscovery([discovered(f.id, `/repo/${f.id}`)]);
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  assert.ok(f.registry.getSession(f.id), "the agent itself is left alone");
+});
+
+test("an agent that goes idle AFTER the merge lands its task on that transition", () => {
+  // The other ordering: still mid-turn when the merge lands, so the merge itself must
+  // conclude nothing, and the settle has to come from the agent finishing later.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fleet("s-idle-after", true);
+  merge(f);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
   f.registry.applyHook({
     agent: "claude",
     event: "Stop",
@@ -197,10 +210,7 @@ test("an idle agent whose PR merged lands its task, so the backlog can reuse it"
     transcriptPath: null,
     env: {},
   });
-  const t = f.registry.getTask(f.taskId)!;
-  assert.equal(t.status, "done");
-  assert.equal(t.outcomeUrl, PR);
-  assert.ok(f.registry.getSession(f.id), "the agent itself is left alone");
+  assert.equal(f.registry.getTask(f.taskId)?.status, "done");
 });
 
 test("an idle agent with NO merge keeps its running task", () => {

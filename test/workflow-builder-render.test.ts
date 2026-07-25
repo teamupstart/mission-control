@@ -87,11 +87,21 @@ test("policy controls and structured diagnostics render in the right pane", () =
     selection: null,
     readOnly: false,
     onUpdate: () => {},
+    onConfirm: () => {},
   }));
   assert.match(html, /Default trigger/);
-  assert.match(html, /Inspector approval \(Phase 5\)/);
+  assert.match(html, /Inspector approval/);
   assert.match(html, /Restart all Personas/);
-  assert.match(html, /session_submitted_route/);
+  // Message first; the machine code survives as the detail affordance, not the headline.
+  assert.match(html, /Session needs one route/);
+  assert.match(html, /class="workflow-diagnostic-code"[^>]*>session_submitted_route/);
+  assert.ok(
+    html.indexOf("Session needs one route") < html.indexOf("session_submitted_route"),
+    "the sentence has to come before the code, or the panel still reads like a compiler",
+  );
+  // Internal plan-phase labels were left on shipped options and read as warnings not to
+  // pick a mode that has been live for four phases.
+  assert.doesNotMatch(html, /Phase \d/);
 });
 
 test("version history names immutable source revisions and never offers update-version mutation", () => {

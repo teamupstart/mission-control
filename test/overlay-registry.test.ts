@@ -225,6 +225,13 @@ test("the recurring missions overlay is registered", () => {
   assert.equal(OVERLAY_IDS.recurringMissions, "recurring-missions");
 });
 
+test("the builder's confirm overlay is registered", () => {
+  // The builder's removals used to be `window.confirm`, which the registry never sees: while
+  // a native prompt is up `anyOpen` is false, so the fleet's `k` and `r` still act on the
+  // card behind the Workflows page. Pinning the id keeps the replacement findable.
+  assert.equal(OVERLAY_IDS.workflowConfirm, "workflow-confirm");
+});
+
 test("every overlay id is declared once", () => {
   const ids = Object.values(OVERLAY_IDS);
   assert.equal(new Set(ids).size, ids.length, "two overlays share an id");

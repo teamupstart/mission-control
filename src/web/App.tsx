@@ -1427,6 +1427,9 @@ export function App(): React.JSX.Element {
                 workflowVersion: version.version,
                 bindingDefaults: version.bindingDefaults,
               })}
+              // No session and no version pinned: the dialog already supports being opened
+              // empty and asking for both.
+              onBindWorkflow={() => setWorkflowBindingTarget({})}
               onDirtyChange={setWorkflowDirty}
             />
           )}

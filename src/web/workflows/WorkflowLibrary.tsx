@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   normalizeWorkflowName,
   WORKFLOW_LIMITS,
@@ -12,12 +12,23 @@ import {
 } from "@shared/workflow.ts";
 import { connectionAllowed, validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import {
+  nodeLabel,
+  projectStages,
+  stageBlockers,
+  type StageNode,
+} from "@shared/workflow-stages.ts";
+import {
   autoLayoutWorkflow,
   WorkflowCanvas,
   type WorkflowCanvasHandle,
   type WorkflowSelection,
 } from "./WorkflowCanvas.tsx";
-import { WorkflowProperties } from "./WorkflowProperties.tsx";
+import { PipelineEditor } from "./PipelineEditor.tsx";
+import { WorkflowPipelineProperties, WorkflowProperties } from "./WorkflowProperties.tsx";
+import {
+  WorkflowConfirmModal,
+  type WorkflowConfirmRequest,
+} from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
 import { workflowRequest } from "./workflowApi.ts";
@@ -84,16 +95,35 @@ export function WorkflowLoadError({
   );
 }
 
+/**
+ * Which editing surface a draft opens on.
+ *
+ * `null` is "whatever this graph expresses" - the default - and it is deliberately NOT
+ * resolved into a concrete mode in state: a draft that is stage-expressible opens on the
+ * Pipeline, one that is not opens on the Graph, and an operator who picks a surface keeps it
+ * until they open a different workflow. A stored concrete default would strand a graph that
+ * stopped being expressible (an undo in Graph view) on a Pipeline that cannot draw it.
+ */
+export function workflowEditorMode(
+  chosen: "pipeline" | "graph" | null,
+  expressible: boolean,
+): "pipeline" | "graph" {
+  return expressible ? chosen ?? "pipeline" : "graph";
+}
+
 export function WorkflowLibrary({
   summaries,
   personas,
   onDirtyChange,
   onBindVersion = () => {},
+  onBindWorkflow,
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
   onDirtyChange: (dirty: boolean) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
+  /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
+  onBindWorkflow?: () => void;
 }): React.JSX.Element {
   const ordered = useMemo(() => [...summaries].sort((a, b) => a.name.localeCompare(b.name)), [summaries]);
   const active = ordered.filter((workflow) => workflow.archivedAt === null);
@@ -119,6 +149,20 @@ export function WorkflowLibrary({
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
   const activePersonas = personas.filter((persona) => persona.archivedAt === null);
+  // One walk answers both questions: the sentences the Graph-view banner shows, and whether
+  // the Pipeline can draw this graph at all. Passing the live Personas is what keeps a draft
+  // reviewer's blocker from reading "Missing persona".
+  const blockers = useMemo(
+    () => workflow ? stageBlockers(workflow.draft, personas) : [],
+    [personas, workflow?.draft],
+  );
+  const pipeline = useMemo(
+    () => workflow ? projectStages(workflow.draft) : null,
+    [workflow?.draft],
+  );
+  const [chosenMode, setChosenMode] = useState<"pipeline" | "graph" | null>(null);
+  const mode = workflowEditorMode(chosenMode, blockers.length === 0);
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
   const connectTrigger = useRef<HTMLButtonElement | null>(null);
@@ -169,8 +213,22 @@ export function WorkflowLibrary({
     selectionInitialized.current = true;
     rememberWorkflowId(id);
     setSelection(null);
+    // A surface choice belongs to the workflow it was made on, so the next one opens on
+    // whatever IT expresses rather than inheriting the last draft's fallback.
+    setChosenMode(null);
+    setConfirm(null);
     setSelectedId(id);
   };
+
+  // Memoised because `WorkflowCanvas` lists it in the dependency array that projects its
+  // node array, and that projection is synced into React Flow's store from an effect: a
+  // fresh closure every render would re-run the sync every render, which is the churn the
+  // canvas's own comments describe as ending in "Maximum update depth exceeded".
+  const graphRef = workflow?.draft ?? null;
+  const labelFor = useCallback(
+    (node: StageNode): string => graphRef ? nodeLabel(graphRef, node, personas) : node.kind,
+    [graphRef, personas],
+  );
 
   const runTransition = async (work: () => Promise<void>): Promise<void> => {
     if (transitionRef.current) return;
@@ -235,7 +293,9 @@ export function WorkflowLibrary({
       : kind === "all_pass" ? { id, kind, position } : { id, kind, outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
-    setAnnouncement(`${kind === "all_pass" ? "All-pass Join" : kind} node added at the viewport center`);
+    setAnnouncement(
+      `${nodeLabel({ ...workflow.draft, nodes: [...workflow.draft.nodes, node] }, node, personas)} node added at the viewport center`,
+    );
   };
 
   const selectedIds = selection?.kind === "multi"
@@ -252,19 +312,31 @@ export function WorkflowLibrary({
       removable.has(edge.source) || removable.has(edge.target));
     const removedEdges = new Set([...edgeIds, ...touching.map((edge) => edge.id)]);
     if (removable.size === 0 && removedEdges.size === 0) return;
-    if (
-      !window.confirm(
-        `Delete ${removable.size} node${removable.size === 1 ? "" : "s"} and ${removedEdges.size} connected edge${removedEdges.size === 1 ? "" : "s"}?`,
-      )
-    ) return;
-    draft.update({
-      draft: {
-        nodes: workflow.draft.nodes.filter((node) => !removable.has(node.id)),
-        edges: workflow.draft.edges.filter((edge) => !removedEdges.has(edge.id)),
+    const names = workflow.draft.nodes
+      .filter((node) => removable.has(node.id))
+      .map((node) => labelFor(node));
+    const routes = `${removedEdges.size} connected route${removedEdges.size === 1 ? "" : "s"}`;
+    setConfirm({
+      title: "Remove selection",
+      body: names.length > 0
+        ? `Remove ${names.join(", ")} and ${routes}?`
+        : `Remove ${routes}?`,
+      confirmLabel: "Remove",
+      confirmHint: "Removes the selected nodes and the routes touching them",
+      danger: true,
+      onConfirm: () => {
+        draft.update({
+          draft: {
+            nodes: workflow.draft.nodes.filter((node) => !removable.has(node.id)),
+            edges: workflow.draft.edges.filter((edge) => !removedEdges.has(edge.id)),
+          },
+        });
+        setSelection(null);
+        setAnnouncement(
+          `Removed ${names.length > 0 ? names.join(", ") : "no nodes"} and ${routes}`,
+        );
       },
     });
-    setSelection(null);
-    setAnnouncement(`Deleted ${removable.size} nodes and ${removedEdges.size} edges`);
   };
 
   const duplicateNodes = (): void => {
@@ -351,7 +423,7 @@ export function WorkflowLibrary({
     draft.update({ draft: { ...workflow.draft, edges: [...workflow.draft.edges, edge] } });
     setConnectSource(null);
     setSelection({ kind: "edge", id: edge.id });
-    setAnnouncement(`Connected ${source.id} ${connectSourcePort} to ${target.id} ${connectTargetPort}`);
+    setAnnouncement(`Connected ${labelFor(source)} ${connectSourcePort} to ${labelFor(target)} ${connectTargetPort}`);
     connectTrigger.current?.focus();
   };
 
@@ -444,7 +516,7 @@ export function WorkflowLibrary({
           ))}
           {ordered.some((summary) => summary.archivedAt !== null) && <label className="workflow-show-archived"><Tooltip label="Include archived workflows in this list"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /></Tooltip> Show archived</label>}
         </div>
-        {workflow && workflow.archivedAt === null && (
+        {workflow && workflow.archivedAt === null && mode === "graph" && (
           <section className="workflow-palette">
             <h4>Node palette</h4>
             <p>Session is fixed. Add review and terminal nodes.</p>
@@ -463,7 +535,6 @@ export function WorkflowLibrary({
             <Tooltip label="Add a terminal outcome node - or drag it onto the canvas">
               <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
             </Tooltip>
-            <small>No checkpoint node · Inspector is a final-gate setting.</small>
           </section>
         )}
       </aside>
@@ -476,69 +547,113 @@ export function WorkflowLibrary({
         <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
         {workflow && (
           <>
+            {/* Three groups: what you are looking at, what you are editing with, and what
+                leaves the draft. Archive used to sit filled-red beside Publish, which is one
+                mis-click between "ship this" and "retire this". */}
             <header className="workflow-builder-toolbar">
               <div><p className="workflow-eyebrow">Draft revision {workflow.draftRevision}</p><h3>{workflow.name}</h3></div>
               <span className={draft.saving || transitioning ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{transitioning ? "Working…" : draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
-              <Tooltip label="Copy this workflow into a new draft">
-                <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
-              </Tooltip>
-              <Tooltip label={draft.canUndo ? "Undo the last local draft edit" : "Nothing to undo"}>
-                <button className="btn btn-ghost" disabled={!draft.canUndo} onClick={draft.undo}>
-                  Undo
-                </button>
-              </Tooltip>
-              <Tooltip label={draft.canRedo ? "Redo the last undone draft edit" : "Nothing to redo"}>
-                <button className="btn btn-ghost" disabled={!draft.canRedo} onClick={draft.redo}>
-                  Redo
-                </button>
-              </Tooltip>
-              <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, Join, or End nodes" : "Select a Persona, Join, or End node first"}>
-                <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
-                  Duplicate nodes
-                </button>
-              </Tooltip>
-              <Tooltip label="Arrange the graph visually without changing its meaning">
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    draft.update({ draft: autoLayoutWorkflow(workflow.draft) });
-                    window.requestAnimationFrame(() => canvasRef.current?.fit());
-                    setAnnouncement("Workflow auto-layout complete");
-                  }}
-                >
-                  Auto-layout
-                </button>
-              </Tooltip>
-              <Tooltip label={selectedIds.length === 1 ? "Connect the selected node with a keyboard dialog" : "Select one non-terminal node first"}>
-                <button
-                  ref={connectTrigger}
-                  className="btn btn-ghost"
-                  disabled={selectedIds.length !== 1 || workflow.draft.nodes.find((node) => node.id === selectedIds[0])?.kind === "end"}
-                  onClick={() => startKeyboardConnect()}
-                >
-                  Connect…
-                </button>
-              </Tooltip>
-              <Tooltip label="Archive this workflow - published versions stay readable">
-                <button className="btn btn-danger" disabled={transitioning || workflow.archivedAt !== null} onClick={() => {
-                if (!window.confirm(`Archive ${workflow.name}? Published versions remain readable.`)) return;
-                void runTransition(async () => {
-                  if (!(await draft.saveNow())) return;
-                  const current = draft.current();
-                  if (!current) return;
-                  await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
-                  openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
-                });
-              }}>Archive</button>
-              </Tooltip>
-              <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
-                <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
-              </Tooltip>
+              <div className="wf-view-toggle" role="group" aria-label="Editing surface">
+                <Tooltip label={blockers.length === 0
+                  ? "Author this workflow as stages of reviewers"
+                  : "This graph is not a pipeline - see the reasons below the toolbar"}>
+                  <button
+                    className={mode === "pipeline" ? "active" : ""}
+                    aria-pressed={mode === "pipeline"}
+                    disabled={blockers.length > 0}
+                    onClick={() => setChosenMode("pipeline")}
+                  >
+                    Pipeline
+                  </button>
+                </Tooltip>
+                <Tooltip label="Edit the underlying graph directly">
+                  <button
+                    className={mode === "graph" ? "active" : ""}
+                    aria-pressed={mode === "graph"}
+                    onClick={() => setChosenMode("graph")}
+                  >
+                    Graph
+                  </button>
+                </Tooltip>
+              </div>
+              <div className="workflow-toolbar-group">
+                <Tooltip label={draft.canUndo ? "Undo the last local draft edit" : "Nothing to undo"}>
+                  <button className="btn btn-ghost" disabled={!draft.canUndo} onClick={draft.undo}>
+                    Undo
+                  </button>
+                </Tooltip>
+                <Tooltip label={draft.canRedo ? "Redo the last undone draft edit" : "Nothing to redo"}>
+                  <button className="btn btn-ghost" disabled={!draft.canRedo} onClick={draft.redo}>
+                    Redo
+                  </button>
+                </Tooltip>
+                <Tooltip label="Copy this workflow into a new draft">
+                  <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
+                </Tooltip>
+                {mode === "graph" && (
+                  <>
+                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, Join, or End nodes" : "Select a Persona, Join, or End node first"}>
+                      <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
+                        Duplicate nodes
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Arrange the graph visually without changing its meaning">
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          draft.update({ draft: autoLayoutWorkflow(workflow.draft) });
+                          window.requestAnimationFrame(() => canvasRef.current?.fit());
+                          setAnnouncement("Workflow auto-layout complete");
+                        }}
+                      >
+                        Auto-layout
+                      </button>
+                    </Tooltip>
+                    <Tooltip label={selectedIds.length === 1 ? "Connect the selected node with a keyboard dialog" : "Select one non-terminal node first"}>
+                      <button
+                        ref={connectTrigger}
+                        className="btn btn-ghost"
+                        disabled={selectedIds.length !== 1 || workflow.draft.nodes.find((node) => node.id === selectedIds[0])?.kind === "end"}
+                        onClick={() => startKeyboardConnect()}
+                      >
+                        Connect…
+                      </button>
+                    </Tooltip>
+                  </>
+                )}
+              </div>
+              <div className="workflow-toolbar-group workflow-toolbar-ship">
+                <Tooltip label="Archive this workflow - published versions stay readable">
+                  <button className="btn btn-danger-ghost" disabled={transitioning || workflow.archivedAt !== null} onClick={() => setConfirm({
+                    title: "Archive workflow",
+                    body: `Archive ${workflow.name}? Published versions remain readable, and runs already bound to them keep working.`,
+                    confirmLabel: "Archive",
+                    confirmHint: "Archives the workflow - its published versions stay readable",
+                    danger: true,
+                    onConfirm: () => void runTransition(async () => {
+                      if (!(await draft.saveNow())) return;
+                      const current = draft.current();
+                      if (!current) return;
+                      await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                      openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                    }),
+                  })}>Archive</button>
+                </Tooltip>
+                <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
+                </Tooltip>
+              </div>
             </header>
+            {mode === "graph" && blockers.length > 0 && (
+              <div className="wf-pipeline-blockers" role="status">
+                <p>Pipeline view unavailable:</p>
+                <ul>{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+              </div>
+            )}
             {draft.conflict && (
               <div className="workflow-conflict" role="alert"><span>A newer draft revision exists. Autosave is paused.</span><Tooltip label="Download your local draft before deciding how to resolve the conflict"><button onClick={downloadLocalDraft}>Download local draft</button></Tooltip><Tooltip label="Discard your unsaved edits and load the newer revision"><button onClick={() => void draft.reload()}>Reload latest</button></Tooltip><Tooltip label="Keep your edits by copying them into a new workflow"><button onClick={() => void duplicate()}>Duplicate my draft</button></Tooltip></div>
             )}
-            {connectSource && (
+            {mode === "graph" && connectSource && (
               <form
                 className="workflow-connect-dialog"
                 role="group"
@@ -564,9 +679,7 @@ export function WorkflowLibrary({
                       onChange={(event) => startKeyboardConnect(event.target.value)}
                     >
                       {workflow.draft.nodes.filter((node) => node.kind !== "end").map((node) => (
-                        <option key={node.id} value={node.id}>
-                          {node.kind === "all_pass" ? "All-pass Join" : node.kind} · {node.id}
-                        </option>
+                        <option key={node.id} value={node.id}>{labelFor(node)}</option>
                       ))}
                     </select>
                   </Tooltip>
@@ -634,9 +747,7 @@ export function WorkflowLibrary({
                       }}
                     >
                       {connectTargets.map((node) => (
-                        <option key={node.id} value={node.id}>
-                          {node.kind === "all_pass" ? "All-pass Join" : node.kind} · {node.id}
-                        </option>
+                        <option key={node.id} value={node.id}>{labelFor(node)}</option>
                       ))}
                     </select>
                   </Tooltip>
@@ -671,19 +782,32 @@ export function WorkflowLibrary({
                 </Tooltip>
               </form>
             )}
-            <WorkflowCanvas
-              key={workflow.id}
-              ref={canvasRef}
-              graph={workflow.draft}
-              personas={personas}
-              readOnly={transitioning || workflow.archivedAt !== null}
-              onChange={(graph) => draft.update({ draft: graph })}
-              onSelection={setSelection}
-              onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
-              onDeleteSelection={removeCanvasSelection}
-              onKeyboardConnect={startKeyboardConnect}
-              onAnnounce={setAnnouncement}
-            />
+            {mode === "pipeline" ? (
+              <PipelineEditor
+                key={workflow.id}
+                graph={workflow.draft}
+                personas={personas}
+                readOnly={transitioning || workflow.archivedAt !== null}
+                onChange={(graph) => draft.update({ draft: graph })}
+                onConfirm={setConfirm}
+                onAnnounce={setAnnouncement}
+              />
+            ) : (
+              <WorkflowCanvas
+                key={workflow.id}
+                ref={canvasRef}
+                graph={workflow.draft}
+                personas={personas}
+                labelFor={labelFor}
+                readOnly={transitioning || workflow.archivedAt !== null}
+                onChange={(graph) => draft.update({ draft: graph })}
+                onSelection={setSelection}
+                onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
+                onDeleteSelection={removeCanvasSelection}
+                onKeyboardConnect={startKeyboardConnect}
+                onAnnounce={setAnnouncement}
+              />
+            )}
             <p className="sr-only" aria-live="polite">{announcement}</p>
             <p className="sr-only" aria-live="assertive">{assertiveAnnouncement}</p>
           </>
@@ -692,14 +816,44 @@ export function WorkflowLibrary({
 
       {workflow && validation && (
         <div className={`workflow-builder-right${mobileDrawer === "properties" ? " mobile-open" : ""}`}>
-          <WorkflowProperties workflow={workflow} personas={personas} diagnostics={validation.diagnostics} selection={selection} readOnly={transitioning || workflow.archivedAt !== null} onUpdate={draft.update} />
+          {mode === "pipeline" ? (
+            <WorkflowPipelineProperties
+              workflow={workflow}
+              diagnostics={validation.diagnostics}
+              stageCount={pipeline?.stages.length ?? 0}
+              readOnly={transitioning || workflow.archivedAt !== null}
+              onUpdate={draft.update}
+            />
+          ) : (
+            <WorkflowProperties
+              workflow={workflow}
+              personas={personas}
+              diagnostics={validation.diagnostics}
+              selection={selection}
+              readOnly={transitioning || workflow.archivedAt !== null}
+              onUpdate={draft.update}
+              onConfirm={setConfirm}
+            />
+          )}
           <WorkflowVersionHistory
             workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
             onBindVersion={onBindVersion}
           />
+          {mode === "pipeline" && onBindWorkflow && (
+            <section className="wf-pipeline-bind">
+              <Tooltip label="Pick a session and a published version to run this workflow against">
+                <button className="btn" onClick={onBindWorkflow}>
+                  Bind to a session…
+                </button>
+              </Tooltip>
+            </section>
+          )}
         </div>
+      )}
+      {confirm && (
+        <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
       )}
     </section>
   );

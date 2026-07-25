@@ -142,12 +142,24 @@ function isPublishedPersona(node: WorkflowDraftNode | PublishedWorkflowNode): no
   return node.kind === "persona" && "persona" in node;
 }
 
+/**
+ * How each node kind is SAID, for screen readers. The wire kinds (`all_pass`, `end`) are
+ * storage spellings, not words an operator uses.
+ */
+const NODE_KIND_WORDS: Record<WorkflowDraftNode["kind"], string> = {
+  session: "Session",
+  persona: "Reviewer",
+  all_pass: "All-pass join",
+  end: "End",
+};
+
 function canvasNodes(
   graph: WorkflowDraftGraph | PublishedWorkflowGraph,
   personas: readonly PersonaView[],
   readOnly: boolean,
   nodeStatuses: Readonly<Record<string, string>>,
   focusNodeId: string | null,
+  labelFor: ((node: WorkflowDraftNode | PublishedWorkflowNode) => string) | null,
 ): WorkflowCanvasNode[] {
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
   const incoming = new Map<string, Set<string>>();
@@ -161,22 +173,27 @@ function canvasNodes(
     outgoing.set(edge.source, successors);
   }
   return graph.nodes.map((node) => {
-    let label = "Session";
+    // The subtitle stays derived here: it is the `runner · model` line and the snapshot
+    // revision, which are canvas presentation and not part of the shared name vocabulary.
+    // The LABEL is - `labelFor` is how a caller hands it the one human name every other
+    // surface prints, so a join reads as its stage rather than as "All pass" twice over.
+    let fallbackLabel = "Session";
     let subtitle = "Submission and repair boundary";
     if (node.kind === "persona") {
       const snapshot = isPublishedPersona(node) ? node.persona : null;
       const live = snapshot ? null : personaMap.get((node as Extract<WorkflowDraftNode, { kind: "persona" }>).personaId);
-      label = snapshot?.name ?? live?.name ?? "Missing Persona";
+      fallbackLabel = snapshot?.name ?? live?.name ?? "Missing Persona";
       subtitle = snapshot
         ? `Snapshot revision ${snapshot.sourceRevision}`
         : live ? `${live.execution.runner.id} · ${live.execution.model.id}` : "Select an active Persona";
     } else if (node.kind === "all_pass") {
-      label = "All pass";
+      fallbackLabel = "All pass";
       subtitle = `${incoming.get(node.id)?.size ?? 0} predecessor${incoming.get(node.id)?.size === 1 ? "" : "s"}`;
     } else if (node.kind === "end") {
-      label = node.outcome;
+      fallbackLabel = node.outcome;
       subtitle = "Terminal outcome";
     }
+    const label = labelFor?.(node) ?? fallbackLabel;
     return {
       id: node.id,
       type: node.kind,
@@ -185,7 +202,7 @@ function canvasNodes(
       draggable: !readOnly,
       selectable: true,
       focusable: node.id === focusNodeId,
-      ariaLabel: `${node.kind === "all_pass" ? "All-pass Join" : node.kind} node, ${label}, ${incoming.get(node.id)?.size ?? 0} incoming connections, ${outgoing.get(node.id)?.size ?? 0} outgoing connections`,
+      ariaLabel: `${NODE_KIND_WORDS[node.kind]} node, ${label}, ${incoming.get(node.id)?.size ?? 0} incoming connections, ${outgoing.get(node.id)?.size ?? 0} outgoing connections`,
       className: nodeStatuses[node.id] ? `workflow-runtime-${nodeStatuses[node.id]}` : undefined,
       data: {
         kind: node.kind,
@@ -294,6 +311,12 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   onKeyboardConnect?: (sourceNodeId: string) => void;
   onAnnounce?: (message: string) => void;
   nodeStatuses?: Readonly<Record<string, string>>;
+  /**
+   * The human name for a node. Supplied by the caller (which already holds the graph and the
+   * Persona list) so the canvas prints the same word the pipeline, the rails and the
+   * announcements do, rather than re-deriving a second vocabulary here.
+   */
+  labelFor?: (node: WorkflowDraftNode | PublishedWorkflowNode) => string;
 }>(function WorkflowCanvas({
   graph,
   personas,
@@ -305,11 +328,12 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   onKeyboardConnect,
   onAnnounce,
   nodeStatuses = EMPTY_NODE_STATUSES,
+  labelFor,
 }, forwardedRef): React.JSX.Element {
   const [focusNodeId, setFocusNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const projectedNodes = useMemo(
-    () => canvasNodes(graph, personas, readOnly, nodeStatuses, focusNodeId),
-    [graph, personas, readOnly, nodeStatuses, focusNodeId],
+    () => canvasNodes(graph, personas, readOnly, nodeStatuses, focusNodeId, labelFor ?? null),
+    [graph, personas, readOnly, nodeStatuses, focusNodeId, labelFor],
   );
   const [nodes, setNodes] = useState(projectedNodes);
   const projectedEdges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);

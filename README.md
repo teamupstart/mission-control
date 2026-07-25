@@ -1679,17 +1679,40 @@ editing your copy changes what that role judges, not how it replies.
 
 ### Workflow drafts and published versions
 
-Every workflow starts with one visible **Session** node and one disconnected **End**. Add
-Persona and **All-pass Join** nodes from the left palette, then connect the directional
-handles: Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may
-return to Session for changes. Session needs at least one `submitted` route and may fan out to
-several, so a first wave of reviewers runs in parallel on one submission; a version published
-with that shape runs correctly on any build, but an older build refuses to re-publish it.
-A Join needs both outcomes from at least two distinct
-predecessors, waits for one result from each, and passes only when all passed. Cycles are
-legal only when they include Session. Persona-only cycles are rejected because they could
-spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not
-a graph node.
+A workflow is **stages of reviewers**, and the **Pipeline** view is where you author one.
+It draws Session, the stages between it, and the End outcome; you add, remove and reorder
+reviewers and stages, and everything structural is generated for you. A stage holding two or
+more reviewers gets its all-pass Join, every fail returns to Session for repair, and the last
+stage's pass reaches End. Nothing is hand-drawn, so none of it can be got wrong.
+
+A brand-new workflow opens on Session, one empty stage affordance, and End - opening it never
+edits it. Picking a Persona from the stage's inline list makes it stage 1; picking a second
+makes the two run **in parallel on the same submission**, both of which must pass before
+anything moves on. That is the whole gesture: two picks, no validation error. A version
+published with that shape runs correctly on any build, but an older build refuses to
+re-publish it.
+
+Reorder by dragging a reviewer onto another slot or another stage, or from the keyboard:
+arrow keys move between cards, <kbd>⌥</kbd> plus <kbd>←</kbd> / <kbd>→</kbd> moves the focused
+stage along the chain, <kbd>⌥</kbd> plus <kbd>↑</kbd> / <kbd>↓</kbd> moves the focused reviewer
+within its stage, and <kbd>Delete</kbd> removes the focused card after a confirmation.
+Announcements and labels name Personas and stages; no surface prints a node id. A stage's name
+is derived, not stored: one reviewer names its own stage, and a parallel stage reads "Stage N".
+
+**Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
+**All-pass Join** and End nodes from the left palette, then connect the directional handles:
+Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may return to
+Session for changes. Session needs at least one `submitted` route and may fan out to several.
+A Join needs both outcomes from at least two distinct predecessors, waits for one result from
+each, and passes only when all passed. Cycles are legal only when they include Session.
+Persona-only cycles are rejected because they could spend repeatedly against unchanged work.
+There is no checkpoint node and Inspector is not a graph node.
+
+The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
+of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
+fail routed somewhere other than Session, a Join fed from two different stages - opens in
+Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
+so a draft moves between them freely and existing workflows need no migration.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2939,6 +2962,10 @@ shortcut works in every layout:
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then close the session; press <kbd>Enter</kbd> to confirm. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Kill the selected session (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move between Session, the stages, their reviewers and End. <kbd>Home</kbd> / <kbd>End</kbd> jump to either terminus | [Workflows](#workflows-and-personas) → Pipeline |
+| <kbd>⌥</kbd><kbd>←</kbd> <kbd>⌥</kbd><kbd>→</kbd> | Move the focused stage earlier or later in the chain | [Workflows](#workflows-and-personas) → Pipeline |
+| <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](#workflows-and-personas) → Pipeline |
+| <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](#workflows-and-personas) → Pipeline |
 
 Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
 **customizable**. Open **Settings** - the ⚙ gear in the top bar, or (in the desktop app)
@@ -2950,7 +2977,9 @@ plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into anot
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
 them) to its default. The arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and bare
 <kbd>Tab</kbd> drive layout navigation and Console reading, and can't be reassigned;
-<kbd>⇧</kbd><kbd>Tab</kbd> remains bindable.
+<kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline editor's four rows above are
+in-surface keys rather than fleet chords - they only exist while a card in that strip has
+focus - so they are fixed for the same reason.
 
 ### Keycaps on the buttons
 

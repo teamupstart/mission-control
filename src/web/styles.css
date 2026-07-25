@@ -6158,7 +6158,6 @@ select:not([multiple]) option {
   width: 100%;
 }
 .workflow-palette button { text-align: left; cursor: pointer; }
-.workflow-palette small { color: var(--dim); line-height: 1.45; }
 .workflow-builder-main {
   display: flex;
   flex-direction: column;
@@ -6167,7 +6166,10 @@ select:not([multiple]) option {
   background: var(--bg-2);
 }
 .workflow-builder-toolbar { flex-wrap: wrap; background: var(--panel); }
-.workflow-builder-toolbar > div:first-child { flex: 1; min-width: 0; }
+/* The toolbar wraps, so the title needs a floor: at `min-width: 0` the Graph view's extra
+   buttons squeezed "Phase 2 pipeline check" into three lines instead of wrapping the row. */
+.workflow-builder-toolbar > div:first-child { flex: 1; min-width: 170px; }
+.workflow-builder-toolbar h3 { overflow-wrap: anywhere; }
 .workflow-builder-toolbar > span { font-size: 10.5px; color: var(--dim); }
 .workflow-builder-toolbar > span.is-dirty,
 .workflow-builder-toolbar > span.is-saving { color: var(--attention); }
@@ -6287,13 +6289,16 @@ select:not([multiple]) option {
 .workflow-properties textarea { min-height: 68px; resize: vertical; }
 .workflow-validation { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .workflow-validation ul { display: flex; flex-direction: column; gap: 7px; margin: 8px 0 0; padding: 0; list-style: none; }
-.workflow-validation li { font-size: 10.5px; line-height: 1.4; color: var(--muted); }
-.workflow-validation code { display: block; color: var(--attention); }
+.workflow-validation li { display: grid; gap: 2px; font-size: 10.5px; line-height: 1.4; color: var(--muted); }
+.workflow-diagnostic-message { color: var(--fg); }
+/* The machine code is kept - it is what a bug report quotes - but it stops being the first
+   thing an operator reads, which is what made the panel look like a compiler. */
+.workflow-diagnostic-code { justify-self: start; font: 9px var(--mono); color: var(--dim); }
 .workflow-valid { color: #42c977; }
 .workflow-edge-list { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .workflow-edge-list ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .workflow-edge-list li { display: grid; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 7px; }
-.workflow-edge-list span { overflow-wrap: anywhere; font: 9.5px/1.4 var(--mono); color: var(--muted); }
+.workflow-edge-list span { overflow-wrap: anywhere; font-size: 10px; line-height: 1.4; color: var(--muted); }
 .workflow-edge-list span:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
 .workflow-version-list { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
 .workflow-version-detail { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
@@ -6303,6 +6308,175 @@ select:not([multiple]) option {
 .workflow-version-detail dd { margin: 0; }
 .workflow-version-persona summary { cursor: pointer; font-size: 11px; color: var(--attention); }
 .workflow-version-persona pre { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; font: 10px/1.45 var(--mono); background: var(--bg); border-radius: 6px; }
+
+/* ---- pipeline editor (Pipeline view of a workflow) ----
+   `wf-pipeline-*` is the vocabulary the runs monitor draws on too, so a rule added here
+   has to be about the SHAPE (a stage, a seam, a reviewer) and not about editing. Anything
+   that is only true while authoring belongs on a class the editor owns. */
+.wf-view-toggle {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.wf-view-toggle button {
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.wf-view-toggle button.active {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 18%, var(--panel));
+}
+.wf-view-toggle button:disabled { cursor: not-allowed; opacity: 0.45; }
+.workflow-toolbar-group { display: flex; align-items: center; gap: 8px; }
+.workflow-toolbar-ship { margin-left: auto; padding-left: 14px; border-left: 1px solid var(--border-soft); }
+.wf-pipeline-blockers {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+.wf-pipeline-blockers p { margin: 0; color: var(--attention); font-size: 11px; font-weight: 700; }
+.wf-pipeline-blockers ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; font-size: 10.5px; line-height: 1.45; }
+.wf-pipeline-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  padding: 18px;
+  overflow: hidden;
+}
+.wf-pipeline {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 10px;
+  justify-content: center;
+}
+.wf-pipeline-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 4px 2px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.wf-pipeline-slot { display: flex; align-items: stretch; }
+.wf-pipeline-seam-slot { display: flex; align-items: stretch; }
+.wf-pipeline-repair {
+  margin: 0;
+  padding: 9px 11px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.wf-pipeline-keys { margin: 0; font-size: 10px; line-height: 1.5; color: var(--dim); }
+.wf-pipeline-terminus,
+.wf-pipeline-stage {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 8px;
+  width: 232px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.wf-pipeline-terminus { align-self: center; flex-direction: row; align-items: center; width: 176px; }
+.wf-pipeline-terminus-mark { font-size: 15px; color: var(--working); }
+.wf-pipeline-terminus-body,
+.wf-pipeline-reviewer-body,
+.wf-pipeline-stage-title { display: grid; gap: 2px; min-width: 0; }
+.wf-pipeline-terminus-name,
+.wf-pipeline-stage-name { font-size: 12.5px; font-weight: 700; overflow-wrap: anywhere; }
+.wf-pipeline-terminus-sub,
+.wf-pipeline-stage-sub,
+.wf-pipeline-reviewer-meta { font-size: 10px; color: var(--dim); overflow-wrap: anywhere; }
+.wf-pipeline-terminus:focus-visible,
+.wf-pipeline-stage-head:focus-visible,
+.wf-pipeline-reviewer:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.wf-pipeline-stage-head { display: flex; align-items: center; gap: 8px; border-radius: 8px; }
+.wf-pipeline-stage-head[draggable="true"] { cursor: grab; }
+.wf-pipeline-stage-title { flex: 1; }
+.wf-pipeline-stage.is-dragging,
+.wf-pipeline-reviewer.is-dragging { opacity: 0.45; }
+.wf-pipeline-stage.is-drop-target,
+.wf-pipeline-reviewer.is-drop-target { border-color: var(--working); }
+.wf-pipeline-members { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.wf-pipeline-reviewer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.wf-pipeline-reviewer-name { font-size: 11.5px; font-weight: 600; overflow-wrap: anywhere; }
+.wf-pipeline-reviewer-actions button,
+.wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+.wf-pipeline-empty {
+  padding: 9px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+}
+.wf-pipeline-stage-foot { display: flex; }
+/* Visuals come from the shared `select:not([multiple])` rule; these only set the width. */
+.wf-pipeline-add,
+.wf-pipeline-insert-picker { display: grid; width: 100%; }
+.wf-pipeline-insert-picker select { min-width: 150px; }
+.wf-pipeline-seam {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: 5px;
+  width: 132px;
+  padding: 0 8px;
+}
+/* Fixed height so every seam's connector lines up, marked or not. */
+.wf-pipeline-gate-slot { display: flex; align-items: center; min-height: 18px; }
+.wf-pipeline-gate {
+  padding: 3px 8px;
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.wf-pipeline-seam-line { color: var(--border); font-size: 16px; line-height: 1; }
+.wf-pipeline-insert { padding: 4px 8px; font-size: 10px; }
+.wf-pipeline-status { flex: none; }
+.wf-pipeline-bind { padding: 13px; }
+.wf-pipeline-bind button { width: 100%; }
+.workflow-confirm { width: min(460px, 100%); }
+.workflow-confirm-body { padding: 16px 18px; }
+.workflow-confirm-body p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
 
 @media (max-width: 1180px) {
   .workflow-builder { grid-template-columns: 210px minmax(380px, 1fr) 260px; }

@@ -8,6 +8,7 @@ import {
   cadenceLabel,
   delayIsLate,
   expressionToForm,
+  formatAuditInstantUtc,
   formatDelay,
   occurrenceStatusView,
   presetToExpression,
@@ -82,6 +83,13 @@ test("a delay under a minute reads as on time; anything more is spelled and flag
   assert.equal(formatDelay(2 * 60 * 60 * 1000 + 14 * 60 * 1000), "2h 14m late");
   assert.equal(delayIsLate(2 * 60 * 60 * 1000), true);
   assert.match(formatDelay(9 * 24 * 60 * 60 * 1000), /9d/);
+});
+
+test("audit timestamps retain the complete UTC instant", () => {
+  assert.equal(
+    formatAuditInstantUtc(Date.UTC(2025, 6, 27, 7, 6, 40, 123)),
+    "2025-07-27T07:06:40.123Z",
+  );
 });
 
 test("an occurrence status this build cannot read is an explicit unknown, never a nearest match", () => {

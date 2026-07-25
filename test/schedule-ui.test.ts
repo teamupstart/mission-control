@@ -307,15 +307,18 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   assert.match(history, /page\.nextCursor === null/);
   assert.match(history, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(history, /tabIndex=\{0\}/);
-  assert.match(history, /aria-label=\{`\$\{formatInstantUtc\(occ\.scheduledFor\)\} UTC/);
+  assert.match(history, /aria-label=\{`\$\{formatAuditInstantUtc\(occ\.scheduledFor\)\}/);
   assert.match(history, /Current zone \(\{timezone\}\):/);
-  assert.match(history, /<h3>\{formatInstantUtc\(occurrence\.scheduledFor\)\} UTC<\/h3>/);
+  assert.match(history, /<h3>\{formatAuditInstantUtc\(occurrence\.scheduledFor\)\}<\/h3>/);
 });
 
 test("generated-task links route without abandoning retained audits", () => {
   const app = readFileSync(path.join(WEB, "App.tsx"), "utf8");
   assert.match(app, /if \(task\.status === "backlog"\)/);
-  assert.match(app, /if \(task\.sessionId\)[\s\S]*?setSelectedId\(task\.sessionId\)/);
+  assert.match(app, /sessions\.find\(\(session\) => session\.id === task\.sessionId\)/);
+  assert.match(app, /if \(liveSession\)[\s\S]*?navigate\(\{ page: "fleet" \}\)/);
+  assert.match(app, /if \(liveSession\)[\s\S]*?setFilter\(""\)/);
+  assert.match(app, /if \(liveSession\)[\s\S]*?setSelectedId\(liveSession\.id\)/);
   assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\)/);
   assert.match(app, /window\.open\(task\.outcomeUrl, "_blank", "noopener"\)/);
 });

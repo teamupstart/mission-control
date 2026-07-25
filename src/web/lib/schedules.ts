@@ -156,6 +156,10 @@ export function formatInstantUtc(at: number): string {
   }).format(at);
 }
 
+export function formatAuditInstantUtc(at: number): string {
+  return new Date(at).toISOString();
+}
+
 /** Compact local time for a generated task's provenance chip (browser zone). */
 export function formatScheduledFor(at: number): string {
   return new Intl.DateTimeFormat(undefined, {

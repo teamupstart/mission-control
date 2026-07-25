@@ -6,9 +6,9 @@ import type {
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
 import { fetchScheduleHistory } from "../../lib/api.ts";
 import {
+  formatAuditInstantUtc,
   formatDelay,
   formatInstant,
-  formatInstantUtc,
   delayIsLate,
   occurrenceStatusView,
   shortTaskId,
@@ -205,7 +205,7 @@ export function ScheduleHistory({
                         }
                       }}
                       tabIndex={0}
-                      aria-label={`${formatInstantUtc(occ.scheduledFor)} UTC, ${status.label}`}
+                      aria-label={`${formatAuditInstantUtc(occ.scheduledFor)}, ${status.label}`}
                     >
                       <td className="rm-mono">
                         <HistoryInstant
@@ -285,7 +285,7 @@ function HistoryInstant({
 }): React.JSX.Element {
   return (
     <>
-      <div>{formatInstantUtc(at)} UTC</div>
+      <div>{formatAuditInstantUtc(at)}</div>
       {timezone && (
         <div className="rm-dim rm-tiny">
           Current zone ({timezone}): {formatInstant(at, timezone)}
@@ -309,7 +309,7 @@ function OccurrenceDetail({
     <div className="rm-occurrence-detail">
       <div className="rm-panel-head">
         <div>
-          <h3>{formatInstantUtc(occurrence.scheduledFor)} UTC</h3>
+          <h3>{formatAuditInstantUtc(occurrence.scheduledFor)}</h3>
           <span className="rm-tiny rm-dim rm-mono">{occurrence.id} · immutable</span>
         </div>
         <span className={`rm-badge-inline rm-badge-${status.tone}`}>{status.label}</span>

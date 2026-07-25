@@ -1613,9 +1613,14 @@ export function App(): React.JSX.Element {
                       openTaskEditor(taskId);
                       return;
                     }
-                    if (task.sessionId) {
+                    const liveSession = task.sessionId
+                      ? sessions.find((session) => session.id === task.sessionId)
+                      : null;
+                    if (liveSession) {
                       closeMissions();
-                      setSelectedId(task.sessionId);
+                      navigate({ page: "fleet" });
+                      setFilter("");
+                      setSelectedId(liveSession.id);
                       if (layout === "board") setBoardOpen(true);
                       return;
                     }

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, InspectorRailMark, WorkflowRailMark } from "../session-bits.tsx";
+import {
+  AgentDot,
+  InspectorRailMark,
+  ScheduleOriginRailMark,
+  WorkflowRailMark,
+} from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
@@ -23,6 +28,8 @@ export function RailRow({
   registerEl,
   workflowRun = null,
   onOpenWorkflowRun,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   session: Session;
   selected: boolean;
@@ -31,6 +38,10 @@ export function RailRow({
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
+  /** Open the Scheduled Catalog from a scheduled task's rail glyph. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Live schedule names by id, for the rail glyph's hover copy. */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
@@ -97,6 +108,11 @@ export function RailRow({
             <WorkflowRailMark
               run={workflowRun}
               onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
+            />
+            <ScheduleOriginRailMark
+              task={session.task}
+              scheduleNames={scheduleNameById}
+              onOpen={onOpenSchedule}
             />
             <span className="rail-seen">
               {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}

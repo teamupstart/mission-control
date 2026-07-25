@@ -5,7 +5,12 @@ import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
-import { DeadBlockerButton, LabelChips, ScheduleSwitch } from "../session-bits.tsx";
+import {
+  DeadBlockerButton,
+  LabelChips,
+  ScheduleOriginChip,
+  ScheduleSwitch,
+} from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -51,6 +56,8 @@ export function BacklogColumn({
   onAssignError,
   onDragging,
   onEdit,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -62,6 +69,10 @@ export function BacklogColumn({
   onDragging: (repoRoot: string | null) => void;
   /** Reopen the dispatch modal over this task. */
   onEdit: (taskId: string) => void;
+  /** Open the Scheduled Catalog from a generated task's provenance mark. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Live schedule names by id, for the provenance mark's copy. */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   const index = backlogIndex(allTasks, plan);
@@ -86,6 +97,8 @@ export function BacklogColumn({
               onAssignError={onAssignError}
               onDragging={onDragging}
               onEdit={() => onEdit(t.id)}
+              onOpenSchedule={onOpenSchedule}
+              scheduleNameById={scheduleNameById}
             />
           ))
         )}
@@ -130,6 +143,8 @@ function BacklogCard({
   onAssignError,
   onDragging,
   onEdit,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   task: Task;
   blockers: BacklogBlocker[];
@@ -140,6 +155,8 @@ function BacklogCard({
   onAssignError: (message: string) => void;
   onDragging: (repoRoot: string | null) => void;
   onEdit: () => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [deadBlockerOpen, setDeadBlockerOpen] = useState(false);
@@ -285,6 +302,9 @@ function BacklogCard({
         <span className="bl-agent">{task.agent}</span>
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
+      {/* A generated task's recurring-mission origin. The shared chip stops propagation so
+          opening its history does not also open Dispatch or start a drag. */}
+      <ScheduleOriginChip task={task} scheduleNames={scheduleNameById} onOpen={onOpenSchedule} />
       {blocked && (
         <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
           <span className={`bl-blocked${needsYou(blockers) ? " is-stopped" : ""}`}>

@@ -11,7 +11,14 @@ import { backlogIndex, declaredBlockers, deadBlockersFor } from "@shared/backlog
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import { AgentDot, DeadBlockerButton, LabelChips, PriorityChip, ScheduleSwitch } from "./session-bits.tsx";
+import {
+  AgentDot,
+  DeadBlockerButton,
+  LabelChips,
+  PriorityChip,
+  ScheduleOriginChip,
+  ScheduleSwitch,
+} from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -20,12 +27,16 @@ function BacklogReportRow({
   tasks,
   deadBlockers,
   onEditTask,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   task: Task;
   tasks: Task[];
   /** Cancelled/failed tasks blocking this row, directly or up its chain. */
   deadBlockers: Task[];
   onEditTask: (taskId: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
@@ -98,6 +109,11 @@ function BacklogReportRow({
         <span className="report-line report-line-sub">
           <LabelChips labels={task.labels} max={3} />
           <span className="report-sub mono">{shortenCwd(task.repoRoot)}</span>
+          <ScheduleOriginChip
+            task={task}
+            scheduleNames={scheduleNameById}
+            onOpen={onOpenSchedule}
+          />
         </span>
         {blockers.length > 0 && (
           <span className="report-line report-line-sub">
@@ -157,6 +173,8 @@ export function ReportPanel({
   onClose,
   onOpenReviews,
   onEditTask,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   sessions: Session[];
   tasks: Task[];
@@ -171,6 +189,10 @@ export function ReportPanel({
   onOpenReviews: (sessionId: string) => void;
   /** Close this panel and reopen the dispatch modal over a backlog task. */
   onEditTask: (taskId: string) => void;
+  /** Close this panel and open the Scheduled Catalog from a generated task's provenance. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Live schedule names by id, for provenance copy on backlog and recent rows. */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [copied, setCopied] = useState(false);
@@ -378,6 +400,8 @@ export function ReportPanel({
               tasks={tasks}
               deadBlockers={deadBlockersFor(task, backlogDepIndex)}
               onEditTask={onEditTask}
+              onOpenSchedule={onOpenSchedule}
+              scheduleNameById={scheduleNameById}
             />
           ))}
         </Section>
@@ -399,6 +423,13 @@ export function ReportPanel({
                     <span className="report-sub">{t.outcome}</span>
                   ))}
                 {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
+                {/* A finished scheduled task keeps its provenance so its run history is
+                    still one click away after it has left the backlog. */}
+                <ScheduleOriginChip
+                  task={t}
+                  scheduleNames={scheduleNameById}
+                  onOpen={onOpenSchedule}
+                />
               </div>
               {/* A cleanly-failed task (torn down, no worktree) can be retried in
                   place - it re-provisions from scratch. */}

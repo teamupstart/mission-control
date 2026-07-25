@@ -108,6 +108,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onAssignError={setDropError}
         onDragging={setDraggingRepo}
         onEdit={props.onEditTask}
+        onOpenSchedule={props.onOpenSchedule}
+        scheduleNameById={props.scheduleNameById}
       />
 
       {groups
@@ -182,6 +184,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       registerEl={props.registerEl}
                       workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                       onOpenWorkflowRun={props.onOpenWorkflowRun}
+                      onOpenSchedule={props.onOpenSchedule}
+                      scheduleNameById={props.scheduleNameById}
                     />
                   ))
                 ) : (
@@ -199,6 +203,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
                       workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                       onOpenWorkflowRun={props.onOpenWorkflowRun}
+                      onOpenSchedule={props.onOpenSchedule}
+                      scheduleNameById={props.scheduleNameById}
                     />
                   ))
                 )}

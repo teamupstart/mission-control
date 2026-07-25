@@ -13,6 +13,7 @@ import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
 import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.ts";
+import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
@@ -163,6 +164,163 @@ export function WorkflowRailMark({
         }}
       >
         ⌁
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * A generated task's schedule provenance, drawn in three surface vocabularies.
+ *
+ * The same session-level-signal shape as the Inspector and Workflow families above: one
+ * DECISION (`scheduleOriginTooltip`, the hover copy) shared by a card/detail chip, a Board
+ * tile flag, and a rail glyph, so the three surfaces cannot drift on what a scheduled task
+ * says or how it is explained. The mark exists only on a task the scheduler filed - all
+ * three read `task.scheduleId` and render nothing for manual, external-source, or
+ * pre-feature work, exactly as `Task`/`TaskSummary` promise those fields move together.
+ *
+ * Clicking any of them opens the Scheduled Catalog at this schedule's run history through
+ * `onOpen`, which never touches session state - a provenance link is a deep link, not a
+ * card action, so each stops propagation so it does not also select/expand the session or
+ * start a backlog drag.
+ */
+export interface ScheduleProvenanceSource {
+  scheduleId: string | null;
+  scheduleOccurrenceId: string | null;
+  scheduledFor: number | null;
+}
+
+interface ResolvedScheduleOrigin {
+  scheduleId: string;
+  occurrenceId: string | null;
+  scheduledFor: number | null;
+}
+
+/** The provenance a generated task carries, or null for ordinary/manual/external work. */
+export function scheduleProvenance(
+  task: ScheduleProvenanceSource | null | undefined,
+): ResolvedScheduleOrigin | null {
+  if (!task?.scheduleId) return null;
+  return {
+    scheduleId: task.scheduleId,
+    occurrenceId: task.scheduleOccurrenceId,
+    scheduledFor: task.scheduledFor,
+  };
+}
+
+/** The one hover sentence, shared by all three surfaces so their copy cannot diverge. */
+function scheduleOriginTooltip(
+  scheduleName: string | null,
+  origin: ResolvedScheduleOrigin,
+): string {
+  const ids = origin.occurrenceId
+    ? `schedule ${origin.scheduleId}, occurrence ${origin.occurrenceId}`
+    : `schedule ${origin.scheduleId}`;
+  const who = scheduleName
+    ? `Scheduled by ${scheduleName}`
+    : `Filed by a recurring mission (${ids})`;
+  const when =
+    origin.scheduledFor != null ? ` for ${formatScheduledFor(origin.scheduledFor)}` : "";
+  return `${who}${when} - open its run history`;
+}
+
+/** The chip's visible text: the live name and time when we have them, "Scheduled" otherwise. */
+function scheduleOriginText(scheduleName: string | null, scheduledFor: number | null): string {
+  const base = scheduleName ?? "Scheduled";
+  return scheduledFor != null ? `${base} · ${formatScheduledFor(scheduledFor)}` : base;
+}
+
+export interface ScheduleOriginProps {
+  task: ScheduleProvenanceSource | null | undefined;
+  /** Live catalog names by schedule id; absent for an archived or purged schedule. */
+  scheduleNames?: ReadonlyMap<string, string>;
+  /**
+   * Deep-link into run history. `scheduledFor` is the occurrence's instant, passed so
+   * history can seed its cursor and open the exact run without paging - see ScheduleHistory.
+   */
+  onOpen?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+}
+
+/** Card and Console-detail vocabulary: a labelled pill. */
+export function ScheduleOriginChip({
+  task,
+  scheduleNames,
+  onOpen,
+}: ScheduleOriginProps): React.JSX.Element | null {
+  const origin = scheduleProvenance(task);
+  if (!origin) return null;
+  const name = scheduleNames?.get(origin.scheduleId) ?? null;
+  return (
+    <Tooltip label={scheduleOriginTooltip(name, origin)}>
+      <button
+        className="schedule-chip"
+        onMouseDown={(event) => event.stopPropagation()}
+        onDragStart={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
+        }}
+      >
+        <span aria-hidden>◷</span>
+        {scheduleOriginText(name, origin.scheduledFor)}
+      </button>
+    </Tooltip>
+  );
+}
+
+/** Board overview-tile vocabulary: a compact `.tile-flag`. */
+export function ScheduleOriginTileFlag({
+  task,
+  scheduleNames,
+  onOpen,
+}: ScheduleOriginProps): React.JSX.Element | null {
+  const origin = scheduleProvenance(task);
+  if (!origin) return null;
+  const name = scheduleNames?.get(origin.scheduleId) ?? null;
+  const label = scheduleOriginTooltip(name, origin);
+  return (
+    <Tooltip label={label}>
+      <button
+        className="tile-flag tf-schedule"
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
+        }}
+      >
+        ◷ scheduled
+      </button>
+    </Tooltip>
+  );
+}
+
+/** Console-rail / Board drilled-in vocabulary: a bare glyph with an accessible name. */
+export function ScheduleOriginRailMark({
+  task,
+  scheduleNames,
+  onOpen,
+}: ScheduleOriginProps): React.JSX.Element | null {
+  const origin = scheduleProvenance(task);
+  if (!origin) return null;
+  const name = scheduleNames?.get(origin.scheduleId) ?? null;
+  const label = scheduleOriginTooltip(name, origin);
+  return (
+    <Tooltip label={label}>
+      {/* A mouse-only glyph, deliberately - NOT a focusable/role="button" control. The rail
+          row is itself a native <button>, so any interactive descendant here would be an
+          invalid nested control the a11y tree announces inconsistently (Inspector round on
+          #241). It matches the sibling WorkflowRailMark / InspectorRailMark for that reason.
+          The KEYBOARD-accessible path to this history deep link is the card chip, the console
+          detail chip, and the board tile flag - all proper focusable buttons outside any row
+          button. stopPropagation keeps a click off the row it sits inside. */}
+      <span
+        className="rail-schedule"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
+        }}
+      >
+        ◷
       </span>
     </Tooltip>
   );

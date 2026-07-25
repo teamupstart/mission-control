@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
+import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import assert from "node:assert/strict";
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
@@ -16,6 +17,9 @@ import {
   PrChip,
   PrTileFlag,
   RuntimeMetaRow,
+  ScheduleOriginChip,
+  ScheduleOriginRailMark,
+  ScheduleOriginTileFlag,
   SessionTitle,
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
@@ -585,4 +589,191 @@ test("the inspector chip and its tile twin have an accessible name", () => {
     }),
   );
   assert.match(tile, /aria-label="Inspector: adopted for review/);
+});
+
+// Schedule provenance is the fourth session-level signal to span all four renderers, and
+// it follows the Inspector's rule: one shared DECISION (`scheduleOriginTooltip`) so the
+// card chip, console-detail chip, board tile flag and rail glyph cannot drift on what a
+// scheduled task says or how it is explained on hover.
+const SCHEDULED_TASK = {
+  id: "task-1",
+  title: "Run dependency audit",
+  kind: "ship" as const,
+  status: "running" as const,
+  outcome: null,
+  outcomeUrl: null,
+  scheduleId: "sched-1",
+  scheduleOccurrenceId: "occ-1",
+  scheduledFor: 1_753_600_000_000,
+  ensemble: null,
+};
+const SCHEDULE_NAMES = new Map([["sched-1", "Dependency audit"]]);
+
+function scheduledView(session: Session): SessionViewProps {
+  return {
+    sessions: [session],
+    tasks: [],
+    backlog: [],
+    onEditTask: () => {},
+    backlogPlan: null,
+    gateAlerts: new Set<string>(),
+    selectedId: session.id,
+    consoleZone: "rail",
+    onConsoleZoneChange: () => {},
+    onSelect: () => {},
+    onDeselect: () => {},
+    expandedId: null,
+    onToggleExpand: () => {},
+    onOpenReviews: () => {},
+    onOpenDiff: () => {},
+    onOpenFiles: () => {},
+    onOpenFile: () => false,
+    fileTabRequest: null,
+    diffTabRequest: null,
+    files: {} as SessionFilesController,
+    onReset: () => {},
+    onComplete: () => {},
+    onKill: () => {},
+    onKilled: () => {},
+    resetNonces: {},
+    registerEl: () => {},
+    registerActions: () => {},
+    registerDetailScroll: () => {},
+    registerReaderTab: () => {},
+    renamingId: null,
+    onRenameStart: () => {},
+    onRenameClose: () => {},
+    foremanMode: "dry-run",
+    foremanEnabled: false,
+    foremanAllowlist: [],
+    inputReviewBySession: new Map<string, string>(),
+    pendingReviewIds: new Set<string>(),
+    onOpenSchedule: () => {},
+    scheduleNameById: SCHEDULE_NAMES,
+  };
+}
+
+test("a scheduled task's origin mark is the shared leaf in all four session renderers", () => {
+  const session = mkSession({ task: SCHEDULED_TASK });
+  const props = { task: SCHEDULED_TASK, scheduleNames: SCHEDULE_NAMES };
+
+  const cardHtml = renderToStaticMarkup(
+    createElement(SessionCard, {
+      session,
+      gateNeedsYou: false,
+      onOpenReviews: () => {},
+      onOpenSchedule: () => {},
+      scheduleNameById: SCHEDULE_NAMES,
+    }),
+  );
+  assert.ok(
+    containsMarkup(cardHtml, bit(ScheduleOriginChip, props)),
+    "the card should render the shared ScheduleOriginChip",
+  );
+
+  const detailHtml = renderToStaticMarkup(
+    createElement(ConsoleDetail, { session, view: scheduledView(session) }),
+  );
+  assert.ok(
+    containsMarkup(detailHtml, bit(ScheduleOriginChip, props)),
+    "console detail should render the shared ScheduleOriginChip",
+  );
+
+  const tileHtml = renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+      onDropConfirm: () => {},
+      onOpenSchedule: () => {},
+      scheduleNameById: SCHEDULE_NAMES,
+    }),
+  );
+  assert.ok(
+    containsMarkup(tileHtml, bit(ScheduleOriginTileFlag, props)),
+    "the board tile should render the shared ScheduleOriginTileFlag",
+  );
+
+  const railHtml = renderToStaticMarkup(
+    createElement(RailRow, {
+      session,
+      selected: false,
+      gateNeedsYou: false,
+      onSelect: () => {},
+      onOpenSchedule: () => {},
+      scheduleNameById: SCHEDULE_NAMES,
+    }),
+  );
+  assert.ok(
+    containsMarkup(railHtml, bit(ScheduleOriginRailMark, props)),
+    "the rail should render the shared ScheduleOriginRailMark",
+  );
+});
+
+test("all four scheduled-origin surfaces share one Tooltip copy, live name and all", () => {
+  const props = { task: SCHEDULED_TASK, scheduleNames: SCHEDULE_NAMES };
+  const chip = ScheduleOriginChip(props);
+  const tile = ScheduleOriginTileFlag(props);
+  const rail = ScheduleOriginRailMark(props);
+  assert.equal(chip?.type, Tooltip, "the chip is wrapped in the shared Tooltip");
+  assert.equal(tile?.type, Tooltip, "the tile flag is wrapped in the shared Tooltip");
+  assert.equal(rail?.type, Tooltip, "the rail mark is wrapped in the shared Tooltip");
+  const label = (chip?.props as { label: string }).label;
+  assert.match(label, /Scheduled by Dependency audit/);
+  assert.equal((tile?.props as { label: string }).label, label);
+  assert.equal((rail?.props as { label: string }).label, label);
+  // The rail glyph is a mouse-only span, NOT a focusable/role="button" control: the rail row
+  // is itself a native button, so an interactive descendant would be an invalid nested
+  // control (Inspector round on #241). It matches WorkflowRailMark / InspectorRailMark; the
+  // keyboard path to the deep link is the card chip, console-detail chip, and tile flag.
+  const railMark = (rail?.props as { children: ReactElement }).children;
+  const railProps = railMark.props as { role?: string; tabIndex?: number };
+  assert.equal(railProps.role, undefined);
+  assert.equal(railProps.tabIndex, undefined);
+});
+
+test("a task with no schedule provenance draws no origin mark on any surface", () => {
+  const ordinaryTask = { ...SCHEDULED_TASK, scheduleId: null, scheduleOccurrenceId: null, scheduledFor: null };
+  const props = { task: ordinaryTask, scheduleNames: SCHEDULE_NAMES };
+  assert.equal(bit(ScheduleOriginChip, props), "");
+  assert.equal(bit(ScheduleOriginTileFlag, props), "");
+  assert.equal(bit(ScheduleOriginRailMark, props), "");
+  // And an external-source task never masquerades as scheduled: only scheduleId gates it.
+  assert.equal(bit(ScheduleOriginChip, { task: { ...ordinaryTask }, scheduleNames: SCHEDULE_NAMES }), "");
+});
+
+test("an archived schedule keeps auditable provenance and isolates chip gestures", () => {
+  // The name map holds only live catalog schedules, so a task from an archived one gets a
+  // generic label - but the mark still renders and still deep-links, because history
+  // carries the schedule even after it leaves the catalog.
+  const chip = ScheduleOriginChip({ task: SCHEDULED_TASK, scheduleNames: new Map() });
+  assert.equal(chip?.type, Tooltip);
+  const label = (chip?.props as { label: string }).label;
+  assert.match(label, /Filed by a recurring mission/);
+  assert.match(label, /schedule sched-1/);
+  assert.match(label, /occurrence occ-1/);
+
+  const button = (
+    chip?.props as {
+      children: ReactElement<{
+        onMouseDown: (event: { stopPropagation: () => void }) => void;
+        onDragStart: (event: { stopPropagation: () => void }) => void;
+      }>;
+    }
+  ).children;
+  let stopped = 0;
+  button.props.onMouseDown({
+    stopPropagation: () => {
+      stopped += 1;
+    },
+  });
+  button.props.onDragStart({
+    stopPropagation: () => {
+      stopped += 1;
+    },
+  });
+  assert.equal(stopped, 2);
 });

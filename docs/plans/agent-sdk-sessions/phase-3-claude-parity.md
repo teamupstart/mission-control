@@ -41,15 +41,17 @@ Inherits C1-C8. Findings binding this phase:
   `harness.workQueue && harness.hooks && (scope === "machine" || hooksSeen)`. SDK
   sessions set `hooksSeen` at bind (C5), but pi has `hooks: null` - the runtime arm added
   here is what phase 6 relies on (C9).
-- `resetSession` (`src/server/reset.ts:23-86`) is the single reset owner;
-  `resetToOrigin` reads `harness.clearContext`. Work-episode rebind expects the rotated
-  `agentSessionId` - the driver's re-emitted `bound` (phase 2) is the signal.
+- `resetSession` (`src/server/reset.ts`) is the single reset owner; `resetToOrigin`
+  reads `harness.clearContext`. Work-episode rebind expects both the rotated
+  `agentSessionId` and clear evidence that `canResolvePending` accepts. Phase 2's
+  `driver_identity` binding alone cannot resolve the pre-armed reset wait.
 - Skills reload (`skills/reload.ts`) gates on pane preconditions (`hasPane`, readable
   mode line, `settledIdle`); Claude cost rides OTEL env from `~/.claude/settings.json`
   (`@shared/claude-settings.ts`) - expected to fire from the SDK subprocess; verify.
 - PR provenance: only `prCreated` (command match) and `NmRunSummary.prUrl` reach
-  `adoptPr` (`inspector-adoption.test.ts` pins it). The driver's `pr_created` event is
-  the same command-match evidence, one transport over.
+  `adoptPr` (`inspector-adoption.test.ts` pins it). Phase 2 pairs `PreToolUse` command
+  evidence with the matching `PostToolUse` URL before emitting the driver's
+  `pr_created`; neither half is sufficient alone.
 
 ## Implementation steps
 
@@ -80,8 +82,10 @@ Inherits C1-C8. Findings binding this phase:
    sentence.
 6. **Reset**: `resetToOrigin` branches on runtime - sdk → `handle.clearContext()` via
    the supervisor (null handle capability degrades to `cleared: false`, the tested
-   answer); the rest of `resetSession` (episode reset, queue clear, rebind wait) is
-   untouched and must pass its existing tests for SDK sessions.
+   answer). Add a driver-sourced clear evidence kind that `canResolvePending` accepts,
+   so the next `bound` can transfer the work episode instead of timing out after identity
+   rotates. The rest of `resetSession` (episode reset, queue clear, rebind wait) remains
+   the single owner and must pass its existing tests for SDK sessions.
 7. **Skills**: reload delivery for SDK Claude sessions sends `reloadCommand` via
    `send()` with preconditions reduced to driver-idle (the pane-guard reads have no SDK
    arm); wrap-up composition is unchanged (`composeWrapup`), delivery rides the queue
@@ -89,8 +93,8 @@ Inherits C1-C8. Findings binding this phase:
 8. **Cost**: E2E-verify OTEL usage events arrive from an SDK subprocess session and the
    daily ledger records them once; assert the driver's `turn_done` usage is not written
    to the ledger (display enrichment only, per the source plan).
-9. **Provenance**: `applyDriverEvent`'s `pr_created` feeds the same registry path the
-   hook's `prCreated` does (session `pr_opened` emit → Inspector adoption).
+9. **Provenance**: `applyDriverEvent`'s paired-command-and-URL `pr_created` feeds the same
+   registry path the hook's `prCreated` does (session `pr_opened` emit → Inspector adoption).
    `inspector-adoption.test.ts` extends: driver event adopts; a bare `prUrl` sighting
    still does not.
 10. **Tests**: `foreman-prompt-runtime.test.ts`, verdict form validation,

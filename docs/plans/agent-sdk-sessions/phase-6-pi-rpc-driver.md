@@ -32,8 +32,9 @@ Inherits C1-C9 (and C11 is owned here). Findings:
 
 - **Transport**: `pi --mode rpc`, strict LF-delimited JSONL over stdio. pi's own docs
   warn Node `readline` is non-compliant (it splits on U+2028/U+2029) - frame manually on
-  `\n` bytes. Commands carry optional `id` for correlation; responses are
-  `{type: "response", command, success, data | error}`.
+  `\n` bytes. Strip inherited `TMUX_PANE`, `WEZTERM_PANE`, and `TERM_PROGRAM` before
+  spawning, matching the first driver's attribution guard. Commands carry optional `id`
+  for correlation; responses are `{type: "response", command, success, data | error}`.
 - **Command set** (verify against the pinned pi version): `prompt` (with images and
   `streamingBehavior`), `steer`, `follow_up`, `abort`, `new_session`,
   `switch_session`, `fork`, `get_state`, `set_model`, `set_thinking_level`, `compact`,
@@ -73,7 +74,7 @@ Inherits C1-C9 (and C11 is owned here). Findings:
      answer after timeout.
    - `send()` → `prompt` (or `steer`/`follow_up` per `streamingBehavior` when a turn is
      in flight - pick the measured behavior and record it); `interrupt()` → `abort`;
-     `setModel` → `set_model`; effort → `set_thinking_level`;
+     `setModel` → `set_model`; `setEffort` → `set_thinking_level`;
      `clearContext()` → `new_session` + re-emit `bound` with the new session file;
      `setPermissionMode: null`.
    - `pr_created`: watch tool-execution events for `opensPullRequest` command matches.
@@ -87,8 +88,9 @@ Inherits C1-C9 (and C11 is owned here). Findings:
    sessions hit the per-session refusal exactly as uninstrumented Codex does. Update
    `workQueueUnsupportedWhy` expectations in `harness-capabilities.test.ts`
    (pi moves from harness-refused to session-refused for terminal, allowed for SDK).
-3. **Handoff**: pi arm of the route -
-   `[resolveAgentBin("pi"), "--session", agentSessionId]`.
+3. **Handoff**: implement `SdkSpec.resumeArgv(agentSessionId)` as
+   `["--session", agentSessionId]`; the phase 2 route prepends `resolveAgentBin("pi")`
+   without a pi-specific branch.
 4. **Dispatcher**: nothing pi-specific to add - the phase 2 branch covers it; verify the
    terminal pi arm (`preparePiLaunch` + acceptance polling) is untouched for toggle-off.
 5. **Tests**: `pi-sdk-adapter.test.ts` on scripted JSONL frames (LF framing incl. a

@@ -33,9 +33,10 @@ import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 //
 // This is the write path and the state path for a session the daemon RUNS. The read path
 // is untouched: the subprocess writes the same `~/.claude/projects/<cwd>/<id>.jsonl` the
-// interactive CLI writes, so `claudeTranscript`, the goal reader, the queue's verification
-// window and the transcript SSE stream all keep working through `transcriptPath` with no
-// arm of their own. That is the whole reason `bound` carries a path at all.
+// interactive CLI writes, so `claudeTranscript` and the transcript SSE stream keep working
+// through `transcriptPath` with no arm of their own. That is the whole reason `bound` carries
+// a path at all. Work-queue automation is deliberately refused until phase 3; do not infer
+// support for it from the shared read path.
 //
 // ## What this module is allowed to know
 //

@@ -1,7 +1,7 @@
 # AGENTS.md
 
-Mission Control: a local control plane for Claude Code / Codex / Pi sessions across wezterm tabs
-and tmux sessions.
+Mission Control: a local control plane for Claude Code / Codex / Pi sessions across terminal
+backends and embedded runtimes.
 
 This file lists the **surfaces that have to move together**. For what the product does and
 how to run it, read `README.md`.

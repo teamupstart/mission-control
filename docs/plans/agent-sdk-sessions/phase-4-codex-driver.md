@@ -35,7 +35,8 @@ Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findin
   `resolveAgentBin("codex")`, stdio JSONL JSON-RPC 2.0, `initialize` handshake (use
   `optOutNotificationMethods` to drop delta noise we do not consume). Per-session
   subprocess buys crash isolation and per-session `-c` config scoping; revisit only if
-  spawn cost is measured to matter.
+  spawn cost is measured to matter. Strip inherited `TMUX_PANE`, `WEZTERM_PANE`, and
+  `TERM_PROGRAM` before spawning, matching the first driver's attribution guard.
 - **Bindings**: `codex app-server generate-ts --out <dir>` against the pinned binary;
   commit under `src/server/harness/codex/app-server/` with the generating version
   recorded in the module. The protocol is experimental - drift is absorbed by
@@ -81,19 +82,19 @@ Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findin
    - `send()` → `turn/start` (or `turn/steer` when a turn is in flight - measured
      behavior, verify); `interrupt()` → `turn/interrupt`; `setPermissionMode` → store +
      apply on next `turn/start` overrides, report the applied posture;
-     `setModel` → per-turn model override; `clearContext()` → new `thread/start` on the
-     same card, re-emit `bound` with the new thread id (the registry rebind path from
-     phase 2 handles rotation).
+     `setEffort` and `setModel` → per-turn overrides; `clearContext()` → new
+     `thread/start` on the same card, re-emit `bound` with the new thread id (the registry
+     rebind path from phase 2 handles rotation).
    - `pr_created`: watch command-execution items for `opensPullRequest` matches - same
      evidence rule as Claude's.
    - Subprocess exit → `exited { resumable: true }`; resume path uses `thread/resume`.
 3. **Capability flips**: codex `runtimes: ["terminal", "sdk"]`,
    `HARNESSES.codex.sdk = codexSdk` (C4 contract test moves them together). The panel
    control appears with no panel edit (it folds over `runtimes`).
-4. **Handoff**: Codex arm of the phase 2 route -
-   `[resolveAgentBin("codex"), "resume", threadId]` (verify the exact resume argv
-   against the pinned binary; the TUI picker's `--include-non-interactive` concern does
-   not apply to a direct id resume).
+4. **Handoff**: implement `SdkSpec.resumeArgv(threadId)` as `["resume", threadId]`
+   (verify the exact argv against the pinned binary; the TUI picker's
+   `--include-non-interactive` concern does not apply to a direct id resume). The phase 2
+   route prepends `resolveAgentBin("codex")` without a Codex-specific branch.
 5. **Supervisor**: no structural change - the Codex adapter slots behind `SdkSpec`.
    Verify restore relaunches app-server + `thread/resume` cleanly.
 6. **Tests**: `codex-sdk-adapter.test.ts` on scripted JSON-RPC frames (handshake,

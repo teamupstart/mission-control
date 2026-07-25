@@ -78,14 +78,22 @@ export function validateComparison(
     }
   }
   for (let rank = 1; rank <= n; rank++) {
-    if (!seenRanks.has(rank)) return { ok: false, reason: `rank ${rank} is missing; ranks must be contiguous 1-${n}` };
+    if (!seenRanks.has(rank)) {
+      return { ok: false, reason: `rank ${rank} is missing; ranks must be contiguous 1-${n}` };
+    }
   }
   const recommended = result.subjects.find((subject) => subject.label === result.recommendation);
   if (!recommended) {
-    return { ok: false, reason: `recommendation ${JSON.stringify(result.recommendation)} is not one of the subjects` };
+    return {
+      ok: false,
+      reason: `recommendation ${JSON.stringify(result.recommendation)} is not one of the subjects`,
+    };
   }
   if (recommended.rank !== 1) {
-    return { ok: false, reason: `the recommendation must hold rank 1, but ${result.recommendation} is rank ${recommended.rank}` };
+    return {
+      ok: false,
+      reason: `the recommendation must hold rank 1, but ${result.recommendation} is rank ${recommended.rank}`,
+    };
   }
 
   const scorecards: BestOfNScorecard[] = [...result.subjects]
@@ -132,6 +140,8 @@ function validate(
 
 async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
   return runEvidenceReview(context, {
+    evaluatorKind: "comparative_llm",
+    purpose: "comparative_review",
     label: "The comparison",
     builtinRubric: {
       id: BEST_OF_N_BUILTIN_RUBRIC,
@@ -156,5 +166,16 @@ export const comparativeReviewDriver: ReviewDriver = {
   driverKey: "comparative_review@1",
   llmPurpose: "comparative_review",
   resultLabel,
+  recover({ policy, evaluations }) {
+    if (policy.kind !== "comparative_llm") return null;
+    const succeeded = evaluations.find((evaluation) => evaluation.status === "succeeded");
+    if (!succeeded) return null;
+    return {
+      evaluationIds: [succeeded.id],
+      resultLabel: succeeded.result
+        ? resultLabel({ result: succeeded.result, subjectArtifactIds: succeeded.subjectArtifactIds })
+        : null,
+    };
+  },
   run,
 };

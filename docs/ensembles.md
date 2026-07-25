@@ -2,10 +2,11 @@
 
 An **ensemble** runs a group of ordinary dispatched tasks under one versioned *strategy* and owns
 the group-level facts a single task cannot: one pinned base commit, member roles, immutable
-submitted artifacts, evaluations, a human decision, and a terminal outcome. Two strategies are
-enabled: **Best of N**, which ranks and promotes one, and **Consensus**, which mines what the
-attempts disagreed about and promotes nothing. This document is the operator's reference for what
-an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
+submitted artifacts, evaluations, a human decision, and a terminal outcome. Three strategies are
+enabled: **Best of N**, which ranks and promotes one; **Consensus**, which mines what the attempts
+disagreed about and promotes nothing; and **Panel vote**, which ranks through independent
+single-lens ballots and surfaces their disagreement. This document is the operator's reference for
+what an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
 strategy extends.
 
 The product overview lives in the [README](../README.md#multi-agent-ensembles); the design
@@ -61,6 +62,43 @@ submitting the same immutable Git snapshots. The run diverges at step 6:
 
 Use it when the disagreement is the point. Its evaluation shares the same review-call ceiling and
 the same **Settings -> Models -> Ensemble evaluation** job as the Best-of-N comparison.
+
+## What Panel vote does
+
+Steps 1-5 are Best of N's, unchanged: the same 2-5 candidate roster, the same pinned base commit,
+the same isolated members and the same submission path. The difference is step 6.
+
+6. When every live member has submitted or terminated and **at least two** produced a snapshot, the
+   daemon convenes a **panel**: two to five judges, each scoring *every* submission from one lens
+   alone. A lens is a built-in rubric (Correctness, Maintainability, Risk, Evidence, Scope) or an
+   operator-authored Persona pinned to an exact revision at creation. All the judges are asked in
+   **parallel** against ONE shared anonymous evidence packet built once, so a judge that disagrees
+   is disagreeing about the submissions rather than about what it happened to be shown. Two judges
+   may not share a built-in lens - a panel that agrees by construction is not a panel.
+7. Each judge's ballot is its own `ensemble_evaluations` row: its lens snapshot, the runner and
+   model actually resolved, its bounded input fingerprint, and its typed per-artifact scores. A
+   judge that answers with prose, whose provider fails, or whose lens this build does not have,
+   fails **that row only** - the panel continues, and nothing malformed becomes a score.
+8. The stage succeeds when at least **two** judges returned a usable ballot (the *quorum*, compiled
+   into the plan). Below quorum it fails and is retried whole against the same immutable
+   submissions up to the attempt cap; a panel that never reaches quorum fails the run. One
+   surviving ballot is never the answer - its disagreement measure is vacuously zero, which reads
+   as unanimity.
+9. The ranking is a pure aggregation over the ballots - Borda points over each judge's RANKS, never
+   over the 0-100 scores, since a score is a private scale and a rank is a comparison between the
+   same subjects. It is computed, never stored, by one shared function the daemon and the dashboard
+   both call, so the stage label and the result view cannot disagree.
+10. The run detail shows the aggregate ranking, a **disagreement figure** (the share of submission
+    pairs two judges ordered differently, averaged over every pair of judges), a **Contested** mark
+    and per-judge ranks on any submission the judges placed differently, an explicit notice when
+    the top two could not be separated, and each judge's full ballot. A tie is declared, not
+    resolved.
+
+Step 7 of Best of N (the human-confirmed select-one finalization) is then identical. The panel
+**recommends and cannot promote**, exactly as the comparison cannot.
+
+Costs: one model call per judge rather than one per run, which the preview states before launch.
+Every other limit, ref, retention, alert and recovery behaviour in this document applies unchanged.
 
 ## States
 

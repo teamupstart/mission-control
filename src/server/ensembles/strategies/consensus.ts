@@ -22,6 +22,7 @@ import {
   defineStrategy,
   type StrategyCompileContext,
   type StrategyCompileResult,
+  type StrategyPersonaRef,
 } from "./types.ts";
 
 /**
@@ -94,7 +95,9 @@ function compile(config: ConsensusConfig, context: StrategyCompileContext): Stra
   // named a Persona and a context that could not resolve it is a REFUSAL - falling back to the
   // built-in guidance would mine divergences against criteria the operator did not choose, and
   // the only sign would be a rubric id nobody reads.
-  if (config.evaluator.personaId !== null && context.persona === null) {
+  const persona =
+    config.evaluator.personaId === null ? null : context.personas.get(config.evaluator.personaId) ?? null;
+  if (config.evaluator.personaId !== null && persona === null) {
     return {
       ok: false,
       issues: [
@@ -105,7 +108,7 @@ function compile(config: ConsensusConfig, context: StrategyCompileContext): Stra
       ],
     };
   }
-  if (context.persona !== null && config.evaluator.personaId === null) {
+  if (context.personas.size > 0 && config.evaluator.personaId === null) {
     return {
       ok: false,
       issues: [
@@ -155,16 +158,16 @@ function compile(config: ConsensusConfig, context: StrategyCompileContext): Stra
     evaluator: {
       kind: "consensus_llm",
       guidance:
-        context.persona === null
+        persona === null
           ? { kind: "builtin", rubricId: CONSENSUS_BUILTIN_RUBRIC }
           : {
               kind: "persona",
-              personaId: context.persona.id,
-              revision: context.persona.revision,
-              name: context.persona.name,
-              guidanceMarkdown: context.persona.guidanceMarkdown,
-              runner: context.persona.runner,
-              model: context.persona.model,
+              personaId: persona.id,
+              revision: persona.revision,
+              name: persona.name,
+              guidanceMarkdown: persona.guidanceMarkdown,
+              runner: persona.runner,
+              model: persona.model,
             },
       runner: config.evaluator.runner,
       model: config.evaluator.model,
@@ -247,6 +250,32 @@ function compile(config: ConsensusConfig, context: StrategyCompileContext): Stra
   return { ok: true, plan: checked.data as CompiledEnsemblePlan, config: config as EnsembleJson };
 }
 
+/** The optional Persona this config can name, read defensively before schema validation. */
+function personaRefs(raw: unknown): StrategyPersonaRef[] {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : null;
+  const evaluator =
+    root?.evaluator && typeof root.evaluator === "object" && !Array.isArray(root.evaluator)
+      ? (root.evaluator as Record<string, unknown>)
+      : null;
+  if (!evaluator) return [];
+  const personaId =
+    typeof evaluator.personaId === "string" && evaluator.personaId !== ""
+      ? evaluator.personaId
+      : null;
+  if (personaId === null) return [];
+  const revision = evaluator.personaRevision;
+  return [
+    {
+      path: "evaluator.personaId",
+      personaId,
+      revision:
+        typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null,
+    },
+  ];
+}
+
 export const consensusStrategy = defineStrategy<ConsensusConfig>({
   ...ENSEMBLE_STRATEGY_INFO.consensus,
   // Re-stated from the shared half only where the type demands the narrower `C`; everything an
@@ -258,4 +287,5 @@ export const consensusStrategy = defineStrategy<ConsensusConfig>({
   estimate: consensusEstimate,
   compilesVersion: STRATEGY_VERSION,
   compile,
+  personaRefs,
 });

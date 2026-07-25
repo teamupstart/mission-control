@@ -3,13 +3,20 @@ import type { TypeOf, ZodTypeAny } from "zod";
 import {
   ensemblePayload,
   ENSEMBLE_LIMITS,
+  type EnsembleEvaluatorKind,
   type EnsembleEvaluatorGuidance,
   type EnsembleJson,
+  type EnsembleLlmPurpose,
 } from "@shared/ensemble.ts";
 import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
 import { boundedSection } from "../../review/prompt.ts";
 import type { PromptSubjectEvidence } from "./prompt.ts";
-import type { ReviewDriverContext, ReviewOutcome } from "./types.ts";
+import type {
+  ReviewDriverContext,
+  ReviewEvaluationRecord,
+  ReviewFailureKind,
+  ReviewOutcome,
+} from "./types.ts";
 
 /**
  * The evidence packet and the provider round-trip every tool-less ensemble evaluator shares.
@@ -251,6 +258,10 @@ export async function assembleEvidencePacket(
  * this would be reaching for authority the review seam deliberately withholds.
  */
 export interface EvidenceReviewSpec<S extends ZodTypeAny> {
+  /** The exact single-evaluator policy arm this driver accepts. */
+  evaluatorKind: Exclude<EnsembleEvaluatorKind, "panel_llm">;
+  /** How this driver's calls appear in the durable cost ledger. */
+  purpose: Exclude<EnsembleLlmPurpose, "panel_review">;
   /** How a failure names this evaluator in operator-facing text, e.g. "The comparison". */
   label: string;
   /**
@@ -293,15 +304,23 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
   spec: EvidenceReviewSpec<S>,
 ): Promise<ReviewOutcome> {
   const { runtime } = context;
+  if (context.policy.kind !== spec.evaluatorKind) {
+    return {
+      ok: false,
+      kind: "infrastructure",
+      detail: "this stage was compiled for a different kind of evaluator",
+      evaluations: [],
+    };
+  }
+  const policy = context.policy;
 
-  const guidance = resolveGuidance(context.guidance, spec.builtinRubric);
+  const guidance = resolveGuidance(policy.guidance, spec.builtinRubric);
   if (guidance === null) {
     return {
       ok: false,
       kind: "infrastructure",
       detail: "this build does not have the rubric this evaluation was compiled against",
-      evaluationId: null,
-      execution: null,
+      evaluations: [],
     };
   }
 
@@ -311,13 +330,15 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
       ok: false,
       kind: assembled.kind,
       detail: assembled.detail,
-      evaluationId: null,
-      execution: null,
+      evaluations: [],
     };
   }
   const packet = assembled.packet;
 
-  const execution = runtime.resolveExecution(context.guidance, context.policy);
+  const execution = runtime.resolveExecution(policy.guidance, {
+    runner: policy.runner,
+    model: policy.model,
+  });
   const prompt = spec.buildPrompt({
     guidance,
     intent: packet.intent,
@@ -335,11 +356,12 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
       ok: false,
       kind: "interrupted",
       detail: "the review stage stopped before evaluation began",
-      evaluationId: null,
-      execution,
+      evaluations: [],
     };
   }
   const evaluationId = context.persist.beginEvaluation({
+    ordinal: 1,
+    method: spec.evaluatorKind,
     runnerId: execution.runnerId,
     modelId: execution.modelId,
     inputFingerprint,
@@ -368,6 +390,7 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
       const inputBytes = Buffer.byteLength(request, "utf8");
       const callId = context.persist.startCall({
         evaluationId,
+        purpose: spec.purpose,
         attempt,
         runnerId: execution.runnerId,
         modelId: execution.modelId,
@@ -416,7 +439,7 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
     // Classify the failure so the engine can tell a retryable interruption from a malformed reply.
     // A stop (cancel/withdraw) is interrupted; a throw (spawn/timeout/exit) is infrastructure; a
     // reply that arrived but never parsed - prose, or a fenced malformed object - is invalid output.
-    const kind =
+    const kind: ReviewFailureKind =
       stopped || context.signal.aborted || !context.stillActive()
         ? "interrupted"
         : lastError != null
@@ -424,19 +447,40 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
           : sawFinish && !lastParsed
             ? "invalid_output"
             : "infrastructure";
-    return { ok: false, kind, detail: result.reason, evaluationId, execution };
+    const record: ReviewEvaluationRecord = {
+      evaluationId,
+      execution,
+      status: kind === "interrupted" ? "interrupted" : "failed",
+      result: null,
+      error: result.reason,
+    };
+    return { ok: false, kind, detail: result.reason, evaluations: [record] };
   }
 
   const validated = spec.validate(result.value, packet);
   if (!validated.ok) {
-    return { ok: false, kind: "invalid_output", detail: validated.reason, evaluationId, execution };
+    const record: ReviewEvaluationRecord = {
+      evaluationId,
+      execution,
+      status: "failed",
+      result: null,
+      error: validated.reason,
+    };
+    return { ok: false, kind: "invalid_output", detail: validated.reason, evaluations: [record] };
   }
 
+  const resultEnvelope = ensemblePayload(validated.result);
   return {
     ok: true,
-    evaluationId,
-    execution,
-    result: ensemblePayload(validated.result),
+    evaluations: [
+      {
+        evaluationId,
+        execution,
+        status: "succeeded",
+        result: resultEnvelope,
+        error: null,
+      },
+    ],
     resultLabel: validated.resultLabel,
   };
 }

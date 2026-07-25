@@ -2676,14 +2676,65 @@ export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const EnsembleEvaluatorPolicySchema = z.object({
-  kind: z.enum(ENSEMBLE_EVALUATOR_KINDS),
+export const EnsemblePanelJudgeSpecSchema = z.object({
+  key: z.string().min(1).max(ENSEMBLE_LIMITS.roleKey),
+  label: z.string().min(1).max(ENSEMBLE_LIMITS.roleLabel),
+  ordinal: z.number().int().positive(),
   guidance: EnsembleEvaluatorGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable(),
   model: ModelIdSchema.nullable(),
-  anonymizeSubjects: z.boolean(),
-  materialBudgetBytes: z.number().int().positive(),
 });
+
+/**
+ * A review stage's evaluator, as a discriminated union.
+ *
+ * The panel arm's `minSuccessfulJudges` is bounded at both ends against the judge count by the
+ * refinement below rather than by a constant: a quorum of one is a panel that can recommend from a
+ * single surviving ballot (whose disagreement measure is vacuously zero, which reads on screen as
+ * unanimity), and a quorum above the judge count is a stage that can never succeed. Both are plans
+ * the compiler must be unable to emit, and this is where an in-flight snapshot written by any
+ * build is held to it.
+ */
+export const EnsembleEvaluatorPolicySchema = z
+  .discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("comparative_llm"),
+      guidance: EnsembleEvaluatorGuidanceSchema,
+      runner: z.enum(LLM_RUNNER_IDS).nullable(),
+      model: ModelIdSchema.nullable(),
+      anonymizeSubjects: z.boolean(),
+      materialBudgetBytes: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("consensus_llm"),
+      guidance: EnsembleEvaluatorGuidanceSchema,
+      runner: z.enum(LLM_RUNNER_IDS).nullable(),
+      model: ModelIdSchema.nullable(),
+      anonymizeSubjects: z.boolean(),
+      materialBudgetBytes: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("panel_llm"),
+      judges: z.array(EnsemblePanelJudgeSpecSchema).min(2).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+      minSuccessfulJudges: z.number().int().min(2).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+      anonymizeSubjects: z.boolean(),
+      materialBudgetBytes: z.number().int().positive(),
+    }),
+  ])
+  .superRefine((policy, ctx) => {
+    if (policy.kind !== "panel_llm") return;
+    if (policy.minSuccessfulJudges > policy.judges.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["minSuccessfulJudges"],
+        message: "the quorum cannot exceed the number of judges on the panel",
+      });
+    }
+    const keys = new Set(policy.judges.map((judge) => judge.key));
+    if (keys.size !== policy.judges.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["judges"], message: "judge keys must be unique" });
+    }
+  });
 
 export const EnsembleSubjectPolicySchema = z.object({
   kind: z.literal("ready_artifacts"),

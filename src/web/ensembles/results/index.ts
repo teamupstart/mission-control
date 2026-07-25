@@ -2,6 +2,7 @@ import type { EnsembleStrategyId, EnsembleJson } from "@shared/ensemble.ts";
 import type { EnsembleRunDetailResponse } from "../types.ts";
 import { BestOfNResult } from "./BestOfN.tsx";
 import { ConsensusResultView } from "./Consensus.tsx";
+import { PanelVoteResult } from "./PanelVote.tsx";
 
 /**
  * The strategy result-renderer registry. Generic run detail shows stages, members, artifacts
@@ -46,4 +47,5 @@ export type EnsembleResultRenderer = (ctx: EnsembleResultContext) => React.JSX.E
 export const ENSEMBLE_RESULT_RENDERERS: Partial<Record<EnsembleStrategyId, EnsembleResultRenderer>> = {
   best_of_n: BestOfNResult,
   consensus: ConsensusResultView,
+  panel_vote: PanelVoteResult,
 };

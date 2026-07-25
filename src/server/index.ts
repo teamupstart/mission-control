@@ -17,7 +17,7 @@ import { getLlmConfig, llmRunnerChoice } from "./llm/config.ts";
 import { resolveLlmJobModel, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import { resolveComparativeExecution } from "./ensembles/reviews/execution.ts";
+import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
@@ -129,9 +129,9 @@ ensembles = new EnsembleManager(registry, undefined, {
   tasks: new TaskManagerGateway(tasks, registry),
   review: {
     scheduler: reviewScheduler,
-    resolveExecution: (guidance, policy) => {
+    resolveExecution: (guidance, pins) => {
       const cfg = getLlmConfig();
-      return resolveComparativeExecution(guidance, policy, {
+      return resolveEvaluatorExecution(guidance, pins, {
         appRunner: llmRunnerChoice(cfg),
         personaEnvModel: envVar(WORKFLOW_PERSONA_MODEL_ENV) ?? null,
         jobModel: (runnerId) =>

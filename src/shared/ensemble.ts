@@ -30,7 +30,7 @@ import type { LlmRunnerId } from "./llm.ts";
  * `EnsembleStrategyKey`, so a run written by a newer build still parses and reports itself
  * unreadable rather than being recompiled with today's defaults. See `EnsembleUnreadable`.
  */
-export const ENSEMBLE_STRATEGY_IDS = ["best_of_n", "consensus"] as const;
+export const ENSEMBLE_STRATEGY_IDS = ["best_of_n", "consensus", "panel_vote"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
@@ -74,6 +74,7 @@ export const ENSEMBLE_DRIVER_KEYS = [
   "consensus_review@1",
   "divergence_decision@1",
   "retain_all_finalize@1",
+  "panel_review@1",
 ] as const;
 export type EnsembleDriverKey = (typeof ENSEMBLE_DRIVER_KEYS)[number];
 
@@ -218,7 +219,7 @@ export type EnsembleDecisionActor = (typeof ENSEMBLE_DECISION_ACTORS)[number];
 export const ENSEMBLE_FINALIZATION_STATUSES = ["pending", "running", "completed", "failed"] as const;
 export type EnsembleFinalizationStatus = (typeof ENSEMBLE_FINALIZATION_STATUSES)[number];
 
-export const ENSEMBLE_LLM_PURPOSES = ["comparative_review", "consensus_review"] as const;
+export const ENSEMBLE_LLM_PURPOSES = ["comparative_review", "consensus_review", "panel_review"] as const;
 export type EnsembleLlmPurpose = (typeof ENSEMBLE_LLM_PURPOSES)[number];
 
 /**
@@ -231,7 +232,7 @@ export type EnsembleLlmPurpose = (typeof ENSEMBLE_LLM_PURPOSES)[number];
  * and recommends one subject; `consensus_llm` compares the subjects' DECISIONS and returns
  * agreements plus open questions, recommending nothing.
  */
-export const ENSEMBLE_EVALUATOR_KINDS = ["comparative_llm", "consensus_llm"] as const;
+export const ENSEMBLE_EVALUATOR_KINDS = ["comparative_llm", "consensus_llm", "panel_llm"] as const;
 export type EnsembleEvaluatorKind = (typeof ENSEMBLE_EVALUATOR_KINDS)[number];
 
 export const ENSEMBLE_LLM_CALL_STATES = ["running", "succeeded", "failed", "interrupted"] as const;
@@ -524,31 +525,67 @@ export interface EnsembleReviewPersona {
 }
 
 /**
- * How a review stage judges. `kind` is the union point so a deterministic gate, a pairwise
- * scheduler or a Persona panel can be appended without touching the evaluation table; every
- * field below it is what ANY tool-less evaluator over immutable artifacts needs, which is why
- * the two shipped kinds share them rather than each carrying its own copy.
+ * One judge on a panel, as snapshotted into a compiled plan.
+ *
+ * `key` and `ordinal` are LOGICAL and deterministic (`judge-1`), for the reason
+ * `EnsembleRoleSpec.key` is: the same config has to compile to the same plan twice, so no runtime
+ * id appears here. `guidance` is the whole point - a panel is M judges over ONE subject set,
+ * differing only in the lens each was given, which is what makes their disagreement information
+ * rather than noise. A judge's runner/model overrides sit beside its guidance rather than on the
+ * policy because a panel may legitimately mix providers.
  */
-export type EnsembleEvaluatorPolicy = {
-  kind: EnsembleEvaluatorKind;
+export interface EnsemblePanelJudgeSpec {
+  key: string;
+  label: string;
+  /** Stable 1-based order, and the evaluation-row ordinal within one stage attempt. */
+  ordinal: number;
   guidance: EnsembleEvaluatorGuidance;
   /** Null resolves through the daemon's own ladder at attempt time. */
   runner: LlmRunnerId | null;
   model: string | null;
-  /**
-   * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
-   * are useful to the operator and invite brand and order bias in a judge.
-   *
-   * Every plan this build compiles pins it `true`, and the evidence packet does NOT consult it -
-   * anonymization is unconditional (`reviews/packet.ts`), so this records what a run does rather
-   * than selecting it, and no form offers it as a control. It stays a `boolean` rather than a
-   * literal because plans written by other builds are read back through this type: a stored
-   * `false` must still LOAD, and it is the packet, not this field, that decides what a model sees.
-   */
-  anonymizeSubjects: boolean;
-  /** Total artifact material one attempt may consume, allocated evenly across subjects. */
-  materialBudgetBytes: number;
-};
+}
+
+/**
+ * How a review stage judges. A union so a deterministic gate, a pairwise scheduler or a
+ * Persona panel can be appended without touching the evaluation table.
+ *
+ * The single-evaluator arms answer the same three questions the engine and their drivers ask -
+ * what guidance, whether to anonymize, and how much artifact material one attempt may consume -
+ * while a panel carries one guidance snapshot per judge and defines its partial-answer quorum.
+ */
+export type EnsembleEvaluatorPolicy =
+  | {
+      kind: "comparative_llm" | "consensus_llm";
+      guidance: EnsembleEvaluatorGuidance;
+      /** Null resolves through the daemon's own ladder at attempt time. */
+      runner: LlmRunnerId | null;
+      model: string | null;
+      /**
+       * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
+       * are useful to the operator and invite brand and order bias in a judge.
+       */
+      anonymizeSubjects: boolean;
+      /** Total artifact material one attempt may consume, allocated evenly across subjects. */
+      materialBudgetBytes: number;
+    }
+  | {
+      kind: "panel_llm";
+      /** Two to five independent judges, each scoring EVERY eligible subject from its own lens. */
+      judges: EnsemblePanelJudgeSpec[];
+      /**
+       * The quorum, compiled into the plan rather than decided at execution time.
+       *
+       * A judge whose call is malformed or interrupted fails ITS attempt only; the stage succeeds
+       * when at least this many judges returned a valid ballot, and fails - retryably, against the
+       * same immutable subjects - when fewer did. Compiled rather than constant because the number
+       * that makes an aggregate defensible is a property of the plan the operator confirmed, and a
+       * later build changing its mind must not re-aim a run already in flight.
+       */
+      minSuccessfulJudges: number;
+      anonymizeSubjects: boolean;
+      /** Total artifact material ONE attempt may consume - the packet is built once and shared. */
+      materialBudgetBytes: number;
+    };
 
 /**
  * What a human is being asked to decide.

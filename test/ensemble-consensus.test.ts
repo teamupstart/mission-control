@@ -55,7 +55,7 @@ beforeEach(() => clearEnsembleTables(db));
 function consensusPlan(count = 3): CompiledEnsemblePlan {
   const result = consensusStrategy.compile(
     { members: Array.from({ length: count }, () => ({})) },
-    { repoRoot: "/repo", persona: null, now: 1000 },
+    { repoRoot: "/repo", personas: new Map(), now: 1000 },
   );
   if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(result.issues)}`);
   return result.plan;
@@ -263,7 +263,10 @@ test("the compiled plan mines, asks and retains - it never promotes", () => {
   const review = plan.stages[1]!;
   assert.equal(review.driverKind === "review" && review.evaluator.kind, "consensus_llm");
   assert.equal(
-    review.driverKind === "review" && review.evaluator.guidance.kind === "builtin" && review.evaluator.guidance.rubricId,
+    review.driverKind === "review" &&
+      review.evaluator.kind === "consensus_llm" &&
+      review.evaluator.guidance.kind === "builtin" &&
+      review.evaluator.guidance.rubricId,
     CONSENSUS_BUILTIN_RUBRIC,
   );
   const decision = plan.stages[2]!;
@@ -281,7 +284,7 @@ test("compilation is deterministic and refuses a two-member roster", () => {
   assert.deepEqual(consensusPlan(4), consensusPlan(4));
   const tooFew = consensusStrategy.compile(
     { members: [{}, {}] },
-    { repoRoot: "/repo", persona: null, now: 1000 },
+    { repoRoot: "/repo", personas: new Map(), now: 1000 },
   );
   assert.equal(tooFew.ok, false);
 });
@@ -289,7 +292,7 @@ test("compilation is deterministic and refuses a two-member roster", () => {
 test("a config naming a Persona the caller could not resolve is refused, never silently downgraded", () => {
   const result = consensusStrategy.compile(
     { members: [{}, {}, {}], evaluator: { personaId: "p-1" } },
-    { repoRoot: "/repo", persona: null, now: 1000 },
+    { repoRoot: "/repo", personas: new Map(), now: 1000 },
   );
   assert.equal(result.ok, false);
   assert.ok(!result.ok && result.issues.some((issue) => issue.path === "evaluator.personaId"));

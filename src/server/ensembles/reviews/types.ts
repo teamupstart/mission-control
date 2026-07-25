@@ -2,6 +2,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import type {
   EnsembleArtifactKind,
   EnsembleDriverKey,
+  EnsembleEvaluation,
   EnsembleEvaluatorGuidance,
   EnsembleEvaluatorPolicy,
   EnsembleJson,
@@ -55,14 +56,27 @@ export interface ReviewExecution {
 }
 
 /**
+ * The runner/model pins one evaluator call was compiled with, whatever named them.
+ *
+ * The ladder needs exactly two facts - an explicit runner and an explicit model, either of which
+ * may be absent - and a comparative policy carries them at its top level while a panel carries one
+ * pair per judge. Passing the PINS rather than the policy is what lets one resolver serve both
+ * without knowing which arm of the union it is looking at.
+ */
+export interface ReviewExecutionPins {
+  runner: LlmRunnerId | null;
+  model: string | null;
+}
+
+/**
  * The provider call, model/runner resolution, diff materialization and scheduling around it,
  * all injected so a test drives the driver against a fake instead of a real model or real Git.
  */
 export interface ReviewRuntime {
   /** The daemon-owned ceiling shared with Workflow review and compaction. */
   scheduler: ReviewScheduler;
-  /** Resolve runner+model at attempt time from the guidance overrides / app+job ladder. */
-  resolveExecution(guidance: EnsembleEvaluatorGuidance, policy: EnsembleEvaluatorPolicy): ReviewExecution;
+  /** Resolve runner+model at attempt time from the explicit pins / guidance overrides / app ladder. */
+  resolveExecution(guidance: EnsembleEvaluatorGuidance, pins: ReviewExecutionPins): ReviewExecution;
   /** The bound provider call. Tool-less by construction: no grant, cwd, shell, web, or terminal. */
   runModel(runnerId: LlmRunnerId, prompt: string, opts: { modelId: string; timeoutMs: number }): Promise<string>;
   /** Materialize one subject's bounded diff from its immutable ref, reading the run's repo. */
@@ -79,10 +93,18 @@ export interface ReviewRuntime {
  */
 export interface ReviewPersist {
   /**
-   * Open the evaluation row BEFORE the provider is asked (persist-before-spawn), returning the id
-   * every later call and the terminal write reference. Idempotent for a given stage attempt.
+   * Open one evaluation row BEFORE its provider call is made (persist-before-spawn), returning the
+   * id every later call and the terminal write reference.
+   *
+   * `ordinal` identifies the row WITHIN this stage attempt and makes the call idempotent: a
+   * comparison opens exactly one at ordinal 1, a panel opens one per judge at that judge's
+   * compiled ordinal, and re-opening the same ordinal returns the existing row rather than a
+   * second one. `method` is what actually judged, recorded on the row so a reader can tell a
+   * ballot from a comparison without re-deriving it from the plan.
    */
   beginEvaluation(input: {
+    ordinal: number;
+    method: string;
     runnerId: string;
     modelId: string;
     inputFingerprint: string;
@@ -91,6 +113,8 @@ export interface ReviewPersist {
   /** Open one llm-call row BEFORE the provider is asked, so an interrupted call is still on the ledger. */
   startCall(input: {
     evaluationId: string;
+    /** What this call was for, recorded on the ledger row rather than assumed from the stage. */
+    purpose: EnsembleLlmPurpose;
     attempt: number;
     runnerId: string;
     modelId: string;
@@ -124,7 +148,13 @@ export interface ReviewDriverContext {
   baseSha: string;
   /** The repository holding the immutable refs - read for diffs, never written. */
   repoRoot: string;
-  guidance: EnsembleEvaluatorGuidance;
+  /**
+   * The compiled evaluator, which is where a driver reads its own GUIDANCE from.
+   *
+   * Guidance is not a separate field beside this, deliberately: a comparison has exactly one
+   * snapshot and a panel has one per judge, so a context that promised "the guidance" would have
+   * had to invent an answer for the panel - and whichever judge it picked would have been wrong.
+   */
   policy: EnsembleEvaluatorPolicy;
   /** The declared ready artifacts, already verified by the engine. */
   subjects: ReviewSubject[];
@@ -139,17 +169,34 @@ export interface ReviewDriverContext {
 export type ReviewFailureKind = "empty_evidence" | "invalid_output" | "infrastructure" | "interrupted";
 
 /**
- * The advisory outcome. `ok` carries the de-anonymised, validated result the engine persists as
- * the evaluation body and the label it surfaces on the compact summary. A failure names WHY, so
- * the engine can distinguish an interrupted call (retryable against the same evidence) from a
- * malformed one (a failure the operator must see), and neither ever becomes a recommendation.
+ * One evaluation row this attempt opened, and how the engine must settle it.
+ *
+ * A LIST of these rather than a single id, because how many models a review asks is the driver's
+ * business and not the engine's: a comparison opens one, a panel opens one per judge and may
+ * legitimately settle some `succeeded` and some `failed` in the same attempt. The engine writes
+ * every one of them under the run lock, in one pass, after the last call has landed - so a run
+ * cancelled mid-panel finds every row `interrupted` rather than a half-committed ledger.
+ */
+export interface ReviewEvaluationRecord {
+  evaluationId: string;
+  /** What actually ran for this row, or null when it failed before a runner was resolved. */
+  execution: ReviewExecution | null;
+  status: "succeeded" | "failed" | "interrupted";
+  /** The validated, de-anonymised body. Non-null exactly when `status` is `succeeded`. */
+  result: EnsemblePayloadEnvelope | null;
+  error: string | null;
+}
+
+/**
+ * The advisory outcome. `ok` carries every evaluation row the attempt produced and the label the
+ * stage advertises on the compact summary. A failure names WHY, so the engine can distinguish an
+ * interrupted call (retryable against the same evidence) from a malformed one (a failure the
+ * operator must see), and neither ever becomes a recommendation.
  */
 export type ReviewOutcome =
   | {
       ok: true;
-      evaluationId: string;
-      execution: ReviewExecution;
-      result: EnsemblePayloadEnvelope;
+      evaluations: ReviewEvaluationRecord[];
       /** A short human label for the compact SSE summary, e.g. "recommends Submission B". */
       resultLabel: string;
     }
@@ -157,10 +204,24 @@ export type ReviewOutcome =
       ok: false;
       kind: ReviewFailureKind;
       detail: string;
-      /** Null only when the failure preceded the evaluation row (empty evidence before any call). */
-      evaluationId: string | null;
-      execution: ReviewExecution | null;
+      /** Rows already opened when the attempt failed; empty when it failed before any. */
+      evaluations: ReviewEvaluationRecord[];
     };
+
+/**
+ * What a driver makes of the evaluation rows a crash left behind on ONE running stage attempt.
+ *
+ * Null - the common answer - means the attempt is unfinished and the generic interrupt-and-retry
+ * path owns it. A non-null answer is the narrow case where the effect already happened and only
+ * the receipt is missing: the rows are settled and their result is durable, so completing the
+ * stage from them is strictly better than spending the model calls again. It is the DRIVER's
+ * question because only it knows how many rows an attempt was supposed to produce and how many
+ * have to have succeeded.
+ */
+export interface ReviewRecovery {
+  evaluationIds: string[];
+  resultLabel: string | null;
+}
 
 /** A versioned review driver, registered by the exact `driverKey` a compiled plan may name. */
 export interface ReviewDriver {
@@ -179,5 +240,15 @@ export interface ReviewDriver {
     result: EnsemblePayloadEnvelope;
     subjectArtifactIds: string[];
   }): string | null;
+  /**
+   * Whether the evaluations left on a running stage attempt already ARE a completed review.
+   *
+   * Given the compiled evaluator policy and every evaluation row belonging to that one stage
+   * attempt, in creation order.
+   */
+  recover(input: {
+    policy: EnsembleEvaluatorPolicy;
+    evaluations: EnsembleEvaluation[];
+  }): ReviewRecovery | null;
   run(context: ReviewDriverContext): Promise<ReviewOutcome>;
 }

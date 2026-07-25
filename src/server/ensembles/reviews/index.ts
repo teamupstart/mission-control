@@ -1,15 +1,19 @@
 import { ENSEMBLE_DRIVER_KEYS, knownDriverKey, type EnsembleDriverKey } from "@shared/ensemble.ts";
 import { comparativeReviewDriver } from "./comparative.ts";
 import { consensusReviewDriver } from "./consensus.ts";
+import { panelReviewDriver } from "./panel.ts";
 import type { ReviewDriver } from "./types.ts";
 
 export type {
   ReviewDriver,
   ReviewDriverContext,
+  ReviewEvaluationRecord,
   ReviewExecution,
+  ReviewExecutionPins,
   ReviewMaterial,
   ReviewOutcome,
   ReviewPersist,
+  ReviewRecovery,
   ReviewRuntime,
   ReviewSubject,
 } from "./types.ts";
@@ -37,6 +41,7 @@ export const REVIEW_DRIVERS: Record<EnsembleDriverKey, ReviewDriver | null> = {
   "consensus_review@1": consensusReviewDriver,
   "divergence_decision@1": null,
   "retain_all_finalize@1": null,
+  "panel_review@1": panelReviewDriver,
 };
 
 /** The review driver for a persisted driver key, or null when this build cannot run it as a review. */

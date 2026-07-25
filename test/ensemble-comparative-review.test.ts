@@ -46,7 +46,7 @@ beforeEach(() => clearEnsembleTables(db));
 function bestOfNPlan(count: number, persona: EnsembleReviewPersona | null = null): CompiledEnsemblePlan {
   const result = bestOfNStrategy.compile(
     { members: Array.from({ length: count }, () => ({})), evaluator: persona ? { personaId: persona.id } : {} },
-    { repoRoot: "/repo", persona, now: 1000 },
+    { repoRoot: "/repo", personas: persona ? new Map([[persona.id, persona]]) : new Map(), now: 1000 },
   );
   if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(result.issues)}`);
   return result.plan;
@@ -673,6 +673,8 @@ function personaCreate(sourceKey: string, evaluator: Record<string, unknown> = {
 function reviewGuidance(run: { plan: CompiledEnsemblePlan | null }) {
   const stage = run.plan?.stages.find((s) => s.driverKind === "review");
   assert.ok(stage && stage.driverKind === "review");
+  assert.equal(stage.evaluator.kind, "comparative_llm");
+  if (stage.evaluator.kind !== "comparative_llm") throw new Error("unreachable");
   return stage.evaluator.guidance;
 }
 

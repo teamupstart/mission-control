@@ -98,3 +98,17 @@ its quorum semantics or move scores onto members.
 
 - 2026-07-23: created; independent of Phases 2-4; only shared touchpoint is appending to
   the strategy registries beside them.
+- 2026-07-25: implemented. Three kernel generalizations were needed and are the ones
+  Phases 2-4 inherit, so they are recorded here rather than left to be rediscovered:
+  `EnsembleEvaluatorPolicy` became a discriminated union (the kernel's own comment
+  anticipated this); `ReviewOutcome` carries a LIST of evaluation records so a driver can
+  settle several rows in one attempt, and `ReviewPersist.beginEvaluation` takes the row's
+  ordinal and method; and `ReviewDriver.recover` moved the "is this crashed attempt
+  already a completed review" question from the engine to the driver. Persona resolution
+  also moved from a hard-coded `evaluator.personaId` path in `EnsembleManager` to a
+  `StrategyDescriptor.personaRefs` seam, since a panel names one Persona per judge.
+  `panel_vote` ships ONE review stage with a `panel_review@1` driver rather than M review
+  stages: the engine services one review at a time per run, so M stages would be M
+  sequential calls and no quorum. Built-in single-lens rubrics (Correctness,
+  Maintainability, Risk, Evidence, Scope) were added so the strategy is useful without
+  Persona setup, and duplicate built-in lenses are refused at validation.

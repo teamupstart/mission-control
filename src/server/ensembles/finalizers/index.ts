@@ -142,6 +142,7 @@ export const FINALIZERS: Record<EnsembleDriverKey, Finalizer | null> = {
   "consensus_review@1": null,
   "divergence_decision@1": null,
   "retain_all_finalize@1": retainAllFinalizer,
+  "panel_review@1": null,
 };
 
 /** The finalizer for a persisted driver key, or null when this build cannot run it. */

@@ -169,6 +169,7 @@ export function EnsembleDispatch({
             key={field.key}
             field={field}
             config={ensemble.config}
+            personas={personas}
             issues={issuesFor(field.key)}
             onChange={setConfig}
           />
@@ -257,11 +258,14 @@ export function EnsembleDispatch({
 function FormField({
   field,
   config,
+  personas,
   issues,
   onChange,
 }: {
   field: StrategyFormField;
   config: unknown;
+  /** The operator's Personas, for the field kinds that can offer one. */
+  personas: PersonaView[];
   issues: StrategyIssue[];
   onChange: (key: string, value: unknown) => void;
 }): React.JSX.Element {
@@ -341,12 +345,29 @@ function FormField({
       </label>
     );
   }
-  // member_roster
-  const rows = (Array.isArray(getConfigPath(config, field.key))
+  const rows = Array.isArray(getConfigPath(config, field.key))
     ? (getConfigPath(config, field.key) as Record<string, unknown>[])
-    : []);
+    : [];
+  if (field.kind === "lens_panel") {
+    return (
+      <JudgePanel
+        fieldKey={field.key}
+        label={field.label}
+        help={field.help}
+        minRows={field.minRows}
+        maxRows={field.maxRows}
+        lenses={field.options}
+        personas={personas}
+        rows={rows}
+        issues={issues}
+        onChange={(next) => onChange(field.key, next)}
+      />
+    );
+  }
+  // member_roster
   return (
     <Roster
+      fieldKey={field.key}
       label={field.label}
       help={field.help}
       minRows={field.minRows}
@@ -359,6 +380,7 @@ function FormField({
 }
 
 function Roster({
+  fieldKey,
   label,
   help,
   minRows,
@@ -367,6 +389,8 @@ function Roster({
   issues,
   onChange,
 }: {
+  /** The config path this roster edits - and therefore the path its issues are addressed at. */
+  fieldKey: string;
   label: string;
   help: string;
   minRows: number;
@@ -392,7 +416,7 @@ function Roster({
         {label} <span className="ensemble-muted">({rows.length})</span>
       </legend>
       <p className="ensemble-muted">{help}</p>
-      <FieldIssues issues={issues.filter((issue) => normalizeIssuePath(issue.path) === "members")} />
+      <FieldIssues issues={issues.filter((issue) => normalizeIssuePath(issue.path) === fieldKey)} />
       <ul className="ensemble-roster-rows">
         {rows.map((row, index) => {
           const agent = (row.agent as AgentType | null) ?? null;
@@ -402,7 +426,7 @@ function Roster({
           const efforts = agent ? capabilitiesFor(agent).effort?.levels ?? [] : [];
           const rowIssues = issues.filter((issue) => {
             const path = normalizeIssuePath(issue.path);
-            return path === `members.${index}` || path.startsWith(`members.${index}.`);
+            return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
           });
           return (
             <li key={index} className="ensemble-roster-row">
@@ -487,6 +511,138 @@ function Roster({
           onClick={addRow}
         >
           + Add candidate
+        </button>
+      </Tooltip>
+    </fieldset>
+  );
+}
+
+/**
+ * A panel of judges: one row each, one control each, and that control is the judge's LENS.
+ *
+ * A judge is one built-in lens or one Persona, so a single select offers both in two groups rather
+ * than a lens picker plus a Persona picker whose interaction the operator has to work out. Choosing
+ * a Persona pins the revision it was chosen at, which is what makes the daemon refuse the launch if
+ * that Persona moves on before the operator confirms - the same drift a base-commit pin removes.
+ *
+ * The next free lens is what a new row defaults to, because the panel refuses duplicate built-in
+ * lenses: defaulting to a repeat would add a row that is invalid the moment it appears.
+ */
+function JudgePanel({
+  fieldKey,
+  label,
+  help,
+  minRows,
+  maxRows,
+  lenses,
+  personas,
+  rows,
+  issues,
+  onChange,
+}: {
+  fieldKey: string;
+  label: string;
+  help: string;
+  minRows: number;
+  maxRows: number;
+  lenses: Array<{ value: string; label: string; help: string }>;
+  personas: PersonaView[];
+  rows: Record<string, unknown>[];
+  issues: StrategyIssue[];
+  onChange: (rows: Record<string, unknown>[]) => void;
+}): React.JSX.Element {
+  const usablePersonas = personas.filter((persona) => persona.archivedAt === null);
+  const valueOf = (row: Record<string, unknown>): string => {
+    const personaId = stringOrNull(row.personaId);
+    return personaId === null ? String(row.lens ?? lenses[0]?.value ?? "") : `persona:${personaId}`;
+  };
+  const rowFor = (value: string): Record<string, unknown> => {
+    if (value.startsWith("persona:")) {
+      const persona = usablePersonas.find((p) => p.id === value.slice("persona:".length));
+      return {
+        lens: lenses[0]?.value ?? "",
+        personaId: persona?.id ?? null,
+        personaRevision: persona?.revision ?? null,
+        runner: null,
+        model: null,
+      };
+    }
+    return { lens: value, personaId: null, personaRevision: null, runner: null, model: null };
+  };
+  const nextFreeLens = (): string => {
+    const taken = new Set(rows.filter((row) => stringOrNull(row.personaId) === null).map((row) => String(row.lens)));
+    return lenses.find((lens) => !taken.has(lens.value))?.value ?? lenses[0]?.value ?? "";
+  };
+
+  return (
+    <fieldset className="ensemble-roster ensemble-panel-roster">
+      <legend>
+        {label} <span className="ensemble-muted">({rows.length})</span>
+      </legend>
+      <p className="ensemble-muted">{help}</p>
+      <FieldIssues issues={issues.filter((issue) => normalizeIssuePath(issue.path) === fieldKey)} />
+      <ul className="ensemble-roster-rows">
+        {rows.map((row, index) => {
+          const value = valueOf(row);
+          const lens = lenses.find((option) => option.value === value);
+          const rowIssues = issues.filter((issue) => {
+            const path = normalizeIssuePath(issue.path);
+            return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
+          });
+          return (
+            <li key={index} className="ensemble-roster-row ensemble-judge-row">
+              <span className="ensemble-roster-ordinal">#{index + 1}</span>
+              <Tooltip label={`What judge ${index + 1} weighs, and nothing else`}>
+                <select
+                  aria-label={`Judge ${index + 1} lens`}
+                  value={value}
+                  onChange={(e) => onChange(rows.map((r, i) => (i === index ? rowFor(e.target.value) : r)))}
+                >
+                  <optgroup label="Built-in lenses">
+                    {lenses.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {usablePersonas.length > 0 && (
+                    <optgroup label="Your Personas">
+                      {usablePersonas.map((persona) => (
+                        <option key={persona.id} value={`persona:${persona.id}`}>
+                          {persona.name} (rev {persona.revision})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </Tooltip>
+              <span className="ensemble-judge-blurb">
+                {lens ? lens.help : "This judge uses your Persona's guidance, pinned at the revision above."}
+              </span>
+              <Tooltip label={`Remove judge ${index + 1}`}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  aria-label={`Remove judge ${index + 1}`}
+                  disabled={rows.length <= minRows}
+                  onClick={() => onChange(rows.filter((_, i) => i !== index))}
+                >
+                  ✕
+                </button>
+              </Tooltip>
+              <FieldIssues issues={rowIssues} />
+            </li>
+          );
+        })}
+      </ul>
+      <Tooltip label="Add another judge - a panel disagrees only if its lenses differ">
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={rows.length >= maxRows}
+          onClick={() => onChange([...rows, rowFor(nextFreeLens())])}
+        >
+          + Add judge
         </button>
       </Tooltip>
     </fieldset>

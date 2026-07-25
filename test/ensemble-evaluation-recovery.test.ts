@@ -36,7 +36,7 @@ beforeEach(() => clearEnsembleTables(db));
 function bestOfNPlan(count: number): CompiledEnsemblePlan {
   const result = bestOfNStrategy.compile(
     { members: Array.from({ length: count }, () => ({})), evaluator: {} },
-    { repoRoot: "/repo", persona: null, now: 1000 },
+    { repoRoot: "/repo", personas: new Map(), now: 1000 },
   );
   if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(result.issues)}`);
   return result.plan;
@@ -261,8 +261,10 @@ test("recovery completes a running review stage from its succeeded evaluation", 
   assert.equal(store.listLlmCalls(run.id)[0]!.state, "succeeded");
   const stageAttempt = store.listStageAttempts(run.id).find((attempt) => attempt.driverKind === "review")!;
   assert.equal(stageAttempt.status, "succeeded");
+  // The receipt names every evaluation the attempt produced. A comparison produces one; the list
+  // is what lets a panel's receipt name each judge's ballot rather than only the first.
   assert.deepEqual(stageAttempt.output, {
-    evaluationId: evaluation.id,
+    evaluationIds: [evaluation.id],
     resultLabel: "recommends Submission A",
   });
 });

@@ -1832,9 +1832,10 @@ not have landed" - with the machine code kept beside them for a bug report, neve
 them. The timeline names Personas and rounds rather than printing payload JSON; **Export
 run** remains the complete durable record.
 
-Destructive actions confirm in the app rather than in a browser dialog. **Cancel run** and
-the delivery's **Mark delivered** ask once; **Restart full workflow** and **Discard and send
-new round** require the exact phrase the daemon also demands, typed into the confirm.
+Actions that cannot be taken back confirm in the app rather than in a browser dialog.
+**Cancel run**, the resubmission against unchanged evidence, and the delivery's **Mark
+delivered** ask once; **Restart full workflow** and **Discard and send new round** require
+the exact phrase the daemon also demands, typed into the confirm.
 
 With no runs at all the tab offers **Bind to a session…**, the same dialog the builder's
 right rail opens.

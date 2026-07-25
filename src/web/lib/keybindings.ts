@@ -22,6 +22,7 @@ export type ActionId =
   | "dispatch"
   | "filter"
   | "settingsSearch"
+  | "workflows"
   | "expand"
   | "diff"
   | "files"
@@ -83,9 +84,16 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
+    id: "workflows",
+    label: "Toggle Workflows",
+    description: "Open the Workflows page, or return to the fleet.",
+    defaultBinding: "w",
+    group: "global",
+  },
+  {
     id: "expand",
     label: "Expand / collapse",
-    description: "Focus-expand the selected card, or collapse it.",
+    description: "Focus-expand the selected card in Cards, open or close the Board drill-in, or do nothing in Console where it is already expanded.",
     defaultBinding: "e",
     group: "selection",
   },

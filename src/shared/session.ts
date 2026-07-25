@@ -5,6 +5,24 @@
 
 import type { PaneDialog, Session, Task } from "./types.ts";
 import { byPriorityThenAge } from "./task.ts";
+import { capabilitiesFor } from "./harness-capabilities.ts";
+import { canWriteTo } from "./pane.ts";
+
+/**
+ * Whether Shift+Tab can cycle this session's permission mode: a live session whose harness
+ * exposes that cycle as its live control, with a pane to inject the keystroke into. The ONE
+ * gate the shortcut (App's keydown and the CommandBar keycap) and the ActionBar button share,
+ * so a board tile, a card and the bar can never disagree about when the cycle is offered - a
+ * menu-driven permission control (`liveControl.kind !== "cycle"`) must never be sent a
+ * keystroke its TUI reads as something else.
+ */
+export function canCycleMode(session: Session): boolean {
+  return (
+    session.state !== "exited" &&
+    capabilitiesFor(session.agent).permissionModes?.liveControl.kind === "cycle" &&
+    canWriteTo(session)
+  );
+}
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 

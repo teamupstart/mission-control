@@ -33,6 +33,7 @@ import { join } from "node:path";
 import ts from "typescript";
 
 const WEB = fileURLToPath(new URL("../src/web", import.meta.url));
+const STYLES = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
 
 function tsxFiles(dir: string): string[] {
   const out: string[] = [];
@@ -226,6 +227,13 @@ test("nothing describes itself with a native title attribute any more", () => {
     [],
     `use <Tooltip label="…"> instead of a native title attribute:\n  ${offenders.join("\n  ")}`,
   );
+});
+
+test("tooltips shrink-fit their text before the viewport cap", () => {
+  const body = /\.tooltip\s*\{([^}]*)\}/.exec(STYLES)?.[1];
+  assert.ok(body, "the shared .tooltip rule is gone");
+  assert.match(body, /\bwidth:\s*max-content\s*;/);
+  assert.match(body, /\bmax-width:\s*[^;]+\s*;/);
 });
 
 test("the scan can actually see a missing tooltip", () => {

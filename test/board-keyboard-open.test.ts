@@ -94,3 +94,45 @@ test("the arrow cursor takes focus onto the tile's own open button", () => {
   const tile = src("components/layouts/SessionTile.tsx");
   assert.match(tile, /<button[\s\S]*?className="tile-open"/, "the keyboard half of the tile is gone");
 });
+
+// The board overview shows a TILE, not the session, so opening the drill-in has to have
+// keyboard routes other than the mouse. Enter is one; Expand is the other, and it used to
+// return for any non-grid layout, so `e` did nothing on the board. These pin both.
+
+test("Enter and Expand both open the board's drill-in detail", () => {
+  // Enter: the switch's board arm sets the drill-in open.
+  const enterArm = app.slice(app.indexOf('case "Enter":'), app.indexOf("// Actions on the selected card."));
+  assert.match(enterArm, /layout !== "board" \|\| !selectedId \|\| boardOpen\) break;/);
+  assert.match(enterArm, /setBoardOpen\(true\)/, "Enter no longer opens the board detail");
+
+  // Expand: a board branch toggles the same detail (open, and collapse - the chord's own
+  // "expand / collapse" name), rather than returning for a non-grid layout.
+  const expandBlock = app.slice(
+    app.indexOf("if (chord === bindings.expand)"),
+    app.indexOf("if (chord === bindings.diff)"),
+  );
+  assert.match(expandBlock, /layout === "board"/, "Expand has no board branch, so `e` does nothing there");
+  assert.match(expandBlock, /setBoardOpen\(\(open\) => !open\)/, "Expand does not toggle the board drill-in");
+});
+
+test("Shift+Tab cycles the permission mode in place on the board, without opening the detail", () => {
+  // The permission-mode cycle is a live control on the session's pane, not a reveal inside
+  // the detail, so on the overview (no action bar) it runs against the API directly and
+  // returns BEFORE the drill-in, instead of opening the detail for a keystroke that never
+  // needed it - the reported bug.
+  const noHandle = app.slice(
+    app.indexOf("const overviewSel = visible.find"),
+    app.indexOf("window.addEventListener"),
+  );
+  const cycleIdx = noHandle.indexOf('run === "cycleMode"');
+  const drillIdx = noHandle.indexOf("pendingBarAction.current");
+  assert.notEqual(cycleIdx, -1, "there is no in-place mode-cycle branch on the board overview");
+  assert.ok(cycleIdx < drillIdx, "the mode-cycle branch must precede - and short-circuit - the drill-in");
+  const cycleBranch = noHandle.slice(cycleIdx, drillIdx);
+  assert.match(cycleBranch, /canCycleMode\(overviewSel\)/, "the in-place cycle is not gated by canCycleMode");
+  assert.match(cycleBranch, /api\.cycleMode\(overviewSel\.id\)/, "Shift+Tab does not cycle the mode in place");
+  assert.match(cycleBranch, /return;/, "the mode-cycle branch must return before drilling in");
+  // `mode` stays a BAR_ACTION so the DRILLED-IN board (and grid/console) still cycle through
+  // the real handle; only the overview takes the in-place path.
+  assert.match(app, /\["mode", "cycleMode"\]/);
+});

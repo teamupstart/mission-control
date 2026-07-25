@@ -2638,10 +2638,11 @@ earns two surfaces a card has nowhere to put:
   the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
   Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
   it. A card keeps the full note block instead, since it has no transcript to inline into.
-- **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
-  command bar are unique to it. In the console, and in the board once you're drilled in, the
-  open detail *is* the selected session, so there is nothing to expand, and its controls are
-  on screen permanently instead of on a bar that floats over them.
+- **Cards** is the only layout with an in-place focus mode, so its floating command bar is
+  unique to it. On the **board**'s overview <kbd>e</kbd> (expand) opens the drill-in the way
+  <kbd>Enter</kbd> does, and closes it again. In the console, and in the board once you're
+  drilled in, the open detail *is* the selected session, so there is nothing left to expand,
+  and its controls are on screen permanently instead of on a bar that floats over them.
 - **Selecting is opening in the console**, and the keyboard walks it left to right. Click a
   rail row - or walk it with <kbd>↑</kbd>/<kbd>↓</kbd> - to switch sessions; the selected row
   wears a bright selector frame so it never gets lost against a busy state. Press
@@ -2663,9 +2664,10 @@ earns two surfaces a card has nowhere to put:
   detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
   you're in, the arrow keys keep moving the open detail through the board - the drill-in
   is always the selected session. Clicking a tile still does both in the one gesture.
-  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd>,
-  <kbd>⇧</kbd><kbd>Tab</kbd> and <kbd>k</kbd> pressed on the overview drill in and then do
-  what they say, so no shortcut is missing from the board.
+  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd> and
+  <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
+  is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
+  without opening its detail.
 - **Killing a session closes its detail**, without waiting for the session to disappear -
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few
@@ -2810,14 +2812,15 @@ shortcut works in every layout:
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
-| <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
+| <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
+| <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
-| <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere | Selected session |
+| <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then close the session; press <kbd>Enter</kbd> to confirm. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Kill the selected session (press <kbd>Enter</kbd> to confirm) | Selected session |

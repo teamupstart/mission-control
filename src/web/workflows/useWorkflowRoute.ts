@@ -23,6 +23,30 @@ export type MissionRoute =
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
+ * The route the Workflows toggle (default `w`) navigates to, or `null` when it must stand
+ * down. Pure, so the keydown handler's one navigation chord is testable without a DOM: App
+ * feeds it the live guard state and this decides.
+ *
+ * It is the one fleet shortcut that fires OFF the fleet too - that is what lets the same key
+ * RETURN - so it toggles Fleet <-> Workflows and does nothing on any other page. It stands
+ * down while a text field has focus, a session is being renamed, or an overlay owns the
+ * screen, so `w` types, renames, or dismisses in those moments rather than navigating.
+ */
+export function workflowsToggleRoute(state: {
+  /** The pressed chord already equals the resolved Workflows binding. */
+  active: boolean;
+  typing: boolean;
+  renaming: boolean;
+  overlayOpen: boolean;
+  page: MissionRoute["page"];
+}): MissionRoute | null {
+  if (!state.active || state.typing || state.renaming || state.overlayOpen) return null;
+  if (state.page === "fleet") return { page: "workflows", tab: "workflows" };
+  if (state.page === "workflows") return { page: "fleet" };
+  return null;
+}
+
+/**
  * One path segment as a plain string, or null when no decoder can read it.
  *
  * `decodeURIComponent` THROWS a `URIError` on a lone or truncated escape - `#/settings/%`,

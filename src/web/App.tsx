@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { backlogTasks, gateParked } from "@shared/session.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { backlogTasks, canCycleMode, gateParked } from "@shared/session.ts";
+import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
@@ -47,7 +46,7 @@ import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
-import { useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import { useWorkflowRoute, workflowsToggleRoute } from "./workflows/useWorkflowRoute.ts";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import {
   WorkflowBindingDialog,
@@ -799,6 +798,24 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      // The Workflows toggle is navigation TO and FROM that page, not a session action, so
+      // it is the one chord that fires while Workflows is open too - the same key that opens
+      // it returns to the fleet, mirroring the top-bar button. It sits ABOVE the page guard
+      // below for exactly that reason. The decision (and its typing/rename/overlay
+      // stand-downs) is `workflowsToggleRoute`, kept pure so it is testable without a DOM.
+      const workflowsTarget = workflowsToggleRoute({
+        active: chord === bindings.workflows,
+        typing,
+        renaming: Boolean(renamingId),
+        overlayOpen: overlaysRef.current.anyOpen,
+        page: route.page,
+      });
+      if (workflowsTarget) {
+        e.preventDefault();
+        navigate(workflowsTarget);
+        return;
+      }
+
       // Every page that is not the fleet owns its own keys - the Workflows editor, the
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
       // session merely because its state remains mounted in App.
@@ -969,10 +986,20 @@ export function App(): React.JSX.Element {
 
       // Actions on the selected card.
       if (chord === bindings.expand) {
-        // Focus mode is a grid idea. The console and the board already show the selected
-        // session expanded, so there is nothing here to toggle - and we leave the chord
-        // unclaimed rather than swallowing it to no effect.
-        if (!selectedId || layout !== "grid") return;
+        if (!selectedId) return;
+        // On the board the overview shows a TILE, not the session, so Expand opens its
+        // drill-in detail - the same thing Enter opens - and collapses it again, which is
+        // the "collapse" half of the chord's own name. Console already shows the selected
+        // session expanded, so there is nothing to toggle; it falls through to the grid
+        // path below, which returns for any non-grid layout.
+        if (layout === "board") {
+          e.preventDefault();
+          setBoardOpen((open) => !open);
+          return;
+        }
+        // Focus mode is a grid idea; leave the chord unclaimed elsewhere rather than
+        // swallowing it to no effect.
+        if (layout !== "grid") return;
         e.preventDefault();
         // Expanding via the keyboard is an explicit "I want to type here", so arm the
         // send box to take the cursor once it mounts. Collapsing (this card is already
@@ -1044,10 +1071,21 @@ export function App(): React.JSX.Element {
       }
       // No bar registered for the selection. On the board's overview that is structural
       // rather than an absence: only the drill-in draws an action bar, so a tile the
-      // arrows merely landed on has none - which made `s`/`f`/`q`/⇧⇥/`k` silent no-ops
+      // arrows merely landed on has none - which made `s`/`f`/`q`/`k` silent no-ops
       // there and broke "every shortcut works in every layout". Drill in and run against
       // the bar that mounts with it, one render later.
       if (layout !== "board" || !selectedId || boardOpen) return;
+      const overviewSel = visible.find((s) => s.id === selectedId);
+      // Shift+Tab is the exception: cycling the permission mode is a live control on the
+      // session's pane, not a reveal inside the detail, so run it in place. Drilling in for
+      // it opened the detail for a keystroke that never needed it - the reported bug. If the
+      // session cannot cycle, it does nothing (and still swallows the key, so the board keeps
+      // its cursor) rather than opening.
+      if (run === "cycleMode") {
+        e.preventDefault();
+        if (overviewSel && canCycleMode(overviewSel)) void api.cycleMode(overviewSel.id);
+        return;
+      }
       e.preventDefault();
       pendingBarAction.current = { id: selectedId, run };
       setBoardOpen(true);
@@ -1148,8 +1186,10 @@ export function App(): React.JSX.Element {
             <Tooltip
               label={
                 route.page === "fleet"
-                  ? "Open Workflows - author and run the personas agents follow"
-                  : "Return to the fleet of running sessions"
+                  ? `Open Workflows - author and run the personas agents follow (${formatChord(bindings.workflows)})`
+                  : route.page === "workflows"
+                    ? `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
+                    : "Return to the fleet of running sessions"
               }
             >
               <button
@@ -1545,12 +1585,10 @@ function CommandBar({
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
-  // The shortcut represents Shift+Tab, so menu-based permission controls stay on their
-  // card picker rather than receiving a keystroke their TUI gives another meaning.
-  const canCycleMode =
-    live &&
-    capabilitiesFor(session.agent).permissionModes?.liveControl.kind === "cycle" &&
-    canWriteTo(session);
+  // The shortcut represents Shift+Tab, so menu-based permission controls stay on their card
+  // picker rather than receiving a keystroke their TUI gives another meaning - the shared
+  // `canCycleMode` is the same gate the keydown handler and the ActionBar button use.
+  const showCycleMode = canCycleMode(session);
   const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -1599,7 +1637,7 @@ function CommandBar({
                 <kbd>{formatChord(bindings.queue)}</kbd> queue
               </button>
             </Tooltip>
-            {canCycleMode && (
+            {showCycleMode && (
               <Tooltip label="Cycle this session's permission mode">
                 <button className="keycap-btn" onClick={() => onAction("cycleMode")}>
                   <kbd>{formatChord(bindings.mode)}</kbd> mode

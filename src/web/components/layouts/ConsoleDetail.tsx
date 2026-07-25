@@ -5,6 +5,7 @@ import { activePaneDialog } from "@shared/session.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import { ActionBar } from "../ActionBar.tsx";
+import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { NomistakesStrip } from "../NomistakesStrip.tsx";
 import { NomistakesFixLog } from "../NomistakesFixLog.tsx";
@@ -178,11 +179,14 @@ export function ConsoleDetail({
   const tabs = useMemo(
     () =>
       [
-        { id: "conversation" as const, label: "Conversation", pip: 0 },
-        { id: "queue" as const, label: "Work queue", pip: queueCount },
-        { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0 },
-        { id: "diff" as const, label: "Diff", pip: 0 },
-        { id: "files" as const, label: "Files", pip: 0 },
+        // `action` is the shortcut that also reveals the tab, printed on its face when
+        // keybinding hints are on. Conversation and Gate have none - they are reached by
+        // Tab-walking the strip, which is not a rebindable action.
+        { id: "conversation" as const, label: "Conversation", pip: 0, action: null },
+        { id: "queue" as const, label: "Work queue", pip: queueCount, action: "queue" as const },
+        { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0, action: null },
+        { id: "diff" as const, label: "Diff", pip: 0, action: "diff" as const },
+        { id: "files" as const, label: "Files", pip: 0, action: "files" as const },
       ],
     [queueCount, gateNeedsYou],
   );
@@ -311,6 +315,7 @@ export function ConsoleDetail({
               }
             }}
           >
+            {t.action && <Keycap action={t.action} />}
             {t.label}
             {t.pip > 0 && <span className="detail-pip">{t.pip}</span>}
           </button>

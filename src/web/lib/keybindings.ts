@@ -15,7 +15,7 @@
 // docs/plans/ui-settings-to-daemon/plan.md.
 
 import { useCallback, useSyncExternalStore } from "react";
-import { subscribeUiConfig, uiConfig, updateUiConfig } from "./uiConfig.ts";
+import { subscribeUiConfig, uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 export type ActionId =
   | "roundup"
@@ -424,6 +424,28 @@ function getSnapshot(): Record<ActionId, string> {
     cachedSnapshot = computeResolved(sanitize(source));
   }
   return cachedSnapshot;
+}
+
+/**
+ * Whether a button that a shortcut also drives prints that shortcut on its face.
+ *
+ * The chords were only ever discoverable from the settings panel and a handful of
+ * tooltips, so the keycaps go on the buttons themselves and this is the switch that
+ * takes them back off. It lives beside the bindings rather than in its own module
+ * because it answers a question about them, and every keycap reads both.
+ *
+ * Deliberately does NOT reach the command bar: that strip is nothing BUT keycaps, so
+ * hiding them leaves a row of unlabelled verbs rather than a tidier one.
+ *
+ * Stored in the daemon (`app_config.ui.keybindingHints`), per machine, like the
+ * overrides above.
+ */
+export function useKeybindingHints(): [boolean, (on: boolean) => void] {
+  const on = useUiConfig().keybindingHints;
+  const set = useCallback((next: boolean) => {
+    void updateUiConfig({ keybindingHints: next });
+  }, []);
+  return [on, set];
 }
 
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */

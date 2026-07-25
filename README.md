@@ -2838,6 +2838,19 @@ them) to its default. The arrow keys, <kbd>Enter</kbd>, <kbd>Esc</kbd> and bare
 <kbd>Tab</kbd> drive layout navigation and Console reading, and can't be reassigned;
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable.
 
+### Keycaps on the buttons
+
+The buttons those shortcuts drive print the key on their own face - Send, Focus, Files,
+Queue, Reset, Complete and Kill on a card; Focus, Diff, Reset, Complete and Kill in the
+Console footer; the Console's Work queue, Diff and Files tabs; a card's `diff` pill;
+Dispatch and Workflows in the top bar; and the settings rail's search box. They show the
+*resolved* chord, so a rebind moves what they say.
+
+**Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
+them. Small icon-only controls (the ⚙ gear, the 📡 sitrep glyph, the expand chevron) never
+carry one - a keycap would be larger than the icon - and name their key in the tooltip
+instead. The command bar is unaffected either way: it is nothing but keycaps.
+
 ## Inspector (automated PR review)
 
 The Inspector reviews the pull requests **Mission Control opened** - and only those -

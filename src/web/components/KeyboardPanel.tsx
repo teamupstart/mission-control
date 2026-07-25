@@ -9,6 +9,7 @@ import {
   resetAll,
   resetBinding,
   setBinding,
+  useKeybindingHints,
   useKeybindings,
 } from "../lib/keybindings.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -37,6 +38,7 @@ function labelOf(id: ActionId): string {
  */
 export function KeyboardPanel(): React.JSX.Element {
   const { bindings, hasCustom } = useKeybindings();
+  const [hints, setHints] = useKeybindingHints();
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const conflicts = findConflicts(bindings);
@@ -90,6 +92,29 @@ export function KeyboardPanel(): React.JSX.Element {
       </div>
 
       {error && <p className="settings-error">{error}</p>}
+
+      {/* Above the list, not inside a group: it is about how every shortcut below is
+          PRESENTED, so it would read as one more binding if it sat among them. */}
+      <label
+        className={`settings-toggle${hints ? " is-on" : ""}`}
+        data-anchor="keyboard/hints"
+      >
+        <Tooltip label="Print each shortcut on the buttons it also drives">
+          <input
+            type="checkbox"
+            checked={hints}
+            onChange={(e) => setHints(e.target.checked)}
+          />
+        </Tooltip>
+        <span className="settings-toggle-text">
+          <span className="settings-toggle-label">Show keybindings on buttons</span>
+          <span className="settings-toggle-desc">
+            Buttons a shortcut also drives - Send, Focus, Queue, Diff, Files, Reset,
+            Complete, Kill, Dispatch, Workflows - carry its key on their face. Small icon
+            buttons and the command bar are unaffected.
+          </span>
+        </span>
+      </label>
 
       {GROUPS.map((group) => (
         <div className="settings-group" key={group.key}>

@@ -7,6 +7,7 @@ import { canWriteTo } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
+import { Keycap } from "./Keycap.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
@@ -255,7 +256,7 @@ export function SessionCard({
                 onOpenDiff?.();
               }}
             >
-              diff
+              <Keycap action="diff" /> diff
             </button>
           </Tooltip>
         )}

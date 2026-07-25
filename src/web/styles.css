@@ -2829,6 +2829,14 @@ body {
     border-color 0.14s ease,
     color 0.14s ease;
 }
+/* The card action row's buttons carry a keycap and a count chip beside their label, so
+   they lay out as a row rather than as inline text. Scoped to `.actions` on purpose:
+   `.btn` is the app's generic button and every other one of them is a lone word. */
+.actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .btn:hover:not(:disabled) {
   color: var(--fg);
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
@@ -3525,6 +3533,31 @@ kbd {
   color: var(--muted);
 }
 
+/* The shortcut printed on a button the chord also drives (`Keycap.tsx`), everywhere
+   one appears: the card and console action rows, the console tabs, the card's diff
+   pill, the topbar's Dispatch. Deliberately NOT the raised keycap above - it rides
+   inside a control, so it has to read as an annotation on that button's label rather
+   than as a second, smaller button sitting on top of one. This was `.act kbd`, which
+   styled the console footer alone and left the seven card buttons unstyled the day
+   they grew keycaps.
+
+   Every host below lays its children out with `gap`, never a margin here, because the
+   preference renders NOTHING when it is off and a margin would leave the hole. */
+.kb-hint {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-bottom-width: 1px;
+  border-radius: 3px;
+  padding: 2px 3px;
+  min-width: 0;
+}
+
 /* ---- empty ---- */
 .empty {
   text-align: center;
@@ -4045,6 +4078,9 @@ kbd {
 
 /* ---- dispatch button (topbar) ---- */
 .dispatch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font: inherit;
   font-size: 12.5px;
   font-weight: 560;
@@ -5126,8 +5162,10 @@ select:not([multiple]) option {
   flex: none;
   height: 24px;
   padding: 0 8px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--panel-2);
@@ -9203,6 +9241,9 @@ select.foreman-model-input {
 }
 .detail-tab {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 13px;
   font: inherit;
   font-size: 12.5px;
@@ -9228,9 +9269,10 @@ select.foreman-model-input {
   border-radius: 2px;
   background: var(--working);
 }
+/* No margin: the tab is a flex row and its `gap` spaces this from the label, so a
+   margin here would double the space in front of the pip. */
 .detail-pip {
   display: inline-block;
-  margin-left: 6px;
   min-width: 16px;
   padding: 0 4px;
   font-size: 10px;
@@ -9423,15 +9465,6 @@ select.foreman-model-input {
   color: var(--danger);
   border-color: color-mix(in oklab, var(--danger) 60%, var(--border));
   background: color-mix(in oklab, var(--danger) 13%, var(--panel-2));
-}
-.act kbd {
-  font-family: var(--mono);
-  font-size: 9.5px;
-  color: var(--dim);
-  padding: 0 3px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: none;
 }
 
 /* ---- board: a column per state, drilling into the console ----

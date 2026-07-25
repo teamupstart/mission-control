@@ -60,7 +60,10 @@ test("an expanded card keeps every control a collapsed one has", () => {
   // to blank this row on.
   const html = render({ hasReply: true });
   for (const label of ["Send", "Focus", "Queue", "Reset", "Complete", "Kill"]) {
-    assert.match(html, new RegExp(`>${label}`), `expanded card lost ${label}: ${html}`);
+    // The label may be preceded by its keycap (`Keycap.tsx`), which the Keyboard panel's
+    // "Show keybindings on buttons" switch can take away again - so match the label
+    // itself rather than assuming what sits in front of it.
+    assert.match(html, new RegExp(`(?:>|</kbd> )${label}`), `expanded card lost ${label}: ${html}`);
   }
 });
 
@@ -104,7 +107,7 @@ test("a session with no pane can't send, but can still be queued for", () => {
   // Send needs a pty to type into; the queue is stored server-side and delivered later,
   // so a pane-less session is exactly the kind you'd want to load up in advance.
   const html = render({ session: mkSession({ terminals: [] }) });
-  assert.match(html, /disabled=""[^>]*>Send/, html);
+  assert.match(html, /disabled=""[^>]*>(?:<kbd[^>]*>[^<]*<\/kbd> )?Send/, html);
   // A disabled control dispatches no mouse events, so this tooltip only reaches a human
   // because Tooltip anchors the hover beside it - see components/Tooltip.tsx.
   assert.ok(hasTooltip(html, "No pane to send to"), "the dead Send must say why it is dead");

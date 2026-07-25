@@ -1394,6 +1394,7 @@ export const UI_CONFIG_DEFAULTS = {
   alerts: { notifications: false, sound: true },
   richText: true,
   usageBarCollapsed: false,
+  keybindingHints: true,
   trustStaged: [],
 } as const;
 
@@ -1418,6 +1419,12 @@ export const UiConfigSchema = z.object({
   richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
   /** Whether the topbar's fleet-cost/rate-limit strip is folded away. */
   usageBarCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.usageBarCollapsed),
+  /**
+   * Whether a button that a keyboard shortcut also drives prints that shortcut on its
+   * face. On by default: the shortcut table is only discoverable if the buttons teach
+   * it. The off switch is for an operator who has learnt them and wants the chrome back.
+   */
+  keybindingHints: z.boolean().default(UI_CONFIG_DEFAULTS.keybindingHints),
   /**
    * Repos the Trust panel has STAGED - added to the matrix but granted nothing yet.
    *

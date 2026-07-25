@@ -7983,6 +7983,7 @@ kbd {
   padding: 3px 10px;
   border-radius: 20px;
   border: 1px solid transparent;
+  background: transparent;
   cursor: pointer;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
@@ -8003,6 +8004,7 @@ kbd {
 .trust-grant.is-off {
   color: var(--dim);
   border-color: var(--border-soft);
+  background: color-mix(in oklab, var(--dim) 6%, transparent);
 }
 .trust-grant.is-off .trust-grant-dot {
   background: var(--exited);

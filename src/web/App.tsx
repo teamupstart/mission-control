@@ -773,17 +773,21 @@ export function App(): React.JSX.Element {
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
       // Search settings (⌘K by default) works from ANY page, which is why it sits above the
-      // non-fleet return and the overlay stand-down below. From the fleet it navigates to the
-      // page and opens the palette in one step; on the page it toggles. It is a plain
-      // bubble-phase handler, so the Keyboard panel's capture-phase chord recorder still
-      // swallows ⌘K while recording - "recording wins", the same contract the palette keeps.
+      // non-fleet return below. From the fleet it navigates to the page and opens the palette
+      // in one step; on the page it toggles. It is a plain bubble-phase handler, so the
+      // Keyboard panel's capture-phase chord recorder still swallows ⌘K while recording -
+      // "recording wins", the same contract the palette keeps.
       //
-      // The text-field bypass is gated on a ⌘/⌃ modifier: ⌘K is unambiguous mid-sentence, but
-      // if the operator rebinds this to a bare key it must stay behind the typing guard, or
-      // that character would open the palette (and navigate away) from inside any input.
+      // `onlyOpen` is the sitrep chord's pattern: fire when nothing is open, OR when the only
+      // thing open is this palette (so ⌘K toggles it shut), but STAND DOWN for anyone else's
+      // overlay - a dispatch dialog or Files must not be left mounted behind a palette after
+      // an unexpected jump to Settings. The text-field bypass is gated on a ⌘/⌃ modifier: ⌘K
+      // is unambiguous mid-sentence, but a bare-key rebinding must stay behind the typing
+      // guard, or that character would open the palette from inside any input.
       if (
         chord === bindings.settingsSearch &&
-        (!typing || chordHasCommandModifier(bindings.settingsSearch))
+        (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
+        overlaysRef.current.onlyOpen(OVERLAY_IDS.settingsSearch)
       ) {
         e.preventDefault();
         if (route.page === "settings") {

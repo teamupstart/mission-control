@@ -242,6 +242,18 @@ test("the sitrep chord stands down for everyone else's overlay, not its own", ()
   assert.equal(overlayGuards([sitrep, diff]).onlyOpen(sitrep), false);
 });
 
+// The ⌘K settings-search chord is gated the same way in App: it opens the palette from a
+// clean screen and toggles its own palette shut, but must NOT open over another
+// screen-owning overlay (Files, the dispatch dialog), which would leave that dialog mounted
+// behind an unexpected jump to Settings.
+test("the settings-search chord stands down for another overlay but toggles its own", () => {
+  const { settingsSearch, dispatch } = OVERLAY_IDS;
+  assert.equal(overlayGuards([]).onlyOpen(settingsSearch), true);
+  assert.equal(overlayGuards([settingsSearch]).onlyOpen(settingsSearch), true);
+  assert.equal(overlayGuards([dispatch]).onlyOpen(settingsSearch), false);
+  assert.equal(overlayGuards([settingsSearch, dispatch]).onlyOpen(settingsSearch), false);
+});
+
 test("the primitive gates dismissal on `closable`, both routes at once", () => {
   // ResetModal's mid-reset guard. Escape can't be exercised without a DOM, but the
   // backdrop's handler is inspectable: a non-closable overlay must not wire a close.

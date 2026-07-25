@@ -50,6 +50,7 @@ const {
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { workflowsToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
 /** The resolved map the runtime handler and the settings editor both read. */
@@ -197,6 +198,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("r", { ctrl: true })),
     chordFromEvent(key("+", { shift: true })),
     chordFromEvent(key("/")),
+    chordFromEvent(key("w")),
     chordFromEvent(key("e")),
     chordFromEvent(key("d")),
     chordFromEvent(key("O", { shift: true })),
@@ -211,6 +213,67 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("k", { meta: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("workflows is a global action defaulting to w that toggles the page", () => {
+  // A registry entry (not a hard-coded key in App) is what also puts it in the settings
+  // editor. It is "global", not "selection": it navigates between the Fleet and Workflows
+  // pages and needs no selected card - the one chord that fires off the fleet too.
+  const workflows = ACTIONS.find((a) => a.id === "workflows");
+  assert.ok(workflows, "workflows missing from the customizable registry");
+  assert.equal(workflows.defaultBinding, "w");
+  assert.equal(workflows.group, "global");
+  assert.equal(chordFromEvent(key("w")), "w");
+  assert.equal(formatChord(workflows.defaultBinding), "w");
+});
+
+// ---- the Workflows toggle decision the App keydown handler runs ----
+//
+// The handler itself is a global keydown listener reaching refs through renders, which has
+// no jsdom here to drive. So its one navigation chord is a PURE function, `workflowsToggleRoute`,
+// that App feeds the live guard state - and these exercise that function the way a real `w`
+// keydown would: the chord a `w` keypress actually produces resolves to the Workflows binding,
+// so `active` is that comparison, and the route it returns is what App hands `navigate`.
+
+const workflowsBinding = ACTIONS.find((a) => a.id === "workflows")!.defaultBinding;
+/** What App computes for a keydown: does the produced chord equal the resolved binding? */
+const pressed = (k: string, mods?: Partial<Record<"ctrl" | "shift", true>>): boolean =>
+  chordFromEvent(key(k, mods)) === workflowsBinding;
+
+test("w toggles Fleet to Workflows and back, and does nothing on any other page", () => {
+  const clear = { typing: false, renaming: false, overlayOpen: false } as const;
+  // A real `w` keypress is what makes the chord `active`.
+  assert.equal(pressed("w"), true);
+  assert.deepEqual(
+    workflowsToggleRoute({ active: pressed("w"), ...clear, page: "fleet" }),
+    { page: "workflows", tab: "workflows" },
+  );
+  assert.deepEqual(
+    workflowsToggleRoute({ active: pressed("w"), ...clear, page: "workflows" }),
+    { page: "fleet" },
+  );
+  // Settings owns its own keys: the toggle stands down rather than yanking to Workflows.
+  assert.equal(workflowsToggleRoute({ active: pressed("w"), ...clear, page: "settings" }), null);
+});
+
+test("the Workflows toggle stands down while typing, renaming, or an overlay is open", () => {
+  const base = { active: true, typing: false, renaming: false, overlayOpen: false, page: "fleet" } as const;
+  // With every guard clear it fires; flipping any one alone suppresses it, so `w` types into
+  // a field, renames a card, or dismisses an overlay instead of navigating.
+  assert.deepEqual(workflowsToggleRoute(base), { page: "workflows", tab: "workflows" });
+  assert.equal(workflowsToggleRoute({ ...base, typing: true }), null);
+  assert.equal(workflowsToggleRoute({ ...base, renaming: true }), null);
+  assert.equal(workflowsToggleRoute({ ...base, overlayOpen: true }), null);
+});
+
+test("only the resolved Workflows chord toggles, nothing near it", () => {
+  // A different key is not `active`, so it never navigates - the toggle owns `w` alone.
+  assert.equal(pressed("q"), false);
+  assert.equal(pressed("w", { ctrl: true }), false);
+  assert.equal(
+    workflowsToggleRoute({ active: pressed("q"), typing: false, renaming: false, overlayOpen: false, page: "fleet" }),
+    null,
+  );
 });
 
 test("queue is a first-class action defaulting to q on the selected card", () => {

@@ -4538,6 +4538,46 @@ kbd {
   font-weight: 400;
   color: var(--dim);
 }
+/* ---- Dropdowns: one themed appearance for every native single <select> ----
+   A native select ignores most theming on macOS/Chrome until `appearance: none` clears the
+   UA control; only then do the colour, border, radius and chevron below take. This one rule
+   is what makes every dropdown in the app - settings panels, dispatch, the workflow editor,
+   the backlog - read as the same control instead of a dozen near-misses in padding, radius
+   and background. It sets no width, so each surface keeps its own sizing (full-row in
+   dialogs, capped in the harness pickers). `[multiple]` list boxes (dependency picker) and
+   the priority chip (`.bl-prio select`, styled AS a chip) opt out and override below.
+   The chevron is an inline SVG in `--muted`; the right padding is what leaves it room. */
+select:not([multiple]) {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 28px 6px 9px;
+  background-color: var(--bg-2);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939eae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color 0.14s ease;
+}
+select:not([multiple]):focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+}
+select:not([multiple]):disabled {
+  color: var(--dim);
+  opacity: 0.6;
+  cursor: default;
+}
+/* The option popup is native OS chrome, so the menu itself can't be themed - but these keep
+   its rows legible against it in the one theme this app ships (dark). */
+select:not([multiple]) option {
+  color: var(--fg);
+  background: var(--bg-2);
+}
+
 .field-input {
   font: inherit;
   font-size: 13px;
@@ -5449,14 +5489,9 @@ kbd {
 .alert-row input[type="checkbox"] {
   accent-color: var(--working);
 }
+/* Visuals come from the shared `select:not([multiple])` rule; this only parks it at the
+   row's trailing edge. */
 .alert-row select {
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 6px;
   margin-left: auto;
 }
 .alert-hint {
@@ -5868,8 +5903,7 @@ kbd {
   font-size: 10.5px;
   color: var(--dim);
 }
-.persona-fields input,
-.persona-fields select {
+.persona-fields input {
   min-width: 0;
   width: 100%;
   padding: 7px 8px;
@@ -5878,6 +5912,12 @@ kbd {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 7px;
+}
+/* Visuals come from the shared `select:not([multiple])` rule; this only lets it fill its
+   field column. */
+.persona-fields select {
+  min-width: 0;
+  width: 100%;
 }
 .persona-effective {
   padding: 7px 9px;
@@ -6062,11 +6102,9 @@ kbd {
   border-radius: 9px;
   background: var(--panel);
 }
-.workflow-palette select,
 .workflow-palette button,
 .workflow-properties input,
-.workflow-properties textarea,
-.workflow-properties select {
+.workflow-properties textarea {
   width: 100%;
   padding: 7px 8px;
   font: inherit;
@@ -6074,6 +6112,12 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--panel);
+}
+/* The selects here take their visuals from the shared `select:not([multiple])` rule and
+   only need to fill the column. */
+.workflow-palette select,
+.workflow-properties select {
+  width: 100%;
 }
 .workflow-palette button { text-align: left; cursor: pointer; }
 .workflow-palette small { color: var(--dim); line-height: 1.45; }
@@ -6110,7 +6154,8 @@ kbd {
 }
 .workflow-connect-dialog h4 { width: 100%; margin: 0; }
 .workflow-connect-dialog label { display: grid; gap: 4px; color: var(--muted); font-size: 10.5px; }
-.workflow-connect-dialog select { min-width: 170px; padding: 7px; color: var(--fg); border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+/* Visuals come from the shared `select:not([multiple])` rule; this only sets its width. */
+.workflow-connect-dialog select { min-width: 170px; }
 .workflow-canvas {
   flex: 1;
   min-height: 560px;
@@ -7288,7 +7333,6 @@ kbd {
 }
 .ts-field .harnesses-select {
   max-width: none;
-  padding: 7px 8px;
 }
 /* The repo picker and the button that commits it, on one line - the combobox takes the
    room. Mirrors `.foreman-repo-add`, which is the same pair doing the same job. */
@@ -7727,9 +7771,12 @@ kbd {
 }
 /* Narrower than full width: a model id is short, and a box stretched to the panel's
    width reads as a prose field and invites pasting a sentence into it. */
-.foreman-model-input {
+/* The shared `select:not([multiple])` rule sets these pickers' colour, chevron and size;
+   `select.` here outweighs it only to restore the mono face, since the value shown is a
+   model id you may want to read character by character. */
+select.foreman-model-input {
   max-width: 260px;
-  font-size: 12px;
+  font-family: var(--mono);
 }
 /* Under the control, never beside it. In the two `<label>`-shaped rows this is a `<span>`
    rather than ModelField's `<p>`, so inline it ignored its top margin and butted straight
@@ -8300,6 +8347,12 @@ kbd {
 .tooltip {
   position: fixed;
   z-index: 100;
+  /* `width: max-content` sizes the bubble to its text (capped by `max-width`) REGARDLESS
+     of where `left` lands. Without it a fixed box with only `left` set shrinks-to-fit the
+     gap between `left` and the viewport's right edge, so a tooltip on a right-aligned
+     trigger (e.g. a settings scope badge) collapsed to one word per line - the
+     `translateX(-50%)` and the on-screen shift are post-layout moves that never widen it. */
+  width: max-content;
   max-width: 260px;
   padding: 5px 9px;
   font-family: var(--sans);

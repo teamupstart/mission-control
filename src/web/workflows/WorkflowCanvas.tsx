@@ -17,6 +17,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   type Connection,
+  type CoordinateExtent,
   type Edge,
   type EdgeChange,
   type NodeChange,
@@ -52,6 +53,20 @@ export interface WorkflowCanvasHandle {
 const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
 const GRID_SIZE = 18;
 const ALIGNMENT_TOLERANCE = 6;
+
+// These reach `<ReactFlow>` as array props that get synced into its internal store from
+// effects keyed on the prop's identity (`snapGrid` / `nodeExtent` via `StoreUpdater`,
+// `multiSelectionKeyCode` via `GraphView`). A fresh literal every render makes those effects
+// fire every render, and during an interaction that already re-renders on its own - starting
+// a connection drag - the churn compounds into "Maximum update depth exceeded" and React
+// unmounts the whole tree (the canvas goes black). They are built from module constants, so
+// hoisting them to one stable reference removes the churn entirely.
+const SNAP_GRID: [number, number] = [GRID_SIZE, GRID_SIZE];
+const NODE_EXTENT: CoordinateExtent = [
+  [-WORKFLOW_LIMITS.canvasCoordinateAbs, -WORKFLOW_LIMITS.canvasCoordinateAbs],
+  [WORKFLOW_LIMITS.canvasCoordinateAbs, WORKFLOW_LIMITS.canvasCoordinateAbs],
+];
+const MULTI_SELECTION_KEYS = ["Meta", "Control"];
 
 function boundedCoordinate(value: number): number {
   return Math.max(
@@ -412,6 +427,41 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
     });
   };
 
+  const nodeDrag = (node: WorkflowCanvasNode): void => {
+    const aligned = alignedPosition(node.id, node.position);
+    setAlignmentGuide({ x: aligned.x, y: aligned.y });
+  };
+
+  const nodeDragStop = (node: WorkflowCanvasNode): void => {
+    const aligned = alignedPosition(node.id, node.position);
+    const next = nodes.map((candidate) => candidate.id === node.id
+      ? { ...candidate, position: aligned.position }
+      : candidate);
+    setNodes(next);
+    setAlignmentGuide({ x: null, y: null });
+    commitNodePositions(next);
+  };
+
+  // Every prop `<ReactFlow>` forwards to its StoreUpdater is tracked by identity: its sync
+  // effect lists each as a dependency and calls `store.setState` inside. A handler recreated
+  // inline on each render makes that effect fire on every render, and a connection drag - which
+  // already re-renders the canvas each pointer move - compounds with it into React's "Maximum
+  // update depth exceeded", which unmounts the tree and blanks the whole screen. So each handler
+  // gets ONE identity for the life of the canvas, calling through a ref that always holds this
+  // render's closure - ReactFlow sees no churn while the logic stays current. The `snapGrid` /
+  // `nodeExtent` / `multiSelectionKeyCode` constants above are the array half of the same rule.
+  const handlersRef = useRef({ changeNodes, changeEdges, connect, nodeDrag, nodeDragStop });
+  handlersRef.current = { changeNodes, changeEdges, connect, nodeDrag, nodeDragStop };
+  const onNodesChange = useCallback(
+    (changes: NodeChange<WorkflowCanvasNode>[]) => handlersRef.current.changeNodes(changes), []);
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => handlersRef.current.changeEdges(changes), []);
+  const onConnect = useCallback((connection: Connection) => handlersRef.current.connect(connection), []);
+  const onNodeDrag = useCallback(
+    (_event: unknown, node: WorkflowCanvasNode) => handlersRef.current.nodeDrag(node), []);
+  const onNodeDragStop = useCallback(
+    (_event: unknown, node: WorkflowCanvasNode) => handlersRef.current.nodeDragStop(node), []);
+
   return (
     <div
       ref={canvas}
@@ -510,22 +560,11 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
         nodes={nodes}
         edges={edges}
         nodeTypes={WORKFLOW_NODE_TYPES}
-        onNodesChange={changeNodes}
-        onEdgesChange={changeEdges}
-        onNodeDrag={(_event, node) => {
-          const aligned = alignedPosition(node.id, node.position);
-          setAlignmentGuide({ x: aligned.x, y: aligned.y });
-        }}
-        onNodeDragStop={(_event, node) => {
-          const aligned = alignedPosition(node.id, node.position);
-          const next = nodes.map((candidate) => candidate.id === node.id
-            ? { ...candidate, position: aligned.position }
-            : candidate);
-          setNodes(next);
-          setAlignmentGuide({ x: null, y: null });
-          commitNodePositions(next);
-        }}
-        onConnect={connect}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeDrag={onNodeDrag}
+        onNodeDragStop={onNodeDragStop}
+        onConnect={onConnect}
         isValidConnection={validConnection}
         onSelectionChange={({ nodes: selectedNodes, edges: selectedEdges }) => {
           const selection = selectedNodes.length + selectedEdges.length > 1
@@ -553,13 +592,10 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
         elementsSelectable
         fitView
         snapToGrid={!readOnly}
-        snapGrid={[GRID_SIZE, GRID_SIZE]}
-        nodeExtent={[
-          [-WORKFLOW_LIMITS.canvasCoordinateAbs, -WORKFLOW_LIMITS.canvasCoordinateAbs],
-          [WORKFLOW_LIMITS.canvasCoordinateAbs, WORKFLOW_LIMITS.canvasCoordinateAbs],
-        ]}
+        snapGrid={SNAP_GRID}
+        nodeExtent={NODE_EXTENT}
         deleteKeyCode={null}
-        multiSelectionKeyCode={["Meta", "Control"]}
+        multiSelectionKeyCode={MULTI_SELECTION_KEYS}
         minZoom={0.2}
         maxZoom={2}
         onInit={(flow) => { instance.current = flow; }}

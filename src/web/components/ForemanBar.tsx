@@ -53,7 +53,84 @@ function toggleTrigger(
 }
 
 /**
- * A bounded number setting that commits on BLUR, not per keystroke.
+ * The value a number field should commit for `draft`, or `null` when it must not: empty
+ * (`Number("") === 0`), non-integer, out of range, or unchanged. Every NumberSetting write
+ * passes this one gate, so "never persist a half-typed or refused value" is decided in a
+ * single tested place rather than re-derived at each call. Test: `foreman-number-setting.test.ts`.
+ */
+export function pendingCommit(draft: string, value: number, min: number, max: number): number | null {
+  // Guard the empty string BEFORE `Number("") === 0`: with auto-save on, an emptied field
+  // that coerced to 0 would silently persist 0 the instant the debounce fired - and where
+  // 0 is a legal value (the Shipping soak window's "no soak"), clearing to retype would
+  // disarm the setting rather than wait for a real number. Blur reverts it instead.
+  if (draft.trim() === "") return null;
+  const n = Number(draft);
+  if (!Number.isInteger(n) || n < min || n > max || n === value) return null;
+  return n;
+}
+
+export interface NumberFieldSaver {
+  /** A draft changed. Arm a debounced commit of it - or disarm, if it is not committable. */
+  edit: (draft: string, value: number, min: number, max: number) => void;
+  /** Commit the armed value NOW (blur, Enter, unmount) and cancel the debounce. No-op when
+   *  nothing is armed, so an idle blur or an unmount after a settled edit sends nothing. */
+  flush: () => void;
+}
+
+/**
+ * The debounce-and-flush half of a number field's auto-save, pulled out of the component so
+ * the timing is deterministic and testable WITHOUT a DOM - the reason the popover's fields
+ * can be trusted to save on their own. A change arms a single delayed write (`edit`); another
+ * change before it fires resets the timer, so a multi-digit entry is one write of the final
+ * value, not one per keystroke. `flush` commits whatever is armed at once, which is what lets
+ * blur, Enter and - the bug this fixes - closing the popover mid-edit all persist the change
+ * instead of dropping it. The timer is injectable so a test can advance it by hand.
+ */
+export function createNumberFieldSaver(
+  onCommit: (n: number) => void,
+  options: {
+    delayMs?: number;
+    setTimer?: (fn: () => void, ms: number) => unknown;
+    clearTimer?: (handle: unknown) => void;
+  } = {},
+): NumberFieldSaver {
+  const delayMs = options.delayMs ?? 400;
+  const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+
+  let handle: unknown = null;
+  let armed: number | null = null;
+
+  function disarm(): void {
+    if (handle !== null) clearTimer(handle);
+    handle = null;
+    armed = null;
+  }
+
+  return {
+    edit(draft, value, min, max) {
+      disarm();
+      armed = pendingCommit(draft, value, min, max);
+      if (armed === null) return;
+      handle = setTimer(() => {
+        const n = armed;
+        handle = null;
+        armed = null;
+        if (n !== null) onCommit(n);
+      }, delayMs);
+    },
+    flush() {
+      const n = armed;
+      disarm();
+      if (n !== null) onCommit(n);
+    },
+  };
+}
+
+/**
+ * A bounded number setting that AUTO-SAVES a valid change - debounced, and also on blur and
+ * on unmount - so Enter is never required, while never persisting a value the human did not
+ * choose.
  *
  * Typing "50" over "3" passes through "5" on the way - a valid value - so a
  * per-keystroke commit silently persists a setting the human never chose, then
@@ -92,11 +169,21 @@ export function NumberSetting({
     setDraft(String(value));
   }, [value]);
 
-  function commit(): void {
-    const n = Number(draft);
-    if (!Number.isInteger(n) || n < min || n > max) return setDraft(String(value));
-    if (n !== value) onCommit(n);
-  }
+  const legal = draft.trim() !== "" && Number.isInteger(Number(draft)) &&
+    Number(draft) >= min && Number(draft) <= max;
+
+  // One auto-save controller for the life of the field. `onCommit` is a fresh closure each
+  // parent render, so the saver (created once) reaches it through a ref rather than capturing
+  // a stale one. `edit` debounces a change; `flush` commits the pending value now.
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const saverRef = useRef<NumberFieldSaver | null>(null);
+  const saver = saverRef.current ?? (saverRef.current = createNumberFieldSaver((n) => onCommitRef.current(n)));
+
+  // Closing the popover unmounts this field and kills the debounce timer, so flush the
+  // pending edit on the way out - a change made and immediately dismissed was the "you have
+  // to press Enter to save it" bug.
+  useEffect(() => () => saver.flush(), [saver]);
 
   return (
     <label className="alert-row">
@@ -106,8 +193,14 @@ export function NumberSetting({
         max={max}
         value={draft}
         disabled={disabled}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          saver.edit(e.target.value, value, min, max);
+        }}
+        onBlur={() => {
+          saver.flush();
+          if (!legal) setDraft(String(value));
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
         }}
@@ -134,8 +227,22 @@ export function ForemanBar({
     function onDoc(e: MouseEvent): void {
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
+    // Escape closes the popover the same way a click outside does. It stops there rather
+    // than bubbling to App's global Escape, which would ALSO collapse the expanded card or
+    // drop the fleet selection behind it - this popover is not a registered overlay, so
+    // nothing else knows to swallow the key on its behalf.
+    function onKey(e: KeyboardEvent): void {
+      if (open && e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    }
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   const enabled = config?.enabled ?? false;

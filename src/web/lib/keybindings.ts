@@ -22,6 +22,7 @@ export type ActionId =
   | "dispatch"
   | "filter"
   | "settingsSearch"
+  | "workflows"
   | "expand"
   | "diff"
   | "files"
@@ -80,6 +81,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Search settings",
     description: "Open the settings search palette from anywhere.",
     defaultBinding: "cmd+k",
+    group: "global",
+  },
+  {
+    id: "workflows",
+    label: "Toggle Workflows",
+    description: "Open the Workflows page, or return to the fleet.",
+    defaultBinding: "w",
     group: "global",
   },
   {

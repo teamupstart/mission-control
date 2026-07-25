@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { canCycleMode } from "@shared/session.ts";
 import { canWriteTo, muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -162,10 +162,7 @@ export function ActionBar({
   // Cycle the permission mode (Shift+Tab) - only meaningful for a harness whose live
   // control is that cycle, with a pane to inject the keystroke into.
   function cycleMode() {
-    if (
-      !canSend ||
-      capabilitiesFor(session.agent).permissionModes?.liveControl.kind !== "cycle"
-    ) return;
+    if (!canCycleMode(session)) return;
     void run("mode", () => api.cycleMode(session.id));
   }
 

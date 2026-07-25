@@ -1288,7 +1288,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath,
-      pid: Number.isInteger(pid) && pid > 0 ? pid : s.pid,
+      pid: pid !== null && Number.isInteger(pid) && pid > 0 ? pid : s.pid,
       instrumented: true,
       stateConfirmed: true,
       hooksSeen: true,

@@ -1,5 +1,6 @@
 import type {
   PersonaVerdict,
+  WorkflowContextSnapshot,
   WorkflowDeliveryState,
   WorkflowGateSummary,
   WorkflowEvent,
@@ -450,6 +451,42 @@ function eventPayload(event: WorkflowEvent): Record<string, unknown> | null {
   return event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
     ? event.payload as Record<string, unknown>
     : null;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * One submission's captured context, or `null` when this build cannot read it.
+ *
+ * `contextState` is the daemon's verdict about the RUN - the newest full submission's kind,
+ * or `corrupt` if any submission is - so it cannot answer for the round a scrubber selected.
+ * A three-key shape check plus a cast used to stand in for that, which is a crash waiting for
+ * a run whose rounds disagree: the render reads `humanDecisions.length` and maps `constraints`
+ * into JSX, so a snapshot missing an array takes the whole Runs view down with it, and one
+ * holding a non-string in `constraints` hands React an object as a child.
+ *
+ * So every field the render touches is checked before the cast. An unreadable snapshot is
+ * reported as unreadable, which is a state this surface already knows how to draw.
+ */
+export function readCapturedContext(context: unknown): WorkflowContextSnapshot | null {
+  if (!isObject(context)) return null;
+  const { primaryGoal, humanDecisions, constraints, acceptanceCriteria, evidence, compaction } =
+    context;
+  if (!isObject(primaryGoal) || typeof primaryGoal.rawPrompt !== "string") return null;
+  if (!isStringArray(constraints) || !isStringArray(acceptanceCriteria)) return null;
+  if (
+    !Array.isArray(humanDecisions)
+    // Each decision is rendered with its source, so a decision without one is unreadable
+    // rather than merely sparse.
+    || !humanDecisions.every((decision) => isObject(decision) && isObject(decision.source))
+  ) return null;
+  if (!isObject(evidence) || !isStringArray(evidence.workingTreeStatus)) return null;
+  if (!isObject(compaction) || typeof compaction.status !== "string") return null;
+  return context as unknown as WorkflowContextSnapshot;
 }
 
 export interface EventNames {

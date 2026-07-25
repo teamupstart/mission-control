@@ -2,9 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   EvidenceRef,
   PersonaVerdict,
-  WorkflowContextSnapshot,
   WorkflowExternalSource,
-  WorkflowJson,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowRunPage,
@@ -35,6 +33,7 @@ import {
   gateSummaryStatus,
   gateWaitSentence,
   nodeStatusesForSubmission,
+  readCapturedContext,
   runRounds,
   runStatusLabel,
   selectedSubmission,
@@ -219,15 +218,6 @@ function VerdictCard({
   );
 }
 
-/** True when a submission's stored context is a readable capture rather than `{}` or worse. */
-function capturedContext(context: WorkflowJson): WorkflowContextSnapshot | null {
-  if (!context || typeof context !== "object" || Array.isArray(context)) return null;
-  const value = context as Record<string, unknown>;
-  const shaped = ["primaryGoal", "evidence", "compaction"].every((key) =>
-    value[key] !== null && typeof value[key] === "object");
-  return shaped ? context as unknown as WorkflowContextSnapshot : null;
-}
-
 export function WorkflowRunView({
   detail,
   roundId = null,
@@ -296,9 +286,17 @@ export function WorkflowRunView({
     && typeof viewed.context.failedHeadSha === "string"
     ? viewed.context.failedHeadSha
     : null;
-  const context = detail.contextState === "captured" && viewed?.mode === "full_workflow"
-    ? capturedContext(viewed.context)
+  // Scoped to the VIEWED round, and validated rather than cast: `contextState` answers for
+  // the run (the newest full submission's kind, or corrupt if any is), so it cannot say
+  // whether the round a scrubber selected is readable. When it is not, the round says so
+  // instead of rendering nothing.
+  const contextRound = viewed?.mode === "full_workflow" ? viewed : null;
+  const context = contextRound && detail.contextState === "captured"
+    ? readCapturedContext(contextRound.context)
     : null;
+  const contextUnreadable = contextRound !== null
+    && detail.contextState === "captured"
+    && context === null;
   const inspectorGate = detail.inspectorGate;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
@@ -867,6 +865,15 @@ export function WorkflowRunView({
           <h4>Captured intent and evidence are corrupt</h4>
           <p className="wf-run-error" role="alert">
             The durable context does not match its submission mode. Check daemon logs or restore it from backup.
+          </p>
+        </section>
+      )}
+      {contextUnreadable && (
+        <section className="wf-run-section">
+          <h4>Captured intent and evidence</h4>
+          <p className="wf-run-error" role="alert">
+            This round's captured context is not readable by this build, though the run's
+            newest one is. Check daemon logs or restore it from backup.
           </p>
         </section>
       )}

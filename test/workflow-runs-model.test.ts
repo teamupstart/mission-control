@@ -22,6 +22,7 @@ import {
   eventsByRound,
   gateWaitSentence,
   nodeStatusesForSubmission,
+  readCapturedContext,
   reviewerStatus,
   runRounds,
   selectedSubmission,
@@ -217,6 +218,51 @@ test("a durable error becomes a sentence and keeps its code beside it", () => {
   });
   assert.equal(errorView(null), null);
   assert.equal(errorView(""), null);
+});
+
+test("a captured context is validated before it is read, field by field", () => {
+  // `contextState` answers for the RUN, so a scrubbed round can be unreadable while the run's
+  // verdict says captured. A shape check that only proved three fields were objects let that
+  // round reach a render which does `humanDecisions.length` and maps `constraints` into JSX -
+  // an exception that takes the whole Runs view down, and an object handed to React as a
+  // child. Every field the render touches is checked here instead.
+  const valid = {
+    primaryGoal: { rawPrompt: "GOAL", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [{ decision: "Keep it", rationale: null, source: { kind: "review", id: "r" } }],
+    constraints: ["No server change"],
+    acceptanceCriteria: [],
+    priorPersonaFeedback: [],
+    session: { agent: "claude", name: "work", cwd: "/repo", branch: "main" },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "d",
+      diff: "",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: 0,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+    },
+    compaction: { status: "model", runner: "claude", model: "cheap", error: null },
+  };
+  assert.equal(readCapturedContext(valid), valid);
+  // The exact shape the Inspector named: three objects, nothing inside them.
+  assert.equal(readCapturedContext({ primaryGoal: {}, evidence: {}, compaction: {} }), null);
+  assert.equal(readCapturedContext({ ...valid, humanDecisions: undefined }), null);
+  // A decision is rendered with its source, so one without a source is unreadable.
+  assert.equal(readCapturedContext({ ...valid, humanDecisions: [{ decision: "x" }] }), null);
+  // A non-string constraint would be handed to React as a child.
+  assert.equal(readCapturedContext({ ...valid, constraints: [{ text: "no" }] }), null);
+  assert.equal(readCapturedContext({ ...valid, evidence: { headSha: "abc" } }), null);
+  assert.equal(readCapturedContext({ ...valid, compaction: {} }), null);
+  assert.equal(readCapturedContext({ ...valid, primaryGoal: { refined: "only" } }), null);
+  assert.equal(readCapturedContext(null), null);
+  assert.equal(readCapturedContext([]), null);
+  assert.equal(readCapturedContext({}), null);
 });
 
 test("timeline events are phrased in names and carry their round forward", () => {

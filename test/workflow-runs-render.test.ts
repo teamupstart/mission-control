@@ -846,6 +846,33 @@ test("run detail renders not-captured and corrupt context states safely", () => 
   assert.match(corrupt, /restore it from backup/);
 });
 
+test("a round whose captured context this build cannot read says so instead of throwing", () => {
+  // `contextState` is the run's verdict - the newest full submission's kind - so a scrubbed
+  // round can be unreadable while it still says "captured". Rendering that round used to cast
+  // a three-key object into a snapshot and then read `humanDecisions.length` off it, which
+  // takes the whole Runs view down rather than showing a state the surface already draws.
+  const base = runningDetail();
+  const detail = {
+    ...base,
+    submissions: [
+      { ...base.submissions[0]!, context: { primaryGoal: {}, evidence: {}, compaction: {} } },
+      base.submissions[1]!,
+    ],
+  } as WorkflowRunDetail;
+  const earlier = render(detail, { roundId: "submission-1" });
+  // The apostrophe reaches the markup escaped, so the assertion starts after it.
+  assert.match(earlier, /s captured context is not readable by this build/);
+  assert.doesNotMatch(earlier, /Original goal/);
+  // The round is otherwise intact: its verdicts and the run's own actions are still there.
+  assert.match(earlier, /Fix the race/);
+  assert.match(earlier, /Export run/);
+  // And a readable round is unaffected.
+  assert.doesNotMatch(
+    render(base, { roundId: "submission-1" }),
+    /not readable by this build/,
+  );
+});
+
 test("paging controls appear exactly when the daemon says there is more", () => {
   const base = runningDetail();
   const paged = render({

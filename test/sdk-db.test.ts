@@ -173,8 +173,13 @@ test("a status this build cannot read is null, never the nearest known one", () 
 
 test("the status vocabulary is what the live check is built from", () => {
   // Append-only, because these strings are in operators' databases. The point of asserting
-  // the tuple is that a RENAME reads as a fresh set here rather than as a migration.
-  assert.deepEqual([...SDK_SESSION_STATUSES], ["starting", "running", "exited", "failed"]);
+  // the tuple is that a RENAME reads as a fresh set here rather than as a migration - and
+  // that an APPEND (which is allowed, and which `suspended` was) is a deliberate edit here
+  // rather than something that slipped in.
+  assert.deepEqual(
+    [...SDK_SESSION_STATUSES],
+    ["starting", "running", "exited", "failed", "suspended"],
+  );
   for (const status of SDK_SESSION_STATUSES) {
     upsertSdkSession(
       {
@@ -192,20 +197,27 @@ test("the status vocabulary is what the live check is built from", () => {
     );
     assert.equal(
       sdkSessionIsLive(getSdkSession(`sdk:st-${status}`)!),
-      status === "starting" || status === "running",
+      // `suspended` is live for the reason it exists: WE stopped it on the way down, and a
+      // restart owes it a resume. Reading it as settled is how a clean restart reclaims the
+      // worktree of work that was merely interrupted.
+      status === "starting" || status === "running" || status === "suspended",
       `${status} liveness`,
     );
   }
 });
 
 test("restore fails a row nothing can resume, and leaves an unreadable one alone", async () => {
-  setSdkSessionStatus("sdk:aaa", "running", 8_000);
+  // `sdk:aaa` has a binding, so it would be resumable if its harness could still be
+  // launched. Point it at an agent id this build does not know instead - the same shape as
+  // a driver that was removed - so `restore` exercises its refusal path without this test
+  // ever spawning a real agent. (`sdk:alien` from the previous case is that row.)
+  setSdkSessionStatus("sdk:alien", "running", 8_000);
   await new SdkSupervisor(new Registry()).restore();
-  // No harness declares a driver in this build, so there is nothing to relaunch. Failing the
-  // row is what makes the task it was running settle visibly through the ordinary path,
-  // instead of sitting `running` for ever with no session anyone can see.
-  assert.equal(getSdkSession("sdk:aaa")?.status, "failed");
-  // Untouched, for the reason above: this row is a newer build's business.
+  // A row nothing can resume is FAILED, which is what makes the task it was running settle
+  // visibly through the ordinary path instead of sitting `running` for ever with no session
+  // anyone can see.
+  assert.equal(getSdkSession("sdk:alien")?.status, "failed");
+  // Untouched, for the doctrine above: this row is a newer build's business.
   assert.equal(getSdkSession("sdk:future")?.statusRaw, "hibernating");
   // And an already-settled row is not rewritten.
   assert.equal(getSdkSession("sdk:st-exited")?.status, "exited");

@@ -1124,9 +1124,54 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Clipped to its column, which the h2 above it has always been.
+   `.card-title` is `flex: 1` in a header row of chips, so on a narrow card it can be
+   narrower than this line - and a bordered chip that overflows it juts out under the chip
+   beside it, where plain grey text merely ran on. The full value is on the tooltip and the
+   accessible name either way. */
 .name-source {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11.5px;
   color: var(--dim);
+}
+
+/* The session runtime, where a pane string would be.
+   A chip rather than plain dim text, because it is the one value in this slot that
+   CHANGES the card: no pane means no Focus and no Rename, and a reader who cannot see why
+   those are missing should find the reason in the same place they looked for the pane.
+   Deliberately quiet - `--muted`, not an alert tone - it is a fact about where the session
+   lives, not something asking to be dealt with. No vendor is named here or anywhere in this
+   file: the runtime is an axis of its own, orthogonal to which harness the card runs. */
+.runtime-chip {
+  /* `inline-flex`, not `flex`, so the pill is only as wide as its label - the block
+     `.name-source` above it is what clips, and a block chip would draw its border across
+     the whole column whatever it says. */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--bg-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.runtime-glyph {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.75;
+}
+.runtime-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Clickable title: looks like the h2 it sits inside, reveals a pencil + underline
@@ -11716,6 +11761,12 @@ select.foreman-model-input {
   color: var(--muted);
   background: var(--bg-2);
 }
+/* The runtime flag wears the tile's default (muted) flag colours deliberately: it is a
+   fact about where the session lives, not one of the attention tones beside it. Only the
+   glyph is set here, so the pill itself stays identical to every other `.tile-flag`. */
+.tile-flag.runtime-flag {
+  letter-spacing: 0.01em;
+}
 .tile-flag.tf-gate,
 .tile-flag.tf-escalated,
 .tile-flag.tf-review {
@@ -12116,6 +12167,56 @@ select.foreman-model-input {
   font-size: 13px;
   line-height: 1.55;
   color: var(--fg);
+}
+/* One block per question of a DRIVER form. The pane never produced this shape - its TUI
+   shows one question at a time - so these rules have no pane counterpart to match; they
+   borrow the dialog's own spacing so a form of four questions reads as one card rather
+   than as four stacked prompts. */
+.pd-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-question + .pd-question {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.pd-question-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.pd-question-tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.pd-text-answer {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+}
+.pd-text-answer:focus {
+  outline: none;
+  border-color: var(--attention);
+}
+.pd-text-answer:disabled {
+  opacity: 0.6;
 }
 .pd-options {
   list-style: none;

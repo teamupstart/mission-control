@@ -30,7 +30,7 @@ import {
   StateBadge,
   WorkflowChip,
   EnsembleChip,
-  subtitle,
+  SessionWhere,
 } from "./session-bits.tsx";
 
 /**
@@ -216,7 +216,7 @@ export function SessionCard({
             onRenameStart={onRenameStart}
             onRenameClose={onRenameClose}
           />
-          {!renaming && <span className="name-source">{subtitle(session)}</span>}
+          {!renaming && <SessionWhere session={session} />}
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />

@@ -1,7 +1,7 @@
 # Mission Control
 
-A local, auto-refreshing dashboard for the Claude Code / Codex / Pi sessions running
-across your **terminal panes**. See every agent at a glance,
+A local, auto-refreshing dashboard for Claude Code / Codex / Pi sessions running
+across your **terminal panes** or embedded through an **Agent SDK**. See every agent at a glance,
 act on any of them, and let an agent push a **diff or plan** to you for review -
 and get your decision back.
 
@@ -9,8 +9,9 @@ and get your decision back.
 
 ## What it does
 
-- **Discovers** every running `claude` / `codex` / `pi` session by walking process →
-  controlling TTY → terminal pane. No per-session setup required.
+- **Discovers** every terminal-backed `claude` / `codex` / `pi` session by walking process →
+  controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
+  No per-session setup is required for terminal discovery.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
   card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
   terminal home, which the next sweep reads straight back onto the card. Only a live session
@@ -34,9 +35,11 @@ and get your decision back.
 - **Answers the menus** a session is parked on - a permission prompt, an
   `AskUserQuestion` clarification, a folder-trust check - as
   [clickable options on the card](#answer-a-sessions-menu-from-the-dashboard).
-  Read straight off the terminal, so it works with or without hooks.
+  Terminal sessions are read straight off their pane, so that path works with or without
+  hooks; Agent SDK sessions deliver the same asks as structured data.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
-  agent in its own isolated worktree + terminal home (or shelves it in a
+  agent in its own isolated worktree, using that harness's configured
+  [session runtime](#session-runtimes-terminal-or-the-agent-sdk), or shelves it in a
   backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
   edit or send, and a switch on the row [holds it back](#hold-a-backlog-item-back)
   from the autopilot without taking it off the list).
@@ -287,27 +290,68 @@ wrong: the permission-mode chip, dialog detection, and the read-back that confir
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
 else, if you want those too.
 
-### How a session is driven is an axis too (terminal today)
+### Session runtimes (terminal, or the Agent SDK)
 
 Everything above answers "which terminal holds this session". A separate question is how
-Mission Control *talks* to it at all, and every session on your machine today answers it the
-same way: through a pane. That is a session's **runtime**, and `terminal` is the only one any
-harness currently offers - so nothing in the product behaves differently yet, and no setting
-exists to change it.
+Mission Control *talks* to it at all, and until now every session answered it the same way:
+through a pane. That is a session's **runtime**, and there are two.
 
-The groundwork is in place because the other answer is coming: Claude, Codex and Pi all have
-programmatic interfaces where a permission prompt is a callback with the tool name as data
-rather than a menu to be read off a screen, and a delivered turn is acknowledged instead of
-pasted and hoped for. A session driven that way has no pane, so the daemon has to be able to
-hold one that no `ps` sweep will ever find. Two predicates keep that honest: "can a turn
-reach this session" (which such a session answers yes to) and "is there a pane to drive"
-(which it answers no to) - the same distinction the Send box and Rename have always needed
-and, until now, shared one answer for. Whether a harness offers the runtime is a declaration
-next to its other capabilities, and it stays off until a driver exists behind it.
+- **Terminal** - the default, and what every session you start yourself always is. Delivery
+  is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
+- **Agent SDK** - the daemon runs Claude Code itself, through
+  `@anthropic-ai/claude-agent-sdk`. There is no pane. A turn is a call that is
+  *acknowledged*, and a permission prompt arrives as data - the tool name, its input, and
+  the exact rows to offer - which the card renders directly.
 
-The design, the tradeoffs (a daemon restart interrupts an in-flight turn; a terminal takeover
-becomes an explicit handoff), and the phases are in
-`docs/plans/agent-sdk-sessions/plan.md`.
+The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
+time, so flipping it mid-batch reaches the next session you launch. It ships as `terminal`
+for every harness and stays there until you change it: there is no per-task override and no
+default flip. It is also scoped to dispatch, exactly like the model and effort defaults next
+to it - a Claude session you started yourself is pane-backed whatever this says, because
+Mission Control does not own your terminal.
+
+**What changes when you turn it on.** A dispatched Claude session appears as a card with no
+pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
+
+- the task's prompt is the conversation's first turn - there is no paste to verify, no
+  settle window, and no retry that can make an agent read its task twice;
+- permission prompts and plan approvals render as one-click rows on the card. A single
+  `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
+  field; multi-question or multi-select asks show every question together and submit once.
+  Each question accepts either its choice rows or non-empty custom text, and parallel asks
+  wait their turn on the same card instead of replacing one another. Claude's own question
+  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
+  terminal is unreadable, and here it is not;
+- the permission-mode and reasoning-effort pickers control the live embedded conversation,
+  just as they control a pane-backed one;
+- the transcript still comes from the same `~/.claude/projects/…` session file the
+  interactive CLI reads. Goal, cost and PR state reaches the same card fields through the
+  driver, so those surfaces keep working too;
+- **Focus** is replaced by **Continue in terminal** (below).
+
+**What it costs.** One real regression: the subprocess is the daemon's child, so restarting
+the daemon interrupts whatever turn was in flight. The conversation itself survives - the
+supervisor records the session and resumes it on the next start, before anything else runs -
+including its Mission MCP tools - but the interrupted turn's remaining work has to be
+re-prompted. In exchange, delivery stops being probabilistic and menus stop being screens.
+
+**Foreman's work queue is not available on an Agent SDK session yet.** It still drives
+sessions through their terminal, so a queue there is refused with a sentence saying so; use
+the handoff, or dispatch that task in a terminal. (Automation parity is the next phase of
+`docs/plans/agent-sdk-sessions/plan.md`, which also carries the full design and tradeoffs.)
+
+#### Continue in terminal
+
+`⇧P`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
+reopens **the same conversation** in a terminal home (`claude --resume <session id>`) in the
+same checkout - Claude keeps one session store across its programmatic and interactive
+surfaces, which is what makes this a handoff rather than a lost conversation. Discovery
+adopts the new process, and the task's binding follows it across even when discovery takes
+longer than the handoff request waits.
+
+It is one way. After the handoff the terminal session is the one holding the conversation;
+the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
+tells you the exact `claude --resume` to run yourself.
 
 ### What each agent can do is declared, not assumed
 
@@ -841,12 +885,15 @@ dispatches get it automatically - see [The ask channel](#the-ask-channel).
 
 ### The ask channel
 
-Sessions the dashboard **dispatches** do not use Claude's built-in `AskUserQuestion`.
-It is disallowed on the spawn, and the agent is pointed at `request_input` instead, so
-a clarifying question arrives as structured arguments in the dashboard rather than as a
-menu drawn on a terminal nobody is watching.
+Claude sessions the dashboard dispatches into the **terminal runtime** do not use Claude's
+built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is pointed at
+`request_input` instead, so a clarifying question arrives as structured arguments in the
+dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
+keep the built-in tool because its questions already arrive as structured driver requests;
+see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk).
 
-Four flags go on together or not at all (`src/server/ask-channel.ts`): `--mcp-config`
+For the terminal runtime, four flags go on together or not at all
+(`src/server/ask-channel.ts`): `--mcp-config`
 supplies the tool, `--allowed-tools` pre-approves it so calling it doesn't itself raise a
 permission prompt, `--disallowed-tools` removes the built-in, and `--append-system-prompt`
 carries the redirect that tells the agent where to go instead, inline.
@@ -887,29 +934,36 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`/`pi`) in a **terminal home** rooted there - a named
-   multiplexer home when one is installed (tmux adds a second **shell pane split beside
-   it** for ad-hoc git/build/inspection), or a terminal tab in that worktree when no
-   multiplexer is available, and
-3. waits for that exact discovered session to become ready (falling back to a brief settle
-   when no stronger signal exists), verifies it is still live, and injects your task as its
-   first prompt. A dispatched Pi proves startup when its injected-id session file appears,
-   then proves delivery only when that exact file appends a new user turn. Metadata changes
-   and generic `working` state do not count. If the agent exits during startup or Pi never
-   records the prompt, dispatch fails instead of calling an unverified task running.
+2. resolves the chosen harness's [session runtime](#session-runtimes-terminal-or-the-agent-sdk)
+   at launch, then takes exactly one path. **Terminal** launches the agent
+   (`claude`/`codex`/`pi`) in a terminal home rooted there - a named multiplexer home when
+   one is installed (tmux adds a second **shell pane split beside it** for ad-hoc
+   git/build/inspection), or a terminal tab in that worktree when no multiplexer is
+   available. It waits for that exact discovered session to become ready, verifies it is
+   still live, and injects your task as its first prompt. A dispatched Pi proves startup
+   when its injected-id session file appears, then proves delivery only when that exact
+   file appends a new user turn. Metadata changes and generic `working` state do not
+   count. **Agent SDK** (Claude today) instead starts the embedded driver with the task as
+   turn one. It creates no terminal home and needs no discovery, readiness wait, paste,
+   or delivery retry; the driver's binding is the readiness signal.
+
+If either launch path cannot prove it started as requested, dispatch fails instead of
+calling an unverified task running.
 
 **Model** starts on the default configured for the chosen harness (see [Default
 model](#default-model)) and names it, so you can see what the task will run on without
 opening Settings. Pick a different one to override it for this task alone - more
 horsepower for a gnarly refactor, something cheap and fast for a one-line fix - and the
-daemon launches the agent with `--model <id>`. Switching **Agent** resets the model,
+daemon passes that model through the selected runtime (`--model <id>` in a terminal,
+the driver's model option on the Agent SDK). Switching **Agent** resets the model,
 since model ids are harness-specific. Leaving it on **Default** stores no model at
 all rather than pinning today's, so a task you shelve now picks up the default in force
 when it's actually dispatched.
 
 **Effort** sits immediately after Model and follows the same rule: it starts on the
 chosen harness's default, can be overridden for one task, and switching Agent resets it.
-Claude launches with `--effort <level>`; Codex receives the corresponding
+Terminal-runtime Claude launches with `--effort <level>`; an embedded Claude launch passes
+the same selection through the SDK and can change it live. Codex receives the corresponding
 `model_reasoning_effort` launch override; Pi receives `--thinking <level>`. Leaving it on
 **Default** keeps the task tied to the effort default in force when it launches.
 
@@ -927,16 +981,18 @@ that repo becomes the seed instead.
 Leave **Title** blank and the daemon names the task for you: a headless `claude -p` on
 Haiku summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
 not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
-it, because the title supplies both the git branch and the initial terminal home name, and
-later task-title edits do not propagate to either. The card appears immediately under a
-title taken from your first line and updates to the model's a beat later. If `claude` is
+it, because the title supplies the git branch and the launched session's name (including a
+terminal home name on the terminal runtime), and later task-title edits do not propagate
+to either. The card appears immediately under a title taken from your first line and
+updates to the model's a beat later. If `claude` is
 missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
 dispatch still goes.
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
-what it's working on. It's headless until you want it - click **Focus** on the card to open
-it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
-launching it yet.
+what it's working on. A terminal-runtime session stays out of the way until you click
+**Focus**; an Agent SDK session has no tab and offers **Continue in terminal** instead.
+Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
+it yet.
 
 **Dependencies** can be selected from tasks already in the backlog and from active
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
@@ -1062,8 +1118,8 @@ has since gone** - a reclaimed worktree, a project moved - stays editable too; o
 you actually change is checked against the [task-root rules above](#a-tasks-repo-is-the-repo-not-the-worktree).
 
 Only *shelved* work can be rewritten. Once a task is dispatched its title has already
-supplied the name of a git branch and terminal home, so the daemon refuses the edit rather
-than let the card drift from the terminal it describes - and a task that starts while you
+supplied the name of a git branch and launched session, so the daemon refuses the edit
+rather than let the card drift from what is running - and a task that starts while you
 have it open takes the form with it.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
@@ -1079,7 +1135,7 @@ according to the [merged-PR rule](#when-a-tasks-pull-request-merges); without a 
 merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
 way, it drops out of every count that means "executing".
 
-It settles; it is **not** torn down. The worktree, its branch and the terminal home name are
+It settles; it is **not** torn down. The worktree, its branch and any terminal home name are
 all kept, and the row says so (`its worktree was kept; Clean up or re-dispatch it`). Freeing
 a checkout runs `git worktree remove --force` over whatever is in it, so that stays where
 every other destructive path in the app puts it: behind the confirmed **Clean up** button on
@@ -1267,6 +1323,21 @@ All three ship as **Harness default**, so Mission Control passes no effort overr
 CLI keeps its own configured choice. Like the model default, this is resolved when the
 task launches: changing it applies to already-shelved tasks unless a task selected its
 own effort in the dispatch form.
+
+### Session runtime
+
+**Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
+in a **Terminal pane**, or embedded on the **Agent SDK**. It ships as Terminal for every
+harness, and stays there until you change it - see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk) for what turning it on
+changes, what it costs, and how to hand a session back to a terminal.
+
+The row renders only for a harness that actually has a driver behind it (Claude, today);
+the others say so on the card rather than offering a control that would change nothing. Like
+the model and effort defaults beside it, it is read **when a task launches** and reaches only
+the sessions Mission Control dispatches. A stored value this build cannot read, or one naming
+a runtime it has no driver for, falls back to Terminal and says so on the card instead of
+quietly launching something else.
 
 ## Task sources (pulling work into the backlog)
 
@@ -2989,6 +3060,7 @@ shortcut works in every layout:
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>⇧</kbd><kbd>P</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
@@ -3311,7 +3383,7 @@ had already been written off:
 
 Only a **merged** pull request does this. One that was closed without merging changes
 nothing, and neither does one still open. An upgrade records an outcome and nothing else:
-the worktree, branch and terminal home stay exactly where they were, still behind the
+the worktree, branch and any terminal home stay exactly where they were, still behind the
 **Clean up** button, because freeing a checkout runs `git worktree remove --force` and
 stays a human's click. Tasks that declared a dependency on the upgraded one are released
 at the same moment, which is the point - a `stopped` blocker over work that shipped is
@@ -3506,7 +3578,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay before injecting the first prompt. Used after Pi's exact session file appears, after a hook wait times out, or immediately when no readiness signal exists; an observed exit fails instead |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: settle delay before injecting the first prompt. Used after Pi's exact session file appears, after a hook wait times out, or immediately when no readiness signal exists; an observed exit fails instead. Agent SDK dispatch does not use a settle delay |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's readiness signal: the first hook for a hook-capable launch, or the injected-id session file for Pi. A missing Pi file fails the dispatch rather than allowing unverified input; hook silence falls back to the settle above if the session is still live. An observed exit ends either wait immediately. The hook wait is skipped when this particular launch could never produce one, including a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |

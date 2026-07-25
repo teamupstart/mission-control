@@ -119,6 +119,12 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
+import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
+import { deliverToDriver } from "./sdk/deliver.ts";
+import { stopSession } from "./sdk/control.ts";
+import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
 import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
@@ -155,13 +161,13 @@ import {
   cyclePermissionMode,
   focus,
   injectPrompt,
-  kill,
   rename,
   resetPreview,
   selectPaneOption,
   sendText,
   setPermissionMode,
   setSessionEffort,
+  sessionEffortTargetResult,
   defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
@@ -326,6 +332,33 @@ function retractByline(rowId: number): void {
  * any terminal input. Named from `AGENT_IDENTITY` so a fourth harness gets a true sentence
  * instead of inheriting "Claude".
  */
+/**
+ * Answer an embedded session's pending request: verify against what the caller was shown,
+ * then resolve the callback the agent is blocked on.
+ *
+ * Two refusals with one shape, because a caller cannot act differently on them: the
+ * projection said no (the ask moved, a label no longer matches, a form is half-filled), or
+ * the driver said no (it no longer holds that request). Either way nothing was delivered
+ * and the question is still on the card - which is exactly what a 409 means on the pane
+ * path, so the two runtimes read identically to the dashboard, to Foreman and to the MCP
+ * tool.
+ */
+async function answerDriverRequest(
+  supervisor: SdkSupervisor | undefined,
+  session: Session,
+  project: (dialog: Session["paneDialog"]) => DriverAnswer,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
+  const projected = project(session.paneDialog);
+  if (!projected.ok) return projected;
+  try {
+    await supervisor.answer(session.id, projected.requestId, projected.answer);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function noPermissionModes(session: Session): string | null {
   if (harnessFor(session.agent).permissionModes) return null;
   return `${AGENT_IDENTITY[session.agent].label} has no permission modes`;
@@ -429,6 +462,19 @@ export function buildApp(
   schedules?: ScheduleService,
   /** Optional for existing route-unit stubs; the daemon always supplies it. */
   ensembles?: EnsembleManager,
+  /**
+   * The owner of embedded (SDK-runtime) sessions.
+   *
+   * Optional for the same route-unit reason, and its absence is answerable rather than
+   * silent: the driver arms below refuse with "this build has no session supervisor",
+   * which nothing can reach anyway, since without one no embedded session can exist.
+   */
+  sdkSessions?: SdkSupervisor,
+  /**
+   * How a handed-off session's terminal home is opened. Injected so the handoff route is
+   * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
+   */
+  handoffDeps?: HandoffDeps,
 ): Hono {
   const app = new Hono();
 
@@ -1421,6 +1467,13 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    // An embedded session has no composer to type into, and `submit` has no meaning for it:
+    // a turn is one acked call, not a paste followed by an Enter that may or may not land.
+    // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
+    if (session.runtime === "sdk") {
+      const sent = await deliverToDriver(sdkSessions, session, parsed.data.text);
+      return c.json({ ok: sent.ok, ...(sent.error ? { error: sent.error } : {}) }, sent.ok ? 200 : 500);
+    }
     const r = await sendText(
       session,
       parsed.data.text,
@@ -1443,6 +1496,17 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    // One route, two runtimes, one refusal code. A driver request is answered by resolving
+    // the callback the agent is blocked on rather than by walking a cursor, but everything
+    // the CALLER sees is the same - `{number, label}` in, 409 and "nothing was selected"
+    // out - which is what keeps the dashboard's prompt, Foreman's `answer.option` and the
+    // MCP tool on one grammar instead of three.
+    if (session.runtime === "sdk") {
+      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
+        driverOptionAnswer(dialog, parsed.data),
+      );
+      return c.json(r, r.ok ? 200 : 409);
+    }
     const r = await selectPaneOption(session, parsed.data);
     return c.json(r, r.ok ? 200 : 409);
   });
@@ -1458,7 +1522,55 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await submitPaneForm(session, parsed.data.options);
+    const { options, answers } = parsed.data;
+    // The two bodies are not interchangeable, and each runtime takes exactly one. A pane
+    // form is a list of checkbox ROWS on one screen; a driver form is an answers map across
+    // several questions, each numbering its own options from 1. Sending the wrong one is a
+    // caller bug, so it is refused rather than coerced - a flattened driver form would tick
+    // the right-numbered row of the wrong question.
+    if (session.runtime === "sdk") {
+      if (!answers) {
+        return c.json(
+          { ok: false, error: "this session's form is answered with a driver answers map" },
+          409,
+        );
+      }
+      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
+        driverFormAnswer(dialog, answers),
+      );
+      return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
+    }
+    if (!options) {
+      return c.json(
+        { ok: false, error: "this session's form is answered with pane rows" },
+        409,
+      );
+    }
+    const r = await submitPaneForm(session, options);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Hand an embedded session back to a real terminal, continuing the same conversation.
+  //
+  // The escape hatch that makes the SDK runtime's one real loss survivable: no pane to look
+  // at or type into. Both vendors share a session store between their programmatic and
+  // interactive surfaces, so this stops the driver and reopens the SAME conversation under
+  // `claude --resume <id>`; discovery adopts the new process and the task's binding follows
+  // it. Not idempotent and not a toggle - there is no way back, because the terminal
+  // session is now the one holding the conversation.
+  app.post("/api/sessions/:id/handoff", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!sdkSessions) {
+      return c.json({ ok: false, error: "this build has no session supervisor" }, 409);
+    }
+    const r = await handOffToTerminal(registry, sdkSessions, session, handoffDeps ?? {
+      spawn: spawnUniquely,
+      waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
+      // Reached only when the driver was stopped and no terminal could replace it, which is
+      // the one case nothing else can settle - see `settleAfterFailedHandoff`.
+      settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
+    });
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -1506,12 +1618,18 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
-    const r = await injectPrompt(
-      session,
-      parsed.data.text,
-      undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
-    );
+    // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
+    // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
+    // here is positive evidence that nothing landed, which is the only state a caller may
+    // safely retry from.
+    const r = session.runtime === "sdk"
+      ? await deliverToDriver(sdkSessions, session, parsed.data.text)
+      : await injectPrompt(
+          session,
+          parsed.data.text,
+          undefined,
+          () => registry.promptResourceBlockerForSession(session.id),
+        );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
@@ -1570,7 +1688,7 @@ export function buildApp(
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await kill(session);
+    const r = await stopSession(session, sdkSessions);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -1597,12 +1715,36 @@ export function buildApp(
     if (refusal) return c.json({ error: refusal }, 400);
     const parsed = await parseBody(c, SetPermissionModeSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await setPermissionMode(session, parsed.data.mode);
+    const r = session.runtime === "sdk"
+      ? await (async () => {
+          const modes = harnessFor(session.agent).permissionModes;
+          if (!modes?.pickable.includes(parsed.data.mode)) {
+            return {
+              ok: false,
+              error: `${parsed.data.mode} is not available for this agent`,
+              mode: session.permissionMode,
+            };
+          }
+          if (!sdkSessions) {
+            return { ok: false, error: "this build has no session supervisor", mode: null };
+          }
+          try {
+            await sdkSessions.setPermissionMode(session.id, parsed.data.mode);
+            return { ok: true, mode: parsed.data.mode };
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+              mode: session.permissionMode,
+            };
+          }
+        })()
+      : await setPermissionMode(session, parsed.data.mode);
     // A cycle walk can stop early in a mode it read off the footer, so retain that
     // observation even on failure. A menu failure observed no new mode: recording its
     // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
     const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
-    if (r.ok || liveControl?.kind === "cycle") {
+    if (r.ok || (session.runtime === "terminal" && liveControl?.kind === "cycle")) {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);
@@ -1630,15 +1772,37 @@ export function buildApp(
         effort: null,
       }, 409);
     }
-    const r = await setSessionEffort(session, parsed.data.effort, {
-      ...defaultPaneDeps,
-      assertBeforeWrite: () => {
-        const current = registry.getSession(session.id);
-        return current?.agent === session.agent &&
-          current.agentSessionId === session.agentSessionId &&
-          current.transcriptPath === session.transcriptPath;
-      },
-    });
+    const r = session.runtime === "sdk"
+      ? await (async () => {
+          const targetResult = sessionEffortTargetResult(session, parsed.data.effort);
+          if (targetResult) return targetResult;
+          if (!sdkSessions) {
+            return {
+              ok: false,
+              error: "this build has no session supervisor",
+              effort: null,
+            };
+          }
+          try {
+            await sdkSessions.setEffort(session.id, parsed.data.effort);
+            return { ok: true, effort: parsed.data.effort };
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+              effort: null,
+            };
+          }
+        })()
+      : await setSessionEffort(session, parsed.data.effort, {
+          ...defaultPaneDeps,
+          assertBeforeWrite: () => {
+            const current = registry.getSession(session.id);
+            return current?.agent === session.agent &&
+              current.agentSessionId === session.agentSessionId &&
+              current.transcriptPath === session.transcriptPath;
+          },
+        });
     if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
       return c.json({
         ok: false,

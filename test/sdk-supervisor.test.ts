@@ -1,0 +1,481 @@
+import { test, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// What is at stake: the supervisor is the only thing that knows an embedded session's
+// harness-native id, its checkout and its task belong together. Nothing else can rebuild
+// that - there is no process on a tty for a sweep to re-find - so every question this file
+// asks is about a card or a task that would otherwise be stranded:
+//
+//  - a launch that starts a driver and then cannot take ownership must not leak it;
+//  - a restart must RESUME rather than restart the conversation, or the agent redoes work;
+//  - a resume nothing can honour must still produce a card that goes away, because the
+//    task it was running is settled by `session_remove` and by nothing else;
+//  - a session WE stopped on the way down is `suspended`, not `exited`, or every clean
+//    restart reclaims the worktree of work that was merely interrupted.
+
+const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
+// Set before importing anything that resolves the state dir (see db-isolation.test.ts).
+process.env.HARNESS_HOME = join(home, "state");
+
+const { openDb } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
+const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
+const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
+  "../src/server/sdk/store.ts"
+);
+const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
+const { mkTask } = await import("./helpers/session-fixture.ts");
+
+type Handle = import("../src/server/harness/types.ts").SdkSessionHandle;
+type SdkEvent = import("../src/server/harness/types.ts").SdkEvent;
+type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
+type ServerEvent = import("../src/shared/types.ts").ServerEvent;
+
+after(() => rmSync(home, { recursive: true, force: true }));
+
+beforeEach(() => {
+  openDb().exec("DELETE FROM sdk_sessions; DELETE FROM tasks;");
+});
+
+/** A driver whose events the test pushes by hand. */
+function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; stopped: boolean } {
+  const queued: SdkEvent[] = [];
+  let waiting: ((r: IteratorResult<SdkEvent>) => void) | null = null;
+  let ended = false;
+  const push = (e: SdkEvent): void => {
+    const w = waiting;
+    if (w) {
+      waiting = null;
+      w({ value: e, done: false });
+      return;
+    }
+    queued.push(e);
+  };
+  const end = (): void => {
+    ended = true;
+    const w = waiting;
+    if (w) {
+      waiting = null;
+      w({ value: undefined as never, done: true });
+    }
+  };
+  const handle = {
+    push,
+    end,
+    stopped: false,
+    events: {
+      async *[Symbol.asyncIterator](): AsyncGenerator<SdkEvent> {
+        for (;;) {
+          const next = queued.shift();
+          if (next) {
+            yield next;
+            continue;
+          }
+          if (ended) return;
+          const m = await new Promise<IteratorResult<SdkEvent>>((r) => (waiting = r));
+          if (m.done) return;
+          yield m.value;
+        }
+      },
+    },
+    async send() {},
+    async interrupt() {},
+    async answer() {},
+    setPermissionMode: null,
+    setEffort: null,
+    setModel: null,
+    clearContext: null,
+    async stop() {
+      handle.stopped = true;
+      push({ kind: "exited", reason: "stopped", resumable: true });
+    },
+  };
+  return handle;
+}
+
+/** Point Claude's harness slot at a scripted driver for the duration of one test. */
+function withFakeDriver(
+  launch: (opts: LaunchOptions) => Promise<Handle>,
+): { restore: () => void; calls: LaunchOptions[] } {
+  const calls: LaunchOptions[] = [];
+  const real = HARNESSES.claude.sdk;
+  HARNESSES.claude.sdk = {
+    launch: (opts) => {
+      calls.push(opts);
+      return launch(opts);
+    },
+    resumeArgv: (id) => ["--resume", id],
+  };
+  return { restore: () => (HARNESSES.claude.sdk = real), calls };
+}
+
+const START = {
+  agent: "claude" as const,
+  name: "Add a toggle",
+  cwd: "/wt/one",
+  prompt: "add a toggle",
+  model: null,
+  effort: null,
+  permissionMode: null,
+  mcp: null,
+  taskId: null,
+};
+
+test("start persists a row, registers the card, and records the binding", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start({ ...START, taskId: "task-1", model: "m" });
+
+    assert.ok(session.id.startsWith("sdk:"), "ids are minted, never derived from a pid");
+    assert.equal(session.runtime, "sdk");
+    assert.equal(session.name, "Add a toggle");
+    // The row is what a restart is cut from, and it exists before the pump can say anything.
+    const row = getSdkSession(session.id)!;
+    assert.equal(row.status, "starting");
+    assert.equal(row.taskId, "task-1");
+    assert.equal(row.model, "m");
+    assert.equal(row.agentSessionId, null);
+
+    handle.push({ kind: "bound", agentSessionId: "agent-7", transcriptPath: null, pid: null });
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-7");
+    assert.equal(getSdkSession(session.id)?.status, "running");
+    // And the card learned the identity the whole file-based read path keys on.
+    assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
+    assert.equal(registry.getSession(session.id)?.hooksSeen, true);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a driver we cannot take ownership of is stopped, not leaked", async () => {
+  const first = fakeHandle();
+  const second = fakeHandle();
+  const handles = [first, second];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    // A duplicate id is the only way `adopt` refuses, and it is the one that matters: two
+    // handles believing they own one card would leave the loser pumping into a session it
+    // does not drive.
+    assert.throws(
+      () =>
+        supervisor.adopt({
+          registration: { id: session.id, agent: "claude", name: "dup", cwd: "/wt/one" },
+          handle: second,
+          durable: { taskId: null, model: null, effort: null },
+        }),
+      /already registered/,
+    );
+    await waitFor(() => second.stopped);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("an exit evicts the card through the ordinary sequence", async (t) => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  // Only `setTimeout`, so the eviction's 8s linger can be ticked rather than waited out.
+  // `setImmediate` stays real, which is what `drain` below rides on - the event pump is
+  // detached and none of this is synchronous.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const registry = new Registry();
+    const removed: string[] = [];
+    registry.subscribe((e: ServerEvent) => {
+      if (e.type === "session_remove") removed.push(e.id);
+    });
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    handle.push({ kind: "exited", reason: "done", resumable: false });
+    handle.end();
+    await drain();
+
+    assert.equal(registry.getSession(session.id)?.state, "exited");
+    assert.equal(getSdkSession(session.id)?.status, "exited");
+    // `session_remove` is the durable signal two subscribers settle state on, and it comes
+    // from the shared eviction after a linger - never from a teardown of this class's own.
+    assert.deepEqual(removed, []);
+    t.mock.timers.tick(9_000);
+    assert.deepEqual(removed, [session.id]);
+    // Delivery to a session whose driver is gone REJECTS. "Delivered to nobody" is the
+    // failure the acked send exists to remove.
+    await assert.rejects(() => supervisor.send(session.id, { text: "hi" }), /no live driver/);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("restore resumes the same conversation rather than starting a new one", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  const descriptor = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/mission/mcp.mjs"],
+    env: { MISSION_CONTROL_URL: "http://127.0.0.1:7317" },
+  };
+  try {
+    upsertSdkSession({
+      id: "sdk:restore-1",
+      agent: "claude",
+      agentSessionId: "agent-42",
+      cwd: "/wt/one",
+      taskId: null,
+      model: "m",
+      effort: "high",
+      permissionMode: "auto",
+      status: "running",
+    });
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry, {
+      missionMcpDescriptor: async () => descriptor,
+    });
+    await supervisor.restore();
+
+    assert.equal(fake.calls.length, 1);
+    // The identity is what makes this a continuation: the note, queue, goal and work
+    // episode are all keyed on it, and a fresh id would strand every one of them.
+    assert.equal(fake.calls[0]!.resume, "agent-42");
+    // And no prompt, or the agent starts its task over on top of what it already did.
+    assert.equal(fake.calls[0]!.prompt, "");
+    assert.equal(fake.calls[0]!.model, "m");
+    assert.equal(fake.calls[0]!.effort, "high");
+    assert.deepEqual(fake.calls[0]!.mcp, descriptor);
+    assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
+    // The row keeps the id it is being picked up from - it must not be blanked to `null`
+    // and then re-learned, or a crash in that window loses the only thing a resume needs.
+    assert.equal(getSdkSession("sdk:restore-1")?.agentSessionId, "agent-42");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a resume that fails still shows a card and takes it away, so the task settles", async (t) => {
+  const fake = withFakeDriver(async () => {
+    throw new Error("the CLI refused");
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    upsertSdkSession({
+      id: "sdk:restore-2",
+      agent: "claude",
+      agentSessionId: "agent-9",
+      cwd: "/wt/two",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+    });
+    const registry = new Registry();
+    const removed: string[] = [];
+    registry.subscribe((e: ServerEvent) => {
+      if (e.type === "session_remove") removed.push(e.id);
+    });
+    await new SdkSupervisor(registry).restore();
+
+    assert.equal(getSdkSession("sdk:restore-2")?.status, "failed");
+    // Registered, then evicted: a row failed quietly in the database leaves the task it was
+    // running `running` for ever, because `reconcileTasksBoundTo` fires on `session_remove`
+    // and on nothing else.
+    assert.equal(registry.getSession("sdk:restore-2")?.state, "exited");
+    t.mock.timers.tick(9_000);
+    assert.deepEqual(removed, ["sdk:restore-2"]);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a shutdown suspends rather than exits, and a suspended row is resumed", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const removed: string[] = [];
+    registry.subscribe((event: ServerEvent) => {
+      if (event.type === "session_remove") removed.push(event.id);
+    });
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    handle.push({ kind: "bound", agentSessionId: "agent-5", transcriptPath: null, pid: null });
+    await waitFor(() => getSdkSession(session.id)?.status === "running");
+
+    await supervisor.stopAll();
+    // The distinction IS resume-on-restart. Recorded as `exited`, a clean restart would be
+    // indistinguishable from an agent that finished, and `reconcileOnStartup` would run
+    // `git worktree remove --force` over work that was merely interrupted.
+    assert.equal(getSdkSession(session.id)?.status, "suspended");
+    assert.equal(supervisor.handleFor(session.id), null);
+    assert.notEqual(registry.getSession(session.id)?.state, "exited");
+    assert.deepEqual(removed, []);
+
+    const resumed = fakeHandle();
+    const again = withFakeDriver(async () => resumed);
+    try {
+      await new SdkSupervisor(new Registry()).restore();
+      assert.equal(again.calls.length, 1, "a suspended session is picked back up");
+      assert.equal(again.calls[0]!.resume, "agent-5");
+    } finally {
+      again.restore();
+    }
+  } finally {
+    fake.restore();
+  }
+});
+
+test("task liveness answers true or false for an embedded task, and null for any other", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    // Null is not uncertainty here - it is "this task has no embedded session", so the
+    // caller goes on to ask the terminal axis. `homeAlive`'s null (nobody could tell us) is
+    // a question this supervisor never has to pose.
+    assert.equal(supervisor.taskLiveness("nope"), null);
+
+    const session = await supervisor.start({ ...START, taskId: "task-9" });
+    assert.equal(supervisor.taskLiveness("task-9"), true);
+    handle.push({ kind: "exited", reason: "done", resumable: false });
+    handle.end();
+    await waitFor(() => getSdkSession(session.id)?.status === "exited");
+    assert.equal(supervisor.taskLiveness("task-9"), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a task re-dispatched after a failure is answered by its newest row", async () => {
+  const supervisor = new SdkSupervisor(new Registry());
+  upsertSdkSession(
+    { id: "sdk:old", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "failed" },
+    1_000,
+  );
+  upsertSdkSession(
+    { id: "sdk:new", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "running" },
+    2_000,
+  );
+  assert.equal(listSdkSessions().length, 2);
+  assert.equal(supervisor.taskLiveness("t"), true);
+});
+
+test("live controls reach the handle and persist what restart will reuse", async () => {
+  const handle = fakeHandle();
+  const modes: string[] = [];
+  const efforts: string[] = [];
+  handle.setPermissionMode = async (mode) => void modes.push(mode);
+  handle.setEffort = async (effort) => void efforts.push(effort);
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    await supervisor.setPermissionMode(session.id, "acceptEdits");
+    await supervisor.setEffort(session.id, "xhigh");
+    assert.deepEqual(modes, ["acceptEdits"]);
+    assert.deepEqual(efforts, ["xhigh"]);
+    assert.equal(getSdkSession(session.id)?.permissionMode, "acceptEdits");
+    assert.equal(getSdkSession(session.id)?.effort, "xhigh");
+  } finally {
+    fake.restore();
+  }
+});
+
+/** Poll until `check` holds. The event pump is detached, so nothing here is synchronous. */
+async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (check()) return;
+    if (Date.now() > deadline) throw new Error("timed out waiting for the supervisor");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+/**
+ * Let the detached pump run, without a clock.
+ *
+ * `setImmediate` rather than `setTimeout`, so this works in the tests that mock timers to
+ * tick the eviction linger: a few macrotask turns is all the pump needs to consume a queued
+ * event, and waiting on a mocked `setTimeout` would simply never resolve.
+ */
+async function drain(turns = 10): Promise<void> {
+  for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
+}
+
+test("a dispatch interrupted mid-launch is COMPLETED on restart, not failed", async () => {
+  // The window is real and narrow: `start()` persists the row and registers the card, and
+  // `dispatchEmbedded` records `running` plus the session id only after that returns. A
+  // daemon that died between the two comes back to a `dispatching` task whose conversation
+  // exists on disk and whose driver `restore()` is about to resume - so failing it would
+  // leave a live agent working under a failed row nothing can settle.
+  //
+  // The terminal path's reason for failing a `dispatching` task does not apply here: the
+  // intent is turn ONE, delivered by the launch itself, so there is no pasted prompt whose
+  // landing a restart cannot confirm.
+  upsertSdkSession({
+    id: "sdk:midflight",
+    agent: "claude",
+    agentSessionId: "agent-mid",
+    cwd: "/wt/mid",
+    taskId: "task-mid",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+  });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "task-mid",
+      status: "dispatching",
+      repoRoot: "/repo",
+      worktreePath: "/wt/mid",
+      sessionId: null,
+    }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+  assert.equal(supervisor.taskLiveness("task-mid"), true);
+  // The id is what finishes the dispatch - liveness alone cannot bind anything.
+  assert.equal(supervisor.liveSessionForTask("task-mid"), "sdk:midflight");
+
+  new TaskManager(registry, undefined, supervisor);
+  await waitFor(() => registry.getTask("task-mid")?.status !== "dispatching");
+  const t = registry.getTask("task-mid")!;
+  assert.equal(t.status, "running");
+  // Bound to the session `restore()` is about to bring back, so `applyDriverBinding` finds
+  // the task when the resumed driver reports its identity.
+  assert.equal(t.sessionId, "sdk:midflight");
+  assert.equal(t.error, null);
+});
+
+test("a dead embedded row still fails an interrupted dispatch", async () => {
+  // The other half: liveness false means no agent is coming back, so the honest outcome is
+  // the ordinary interrupted-dispatch failure rather than a `running` task with nothing
+  // behind it.
+  upsertSdkSession({
+    id: "sdk:deadmid",
+    agent: "claude",
+    agentSessionId: "agent-dead",
+    cwd: "/wt/dead",
+    taskId: "task-dead",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "exited",
+  });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-dead", status: "dispatching", repoRoot: "/repo", worktreePath: "/wt/dead" }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+  assert.equal(supervisor.liveSessionForTask("task-dead"), null);
+  assert.equal(supervisor.taskLiveness("task-dead"), false);
+});

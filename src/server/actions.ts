@@ -6,11 +6,11 @@ import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
 import type { ControlSpec } from "./harness/types.ts";
 import {
+  describeOptionRowMiss,
   hasUnansweredWarning,
   optionRowMiss,
   parsePaneDialog,
   submitAnswersRow,
-  type OptionRowMiss,
   type PaneDialog,
   type PaneOption,
 } from "./discovery/pane-dialog.ts";
@@ -383,28 +383,74 @@ export interface EffortResult extends ActionResult {
   effort: ThinkingLevel | null;
 }
 
-export async function setSessionEffort(
+export function sessionEffortTargetResult(
   session: Session,
   target: ThinkingLevel,
-  deps: PaneDeps = defaultPaneDeps,
-): Promise<EffortResult> {
+): EffortResult | null {
   const spec = harnessFor(session.agent).effort;
   const modelId = session.meta?.modelId ?? null;
   const model = session.meta?.model ?? null;
   const current = session.meta?.thinkingLevel ?? null;
   if (!spec) return { ok: false, error: "this agent has no reasoning-effort control", effort: null };
-  const picker = spec.sessionPicker;
-  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control", effort: null };
   if (!model) return { ok: false, error: "the selected model is not known yet", effort: null };
   if (!modelId) return { ok: false, error: "the selected model id is not known yet", effort: null };
   if (!current) return { ok: false, error: "the selected model's current effort is not known yet", effort: null };
   if (!supportsSessionEffort(session.agent, modelId, current, target)) {
     return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
   }
-  const from = spec.levelsFor(modelId).indexOf(current);
-  const to = spec.levelsFor(modelId).indexOf(target);
-  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed", effort: null };
-  if (from === to) return { ok: true, effort: current };
+  const levels = spec.levelsFor(modelId);
+  if (levels.indexOf(current) < 0 || levels.indexOf(target) < 0) {
+    return { ok: false, error: "the selected model's effort options changed", effort: null };
+  }
+  if (current === target) return { ok: true, effort: current };
+  return null;
+}
+
+function resolveTerminalSessionEffort(
+  session: Session,
+  target: ThinkingLevel,
+):
+  | { change: false; result: EffortResult }
+  | {
+      change: true;
+      spec: EffortSpec;
+      picker: NonNullable<EffortSpec["sessionPicker"]>;
+      modelId: string;
+      model: string;
+      current: ThinkingLevel;
+    } {
+  const spec = harnessFor(session.agent).effort;
+  if (spec && !spec.sessionPicker) {
+    return {
+      change: false,
+      result: {
+        ok: false,
+        error: "this agent has no session-only reasoning-effort control",
+        effort: null,
+      },
+    };
+  }
+  const result = sessionEffortTargetResult(session, target);
+  if (result) return { change: false, result };
+  const picker = spec!.sessionPicker!;
+  return {
+    change: true,
+    spec: spec!,
+    picker,
+    modelId: session.meta!.modelId!,
+    model: session.meta!.model!,
+    current: session.meta!.thinkingLevel!,
+  };
+}
+
+export async function setSessionEffort(
+  session: Session,
+  target: ThinkingLevel,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<EffortResult> {
+  const resolved = resolveTerminalSessionEffort(session, target);
+  if (!resolved.change) return resolved.result;
+  const { spec, picker, modelId, model, current } = resolved;
 
   return withPaneLock<EffortResult>(session, () => ({ ok: false, error: PANE_BUSY, effort: null }), async () => {
     const pane = deps.pane(session);
@@ -1400,7 +1446,7 @@ async function selectOptionLocked(
   // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
   // pressing Enter would confirm whatever replaced it.
   const miss = optionRowMiss(dialog, target);
-  if (miss) return { ok: false, error: describeMiss(miss, dialog, target) };
+  if (miss) return { ok: false, error: describeOptionRowMiss(miss, dialog, target) };
 
   // A checkbox row is not answerable by pressing it: Enter TOGGLES it and the form stays
   // up, so this would report a delivered answer for a keystroke that sent nothing. That is
@@ -1535,7 +1581,7 @@ async function submitFormLocked(
   // has moved on is refused whole rather than half-ticked.
   for (const t of targets) {
     const miss = optionRowMiss(dialog, t);
-    if (miss) return { ok: false, error: describeMiss(miss, dialog, t) };
+    if (miss) return { ok: false, error: describeOptionRowMiss(miss, dialog, t) };
     if (dialog.options.find((o) => o.number === t.number)!.checked === undefined) {
       return { ok: false, error: `option ${t.number} is not a checkbox on this form` };
     }
@@ -1659,20 +1705,6 @@ async function awaitDialogChange(
     if (d && dialogIdentity(d) !== from) return d;
     if (Date.now() >= deadline) return null;
     await sleep(REPAINT_POLL_MS);
-  }
-}
-
-/** Say which way the screen failed to be the menu we were told to answer. */
-function describeMiss(miss: OptionRowMiss, dialog: PaneDialog, target: OptionTarget): string {
-  switch (miss) {
-    case "no-such-row":
-      return `this menu has no option ${target.number}`;
-    case "label-differs": {
-      const row = dialog.options.find((o) => o.number === target.number);
-      return `option ${target.number} now reads "${row?.label}" - the screen changed`;
-    }
-    case "label-ambiguous":
-      return `"${target.label}" reads the same as another row on this menu`;
   }
 }
 

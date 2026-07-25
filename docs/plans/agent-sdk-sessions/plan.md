@@ -214,6 +214,8 @@ export interface Harness extends HarnessCapabilities {
 export interface SdkSpec {
   /** Start (or resume) an embedded session. Rejects rather than degrades. */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+  /** Argv after the harness binary for continuing this conversation interactively. */
+  resumeArgv(agentSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -222,7 +224,7 @@ export interface SdkLaunchOptions {
   model: string | null;
   effort: ThinkingLevel | null;
   permissionMode: PermissionMode | null; // from dispatchPermissionMode, same source as argv today
-  mcp: McpLaunchDescriptor | null;       // rendered from mission-mcp.ts's single descriptor
+  mcp: MissionMcpDescriptor | null;      // rendered from mission-mcp.ts's single descriptor
   resume: string | null;                 // harness-native session/thread id, for restarts
 }
 
@@ -232,17 +234,18 @@ export interface SdkSessionHandle {
   /** Deliver a user turn. Resolves when the harness accepted it - the ack injectPrompt never had. */
   send(turn: { text: string; images?: SdkImage[] }): Promise<void>;
   interrupt(): Promise<void>;
-  /** Resolve a pending SessionRequest (permission, question, approval). */
+  /** Resolve a pending SessionRequest (permission, question, plan, approval). */
   answer(requestId: string, answer: SessionRequestAnswer): Promise<void>;
   /** Live controls; null when this driver cannot (mirrors capability-null doctrine). */
   setPermissionMode: ((mode: PermissionMode) => Promise<void>) | null;
+  setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
   stop(): Promise<void>;
 }
 
 export type SdkEvent =
-  | { kind: "bound"; agentSessionId: string; transcriptPath: string | null }
+  | { kind: "bound"; agentSessionId: string; transcriptPath: string | null; pid: number | null }
   | { kind: "state"; state: "working" | "idle"; activity: string | null }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
@@ -293,6 +296,9 @@ Responsibilities:
   sees SDK sessions on the first completed sweep exactly as it sees rediscovered terminal
   ones. A session whose resume fails is registered, marked `exited`, and evicted through
   the normal path so `TaskManager.reconcileTasksBoundTo` settles its task visibly.
+- **Suspends on daemon shutdown**: a clean stop records `suspended`, not `exited`, so
+  startup reconciliation does not reclaim a worktree whose interrupted conversation the
+  supervisor is about to resume. Persisted status values are append-only.
 - **Evicts**: `applyDiscovery`'s unseen-means-exited rule is scoped to `proc:` sessions;
   SDK sessions exit when their handle says so (`exited` event), through the same
   `state: "exited"` then `session_remove` sequence, so both existing subscribers
@@ -339,9 +345,11 @@ Answering routes by runtime, not by caller:
   it walks the cursor as today. For SDK sessions it verifies the label against the pending
   request (the same `optionRowMiss` rule - the miscount-catching label check is about
   callers, not panes, and exact labels make it strict) and resolves the callback.
-- `POST /sessions/:id/submit-options` (multi-select) likewise: pane sessions run the form
-  walk; SDK sessions resolve with the full answers map - no Submit tab, no unanswered
-  banner, and free-text answers become possible instead of refused.
+- `POST /sessions/:id/submit-options` accepts either the pane form's existing flat
+  `{options}` body or a driver form's `{answers}` body, one entry per question. The route
+  refuses either body on the other runtime rather than flattening or coercing it. Pane
+  sessions run the form walk; SDK sessions resolve with the full answers map - no Submit
+  tab, no unanswered banner, and free-text answers become possible instead of refused.
 - Foreman's `answer.option` grammar is unchanged for single-select. `promptHarness`
   (`foreman/prompt.ts`) gains `runtime`, so the reviewer prompt states the true grammar:
   for SDK sessions the menu is data, prose answers ARE deliverable (a deny-with-message /
@@ -384,7 +392,7 @@ instead of a null:
 | `skills.invoke` (wrap-up) | single-line composer grammar incl. Codex's popup-closing clause | the same line delivered as turn text via `send()` - the clause machinery becomes inert but harmless for SDK delivery |
 | `skills.reloadCommand` | typed at idle sessions holding a pane | Claude SDK: same line via `send()`; the pane-guard preconditions (mode line readable, pane idle) reduce to "driver idle" |
 | `permissionModes.liveControl` | Shift+Tab cycle / `/permissions` menu | `handle.setPermissionMode`: Claude maps 1:1; Codex renders modes as per-turn approval-policy + sandbox overrides (mapping table in the Codex driver) |
-| `effort.sessionPicker` | TUI picker walks | Claude: `setModel` + options; Codex: per-turn `modelReasoningEffort` override |
+| `effort.sessionPicker` | TUI picker walks | Claude: `setEffort` through live query flag settings; Codex: per-turn `modelReasoningEffort` override |
 
 None of these become nulls - which matters, because every null on this table costs a real
 feature (`workQueueBlockedReason`, wrap-up degradation to `ask`).
@@ -446,7 +454,8 @@ surfaces, "let me drive" is an explicit handoff rather than a lost capability:
 
 `POST /sessions/:id/handoff` (SDK sessions only): the supervisor stops the driver
 gracefully, marks the SDK session exited (normal eviction settles nothing prematurely -
-the task binding transfers), and launches a terminal home in the same cwd running
+the task binding transfers), and launches a terminal home in the same cwd using
+`SdkSpec.resumeArgv(agentSessionId)`. For the planned drivers that is
 `claude --resume <agentSessionId>` / `codex resume <threadId>`. Discovery adopts the new
 process; session decorations keyed by `noteKeyFor` follow the agent session id through the
 same rebind machinery a `/clear` exercises today. The card gains a "Continue in terminal"

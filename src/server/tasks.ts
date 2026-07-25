@@ -44,6 +44,8 @@ import {
 import { resetSession } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
+import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import { stopSession } from "./sdk/control.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
@@ -258,8 +260,18 @@ export class TaskManager {
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    /**
+     * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
+     *
+     * Optional so the many route-unit tests that construct a bare TaskManager still
+     * compile; production always supplies it. Without it, dispatch refuses the SDK runtime
+     * out loud rather than taking the terminal path an operator did not ask for, and
+     * startup reconciliation falls through to the terminal axis - which for a task with no
+     * `homeName` means "keep the worktree", the safe direction.
+     */
+    private supervisor?: SdkSupervisor,
   ) {
-    this.dispatcher = new Dispatcher(registry);
+    this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
@@ -303,6 +315,7 @@ export class TaskManager {
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
+        this.rebindTaskAtCwd(e.session);
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
         // And the rows no session can settle: a terminal task whose pull request has since
@@ -645,7 +658,11 @@ export class TaskManager {
     ) {
       return;
     }
-    const killed = await this.closeMergedSessionDeps.kill(currentSession);
+    const killed = await stopSession(
+      currentSession,
+      this.supervisor,
+      this.closeMergedSessionDeps.kill,
+    );
     if (!killed.ok) {
       throw new Error(killed.error ?? "could not close the merged task's session");
     }
@@ -690,6 +707,48 @@ export class TaskManager {
     for (const t of this.registry.listTasks()) {
       if (t.sessionId && !this.registry.getSession(t.sessionId)) this.agentWentAway(t);
     }
+  }
+
+  /**
+   * Settle a task whose terminal handoff stopped its agent and then could not open a home.
+   *
+   * The one narrow door into `agentWentAway` from outside the eviction path, and it exists
+   * because that path cannot reach this case: the handoff clears `Task.sessionId` BEFORE
+   * stopping the driver (so the ordinary stop does not settle a task that is merely
+   * transferring), and when the spawn then fails there is no session left to bind to and no
+   * `session_remove` anyone can key on. The task would sit `running` with no agent for ever,
+   * and `rebindTaskAtCwd` cannot rescue it either - no terminal is ever going to appear in
+   * that checkout.
+   *
+   * Routed through `agentWentAway` rather than writing a status here so this case inherits
+   * its two rules rather than approximating them: work that MERGED still reads `done`, and
+   * the worktree, branch and home are KEPT for the operator's confirmed Clean up.
+   */
+  settleAfterFailedHandoff(taskId: string): void {
+    const t = this.registry.getTask(taskId);
+    if (t) this.agentWentAway(t);
+  }
+
+  private rebindTaskAtCwd(session: Session): void {
+    if (!session.cwd || session.state === "exited") return;
+    const tasks = this.registry.listTasks();
+    if (
+      tasks.some(
+        (task) =>
+          task.sessionId === session.id &&
+          (task.status === "running" || task.status === "dispatching"),
+      )
+    ) return;
+    const candidates = tasks.filter(
+      (task) =>
+        task.sessionId === null &&
+        task.worktreePath === session.cwd &&
+        task.status === "running",
+    );
+    if (candidates.length !== 1) return;
+    const task = candidates[0]!;
+    this.registry.upsertTask({ ...task, sessionId: session.id, updatedAt: Date.now() });
+    this.registry.bindTaskToWorkEpisode(task.id, session.id);
   }
 
   /**
@@ -1632,6 +1691,14 @@ export class TaskManager {
     };
   }
 
+  private async stopEmbeddedAgentBeforeReclaim(t: Task): Promise<void> {
+    if (!t.sessionId || !t.worktreePath) return;
+    const session = this.registry.getSession(t.sessionId);
+    if (session?.runtime !== "sdk") return;
+    if (!this.supervisor) throw new Error("this build has no session supervisor");
+    if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
+  }
+
   /**
    * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
    * cancelled. A dispatched agent's tree is throwaway - to preserve work you
@@ -1650,15 +1717,16 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task" };
     this.autoCompleted.delete(id);
 
-    if (t.sessionId && t.homeName) {
-      const s = this.registry.getSession(t.sessionId);
-      if (s) await kill(s);
-    }
-    // Re-read before tearing down so we don't miss resources a concurrent dispatch
-    // created during the kill above. teardownWorktree also kills the terminal home.
-    const teardownTarget = this.registry.getTask(id) ?? t;
     let teardownError: string | null = null;
     try {
+      await this.stopEmbeddedAgentBeforeReclaim(t);
+      if (t.sessionId && t.homeName) {
+        const s = this.registry.getSession(t.sessionId);
+        if (s) await kill(s);
+      }
+      // Re-read before tearing down so we don't miss resources a concurrent dispatch
+      // created during the kill above. teardownWorktree also kills the terminal home.
+      const teardownTarget = this.registry.getTask(id) ?? t;
       await teardownWorktree(teardownTarget);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
@@ -1805,7 +1873,9 @@ export class TaskManager {
       this.autoCompleted.delete(id);
       if (t.worktreePath || t.homeName) {
         try {
-          await teardownWorktree(this.registry.getTask(id) ?? t);
+          const current = this.registry.getTask(id) ?? t;
+          await this.stopEmbeddedAgentBeforeReclaim(current);
+          await teardownWorktree(current);
         } catch (error) {
           return {
             ok: false,
@@ -1854,7 +1924,9 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task" };
     this.autoCompleted.delete(id);
     try {
-      await teardownWorktree(this.registry.getTask(id) ?? t);
+      const current = this.registry.getTask(id) ?? t;
+      await this.stopEmbeddedAgentBeforeReclaim(current);
+      await teardownWorktree(current);
     } catch (error) {
       return {
         ok: false,
@@ -1886,6 +1958,7 @@ export class TaskManager {
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {
       try {
+        await this.stopEmbeddedAgentBeforeReclaim(t);
         await teardownWorktree(t);
       } catch (error) {
         return {
@@ -1922,13 +1995,51 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
-    const alive = t.homeName ? await homeAlive(t.homeName) : null;
+    // The embedded arm answers first, and it answers `true` or `false` - never the `null`
+    // that means "nobody could tell us". `homeAlive`'s uncertainty is about terminal
+    // backends, a question an embedded session never poses: the supervisor either holds
+    // this task's handle or has a durable row saying what became of it. Asking it before
+    // `homeName` also closes the trap that shape would otherwise set - an embedded task has
+    // no home name at all, so the terminal reading would be a confident "gone".
+    //
+    // Note this runs BEFORE `restore()` has relaunched anything, which is why the
+    // supervisor answers from the row: a row that says it was alive is a session this
+    // daemon is about to pick back up, and reading the empty handle map would reclaim its
+    // worktree out from under it.
+    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    const alive = embedded ?? (t.homeName ? await homeAlive(t.homeName) : null);
     if (alive !== false) {
       if (t.status === "dispatching") {
+        // An embedded dispatch that was interrupted mid-flight is COMPLETED, not failed,
+        // and the difference is that its agent is real. `supervisor.start()` persists the
+        // row and registers the card before `dispatchEmbedded` records `running` and the
+        // session id, so a daemon that died between the two left a task whose conversation
+        // exists and whose driver `restore()` is about to resume. Failing it there would
+        // leave that agent working under a failed row nothing can settle - and the
+        // dispatch's own reason for failing here does not apply: the intent is turn ONE of
+        // the conversation, delivered by the launch itself, so there is no pasted prompt
+        // whose landing a restart cannot confirm.
+        const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
+        if (embedded === true && session) {
+          this.registry.upsertTask({
+            ...t,
+            status: "running",
+            sessionId: session,
+            error: null,
+            updatedAt: Date.now(),
+          });
+          // Its work episode binds when the resumed driver reports `bound`, exactly as it
+          // would have on the original dispatch - the task now records the session id that
+          // `applyDriverBinding` looks up.
+          return;
+        }
         this.registry.upsertTask({
           ...t,
           status: "failed",
-          error: "dispatch interrupted by a restart - Focus or Cancel it",
+          error:
+            embedded === true
+              ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
+              : "dispatch interrupted by a restart - Focus or Cancel it",
           updatedAt: Date.now(),
         });
       }

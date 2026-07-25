@@ -8,6 +8,7 @@ import {
   ScheduleOriginRailMark,
   WorkflowRailMark,
   EnsembleRailMark,
+  runtimeRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { Tooltip } from "../Tooltip.tsx";
@@ -64,6 +65,11 @@ export function RailRow({
   }, [selected]);
 
   const marks: string[] = [];
+  // First, because it is a fact about WHERE this session is rather than about what it
+  // needs - a reader scanning the rail for something to act on should not have to step
+  // past it, and a reader wondering why Focus is missing should find it immediately.
+  const runtime = runtimeRailMark(session);
+  if (runtime) marks.push(runtime);
   if (session.nomistakesGated) marks.push("◇");
   if (gateNeedsYou) marks.push("▮");
   if (session.note) marks.push("◆");

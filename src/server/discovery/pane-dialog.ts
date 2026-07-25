@@ -405,3 +405,29 @@ export function optionRowMiss(
   }
   return null;
 }
+
+/**
+ * Say which way the dialog failed to be the one the caller was told to answer.
+ *
+ * Beside the predicate rather than beside either caller, now that there are two answering
+ * paths: the pane walk re-reads a screen, the driver path re-reads the request the card was
+ * drawn from, and both owe the human the same sentence. "The screen changed" is deliberately
+ * neutral about which of the two it was - what the reader needs to know is that nothing was
+ * pressed and the question is still theirs to answer.
+ */
+export function describeOptionRowMiss(
+  miss: OptionRowMiss,
+  dialog: PaneDialog,
+  target: { number: number; label: string },
+): string {
+  switch (miss) {
+    case "no-such-row":
+      return `this menu has no option ${target.number}`;
+    case "label-differs": {
+      const row = dialog.options.find((o) => o.number === target.number);
+      return `option ${target.number} now reads "${row?.label}" - the screen changed`;
+    }
+    case "label-ambiguous":
+      return `"${target.label}" reads the same as another row on this menu`;
+  }
+}

@@ -73,6 +73,7 @@ import {
 const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["send", "startSend"],
   ["focus", "focusPane"],
+  ["handoff", "handoff"],
   ["queue", "toggleQueue"],
   ["mode", "cycleMode"],
   ["complete", "requestComplete"],
@@ -1785,7 +1786,9 @@ function CommandBar({
   bindings: Record<ActionId, string>;
   expanded: boolean;
   onToggleExpand: () => void;
-  onAction: (action: "startSend" | "focusPane" | "toggleQueue" | "cycleMode" | "requestKill") => void;
+  onAction: (
+    action: "startSend" | "focusPane" | "handoff" | "toggleQueue" | "cycleMode" | "requestKill",
+  ) => void;
   onDiff: () => void;
   onFiles: () => void;
   onFilePicker: () => void;
@@ -1836,11 +1839,22 @@ function CommandBar({
                 <kbd>{formatChord(bindings.send)}</kbd> send
               </button>
             </Tooltip>
-            <Tooltip label="Bring this session's terminal pane to the front">
-              <button className="keycap-btn" onClick={() => onAction("focusPane")}>
-                <kbd>{formatChord(bindings.focus)}</kbd> focus
-              </button>
-            </Tooltip>
+            {/* One slot, two answers, because they are the same intent: get me to this
+                session in a terminal. A pane-backed one is already there and only needs
+                raising; an embedded one has no pane until this makes it one. */}
+            {session.runtime === "sdk" ? (
+              <Tooltip label="Stop the embedded driver and reopen this conversation in a terminal - one way">
+                <button className="keycap-btn" onClick={() => onAction("handoff")}>
+                  <kbd>{formatChord(bindings.handoff)}</kbd> terminal
+                </button>
+              </Tooltip>
+            ) : (
+              <Tooltip label="Bring this session's terminal pane to the front">
+                <button className="keycap-btn" onClick={() => onAction("focusPane")}>
+                  <kbd>{formatChord(bindings.focus)}</kbd> focus
+                </button>
+              </Tooltip>
+            )}
             <Tooltip label="Show or hide this session's work queue">
               <button className="keycap-btn" onClick={() => onAction("toggleQueue")}>
                 <kbd>{formatChord(bindings.queue)}</kbd> queue

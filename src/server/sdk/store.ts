@@ -28,15 +28,32 @@ import { openDb } from "../db.ts";
  * `readSdkStatus`).
  *
  *  - `starting`: launched, no `bound` event yet.
- *  - `running`: bound and driving. The only status a restart has to do something about.
+ *  - `running`: bound and driving.
  *  - `exited`: the driver ended, for any reason it reported.
  *  - `failed`: we could not keep it - a launch that threw, or a resume nothing could honour.
+ *  - `suspended`: WE ended it, because the daemon was going down. The distinction from
+ *    `exited` is the whole of resume-on-restart: an embedded session's subprocess is our
+ *    child, so a restart necessarily stops it, and a shutdown that recorded that as
+ *    `exited` would make every clean restart indistinguishable from an agent that finished
+ *    - reclaiming worktrees out from under work that was merely interrupted.
  */
-export const SDK_SESSION_STATUSES = ["starting", "running", "exited", "failed"] as const;
+export const SDK_SESSION_STATUSES = [
+  "starting",
+  "running",
+  "exited",
+  "failed",
+  "suspended",
+] as const;
 export type SdkSessionStatus = (typeof SDK_SESSION_STATUSES)[number];
 
-/** The statuses a restart has to deal with: a session that believed it was alive. */
-const LIVE_STATUSES: readonly SdkSessionStatus[] = ["starting", "running"];
+/**
+ * The statuses a restart has to deal with: a session that was alive when we last looked.
+ *
+ * `suspended` is here for the reason it exists at all - we stopped it on the way down and
+ * promised to pick it back up. `starting` and `running` are the crash cases, where nobody
+ * got to write anything and the row is the last thing that was true.
+ */
+const LIVE_STATUSES: readonly SdkSessionStatus[] = ["starting", "running", "suspended"];
 
 /**
  * One persisted embedded session.
@@ -201,4 +218,46 @@ export function setSdkSessionStatus(
   openDb()
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
+}
+
+export function clearSdkSessionTask(id: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET task_id = NULL, updated_at = ? WHERE id = ?`)
+    .run(now, id);
+}
+
+/**
+ * Put a task association back on a row.
+ *
+ * The undo of `clearSdkSessionTask`, and it exists for one caller: a terminal handoff
+ * unbinds BOTH the task and this row before it stops the driver, so that an ordinary
+ * transfer does not settle a task that is merely moving. When the stop then fails and the
+ * driver is still alive, that unbinding has to be taken back or a live embedded session is
+ * left with no task pointing at it - which is `taskLiveness` answering `null` for a task
+ * whose agent is right there, and a restart reclaiming its worktree on that answer.
+ */
+export function restoreSdkSessionTask(id: string, taskId: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET task_id = ?, updated_at = ? WHERE id = ?`)
+    .run(taskId, now, id);
+}
+
+export function setSdkSessionPermissionMode(
+  id: string,
+  permissionMode: PermissionMode,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`)
+    .run(permissionMode, now, id);
+}
+
+export function setSdkSessionEffort(
+  id: string,
+  effort: ThinkingLevel,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET effort = ?, updated_at = ? WHERE id = ?`)
+    .run(effort, now, id);
 }

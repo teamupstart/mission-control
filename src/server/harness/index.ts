@@ -1,7 +1,7 @@
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
-import { envVar } from "@shared/harness-runtime.mjs";
+import { resolveBinSpec } from "./bin.ts";
 import type {
   ControlSpec,
   DialogSpec,
@@ -20,6 +20,7 @@ import { claudeTui } from "./claude/tui.ts";
 import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
 import { claudeControl } from "./claude/control.ts";
+import { claudeSdk } from "./claude/sdk.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 import { codexTui } from "./codex/tui.ts";
 import { codexDetect } from "./codex/detect.ts";
@@ -66,9 +67,13 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: claudeBin,
     tui: claudeTui,
     control: claudeControl,
-    // Phase 2 of `docs/plans/agent-sdk-sessions/plan.md` fills this with the
-    // `@anthropic-ai/claude-agent-sdk` adapter, and flips `runtimes` in the same change.
-    sdk: null,
+    // The `@anthropic-ai/claude-agent-sdk` adapter. Non-null here and `"sdk"` in
+    // `runtimes` above are ONE fact in two files; `harness-sdk.test.ts` fails until they
+    // agree, so a driver cannot ship invisible and a toggle cannot advertise one that does
+    // not exist. What it changes is only how a session WE dispatch is driven, and only
+    // when the operator turns it on: `control` above is still how a Claude session someone
+    // else started is reached, because we do not own their pty.
+    sdk: claudeSdk,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -151,16 +156,12 @@ export function harnessFor(agent: AgentType): Harness {
  *
  * An empty value counts as unset throughout: `MISSION_CLAUDE_BIN=` is an operator clearing
  * an override, not a request to spawn "". Test: `harness-bin.test.ts`.
+ *
+ * The chain itself lives in `harness/bin.ts` so a module this record IMPORTS can resolve a
+ * spec it already holds without importing the record back - see the note there.
  */
 export function resolveAgentBin(agent: AgentType): string {
-  const spec = HARNESSES[agent].bin;
-  const chain = envVar(spec.env);
-  if (chain) return chain;
-  for (const name of spec.legacyEnv) {
-    const legacy = process.env[name];
-    if (legacy) return legacy;
-  }
-  return spec.command;
+  return resolveBinSpec(HARNESSES[agent].bin);
 }
 
 /** Every harness, in declaration order. For anything enumerating agents. */
@@ -202,10 +203,21 @@ export function sdkFor(agent: AgentType): SdkSpec | null {
   return HARNESSES[agent].sdk;
 }
 
-/** Whether Foreman may automate this session. */
+/**
+ * Whether Foreman may automate this session.
+ *
+ * The `runtime` arm is INTERIM and deliberately runtime-scoped, not agent-scoped: an
+ * embedded session is instrumented by construction (its push channel is the handle the
+ * supervisor holds), so this would say yes on the hook capability alone - and Foreman's
+ * queue would then be driven by pane machinery the session has none of. It is one line
+ * rather than a per-harness list so the next driver inherits the guard without an edit.
+ * Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` replaces it with the driver arm; the
+ * human-visible half of the same refusal is `workQueueBlockedReason`.
+ */
 export function foremanAutomationAuthorized(session: Session): boolean {
   const harness = HARNESSES[session.agent];
   if (!harness.workQueue || !harness.hooks) return false;
+  if (session.runtime === "sdk") return false;
   return harness.hooks.scope === "machine" || session.hooksSeen;
 }
 

@@ -1,6 +1,17 @@
-import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
+import {
+  AGENT_TYPES,
+  type AgentType,
+  type SessionRuntime,
+  type ThinkingLevel,
+} from "@shared/types.ts";
 import { AGENT_IDENTITY, agentList } from "@shared/agent.ts";
-import { autoModeAgents, autoModeUnsupportedWhy, capabilitiesFor } from "@shared/harness-capabilities.ts";
+import {
+  autoModeAgents,
+  autoModeUnsupportedWhy,
+  capabilitiesFor,
+  resolveSessionRuntime,
+  sdkRuntimeUnsupportedWhy,
+} from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
@@ -113,22 +124,33 @@ function HarnessCard({
   label,
   model,
   effort,
+  runtime,
   autoMode,
   disabled,
   onModel,
   onEffort,
+  onRuntime,
 }: {
   agent: AgentType;
   label: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  runtime: string;
   autoMode: boolean;
   disabled: boolean;
   onModel: (id: string | null) => void;
   onEffort: (level: ThinkingLevel | null) => void;
+  onRuntime: (runtime: SessionRuntime) => void;
 }): React.JSX.Element {
   const modelId = `harness-model-${agent}`;
   const effortId = `harness-effort-${agent}`;
+  const runtimeId = `harness-runtime-${agent}`;
+  // Through the shared gate, never off the raw string: the panel and the dispatcher must
+  // agree about which runtime is in force, including when what was stored is a value this
+  // build cannot read (an older build reading a newer one's choice) or one this harness no
+  // longer offers. Both fall back to `terminal` and the card says which happened.
+  const resolved = resolveSessionRuntime(agent, runtime);
+  const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
   return (
     <div className="harness-card" data-anchor={`harnesses/${agent}`} style={agentAccentStyle(agent)}>
       <div className="harness-card-head">
@@ -181,6 +203,29 @@ function HarnessCard({
             ))}
           </select>
         </Tooltip>
+        {/* Rendered only for a harness that DECLARES the runtime, never for one we hope
+            will get a driver later: the row would be a toggle that changes nothing. The
+            absence is stated in the card's note below, composed from the capability. */}
+        {!sdkWhy && (
+          <>
+            <label className="harness-card-field-label" htmlFor={runtimeId}>
+              Runtime
+            </label>
+            <Tooltip label={`How a dispatched ${label} session is driven`}>
+              <select
+                id={runtimeId}
+                className="harnesses-select"
+                value={resolved.runtime}
+                disabled={disabled}
+                onChange={(e) => onRuntime(e.target.value as SessionRuntime)}
+                aria-label={`Session runtime for dispatched ${label} sessions`}
+              >
+                <option value="terminal">Terminal pane</option>
+                <option value="sdk">Agent SDK</option>
+              </select>
+            </Tooltip>
+          </>
+        )}
       </div>
       <p className="harness-card-note">
         {model
@@ -188,7 +233,28 @@ function HarnessCard({
           : `Dispatched ${label} sessions are launched with no --model flag, so ${label} uses its own configured model.`}{" "}
         {effort
           ? `They start with ${effort} reasoning effort.`
-          : `Effort stays whatever ${label} has configured.`}
+          : `Effort stays whatever ${label} has configured.`}{" "}
+        {sdkWhy ??
+          (resolved.runtime === "sdk"
+            ? `They run inside Mission Control on the Agent SDK - no terminal pane, questions answered from the card, and Continue in terminal when you want to take over.`
+            : `They run in a terminal pane, as they always have.`)}
+        {resolved.unknown && (
+          <>
+            {" "}
+            <strong>
+              A stored runtime this build doesn&apos;t know ({resolved.unknown}) was ignored.
+            </strong>
+          </>
+        )}
+        {resolved.unsupported && (
+          <>
+            {" "}
+            <strong>
+              This harness is set to the {resolved.unsupported} runtime, which this build has no
+              driver for.
+            </strong>
+          </>
+        )}
       </p>
     </div>
   );
@@ -256,10 +322,12 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             label={card.label}
             model={config?.defaultModel[card.agent] ?? null}
             effort={config?.defaultEffort[card.agent] ?? null}
+            runtime={config?.sessionRuntime[card.agent] ?? "terminal"}
             autoMode={autoMode}
             disabled={!config}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
             onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
+            onRuntime={(runtime) => void update({ sessionRuntime: { [card.agent]: runtime } })}
           />
         ))}
       </div>

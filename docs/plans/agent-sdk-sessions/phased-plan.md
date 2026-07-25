@@ -40,24 +40,27 @@ Verified against the worktree at planning time (implementers re-verify at execut
   `HarnessesPanel.tsx`** (AGENTS.md's `SettingsModal.tsx` reference is stale). No new
   settings category is needed: the runtime control lands inside the existing per-agent
   Harnesses cards, and `HarnessesConfig` (`src/server/harnesses.ts`) is the documented
-  dispatch-time blob (schema in `protocol.ts:1291-1345`, hand-written patch blocks).
+  dispatch-time blob (schema in `protocol.ts`, hand-written patch blocks).
 - **There is no `harness/claude/launch.ts`.** Claude launch config is assembled inline in
-  `dispatcher.ts` from `dispatchPermissionModeArgs`, `EffortSpec.launchArgs`, and
-  `askChannelArgs`. The SDK branch composes from the same sources; it does not invent a
-  launch module the terminal path never had.
-- **`PaneDialog` already ships to the browser** (`@shared/types.ts:456`, comparator
-  `byJson` at `registry.ts:4880`, rendered by `PaneDialogPrompt.tsx`, answered via
-  `POST /select-option` and `/submit-options` at `routes.ts:1362-1385`). Extending it
-  with optional fields is wire-compatible.
+  `dispatcher.ts` from `dispatchPermissionMode`, its terminal argv renderer,
+  `EffortSpec.launchArgs`, and `askChannelArgs`. The SDK branch composes from the same
+  sources; it does not invent a launch module the terminal path never had.
+- **`PaneDialog` already ships to the browser** (`@shared/types.ts`, comparator `byJson`
+  in `registry.ts`, rendered by `PaneDialogPrompt.tsx`, answered via
+  `POST /select-option` and `/submit-options` in `routes.ts`). Extending it with optional
+  fields is wire-compatible.
 - **Foreman is HTTP-only** (`foreman/client.ts`); everything it needs for SDK sessions
   must arrive via existing routes or the `Session` payload, never a new process coupling.
 - **PR provenance** requires authorship evidence (`prCreated` from the hook matching
-  `gh pr create`, via `@shared/pr-command.mjs` `opensPullRequest`); the driver event
-  must feed the same rule, not a `prUrl` sniff.
+  `gh pr create`, via `@shared/pr-command.mjs` `opensPullRequest`); the Claude driver
+  pairs that pre-tool command evidence with the matching post-tool URL before emitting.
+  A driver event must feed the same rule, not a `prUrl` sniff.
 - **SDK subprocess binary resolution**: the Agent SDK auto-detects `claude` on PATH; the
   adapter must pin it to `resolveAgentBin("claude")` (env override or the SDK's
   executable-path option - verify against the installed SDK version at implementation).
-  Same for `codex app-server` via `resolveAgentBin("codex")`.
+  Same for `codex app-server` via `resolveAgentBin("codex")`. Any driver subprocess
+  inheriting the daemon's environment strips `TMUX_PANE`, `WEZTERM_PANE`, and
+  `TERM_PROGRAM` so hooks cannot attribute it to the daemon's own pane.
 - **Packaging**: the daemon bundles to `dist/server/index.mjs` (esbuild); a new npm
   dependency must survive that bundle and electron-builder's `files:` allowlist, with
   asar disabled. Phase 2 owns this for `@anthropic-ai/claude-agent-sdk`; phase 4 adds no
@@ -108,19 +111,22 @@ Named once here; each phase file restates the ones it inherits or owns.
 - **C3 (P1 shape, P2 answering): the request shape.** `PaneDialog` gains optional
   `source` / `requestId` / `kind` / `questions`; absent fields mean a pane dialog.
   `/select-option` keeps `{number, label}` semantics on both runtimes (label verified via
-  `optionRowMiss` on both); `/submit-options` carries the full answers map for driver
-  forms.
+  `optionRowMiss` on both); `/submit-options` keeps the pane `{options}` body and adds a
+  driver `{answers}` body keyed per question. Each shape is refused on the other runtime.
 - **C4 (P1): the driver interface.** `SdkSpec` / `SdkLaunchOptions` / `SdkSessionHandle`
   / `SdkEvent` in `server/harness/types.ts`; `Harness.sdk: SdkSpec | null`; pure
   `HarnessCapabilities.runtimes: readonly SessionRuntime[]`; contract test pins
   `runtimes.includes("sdk") === (HARNESSES[a].sdk !== null)`. Adapters (P2/P4/P6) are
   constructed over an injectable transport seam (the `PaneDeps` pattern) so tests drive
-  real adapters on scripted frames.
+  real adapters on scripted frames. P2 extends the seam with
+  `SdkSpec.resumeArgv(agentSessionId)` for harness-neutral terminal handoff and nullable
+  `SdkSessionHandle.setEffort`.
 - **C5 (P1): registration and eviction.** `registry.registerSdkSession`,
   `registry.applyDriverEvent`, supervisor-driven removal via the existing
   exited-then-`session_remove` sequence; `applyDiscovery` eviction scoped to
   `runtime === "terminal"` entries; supervisor restore completes before
-  `startPoller(registry)` (`src/server/index.ts:140`). `bound` events fill
+  `startPoller(registry)`. P2 adds append-only `suspended` status for clean daemon
+  shutdowns so startup reconciliation keeps interrupted work alive. `bound` events fill
   `agentSessionId` / `transcriptPath` and set `instrumented` / `stateConfirmed` /
   `hooksSeen` true, which is what keeps the file-based read path and every
   hooks-instrumentation gate working unchanged.

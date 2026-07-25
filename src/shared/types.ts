@@ -80,8 +80,15 @@ export type NameSource = TerminalBackendId | "process" | "sdk";
  * An SDK-backed Claude session is still Claude on every axis the registries measure -
  * same transcript format, same skills directory, same accent - so this is deliberately
  * NOT a new agent id. See `docs/plans/agent-sdk-sessions/plan.md`.
+ *
+ * APPEND-ONLY, and a tuple rather than a bare union because both are persisted: the
+ * operator's per-harness choice lives in the `harnesses` blob in `app_config`. A value
+ * this build cannot read falls back to `"terminal"` and REPORTS the drop
+ * (`resolveDispatchRuntime`) rather than guessing at a nearest match, because the two
+ * runtimes launch genuinely different things.
  */
-export type SessionRuntime = "terminal" | "sdk";
+export const SESSION_RUNTIMES = ["terminal", "sdk"] as const;
+export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 
 /**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex

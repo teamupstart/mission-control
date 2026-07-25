@@ -417,6 +417,7 @@ export class Registry extends EventEmitter {
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
   private goals = new Map<string, SessionGoal>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private driverDialogs = new Map<string, PaneDialog[]>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
   private overlays = new Map<string, HookOverlay>();
   /** Transcript-derived state keyed by pane token and attributed inside the value to
@@ -1166,6 +1167,7 @@ export class Registry extends EventEmitter {
     const refusal = this.sdkRegistrationRefusal(input.id);
     if (refusal) throw new Error(refusal);
     const now = input.now ?? Date.now();
+    this.driverDialogs.delete(input.id);
     const s: Session = {
       id: input.id,
       agent: input.agent,
@@ -1276,14 +1278,26 @@ export class Registry extends EventEmitter {
         this.applyDriverState(s, "idle", null, now);
         return;
       case "request":
-        this.applyDriverDialog(s, driverDialog(evt.request), now);
+        {
+          const queue = this.driverDialogs.get(id) ?? [];
+          if (!queue.some((dialog) => dialog.requestId === evt.request.id)) {
+            queue.push(driverDialog(evt.request));
+            this.driverDialogs.set(id, queue);
+          }
+          if (queue[0]?.requestId === evt.request.id) {
+            this.applyDriverDialog(s, queue[0], now);
+          }
+        }
         return;
       case "request_resolved":
-        // Only when it is still THIS request on the card. A newer one may already have
-        // replaced it, and clearing that would withhold the buttons for an ask nobody has
-        // answered - the failure `paneDialog`'s comparator note describes, arrived at from
-        // the other direction.
-        if (s.paneDialog?.requestId === evt.requestId) this.applyDriverDialog(s, null, now);
+        {
+          const queue = this.driverDialogs.get(id) ?? [];
+          const visible = queue[0]?.requestId === evt.requestId;
+          const remaining = queue.filter((dialog) => dialog.requestId !== evt.requestId);
+          if (remaining.length === 0) this.driverDialogs.delete(id);
+          else this.driverDialogs.set(id, remaining);
+          if (visible) this.applyDriverDialog(s, remaining[0] ?? null, now);
+        }
         return;
       case "pr_created":
         if (evt.url) this.applyDriverPrCreated(s, evt.url);
@@ -3769,6 +3783,7 @@ export class Registry extends EventEmitter {
     this.clearSessionEffortTracking(id);
     this.permissionModeFreshnessGuards.delete(id);
     this.statusLineTimestamps.delete(id);
+    this.driverDialogs.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives

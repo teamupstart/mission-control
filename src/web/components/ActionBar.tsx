@@ -22,7 +22,22 @@ export interface ActionBarHandle {
   requestComplete: () => void;
   requestKill: () => void;
   cancel: () => void;
+  /**
+   * Hand an embedded session to a terminal. A no-op on a pane-backed one, which is
+   * already where a handoff would put it.
+   */
+  handoff: () => void;
 }
+
+/**
+ * What "Continue in terminal" does, said once so the card row and the console footer
+ * cannot describe the same click differently.
+ *
+ * It names the one-way part, because that is the thing an operator cannot undo by clicking
+ * again: after this the terminal session holds the conversation and this card is gone.
+ */
+const HANDOFF_LABEL =
+  "Stop the embedded driver and reopen this exact conversation in a terminal. One way - the terminal session takes over from here.";
 
 /**
  * Per-session controls: focus its pane, send a message into its prompt, show its
@@ -100,6 +115,9 @@ export function ActionBar({
   // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
   // session, which a driver-run one answers yes to without holding a pane.
   const canSend = canMessage(session);
+  // No pane to raise, so Focus is replaced rather than disabled: the affordance an embedded
+  // session wants in that slot is the handoff that GIVES it one.
+  const isEmbedded = session.runtime === "sdk";
   // What Kill tears down beyond the process itself: a multiplexer's named session, which an
   // emulator has no equivalent of. The backend names itself in the sentence, so the tmux
   // copy is unchanged and a second multiplexer's is true rather than borrowed.
@@ -162,6 +180,20 @@ export function ActionBar({
     void run("focus", () => api.focus(session.id));
   }
 
+  /**
+   * "Continue in terminal": stop the driver and reopen the same conversation in a pane.
+   *
+   * One-way, and the card says so rather than asking: the alternative to offering it is an
+   * embedded session an operator cannot take over, which is the one thing the runtime
+   * genuinely costs them. The card that comes back is a NEW session (a terminal one that
+   * discovery adopted), so this one disappears - which is why nothing here waits for a
+   * success message to render.
+   */
+  function handoff() {
+    if (!isEmbedded) return;
+    void run("handoff", () => api.handoff(session.id));
+  }
+
   // Cycle the permission mode (Shift+Tab) - only meaningful for a harness whose live
   // control is that cycle, with a pane to inject the keystroke into.
   function cycleMode() {
@@ -195,10 +227,10 @@ export function ActionBar({
   // Register a stable handle that always calls the latest closures, so App can
   // drive this bar by keyboard without re-registering on every render.
   const latest = useRef({
-    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel,
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel, handoff,
   });
   latest.current = {
-    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel,
+    startSend, focusPane, toggleQueue, cycleMode, requestComplete, requestKill, cancel, handoff,
   };
   useEffect(() => {
     if (!registerActions) return;
@@ -210,6 +242,7 @@ export function ActionBar({
       requestComplete: () => latest.current.requestComplete(),
       requestKill: () => latest.current.requestKill(),
       cancel: () => latest.current.cancel(),
+      handoff: () => latest.current.handoff(),
     };
     registerActions(session.id, handle);
     return () => registerActions(session.id, null);
@@ -250,11 +283,19 @@ export function ActionBar({
         // conversation's reply box and Queue is a tab, so neither is drawn here - but the
         // handle above still carries startSend and toggleQueue, so `s` and `q` work.
         <>
-          <Tooltip label="Bring this session's terminal pane to the front">
-            <button className="act act-focus" onClick={focusPane}>
-              <Keycap action="focus" /> focus
-            </button>
-          </Tooltip>
+          {isEmbedded ? (
+            <Tooltip label={HANDOFF_LABEL}>
+              <button className="act act-focus" onClick={handoff} disabled={busy === "handoff"}>
+                <Keycap action="handoff" /> {busy === "handoff" ? "opening…" : "terminal"}
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip label="Bring this session's terminal pane to the front">
+              <button className="act act-focus" onClick={focusPane}>
+                <Keycap action="focus" /> focus
+              </button>
+            </Tooltip>
+          )}
           {onDiff && session.cwd && (
             <Tooltip label="View this checkout's changes vs its source branch">
               <button className="act" onClick={onDiff}>
@@ -303,13 +344,22 @@ export function ActionBar({
               <Keycap action="send" /> Send
             </button>
           </Tooltip>
-          <Tooltip
-            label={`Bring this session's terminal pane to the front (${formatChord(bindings.focus)})`}
-          >
-            <button className="btn" onClick={focusPane}>
-              <Keycap action="focus" /> Focus
-            </button>
-          </Tooltip>
+          {isEmbedded ? (
+            <Tooltip label={`${HANDOFF_LABEL} (${formatChord(bindings.handoff)})`}>
+              <button className="btn" onClick={handoff} disabled={busy === "handoff"}>
+                <Keycap action="handoff" />{" "}
+                {busy === "handoff" ? "Opening…" : "Continue in terminal"}
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip
+              label={`Bring this session's terminal pane to the front (${formatChord(bindings.focus)})`}
+            >
+              <button className="btn" onClick={focusPane}>
+                <Keycap action="focus" /> Focus
+              </button>
+            </Tooltip>
+          )}
           {session.cwd && onFiles && (
             <Tooltip label={`Browse and edit checkout files (${formatChord(bindings.files)})`}>
               <button className="btn" onClick={onFiles}>

@@ -8,6 +8,7 @@ import {
   InspectorTileFlag,
   PrTileFlag,
   RuntimeMetaRow,
+  RuntimeTileFlag,
   ScheduleOriginTileFlag,
   WorkflowTileFlag,
   EnsembleTileFlag,
@@ -211,6 +212,11 @@ export function SessionTile({
       )}
 
       <span className="tile-marks">
+        {/* Where this session lives, in the tile's flag vocabulary. Nothing renders for a
+            pane-backed one, which is every session until an operator turns the runtime on.
+            The DECISION and the tooltip are shared with the card chip and the rail glyph
+            (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
+        <RuntimeTileFlag session={session} />
         {gateNeedsYou && <span className="tile-flag tf-gate">gate</span>}
         {session.note && (
           <span className={`tile-flag tf-${session.note.disposition}`}>

@@ -505,6 +505,23 @@ export interface SdkSpec {
    * because the alternative is a card that looks dispatched and is running something else.
    */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+  /**
+   * The argv - after this harness's own binary - that CONTINUES `agentSessionId`
+   * interactively, in a terminal.
+   *
+   * This exists because both vendors keep one session store for their programmatic and
+   * their interactive surfaces: an embedded session writes the same file
+   * (`~/.claude/projects/…`, `~/.codex/sessions/…`) that `claude --resume <id>` and
+   * `codex resume <threadId>` read back. So "let me drive" is a handoff rather than a lost
+   * conversation, which is what stops the first embedded session an operator dispatches
+   * from being a trap.
+   *
+   * On the SPEC rather than composed at the handoff route, for the rule the whole harness
+   * axis rests on: reach a capability through the registry, never by testing `s.agent`. A
+   * driver that shipped without this would be a card offering an escape hatch that spawns
+   * the wrong command line.
+   */
+  resumeArgv(agentSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -566,6 +583,7 @@ export interface SdkSessionHandle {
    * null only after pointing the driver at a real install.
    */
   setPermissionMode: ((mode: PermissionMode) => Promise<void>) | null;
+  setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */

@@ -48,9 +48,74 @@ import type { TaskEnsembleLink } from "@shared/ensemble.ts";
  * did; a third one inherits whichever rule its axis already states.
  */
 export function subtitle(session: Session): string {
+  if (session.runtime === "sdk") return RUNTIME_LABEL;
   const namer = session.terminals.find((h) => h.backend === session.nameSource);
   if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
   return session.nameSource;
+}
+
+/**
+ * What an embedded session is called where a pane string would go.
+ *
+ * "Agent SDK" rather than the `sdk` the `NameSource` spells, because this line answers
+ * "where is this session?" for a human, and the honest answer is that there is nowhere to
+ * go and look - it runs inside Mission Control. Named once and shared by all four
+ * surfaces, so the three mark vocabularies say the same word.
+ */
+export const RUNTIME_LABEL = "Agent SDK";
+
+const RUNTIME_TITLE =
+  "This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.";
+
+/**
+ * WHERE this session is, under its title - the card's and the console detail's vocabulary
+ * for the same fact the rail spells as a glyph and the tile as a flag.
+ *
+ * One leaf for both spellings rather than a chip added BESIDE the pane string, because
+ * they answer the same question and a card carrying both would say it twice. An embedded
+ * session takes the chip treatment because it is the answer that changes what the rest of
+ * the card can offer: no pane means no Focus, no Rename, and "look at it in the terminal"
+ * means running a command rather than switching tabs.
+ */
+export function SessionWhere({ session }: { session: Session }): React.JSX.Element {
+  if (session.runtime !== "sdk") {
+    return <span className="name-source">{subtitle(session)}</span>;
+  }
+  return (
+    <Tooltip label={RUNTIME_TITLE}>
+      <span className="name-source runtime-chip" aria-label={RUNTIME_TITLE}>
+        <span className="runtime-glyph" aria-hidden>
+          ◈
+        </span>
+        {/* Its own element so the LABEL is what shrinks on a narrow card. Left as the
+            chip's bare text it is an atomic box: the pill would be clipped mid-word with
+            no ellipsis, because the ellipsis belongs to whatever is overflowing. */}
+        <span className="runtime-name">{RUNTIME_LABEL}</span>
+      </span>
+    </Tooltip>
+  );
+}
+
+/** The board tile's `.tile-flag` spelling of the same fact. */
+export function RuntimeTileFlag({ session }: { session: Session }): React.JSX.Element | null {
+  if (session.runtime !== "sdk") return null;
+  return (
+    <Tooltip label={RUNTIME_TITLE}>
+      <span className="tile-flag runtime-flag" aria-label={RUNTIME_TITLE}>
+        ◈ {RUNTIME_LABEL}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * The rail's glyph, which is all the room a rail row has.
+ *
+ * Returned as a STRING rather than an element, because the rail composes its marks into
+ * one `join(" ")`ed span - the same shape `costIsNotable`'s `≈$` takes there.
+ */
+export function runtimeRailMark(session: Session): string | null {
+  return session.runtime === "sdk" ? "◈" : null;
 }
 
 /**

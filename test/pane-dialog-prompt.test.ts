@@ -135,6 +135,71 @@ test("a menu is still a menu - the split does not reach single-select", () => {
   assert.ok(html.includes("pd-current"));
 });
 
+test("a driver form offers a custom answer for every question", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-form",
+    kind: "question",
+    prompt: "Choose or type",
+    options: [],
+    highlighted: 0,
+    multiSelect: true,
+    questions: [
+      {
+        question: "Which linter?",
+        options: [{ number: 1, label: "biome" }],
+      },
+      {
+        question: "Which checks?",
+        options: [{ number: 1, label: "types" }],
+        multiSelect: true,
+      },
+    ],
+  });
+  assert.equal((html.match(/placeholder="Or type a custom answer"/g) ?? []).length, 2);
+  assert.ok(html.includes("Custom answer for Which linter?"));
+  assert.ok(html.includes("Custom answer for Which checks?"));
+});
+
+test("a single driver question keeps one-click rows and offers custom text", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-single",
+    kind: "question",
+    prompt: "Which linter?",
+    options: [{ number: 1, label: "biome" }],
+    highlighted: 0,
+    questions: [
+      {
+        question: "Which linter?",
+        options: [{ number: 1, label: "biome" }],
+      },
+    ],
+  });
+  assert.ok(html.includes("biome"));
+  assert.ok(html.includes('placeholder="Or type a custom answer"'));
+  assert.ok(html.includes("Custom answer for Which linter?"));
+  assert.ok(html.includes("Submit custom answer"));
+  assert.ok(!html.includes('role="radio"'));
+});
+
+test("driver permissions remain option-only", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-permission",
+    kind: "permission",
+    prompt: "Allow this tool?",
+    options: [
+      { number: 1, label: "Allow" },
+      { number: 2, label: "Deny" },
+    ],
+    highlighted: 0,
+  });
+  assert.ok(html.includes("Allow"));
+  assert.ok(!html.includes("Or type a custom answer"));
+  assert.ok(!html.includes("Submit custom answer"));
+});
+
 // ---- The board has to SHOW that the session is blocked ----
 
 const base = {

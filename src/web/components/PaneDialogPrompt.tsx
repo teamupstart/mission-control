@@ -40,6 +40,7 @@ export function PaneDialogPrompt({
   const [busy, setBusy] = useState<number | "form" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
 
   // A 409 says "the screen changed" - and the screen changing is precisely what replaces
   // the question above it. Without this the failure message outlives the menu it was
@@ -60,6 +61,7 @@ export function PaneDialogPrompt({
     setPicked(initialPicks(dialog));
     setError(null);
     setNote(null);
+    setTyped("");
   }
 
   async function choose(option: PaneOption): Promise<void> {
@@ -105,8 +107,43 @@ export function PaneDialogPrompt({
     }
   }
 
+  async function submitDriverText(question: string): Promise<void> {
+    const text = typed.trim();
+    if (busy !== null || !text) return;
+    setBusy("form");
+    setError(null);
+    setNote(null);
+    const r = await api.submitAnswers(sessionId, [{ question, labels: [], text }]);
+    setBusy(null);
+    if (!r.ok) setError(failure(r));
+  }
+
   const checkboxes = boxes(dialog);
   const form = dialog.multiSelect === true && checkboxes.length > 0;
+  const driverQuestion =
+    dialog.source === "driver" && dialog.questions?.length === 1 && !dialog.multiSelect
+      ? dialog.questions[0]
+      : null;
+
+  // A DRIVER form is a third shape, and it needs its own render for the same reason it
+  // needs its own wire body: its rows live on its questions, each numbering from 1, so
+  // there is no single numbered list to draw. Drawn here rather than in a component of its
+  // own so the two forms share this file's refusal handling, its identity-keyed reset and
+  // its "nothing was sent" wording - the parts a human reads when something goes wrong.
+  if (dialog.questions && dialog.questions.length > 0 && dialog.multiSelect) {
+    return (
+      <DriverForm
+        key={identity}
+        sessionId={sessionId}
+        dialog={dialog}
+        questions={dialog.questions}
+        busy={busy}
+        setBusy={setBusy}
+        error={error}
+        setError={setError}
+      />
+    );
+  }
 
   return (
     // Stops the click from reaching the card, which would toggle it expanded underneath.
@@ -175,6 +212,37 @@ export function PaneDialogPrompt({
         )}
       </ul>
 
+      {driverQuestion && (
+        <form
+          className="pd-question"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitDriverText(driverQuestion.question);
+          }}
+        >
+          <input
+            className="pd-text-answer"
+            type="text"
+            value={typed}
+            disabled={busy !== null}
+            aria-label={`Custom answer for ${driverQuestion.question}`}
+            placeholder="Or type a custom answer"
+            onChange={(event) => setTyped(event.target.value)}
+          />
+          <div className="pd-actions">
+            <Tooltip label="Send this custom answer back to the agent">
+              <button
+                type="submit"
+                className="pd-submit"
+                disabled={busy !== null || !typed.trim()}
+              >
+                {busy === "form" ? "Submitting…" : "Submit custom answer"}
+              </button>
+            </Tooltip>
+          </div>
+        </form>
+      )}
+
       {form && (
         <div className="pd-actions">
           <Tooltip label="Send the ticked options to this session's prompt">
@@ -186,6 +254,169 @@ export function PaneDialogPrompt({
       )}
 
       {note && <p className="pd-note dim">{note}</p>}
+      {error && <p className="pd-error">{error}</p>}
+    </section>
+  );
+}
+
+/**
+ * A driver's multi-question form: every question at once, each with its own rows.
+ *
+ * The whole shape the pane could never show. Claude's `AskUserQuestion` carries up to four
+ * questions in one call, and the TUI renders them as tabs - so the parser only ever saw
+ * one, the human answered it, and the walk stepped `→` hoping to find either the next
+ * question or a Submit tab. Here all of them are on screen, single-select questions render
+ * as radios and multi-select ones as checkboxes, and one Submit sends the whole map. The
+ * "you have not answered all questions" banner has no equivalent because the button is
+ * simply disabled until every question has an answer.
+ */
+function DriverForm({
+  sessionId,
+  dialog,
+  questions,
+  busy,
+  setBusy,
+  error,
+  setError,
+}: {
+  sessionId: string;
+  dialog: PaneDialog;
+  questions: NonNullable<PaneDialog["questions"]>;
+  busy: number | "form" | null;
+  setBusy: (b: number | "form" | null) => void;
+  error: string | null;
+  setError: (e: string | null) => void;
+}): React.JSX.Element {
+  // Per question, the labels chosen. A single-select question holds at most one, which is
+  // enforced where the row is clicked rather than at submit - the human should never be
+  // able to build a state the daemon will refuse.
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [typed, setTyped] = useState<Record<string, string>>({});
+
+  /**
+   * Pick (or unpick) a row, and drop whatever was typed for that question.
+   *
+   * The two are EITHER/OR, and the exclusion is enforced here rather than at submit for
+   * the reason the comment above states: the human should never be able to build a state
+   * the daemon will refuse. The harness takes one string per question, so a submission
+   * carrying both could only send one of them - and whichever it chose, the other is
+   * something the operator did that the agent never hears about. Clearing as they go makes
+   * the screen say which one is live, instead of a refusal telling them afterwards.
+   */
+  function toggle(question: string, label: string, multi: boolean): void {
+    setTyped((t) => (t[question] ? { ...t, [question]: "" } : t));
+    setPicked((p) => {
+      const cur = p[question] ?? [];
+      if (!multi) return { ...p, [question]: cur[0] === label ? [] : [label] };
+      return {
+        ...p,
+        [question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
+      };
+    });
+  }
+
+  /** Type a custom answer, which likewise gives up any rows chosen for that question. */
+  function type(question: string, value: string): void {
+    setTyped((t) => ({ ...t, [question]: value }));
+    if (value.trim()) setPicked((p) => (p[question]?.length ? { ...p, [question]: [] } : p));
+  }
+
+  const complete = questions.every(
+    (q) => (picked[q.question] ?? []).length > 0 || Boolean(typed[q.question]?.trim()),
+  );
+
+  async function submit(): Promise<void> {
+    if (busy !== null || !complete) return;
+    setBusy("form");
+    setError(null);
+    const r = await api.submitAnswers(
+      sessionId,
+      questions.map((q) => ({
+        question: q.question,
+        labels: picked[q.question] ?? [],
+        ...(typed[q.question]?.trim() ? { text: typed[q.question]!.trim() } : {}),
+      })),
+    );
+    setBusy(null);
+    // No success branch, as above: answering resolves the tool call, the request clears,
+    // and this whole component unmounts on the next frame.
+    if (!r.ok) setError(failure(r));
+  }
+
+  return (
+    <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+      <header className="pd-head">
+        <span className="pd-badge">Waiting on you</span>
+        <span className="pd-hint dim">answer each, then submit</span>
+      </header>
+
+      {dialog.prompt && questions.length > 1 && <p className="pd-prompt">{dialog.prompt}</p>}
+
+      {questions.map((q) => (
+        <div className="pd-question" key={q.question}>
+          <p className="pd-question-text">
+            {q.header && <span className="pd-question-tag">{q.header}</span>}
+            {q.question}
+          </p>
+          <ul className="pd-options">
+            {q.options.map((o) => {
+              const on = (picked[q.question] ?? []).includes(o.label);
+              return (
+                <li key={o.number}>
+                  <Tooltip label={o.detail ?? `Choose ${o.label}`}>
+                    <button
+                      type="button"
+                      role={q.multiSelect ? "checkbox" : "radio"}
+                      aria-checked={on}
+                      className={`pd-option pd-check${on ? " pd-checked" : ""}`}
+                      disabled={busy !== null}
+                      onClick={() => toggle(q.question, o.label, q.multiSelect === true)}
+                    >
+                      <span className="pd-num">{o.number}</span>
+                      <span className="pd-box" aria-hidden="true">
+                        {on ? "✔" : ""}
+                      </span>
+                      <span className="pd-body">
+                        <span className="pd-label">{o.label}</span>
+                        {o.detail && <span className="pd-detail">{o.detail}</span>}
+                      </span>
+                    </button>
+                  </Tooltip>
+                </li>
+              );
+            })}
+          </ul>
+          <input
+            className="pd-text-answer"
+            type="text"
+            value={typed[q.question] ?? ""}
+            disabled={busy !== null}
+            aria-label={`Custom answer for ${q.question}`}
+            placeholder="Or type a custom answer"
+            onChange={(event) => type(q.question, event.target.value)}
+          />
+        </div>
+      ))}
+
+      <div className="pd-actions">
+        <Tooltip
+          label={
+            complete
+              ? "Send these answers back to the agent"
+              : "Every question needs an answer before this can be sent"
+          }
+        >
+          <button
+            type="button"
+            className="pd-submit"
+            disabled={busy !== null || !complete}
+            onClick={() => void submit()}
+          >
+            {busy === "form" ? "Submitting…" : "Submit answers"}
+          </button>
+        </Tooltip>
+      </div>
+
       {error && <p className="pd-error">{error}</p>}
     </section>
   );

@@ -29,6 +29,7 @@ export type ActionId =
   | "filePicker"
   | "send"
   | "focus"
+  | "handoff"
   | "queue"
   | "mode"
   | "rename"
@@ -130,6 +131,17 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus pane",
     description: "Bring the selected session's terminal pane to the front.",
     defaultBinding: "p",
+    group: "selection",
+  },
+  {
+    // Beside Focus, and bound as its Shift: the pair is the point. `p` goes to a session's
+    // pane, and this is what an embedded session does instead - it MAKES one, by handing
+    // the conversation to a terminal. It does nothing on a session that already has a pane.
+    id: "handoff",
+    label: "Continue in terminal",
+    description:
+      "Hand the selected Agent SDK session to a terminal, continuing the same conversation.",
+    defaultBinding: "shift+p",
     group: "selection",
   },
   {

@@ -5,7 +5,7 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
-import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -246,18 +246,48 @@ export type SelectOption = z.infer<typeof SelectOptionSchema>;
  * `label` carries the same weight as it does above, and each row is re-checked against the
  * screen before anything is typed.
  */
-export const SubmitOptionsSchema = z.object({
-  options: z
-    .array(
-      z.object({
-        number: z.number().int().min(1).max(99),
-        label: z.string().min(1),
-        checked: z.boolean(),
-      }),
-    )
-    .min(1)
-    .max(99),
-});
+export const SubmitOptionsSchema = z
+  .object({
+    options: z
+      .array(
+        z.object({
+          number: z.number().int().min(1).max(99),
+          label: z.string().min(1),
+          checked: z.boolean(),
+        }),
+      )
+      .min(1)
+      .max(99)
+      .optional(),
+    /**
+     * A DRIVER form's answers: one entry per question, by the question's own text.
+     *
+     * A second shape rather than a looser first one, because a driver form genuinely is
+     * not a flat list of rows. `AskUserQuestion` carries up to four questions at once, each
+     * numbering its own options from 1, so `{number, label, checked}` would be ambiguous
+     * across them - two questions both have a row 1. The pane never had this problem
+     * because its TUI shows one question at a time and the parser only ever saw that tab,
+     * which is exactly why `driverDialog` refuses to flatten them.
+     *
+     * `text` is what a driver form can do and a pane form cannot: the harness accepts free
+     * text where the human would rather write than pick, and the pane path has to refuse it
+     * because a menu has no field to type into.
+     */
+    answers: z
+      .array(
+        z.object({
+          question: z.string().min(1).max(4000),
+          labels: z.array(z.string().min(1).max(500)).max(16),
+          text: z.string().max(4000).optional(),
+        }),
+      )
+      .min(1)
+      .max(8)
+      .optional(),
+  })
+  .refine((o) => Boolean(o.options) !== Boolean(o.answers), {
+    message: "send either pane form rows or driver form answers, not both and not neither",
+  });
 export type SubmitOptions = z.infer<typeof SubmitOptionsSchema>;
 
 /**
@@ -1258,6 +1288,26 @@ export const ShippingConfigPatchSchema = ShippingConfigSchema.partial().refine(
 export type ShippingConfigPatch = z.infer<typeof ShippingConfigPatchSchema>;
 
 /**
+ * One runtime choice AS STORED, which is a `string` on purpose.
+ *
+ * Two things have to be true at once and a `z.enum` here cannot do both. `getHarnessesConfig`
+ * parses this blob on the path of every dispatch, so a value written by a NEWER build must
+ * not throw - that would take out the model and effort defaults too, over a key the caller
+ * never asked about. And the drop has to be REPORTABLE: `resolveSessionRuntime` names the
+ * value it could not read, which a `.catch("terminal")` would have already erased, leaving
+ * an operator's stored choice indistinguishable from the default they never set.
+ *
+ * The narrowing is `resolveSessionRuntime` (`@shared/harness-capabilities.ts`), the single
+ * gate both the dispatcher and the panel go through. Nothing may read this field raw.
+ * The PATCH schema below stays a strict enum, so this build can never WRITE a value it
+ * cannot read - the looseness is only ever about reading someone else's.
+ */
+const StoredSessionRuntimeSchema = z.string();
+
+/** What the dashboard may set. Strict: we write only what we understand. */
+const SessionRuntimeSchema = z.enum(SESSION_RUNTIMES);
+
+/**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
@@ -1303,6 +1353,27 @@ export const HarnessesConfigSchema = z.object({
       pi: harnessEffortSchema("pi").nullable().default(null),
     })
     .default({ claude: null, codex: null, pi: null }),
+  /**
+   * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
+   * embedded through the harness's own programmatic interface.
+   *
+   * `"terminal"` everywhere is the shipped value and stays the shipped value - the cut-over
+   * is an operator flipping a toggle per harness, never a default change (a resolved
+   * decision on `docs/plans/agent-sdk-sessions/plan.md`). Scoped to dispatch like every
+   * other key in this blob: a session an operator started themselves is pane-backed
+   * whatever this says, because we do not own their pty.
+   *
+   * A stored value this build cannot read, or one naming a runtime the harness does not
+   * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at
+   * dispatch time, so a flip mid-batch reaches the next launch without a restart.
+   */
+  sessionRuntime: z
+    .object({
+      claude: StoredSessionRuntimeSchema.default("terminal"),
+      codex: StoredSessionRuntimeSchema.default("terminal"),
+      pi: StoredSessionRuntimeSchema.default("terminal"),
+    })
+    .default({ claude: "terminal", codex: "terminal", pi: "terminal" }),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
@@ -1330,6 +1401,13 @@ export const HarnessesConfigPatchSchema = z
         claude: harnessEffortSchema("claude").nullable().optional(),
         codex: harnessEffortSchema("codex").nullable().optional(),
         pi: harnessEffortSchema("pi").nullable().optional(),
+      })
+      .optional(),
+    sessionRuntime: z
+      .object({
+        claude: SessionRuntimeSchema.optional(),
+        codex: SessionRuntimeSchema.optional(),
+        pi: SessionRuntimeSchema.optional(),
       })
       .optional(),
   })

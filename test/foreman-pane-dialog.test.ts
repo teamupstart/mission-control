@@ -116,6 +116,20 @@ test("ticking a box does not change what the row IS", () => {
   assert.equal(dialogIdentity(after), dialogIdentity(before));
 });
 
+test("driver request identity changes without changing pane identity", () => {
+  const pane = parsePaneDialog(ASK_USER_QUESTION, CLAUDE_DIALOG)!;
+  const paneIdentity = dialogIdentity(pane);
+  assert.equal(
+    paneIdentity,
+    JSON.stringify([pane.prompt ?? "", pane.options.map((option) => [option.number, option.label])]),
+  );
+  assert.equal(dialogIdentity({ ...pane, source: "pane" }), paneIdentity);
+  assert.notEqual(
+    dialogIdentity({ ...pane, source: "driver", requestId: "request-one" }),
+    dialogIdentity({ ...pane, source: "driver", requestId: "request-two" }),
+  );
+});
+
 test("a single-select menu is not a form, and parses exactly as it always did", () => {
   for (const capture of [ASK_USER_QUESTION, PERMISSION, TRUST, CURSOR_ON_THIRD]) {
     const d = parsePaneDialog(capture, CLAUDE_DIALOG);

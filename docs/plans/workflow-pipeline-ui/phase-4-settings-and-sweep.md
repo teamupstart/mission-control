@@ -88,3 +88,31 @@ None - final phase. The end state matches the source plan with no undocumented c
 - 2026-07-25: retention-shortening confirm routed through phase 2's `workflowConfirm` overlay
   rather than a new mechanism; AGENTS.md discrepancy (SettingsModal.tsx -> settings-registry.ts /
   SettingsPage.tsx) recorded here as the owning phase.
+- 2026-07-25 (implementation): **scope is `machine`, not the `home` this document specified.**
+  `home`'s badge reads literally `Writes ~/` and its hint says the category edits files in the
+  home directory - true of Skills and Cost, false of this one, whose config lives in the daemon's
+  own state and whose blast radius is a keystroke into a local terminal pane. The registry's rule
+  is that the panel header is the precise claim; `machine` ("changes what the daemon does locally,
+  nothing leaves this machine") is that claim, and the group placement the step asked for
+  (contiguous, beside Foreman in *Background work*) is unchanged. Recorded rather than silently
+  taken: it is the one literal in step 1 not implemented as written.
+- 2026-07-25 (implementation): the Live-delivery switch is indexed `risky`, joining YOLO and the
+  Inspector's two in the D5 exemption set, so it always jumps to its panel rather than flipping
+  from a search row with its consent copy off screen. `settings-search.test.ts` pinned that set to
+  exactly three; the assertion and its reason were widened rather than deleted.
+- 2026-07-25 (implementation): the sweep's `window.confirm` gate was still red in two files phases
+  2 and 3 did not rebuild - `PersonaLibrary.tsx` (three) and `useWorkflowRoute.ts` (two). Both
+  converted to the `workflowConfirm` overlay. The router's is the one with a shape change: a
+  native confirm answers synchronously, so the route is now HELD (`pendingRoute` /
+  `confirmPending` / `cancelPending`) and App raises the dialog outside the page slots. The gate
+  is now a test (`workflow-confirm-render.test.ts`), matching calls rather than the word, so the
+  comments recording why they went stay readable.
+- 2026-07-25 (implementation): no orphaned `workflow-*` CSS was found - phases 2 and 3 swept their
+  own. What the sweep did remove is the drawer's own rules (`workflow-config-*`,
+  `workflow-retention-grid`, `workflow-health-grid`, and its `.is-desktop` no-drag exemption), and
+  it retired `persona-error`'s four uses outside the Persona library onto a `wf-error` selector
+  sharing the rule.
+- 2026-07-25 (implementation): the drawer's **Refresh health** button is gone rather than carried
+  over. It existed because the drawer fetched health once, on open; the panel's config and health
+  come from one 5s poll owned by the settings page (the `useInspector` precedent), so the button
+  would have been a control that refreshes what is already refreshing.

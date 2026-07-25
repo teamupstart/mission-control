@@ -319,12 +319,12 @@ export function WorkflowBindingDialog({
         </p>
       )}
       {deliveryMode === "live" && !liveAllowed && (
-        <p className="persona-error" role="alert">
+        <p className="wf-error" role="alert">
           Live delivery requires Workflow Live mode and this session's repository in the Workflow allowlist.
         </p>
       )}
       {triggerMode === "foreman_complete" && !foremanAllowed && (
-        <p className="persona-error" role="alert">
+        <p className="wf-error" role="alert">
           Foreman Complete requires Foreman and a session harness with measured work-queue support.
         </p>
       )}
@@ -340,7 +340,7 @@ export function WorkflowBindingDialog({
         </p>
       )}
       {conflict && (
-        <p className="persona-error" role="alert">
+        <p className="wf-error" role="alert">
           This conversation is already bound to immutable version {conflict.workflowVersionId.slice(0, 8)}.
           Archive that binding before selecting another version.
         </p>
@@ -355,7 +355,7 @@ export function WorkflowBindingDialog({
           <div><dt>Version</dt><dd>{versionNumber === null ? versionId.slice(0, 8) : `v${versionNumber}`}</dd></div>
         </dl>
       )}
-      {error && <p className="persona-error" role="alert">{error}</p>}
+      {error && <p className="wf-error" role="alert">{error}</p>}
       <footer className="modal-actions">
         <Tooltip label="Attach the workflow to this session without starting a run">
           <button className="btn btn-ghost" disabled={busy || !canSubmit} onClick={() => void perform(false)}>

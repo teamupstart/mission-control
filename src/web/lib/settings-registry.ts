@@ -143,6 +143,32 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["auto-responder", "triage", "cheap tier", "allowlist", "backlog"],
   },
   {
+    id: "workflows",
+    label: "Workflows",
+    // The same glyph the topbar's Workflows button carries, so the rail row and the page
+    // it configures are recognisably the same subsystem.
+    icon: "⌘",
+    blurb: "Live repair delivery, its trusted repos, and how long run history is kept",
+    group: "background",
+    // `machine`, not `home`: Live delivery types a repair packet into a terminal pane, and
+    // the config itself lives in the daemon's own state - nothing here edits a file in the
+    // home directory, which is the precise claim `home`'s "Writes ~/" badge makes (Skills
+    // and Cost, which do). The blast radius is still real and this scope names it: the
+    // daemon acts locally, including in sessions this app never launched.
+    scope: "machine",
+    keywords: [
+      "workflow",
+      "live delivery",
+      "allowlist",
+      "retention",
+      "persona",
+      "review",
+      "repair",
+      "evidence",
+      "health",
+    ],
+  },
+  {
     id: "task-sources",
     label: "Task sources",
     icon: "⇊",

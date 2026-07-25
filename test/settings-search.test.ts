@@ -120,9 +120,20 @@ test("every category has at least one control indexed", () => {
   }
 });
 
-test("the risky set is exactly the D5 exemption - YOLO and the Inspector's enable and mode", () => {
+// The D5 exemption set: booleans whose consent copy has to be on screen when they change,
+// so they always jump to their panel rather than flipping from a search row. YOLO merges
+// code and the Inspector's two publish under the operator's GitHub account; Live workflow
+// delivery is the local member of the same class - it is what lets Mission Control type a
+// repair packet into somebody's running agent session, and the sentence saying so lives in
+// the panel it jumps to.
+test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, and Live delivery", () => {
   const risky = SETTINGS_CONTROLS.filter((c) => c.risky).map((c) => c.id).sort();
-  assert.deepEqual(risky, ["inspector-enabled", "inspector-mode", "yolo"]);
+  assert.deepEqual(risky, [
+    "inspector-enabled",
+    "inspector-mode",
+    "workflow-live-delivery",
+    "yolo",
+  ]);
 });
 
 test("risky controls never appear in the bindable set - they can only jump", () => {
@@ -145,6 +156,32 @@ test("substring search returns the soak entry for \"soak\" and the Trust entry f
   assert.ok(
     searchSettings("allowlist").controls.some((c) => c.id === "trust-grants"),
     "\"allowlist\" should find the Trust grant via its keywords",
+  );
+});
+
+// Workflow settings were a drawer on another page until the migration's last phase: no rail
+// row, no anchor, and therefore no way to reach them from here at all. Searching for what
+// they DO - the two phrases an operator would actually type - has to land in the workflows
+// category, or the move has restored the convention without restoring the discoverability
+// that was the point of it.
+test("\"retention\" and \"live delivery\" reach the Workflows category", () => {
+  const retention = searchSettings("retention");
+  assert.ok(
+    retention.controls.some((c) => c.id === "workflow-retention"),
+    "\"retention\" should find the workflow retention control",
+  );
+  assert.ok(
+    retention.categories.includes("workflows"),
+    "\"retention\" should offer the Workflows category as a jump",
+  );
+  const live = searchSettings("live delivery");
+  assert.ok(
+    live.controls.some((c) => c.anchor === "workflows/live-delivery"),
+    "\"live delivery\" should find the Live delivery switch",
+  );
+  assert.ok(
+    live.categories.includes("workflows"),
+    "\"live delivery\" should offer the Workflows category as a jump",
   );
 });
 

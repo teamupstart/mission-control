@@ -12,7 +12,6 @@ import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
 import { EnsembleRuns } from "./EnsembleRuns.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { WorkflowConfigPanel } from "./WorkflowConfigPanel.tsx";
 
 const WORKFLOW_TABS = [
   ["workflows", "Author the review workflows agents are bound to"],
@@ -43,6 +42,7 @@ export function WorkflowPage({
   onBindWorkflow,
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
+  onOpenWorkflowSettings = () => {},
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
@@ -70,6 +70,12 @@ export function WorkflowPage({
   onBindWorkflow?: () => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
+  /**
+   * Opens `#/settings/workflows`. The subsystem's switches used to hang off this header as
+   * a drawer, which is why the link stays here: the page is where an operator looks for
+   * them, but the settings themselves belong in the rail with every other subsystem's.
+   */
+  onOpenWorkflowSettings?: () => void;
 }): React.JSX.Element {
   return (
     <main className="workflow-page">
@@ -109,7 +115,12 @@ export function WorkflowPage({
             </Tooltip>
           ))}
         </nav>
-        <WorkflowConfigPanel />
+        <Tooltip label="Live delivery, its allowed repositories, retention and health, in Settings">
+          <button className="btn btn-ghost wf-settings-link" onClick={onOpenWorkflowSettings}>
+            Workflow settings
+            <span aria-hidden>→</span>
+          </button>
+        </Tooltip>
       </header>
 
       {tab === "personas" && (

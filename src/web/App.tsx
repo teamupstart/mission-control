@@ -57,6 +57,7 @@ import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
 import { useWorkflowRoute, workflowsToggleRoute } from "./workflows/useWorkflowRoute.ts";
 import { AppPageShell } from "./components/AppPageShell.tsx";
+import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialog,
   type WorkflowBindingTarget,
@@ -116,7 +117,8 @@ export function App(): React.JSX.Element {
     hasSnapshot,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
-  const { route, navigate } = useWorkflowRoute(workflowDirty);
+  const { route, navigate, pendingRoute, confirmPending, cancelPending } =
+    useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -1501,6 +1503,9 @@ export function App(): React.JSX.Element {
               onOpenInspectorSettings={() => {
                 navigate({ page: "settings", category: "inspector" });
               }}
+              onOpenWorkflowSettings={() => {
+                navigate({ page: "settings", category: "workflows" });
+              }}
               onBindVersion={(version) => setWorkflowBindingTarget({
                 workflowVersionId: version.id,
                 workflowId: version.workflowId,
@@ -1789,6 +1794,25 @@ export function App(): React.JSX.Element {
             </>
           )}
         />
+
+        {/* The dirty-draft gate, outside the page slots because it is raised by LEAVING one:
+            back/forward can fire it while the Workflows page is already unmounting, and a
+            dialog rendered inside that page would have gone with it. */}
+        {pendingRoute && (
+          <WorkflowConfirmModal
+            request={{
+              title: "Leave with unsaved changes",
+              body:
+                "The workflow or Persona open in the editor has changes that have not been "
+                + "saved. Leaving this page discards them.",
+              confirmLabel: "Discard and leave",
+              confirmHint: "Throw the unsaved edits away and go to the page you asked for",
+              danger: true,
+              onConfirm: confirmPending,
+            }}
+            onClose={cancelPending}
+          />
+        )}
       </div>
     </OverlayHost>
   );

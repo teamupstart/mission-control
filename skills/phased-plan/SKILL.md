@@ -121,6 +121,35 @@ If task creation fails, stop creating tasks that depend on it. Report the failur
 already created; never recreate successful tasks speculatively, because duplicate implementation
 tasks are worse than an incomplete graph.
 
+## Ship the artifacts and watch the pull request
+
+The scheduled tasks are gated on the planning session, so the plan is not delivered until the
+artifacts reach the default branch. After task creation succeeds:
+
+1. Commit every artifact this run created or updated (the source plan and its HTML, the phased-plan
+   index and its HTML, every phase file) on a branch following the repository's branch and commit
+   conventions, and open a pull request containing exactly that work. Follow the repository's PR
+   skill where one exists (for Mission Control sessions, `mission-pull-request`). The description
+   names the approved decisions, the phase-to-task-id map, and states that the backlogged phase
+   tasks are released by this PR's merge.
+2. Watch the pull request until CI passes. Fix failures this PR caused; a failure that reproduces on
+   the base branch is reported, not chased. Do not stop at "pushed" - the deliverable is a green,
+   merged PR.
+3. Address Inspector (or other automated reviewer) comments **if and only if both hold**: the
+   comment is valid - it identifies a real defect in the artifacts, verified against the repository
+   rather than taken on faith - AND fixing it does not change the intended behavior of the scoped
+   work as the user defined it (the approved plan and its submitted decisions). A valid comment
+   whose fix would alter an approved decision or the plan's scope is surfaced to the human as a
+   question, never silently applied. An invalid comment gets a reply stating why, with evidence,
+   and its thread resolved - do not churn the artifacts to appease a wrong review. After each fix:
+   push to the same branch, resolve any conflicts, and keep monitoring CI and review threads until
+   the PR is green with no unresolved actionable comments. Never weaken a phase's contracts or exit
+   criteria to satisfy a reviewer without recording the change in the affected cross-phase audit
+   records.
+4. When the human has asked for it (or the repository's conventions authorize it), merge once green;
+   otherwise hand the green PR to the human for merge. Merging is what releases the dependent phase
+   tasks.
+
 Finish by reporting the artifact paths, the phase-to-task-id map, the direct dependency edges
-(including the active planning-session edge on every task), and which tasks may execute
-concurrently.
+(including the active planning-session edge on every task), which tasks may execute concurrently,
+and the pull request URL with its CI and merge state.

@@ -227,6 +227,67 @@ test("a rollover archives the merged binding, and the departed agent lands on it
   assert.match(t.outcome ?? "", /merged/);
 });
 
+test("an idle merge survives the provisional done-to-running rollover", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const registry = new Registry();
+  new TaskManager(registry);
+  const id = "durable-idle-rollover";
+  const taskId = "durable-idle-rollover-task";
+  const cwd = `/repo/${id}`;
+  registry.applyDiscovery([discovered(id, cwd)]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${id}-episode`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(baseTask({
+    id: taskId,
+    title: "Ship then follow up",
+    status: "running",
+    sessionId: id,
+    worktreePath: cwd,
+  }));
+  registry.bindTaskToWorkEpisode(taskId, id);
+  const episode = registry.workEpisodeForSession(id)!;
+  const mergedAt = episode.startedAt + 10;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      state: "merged",
+      mergedAt,
+      agentSessionId: `${id}-episode`,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+    })]]),
+    new Set(),
+  );
+  assert.equal(registry.getTask(taskId)?.status, "done");
+
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: `${id}-episode`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "do the follow-up",
+    ts: mergedAt + 1,
+  });
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  const historical = historicalTaskWorkEpisodeBindingsForTask(taskId);
+  assert.equal(historical.length, 1);
+  assert.equal(historical[0]?.episodeId, episode.episodeId);
+  assert.equal(historical[0]?.mergedAt, mergedAt);
+
+  registry.emit("event", { type: "session_remove", id });
+  const task = registry.getTask(taskId)!;
+  assert.equal(task.status, "done");
+  assert.equal(task.outcomeUrl, PR);
+  assert.match(task.outcome ?? "", /merged/);
+});
+
 // ---- newest merge wins across several bindings -------------------------------------------
 
 test("a departed agent lands on the NEWEST merge across all of its episodes", () => {

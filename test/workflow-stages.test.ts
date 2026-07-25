@@ -186,6 +186,22 @@ test("a brand-new stage mints its own join without disturbing the stage before i
 test("graphs the pipeline cannot express are refused with the reason, not a boolean", () => {
   const base = () => compileStages(pipeline([parallel("gate", ["security", "style"])]), empty);
 
+  const duplicateNode = base();
+  duplicateNode.nodes.push({ ...duplicateNode.nodes.find((node) => node.kind === "persona")! });
+  assert.deepEqual(
+    stageBlockers(duplicateNode),
+    ["This graph has nodes with duplicate identities; every pipeline node needs a unique identity."],
+  );
+  assert.equal(projectStages(duplicateNode), null);
+
+  const duplicateEdge = base();
+  duplicateEdge.edges[1]!.id = duplicateEdge.edges[0]!.id;
+  assert.deepEqual(
+    stageBlockers(duplicateEdge),
+    ["This graph has routes with duplicate identities; every pipeline route needs a unique identity."],
+  );
+  assert.equal(projectStages(duplicateEdge), null);
+
   const twoEnds = base();
   twoEnds.nodes.push({ id: "end-2", kind: "end", outcome: "Rejected", position: { x: 60, y: 400 } });
   assert.match(stageBlockers(twoEnds).join(" "), /2 End nodes/);
@@ -242,7 +258,16 @@ test("graphs the pipeline cannot express are refused with the reason, not a bool
   island.nodes.push({ id: "docs", kind: "persona", personaId: "docs", position: { x: 60, y: 400 } });
   assert.deepEqual(stageBlockers(island, personas), ["Docs reviewer is not part of the pipeline."]);
 
-  for (const candidate of [twoEnds, chained, noJoinReturn, crossStage, stranger, island]) {
+  for (const candidate of [
+    duplicateNode,
+    duplicateEdge,
+    twoEnds,
+    chained,
+    noJoinReturn,
+    crossStage,
+    stranger,
+    island,
+  ]) {
     assert.equal(projectStages(candidate), null);
     assert.equal(stageExpressible(candidate), false);
   }

@@ -165,6 +165,12 @@ unchanged. They must not change these without editing this phase's tests.
   argument defaults to `[]`, so the frozen one-argument call still compiles and still answers
   expressibility identically; `stageExpressible` passes nothing on purpose. Published graphs need
   no list: `nodeLabel` and the projection read the immutable snapshot names off the nodes.
+- 2026-07-25 (operator-approved API clarification): the phase's "exports exactly the API above"
+  criterion means the behavioural API plus the types it is structurally composed of.
+  `StageGraph`, `StageNode`, `StagePersonaNames`, and `StageMember` are approved type exports:
+  `Stage.members` contains `StageMember` values, and the public projection and naming functions
+  accept the other three types. Removing them would force every phase 2-3 consumer to re-derive
+  the public parameter and member types.
 - 2026-07-25 (Inspector round 3, PR #244): `Stage.members[].nodeId` became `string | null` - a
   reviewer being added has no graph node yet, and requiring an id would have forced the editor to
   mint one, breaking the compiler's id-ownership contract. Null identities are minted by

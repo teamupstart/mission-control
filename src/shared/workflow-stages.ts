@@ -159,6 +159,12 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
   if (ends.length > 1) {
     structural.push(`This graph has ${ends.length} End nodes; a pipeline has exactly one.`);
   }
+  if (new Set(graph.nodes.map((node) => node.id)).size !== graph.nodes.length) {
+    structural.push("This graph has nodes with duplicate identities; every pipeline node needs a unique identity.");
+  }
+  if (new Set(graph.edges.map((edge) => edge.id)).size !== graph.edges.length) {
+    structural.push("This graph has routes with duplicate identities; every pipeline route needs a unique identity.");
+  }
   if (structural.length > 0) return { pipeline: null, blockers: structural };
 
   const session = sessions[0]!;

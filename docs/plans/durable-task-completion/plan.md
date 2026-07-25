@@ -118,19 +118,22 @@ Concrete changes:
 
 What it means concretely:
 
-- **`Task.sessionId` is "currently executing on"** - mutable and nullable. It is cleared
-  (or left pointing at history harmlessly) once the task is terminal; nothing may read it
-  as "the session that produced this work". Provenance questions go to the bindings.
+- **`Task.sessionId` is "currently executing on"** - mutable and nullable. A terminal row
+  keeps the pointer until that session takes its next task, when `upsertTask` moves it;
+  liveness readers therefore filter on status. Nothing may read it as "the session that
+  produced this work". Provenance questions go to the bindings.
 - **Serial execution is the invariant, restated where it is enforced:** at most one
-  `running`/`dispatching` task per session at any moment (`agentIsFree` already refuses
-  otherwise). This change does not introduce concurrent tasks in one pane.
+  `running`/`dispatching` task per session at any moment. `agentIsFree` enforces that for
+  Foreman selection and `TaskManager.assign` re-checks it server-side. This change does
+  not introduce concurrent tasks in one pane.
 - **A completed task frees its agent immediately.** Once the reconciler moves a task to
   `done`, `agentIsFree`'s "no non-terminal task bound" clause passes and the backlog
   autopilot may hand the session its next task - the N-tasks-over-a-session's-life flow
   this formalizes.
-- **PRs associate with tasks through bindings, never retracted.** The live session card's
-  `prUrl` may come and go with episode currency (it is a decoration); the binding record
-  is append-only in effect and is what completion, dependencies, and history read.
+- **PRs associate with tasks through bindings.** The live session card's `prUrl` may come
+  and go with episode currency (it is a decoration); durable current and historical
+  bindings are what completion, dependencies, and history read. The ownership-invalidation
+  gap is owned by the local comment on `invalidateTaskOwnershipInTransaction`.
 - **Audit every reader of `Task.sessionId` and `Session.task`** for the 1:1-for-life
   assumption - the card's task chip, `reconcileTasksBoundTo`, `agentWentAway`,
   `reopenIfWorkResumed`, the Foreman backlog machine, and the reset path - and repoint any

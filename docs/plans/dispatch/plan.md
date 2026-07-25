@@ -66,7 +66,7 @@ export interface Task {
   worktreePath: string | null;// isolated worktree the agent runs in (correlation key); null while queued
   branch: string | null;      // worktree branch, once known
   tmuxSession: string | null; // the detached tmux session name we created
-  sessionId: string | null;   // bound live session's synthetic id, once discovered
+  sessionId: string | null;   // current semantics are owned by Task.sessionId in src/shared/types.ts
   status: TaskStatus;
   outcome: string | null;     // free text set on completion (e.g. "opened PR #123")
   outcomeUrl: string | null;  // optional link
@@ -93,7 +93,7 @@ export interface TaskSummary {
 ```ts
 export interface Session {
   // ...existing...
-  task: TaskSummary | null;   // the task this session is executing, matched by cwd === worktreePath
+  task: TaskSummary | null;   // current projection contract is owned by Session.task in src/shared/types.ts
 }
 ```
 

@@ -381,7 +381,12 @@ export interface Session {
    * when a reset discards the commits. Empty when there are none.
    */
   nomistakesFixes: NmFixSummary[];
-  /** The dispatched task this session is executing, matched by cwd === worktreePath. */
+  /**
+   * The current task projected onto this session's views.
+   *
+   * Assigned tasks correlate by `Task.sessionId`; dispatched tasks fall back to the
+   * worktree path. A terminal task remains here until the session takes its next task.
+   */
   task: TaskSummary | null;
   /**
    * "What the no-mistakes skill is doing right now" - the in-progress TodoWrite

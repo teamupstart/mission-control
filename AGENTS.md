@@ -197,11 +197,8 @@ rather than resting on the index, because `publishEpisodeTaskChanges` writes the
 directly. Test: `task-multi-session.test.ts`.
 
 **KNOWN GAP beside it**: `invalidateTaskOwnershipInTransaction` (`db.ts`) is the one
-binding-deleting path that does not archive first, so a task whose pull request merges only
-after its session's work identity rotated has no evidence left for `mergedPrFor` to read.
-Archiving there was tried and reverted - it works, and it also releases every dependent of
-the upgraded task, which collides with the selection-time boundary
-`reconcileWorkEpisodeMerge` applies. Reconciling those two rules is its own decision.
+binding-deleting path that does not archive first. Its local comment owns the unresolved
+tension between durable merge evidence and dependency-release boundaries.
 
 ## Overlays
 

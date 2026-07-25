@@ -1027,10 +1027,10 @@ merges](#when-a-tasks-pull-request-merges) - not when you get round to clicking 
 Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
 default it stays, ready for the next drop.
 
-**Each task keeps its own record.** The card shows the task the agent is executing right
-now, and the previous one keeps its own outcome, its own pull request and its own row -
-which is what makes a day's work on one agent readable afterwards rather than a single row
-overwritten four times.
+**Each task keeps its own record.** The card shows the task the agent is executing, or the
+one it most recently finished until it takes another; the previous task keeps its own
+outcome, its own pull request and its own row. That's what makes a day's work on one agent
+readable afterwards rather than a single row overwritten four times.
 
 ### Edit a shelved task
 

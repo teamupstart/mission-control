@@ -6,7 +6,7 @@
 tasks **serially** over its life, each task's provenance (episodes, PRs) living in its
 bindings; a completed task frees its agent for the next assignment immediately; and every
 reader of `Task.sessionId` / `Session.task` is audited against the retired
-1:1-for-the-session's-life assumption. Documentation (README + CLAUDE.md architecture
+1:1-for-the-session's-life assumption. Documentation (README + AGENTS.md architecture
 notes) states the model.
 
 ## Entry criteria and dependencies
@@ -28,20 +28,21 @@ notes) states the model.
      in both places.
 2. **Audit every reader for the 1:1 assumption.** Grounded list (extend it during
    implementation if grep finds more):
-   - `Registry.activeTaskFor` (registry.ts ~3697): once a session accumulates several
-     terminal task rows still carrying its id, the pick must be deterministic - prefer
-     the non-terminal row; among terminal rows prefer the newest `updatedAt` (the card
-     briefly shows the just-finished task's outcome, which is the current behavior for
-     one task and the right generalization for N).
+   - `Registry.activeTaskFor`: the persisted state cannot accumulate several rows for one
+     session because `idx_tasks_session` is UNIQUE and `upsertTask` moves the pointer.
+     Keep a deterministic pick anyway - non-terminal first, then newest terminal - because
+     `publishEpisodeTaskChanges` writes the in-memory map directly rather than through that
+     database constraint.
    - `reconcileTasksBoundTo` / `reconcileTasksWithNoLiveSession` (tasks.ts): iterate ALL
      rows carrying the session id (they already do); confirm ordering with Phase 2's
      reconciler (complete-by-merge wins before `agentWentAway` fails the rest).
    - `agentWentAway`: only non-terminal rows (already guarded); confirm it never clears
      `sessionId` on a row another live task legitimately shares - it nulls its own row
      only.
-   - `reopenIfWorkResumed`: keyed on `autoCompleted.get(task.id) === s.id` - already
-     per-task; confirm a session working on task B cannot reopen auto-completed task A
-     (the map holds one entry per task, so it cannot; pin with a test).
+   - `reopenIfWorkResumed`: a session working on task B cannot reopen auto-completed task
+     A because claiming B moves the exclusive pointer off A and the same `task_upsert`
+     removes A from `autoCompleted`. Pin those structural reasons with a test; do not add
+     a defensive branch that cannot fire.
    - Foreman `backlog-machine.ts` (`agentIsFree`, `activeAgentCount`): non-terminal
      filters already correct; add the N-tasks test.
    - The reset path (`src/server/reset.ts`) and Clean up (`reclaim`): confirm they key on
@@ -49,19 +50,15 @@ notes) states the model.
    - The card (`taskSummaryFor` consumers: SessionCard, ConsoleDetail, SessionTile,
      RailRow - the four-surface rule): no component change expected once
      `activeTaskFor`'s pick is deterministic; verify all four surfaces render the
-     CURRENT task after a second assignment (layout-parity rule from CLAUDE.md).
-3. **Terminal rows release the pointer where that is what the reader needs.** Decide ONE
-   rule and apply it consistently: keep `sessionId` on terminal rows (provenance-ish
-   display convenience, current behavior for `done`) OR null it on completion the way
-   `agentWentAway` nulls it on failure. Recommendation: **keep it**, and make every
-   liveness-flavored reader filter on non-terminal status instead - fewer writes, no
-   information destroyed, and `activeTaskFor`'s deterministic pick handles display.
-   Record the decision in the `Task.sessionId` doc comment.
+     CURRENT task after a second assignment (layout-parity rule from AGENTS.md).
+3. **Terminal rows keep the pointer until the next task moves it.** Every
+   liveness-flavored reader filters on non-terminal status instead - fewer writes, no
+   information destroyed, and `activeTaskFor`'s deterministic order handles display.
+   The adopted decision is recorded in the `Task.sessionId` doc comment.
 4. **Documentation.** README: the task lifecycle section gains the model in two
    sentences (serial tasks per session; completion follows the merged PR; close-on-merge
-   is a separate preference). CLAUDE.md's "A session going away" block gets one line
-   noting completion now reads durable bindings (keep it short; the architecture file
-   lists surfaces that move together, not feature docs).
+   is a separate preference). AGENTS.md's "A session going away" block records the pointer
+   model and points detailed local constraints back to their implementation owners.
 
 ## Non-goals
 
@@ -84,15 +81,15 @@ notes) states the model.
 
 1. `@shared/types.ts` + `TaskManager.assign`/`dispatch`: semantics doc comments; name the
    serial invariant at its two enforcement points.
-2. `src/server/registry.ts`: deterministic `activeTaskFor` pick (non-terminal first,
-   then newest terminal).
+2. `src/server/registry.ts`: deterministic `activeTaskFor` order (non-terminal first,
+   then newest terminal) without assuming persisted rival rows can exist.
 3. Audit pass over the reader list (scope 2), fixing anything that assumed 1:1-for-life;
    keep a short audit note per site in the PR description.
-4. README + CLAUDE.md lines (scope 4).
+4. README + AGENTS.md lines (scope 4).
 5. Tests (new `test/task-multi-session.test.ts`):
    - session runs task A → A completes via merge (Phase 2 path) → `agentIsFree` passes →
      task B assigned to the SAME session → B's completion reads B's bindings, never A's;
-   - `activeTaskFor` picks the non-terminal row when a terminal one still carries the id;
+   - the database rejects a second row for one session and `upsertTask` moves the pointer;
    - all four session surfaces (renderToStaticMarkup, per repo convention) show task B
      after the second assignment;
    - `reopenIfWorkResumed` cannot reopen A while B runs;
@@ -107,7 +104,7 @@ npm run typecheck && npm test && npm run build
 ## Merge / exit criteria
 
 - Multi-task tests green on CI; four-surface parity verified.
-- README/CLAUDE.md updated in the same PR (repo rule: stale docs are a rejected change).
+- README/AGENTS.md updated in the same PR (repo rule: stale docs are a rejected change).
 - The audit list in the PR description names every touched reader and its disposition.
 
 ## Downstream handoff

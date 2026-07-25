@@ -304,14 +304,30 @@ export function ScheduleOriginRailMark({
   if (!origin) return null;
   const name = scheduleNames?.get(origin.scheduleId) ?? null;
   const label = scheduleOriginTooltip(name, origin);
+  const open = (): void =>
+    onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
   return (
     <Tooltip label={label}>
+      {/* Focusable so keyboard users reach the history deep link from the rail too, not just
+          the card chip and tile flag. It stays a span, not a button: the rail row is itself
+          a native button and a nested button is invalid - tabIndex + role + Enter/Space give
+          it button semantics without that. stopPropagation keeps it from also selecting the
+          row it sits inside, on click and on key alike. */}
       <span
         className="rail-schedule"
+        role="button"
+        tabIndex={0}
         aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
-          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
+          open();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            open();
+          }
         }}
       >
         ◷

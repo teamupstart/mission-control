@@ -1636,6 +1636,25 @@ export function App(): React.JSX.Element {
                       window.open(task.outcomeUrl, "_blank", "noopener");
                     }
                   }}
+                  // History renders a generated-task link as clickable only when it leads
+                  // somewhere - a live backlog task to edit, a live bound session to focus,
+                  // or an outcome URL to open. A finished task with none of those has no live
+                  // surface (its result is already in the occurrence audit), so this returns
+                  // a reason and the link is shown disabled with that explanation rather than
+                  // as a dead click. Kept in lockstep with onOpenTask above.
+                  resolveTaskLink={(taskId) => {
+                    const task = tasks.find((candidate) => candidate.id === taskId);
+                    if (!task) return { openable: false, blockedReason: "This task no longer exists." };
+                    if (task.status === "backlog") return { openable: true, blockedReason: null };
+                    if (task.sessionId && sessions.some((s) => s.id === task.sessionId)) {
+                      return { openable: true, blockedReason: null };
+                    }
+                    if (task.outcomeUrl) return { openable: true, blockedReason: null };
+                    return {
+                      openable: false,
+                      blockedReason: "This task has finished; its outcome is shown in the audit here.",
+                    };
+                  }}
                 />
               )}
 

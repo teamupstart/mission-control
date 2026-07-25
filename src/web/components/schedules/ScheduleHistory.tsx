@@ -16,8 +16,6 @@ import {
 } from "../../lib/schedules.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
-const DEEP_LINK_PAGE_LIMIT = 40;
-
 /**
  * A schedule's occurrence history, paged on demand and never polled.
  *
@@ -39,6 +37,7 @@ export function ScheduleHistory({
   initialOccurrenceId,
   initialScheduledFor,
   onOpenTask,
+  resolveTaskLink,
 }: {
   scheduleId: string;
   /** A name to show while the first page (which carries the real schedule) is loading. */
@@ -54,6 +53,12 @@ export function ScheduleHistory({
   initialScheduledFor?: number | null;
   /** Open a generated backlog/finished task from a history row. */
   onOpenTask?: (taskId: string) => void;
+  /**
+   * Whether a generated-task link leads anywhere live. A finished task with no live session
+   * and no outcome URL has no surface to open - its result is already in the audit - so its
+   * link renders disabled with the returned reason rather than as a dead click.
+   */
+  resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
 }): React.JSX.Element {
   const [schedule, setSchedule] = useState<MissionSchedule | null>(null);
   const [rows, setRows] = useState<ScheduleOccurrence[]>([]);
@@ -82,15 +87,16 @@ export function ScheduleHistory({
       // With the deep-linked occurrence's own instant, seed the cursor just past it so the
       // target lands on the first page - occurrence identity is (schedule, scheduled_for),
       // so `before = instant + 1` returns it at the top of that page. That is an O(1) deep
-      // link with no page cap. Without the instant we fall back to bounded paging from the
-      // newest page, capped so a very old occurrence cannot spin forever.
-      const seededCursor =
+      // link, however old the occurrence is. Without the instant (an older link that never
+      // carried it) we page from the newest end until the occurrence is found OR history is
+      // exhausted - no artificial page cap, so no reachable occurrence is ever unlinkable.
+      // History is finite, so this always terminates.
+      let before: number | null =
         initialOccurrenceId && initialScheduledFor != null ? initialScheduledFor + 1 : null;
-      let before: number | null = seededCursor;
       let accumulated: ScheduleOccurrence[] = [];
-      const pageLimit = initialOccurrenceId && seededCursor === null ? DEEP_LINK_PAGE_LIMIT : 1;
+      let firstPage = true;
 
-      for (let pageIndex = 0; pageIndex < pageLimit; pageIndex += 1) {
+      for (;;) {
         const page = await fetchScheduleHistory(scheduleId, {
           before,
           limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
@@ -99,12 +105,13 @@ export function ScheduleHistory({
         if (!page) {
           setLoading(false);
           setError(
-            pageIndex === 0
+            firstPage
               ? "History is unavailable for this schedule."
               : "Could not load the requested occurrence.",
           );
           return;
         }
+        firstPage = false;
 
         setError(null);
         const seen = new Set(accumulated.map((occurrence) => occurrence.id));
@@ -128,9 +135,6 @@ export function ScheduleHistory({
         }
         before = page.nextCursor;
       }
-
-      setLoading(false);
-      setError("Could not load the requested occurrence.");
     })();
     // initialOccurrenceId only seeds the selection; it must not re-fetch the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -239,25 +243,12 @@ export function ScheduleHistory({
                         {formatDelay(occ.delayMs)}
                       </td>
                       <td>
-                        {occ.taskId ? (
-                          onOpenTask ? (
-                            <Tooltip label="Open the backlog/finished task this occurrence filed">
-                              <button
-                                className="rm-link"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onOpenTask(occ.taskId!);
-                                }}
-                              >
-                                {shortTaskId(occ.taskId)}
-                              </button>
-                            </Tooltip>
-                          ) : (
-                            <span className="rm-mono">{shortTaskId(occ.taskId)}</span>
-                          )
-                        ) : (
-                          <span className="rm-dim">-</span>
-                        )}
+                        <TaskLinkCell
+                          taskId={occ.taskId}
+                          onOpenTask={onOpenTask}
+                          resolveTaskLink={resolveTaskLink}
+                          stopRowClick
+                        />
                       </td>
                       <td className="rm-dim">rev {occ.scheduleRevision}</td>
                     </tr>
@@ -283,6 +274,7 @@ export function ScheduleHistory({
             occurrence={selected}
             timezone={schedule?.timezone ?? null}
             onOpenTask={onOpenTask}
+            resolveTaskLink={resolveTaskLink}
           />
         ) : (
           <p className="rm-empty">Select an occurrence to see its audit.</p>
@@ -311,14 +303,58 @@ function HistoryInstant({
   );
 }
 
+/**
+ * A generated task's link in history: clickable when it leads to a live surface (backlog
+ * task, bound session, outcome URL), and a plain, non-clickable label with an explanation
+ * when it does not - a finished task's retained result is the audit itself, so the link is
+ * disabled rather than a dead click. `stopRowClick` keeps a click off the selectable table
+ * row it sits inside.
+ */
+function TaskLinkCell({
+  taskId,
+  onOpenTask,
+  resolveTaskLink,
+  stopRowClick,
+}: {
+  taskId: string | null;
+  onOpenTask?: (taskId: string) => void;
+  resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
+  stopRowClick?: boolean;
+}): React.JSX.Element {
+  if (!taskId) return <span className="rm-dim">-</span>;
+  const link = resolveTaskLink?.(taskId) ?? { openable: true, blockedReason: null };
+  if (onOpenTask && link.openable) {
+    return (
+      <Tooltip label="Open the task this occurrence filed">
+        <button
+          className="rm-link"
+          onClick={(event) => {
+            if (stopRowClick) event.stopPropagation();
+            onOpenTask(taskId);
+          }}
+        >
+          {shortTaskId(taskId)}
+        </button>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={link.blockedReason ?? "This task is no longer available to open."}>
+      <span className="rm-mono rm-task-inert">{shortTaskId(taskId)}</span>
+    </Tooltip>
+  );
+}
+
 function OccurrenceDetail({
   occurrence,
   timezone,
   onOpenTask,
+  resolveTaskLink,
 }: {
   occurrence: ScheduleOccurrence;
   timezone: string | null;
   onOpenTask?: (taskId: string) => void;
+  resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
 }): React.JSX.Element {
   const status = occurrenceStatusView(occurrence.status);
   return (
@@ -358,15 +394,11 @@ function OccurrenceDetail({
         <dt>Generated task</dt>
         <dd>
           {occurrence.taskId ? (
-            onOpenTask ? (
-              <Tooltip label="Open the task this occurrence filed">
-                <button className="rm-link" onClick={() => onOpenTask(occurrence.taskId!)}>
-                  {shortTaskId(occurrence.taskId)}
-                </button>
-              </Tooltip>
-            ) : (
-              <span className="rm-mono">{shortTaskId(occurrence.taskId)}</span>
-            )
+            <TaskLinkCell
+              taskId={occurrence.taskId}
+              onOpenTask={onOpenTask}
+              resolveTaskLink={resolveTaskLink}
+            />
           ) : (
             "no task created"
           )}

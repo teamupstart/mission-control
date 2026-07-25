@@ -11475,6 +11475,13 @@ select.foreman-model-input {
 .rm-link:hover {
   text-decoration: underline;
 }
+/* A finished task with no live surface to open: shown as a muted, non-clickable id (its
+   result is in the audit) rather than a dead link. */
+.rm-task-inert {
+  color: var(--dim);
+  font-size: 11px;
+  cursor: default;
+}
 .rm-banner {
   margin-bottom: 10px;
   padding: 8px 11px;

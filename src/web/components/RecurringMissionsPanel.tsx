@@ -60,6 +60,7 @@ export function RecurringMissionsPanel({
   initialScheduledFor = null,
   onClose,
   onOpenTask,
+  resolveTaskLink,
 }: {
   schedules: MissionSchedule[];
   connected: boolean;
@@ -73,6 +74,8 @@ export function RecurringMissionsPanel({
   onClose: () => void;
   /** Open a generated task (backlog edit or finished result) from history. */
   onOpenTask?: (taskId: string) => void;
+  /** Whether a generated-task link leads anywhere live, and why not when it does not. */
+  resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
 }): React.JSX.Element {
   const sorted = useMemo(() => sortSchedulesForCatalog(schedules), [schedules]);
 
@@ -276,6 +279,7 @@ export function RecurringMissionsPanel({
             initialOccurrenceId={screen.occurrenceId}
             initialScheduledFor={screen.scheduledFor}
             onOpenTask={onOpenTask}
+            resolveTaskLink={resolveTaskLink}
           />
         )}
       </div>

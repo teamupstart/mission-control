@@ -303,7 +303,11 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
     path.join(WEB, "components/schedules/ScheduleHistory.tsx"),
     "utf8",
   );
-  assert.match(history, /const DEEP_LINK_PAGE_LIMIT = 40/);
+  // The deep link seeds the cursor from the occurrence's own instant so the exact run lands
+  // on the first page (O(1)), and the fallback pages until found or history is exhausted -
+  // no artificial page cap, per the Inspector round on #241.
+  assert.match(history, /initialScheduledFor \+ 1/);
+  assert.doesNotMatch(history, /DEEP_LINK_PAGE_LIMIT/);
   assert.match(history, /page\.nextCursor === null/);
   assert.match(history, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(history, /tabIndex=\{0\}/);
@@ -321,4 +325,11 @@ test("generated-task links route without abandoning retained audits", () => {
   assert.match(app, /if \(liveSession\)[\s\S]*?setSelectedId\(liveSession\.id\)/);
   assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\)/);
   assert.match(app, /window\.open\(task\.outcomeUrl, "_blank", "noopener"\)/);
+  // A finished task with no live surface is not a dead link: App reports it un-openable
+  // with a reason, and history renders it disabled rather than a click that does nothing.
+  assert.match(app, /resolveTaskLink=\{/);
+  assert.match(app, /openable: false, blockedReason:/);
+  const history = readFileSync(path.join(WEB, "components/schedules/ScheduleHistory.tsx"), "utf8");
+  assert.match(history, /function TaskLinkCell/);
+  assert.match(history, /rm-task-inert/);
 });

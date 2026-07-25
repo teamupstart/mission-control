@@ -372,7 +372,7 @@ export class TaskManager {
    *  - the agent is idle, so its turn is over rather than merely paused;
    *  - its work queue is empty, so nothing pending is about to continue this task;
    *  - the merged episode is still its CURRENT one, so it has not already rolled onto
-   *    new work (which `agentWentAway` deliberately reports as a failure);
+   *    new work (this live-session gate does not apply after `agentWentAway`);
    *  - and a merge is durably recorded against that binding.
    *
    * An idle agent can still be wrong about being finished - it may be idle only because
@@ -566,19 +566,19 @@ export class TaskManager {
    *
    * Deliberately not a teardown, and the asymmetry with `reconcileOnStartup` is the point:
    * that path reclaims because a row nobody can see leaks invisibly, while this one makes
-   * the row visible the moment it happens - failed, resources intact, one confirmed Clean
+   * the row visible the moment it happens - settled, resources intact, one confirmed Clean
    * up away from being freed. Tearing down here would run `git worktree remove --force`
    * seconds after a mis-aimed (k), which is the one thing `complete` already refuses to do
    * ("Mark done must not discard work"). Freeing a tree is the operator's call; saying the
    * agent is gone is ours.
    *
-   * `failed` is the least-wrong of the three terminal states, and the sentence is careful
-   * not to overclaim what it means. An agent that finished cleanly and exited is
-   * indistinguishable here from one that crashed - the only thing observed is that the
-   * session went away with no outcome recorded, so that is what it says. It is also the
-   * status `reconcileOnStartup` already reaches for in the same situation, and the one
-   * whose row carries the affordances this state wants: Retry when the tree is gone,
-   * Clean up when it is not.
+   * When no episode recorded a merge, `failed` is the least-wrong terminal state, and the
+   * sentence is careful not to overclaim what it means. An agent that finished cleanly and
+   * exited is indistinguishable here from one that crashed - the only thing observed is
+   * that the session went away with no outcome recorded, so that is what it says. It is
+   * also the status `reconcileOnStartup` already reaches for in the same situation, and
+   * the one whose row carries the affordances this state wants: Retry when the tree is
+   * gone, Clean up when it is not.
    */
   private agentWentAway(t: Task): void {
     this.autoCompleted.delete(t.id);

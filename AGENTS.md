@@ -147,13 +147,15 @@ there; `registry.onSessionsObserved` is that moment (`reconcileTasksWithNoLiveSe
 twin - it visits only tasks still holding a worktree or home, so an assigned task, which owns
 neither, was invisible to it on every restart and stayed `running` forever.
 
-**Settling is not tearing down.** `agentWentAway` marks the task `done` when its current work
-episode produced a merged PR, and `failed` otherwise; either way it KEEPS the worktree, branch
-and home for the operator's confirmed Clean up (`reclaim`). The asymmetry with
+**Settling is not tearing down.** `agentWentAway` marks the task `done` when any of its work
+episodes produced a merged PR (using the newest merge when several did), and `failed` only
+when none did; either way it KEEPS the worktree, branch and home for the operator's confirmed
+Clean up (`reclaim`). The asymmetry with
 `reconcileOnStartup`, which does reclaim, is the point: that path is collecting rows nobody can
 see, this one makes the row visible the instant it happens. `git worktree remove --force`
 belongs behind a human click here, the same rule `complete` states ("Mark done must not discard
-work"). Test: `task-session-orphan.test.ts`, `task-merge-settles.test.ts`.
+work"). Test: `task-session-orphan.test.ts`, `task-merge-settles.test.ts`,
+`task-durable-merge.test.ts`.
 
 ## Overlays
 

@@ -1027,8 +1027,9 @@ Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the dae
 Kill a session with <kbd>k</kbd>, close its terminal, or let the agent exit by itself, and
 the task it was running **settles as soon as the session is evicted** - roughly eight
 seconds, the linger that stops one hiccuping `ps` sweep from burying a live agent. It reads
-`failed`, with `the agent's session ended with no outcome recorded`, and drops out of every
-count that means "executing".
+according to the [merged-PR rule](#when-a-tasks-pull-request-merges); without a recorded
+merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
+way, it drops out of every count that means "executing".
 
 It settles; it is **not** torn down. The worktree, its branch and the terminal home name are
 all kept, and the row says so (`its worktree was kept; Clean up or re-dispatch it`). Freeing
@@ -1038,10 +1039,11 @@ the row, next to Mark done, which refuses to discard work for the same reason. A
 never had a worktree of its own - one you handed to an agent that was already running - has
 nothing to collect and says nothing about cleanup.
 
-`failed` is the honest reading rather than a flattering one: an agent that finished and
-exited looks exactly like one that crashed, and the only thing actually observed is that the
-session went away without an outcome being recorded. Mark a task done *before* the agent
-goes, and that outcome stands - a task already in a terminal state is never rewritten.
+With no recorded merge, `failed` is the honest reading rather than a flattering one: an
+agent that finished and exited looks exactly like one that crashed, and the only thing
+actually observed is that the session went away without an outcome being recorded. Mark a
+task done *before* the agent goes, and that outcome stands - a task already in a terminal
+state is never rewritten.
 
 The same reconciliation runs against the first process sweep after a restart, which is what
 catches a task whose agent died while the daemon was down.

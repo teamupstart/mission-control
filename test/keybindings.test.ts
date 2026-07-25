@@ -40,6 +40,7 @@ Object.defineProperty(globalThis, "fetch", {
 
 const {
   ACTIONS,
+  bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
   findConflicts,
@@ -47,6 +48,7 @@ const {
   isReservedChord,
   resetAll,
   resetBinding,
+  resolveKeybindings,
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
@@ -318,6 +320,33 @@ test("every default binding is unique - a collision silently shadows one action"
     );
     seen.set(a.defaultBinding, a.id);
   }
+});
+
+test("a stored override wins over a colliding new default", () => {
+  const resolved = resolveKeybindings({ diff: "g" });
+  assert.equal(resolved.diff, "g");
+  assert.equal(resolved.conversation, "");
+  assert.deepEqual([...findConflicts(resolved).keys()], []);
+  assert.equal(resolveKeybindings({}).conversation, "g");
+});
+
+test("the editor rejects another action's chord and keeps the prior binding", () => {
+  const bindings = { ...defaults(), conversation: "v", diff: "x" };
+  assert.equal(
+    bindingValidationError(bindings, "conversation", "x"),
+    "x is already bound to Open diff.",
+  );
+  assert.equal(bindingValidationError(bindings, "conversation", "v"), null);
+
+  resetAll();
+  setBinding("conversation", "v");
+  setBinding("diff", "x");
+  const before = puts.length;
+  setBinding("conversation", "x");
+  assert.equal(puts.length, before);
+  assert.equal(stored().conversation, "v");
+  assert.equal(stored().diff, "x");
+  resetAll();
 });
 
 test("reset is a first-class action defaulting to Ctrl+R on the selected card", () => {

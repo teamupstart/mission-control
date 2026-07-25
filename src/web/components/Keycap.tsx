@@ -23,6 +23,7 @@ import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindi
 export function Keycap({ action }: { action: ActionId }): React.JSX.Element | null {
   const { bindings } = useKeybindings();
   const [show] = useKeybindingHints();
-  if (!show) return null;
-  return <kbd className="kb-hint">{formatChord(bindings[action])}</kbd>;
+  const chord = formatChord(bindings[action]);
+  if (!show || !chord) return null;
+  return <kbd className="kb-hint">{chord}</kbd>;
 }

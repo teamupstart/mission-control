@@ -351,8 +351,24 @@ function currentOverrides(): Overrides {
 
 function computeResolved(overrides: Overrides): Record<ActionId, string> {
   const out = {} as Record<ActionId, string>;
-  for (const a of ACTIONS) out[a.id] = overrides[a.id] ?? a.defaultBinding;
+  const claimed = new Set<string>();
+  for (const a of ACTIONS) out[a.id] = "";
+  for (const a of ACTIONS) {
+    const chord = overrides[a.id];
+    if (!chord || claimed.has(chord)) continue;
+    out[a.id] = chord;
+    claimed.add(chord);
+  }
+  for (const a of ACTIONS) {
+    if (overrides[a.id] || claimed.has(a.defaultBinding)) continue;
+    out[a.id] = a.defaultBinding;
+    claimed.add(a.defaultBinding);
+  }
   return out;
+}
+
+export function resolveKeybindings(raw: Record<string, string>): Record<ActionId, string> {
+  return computeResolved(sanitize(raw));
 }
 
 /**
@@ -367,8 +383,9 @@ function commit(next: Overrides): void {
 /** Rebind an action. Setting it back to its default clears the override. */
 export function setBinding(id: ActionId, chord: string): void {
   const def = ACTION_BY_ID.get(id);
-  if (!def || isReservedChord(chord)) return;
+  if (!def) return;
   const next: Overrides = { ...currentOverrides() };
+  if (bindingValidationError(computeResolved(next), id, chord)) return;
   if (chord === def.defaultBinding) delete next[id];
   else next[id] = chord;
   commit(next);
@@ -396,9 +413,11 @@ export function resetAll(): void {
 export function findConflicts(bindings: Record<ActionId, string>): Map<ActionId, ActionId[]> {
   const byChord = new Map<string, ActionId[]>();
   for (const a of ACTIONS) {
-    const arr = byChord.get(bindings[a.id]) ?? [];
+    const chord = bindings[a.id];
+    if (!chord) continue;
+    const arr = byChord.get(chord) ?? [];
     arr.push(a.id);
-    byChord.set(bindings[a.id], arr);
+    byChord.set(chord, arr);
   }
   const conflicts = new Map<ActionId, ActionId[]>();
   for (const ids of byChord.values()) {
@@ -408,12 +427,25 @@ export function findConflicts(bindings: Record<ActionId, string>): Map<ActionId,
   return conflicts;
 }
 
+export function bindingValidationError(
+  bindings: Record<ActionId, string>,
+  id: ActionId,
+  chord: string,
+): string | null {
+  if (isReservedChord(chord)) {
+    return `${formatChord(chord)} is reserved for grid navigation.`;
+  }
+  const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
+  if (!owner) return null;
+  return `${formatChord(chord)} is already bound to ${ACTION_BY_ID.get(owner)?.label ?? owner}.`;
+}
+
 export interface KeybindingsApi {
   /** Resolved chord per action (override or default). */
   bindings: Record<ActionId, string>;
-  /** Whether an action currently differs from its default. */
+  /** Whether an action has a stored override. */
   isCustom: (id: ActionId) => boolean;
-  /** Whether any action differs from its default. */
+  /** Whether any action has a stored override. */
   hasCustom: boolean;
 }
 
@@ -427,13 +459,13 @@ const subscribe = subscribeUiConfig;
 // Identity is the right key because the config store never mutates in place - every
 // change commits a new object.
 let cachedSource: Record<string, string> | null = null;
-let cachedSnapshot: Record<ActionId, string> = computeResolved({});
+let cachedSnapshot: Record<ActionId, string> = resolveKeybindings({});
 
 function getSnapshot(): Record<ActionId, string> {
   const source = uiConfig().keybindings;
   if (source !== cachedSource) {
     cachedSource = source;
-    cachedSnapshot = computeResolved(sanitize(source));
+    cachedSnapshot = resolveKeybindings(source);
   }
   return cachedSnapshot;
 }
@@ -463,10 +495,11 @@ export function useKeybindingHints(): [boolean, (on: boolean) => void] {
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */
 export function useKeybindings(): KeybindingsApi {
   const bindings = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const overrides = currentOverrides();
   const isCustom = useCallback(
-    (id: ActionId) => bindings[id] !== ACTION_BY_ID.get(id)?.defaultBinding,
-    [bindings],
+    (id: ActionId) => Object.hasOwn(overrides, id),
+    [overrides],
   );
-  const hasCustom = ACTIONS.some((a) => bindings[a.id] !== a.defaultBinding);
+  const hasCustom = Object.keys(overrides).length > 0;
   return { bindings, isCustom, hasCustom };
 }

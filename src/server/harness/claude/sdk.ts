@@ -425,11 +425,21 @@ class ClaudeSdkSession implements SdkSessionHandle {
           throw new Error(`"${one.question}" takes one answer, not ${one.labels.length}`);
         }
         // The tool's own encoding: one string per question, several labels comma-joined.
-        // Free text stands in for a label when the human typed instead of picking, which
+        // Free text stands in FOR a label when the human typed instead of picking, which
         // is a shape the pane form has to refuse.
-        answers[one.question] = one.text?.trim()
-          ? one.text.trim()
-          : one.labels.join(", ");
+        //
+        // Both at once is refused rather than reconciled, and this is the last line of
+        // defence for it (the route checks the same thing against the card the operator
+        // was shown). One string per question means one of them would have to be dropped,
+        // and a dropped selection is the agent being told something other than what was
+        // clicked - the exact failure the structured ask replaced.
+        const typed = one.text?.trim() ?? "";
+        if (typed && one.labels.length > 0) {
+          throw new Error(
+            `"${one.question}" has both a chosen option and custom text - send one or the other`,
+          );
+        }
+        answers[one.question] = typed || one.labels.join(", ");
       }
       for (const question of questions) {
         if (!(question.question in answers)) {

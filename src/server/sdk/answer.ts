@@ -87,6 +87,18 @@ export function driverFormAnswer(
     if (!one.text?.trim() && one.labels.length === 0) {
       return { ok: false, error: `"${one.question}" was not answered` };
     }
+    // Either/or, and REFUSED rather than reconciled. The harness takes one string per
+    // question, so a submission carrying both a chosen row and typed text can only send
+    // one of them - and whichever this picked, the other is a thing the operator did that
+    // the agent never hears about. That is the failure this whole shape exists to remove
+    // (a menu answering something other than what was clicked), so it cannot be reintroduced
+    // as a silent preference.
+    if (one.text?.trim() && one.labels.length > 0) {
+      return {
+        ok: false,
+        error: `"${one.question}" has both a chosen option and custom text - send one or the other`,
+      };
+    }
     if (!question.multiSelect && one.labels.length > 1) {
       return { ok: false, error: `"${one.question}" takes one answer, not ${one.labels.length}` };
     }

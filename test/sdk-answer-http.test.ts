@@ -657,3 +657,53 @@ test("a stop that fails with the driver already gone settles instead", async () 
   assert.deepEqual(settled, ["task-stopgone"]);
   assert.match(((await res.json()) as { error: string }).error, /worktree kept/);
 });
+
+test("a mixed answer is refused, never silently reconciled", async () => {
+  const registry = new Registry();
+  seed(registry, FORM);
+  const supervisor = fakeSupervisor();
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:one/submit-options", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      answers: [
+        // Both a chosen row and typed text. The harness takes one string per question, so
+        // sending this could only carry one of them - and whichever won, the other is a
+        // thing the operator did that the agent never hears about. That is the failure the
+        // structured ask replaced, so it must not come back as a silent preference.
+        { question: "Which linter?", labels: ["biome"], text: "prettier, actually" },
+        { question: "Which checks?", labels: ["types"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 409);
+  assert.match(
+    ((await res.json()) as { error: string }).error,
+    /both a chosen option and custom text/,
+  );
+  assert.equal(supervisor.answered.length, 0);
+});
+
+test("either half on its own still answers", async () => {
+  const registry = new Registry();
+  seed(registry, FORM);
+  const supervisor = fakeSupervisor();
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:one/submit-options", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      answers: [
+        { question: "Which linter?", labels: [], text: "prettier, actually" },
+        { question: "Which checks?", labels: ["types", "tests"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(supervisor.answered[0]!.answer, {
+    kind: "form",
+    answers: [
+      { question: "Which linter?", labels: [], text: "prettier, actually" },
+      { question: "Which checks?", labels: ["types", "tests"] },
+    ],
+  });
+});

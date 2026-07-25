@@ -293,7 +293,18 @@ function DriverForm({
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [typed, setTyped] = useState<Record<string, string>>({});
 
+  /**
+   * Pick (or unpick) a row, and drop whatever was typed for that question.
+   *
+   * The two are EITHER/OR, and the exclusion is enforced here rather than at submit for
+   * the reason the comment above states: the human should never be able to build a state
+   * the daemon will refuse. The harness takes one string per question, so a submission
+   * carrying both could only send one of them - and whichever it chose, the other is
+   * something the operator did that the agent never hears about. Clearing as they go makes
+   * the screen say which one is live, instead of a refusal telling them afterwards.
+   */
   function toggle(question: string, label: string, multi: boolean): void {
+    setTyped((t) => (t[question] ? { ...t, [question]: "" } : t));
     setPicked((p) => {
       const cur = p[question] ?? [];
       if (!multi) return { ...p, [question]: cur[0] === label ? [] : [label] };
@@ -302,6 +313,12 @@ function DriverForm({
         [question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
       };
     });
+  }
+
+  /** Type a custom answer, which likewise gives up any rows chosen for that question. */
+  function type(question: string, value: string): void {
+    setTyped((t) => ({ ...t, [question]: value }));
+    if (value.trim()) setPicked((p) => (p[question]?.length ? { ...p, [question]: [] } : p));
   }
 
   const complete = questions.every(
@@ -376,9 +393,7 @@ function DriverForm({
             disabled={busy !== null}
             aria-label={`Custom answer for ${q.question}`}
             placeholder="Or type a custom answer"
-            onChange={(event) =>
-              setTyped((current) => ({ ...current, [q.question]: event.target.value }))
-            }
+            onChange={(event) => type(q.question, event.target.value)}
           />
         </div>
       ))}

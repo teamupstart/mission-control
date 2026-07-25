@@ -226,6 +226,22 @@ export function clearSdkSessionTask(id: string, now = Date.now()): void {
     .run(now, id);
 }
 
+/**
+ * Put a task association back on a row.
+ *
+ * The undo of `clearSdkSessionTask`, and it exists for one caller: a terminal handoff
+ * unbinds BOTH the task and this row before it stops the driver, so that an ordinary
+ * transfer does not settle a task that is merely moving. When the stop then fails and the
+ * driver is still alive, that unbinding has to be taken back or a live embedded session is
+ * left with no task pointing at it - which is `taskLiveness` answering `null` for a task
+ * whose agent is right there, and a restart reclaiming its worktree on that answer.
+ */
+export function restoreSdkSessionTask(id: string, taskId: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET task_id = ?, updated_at = ? WHERE id = ?`)
+    .run(taskId, now, id);
+}
+
 export function setSdkSessionPermissionMode(
   id: string,
   permissionMode: PermissionMode,

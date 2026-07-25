@@ -557,19 +557,44 @@ class ClaudeSdkSession implements SdkSessionHandle {
     const id = options.requestId || randomUUID();
     const request = this.projectRequest(id, toolName, input, options);
     return new Promise<ClaudeSdkPermissionResult>((resolve) => {
+      /**
+       * Give up on this ask - and RESOLVE it, which is the part that is not optional.
+       *
+       * The SDK documents the consequence of not doing so: a `canUseTool` that never
+       * settles sends no control response, and a permission prompt has no park deadline,
+       * so the tool stays blocked for ever. Clearing the card without resolving would be
+       * the worst version of that - a turn hung on a question nobody can even see any
+       * more. A denial is the only safe way to abandon one: it fails CLOSED, so an ask
+       * nobody answered never reads as approval.
+       */
+      const abandon = (why: string): void => {
+        // Guarded by the delete, so this cannot double-resolve a request `stop()` or
+        // `answer()` already settled - both remove their entry first.
+        if (!this.pending.delete(id)) return;
+        this.out.emit({ kind: "request_resolved", requestId: id });
+        resolve({ behavior: "deny", message: why });
+      };
+      // Checked BEFORE anything is registered or announced: an already-aborted signal
+      // never fires its event, so a listener alone would leave this promise pending for
+      // ever and put a card up for an ask that was over before it arrived.
+      if (options.signal.aborted) {
+        resolve({ behavior: "deny", message: "this request was cancelled before it arrived" });
+        return;
+      }
       this.pending.set(id, {
         request,
         input,
         suggestions: options.suggestions ?? [],
         resolve,
       });
-      // A session torn down while the CLI was mid-request: the abort is the only notice
-      // there is, and a pending row left behind would be a card showing buttons that
-      // resolve nothing.
-      options.signal.addEventListener("abort", () => {
-        if (!this.pending.delete(id)) return;
-        this.out.emit({ kind: "request_resolved", requestId: id });
-      });
+      // A session interrupted or torn down while the CLI was mid-request: the abort is the
+      // only notice there is, and a pending row left behind would be a card showing buttons
+      // that resolve nothing.
+      options.signal.addEventListener(
+        "abort",
+        () => abandon("this request was cancelled before it was answered"),
+        { once: true },
+      );
       this.out.emit({ kind: "request", request });
     });
   };

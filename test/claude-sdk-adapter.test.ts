@@ -523,3 +523,70 @@ test("the pure projections stand on their own", () => {
   assert.equal(sdkPermissionMode("plan"), "plan");
   assert.equal(sdkPermissionMode(null), null);
 });
+
+test("an aborted permission ask is DENIED, not merely forgotten", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query, options } = await started;
+  query.emit(INIT("agent-1"));
+
+  const abort = new AbortController();
+  const pending = options.canUseTool(
+    "Bash",
+    { command: "ls" },
+    { requestId: "gone", signal: abort.signal },
+  );
+  const events = await collect(handle.events, (e) => e.kind === "request");
+  assert.ok(events.some((e) => e.kind === "request"));
+
+  abort.abort();
+  // The SDK is explicit about the consequence of not resolving: no control response is
+  // sent, and a permission prompt has no park deadline, so the tool stays blocked for
+  // ever. Clearing the card without resolving is the worst version of that - a turn hung
+  // on a question nobody can see any more.
+  const result = await pending;
+  assert.equal(result.behavior, "deny", "an abandoned ask must fail CLOSED");
+  const after = await collect(handle.events, (e) => e.kind === "request_resolved");
+  assert.ok(after.some((e) => e.kind === "request_resolved" && e.requestId === "gone"));
+});
+
+test("a signal that is already aborted resolves rather than hanging", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query, options } = await started;
+  query.emit(INIT("agent-1"));
+  await collect(handle.events, (e) => e.kind === "bound");
+
+  const abort = new AbortController();
+  abort.abort();
+  // An already-aborted signal never fires its event, so a listener alone would leave this
+  // promise pending for ever - and put a card up for an ask that was over before it
+  // arrived. Nothing is announced and nothing is held.
+  const result = await options.canUseTool(
+    "Bash",
+    { command: "ls" },
+    { requestId: "stale", signal: abort.signal },
+  );
+  assert.equal(result.behavior, "deny");
+});
+
+test("stop still wins the race against a later abort, with no double resolve", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query, options } = await started;
+  query.emit(INIT("agent-1"));
+  const abort = new AbortController();
+  const pending = options.canUseTool(
+    "Bash",
+    { command: "ls" },
+    { requestId: "both", signal: abort.signal },
+  );
+  await collect(handle.events, (e) => e.kind === "request");
+  await handle.stop();
+  const first = await pending;
+  // `stop` removes its entry before resolving, and `abandon` is guarded by that same
+  // delete - so the abort that follows a teardown is a no-op rather than a second answer.
+  abort.abort();
+  assert.equal(first.behavior, "deny");
+  assert.match(first.behavior === "deny" ? first.message : "", /Mission Control stopped/);
+});

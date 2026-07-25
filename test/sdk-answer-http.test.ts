@@ -25,7 +25,6 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
 
@@ -549,7 +548,7 @@ test("settling after a failed handoff keeps the worktree and reads a merge as do
   // inherits its rules instead of approximating them. Asserting them from the outside is
   // what stops a second settler being written the next time someone needs one.
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const tasks = new RealTaskManager(registry);
   registry.upsertTask(
     mkTask({
       id: "task-settle",
@@ -573,4 +572,88 @@ test("settling after a failed handoff keeps the worktree and reads a merge as do
   tasks.settleAfterFailedHandoff("task-backlog");
   assert.equal(registry.getTask("task-backlog")?.status, "backlog");
   tasks.settleAfterFailedHandoff("no-such-task");
+});
+
+test("a stop that fails with the driver still alive puts the binding back", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:stopfail");
+  registry.upsertTask(
+    mkTask({
+      id: "task-stopfail",
+      status: "running",
+      sessionId: "sdk:stopfail",
+      repoRoot: "/repo",
+      worktreePath: "/wt/one",
+      title: "Add a toggle",
+    }),
+  );
+  upsertSdkSession({
+    id: "sdk:stopfail",
+    agent: "claude",
+    agentSessionId: "agent-1",
+    cwd: "/wt/one",
+    taskId: "task-stopfail",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+  });
+  const supervisor = {
+    async stop() {
+      throw new Error("the driver would not close");
+    },
+    // Still holding the handle: the driver survived its own stop.
+    handleFor: () => ({}) as never,
+  } as unknown as SdkSupervisor;
+
+  const res = await mkApp(registry, supervisor, {
+    spawn: async () => assert.fail("nothing may be spawned when the stop failed"),
+    waitForSessionAtCwd: async () => null,
+    settleTask: () => assert.fail("a live driver must be rebound, never settled"),
+  }).request("/api/sessions/sdk:stopfail/handoff", { method: "POST", headers: HEADERS });
+
+  assert.equal(res.status, 409);
+  // The unbinding happens BEFORE the stop, so a stop that fails has to take it back or the
+  // task is stranded - and here the agent may still be working, which is worse than the
+  // spawn-failure case.
+  assert.equal(registry.getTask("task-stopfail")?.status, "running");
+  assert.equal(registry.getTask("task-stopfail")?.sessionId, "sdk:stopfail");
+  // The ROW too: `taskLiveness` reads it, so a card restored without the row would leave a
+  // live agent whose worktree a restart reclaims.
+  assert.equal(getSdkSession("sdk:stopfail")?.taskId, "task-stopfail");
+  assert.match(((await res.json()) as { error: string }).error, /still bound to it/);
+});
+
+test("a stop that fails with the driver already gone settles instead", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:stopgone");
+  registry.upsertTask(
+    mkTask({
+      id: "task-stopgone",
+      status: "running",
+      sessionId: "sdk:stopgone",
+      repoRoot: "/repo",
+      worktreePath: "/wt/one",
+      title: "Add a toggle",
+    }),
+  );
+  const settled: string[] = [];
+  const supervisor = {
+    async stop() {
+      throw new Error("the driver died mid-stop");
+    },
+    // No handle left: there is nothing to rebind to, so this is the same dead end the
+    // spawn-failure path reaches and it takes the same exit.
+    handleFor: () => null,
+  } as unknown as SdkSupervisor;
+
+  const res = await mkApp(registry, supervisor, {
+    spawn: async () => assert.fail("nothing may be spawned when the stop failed"),
+    waitForSessionAtCwd: async () => null,
+    settleTask: (id) => settled.push(id),
+  }).request("/api/sessions/sdk:stopgone/handoff", { method: "POST", headers: HEADERS });
+
+  assert.equal(res.status, 409);
+  assert.deepEqual(settled, ["task-stopgone"]);
+  assert.match(((await res.json()) as { error: string }).error, /worktree kept/);
 });

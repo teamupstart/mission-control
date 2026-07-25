@@ -3,7 +3,7 @@ import { resolveAgentBin, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
-import { clearSdkSessionTask } from "./store.ts";
+import { clearSdkSessionTask, restoreSdkSessionTask } from "./store.ts";
 
 /**
  * "Continue in terminal": end the embedded session and reopen the SAME conversation in a
@@ -85,7 +85,46 @@ export async function handOffToTerminal(
     registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
   }
 
-  await supervisor.stop(session.id);
+  try {
+    await supervisor.stop(session.id);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    // Nothing has been replaced yet, so the unbinding above has to be taken back or the
+    // task is stranded exactly as it would be if the spawn had failed - and here it is
+    // worse, because the agent may still be RUNNING. Which of the two undos is right turns
+    // on one question the supervisor can answer: is the handle still there?
+    //
+    // Read ONCE, and both the branch and the sentence below use that reading. Asking twice
+    // would let the message describe a decision the code did not take, on the one path
+    // where a human has nothing else to go on.
+    const stillDriving = supervisor.handleFor(session.id) !== null;
+    if (task) {
+      if (stillDriving) {
+        // The driver survived its own stop, so this is a handoff that simply did not
+        // happen: put the task back on the session that is still driving it. `taskLiveness`
+        // reads the ROW, so restoring the card without the row would leave a live agent
+        // whose worktree a restart reclaims.
+        restoreSdkSessionTask(session.id, task.id);
+        registry.upsertTask({ ...task, sessionId: session.id, updatedAt: Date.now() });
+      } else {
+        // The stop reported a failure but the driver is gone anyway, so there is nothing to
+        // rebind to and no `session_remove` that can settle this task - the same dead end
+        // the spawn-failure path reaches, and it takes the same exit.
+        deps.settleTask(task.id);
+      }
+    }
+    const consequence = !task
+      ? ""
+      : stillDriving
+        ? " and the task is still bound to it"
+        : " and the task was marked failed with its worktree kept";
+    return {
+      ok: false,
+      error:
+        `the embedded session's driver could not be stopped (${why}) - nothing was handed ` +
+        `over${consequence}`,
+    };
+  }
 
   const name = sessionLabel(task?.title?.trim() || session.name || session.agent);
   let homeName: string;

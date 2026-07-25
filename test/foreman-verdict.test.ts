@@ -236,6 +236,7 @@ test("applyVerdict: live answer sends first, then records the answered note", as
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     selectOption: async () => (calls.push("selectOption"), {}),
+    submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
     logGateReply: async () => (calls.push("logGateReply"), {}),
   };
@@ -252,6 +253,7 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
       throw new Error("pane gone");
     },
     selectOption: async () => ({}),
+    submitForm: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async () => ({}),
   };
@@ -269,6 +271,7 @@ test("applyVerdict: dry-run draft writes the note and sends nothing", async () =
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     selectOption: async () => (calls.push("selectOption"), {}),
+    submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
     logGateReply: async () => (calls.push("logGateReply"), {}),
   };
@@ -499,6 +502,7 @@ test("applyVerdict selects the row and never types at a menu", async () => {
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     selectOption: async () => (calls.push("selectOption"), {}),
+    submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
     logGateReply: async () => (calls.push("logGateReply"), {}),
   };
@@ -517,6 +521,7 @@ test("a refused selection leaves the session unanswered and retryable", async ()
     selectOption: async () => {
       throw new Error("the menu changed before the selection could be confirmed");
     },
+    submitForm: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async () => ({}),
   };
@@ -558,6 +563,7 @@ test("the gate byline quotes the row that was delivered, never the prose that wa
     putNote: async () => ({}),
     sendText: async () => ({}),
     selectOption: async () => ({}),
+    submitForm: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
   };
@@ -574,6 +580,7 @@ test("a menu send is logged even with submit false - selecting a row always pres
     putNote: async () => ({}),
     sendText: async () => ({}),
     selectOption: async () => ({}),
+    submitForm: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
   };
@@ -589,6 +596,7 @@ test("an unsubmitted PROSE send still logs no byline - it's sitting in the pane,
     putNote: async () => ({}),
     sendText: async () => ({}),
     selectOption: async () => ({}),
+    submitForm: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
   };

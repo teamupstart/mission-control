@@ -1,8 +1,28 @@
 import type { ResetResult, Session } from "@shared/types.ts";
-import { resetToOrigin, withPaneLockWait, type PaneLockToken } from "./actions.ts";
+import { resetToOrigin, withPaneLockWait, type DriverClear, type PaneLockToken } from "./actions.ts";
 import { forgetFixLog } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import { noteKeyFor } from "./registry.ts";
+
+/**
+ * The one thing a reset needs from the SDK supervisor - structural, so a test satisfies it
+ * with an object literal and this module never imports the supervisor.
+ */
+export interface SdkClearer {
+  clearContext(id: string): Promise<boolean>;
+}
+
+/**
+ * The supervisor as a `DriverClear`, or undefined when this build has no supervisor.
+ *
+ * One adapter, at the boundary, because all three reset callers need the identical lambda
+ * and a fourth would otherwise write its own - which is how one of them ends up passing the
+ * session's `id` where another passes its `agentSessionId` and an embedded reset silently
+ * clears nothing.
+ */
+export function driverClearFor(sdk: SdkClearer | undefined): DriverClear | undefined {
+  return sdk ? (session: Session) => sdk.clearContext(session.id) : undefined;
+}
 
 /**
  * A reset as the PRODUCT means it: the git operation plus every piece of session-scoped
@@ -24,7 +44,22 @@ export async function resetSession(
   registry: Registry,
   session: Session,
   clear: boolean,
-  reset?: (session: Session, clear: boolean, lockOwner?: PaneLockToken) => Promise<ResetResult>,
+  reset?: (
+    session: Session,
+    clear: boolean,
+    lockOwner?: PaneLockToken,
+    driverClear?: DriverClear,
+  ) => Promise<ResetResult>,
+  /**
+   * How to clear an EMBEDDED session's context - see `DriverClear`.
+   *
+   * Threaded rather than imported because this module is the reset's POLICY and the
+   * supervisor is a live subsystem: a test drives the whole cleanup with a fake, exactly as
+   * `reset` above already lets it drive the git half. Absent, an embedded session's clear
+   * reports `cleared: false` - honest for a build with no supervisor, and the same answer
+   * that path gave before this parameter existed.
+   */
+  driverClear?: DriverClear,
 ): Promise<ResetResult> {
   // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
   // or clear the run in that window.
@@ -34,8 +69,8 @@ export async function resetSession(
   try {
     return await withPaneLockWait(session, async (lockOwner) => {
       const r = reset
-        ? await reset(session, clear, lockOwner)
-        : await resetToOrigin(session, clear, undefined, lockOwner);
+        ? await reset(session, clear, lockOwner, driverClear)
+        : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
 
       // Retired against the checkout it wiped (root + the branch that was standing in it),
       // not this session, so it holds for a sibling sharing the checkout and across a

@@ -459,3 +459,39 @@ test("the escape follows the failure that earned the current wait", () => {
     "a low ladder still lets a push through, whatever earned it",
   );
 });
+
+test("a driver's pr_created adopts; a bare prUrl sighting on the same session does not", () => {
+  // The end of the provenance chain, on the runtime that has no hook script. `applyDriverEvent`
+  // reaches the SAME announcer the hook path does (`announcePrOpened`), and the listener that
+  // subscribes to it is what writes the row - so an embedded session's PR is adopted by the
+  // one rule, not by a second one written beside it.
+  //
+  // The distinction being pinned is authorship. The driver emits `pr_created` only after
+  // pairing a Bash command that satisfies `opensPullRequest` with the URL that command
+  // printed; a URL SEEN in some other output proves nothing (`gh pr view` prints one, so does
+  // `cat notes.md`), and adopting on it would post automated review comments on a stranger's
+  // pull request under the operator's name.
+  const r = new Registry();
+  const opened: Array<{ url: string; sessionId: string }> = [];
+  r.onPrOpened((e) => opened.push({ url: e.url, sessionId: e.sessionId }));
+  const sdkId = `${SDK_SESSION_ID_PREFIX}33333333-3333-4333-8333-333333333333`;
+  r.registerSdkSession({ id: sdkId, agent: "claude", name: "embedded", cwd: "/wt/a" });
+
+  // The command half alone is not a URL to adopt, and the sniff half alone is not authorship.
+  assert.equal(opensPullRequest("gh pr view 56 --json url"), false);
+  assert.ok(opensPullRequest("gh pr create --fill"));
+
+  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_1 });
+  assert.deepEqual(opened, [{ url: URL_1, sessionId: sdkId }]);
+
+  // What the listener does with it is the ordinary adoption, keyed on the repo rather than
+  // on the session, so a driver-run PR is reviewed exactly as a pane-run one is.
+  const ctx = { sessionId: sdkId, cwd: "/wt/a", repoRoot: "/repo/a" };
+  assert.equal(adoptPr(URL_1, ctx, "hook", 1000), true);
+  assert.equal(loadOpenInspectorPrs().length, 1);
+  assert.equal(getInspectorPr("mancej/ai-harness#56")?.number, 56);
+
+  // And nothing else on the driver channel can put a row in that table. A session carrying a
+  // `prUrl` it merely observed emits no announcement at all, so there is no second path in.
+  assert.deepEqual(opened.length, 1);
+});

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
-import { reportBucket } from "@shared/session.ts";
+import { activePaneDialog, reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
@@ -74,6 +74,28 @@ import {
 function dialogMenu(agent: AgentType, pane: string | null): PaneDialog | null {
   const spec = dialogSpecFor(agent);
   return spec ? parsePaneDialog(pane, spec) : null;
+}
+
+/**
+ * The ask this session is parked on, whichever way it got here - the ONE object every tier
+ * is shown and every answer is checked against.
+ *
+ * Keyed on where the dialog CAME FROM, never on the session's runtime or its agent. A
+ * driver reports its request as data and the registry has already put it on the session, so
+ * re-reading a screen for it would be asking a question that has an authoritative answer; a
+ * pane's menu exists nowhere but the capture, so it has to be parsed. Reading the session's
+ * field first is also what makes this correct for a session with BOTH (there is none today,
+ * and if one arrives the structured ask is the one with a correlation id to answer against).
+ *
+ * Getting this wrong is silent in the expensive direction: `ctx.menu` null for a driver
+ * session means `planFromVerdict` sees no ask, so a verdict naming an option is delivered as
+ * TYPED PROSE - a new turn the agent reads while still blocked on the request nobody
+ * answered.
+ */
+function askOnScreen(session: Session, pane: string | null): PaneDialog | null {
+  const reported = activePaneDialog(session);
+  if (reported?.source === "driver") return reported;
+  return dialogMenu(session.agent, pane);
 }
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -1544,14 +1566,22 @@ async function processSession(
     // with this session's OWN grammar - the reviewer is shown whatever rows its agent drew,
     // and a harness we cannot read reports no menu rather than another agent's reading of
     // its screen.
-    menu: dialogMenu(session.agent, pane),
+    menu: askOnScreen(session, pane),
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
   // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
-  const decision = await decide(client, cfg, session, pending, ctx, { pane, instructions, queueItem });
+  const decision = await decide(client, cfg, session, pending, ctx, {
+    pane,
+    // The SAME object `ctx.menu` holds when it is a driver's request, so what the reviewer
+    // was shown and what its answer is checked against cannot be two different asks. Null
+    // for a pane menu, which is rendered from `pane` and has no structured form.
+    request: ctx.menu?.source === "driver" ? ctx.menu : null,
+    instructions,
+    queueItem,
+  });
   if (!decision) return true;
   const { verdict, tier } = decision;
 
@@ -1780,6 +1810,8 @@ async function fullReview(
     session: {
       // Which harness this is, so the prompt describes ITS screen - see `ReviewInput.session.agent`.
       agent: session.agent,
+      // ...and how an answer reaches it, which decides whether there IS a screen to describe.
+      runtime: session.runtime,
       name: session.name,
       cwd: session.cwd,
       gitBranch: session.gitBranch,

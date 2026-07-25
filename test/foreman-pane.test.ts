@@ -49,6 +49,7 @@ function input(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
       agent: "claude",
+      runtime: "terminal",
       name: "worktree cleanup",
       cwd: "/repo",
       gitBranch: "mancej/reap-leaked-worktree-leases",

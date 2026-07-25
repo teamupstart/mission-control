@@ -149,7 +149,7 @@ ensembles = new EnsembleManager(registry, undefined, {
   // materialization through TaskManager, guarded pane injection, and the Workflow external
   // boundary. This is what lets a human-confirmed decision reap losers, preserve one exact winner,
   // and optionally submit its clean snapshot into a published Workflow - all restart-safe.
-  finalize: createFinalizeDeps({ registry, tasks, workflows }),
+  finalize: createFinalizeDeps({ registry, tasks, workflows, sdk: sdkSessions }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),

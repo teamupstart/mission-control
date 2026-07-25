@@ -9,6 +9,7 @@ import type {
   RecordEpisode,
   SetNote,
   SetWorkItemState,
+  SubmitOptions,
 } from "@shared/protocol.ts";
 import type {
   AssignRefusalScope,
@@ -522,6 +523,23 @@ export class ForemanClient implements ForemanActions {
   async selectOption(id: string, option: { number: number; label: string }): Promise<unknown> {
     const res = await send("POST", `/api/sessions/${enc(id)}/select-option`, option);
     if (!res.ok) throw new Error(`selectOption ${id} -> ${res.status}`);
+    return res.json();
+  }
+
+  /**
+   * Submit a driver form's answers as a whole - the `{answers}` body of `/submit-options`.
+   *
+   * Throws on refusal exactly as `selectOption` does, and a refusal here means nothing was
+   * delivered: the daemon re-checks the submission against the live request and answers 409
+   * before any of it reaches the agent, so `applyVerdict`'s catch leaves the session parked
+   * rather than half-answered.
+   */
+  async submitForm(
+    id: string,
+    answers: NonNullable<SubmitOptions["answers"]>,
+  ): Promise<unknown> {
+    const res = await send("POST", `/api/sessions/${enc(id)}/submit-options`, { answers });
+    if (!res.ok) throw new Error(`submitForm ${id} -> ${res.status}`);
     return res.json();
   }
 

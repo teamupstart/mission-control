@@ -335,10 +335,28 @@ supervisor records the session and resumes it on the next start, before anything
 including its Mission MCP tools - but the interrupted turn's remaining work has to be
 re-prompted. In exchange, delivery stops being probabilistic and menus stop being screens.
 
-**Foreman's work queue is not available on an Agent SDK session yet.** It still drives
-sessions through their terminal, so a queue there is refused with a sentence saying so; use
-the handoff, or dispatch that task in a terminal. (Automation parity is the next phase of
-`docs/plans/agent-sdk-sessions/plan.md`, which also carries the full design and tradeoffs.)
+**Automation works here, and works better.** Foreman reviews, answers and drives the work
+queue on an embedded session exactly as it does on a pane-backed one, over the same routes -
+and the differences all fall the same way:
+
+- a queue item is delivered by one acknowledged call, so an item either was delivered or
+  definitively was not. There is no "it may be sitting unsubmitted in the composer" state to
+  hand back to you, and no waiting out someone's scroll-back;
+- Foreman answers a structured ask by naming the option, and a multi-question
+  `AskUserQuestion` by filling the whole form in one submission. On a terminal that form is
+  refused outright - pressing a row only ticks a box - so this is an ask it can now answer
+  rather than escalate;
+- prose is deliverable. A terminal menu discards typed characters, so an answer that named
+  no row could not be sent at all; an embedded ask takes free text where a question invites
+  it, and takes "no, and here is why" as an answer;
+- an embedded session is instrumented by construction - the driver *is* the pickup and
+  completion channel - so it never has to wait to have reported a hook before it can hold a
+  queue;
+- **Reset** clears the conversation through the driver, and the wrap-up skill and the
+  skills-reload broadcast reach it the same way. Cost is still read from the same OpenTelemetry
+  stream the interactive CLI emits, counted once.
+
+(The full design and its tradeoffs are in `docs/plans/agent-sdk-sessions/plan.md`.)
 
 #### Continue in terminal
 

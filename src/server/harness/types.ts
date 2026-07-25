@@ -670,6 +670,21 @@ export type SdkEvent =
        * name. This is the ONE place a pid can arrive for a driver-run session.
        */
       pid: number | null;
+      /**
+       * True when this identity is the one a `clearContext()` asked for.
+       *
+       * The driver's answer to the hook path's `SessionStart { source: "clear" }`, and the
+       * reason it has to come from HERE: a rotation looks identical from outside whether the
+       * agent was cleared or merely reported a new id, and the only party that knows which is
+       * the one that issued the command. Without it, `resetSession`'s pre-armed rebind waits
+       * out its five seconds and reports `workIdentityReady: false` on a reset that worked -
+       * which leaves the work episode, and with it the task's ownership of its branch, on the
+       * dead identity.
+       *
+       * Optional, and absent means "an ordinary binding", so a driver that never clears (and
+       * every event a driver already emits) is unchanged.
+       */
+      cleared?: true;
     }
   | { kind: "state"; state: "working" | "idle"; activity: string | null }
   | { kind: "request"; request: SessionRequest }

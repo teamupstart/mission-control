@@ -459,3 +459,51 @@ test("an exited session's stale menu is not a question anyone can answer", () =>
   const p = classifyPending(mkDialogSession({ state: "exited" as SessionState }), []);
   assert.equal(p.situation, "no-question");
 });
+
+test("a driver's request is its own situation, named off the ASK and not the runtime", () => {
+  // The reviewer prompt selects its whole delivery grammar from this (see `promptHarness`),
+  // and the card records which kind of ask was answered. Both are properties of where the
+  // ask CAME FROM, which is why the name is read off `dialog.source` rather than off
+  // `session.runtime`: a driver that ever reported a screen-read dialog would be described
+  // as one, and a later runtime whose asks are structured inherits the framing for free.
+  const p = classifyPending(
+    mkDialogSession({
+      runtime: "sdk",
+      terminals: [],
+      paneDialog: {
+        ...MENU,
+        highlighted: 0,
+        source: "driver",
+        requestId: "req-1",
+        kind: "question",
+      },
+    }),
+    [],
+  );
+  assert.equal(p.situation, "structured-request");
+  assert.equal(p.surface, "terminal");
+  assert.equal(p.canSend, true, "a driver-run session has a delivery channel without a pane");
+  assert.match(p.marker, /^dialog:/, "the same rows are the same episode, whatever produced them");
+});
+
+test("a pane menu on a pane session is still terminal-pane", () => {
+  // The new name must not swallow the old one: a screen-read dialog carries no `source`, and
+  // absence means pane by construction (see `PaneDialog`).
+  assert.equal(classifyPending(mkDialogSession(), []).situation, "terminal-pane");
+});
+
+test("a driver request on a session that cannot be messaged is still no-channel", () => {
+  // `canSend` outranks the naming: a situation that promises an answer can be delivered when
+  // it cannot is the one `planFromVerdict` can only resolve as "escalated (no reply channel)"
+  // - after paying for the review.
+  const p = classifyPending(
+    mkDialogSession({
+      runtime: "terminal",
+      terminals: [],
+      paneDialog: { ...MENU, source: "driver", requestId: "req-1" },
+    }),
+    [],
+  );
+  assert.equal(p.situation, "terminal-no-pane");
+  assert.equal(p.canSend, false);
+});

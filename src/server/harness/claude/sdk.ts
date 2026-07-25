@@ -355,6 +355,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * in the same turn cannot lend each other their halves.
    */
   private readonly prPending = new Set<string>();
+  /** Armed by `clearContext`, spent by the next `bind` - see both for why it must exist. */
+  private clearing = false;
   private stopped = false;
 
   constructor(private readonly cwd: string) {}
@@ -508,9 +510,24 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * one the pane path already has: Claude mints a NEW session id on the same card. The
    * `bound` event that re-fires when the next message carries it is what moves the note,
    * queue, goal and work episode onto the new key - the same rebind a hook drives today.
+   *
+   * The latch is what makes that `bound` say WHICH KIND of rotation it is. Nothing
+   * downstream can tell a cleared identity from an ordinary one by looking at it, and the
+   * difference decides whether a reset's pre-armed work episode transfers or times out -
+   * so the only party that knows (this one, which just issued the command) has to say. It
+   * is armed here and spent by the FIRST rotation after it, because that is the one the
+   * command caused; a later rotation is some other event and must not inherit the claim.
    */
   clearContext = async (): Promise<void> => {
-    await this.send({ text: "/clear" });
+    this.clearing = true;
+    try {
+      await this.send({ text: "/clear" });
+    } catch (err) {
+      // The command never went, so no rotation is coming and the latch would sit armed
+      // waiting to mislabel whatever arrives next.
+      this.clearing = false;
+      throw err;
+    }
   };
 
   async stop(): Promise<void> {
@@ -756,6 +773,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private bind(agentSessionId: string): void {
     if (!agentSessionId || agentSessionId === this.agentSessionId) return;
     this.agentSessionId = agentSessionId;
+    const cleared = this.clearing;
+    this.clearing = false;
     this.out.emit({
       kind: "bound",
       agentSessionId,
@@ -763,6 +782,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // The SDK owns its subprocess and reports no pid; the registry keeps 0, which is the
       // sentinel `signalProcess` already refuses.
       pid: null,
+      ...(cleared ? { cleared: true as const } : {}),
     });
   }
 }

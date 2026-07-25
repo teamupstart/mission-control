@@ -93,7 +93,7 @@ export const ACTIONS: readonly ActionDef[] = [
   {
     id: "expand",
     label: "Expand / collapse",
-    description: "Focus-expand the selected card, or collapse it.",
+    description: "Focus-expand the selected card in Cards, open or close the Board drill-in, or do nothing in Console where it is already expanded.",
     defaultBinding: "e",
     group: "selection",
   },

@@ -1289,7 +1289,8 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const outcome = await manager.createAndLaunch(parsed.data);
     if (!outcome.ok) {
-      return c.json({ error: outcome.reason, code: `ensemble_create_${outcome.reason}`, issues: outcome.issues }, 400);
+      const status = outcome.reason === "request_conflict" ? 409 : 400;
+      return c.json({ error: outcome.reason, code: `ensemble_create_${outcome.reason}`, issues: outcome.issues }, status);
     }
     // `created: false` is the response-loss retry doing exactly what the source key exists for - one
     // run, not a second fleet - so it is a 200, not a conflict.

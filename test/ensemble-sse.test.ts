@@ -166,12 +166,39 @@ test("an idempotent create republishes the same run rather than adding a second 
   const registry = new Registry();
   const manager = new EnsembleManager(registry, new EnsembleStore(db));
   const first = manager.create(request, 100);
-  const retry = manager.create(request, 200);
+  const retry = manager.create(
+    {
+      ...request,
+      strategyConfig: {
+        evaluator: {},
+        members: [{}, {}],
+      },
+    },
+    200,
+  );
   assert.equal(first.ok && retry.ok, true);
   if (!first.ok || !retry.ok) return;
   assert.equal(retry.created, false);
   assert.equal(retry.run.id, first.run.id);
   assert.equal(registry.snapshot().ensembleSummaries.length, 1);
+
+  const changedIntent = manager.create({ ...request, intent: "Do something else" }, 300);
+  assert.equal(changedIntent.ok, false);
+  if (!changedIntent.ok) assert.equal(changedIntent.reason, "request_conflict");
+
+  const changedConfig = manager.create(
+    { ...request, strategyConfig: { members: [{ approach: "one" }, {}] } },
+    400,
+  );
+  assert.equal(changedConfig.ok, false);
+  if (!changedConfig.ok) assert.equal(changedConfig.reason, "request_conflict");
+
+  const changedWorkflow = manager.create(
+    { ...request, workflow: { workflowId: "workflow-1", workflowVersion: 1 } },
+    500,
+  );
+  assert.equal(changedWorkflow.ok, false);
+  if (!changedWorkflow.ok) assert.equal(changedWorkflow.reason, "request_conflict");
 });
 
 test("the manager wraps raw decision input in the durable payload envelope", () => {

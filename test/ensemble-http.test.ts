@@ -125,6 +125,29 @@ test("POST /api/ensembles refuses an invalid config with a 400 and launches noth
   assert.equal(gateway.dispatched.length, 0, "and launched nothing");
 });
 
+test("POST /api/ensembles refuses a mismatched source-key replay with a 409", async () => {
+  const { manager, app } = build();
+  const request = {
+    sourceKey: "create-conflict",
+    title: "Original",
+    intent: "original intent",
+    repoRoot: "/repo",
+    strategyId: "best_of_n" as const,
+    strategyConfig: { members: [{}, {}] },
+  };
+  const created = manager.create(request, 100);
+  assert.equal(created.ok, true);
+
+  const conflict = await req(app, "/api/ensembles", {
+    ...request,
+    intent: "different intent",
+    workflow: { workflowId: "unsupported-workflow", workflowVersion: 1 },
+  });
+  assert.equal(conflict.status, 409);
+  const body = (await conflict.json()) as { code: string };
+  assert.equal(body.code, "ensemble_create_request_conflict");
+});
+
 test("POST /api/ensembles/:id/actions decides through the manager and reaches completed", async () => {
   const { store, gateway, driver, app } = build();
   const runId = await driveToDecision(store, gateway, driver);

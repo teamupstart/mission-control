@@ -658,6 +658,17 @@ export function ensemblePayload(body: EnsembleJson): EnsemblePayloadEnvelope {
   return { payloadVersion: ENSEMBLE_PAYLOAD_VERSION, body };
 }
 
+export function canonicalEnsembleJson(value: EnsembleJson): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalEnsembleJson).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalEnsembleJson(value[key] as EnsembleJson)}`).join(",")}}`;
+}
+
+export function ensembleJsonEqual(a: EnsembleJson, b: EnsembleJson): boolean {
+  return canonicalEnsembleJson(a) === canonicalEnsembleJson(b);
+}
+
 export type EnsembleOutcome =
   | { kind: "selected"; memberIds: string[]; artifactIds: string[]; materializedTaskId: string | null }
   | { kind: "synthesized"; memberId: string; artifactId: string; materializedTaskId: string | null }

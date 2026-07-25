@@ -1,10 +1,9 @@
 import {
   ENSEMBLE_LIMITS,
-  ENSEMBLE_SOURCE_KINDS,
+  ensembleJsonEqual,
   ensembleIsTerminal,
   ensemblePayload,
   ensembleStrategyKey,
-  readEnsembleEnum,
   type CompiledEnsemblePlan,
   type EnsembleAction,
   type EnsembleArtifact,
@@ -85,6 +84,7 @@ export type EnsembleCreateRefusal =
   | "version_unavailable"
   | "invalid_config"
   | "workflow_unavailable"
+  | "request_conflict"
   | "preflight_failed";
 
 export type EnsembleCreateOutcome =
@@ -344,7 +344,9 @@ export class EnsembleManager {
     if (existing) return existing;
     const compiled = this.compile(input, now);
     if (!compiled.ok) return compiled.outcome;
-    const write = this.persistRun(compiled.value, null, null, "planning", now);
+    const handoff = this.resolveHandoff(compiled.value.request.workflow);
+    if (!handoff.ok) return handoff.outcome;
+    const write = this.persistRun(compiled.value, null, null, "planning", now, undefined, handoff.value);
     return this.published(write);
   }
 
@@ -377,7 +379,7 @@ export class EnsembleManager {
 
     // Resolve an optional Workflow handoff to an immutable version BEFORE any base is pinned or any
     // Task exists - a Live/Foreman mode or an archived version is a create refusal, not a downgrade.
-    const handoff = this.resolveHandoff(input.workflow ?? null);
+    const handoff = this.resolveHandoff(compiled.value.request.workflow);
     if (!handoff.ok) return handoff.outcome;
 
     const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
@@ -452,16 +454,38 @@ export class EnsembleManager {
   }
 
   private existingRun(input: EnsembleCreateInput): EnsembleCreateOutcome | null {
-    const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, input.sourceKind);
-    const sourceKey =
-      typeof input.sourceKey === "string" &&
-      input.sourceKey.length > 0 &&
-      input.sourceKey.length <= ENSEMBLE_LIMITS.sourceKey
-        ? input.sourceKey
-        : null;
-    const existing =
-      sourceKind !== null && sourceKey !== null ? this.store.runBySource(sourceKind, sourceKey) : null;
+    const parsed = EnsembleCreateInputSchema.safeParse(input);
+    if (!parsed.success) return null;
+    const request = parsed.data;
+    const existing = this.store.runBySource(request.sourceKind, request.sourceKey);
     if (!existing) return null;
+    const descriptor = descriptorFor(this.catalog, request.strategyId);
+    const parsedConfig = descriptor?.configSchema.safeParse(request.strategyConfig);
+    const workflowMatches =
+      request.workflow === null
+        ? existing.workflowHandoff === null
+        : existing.workflowHandoff !== null &&
+          existing.workflowHandoff.workflowId === request.workflow.workflowId &&
+          existing.workflowHandoff.workflowVersion === request.workflow.workflowVersion;
+    const equivalent =
+      existing.unreadable === null &&
+      existing.strategyId === request.strategyId &&
+      parsedConfig?.success === true &&
+      ensembleJsonEqual(existing.strategyConfig, parsedConfig.data as EnsembleJson) &&
+      existing.intent === request.intent &&
+      workflowMatches;
+    if (!equivalent) {
+      return {
+        ok: false,
+        reason: "request_conflict",
+        issues: [
+          {
+            path: "sourceKey",
+            message: "this source key is already bound to a different ensemble request",
+          },
+        ],
+      };
+    }
     const summary = this.publish(existing.id);
     if (!summary) throw new Error(`ensemble ${existing.id} has no summary for its source claim`);
     return { ok: true, run: existing, summary, created: false };

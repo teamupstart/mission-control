@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_LIMITS,
+  ensembleJsonEqual,
   ensembleIsRunnable,
   ensembleIsTerminal,
   ensemblePayload,
@@ -2406,16 +2407,20 @@ export class EnsembleEngine {
     const winnerAttempt = winnerArtifact.attemptId
       ? state.attempts.find((a) => a.id === winnerArtifact.attemptId) ?? null
       : null;
-    if (progress.winner?.mode === "restored") {
+    if (progress.winner?.mode === "restored" && progress.winner.ready === true) {
       const taskId = winnerAttempt?.taskId ?? null;
-      return {
-        ok: true,
-        winner: { mode: "restored", ready: true },
-        sessionId: taskId ? this.tasks.sessionId(taskId) : null,
-        worktreePath: winnerAttempt ? this.ownedWorktree(winnerAttempt) : null,
-        mode: "restored",
-        continuationInIntent: false,
-      };
+      const sessionId = taskId ? this.tasks.sessionId(taskId) : null;
+      const worktreePath = winnerAttempt ? this.ownedWorktree(winnerAttempt) : null;
+      if (sessionId !== null && worktreePath !== null) {
+        return {
+          ok: true,
+          winner: { mode: "restored", ready: true },
+          sessionId,
+          worktreePath,
+          mode: "restored",
+          continuationInIntent: false,
+        };
+      }
     }
     const outcome = run.outcome;
     const materializedTaskId = outcome && outcome.kind === "selected" ? outcome.materializedTaskId : null;
@@ -3049,18 +3054,6 @@ function readComparisonForArtifact(
     }
   }
   return { comparison, rationale, caveats };
-}
-
-/** Whether two validated JSON values are equal, by canonical serialization. */
-function ensembleJsonEqual(a: EnsembleJson, b: EnsembleJson): boolean {
-  return canonicalJson(a) === canonicalJson(b);
-}
-
-function canonicalJson(value: EnsembleJson): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k] as EnsembleJson)}`).join(",")}}`;
 }
 
 // ---- pure claim helpers ----

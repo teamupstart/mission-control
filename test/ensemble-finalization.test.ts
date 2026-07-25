@@ -218,6 +218,46 @@ test("the live winner is restored to its exact snapshot, losers reaped through T
   assert.equal(finalize.continuations.length, 1, "exactly one continuation was delivered");
 });
 
+test("a failed restore receipt is retried before finalization continues", async () => {
+  const finalize = new FakeFinalize();
+  finalize.restoreOk = false;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.restored.length, 1);
+  assert.equal(finalize.continuations.length, 0);
+
+  finalize.restoreOk = true;
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.restored.length, 2);
+  assert.equal(finalize.continuations.length, 1);
+});
+
+test("a restored winner that exits before delivery is replaced once", async () => {
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const winnerTask = store.listAttempts(runId).find((attempt) => attempt.memberId === winner.memberId)!.taskId!;
+  const loser = store.listMembers(runId).find((member) => member.id !== winner.memberId)!;
+  const loserTask = store.listAttempts(runId).find((attempt) => attempt.memberId === loser.id)!.taskId!;
+  gateway.failCancel(loserTask);
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.restored.length, 1);
+
+  gateway.vanish(winnerTask);
+  gateway.cancelFailures.delete(loserTask);
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.restored.length, 1);
+  assert.equal(finalize.materialized.length, 1);
+  assert.equal(finalize.continuations.length, 0);
+});
+
 test("a loser whose cancel fails leaves the run finalizing, and a retry completes it", async () => {
   const finalize = new FakeFinalize();
   const { store, gateway, engine } = harness(finalize);

@@ -349,6 +349,12 @@ function currentOverrides(): Overrides {
   return sanitize(uiConfig().keybindings);
 }
 
+/**
+ * Stored overrides claim chords before defaults so a newly shipped default never
+ * displaces an operator's existing choice. Within each pass registry order breaks
+ * malformed legacy/hand-edited ties; an action that cannot claim its stored chord or
+ * default stays unset.
+ */
 function computeResolved(overrides: Overrides): Record<ActionId, string> {
   const out = {} as Record<ActionId, string>;
   const claimed = new Set<string>();
@@ -401,7 +407,7 @@ function commit(next: Overrides): void {
   void updateUiConfig({ keybindings: next as Record<string, string> });
 }
 
-/** Rebind an action. Setting it back to its default clears the override. */
+/** Rebind an action to an unclaimed chord; an available own default clears the override. */
 export function setBinding(id: ActionId, chord: string): void {
   const def = ACTION_BY_ID.get(id);
   if (!def) return;
@@ -412,7 +418,7 @@ export function setBinding(id: ActionId, chord: string): void {
   commit(next);
 }
 
-/** Drop the override for one action, restoring its default. */
+/** Drop one override; the action returns to its default when that chord is available. */
 export function resetBinding(id: ActionId): void {
   const overrides = currentOverrides();
   if (!(id in overrides)) return;
@@ -462,7 +468,7 @@ export function bindingValidationError(
 }
 
 export interface KeybindingsApi {
-  /** Resolved chord per action (override or default). */
+  /** Resolved chord per action, or empty when its stored chord/default cannot be claimed. */
   bindings: Record<ActionId, string>;
   /** Whether an action has a stored override. */
   isCustom: (id: ActionId) => boolean;

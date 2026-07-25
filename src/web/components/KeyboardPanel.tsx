@@ -26,7 +26,7 @@ function labelOf(id: ActionId): string {
 /**
  * The keyboard-shortcut editor, a settings category. Click an action's key, press the
  * new one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved navigation
- * keys are refused and duplicate bindings are flagged inline.
+ * keys and chords already assigned to another action are refused inline.
  *
  * This panel owns everything about recording a shortcut - the target being recorded, the
  * inline error, and the capture listener. The listener runs in the CAPTURE phase and

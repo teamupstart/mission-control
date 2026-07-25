@@ -373,6 +373,13 @@ interface PassiveState {
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private prObservations = new Map<string, PrObservation>();
+  /**
+   * Pull requests each session has already been announced as the author of.
+   *
+   * See `announcePrOpened`. In memory and per session, because the durable half of this
+   * fact is the adoption row the announcement produces.
+   */
+  private announcedPrs = new Map<string, Set<string>>();
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
@@ -1346,9 +1353,12 @@ export class Registry extends EventEmitter {
    * The driver watched this session's agent run `gh pr create`.
    *
    * The same two things a proving hook does, and for the same reasons: decorate the card at
-   * once (the poller confirms it and later flips it to merged), and announce the AUTHORSHIP
-   * once, because nothing persists it. `prUrl` alone is a text match anything could trip;
-   * this event means the command was observed, which is the only evidence `adoptPr` accepts.
+   * once (the poller confirms it and later flips it to merged), and announce the AUTHORSHIP,
+   * because nothing persists it. `prUrl` alone is a text match anything could trip; this
+   * event means the command was observed, which is the only evidence `adoptPr` accepts.
+   *
+   * A repeat is safe HERE (the fields it writes are the same ones) and dangerous downstream,
+   * which is why the announcement is not made inline - see `announcePrOpened`.
    */
   private applyDriverPrCreated(s: Session, url: string): void {
     const next: Session = {
@@ -1362,16 +1372,48 @@ export class Registry extends EventEmitter {
     next.inspector = this.inspectorSummaryFor(next);
     this.sessions.set(next.id, next);
     if (!sessionEqual(s, next)) this.emitSession(next);
+    this.announcePrOpened(next, url);
+  }
+
+  /**
+   * Announce, ONCE per session per pull request, that this session's agent opened it.
+   *
+   * The one emitter of `pr_opened`, shared by the hook path and the driver path, because
+   * "once" is a property of the ANNOUNCEMENT and a rule with two implementations has one
+   * too many. Both callers hold proof-grade evidence - the hook matched the `gh pr create`
+   * COMMAND, the driver watched it on its own tool stream - and `prUrl` alone never
+   * reaches here, because a text match is what `gh pr view` also trips.
+   *
+   * The dedupe is what makes the sentence above true rather than aspirational. A hook
+   * fires once per command, but a driver's event stream is a stream: an adapter that
+   * reconnects, replays, or reports a tool result twice would announce the same authorship
+   * again, and the listener that catches this writes to a ledger that decides where the
+   * Inspector comments in public. Today `adoptInspectorPr` absorbs a repeat (its upsert is
+   * `ON CONFLICT DO NOTHING`, and every side effect the listener has is gated on the insert
+   * having happened), so this closes the gap at the source rather than relying on a
+   * downstream table to keep being forgiving.
+   *
+   * Keyed on the PR as well as the session, so a session that legitimately opens a SECOND
+   * pull request still announces it - the thing being suppressed is a repeat, not a
+   * sequence. Held in memory and dropped with the session (see `remove`), like every other
+   * per-session decoration: nothing here is durable, because the adoption row it produces
+   * is.
+   */
+  private announcePrOpened(s: Session, url: string): void {
+    const announced = this.announcedPrs.get(s.id);
+    if (announced?.has(url)) return;
+    if (announced) announced.add(url);
+    else this.announcedPrs.set(s.id, new Set([url]));
     try {
       this.emit("pr_opened", {
         url,
-        sessionId: next.id,
-        cwd: next.cwd,
-        repoRoot: next.repoRoot,
+        sessionId: s.id,
+        cwd: s.cwd,
+        repoRoot: s.repoRoot,
       } satisfies PrOpened);
     } catch (err) {
-      // Guarded for `applyHook`'s reason: adoption must never be able to break the ingest
-      // that a live session's whole card depends on.
+      // Guarded because both callers are on an INGEST path: adoption must never be able to
+      // break the event that a live session's whole card depends on.
       console.error("[registry] pr_opened listener threw:", err);
     }
   }
@@ -1515,22 +1557,11 @@ export class Registry extends EventEmitter {
       // unrelated event.
       this.captureGoalPrompt(next, spec, evt, now);
       // Last of all, and only on the proof-grade signal. `prUrl` alone is a text match
-      // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. The
-      // listener writes a durable adoption row, so this firing is the only chance to
-      // record that this PR is ours - but it must never be able to break hook ingest,
-      // hence the guard.
-      if (evt.prCreated && evt.prUrl) {
-        try {
-          this.emit("pr_opened", {
-            url: evt.prUrl,
-            sessionId: next.id,
-            cwd: next.cwd,
-            repoRoot: next.repoRoot,
-          } satisfies PrOpened);
-        } catch (err) {
-          console.error("[registry] pr_opened listener threw:", err);
-        }
-      }
+      // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. Nothing
+      // persists that distinction, so this firing is the only chance to record that this PR
+      // is ours - see `announcePrOpened`, which owns both the once-per-PR rule and the
+      // guard that keeps adoption from breaking hook ingest.
+      if (evt.prCreated && evt.prUrl) this.announcePrOpened(next, evt.prUrl);
     }
     this.pruneOverlays(now);
   }
@@ -3626,6 +3657,7 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
+    this.announcedPrs.delete(id);
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);

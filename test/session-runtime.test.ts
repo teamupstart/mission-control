@@ -583,5 +583,24 @@ test("a driver-observed gh pr create decorates the card and proves authorship on
   // Authorship evidence, which is the only thing `adoptPr` accepts - a `prUrl` sniff proves
   // nothing about who opened it, and commenting on a stranger's PR is what that costs.
   assert.deepEqual(opened, ["https://github.com/o/r/pull/7"]);
+
+  // A REPEAT announces nothing. A hook fires once per command, but a driver's events are a
+  // stream: an adapter that reconnects, replays, or reports one tool result twice would
+  // otherwise re-announce authorship into the ledger that decides where the Inspector
+  // comments in public. `adoptInspectorPr` happens to absorb a repeat today; the guarantee
+  // belongs at the source rather than in a downstream table's forgiveness.
+  driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/7" });
+  await settle();
+  assert.deepEqual(opened, ["https://github.com/o/r/pull/7"], "a replayed event is not news");
+
+  // A DIFFERENT pull request still is. What is suppressed is a repeat, not a sequence - a
+  // long-running agent opening a second PR must still be recorded as its author.
+  driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/8" });
+  await settle();
+  assert.deepEqual(opened, [
+    "https://github.com/o/r/pull/7",
+    "https://github.com/o/r/pull/8",
+  ]);
+  assert.equal(r.getSession(SDK_ID)?.prNumber, 8);
   await sup.stop(SDK_ID);
 });

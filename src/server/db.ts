@@ -2635,6 +2635,59 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
+    // Archive the outgoing binding before this write overwrites it. On a rollover the SAME
+    // task_id row is upserted with a NEW episode_id, so the episode the task is rolling OFF
+    // - and the pr_url / merged_at that are the only durable proof its work landed - would
+    // be lost. `mergedPrFor` reads current AND historical bindings precisely so that a merge
+    // on a rolled-past episode still completes the task; that read is inert unless the old
+    // binding is preserved here. Only a row that actually changes episode and carries a PR
+    // is worth keeping - a PR-less binding is no completion evidence, and
+    // `cleanupDependencyProvenance` prunes it anyway. (#167 archived here too, then dropped
+    // it when dependency provenance moved onto the edges; durable completion is the new
+    // reader that needs it back.) COALESCE keeps a merge already recorded on the historical
+    // row rather than letting a re-archival clear it.
+    d.prepare(
+      `INSERT INTO historical_task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+              merged_at, bound_at, updated_at
+       FROM task_work_episode_bindings
+       WHERE task_id = ? AND episode_id <> ? AND pr_url IS NOT NULL
+       ON CONFLICT(task_id, episode_id) DO UPDATE SET
+         session_id       = excluded.session_id,
+         agent_session_id = excluded.agent_session_id,
+         branch           = excluded.branch,
+         pr_url           = excluded.pr_url,
+         pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
+         bound_at         = excluded.bound_at,
+         updated_at       = excluded.updated_at`,
+    ).run(binding.taskId, binding.episodeId);
+    // And archive any OTHER task's PR-carrying binding that the cross-task DELETE below is
+    // about to drop. A session rebound from task A to task B removes A's current binding
+    // here; if A's PR had merged while A was still active, losing that row leaves A with
+    // neither a current nor a historical merge, so a later departure fails it. This is the
+    // same durable-record contract as the rollover archival above, on the other key
+    // (session_id, task_id <>) - #167 archived by both keys for exactly this reason.
+    d.prepare(
+      `INSERT INTO historical_task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+              merged_at, bound_at, updated_at
+       FROM task_work_episode_bindings
+       WHERE session_id = ? AND task_id <> ? AND pr_url IS NOT NULL
+       ON CONFLICT(task_id, episode_id) DO UPDATE SET
+         session_id       = excluded.session_id,
+         agent_session_id = excluded.agent_session_id,
+         branch           = excluded.branch,
+         pr_url           = excluded.pr_url,
+         pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
+         bound_at         = excluded.bound_at,
+         updated_at       = excluded.updated_at`,
+    ).run(binding.sessionId, binding.taskId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);
@@ -2815,8 +2868,26 @@ export function markWorkEpisodeMerged(
          WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
       )
       .run(now, now, sessionId, episodeId, prUrl);
+    // The SAME stamp over the historical row, in this one transaction. A binding that
+    // rolled to a new episode before the merge was seen keeps its provenance ONLY here -
+    // the current binding was overwritten with the new episode, and session_work_episodes
+    // followed it - so a by-URL merge observed for that old episode (Phase 2's harvest)
+    // would land nowhere durable without this. `mergedAt` is COALESCEd so an id that
+    // already recorded the merge is never restamped. No column check is needed:
+    // `merged_at` has been in this table's CREATE block since it shipped (#167).
+    const historical = d
+      .prepare(
+        `UPDATE historical_task_work_episode_bindings
+         SET merged_at = COALESCE(merged_at, ?), updated_at = MAX(updated_at, ?)
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
     if (ownsTransaction) d.exec("COMMIT");
-    return Number(session.changes) > 0 || Number(binding.changes) > 0;
+    return (
+      Number(session.changes) > 0 ||
+      Number(binding.changes) > 0 ||
+      Number(historical.changes) > 0
+    );
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;

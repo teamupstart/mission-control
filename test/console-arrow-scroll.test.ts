@@ -12,17 +12,16 @@ const source = (relative: string): string => readFileSync(
   "utf8",
 );
 
-test("Console vertical arrows scroll the active detail only once focus is in it", () => {
+test("vertical arrows scroll the active detail only once focus is in the reader", () => {
   const app = source("App.tsx");
-  const route = app.indexOf('layout === "console" && selected && (e.key');
-  const navigation = app.indexOf("const nextId = moveSelection", route);
-  assert.ok(route >= 0, "Console has no detail-scroll arrow branch");
-  assert.ok(navigation > route, "rail navigation still runs when the detail is not focused");
-  const branch = app.slice(route, navigation);
-  // The scroll is gated on the reader zone: in the rail zone the same arrows fall
-  // through to moveSelection and walk the rail instead.
-  assert.match(branch, /consoleZone === "detail"/);
-  assert.match(branch, /detailScrollers\.current\.get\(selected\.id\)/);
+  const navigation = app.indexOf("const nextId = moveSelection");
+  assert.ok(navigation >= 0, "rail navigation branch is gone");
+  const branch = app.slice(0, navigation);
+  // The scroll is gated on focus actually being in the reader (`.cdetail` ancestry), for
+  // the console detail AND the board drill-in (readerSession) - not a layout literal or the
+  // lagging zone state. Off the reader the same arrows fall through to moveSelection.
+  assert.match(branch, /\(e\.key === "ArrowUp" \|\| e\.key === "ArrowDown"\) &&\s*target\?\.closest\("\.cdetail"\)/);
+  assert.match(branch, /detailScrollers\.current\.get\(readerSession\.id\)/);
   assert.match(branch, /if \(detailScroll\)[\s\S]*detailScroll\([\s\S]*return/);
 });
 

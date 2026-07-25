@@ -25,28 +25,29 @@ Observed instance: the session that shipped PR #220 stayed `running` with its ta
 settling, because it kept working (drove its own merge, then follow-up) long after the PR
 was created - so its *current* work episode is no longer the one that merged.
 
-## Why it happens (grounded in the code)
+## Why it happened before Phase 1 (grounded in the code)
 
-The merge is recorded against **one specific work episode**, and every completion path
-reads only the **current** episode:
+At plan adoption, the merge was recorded against **one specific work episode**, and every
+completion path read only the **current** episode:
 
-- `mergedPrFor(taskId)` (`src/server/tasks.ts`) reads only the *current* task↔episode
-  binding (`taskWorkEpisodeForTask`) and returns a merged PR only if **that** binding has
-  `mergedAt`. The retained **historical** bindings are ignored.
+- `mergedPrFor(taskId)` (`src/server/tasks.ts`) read only the *current* task↔episode
+  binding (`taskWorkEpisodeForTask`) and returned a merged PR only if **that** binding had
+  `mergedAt`. The **historical** bindings were ignored.
 - Merge attribution (`reconcileWorkEpisodeMerge` → `markWorkEpisodeMerged`,
-  `src/server/registry.ts`) only fires `task_pr_merged` when the current binding matches
+  `src/server/registry.ts`) only fired `task_pr_merged` when the current binding matched
   the merged episode (`activeTaskId`).
-- `settleIfEpisodeFinished` and `closeMergedSession` both gate on `episodeId === current`.
+- `settleIfEpisodeFinished` and `closeMergedSession` both gated on
+  `episodeId === current`.
 
-So a merge recorded on a **rolled-past** episode is invisible to task completion: the task
-never learns its work merged. When the session then goes away, `agentWentAway` calls
-`mergedPrFor` - which reads the current (unmerged) binding - finds nothing, and marks the
+So a merge recorded on a **rolled-past** episode was invisible to task completion: the task
+never learned its work merged. When the session then went away, `agentWentAway` called
+`mergedPrFor` - which read the current (unmerged) binding - found nothing, and marked the
 task `failed`, stranding every dependent behind a `stopped` blocker for work that shipped.
 
-The machinery to fix this **already exists but is only half-wired**: work-episode↔task
-bindings are retained as *historical* (`historicalTaskWorkEpisodeBindings`), and the
-*dependency* merge path (`reconcileDependencyPrMerges`) already reads current **and**
-historical bindings. Standalone task completion simply does not.
+The machinery was **only half-wired**: the historical table and its readers existed, but
+rollover did not populate it. The *dependency* merge path
+(`reconcileDependencyPrMerges`) already read current **and** historical bindings, while
+standalone task completion did not.
 
 ## Requirement
 

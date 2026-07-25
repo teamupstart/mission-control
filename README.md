@@ -766,8 +766,21 @@ own CLI, its own env flag and whether it even has a scope to register under - Co
 registration and no `-s user|project` to choose between. A harness with no MCP client at all
 would be reported as such rather than silently skipped.)
 
+> **Adding or changing a tool means rebuilding the bundle.** Both the registration above and
+> the dispatched-session `--mcp-config` launch the *built* `dist/mcp/server.mjs`, never
+> `src/mcp/server.ts` directly - so a new or edited tool in the source is invisible to every
+> session until `npm run build` (or just `npm run build:mcp`) refreshes that file, after which
+> you start a **new** session to pick it up. Re-running `claude mcp add` is not needed: the
+> registration records the *path*, and the rebuild replaces the file it points at (re-add only
+> when the server *name* changes). The dev stack is the same trap in disguise - `npm run dev` /
+> `make start` auto-reload the daemon from source, but the MCP bundle is not on that watch, so
+> an MCP tool change still needs a manual rebuild. The tell is a session whose `mission-control`
+> tool list is shorter than the set below (`create_task` missing, say): the bundle it launched
+> predates the tool.
+
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
-exposes six tools:
+exposes six review-channel tools (an ensemble member session also gets
+[`submit_ensemble_result`](#multi-agent-ensembles-runtime-landed-creation-still-gated)):
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1014,8 +1027,9 @@ Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the dae
 Kill a session with <kbd>k</kbd>, close its terminal, or let the agent exit by itself, and
 the task it was running **settles as soon as the session is evicted** - roughly eight
 seconds, the linger that stops one hiccuping `ps` sweep from burying a live agent. It reads
-`failed`, with `the agent's session ended with no outcome recorded`, and drops out of every
-count that means "executing".
+according to the [merged-PR rule](#when-a-tasks-pull-request-merges); without a recorded
+merge, it reads `failed`, with `the agent's session ended with no outcome recorded`. Either
+way, it drops out of every count that means "executing".
 
 It settles; it is **not** torn down. The worktree, its branch and the terminal home name are
 all kept, and the row says so (`its worktree was kept; Clean up or re-dispatch it`). Freeing
@@ -1025,10 +1039,11 @@ the row, next to Mark done, which refuses to discard work for the same reason. A
 never had a worktree of its own - one you handed to an agent that was already running - has
 nothing to collect and says nothing about cleanup.
 
-`failed` is the honest reading rather than a flattering one: an agent that finished and
-exited looks exactly like one that crashed, and the only thing actually observed is that the
-session went away without an outcome being recorded. Mark a task done *before* the agent
-goes, and that outcome stands - a task already in a terminal state is never rewritten.
+With no recorded merge, `failed` is the honest reading rather than a flattering one: an
+agent that finished and exited looks exactly like one that crashed, and the only thing
+actually observed is that the session went away without an outcome being recorded. Mark a
+task done *before* the agent goes, and that outcome stands - a task already in a terminal
+state is never rewritten.
 
 The same reconciliation runs against the first process sweep after a restart, which is what
 catches a task whose agent died while the daemon was down.
@@ -2616,21 +2631,21 @@ earns two surfaces a card has nowhere to put:
   command bar are unique to it. In the console, and in the board once you're drilled in, the
   open detail *is* the selected session, so there is nothing to expand, and its controls are
   on screen permanently instead of on a bar that floats over them.
-- **Selecting is opening in the console**, and the keyboard lives in one of two zones.
-  Click a rail row - or walk it with <kbd>↑</kbd>/<kbd>↓</kbd> - to switch sessions; the
-  selected row wears a bright selector frame so it never gets lost against a busy state.
-  That is the **rail** zone. Press <kbd>Tab</kbd> to hand focus to the open conversation
-  (the **reader** zone): the pane takes the ring, and <kbd>↑</kbd>/<kbd>↓</kbd> now scroll
-  its active Conversation or Files reader instead of moving the selection. <kbd>⇧</kbd><kbd>Tab</kbd>
-  hands it back to the rail. The handoff follows the zone, not wherever a click last left
-  focus, so a single <kbd>Tab</kbd> reaches the reader even when focus is on the body -
-  except while you are typing in the filter or the reply box, where <kbd>Tab</kbd> stays
-  native. Once focus is in the reader,
-  ordinary browser tabbing continues through its tabs, reply box and controls. In the
-  focused inline Diff reader the arrows move through its file list instead; that navigation
-  stays scoped to the reader.
+- **Selecting is opening in the console**, and the keyboard walks it left to right. Click a
+  rail row - or walk it with <kbd>↑</kbd>/<kbd>↓</kbd> - to switch sessions; the selected row
+  wears a bright selector frame so it never gets lost against a busy state. Press
+  <kbd>Tab</kbd> to step INTO the open detail: it lands on the conversation pane, which takes
+  a soft ring, and <kbd>↑</kbd>/<kbd>↓</kbd> scroll it. Each further <kbd>Tab</kbd> moves one
+  tab right - Conversation, Work queue, Gate, Diff, Files - with <kbd>↑</kbd>/<kbd>↓</kbd>
+  scrolling whichever is showing, and it clamps at the last rather than tabbing away.
+  <kbd>⇧</kbd><kbd>Tab</kbd> walks back the same way, and from the conversation hands the
+  keyboard to the rail. The reader is chosen by where focus actually is, so a single
+  <kbd>Tab</kbd> reaches it whatever a click last left focused - except while you are typing
+  in the filter or the reply box, where <kbd>Tab</kbd> stays native. In the focused inline
+  Diff reader the arrows move through its file list instead.
   <kbd>Esc</kbd> peels back one layer at a time - reader to rail, then deselect, emptying
-  the pane.
+  the pane. **The board's drill-in reads the same**: opening a card morphs its column into
+  this rail-plus-reader, and every key here behaves identically there.
 - **The board separates the two**, because its overview is worth reading without being
   dragged through every transcript on the way. The arrow keys move a visible cursor from
   tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
@@ -2776,8 +2791,8 @@ shortcut works in every layout:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the selected session's active Conversation or Files reader once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in **Board**. With nothing selected, the first arrow selects the first session | Anywhere |
-| <kbd>Tab</kbd> | **Console:** hand the keyboard from the rail selector into the open conversation, so <kbd>↑</kbd>/<kbd>↓</kbd> scroll it; <kbd>⇧</kbd><kbd>Tab</kbd> (or <kbd>Esc</kbd>) hands it back. The selected row keeps its selector frame, dimmed, while the reader holds the ring | Selected Console session |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
+| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Gate → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
@@ -2791,7 +2806,7 @@ shortcut works in every layout:
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
-| <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only). In a **Console** reader it first hands focus back to the rail (press again to cycle); from the rail it cycles as everywhere | Selected session |
+| <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then close the session; press <kbd>Enter</kbd> to confirm. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Kill the selected session (press <kbd>Enter</kbd> to confirm) | Selected session |
@@ -3054,9 +3069,14 @@ The merge is recorded when it happens, and the task is first concluded once its 
 **appears to have finished the episode**: idle, nothing queued, and not rolled onto new
 work. An agent that is mid-turn is left alone whatever its pull request did.
 
-An agent that was given **new work after its merge** and then vanished mid-flight still
-fails, rather than reporting the earlier merge as its outcome: that later work never
-landed, and saying otherwise would claim a success for it.
+Once the agent is **gone for good**, though, any pull request it merged is its outcome -
+including one on an episode it had already rolled past. The two cases differ because a
+present agent may still be mid-turn: while it is here, a rollover means it was handed more
+work, so the merge is not concluded yet (above). But a departed agent has no work in flight
+to strand, and reporting a pull request that actually shipped as `failed` would deadlock
+every task waiting on it behind a *stopped* blocker. The merge survives the rollover in the
+task's durable record, so a later prompt cannot outrun it; if several of the agent's
+episodes merged, the **most recent** merge is the one recorded.
 
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
 that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to

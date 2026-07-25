@@ -186,6 +186,24 @@ export function ConsoleDetail({
       ],
     [queueCount, gateNeedsYou],
   );
+  const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
+
+  // Tab/Shift+Tab walk this tab strip left to right, driven from App's one global key
+  // handler so the console and the board drill-in behave identically (both mount this
+  // component). App owns the "which surface holds the keyboard" decision; this just reports
+  // whether a step landed on a tab ("moved") or ran off the end ("edge"), which App reads
+  // as clamp-here going forward and hand-back-to-the-rail going back.
+  useEffect(() => {
+    const order = tabs.map((t) => t.id);
+    const nav = (dir: -1 | 1): "moved" | "edge" => {
+      const nextTab = order[order.indexOf(tab) + dir];
+      if (!nextTab) return "edge";
+      setTab(nextTab);
+      return "moved";
+    };
+    view.registerReaderTab(session.id, nav);
+    return () => view.registerReaderTab(session.id, null);
+  }, [session.id, tab, tabs, view.registerReaderTab]);
 
   return (
     <div className={`cdetail tone-${st.tone}`}>
@@ -318,7 +336,10 @@ export function ConsoleDetail({
         )}
       </div>
 
-      <div className="detail-body">
+      {/* The reader pane. `tabIndex=-1` so Tab from the rail can land focus HERE - the
+          conversation window the operator reads and the vertical arrows scroll - and its
+          ring frames just this body, not the header/tabs/footer chrome around it. */}
+      <div className="detail-body" tabIndex={-1} aria-label={`${tabLabel} pane`}>
         {tab === "conversation" && (
           // Fills the body and pins the reply box: the leading bits stay put and the
           // transcript scrolls inside itself, rather than the whole tab scrolling the

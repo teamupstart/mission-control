@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent SDK sessions</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1d1f24; --muted: #5c6370; --line: #e3e0da;
+    --card: #ffffff; --code-bg: #f1efe9; --accent: #7154c0; --accent-2: #1d7f6e;
+    --warn: #a05a1c; --box: #f6f4ef; --box-line: #cfcac0;
+    --sdk: #e9f4f1; --sdk-line: #9cc9bd; --pane: #f3eee4; --pane-line: #d4c6a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --fg: #e6e4df; --muted: #9aa0ab; --line: #2c2f36;
+      --card: #1c1f25; --code-bg: #22252c; --accent: #a98ff0; --accent-2: #5cc3ab;
+      --warn: #d99a55; --box: #20232a; --box-line: #3a3e47;
+      --sdk: #1b2a27; --sdk-line: #35695c; --pane: #292620; --pane-line: #5c5340;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 60rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .3rem; letter-spacing: -.02em; }
+  .subtitle { color: var(--muted); margin: 0 0 2.2rem; max-width: 46rem; }
+  h2 { font-size: 1.35rem; margin: 2.8rem 0 .8rem; letter-spacing: -.01em;
+       border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: 1.08rem; margin: 1.9rem 0 .5rem; }
+  p, li { max-width: 100%; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .86em;
+  }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--box); }
+  .sev-high { color: var(--warn); font-weight: 600; }
+  .sev-low { color: var(--accent-2); }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--card);
+    border-radius: 0 8px 8px 0; padding: .8rem 1.1rem; margin: 1.2rem 0;
+  }
+  .callout.win { border-left-color: var(--accent-2); }
+  figure { margin: 1.6rem 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: .8rem; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  svg text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .grp { font-size: 12px; font-weight: 600; fill: var(--muted); }
+  svg .node { fill: var(--box); stroke: var(--box-line); rx: 7; }
+  svg .pane { fill: var(--pane); stroke: var(--pane-line); }
+  svg .sdkn { fill: var(--sdk); stroke: var(--sdk-line); }
+  svg .zone { fill: none; stroke: var(--line); stroke-dasharray: 4 4; rx: 10; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .bad { stroke: var(--warn); }
+  svg .good { stroke: var(--accent-2); }
+  ol li, ul li { margin: .3rem 0; }
+  .decisions li { margin: .6rem 0; }
+  .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; color: var(--muted); margin: 0 0 .4rem; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">docs/plans/agent-sdk-sessions/plan.md</p>
+  <h1>Agent SDK sessions</h1>
+  <p class="subtitle">
+    Migrate dispatched Claude and Codex sessions from keystroke-driven terminal panes to
+    their vendors' programmatic interfaces - the Claude Agent SDK and Codex's
+    <code>app-server</code> protocol - behind a shared per-session runtime abstraction,
+    selected by a settings toggle, with no new agent ids and no change to sessions an
+    operator starts themselves.
+  </p>
+
+  <div class="callout">
+    The plan answers three questions: <strong>what would we lose</strong> (Tradeoffs),
+    <strong>what is the abstraction</strong> (Architecture), and <strong>how do we cut
+    over and deprecate</strong> (Phases). All five open choices were decided from the
+    Mission Control dashboard on 2026-07-24 - see Resolved decisions.
+  </div>
+
+  <h2>Where the terminal path is today</h2>
+  <p>Four choke points carry every write to a session, and one parser carries every
+  structured read:</p>
+  <ul>
+    <li><code>injectPrompt</code> / <code>sendText</code> (<code>src/server/actions.ts</code>) -
+      paste, settle 400ms, Enter, verify against a paste placeholder the harness may not
+      render (<code>submitVerified: false</code> for Codex and pi).</li>
+    <li><code>selectPaneOption</code> / <code>submitPaneForm</code> - answer a menu by
+      walking the cursor row by row, re-reading the pane after every keystroke;
+      multi-select forms tick checkboxes and walk to a Submit tab, refusing on an
+      "unanswered" banner.</li>
+    <li><code>parsePaneDialog</code> (<code>src/server/discovery/pane-dialog.ts</code>) -
+      the harness-neutral screen grammar with per-harness tokens in <code>DialogSpec</code>.</li>
+    <li>The 1.5s discovery sweep - sessions exist because <code>ps</code> found a process
+      on a tty; identity is <code>proc:&lt;tty&gt;:&lt;pid&gt;:&lt;startMs&gt;</code>.</li>
+  </ul>
+  <p>The seam for this migration already exists and is deliberate: <code>ControlSpec</code>
+  (<code>src/server/harness/types.ts:434-476</code>) declares
+  <code>{ kind: "stream-json" }</code> with zero implementations,
+  <code>controlFor(session)</code> takes a <code>Session</code> rather than an
+  <code>AgentType</code> precisely so "the delivery path asks the SESSION how to talk to
+  it", and exactly two call sites refuse the unimplemented variant by name
+  (<code>actions.ts:909</code>, <code>:970</code>). The pluggable-integrations plan calls
+  this "the seam that makes headless dispatch possible later". This plan is that later.</p>
+
+  <h2>Research findings</h2>
+
+  <h3>Claude: the Agent SDK (@anthropic-ai/claude-agent-sdk)</h3>
+  <p>The TypeScript SDK spawns the <code>claude</code> CLI as a subprocess and drives it
+  over the stream-json control protocol. Everything the pane path scrapes arrives
+  structured:</p>
+  <ul>
+    <li><strong>Sessions</strong>: streaming input holds one process across many turns;
+      <code>interrupt()</code>, <code>resume</code>, <code>forkSession</code>. Session
+      files land in <code>~/.claude/projects/</code> - the same storage the interactive
+      CLI uses, so an SDK session can later be resumed in a terminal
+      (<code>claude --resume &lt;id&gt;</code>) and vice versa.</li>
+    <li><strong>Permissions</strong>: <code>canUseTool(toolName, input, {suggestions})</code>
+      is called for anything the mode does not settle; the caller answers
+      allow / deny / allow-with-updated-permissions. <code>setPermissionMode</code> and
+      <code>setModel</code> work live.</li>
+    <li><strong>AskUserQuestion (the multi-select case)</strong>: arrives as a
+      <code>canUseTool</code> call carrying <code>questions: [{question, header, options,
+      multiSelect}]</code>; the answer is an <code>answers</code> map, with free text
+      supported. No tabs, no checkboxes, no Submit walk, no "unanswered" banner - the
+      entire <code>DialogFormSpec</code> machinery has no SDK equivalent because the
+      problem it solves does not exist there.</li>
+    <li><strong>Hooks</strong> as in-process callbacks for the full event set;
+      machine-installed <code>~/.claude/settings.json</code> hooks also still fire in the
+      subprocess.</li>
+    <li><strong>Everything else</strong>: MCP via <code>options.mcpServers</code>; skills
+      and CLAUDE.md via <code>settingSources</code>; <code>/clear</code> and
+      <code>/compact</code> as user messages; images as base64 blocks; per-turn usage and
+      <code>total_cost_usd</code> on result messages.</li>
+  </ul>
+
+  <h3>Codex: the SDK cannot answer approvals; app-server can</h3>
+  <p>This is the decisive Codex finding. <code>@openai/codex-sdk</code> is a thin wrapper
+  over <code>codex exec --experimental-json</code>: approval policy is <strong>pre-set</strong>
+  and there is no callback - a headless run either auto-decides or fails. Human-input
+  tools are stripped from the toolset in exec mode. The SDK's only interrupt is killing
+  the subprocess.</p>
+  <p><code>codex app-server</code> - the JSON-RPC-over-stdio interface the IDE extension,
+  the Desktop app, and the official Python SDK use - surfaces everything we need:</p>
+  <ul>
+    <li><strong>Approvals as answerable requests</strong>:
+      <code>item/commandExecution/requestApproval</code> and
+      <code>item/fileChange/requestApproval</code>, answered accept / decline / cancel.</li>
+    <li><strong>Threads and turns</strong>: <code>thread/start</code> / <code>resume</code> /
+      <code>fork</code>, <code>turn/start</code> with per-turn model / effort / sandbox
+      overrides, <code>turn/interrupt</code>, and <code>turn/steer</code> - input appended
+      to an in-flight turn, which no other Codex interface has.</li>
+    <li><strong>Programmatic equivalents of TUI-only commands</strong>:
+      <code>thread/compact</code>, <code>review/start</code>,
+      <code>account/rateLimits/read</code>.</li>
+    <li><strong>Typed bindings</strong> generated from the pinned binary
+      (<code>codex app-server generate-ts</code>).</li>
+    <li><strong>Shared rollouts</strong> in <code>~/.codex/sessions/</code>; the
+      interactive TUI resumes them (<code>codex resume --include-non-interactive</code>).</li>
+  </ul>
+  <p>Caveat: the protocol is documented as experimental. Mitigation is the generated
+  bindings against the binary we launch, plus adapter isolation - the protocol is spoken
+  in exactly one module.</p>
+
+  <h3>pi: has a first-class RPC mode</h3>
+  <p>In scope as this plan's final phase (a resolved decision):
+  <code>pi --mode rpc</code> is JSONL over stdio with <code>prompt</code> /
+  <code>steer</code> / <code>abort</code> / <code>switch_session</code> /
+  <code>fork</code> / <code>set_model</code> / <code>compact</code>, full streaming
+  events, and interactive dialogs surfaced as <code>extension_ui_request</code>
+  (select / confirm / input) answered over stdin. That last part matters doubly for pi:
+  it has no hooks and no readable TUI grammar today, so the RPC driver is the first time
+  a pi session gets structured needs-you evidence at all. One caveat: pi enforces no tool
+  approvals itself (permission gating is an extension concern), so the driver surfaces
+  whatever dialogs pi's configured extensions raise rather than a built-in approval
+  stream.</p>
+
+  <h2>Tradeoffs</h2>
+  <p>The direct answer to "is there any current functionality we'd lose?".</p>
+
+  <h3>Lost or changed</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>What</th><th>Today (terminal)</th><th>Under the SDK runtime</th><th>Severity</th></tr>
+    <tr>
+      <td>Surviving daemon death</td>
+      <td>tmux keeps the agent running if the daemon crashes or restarts; the sweep re-adopts it</td>
+      <td>SDK subprocesses are daemon children: a restart interrupts the in-flight turn. Conversation state survives (session files); the supervisor resumes on startup, but the interrupted turn's remaining work must be re-prompted</td>
+      <td class="sev-high">The one real regression. Mitigated by resume-on-start and graceful drain; accepted because the daemon is already the control plane for everything else about a dispatched session</td>
+    </tr>
+    <tr>
+      <td>Glanceable terminal presence</td>
+      <td>Every session is a wezterm/tmux pane you can look at and type into</td>
+      <td>No pane. The dashboard transcript stream is the view; taking over is an explicit handoff, not wandering into a terminal</td>
+      <td>Medium. Shared session storage makes handoff first-class: <code>claude --resume</code> / <code>codex resume</code> continue the same conversation interactively</td>
+    </tr>
+    <tr>
+      <td>Codex live TUI menus</td>
+      <td><code>/permissions</code> picker driven by keystrokes; <code>/model</code>, <code>/status</code> readable</td>
+      <td>No slash commands headless. Permission posture becomes per-turn overrides; <code>/compact</code> and <code>/review</code> become <code>thread/compact</code> / <code>review/start</code>; status facts come from the event stream</td>
+      <td class="sev-low">Low. Every lost menu has a structured replacement</td>
+    </tr>
+    <tr>
+      <td>Codex protocol stability</td>
+      <td>The TUI's screen grammar (also unstable, also unversioned)</td>
+      <td>app-server is explicitly experimental. Pinned, generated bindings; one adapter module absorbs drift</td>
+      <td class="sev-low">Low, and strictly better than screen-scraping the same vendor's TUI</td>
+    </tr>
+    <tr>
+      <td>Claude TUI chrome</td>
+      <td>Todo strip, background-bash UI, spinner</td>
+      <td>Narration still comes from the transcript file (unchanged reader); background bash has no UI equivalent</td>
+      <td class="sev-low">Cosmetic</td>
+    </tr>
+    <tr>
+      <td><code>/login</code> and first-run auth</td>
+      <td>An operator can log in inside the pane</td>
+      <td>SDK requires auth to already exist - but dispatched sessions already assume this today</td>
+      <td class="sev-low">None in practice</td>
+    </tr>
+    <tr>
+      <td>pi dispatch</td>
+      <td>Terminal panes</td>
+      <td>Unchanged until the pi RPC driver lands (this plan's final phase); terminal until then</td>
+      <td class="sev-low">None</td>
+    </tr>
+    <tr>
+      <td>Operator-started sessions</td>
+      <td>Discovered from <code>ps</code>, read passively, driven by keystrokes</td>
+      <td><strong>Completely unchanged.</strong> Discovery, pane dialogs, Foreman's cursor walks, the whole keystroke stack stays for sessions we do not own</td>
+      <td class="sev-low">None - which is why "deprecate terminal use" means "for dispatched sessions", not deletion of the pane stack</td>
+    </tr>
+  </table>
+  </div>
+
+  <h3>Gained</h3>
+  <div class="callout win">
+    <ul>
+      <li><strong>Delivery stops being probabilistic.</strong> <code>send()</code> acks; no
+        settle window, no paste placeholder, no <code>submitVerified: false</code>, no
+        Enter swallowed by a mention popup, no pane lock, no copy-mode probe, no
+        capture-miss counter.</li>
+      <li><strong>Menus stop being screens.</strong> A permission prompt is a callback with
+        the tool name and input as data; a multi-select is a typed form with free text; a
+        Codex approval is an RPC carrying the exact command and diff. The failure class
+        where a dialog swallows typed characters and Enter confirms the default row is
+        structurally gone.</li>
+      <li><strong>The folder-trust dialog disappears</strong> for SDK sessions - the dialog
+        that motivated the <code>--permission-mode</code> launch-flag work (#223).</li>
+      <li><strong>True interrupt, live mode/model changes</strong> instead of TUI walks
+        that read footers which dialogs hide.</li>
+      <li><strong>Exact usage</strong> per turn on the event stream.</li>
+      <li><strong>Dispatch verification collapses</strong>: the 20s hook wait and prompt
+        acceptance polling become "the SDK reported init".</li>
+    </ul>
+  </div>
+
+  <h3>Unchanged by design</h3>
+  <ul>
+    <li><strong>The read path stays file-based.</strong> Both SDKs write the same session
+      files the CLIs write, so <code>transcript.locate</code> / <code>passiveRead</code> /
+      <code>messages</code>, goal reading, queue verification windows, Codex usage ledger,
+      and the transcript SSE stream keep working with zero changes. The driver replaces
+      the <em>write</em> path and the <em>state</em> path, never the read path.</li>
+    <li>Worktree provisioning, pinned bases, the pool - identical.</li>
+    <li>Task lifecycle contracts - <code>session_remove</code> remains the durable signal.</li>
+    <li>The MCP ask-channel descriptor is rendered into SDK options instead of argv; same
+      single declaration.</li>
+  </ul>
+
+  <h2>Architecture</h2>
+
+  <h3>The axis is a per-session runtime, not a new harness</h3>
+  <p>An SDK-backed Claude session is still Claude on every axis the registries measure -
+  same transcript format, same skills directory, same models, same identity, same accent.
+  A <code>claude-sdk</code> agent id would give one product two settings cards, two model
+  catalogs, two entries in every <code>agentList()</code> sentence, would fragment the
+  hook-overlay namespace (<code>overlayFor</code> matches on <code>agent</code>), and
+  would silently become the ensemble default if it ever landed at
+  <code>AGENT_TYPES[0]</code>. The fact being encoded is <em>how this particular session
+  is driven</em>, which is exactly what <code>controlFor(session)</code> was shaped to
+  answer.</p>
+<pre><code>// @shared/types.ts
+export type SessionRuntime = "terminal" | "sdk";
+
+export interface Session {
+  // ...
+  runtime: SessionRuntime;  // fixed for the life of an entry
+}</code></pre>
+  <p><code>SESSION_FIELD_COMPARATORS</code> gains <code>runtime: byValue</code>.
+  <code>NameSource</code> gains <code>"sdk"</code>. SDK session ids are
+  <code>sdk:&lt;uuid&gt;</code>, disjoint from <code>proc:&lt;tty&gt;:&lt;pid&gt;:&lt;startMs&gt;</code>
+  by construction.</p>
+
+  <h3>The harness slot: SdkSpec</h3>
+  <p>One new nullable capability on the server-side <code>Harness</code>:</p>
+<pre><code>export interface Harness extends HarnessCapabilities {
+  // ...
+  /** How to run this harness embedded, or null when no driver exists (yet). */
+  sdk: SdkSpec | null;
+}
+
+export interface SdkSpec {
+  launch(opts: SdkLaunchOptions): Promise&lt;SdkSessionHandle&gt;;
+}
+
+export interface SdkSessionHandle {
+  events: AsyncIterable&lt;SdkEvent&gt;;
+  send(turn: { text: string; images?: SdkImage[] }): Promise&lt;void&gt;;  // acked
+  interrupt(): Promise&lt;void&gt;;
+  answer(requestId: string, answer: SessionRequestAnswer): Promise&lt;void&gt;;
+  setPermissionMode: ((mode: PermissionMode) =&gt; Promise&lt;void&gt;) | null;
+  setModel: ((model: string) =&gt; Promise&lt;void&gt;) | null;
+  clearContext: (() =&gt; Promise&lt;void&gt;) | null;
+  stop(): Promise&lt;void&gt;;
+}
+
+export type SdkEvent =
+  | { kind: "bound"; agentSessionId: string; transcriptPath: string | null }
+  | { kind: "state"; state: "working" | "idle"; activity: string | null }
+  | { kind: "request"; request: SessionRequest }
+  | { kind: "request_resolved"; requestId: string }
+  | { kind: "turn_done"; usage: SdkUsage | null }
+  | { kind: "pr_created"; url: string | null }
+  | { kind: "exited"; reason: string; resumable: boolean };</code></pre>
+  <p>The purity split holds: the browser needs to know <em>whether</em> a harness offers
+  the SDK runtime (to draw the toggle), so <code>HarnessCapabilities</code> gains
+  <code>runtimes: readonly SessionRuntime[]</code>. A contract test pins
+  <code>runtimes.includes("sdk") === (HARNESSES[a].sdk !== null)</code> - the
+  one-fact-two-files treatment <code>GOAL_UNSUPPORTED</code> already gets.</p>
+  <p>Declarations as the phases land: claude <code>["terminal", "sdk"]</code> (phase 2),
+  codex <code>["terminal", "sdk"]</code> (phase 4), pi <code>["terminal"]</code> with
+  <code>sdk: null</code> until its driver phase (phase 6) - a real absence taking the
+  tested degradation in the interim: no toggle, terminal dispatch, a sentence composed
+  from the capability.</p>
+
+  <h3>The supervisor</h3>
+  <p><code>src/server/sdk/supervisor.ts</code>, <strong>in the daemon</strong> - the
+  Inspector precedent, for the Inspector's reasons: a packaged Electron build must have
+  it, and its state must survive restarts. The Foreman stays a separate HTTP-only process.</p>
+  <ul>
+    <li>Owns the handle map; serializes <code>send()</code> per session (the pane lock's
+      job, without the pane).</li>
+    <li><strong>Registers sessions with the registry</strong> - the counterpart of
+      <code>applyDiscovery</code> for sessions no <code>ps</code> sweep will see (SDK
+      subprocesses have no tty). It mints <code>sdk:&lt;uuid&gt;</code> ids, feeds
+      <code>bound</code> events into the same identity slots hooks fill today
+      (<code>agentSessionId</code>, <code>transcriptPath</code> - which is what keeps the
+      file-based read path working), and applies <code>state</code> / <code>request</code>
+      events through a new <code>registry.applyDriverEvent</code>. No attribution guard is
+      needed: the supervisor <em>owns</em> the binding it reports.</li>
+    <li><strong>Persists</strong> to a new <code>sdk_sessions</code> table (new table, so
+      <code>migrate()</code> needs nothing; no <code>REFERENCES</code>; explicit
+      <code>NOT NULL</code> primary key).</li>
+    <li><strong>Resumes on startup</strong>, and the restore completes <strong>before the
+      discovery poller starts</strong>, so <code>registry.onSessionsObserved</code> (the
+      restart twin that settles orphaned tasks) sees SDK sessions on the first completed
+      sweep. A failed resume is registered, marked exited, and evicted normally so
+      <code>TaskManager.reconcileTasksBoundTo</code> settles its task visibly.</li>
+    <li><strong>Evicts</strong>: <code>applyDiscovery</code>'s unseen-means-exited rule is
+      scoped to <code>proc:</code> sessions; SDK sessions exit when their handle says so,
+      through the same <code>exited</code> then <code>session_remove</code> sequence both
+      existing subscribers already handle.</li>
+  </ul>
+
+  <h3>One request shape for menus, permissions, questions, approvals</h3>
+  <p>The multi-select special case, resolved by making the pane dialog one
+  <em>producer</em> of a shared shape rather than the shape itself.
+  <code>PaneDialog</code> is already the wire shape the dashboard renders and Foreman
+  answers; it generalizes with optional fields (absent on pane dialogs, so the wire is
+  compatible):</p>
+<pre><code>export interface PaneDialog {
+  // existing: options, highlighted, multiSelect?, prompt?
+  source?: "pane" | "driver";
+  requestId?: string;   // driver correlation; answers echo it
+  kind?: "permission" | "question" | "plan" | "approval" | "trust";
+  questions?: SessionRequestQuestion[];  // multi-question forms (AskUserQuestion)
+}</code></pre>
+  <div class="scroll">
+  <table>
+    <tr><th>Source</th><th>Projection</th></tr>
+    <tr><td>Claude <code>canUseTool</code> (ordinary tool)</td><td>kind <code>permission</code>; options Yes / Yes-don't-ask-again (from <code>suggestions</code>) / No; answering resolves allow / allow+updatedPermissions / deny</td></tr>
+    <tr><td>Claude <code>AskUserQuestion</code></td><td>kind <code>question</code>; one entry per question with its own options and <code>multiSelect</code>; free text allowed; resolves with the <code>answers</code> map</td></tr>
+    <tr><td>Claude <code>ExitPlanMode</code></td><td>kind <code>plan</code>; the plan text as prompt; approve / keep planning</td></tr>
+    <tr><td>Codex <code>item/commandExecution/requestApproval</code></td><td>kind <code>approval</code>; the command as prompt; accept / decline</td></tr>
+    <tr><td>Codex <code>item/fileChange/requestApproval</code></td><td>kind <code>approval</code>; the diff summary as prompt; accept / decline</td></tr>
+    <tr><td>Pane parse (<code>parsePaneDialog</code>)</td><td>exactly what it produces today, <code>source</code> absent</td></tr>
+  </table>
+  </div>
+  <p>Answering routes by runtime, not by caller: <code>select-option</code> keeps its
+  <code>{number, label}</code> body (pane: cursor walk; SDK: verify the label with the
+  same <code>optionRowMiss</code> rule, resolve the callback);
+  <code>submit-options</code> resolves multi-select with the full answers map - no Submit
+  tab, no unanswered banner, and free text becomes possible instead of refused.
+  <code>promptHarness</code> gains <code>runtime</code> so the reviewer prompt states the
+  true grammar; multi-question forms become answerable (<code>answer.form</code>) instead
+  of <code>menuMismatch</code>'s blanket multi-select refusal.
+  <code>reportBucket</code>'s <code>activePaneDialog</code> check needs no change: a
+  pending driver request lives in the same field, so an SDK session with an open ask reads
+  needs-you everywhere it does today.</p>
+  <p>One simplification falls out: dispatched Claude sessions today launch with
+  <code>--disallowed-tools AskUserQuestion</code> plus a redirect prompt steering asks
+  into the MCP ask-channel. SDK sessions re-enable the native tool - the card renders the
+  question directly, which is what the redirect was approximating.</p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 900 330" width="900" height="330" role="img" aria-label="Multi-select flow, terminal runtime vs SDK runtime">
+      <defs>
+        <marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <rect class="zone" x="10" y="10" width="880" height="150"/>
+      <text class="grp" x="24" y="32">Terminal runtime: a menu is a screen</text>
+      <rect class="node pane" x="24" y="52" width="140" height="52"/>
+      <text x="36" y="74">1.5s sweep</text><text class="lbl" x="36" y="90">capture-pane</text>
+      <rect class="node pane" x="204" y="52" width="160" height="52"/>
+      <text x="216" y="74">parsePaneDialog</text><text class="lbl" x="216" y="90">screen grammar, cursor glyph</text>
+      <rect class="node pane" x="404" y="52" width="150" height="52"/>
+      <text x="416" y="74">Session.paneDialog</text><text class="lbl" x="416" y="90">needs-you bucket</text>
+      <rect class="node pane" x="594" y="52" width="130" height="52"/>
+      <text x="606" y="74">Foreman</text><text class="lbl" x="606" y="90">answer.option</text>
+      <rect class="node pane" x="760" y="42" width="118" height="72"/>
+      <text x="770" y="64">cursor walk</text>
+      <text class="lbl" x="770" y="80">tick boxes, submit tab,</text>
+      <text class="lbl" x="770" y="94">unanswered banner,</text>
+      <text class="lbl" x="770" y="108">Enter x N</text>
+      <path class="arrow" d="M164 78 H202" marker-end="url(#m1)"/>
+      <path class="arrow" d="M364 78 H402" marker-end="url(#m1)"/>
+      <path class="arrow" d="M554 78 H592" marker-end="url(#m1)"/>
+      <path class="arrow bad" d="M724 78 H758" marker-end="url(#m1)"/>
+      <text class="lbl" x="30" y="140">Failure class: a dialog swallows typed characters; Enter confirms the default row. The reviewer's judgment never reaches the child.</text>
+
+      <rect class="zone" x="10" y="175" width="880" height="145"/>
+      <text class="grp" x="24" y="197">SDK runtime: a menu is data</text>
+      <rect class="node sdkn" x="24" y="217" width="200" height="52"/>
+      <text x="36" y="239">canUseTool / approval RPC</text><text class="lbl" x="36" y="255">AskUserQuestion, ExitPlanMode, exec/patch</text>
+      <rect class="node sdkn" x="264" y="217" width="180" height="52"/>
+      <text x="276" y="239">SessionRequest</text><text class="lbl" x="276" y="255">projection into PaneDialog</text>
+      <rect class="node sdkn" x="484" y="217" width="160" height="52"/>
+      <text x="496" y="239">same card render</text><text class="lbl" x="496" y="255">source: "driver"</text>
+      <rect class="node sdkn" x="684" y="217" width="194" height="52"/>
+      <text x="696" y="239">resolve callback</text><text class="lbl" x="696" y="255">answers map, free text, exact</text>
+      <path class="arrow" d="M224 243 H262" marker-end="url(#m1)"/>
+      <path class="arrow" d="M444 243 H482" marker-end="url(#m1)"/>
+      <path class="arrow good" d="M644 243 H682" marker-end="url(#m1)"/>
+      <text class="lbl" x="30" y="300">Foreman and the dashboard answer through the same routes; the label check (optionRowMiss) still verifies the answer names the row it means.</text>
+    </svg>
+    </div>
+    <figcaption>The multi-select special case: one shared request shape, two producers. The pane parser stays for terminal sessions; SDK sessions produce the same shape from structured callbacks.</figcaption>
+  </figure>
+
+  <h3>The delivery predicate</h3>
+  <p><code>canWriteTo</code> answers "is there a composer to type into", and ~20 call
+  sites use it to mean "can Mission Control deliver a turn". Those become different
+  questions: a new <code>canMessage(s)</code> (pane-writable OR sdk runtime) is adopted by
+  every delivery-intent call site (send boxes, queue gate, assign preflight, pickers,
+  Foreman's canSend); <code>canWriteTo</code> keeps its literal meaning for pane mechanics
+  (focus, rename, locks, capture tolerance). The sweep is enumerated per call site in the
+  phase work and pinned by tests.</p>
+
+  <h3>Capability remaps for SDK sessions</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>Capability</th><th>Terminal mechanism</th><th>SDK mechanism</th></tr>
+    <tr><td><code>clearContext</code></td><td>type <code>/clear</code> (<code>/new</code> for pi)</td><td>Claude: send <code>/clear</code> as a user message (supervisor rebinds the rotated session id). Codex: fresh thread on the same card - <code>handle.clearContext</code> owns which</td></tr>
+    <tr><td><code>skills.invoke</code> (wrap-up)</td><td>single-line composer grammar incl. Codex's popup-closing clause</td><td>the same line delivered as turn text via <code>send()</code> - the popup machinery becomes inert but harmless</td></tr>
+    <tr><td><code>skills.reloadCommand</code></td><td>typed at idle sessions holding a pane</td><td>Claude: same line via <code>send()</code>; pane-guard preconditions reduce to "driver idle"</td></tr>
+    <tr><td><code>permissionModes.liveControl</code></td><td>Shift+Tab cycle / <code>/permissions</code> menu walk</td><td><code>handle.setPermissionMode</code>: Claude maps 1:1; Codex renders modes as per-turn approval-policy + sandbox overrides</td></tr>
+    <tr><td><code>effort.sessionPicker</code></td><td>TUI picker walks</td><td>Claude: <code>setModel</code> + options; Codex: per-turn <code>modelReasoningEffort</code> override</td></tr>
+  </table>
+  </div>
+  <p>None of these become nulls - which matters, because every null on this table costs a
+  real feature.</p>
+
+  <h3>Dispatch, the toggle, and the settings panel</h3>
+  <p><code>HarnessesConfig</code> (<code>src/server/harnesses.ts</code>) is the documented
+  home for dispatch-time defaults, read at dispatch time so a toggle mid-batch affects the
+  next launch:</p>
+  <ul>
+    <li>Schema: <code>sessionRuntime: Record&lt;AgentType, SessionRuntime&gt;</code>
+      defaulting every agent to <code>"terminal"</code>, with hand-written per-agent patch
+      blocks. A persisted value this build cannot read falls back to
+      <code>"terminal"</code> and reports the drop (the <code>ResolvedLlmRunner.unknown</code>
+      precedent).</li>
+    <li><code>resolveDispatchRuntime(agent)</code>: config value, gated on
+      <code>HARNESSES[agent].sdk !== null</code>.</li>
+    <li>Panel: the Harnesses card per agent gains a runtime control, rendered only for
+      agents whose capabilities declare <code>"sdk"</code>; the absence sentence is
+      composed from the capability.</li>
+    <li><code>Dispatcher.dispatch</code>: after worktree provisioning (identical), branch
+      once - terminal: today's path; sdk: <code>supervisor.start(...)</code>. No home, no
+      20s hook wait (init IS ready), no paste (the prompt is turn one).
+      <code>Task.homeName</code> stays null; the <code>homeAlive</code> three-valued
+      contract gets an sdk arm where the supervisor always answers true/false, never
+      null.</li>
+  </ul>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 900 360" width="900" height="360" role="img" aria-label="Dispatch and delivery, terminal vs SDK runtime">
+      <defs>
+        <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <rect class="node" x="20" y="140" width="150" height="56"/>
+      <text x="32" y="164">Dispatcher</text><text class="lbl" x="32" y="180">worktree, pin, model, mode</text>
+      <rect class="node" x="210" y="140" width="180" height="56"/>
+      <text x="222" y="164">resolveDispatchRuntime</text><text class="lbl" x="222" y="180">HarnessesConfig, read at dispatch</text>
+
+      <rect class="zone" x="430" y="20" width="460" height="150"/>
+      <text class="grp" x="446" y="42">runtime: "terminal" (today's path, unchanged)</text>
+      <rect class="node pane" x="446" y="56" width="140" height="52"/>
+      <text x="458" y="78">terminal home</text><text class="lbl" x="458" y="94">tmux / wezterm spawn</text>
+      <rect class="node pane" x="620" y="56" width="120" height="52"/>
+      <text x="632" y="78">ps sweep</text><text class="lbl" x="632" y="94">proc:tty:pid id</text>
+      <rect class="node pane" x="754" y="56" width="122" height="52"/>
+      <text x="766" y="78">injectPrompt</text><text class="lbl" x="766" y="94">paste + Enter</text>
+      <path class="arrow" d="M586 82 H618" marker-end="url(#m2)"/>
+      <path class="arrow" d="M740 82 H752" marker-end="url(#m2)"/>
+      <text class="lbl" x="446" y="140">awaitReady: 20s hook wait, settle fallback, submitVerified maybe false</text>
+
+      <rect class="zone" x="430" y="190" width="460" height="150"/>
+      <text class="grp" x="446" y="212">runtime: "sdk"</text>
+      <rect class="node sdkn" x="446" y="226" width="150" height="52"/>
+      <text x="458" y="248">SdkSupervisor</text><text class="lbl" x="458" y="264">in-daemon, persisted</text>
+      <rect class="node sdkn" x="630" y="226" width="246" height="52"/>
+      <text x="642" y="248">Agent SDK / app-server subprocess</text><text class="lbl" x="642" y="264">init IS ready; prompt is turn one; send() acks</text>
+      <path class="arrow good" d="M596 252 H628" marker-end="url(#m2)"/>
+      <text class="lbl" x="446" y="310">registry.registerSdkSession + applyDriverEvent; sdk_sessions row; resume on daemon restart</text>
+
+      <path class="arrow" d="M170 168 H208" marker-end="url(#m2)"/>
+      <path class="arrow" d="M390 158 C 420 130, 420 90, 444 84" marker-end="url(#m2)"/>
+      <path class="arrow" d="M390 178 C 420 205, 420 240, 444 250" marker-end="url(#m2)"/>
+    </svg>
+    </div>
+    <figcaption>Dispatch branches once, after identical worktree provisioning. The toggle is read at dispatch time; existing sessions never change runtime.</figcaption>
+  </figure>
+
+  <h3>Automation parity</h3>
+  <ul>
+    <li><strong>Foreman</strong> (HTTP-only, unchanged process shape):
+      <code>classifyPending</code> already keys on the shared request field and driver
+      state. The pane capture returns null for SDK sessions; the review prompt substitutes
+      the structured request and transcript window - strictly more faithful than a 60-line
+      viewport.</li>
+    <li><strong>Work queue</strong>: pickup/completion arrive as driver events (SDK
+      sessions are instrumented by construction); delivery goes through
+      <code>send()</code> with a real ack - <code>mayHaveLanded</code>,
+      <code>paneBlocked</code>, and the pane-recreated guard have no SDK arm because their
+      failure modes cannot occur; verification (<code>transcript.since</code>) is
+      unchanged.</li>
+    <li><strong>Reset</strong>: <code>resetSession</code> routes through
+      <code>handle.clearContext()</code>; work-episode rebind keys on the rotated
+      <code>agentSessionId</code> exactly as the hook path does.</li>
+    <li><strong>Inspector / PR provenance</strong>: the driver watches
+      <code>gh pr create</code> on its tool stream (<code>pr_created</code> event) and
+      feeds the same <code>adoptPr</code> path - authorship evidence, preserving the
+      two-signal provenance rule.</li>
+    <li><strong>Cost</strong>: unchanged pipelines (Claude OTEL from the subprocess, Codex
+      rollup from rollouts SDK sessions still write); driver usage is display enrichment,
+      not a second ledger writer.</li>
+  </ul>
+
+  <h3>Terminal takeover</h3>
+  <p>Because both vendors share session storage between their programmatic and interactive
+  surfaces, "let me drive" is an explicit handoff rather than a lost capability:
+  <code>POST /sessions/:id/handoff</code> stops the driver gracefully, marks the SDK
+  session exited, and launches a terminal home in the same cwd running
+  <code>claude --resume &lt;agentSessionId&gt;</code> /
+  <code>codex resume &lt;threadId&gt;</code>. Discovery adopts the new process; session
+  decorations keyed by <code>noteKeyFor</code> follow the agent session id through the
+  same rebind machinery a <code>/clear</code> exercises today. The card gains a "Continue
+  in terminal" action where "Focus" renders for pane sessions.</p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 900 300" width="900" height="300" role="img" aria-label="Session lifecycle for terminal and SDK sessions">
+      <defs>
+        <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <rect class="zone" x="10" y="10" width="430" height="280"/>
+      <text class="grp" x="26" y="34">Terminal sessions (unchanged)</text>
+      <rect class="node pane" x="26" y="50" width="170" height="48"/>
+      <text x="38" y="70">ps sweep, 1.5s</text><text class="lbl" x="38" y="86">DetectSpec, tty required</text>
+      <rect class="node pane" x="240" y="50" width="180" height="48"/>
+      <text x="252" y="70">correlate</text><text class="lbl" x="252" y="86">proc:tty:pid:startMs</text>
+      <rect class="node pane" x="26" y="130" width="394" height="48"/>
+      <text x="38" y="150">Registry.applyDiscovery</text>
+      <text class="lbl" x="38" y="166">unseen by a completed sweep: exited, then 8s linger, then session_remove</text>
+      <rect class="node pane" x="26" y="210" width="394" height="48"/>
+      <text x="38" y="230">Restart twin</text>
+      <text class="lbl" x="38" y="246">rebuilt from the process table; onSessionsObserved reconciles tasks</text>
+      <path class="arrow" d="M196 74 H238" marker-end="url(#m3)"/>
+      <path class="arrow" d="M220 98 V128" marker-end="url(#m3)"/>
+      <path class="arrow" d="M220 178 V208" marker-end="url(#m3)"/>
+
+      <rect class="zone" x="460" y="10" width="430" height="280"/>
+      <text class="grp" x="476" y="34">SDK sessions (new registration path)</text>
+      <rect class="node sdkn" x="476" y="50" width="170" height="48"/>
+      <text x="488" y="70">SdkSupervisor.start</text><text class="lbl" x="488" y="86">sdk:&lt;uuid&gt;, no tty</text>
+      <rect class="node sdkn" x="690" y="50" width="180" height="48"/>
+      <text x="702" y="70">sdk_sessions</text><text class="lbl" x="702" y="86">persisted binding + resume id</text>
+      <rect class="node sdkn" x="476" y="130" width="394" height="48"/>
+      <text x="488" y="150">registerSdkSession + applyDriverEvent</text>
+      <text class="lbl" x="488" y="166">exited event, then the same session_remove both subscribers know</text>
+      <rect class="node sdkn" x="476" y="210" width="394" height="48"/>
+      <text x="488" y="230">Restart twin</text>
+      <text class="lbl" x="488" y="246">restore + resume BEFORE the first sweep, so onSessionsObserved sees them</text>
+      <path class="arrow" d="M646 74 H688" marker-end="url(#m3)"/>
+      <path class="arrow" d="M670 98 V128" marker-end="url(#m3)"/>
+      <path class="arrow" d="M670 178 V208" marker-end="url(#m3)"/>
+    </svg>
+    </div>
+    <figcaption>Two registration paths into one registry. Eviction stays a single durable signal (session_remove); the SDK path adds a persisted resume identity the process table never had.</figcaption>
+  </figure>
+
+  <h2>Phases</h2>
+  <ol>
+    <li><strong>The seam</strong> (no behavior change): <code>Session.runtime</code> +
+      comparator, <code>canMessage</code> / <code>canWriteTo</code> split with the
+      enumerated call-site sweep, <code>PaneDialog</code> extensions,
+      <code>registerSdkSession</code> / <code>applyDriverEvent</code> / eviction scoping,
+      supervisor skeleton + <code>sdk_sessions</code> table, <code>SdkSpec</code> slot
+      (all three harnesses null), <code>runtimes</code> capability + contract test.</li>
+    <li><strong>Claude driver, behind the toggle</strong> (default stays terminal): the
+      Agent SDK adapter, request projections, dispatch branch,
+      <code>sessionRuntime</code> config + Harnesses panel control, resume-on-restart,
+      all four session-drawing components rendering runtime truthfully - and the
+      "Continue in terminal" handoff, so the first SDK session an operator ever
+      dispatches is never a trap.</li>
+    <li><strong>Automation parity on Claude</strong>: Foreman structured answers + prompt
+      runtime projection, work queue over <code>send()</code>, reset, wrap-up invocation,
+      cost double-count verification, PR provenance events.</li>
+    <li><strong>Codex driver</strong>: app-server adapter with generated bindings pinned
+      to the launched binary, approval projections, per-turn permission/effort overrides,
+      thread resume, parity re-run of phase 3's checklist.</li>
+    <li><strong>Deprecation of the dispatched-session keystroke surfaces</strong>:
+      defaults stay <code>"terminal"</code> - cut-over is the operator flipping each
+      harness's toggle, never a default change (resolved decision). This phase retires
+      the machinery only SDK-runtime dispatch makes unreachable and documents the
+      enduring terminal surface: operator-started sessions, and Foreman's pane-menu
+      answering for sessions we do not own.</li>
+    <li><strong>pi RPC driver</strong>: a pi adapter over <code>--mode rpc</code> behind
+      the same <code>SdkSpec</code> - <code>extension_ui_request</code> dialogs projected
+      into the shared request shape, pi's <code>runtimes</code> gaining
+      <code>"sdk"</code> and the Harnesses toggle appearing for it. Also where pi first
+      gains structured needs-you evidence and a deliverable work queue signal, so its
+      <code>workQueue: null</code> / <code>hooks: null</code> declarations are revisited
+      for SDK-runtime pi sessions.</li>
+  </ol>
+
+  <h2>Resolved decisions</h2>
+  <p>Submitted from the Mission Control dashboard on 2026-07-24:</p>
+  <ol class="decisions">
+    <li><strong>Codex transport: <code>codex app-server</code>.</strong> The only
+      interface with answerable approvals; the official <code>@openai/codex-sdk</code>
+      was rejected because it reduces approvals to pre-set policy. Drift risk is absorbed
+      by generated typed bindings pinned to the launched binary, spoken in exactly one
+      adapter module.</li>
+    <li><strong>Toggle scope: Harnesses settings panel only.</strong> One per-agent
+      default read at dispatch time; no per-dispatch override.</li>
+    <li><strong>Terminal handoff: built with the Claude driver (phase 2).</strong> The
+      first SDK sessions ship with the escape hatch.</li>
+    <li><strong>No default flip.</strong> The stored default stays
+      <code>"terminal"</code> for every harness; cut-over is the operator flipping each
+      toggle in settings.</li>
+    <li><strong>pi RPC driver: in scope, as the final phase (6).</strong></li>
+  </ol>
+
+  <h2>Documentation</h2>
+  <p>README gains a Session runtimes section (what the toggle does, what changes for a
+  dispatched session, the handoff action), a Configuration line for any new env, and the
+  action-table entry for handoff. The pluggable-integrations plan's
+  <code>stream-json</code> note gets a pointer here. AGENTS.md gains the supervisor's
+  invariants (in-daemon like the Inspector, restore-before-first-sweep, eviction scoping)
+  in the architecture table and the session-going-away section.</p>
+</main>
+</body>
+</html>

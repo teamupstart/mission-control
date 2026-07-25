@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent SDK sessions - phased implementation</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1d1f24; --muted: #5c6370; --line: #e3e0da;
+    --card: #ffffff; --code-bg: #f1efe9; --accent: #7154c0; --accent-2: #1d7f6e;
+    --box: #f6f4ef; --box-line: #cfcac0; --hl: #eef0fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --fg: #e6e4df; --muted: #9aa0ab; --line: #2c2f36;
+      --card: #1c1f25; --code-bg: #22252c; --accent: #a98ff0; --accent-2: #5cc3ab;
+      --box: #20232a; --box-line: #3a3e47; --hl: #23263a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 60rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .3rem; letter-spacing: -.02em; }
+  .subtitle { color: var(--muted); margin: 0 0 2rem; max-width: 46rem; }
+  h2 { font-size: 1.3rem; margin: 2.6rem 0 .8rem; border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em;
+    background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--box); }
+  figure { margin: 1.6rem 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: .8rem; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  svg text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .lbl { font-size: 11px; fill: var(--muted); }
+  svg .node { fill: var(--box); stroke: var(--box-line); rx: 8; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  ul li, ol li { margin: .3rem 0; }
+  .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; color: var(--muted); margin: 0 0 .4rem; }
+  .contract { border-left: 3px solid var(--accent); background: var(--card); border-radius: 0 8px 8px 0;
+    padding: .7rem 1rem; margin: .8rem 0; font-size: .93rem; }
+  .contract b { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">docs/plans/agent-sdk-sessions/phased-plan.md</p>
+  <h1>Agent SDK sessions - phased implementation</h1>
+  <p class="subtitle">Six merge units implementing
+    <code>docs/plans/agent-sdk-sessions/plan.md</code>. Each phase file beside this index
+    (<code>phase-&lt;n&gt;-&lt;slug&gt;.md</code>) is the authoritative instruction set for
+    its implementing agent.</p>
+
+  <h2>Incorporated human decisions (2026-07-24)</h2>
+  <div class="scroll"><table>
+    <tr><th>Decision</th><th>Selection</th><th>Consequence</th></tr>
+    <tr><td>Codex transport</td><td><code>codex app-server</code></td><td>Phase 4 speaks app-server in one adapter with generated typed bindings; the official SDK is not used</td></tr>
+    <tr><td>Toggle scope</td><td>Harnesses settings panel only</td><td>No per-dispatch override; one per-agent default read at dispatch time</td></tr>
+    <tr><td>Terminal handoff</td><td>Built with the Claude driver</td><td>"Continue in terminal" ships in phase 2</td></tr>
+    <tr><td>Default flip</td><td>No - operator flips each toggle</td><td>Phase 5 never changes stored defaults (pinned by a test)</td></tr>
+    <tr><td>pi RPC driver</td><td>In scope, final phase</td><td>Phase 6 exists; pi gains the SDK runtime there</td></tr>
+    <tr><td>Follow-up</td><td>Phased implementation plan</td><td>This document</td></tr>
+  </table></div>
+
+  <h2>Repository findings that shaped the phases</h2>
+  <ul>
+    <li><strong>The seam exists</strong>: <code>ControlSpec</code>'s unimplemented
+      <code>stream-json</code> variant, <code>controlFor(session)</code>, two tested
+      refusal sites (<code>actions.ts:909</code>, <code>:970</code>).</li>
+    <li><strong>Sessions are discovered, never registered</strong>:
+      <code>applyDiscovery</code> is the registry's only entry; SDK subprocesses have no
+      tty, so phase 1 adds a registration path and scopes eviction.</li>
+    <li><strong>Restart ordering point</strong>: supervisor restore must complete before
+      <code>startPoller(registry)</code> (<code>src/server/index.ts:140</code>).</li>
+    <li><strong><code>canWriteTo</code> operates on <code>PaneHandles</code></strong>
+      (Session AND DiscoveredSession); <code>canMessage</code> takes
+      <code>PaneHandles &amp; { runtime }</code>, so only Session-shaped call sites move.</li>
+    <li><strong>Settings surface</strong> is <code>settings-registry.ts</code> +
+      <code>SettingsPage.tsx</code> + <code>HarnessesPanel.tsx</code> (AGENTS.md's
+      SettingsModal reference is stale); the toggle lands in the existing Harnesses
+      cards over the existing <code>HarnessesConfig</code> blob.</li>
+    <li><strong>No <code>harness/claude/launch.ts</code> exists</strong>; the SDK branch
+      composes from the same inline dispatcher inputs the terminal path uses.</li>
+    <li><strong><code>PaneDialog</code> already ships to the browser</strong>; optional
+      extensions are wire-compatible.</li>
+    <li><strong>Foreman is HTTP-only</strong>; everything it needs arrives via existing
+      routes or the Session payload.</li>
+    <li><strong>PR provenance</strong> requires authorship evidence; the driver's
+      <code>pr_created</code> event feeds the same rule.</li>
+    <li><strong>Binary resolution and packaging</strong>: adapters pin subprocesses to
+      <code>resolveAgentBin</code>; phase 2 owns the SDK dependency surviving the
+      esbuild bundle and electron-builder allowlist.</li>
+  </ul>
+
+  <h2>Phases</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>File</th><th>Merge unit</th><th>Direct prerequisites</th></tr>
+    <tr><td>1</td><td><code>phase-1-runtime-seam.md</code></td><td>Runtime axis, registration/eviction seam, request-shape extensions, <code>SdkSpec</code> slot, supervisor skeleton + <code>sdk_sessions</code>. No behavior change</td><td>-</td></tr>
+    <tr><td>2</td><td><code>phase-2-claude-driver.md</code></td><td>Claude Agent SDK adapter, dispatch branch, toggle, answer routing, resume, terminal handoff</td><td>1</td></tr>
+    <tr><td>3</td><td><code>phase-3-claude-parity.md</code></td><td>Foreman structured answers, queue over acked send, reset, skills/wrap-up, cost verification, PR provenance</td><td>2</td></tr>
+    <tr><td>4</td><td><code>phase-4-codex-driver.md</code></td><td>Codex app-server adapter (generated bindings), approvals, mode/effort mapping, thread resume</td><td>2</td></tr>
+    <tr><td>5</td><td><code>phase-5-keystroke-deprecation.md</code></td><td>Retire SDK-unreachable machinery, defaults untouched, deprecation docs, full E2E gate</td><td>3, 4</td></tr>
+    <tr><td>6</td><td><code>phase-6-pi-rpc-driver.md</code></td><td>pi <code>--mode rpc</code> adapter, dialog projection, pi runtimes + work-queue revisit</td><td>3</td></tr>
+  </table></div>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 860 250" width="860" height="250" role="img" aria-label="Phase dependency graph">
+      <defs>
+        <marker id="pm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <rect class="node" x="20" y="100" width="130" height="52"/>
+      <text x="32" y="122">1 seam</text><text class="lbl" x="32" y="138">no behavior change</text>
+      <rect class="node" x="200" y="100" width="150" height="52"/>
+      <text x="212" y="122">2 claude driver</text><text class="lbl" x="212" y="138">toggle + handoff</text>
+      <rect class="node" x="410" y="30" width="150" height="52"/>
+      <text x="422" y="52">3 claude parity</text><text class="lbl" x="422" y="68">foreman, queue, reset</text>
+      <rect class="node" x="410" y="170" width="150" height="52"/>
+      <text x="422" y="192">4 codex driver</text><text class="lbl" x="422" y="208">app-server</text>
+      <rect class="node" x="640" y="100" width="180" height="52"/>
+      <text x="652" y="122">5 deprecation + E2E gate</text><text class="lbl" x="652" y="138">defaults untouched</text>
+      <rect class="node" x="640" y="14" width="180" height="52"/>
+      <text x="652" y="36">6 pi rpc driver</text><text class="lbl" x="652" y="52">pi gains sdk runtime</text>
+      <path class="arrow" d="M150 126 H198" marker-end="url(#pm)"/>
+      <path class="arrow" d="M350 112 C 375 90, 385 70, 408 60" marker-end="url(#pm)"/>
+      <path class="arrow" d="M350 140 C 375 162, 385 182, 408 192" marker-end="url(#pm)"/>
+      <path class="arrow" d="M560 52 C 600 60, 615 90, 638 110" marker-end="url(#pm)"/>
+      <path class="arrow" d="M560 200 C 600 192, 615 162, 638 142" marker-end="url(#pm)"/>
+      <path class="arrow" d="M560 44 C 595 42, 610 40, 638 40" marker-end="url(#pm)"/>
+    </svg>
+    </div>
+    <figcaption>Concurrent groups: 3 ∥ 4 (both depend only on 2, disjoint files), then 5 ∥ 6 (README adjacency only). Numbering is presentation order, not serialization.</figcaption>
+  </figure>
+
+  <h2>Cross-phase contracts</h2>
+  <div class="contract"><b>C1 (P1)</b> - the runtime axis: <code>SessionRuntime</code>, <code>Session.runtime</code> (comparator <code>byValue</code>), <code>sdk:&lt;uuid&gt;</code> ids, <code>NameSource "sdk"</code>. Branch on <code>runtime</code>, never on an id prefix.</div>
+  <div class="contract"><b>C2 (P1)</b> - <code>canMessage</code> vs <code>canWriteTo</code>; the phase 1 call-site table is exhaustive; no surface re-derives either.</div>
+  <div class="contract"><b>C3 (P1 shape, P2 answering)</b> - <code>PaneDialog</code> optional <code>source</code>/<code>requestId</code>/<code>kind</code>/<code>questions</code>; <code>{number, label}</code> answers verified by <code>optionRowMiss</code> on both runtimes; forms answered with the full answers map.</div>
+  <div class="contract"><b>C4 (P1)</b> - <code>SdkSpec</code> family, <code>Harness.sdk</code>, pure <code>runtimes</code> capability, agreement pinned by test; adapters built over an injectable transport seam.</div>
+  <div class="contract"><b>C5 (P1)</b> - <code>registerSdkSession</code> / <code>applyDriverEvent</code>; eviction scoped to terminal sessions; restore before first sweep; <code>bound</code> fills identity and sets <code>instrumented</code>/<code>stateConfirmed</code>/<code>hooksSeen</code>, keeping the file-based read path and instrumentation gates working.</div>
+  <div class="contract"><b>C6 (P2)</b> - <code>sessionRuntime</code> config (default terminal, unknown values fall back and report) + <code>resolveDispatchRuntime</code> gated on the declared driver; panel-only control.</div>
+  <div class="contract"><b>C7 (P2)</b> - one dispatch branch after identical worktree provisioning; no home, no hook wait; supervisor answers task liveness true/false.</div>
+  <div class="contract"><b>C8 (P2)</b> - handoff: graceful stop + terminal home on the harness's resume argv; decorations follow <code>noteKeyFor</code>.</div>
+  <div class="contract"><b>C9 (P3)</b> - <code>promptHarness.runtime</code>, <code>answer.form</code>, queue over acked send with no pane-uncertainty arms, runtime-aware <code>foremanAutomationAuthorized</code> (phase 6 relies on it).</div>
+  <div class="contract"><b>C10 (P4)</b> - one app-server subprocess per session; committed generated bindings pinned to the binary; protocol spoken only in the adapter.</div>
+  <div class="contract"><b>C11 (P6)</b> - pi RPC JSONL (LF-only framing), <code>extension_ui_request</code> → C3, <code>new_session</code> as clearContext, work-queue revisit on C9's arm.</div>
+
+  <h2>Merge order and final verification</h2>
+  <p>Merge 1 → 2 → (3 ∥ 4) → (5 ∥ 6). After phase 5: dispatching Claude and Codex with
+  the toggle on runs end to end (dispatch → structured asks answered from the card and by
+  Foreman → queue → wrap-up → PR adopted) with zero keystroke writes; with the toggle off
+  the terminal path is byte-identical to today. After phase 6 the same holds for pi.
+  Defaults remain <code>"terminal"</code> everywhere - flipping them is an operator act in
+  settings. Every phase leaves CI green (<code>npm run typecheck</code>,
+  <code>npm test</code>, <code>npm run build</code>, bundle smoke) on Node 24 and 26.</p>
+</main>
+</body>
+</html>

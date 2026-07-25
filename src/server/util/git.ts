@@ -31,8 +31,8 @@ export interface GitInfo {
 /**
  * Read git info for a directory by walking up to the repo root - pure
  * filesystem, no subprocess, cheap enough to run for every session every poll.
- * Returns the branch (or short SHA when detached) and whether the repo is gated
- * by no-mistakes (surfacing the component the harness runs alongside).
+ * Returns the branch (or null when detached) and whether the repo is gated by
+ * no-mistakes (surfacing the component the harness runs alongside).
  *
  * Handles linked worktrees (and submodules), where `.git` is a FILE pointing at
  * the real git dir (`gitdir: <path>`) and shared config lives in the commondir -
@@ -161,7 +161,8 @@ function commonDir(gitDir: string): string {
 function branchFromHead(head: string): string | null {
   const ref = head.match(/^ref:\s*refs\/heads\/(.+)$/);
   if (ref) return ref[1] ?? null;
-  if (/^[0-9a-f]{7,40}$/.test(head)) return head.slice(0, 8);
+  // A detached checkout has no branch. Keeping this null lets the first real branch be
+  // adopted in place instead of looking like a branch change that invalidates task ownership.
   return null;
 }
 

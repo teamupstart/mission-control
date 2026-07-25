@@ -33,7 +33,10 @@ const FORKED_ID = "019f8f60-b43f-7163-8311-35f7e19fad67";
  * was witnessed can only have its identity moved by discovery reading again.
  */
 let seq = 0;
-function dispatched(id: string, over: { witnessIdentity?: boolean } = {}) {
+function dispatched(
+  id: string,
+  over: { witnessIdentity?: boolean; startBranch?: string | null } = {},
+) {
   // Each test gets its own session/task: the work-episode table is keyed by session id
   // and these tests share one HARNESS_HOME, so a shared id would leak state between them.
   const SID = `rollover-session-${++seq}`;
@@ -51,7 +54,7 @@ function dispatched(id: string, over: { witnessIdentity?: boolean } = {}) {
     name: SID,
     nameSource: "wezterm",
     cwd: WORKTREE,
-    gitBranch: "codex/phase-4-live",
+    gitBranch: over.startBranch === undefined ? "codex/phase-4-live" : over.startBranch,
     gitRoot: "/repo",
     repoRoot: "/repo",
     nomistakesGated: false,
@@ -118,6 +121,15 @@ function dispatched(id: string, over: { witnessIdentity?: boolean } = {}) {
       } as Parameters<typeof registry.applyHook>[0]);
       return registry.getSession(SID)!;
     },
+    /**
+     * Discovery reads the checkout again and sees a different branch - the agent moved its
+     * own work onto one. Nothing was announced; this is a passive read of the worktree.
+     */
+    switchesBranch(next: string | null) {
+      registry.applyDiscovery([{ ...discovered, gitBranch: next }]);
+      registry.workEpisodeForSession(SID);
+      return registry.getSession(SID)!;
+    },
   };
 }
 
@@ -156,6 +168,33 @@ test("an explicit /clear still gives up the work the task was dispatched for", (
   // A deliberate fresh start is the one identity change that really does abandon the
   // dispatched work - the case invalidation exists for.
   assert.equal(registry.getTask(TASK)?.status, "cancelled");
+});
+
+test("a detached-HEAD session keeps its task when the agent cuts its own branch", () => {
+  // The reported bug, end to end. A pooled worktree is provisioned by resetting to a bare
+  // commit, so the dispatched session starts on a DETACHED HEAD - which `gitInfo` now reports
+  // as no branch (`branch: null`, see git.test.ts), not a short sha dressed up as one. When
+  // the agent does the correct thing ("HEAD is detached, so I cut a feature branch") the new
+  // branch is adopted IN PLACE: the same episode, the task never disturbed. Before the fix the
+  // sha-"branch" changing to a real one read as a branch switch, rolled a fresh episode
+  // invalidating ownership, and cancelled the still-working task - so the PR it then merged was
+  // recorded against an episode no task pointed at, its Complete button dead and its dependents
+  // stranded behind a stopped blocker.
+  const { registry, switchesBranch, SID, TASK } = dispatched(FIRST_ID, { startBranch: null });
+  const before = registry.workEpisodeForTask(TASK)!;
+  assert.equal(before.branch, null, "the fixture did not start on a detached HEAD");
+
+  switchesBranch("codex/fix-the-thing");
+
+  const task = registry.getTask(TASK)!;
+  assert.equal(task.status, "running", "cutting a feature branch cancelled a live agent's task");
+  assert.equal(task.sessionId, SID, "the task lost the session still working it");
+  // Adopted in place - the SAME episode now carries the branch, so the merge that lands on it
+  // still belongs to this task and settles it (see task-merge-settles.test.ts).
+  const after = registry.workEpisodeForSession(SID)!;
+  assert.equal(after.episodeId, before.episodeId, "a new episode rolled instead of adopting the branch");
+  assert.equal(after.branch, "codex/fix-the-thing");
+  assert.equal(registry.workEpisodeForTask(TASK)?.episodeId, after.episodeId, "the task did not stay on its episode");
 });
 
 test("the barrier still blocks a session sitting in a genuinely cancelled task's tree", async () => {

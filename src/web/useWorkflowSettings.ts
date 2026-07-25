@@ -105,6 +105,27 @@ export function pollRacedByWrite(before: WriteClock, after: WriteClock): boolean
   return before.inFlight > 0 || after.inFlight > 0 || after.completed !== before.completed;
 }
 
+/**
+ * Whether a poll that has just come back is still the newest one to have done so.
+ *
+ * The interval starts a tick whether or not the previous one's requests are still out, so
+ * two polls can be in flight at once and they do not have to land in the order they left.
+ * An older one landing last repaints what IT read - the panel showed Live delivery come on
+ * and then go off again for nearly three seconds against a held response - and the value it
+ * restores is not merely displayed: every save on this panel spreads the config it is
+ * holding, so an operator acting during that window writes the obsolete blob back.
+ *
+ * An id per poll, and a completion older than the newest applied is dropped. The
+ * alternative - refusing to start a tick while one is in flight - rules the reorder out
+ * structurally but has a worse failure: `fetch` has no timeout, so one request that never
+ * settles would stop the panel polling for good, leaving exactly the stale-reading-shown-as-
+ * current state the null handling above exists to prevent. Asking again on schedule and
+ * discarding what arrives out of order keeps a wedged request from becoming a wedged panel.
+ */
+export function pollIsLatest(id: number, lastApplied: number): boolean {
+  return id > lastApplied;
+}
+
 export function useWorkflowSettings(): WorkflowSettingsState {
   const [config, setConfigState] = useState<WorkflowConfig | null>(null);
   const [status, setStatus] = useState<WorkflowStatus | null>(null);
@@ -117,6 +138,9 @@ export function useWorkflowSettings(): WorkflowSettingsState {
    */
   const writesCompleted = useRef(0);
   const writesInFlight = useRef(0);
+  /** Ids handed out to polls, and the newest whose reads reached the screen. */
+  const pollsStarted = useRef(0);
+  const pollApplied = useRef(0);
   const readClock = useCallback(
     (): WriteClock => ({
       completed: writesCompleted.current,
@@ -133,6 +157,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
+      const id = ++pollsStarted.current;
       const before = readClock();
       const [config, status] = await Promise.all([
         // A refusal is not thrown at the operator: it becomes a null reading, which is what
@@ -142,6 +167,10 @@ export function useWorkflowSettings(): WorkflowSettingsState {
         workflowRequest<WorkflowStatus>("/api/workflows/status").catch(() => null),
       ]);
       if (!alive) return;
+      // A poll that has been overtaken is dropped whole - both readings, not just the
+      // config: the status counters are as old as the config that came back with them.
+      if (!pollIsLatest(id, pollApplied.current)) return;
+      pollApplied.current = id;
       // The second clock reading sits directly after the await with nothing between them,
       // so no write can slip in unseen between the reads landing and being judged.
       const next = applyWorkflowPoll(

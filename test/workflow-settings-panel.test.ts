@@ -24,6 +24,7 @@ import {
 } from "../src/web/components/WorkflowSettingsPanel.tsx";
 import {
   applyWorkflowPoll,
+  pollIsLatest,
   pollRacedByWrite,
   type WorkflowSettingsState,
 } from "../src/web/useWorkflowSettings.ts";
@@ -289,4 +290,24 @@ test("a poll is raced by a write that merely OVERLAPS it, not only one that fini
 // the same "showing something that is no longer true" failure in a slower form.
 test("the race guard clears once writes have settled", () => {
   assert.equal(pollRacedByWrite({ completed: 4, inFlight: 0 }, { completed: 4, inFlight: 0 }), false);
+});
+
+// The reorder the Inspector caught on round 3 of #258. The interval starts a tick whether
+// or not the previous one's requests are still out, so two polls can be in flight and need
+// not land in the order they left - and an older one landing last repaints what IT read.
+//
+// Not merely a display problem, which is why it was the major of the three: every save on
+// this panel spreads the config it is holding, so an operator acting inside that window
+// writes the obsolete blob back. Measured against a held response: the switch came on,
+// went off for nearly three seconds, then came on again
+// (`000000000001111100000001111111111111111111111111111111111111` at 400ms).
+test("a poll that has been overtaken is dropped, however late it lands", () => {
+  // Polls landing in order: each is the newest when it arrives.
+  assert.equal(pollIsLatest(1, 0), true);
+  assert.equal(pollIsLatest(2, 1), true);
+  // Poll 3 landed first and was applied; polls 1 and 2 arriving afterwards are stale.
+  assert.equal(pollIsLatest(2, 3), false);
+  assert.equal(pollIsLatest(1, 3), false);
+  // A poll cannot apply twice - the same id is no longer newer than itself.
+  assert.equal(pollIsLatest(3, 3), false);
 });

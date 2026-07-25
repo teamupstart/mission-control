@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type { WorkflowSummary, WorkflowVersion } from "../src/shared/workflow.ts";
+import type { WorkflowSummary, WorkflowVersionMetadata } from "../src/shared/workflow.ts";
 import {
   compatibilityForWorkflowVersion,
   EnsembleDispatch,
+  workflowVersionCompatibilityKey,
 } from "../src/web/ensembles/dispatch/EnsembleDispatch.tsx";
 import {
   buildEnsembleCreateInput,
@@ -70,7 +71,7 @@ test("the dispatch renders descriptor-driven strategy cards, a roster, and a two
   assert.match(html, /no workflow/i); // the optional workflow-placement selector
 });
 
-test("workflow placement disables versions until compatibility is known", () => {
+test("workflow placement leaves unselected versions lazy", () => {
   const workflow: WorkflowSummary = {
     id: "workflow-1",
     name: "Review winner",
@@ -86,18 +87,17 @@ test("workflow placement disables versions until compatibility is known", () => 
     personaCount: 0,
   };
   const html = render({ workflowSummaries: [workflow] });
-  assert.match(html, /Review winner \(v1\) · checking compatibility/);
-  assert.match(html, /value="workflow-1" disabled/);
-  assert.match(html, /confirmed by the backend at Review/);
+  assert.match(html, /Review winner \(v1\)/);
+  assert.doesNotMatch(html, /Review winner \(v1\) · checking compatibility/);
+  assert.match(html, /loaded when selected and confirmed by the backend at Review/);
 });
 
 test("workflow placement identifies unsupported Live and Foreman modes", () => {
-  const version: WorkflowVersion = {
+  const version: WorkflowVersionMetadata = {
     id: "workflow-version-1",
     workflowId: "workflow-1",
     version: 1,
     sourceDraftRevision: 1,
-    graph: { nodes: [], edges: [] },
     completionPolicy: { kind: "none" },
     bindingDefaults: {
       triggerMode: "manual",
@@ -124,6 +124,43 @@ test("workflow placement identifies unsupported Live and Foreman modes", () => {
     }).reason ?? "",
     /trigger mode is not available/,
   );
+});
+
+test("workflow compatibility loads selected metadata by pinned version", () => {
+  const workflow: WorkflowSummary = {
+    id: "workflow-1",
+    name: "Review winner",
+    description: "",
+    draftRevision: 2,
+    currentVersionId: "workflow-version-2",
+    publishedVersion: 2,
+    archivedAt: null,
+    updatedAt: 2,
+    errorCount: 0,
+    warningCount: 0,
+    nodeCount: 2,
+    personaCount: 0,
+  };
+  const ensemble = {
+    ...freshEnsembleDraft(),
+    workflow: { workflowId: workflow.id, workflowVersion: 1 },
+  };
+  const html = render({ ensemble, workflowSummaries: [workflow] });
+  assert.match(html, /Review winner \(v1\) · pinned · checking compatibility/);
+  assert.match(html, /Review winner \(v2\)/);
+  assert.notEqual(
+    workflowVersionCompatibilityKey(workflow.id, 1),
+    workflowVersionCompatibilityKey(workflow.id, 2),
+  );
+
+  const source = readFileSync(
+    new URL("../src/web/ensembles/dispatch/EnsembleDispatch.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /workflowRequest<WorkflowVersionMetadata\[\]>/);
+  assert.match(source, /item\.version === selectedVersion/);
+  assert.doesNotMatch(source, /Promise\.all/);
+  assert.doesNotMatch(source, /versions\/\$\{workflow\.publishedVersion\}/);
 });
 
 test("uploading attachments blocks the launch controls", () => {

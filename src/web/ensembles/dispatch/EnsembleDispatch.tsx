@@ -4,7 +4,11 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import type { PersonaView, WorkflowSummary, WorkflowVersion } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  WorkflowSummary,
+  WorkflowVersionMetadata,
+} from "@shared/workflow.ts";
 import {
   ENSEMBLE_STRATEGY_INFO,
   type StrategyFormField,
@@ -542,72 +546,112 @@ function WorkflowPlacement({
   onChange: (workflow: EnsembleDispatchDraft["workflow"]) => void;
 }): React.JSX.Element {
   const published = workflows.filter((w) => w.publishedVersion !== null && w.archivedAt === null);
+  const selectedKey = selected
+    ? workflowVersionCompatibilityKey(selected.workflowId, selected.workflowVersion)
+    : null;
+  const choices: WorkflowChoice[] = published.map((workflow) => ({
+    key: workflowVersionCompatibilityKey(workflow.id, workflow.publishedVersion!),
+    workflowId: workflow.id,
+    workflowVersion: workflow.publishedVersion!,
+    name: workflow.name,
+  }));
+  if (selected && selectedKey && !choices.some((choice) => choice.key === selectedKey)) {
+    choices.unshift({
+      key: selectedKey,
+      workflowId: selected.workflowId,
+      workflowVersion: selected.workflowVersion,
+      name: workflows.find((workflow) => workflow.id === selected.workflowId)?.name
+        ?? selected.workflowId,
+    });
+  }
   const [compatibility, setCompatibility] = useState<Record<string, WorkflowCompatibility>>({});
-  const publishedSignature = published
-    .map((workflow) => `${workflow.id}:${workflow.publishedVersion}`)
-    .join("|");
+  const [loadingCompatibilityKey, setLoadingCompatibilityKey] = useState<string | null>(null);
+  const selectedCompatibility = selectedKey ? compatibility[selectedKey] : undefined;
 
   useEffect(() => {
+    if (!selected || !selectedKey || selectedCompatibility) {
+      setLoadingCompatibilityKey((key) => (key === selectedKey ? null : key));
+      return;
+    }
     let current = true;
-    setCompatibility({});
-    void Promise.all(
-      published.map(async (workflow): Promise<[string, WorkflowCompatibility]> => {
-        try {
-          const version = await workflowRequest<WorkflowVersion>(
-            `/api/workflows/${encodeURIComponent(workflow.id)}/versions/${workflow.publishedVersion}`,
-          );
-          return [workflow.id, compatibilityForWorkflowVersion(version)];
-        } catch {
-          return [
-            workflow.id,
-            {
-              supported: null,
-              reason: "Compatibility could not be loaded; the backend will confirm it at Review.",
-            },
-          ];
+    const workflowId = selected.workflowId;
+    const selectedVersion = selected.workflowVersion;
+    setLoadingCompatibilityKey(selectedKey);
+    void workflowRequest<WorkflowVersionMetadata[]>(
+      `/api/workflows/${encodeURIComponent(workflowId)}/versions`,
+    )
+      .then((versions) => {
+        if (!current) return;
+        const version = versions.find((item) => item.version === selectedVersion);
+        setCompatibility((known) => ({
+          ...known,
+          [selectedKey]: version
+            ? compatibilityForWorkflowVersion(version)
+            : {
+                supported: null,
+                reason: `Published workflow version ${selectedVersion} could not be found; the backend will confirm it at Review.`,
+              },
+        }));
+      })
+      .catch(() => {
+        if (!current) return;
+        setCompatibility((known) => ({
+          ...known,
+          [selectedKey]: {
+            supported: null,
+            reason: "Compatibility could not be loaded; the backend will confirm it at Review.",
+          },
+        }));
+      })
+      .finally(() => {
+        if (current) {
+          setLoadingCompatibilityKey((key) => (key === selectedKey ? null : key));
         }
-      }),
-    ).then((entries) => {
-      if (current) setCompatibility(Object.fromEntries(entries));
-    });
+      });
     return () => {
       current = false;
     };
-  }, [publishedSignature]);
+  }, [selectedKey, selectedCompatibility]);
 
-  const selectedCompatibility = selected
-    ? compatibility[selected.workflowId]
-    : null;
   return (
     <div className="ensemble-workflow-placement">
       <Tooltip label="Optionally hand the confirmed winner to a published workflow">
         <label className="ensemble-field">
           <span>After a winner is chosen (optional)</span>
           <select
-            value={selected?.workflowId ?? ""}
+            value={selectedKey ?? ""}
             onChange={(e) => {
-              const workflow = published.find((w) => w.id === e.target.value);
+              const workflow = choices.find((choice) => choice.key === e.target.value);
               onChange(
-                workflow && workflow.publishedVersion !== null
-                  ? { workflowId: workflow.id, workflowVersion: workflow.publishedVersion }
+                workflow
+                  ? {
+                      workflowId: workflow.workflowId,
+                      workflowVersion: workflow.workflowVersion,
+                    }
                   : null,
               );
             }}
           >
             <option value="">Continue normally (no workflow)</option>
-            {published.map((workflow) => {
-              const status = compatibility[workflow.id];
+            {choices.map((workflow) => {
+              const status = compatibility[workflow.key];
+              const isSelected = workflow.key === selectedKey;
+              const checking =
+                workflow.key === loadingCompatibilityKey || (isSelected && status === undefined);
               return (
                 <option
-                  key={workflow.id}
-                  value={workflow.id}
-                  disabled={status === undefined || status.supported === false}
+                  key={workflow.key}
+                  value={workflow.key}
+                  disabled={status?.supported === false}
                 >
-                  {workflow.name} (v{workflow.publishedVersion})
-                  {status === undefined
+                  {workflow.name} (v{workflow.workflowVersion})
+                  {isSelected ? " · pinned" : ""}
+                  {checking
                     ? " · checking compatibility"
-                    : status.supported === false
+                    : status?.supported === false
                       ? ` · unavailable: ${status.reason}`
+                      : status?.supported === null && status.reason
+                        ? ` · ${status.reason}`
                       : ""}
                 </option>
               );
@@ -616,7 +660,7 @@ function WorkflowPlacement({
           <small>
             A workflow reviews the confirmed winner only; it is not part of the candidate comparison.
             {!resolution && (
-              <> Published-version compatibility is loaded here and confirmed by the backend at Review.</>
+              <> Published-version compatibility is loaded when selected and confirmed by the backend at Review.</>
             )}
             {!resolution && selectedCompatibility?.reason && (
               <span
@@ -680,8 +724,22 @@ export type WorkflowCompatibility = {
   reason: string | null;
 };
 
+type WorkflowChoice = {
+  key: string;
+  workflowId: string;
+  workflowVersion: number;
+  name: string;
+};
+
+export function workflowVersionCompatibilityKey(
+  workflowId: string,
+  workflowVersion: number,
+): string {
+  return JSON.stringify([workflowId, workflowVersion]);
+}
+
 export function compatibilityForWorkflowVersion(
-  version: WorkflowVersion,
+  version: WorkflowVersionMetadata,
 ): WorkflowCompatibility {
   if (version.bindingDefaults.deliveryMode !== "preview") {
     return {

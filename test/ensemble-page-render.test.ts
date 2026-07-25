@@ -705,6 +705,81 @@ test("partial attempt history never presents an older session as current", () =>
   assert.match(html, /Open task/);
 });
 
+test("partial attempt history retains selected artifact subject attribution", () => {
+  const partialMember = member({
+    id: "m-partial",
+    ordinal: 3,
+    selectedAttemptId: "attempt-current",
+  });
+  const selectedArtifact = artifact({
+    id: "artifact-current",
+    attemptId: "attempt-current",
+  });
+  const html = renderDetail({
+    members: [partialMember],
+    attempts: [],
+    artifacts: [selectedArtifact],
+    evaluations: [
+      {
+        ...evaluation,
+        id: "evaluation-current",
+        subjectArtifactIds: [selectedArtifact.id],
+      },
+    ],
+    pagination: {
+      eventsTotal: 1,
+      eventsReturned: 1,
+      attemptsTotal: 2,
+      attemptsReturned: 1,
+    },
+  });
+  assert.match(html, /ensemble-artifact-label">Candidate 3</);
+  assert.match(html, /Subject artifact set[\s\S]*Candidate 3/);
+});
+
+test("outcome exposes the materialized task and pinned workflow handoff identity", () => {
+  const completed: EnsembleRun = {
+    ...run,
+    status: "completed",
+    activeStageId: null,
+    completedAt: 3000,
+    outcome: {
+      kind: "selected",
+      memberIds: ["m-1"],
+      artifactIds: ["art-1"],
+      materializedTaskId: "task-winner",
+    },
+    workflowHandoff: {
+      workflowId: "workflow-1",
+      workflowVersionId: "workflow-version-7",
+      workflowVersion: 7,
+      workflowName: "Review winner",
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 4,
+      completionPolicy: "inspector",
+      state: "submitted",
+      sourceKey: "ensemble:run-1",
+      expectedHeadSha: "1234567890abcdef",
+      bindingId: "binding-1",
+      runId: "workflow-run-1",
+      submissionId: "submission-1",
+      error: null,
+    },
+  };
+  const html = renderDetail({ run: completed });
+  assert.match(html, /Materialized task/);
+  assert.match(html, /task-winner/);
+  assert.match(html, /Open task/);
+  assert.match(html, /Review winner<!-- --> v<!-- -->7/);
+  assert.match(html, /Manual<!-- --> · <!-- -->Preview/);
+  assert.match(html, /Inspector<!-- --> · <!-- -->4<!-- --> repair rounds/);
+  assert.match(html, /binding-1/);
+  assert.match(html, /1234567890abcdef/);
+  assert.match(html, /workflow-run-1/);
+  assert.match(html, /Open workflow run/);
+});
+
 test("decision busy state and errors stay owned by their action surface", () => {
   const detailSource = readFileSync(
     new URL("../src/web/ensembles/EnsembleDetail.tsx", import.meta.url),

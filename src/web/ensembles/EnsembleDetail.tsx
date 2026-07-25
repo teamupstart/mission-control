@@ -71,11 +71,20 @@ export function EnsembleDetail({
   const { subjectLabel, memberOrdinal } = useMemo(() => {
     const attemptById = new Map<string, EnsembleAttempt>(detail.attempts.map((a) => [a.id, a]));
     const memberById = new Map<string, EnsembleMember>(detail.members.map((m) => [m.id, m]));
+    const memberBySelectedAttemptId = new Map<string, EnsembleMember>(
+      detail.members
+        .filter((member) => member.selectedAttemptId !== null)
+        .map((member) => [member.selectedAttemptId!, member] as const),
+    );
     const artifactById = new Map<string, EnsembleArtifact>(detail.artifacts.map((a) => [a.id, a]));
     const label = (artifactId: string): string => {
       const artifact = artifactById.get(artifactId);
       const attempt = artifact?.attemptId ? attemptById.get(artifact.attemptId) : null;
-      const member = attempt ? memberById.get(attempt.memberId) : null;
+      const member = attempt
+        ? memberById.get(attempt.memberId)
+        : artifact?.attemptId
+          ? memberBySelectedAttemptId.get(artifact.attemptId)
+          : null;
       if (member) {
         const facts = [attempt?.agent, attempt?.observedModel ?? attempt?.requestedModel]
           .filter(Boolean)
@@ -210,6 +219,7 @@ export function EnsembleDetail({
       <EnsembleOutcome
         detail={detail}
         memberOrdinal={memberOrdinal}
+        onOpenTask={onOpenTask}
         onOpenWorkflowRun={onOpenWorkflowRun}
       />
 
@@ -260,14 +270,18 @@ export function EnsembleDetail({
 function EnsembleOutcome({
   detail,
   memberOrdinal,
+  onOpenTask,
   onOpenWorkflowRun,
 }: {
   detail: EnsembleRunDetailResponse;
   memberOrdinal: (memberId: string) => number | null;
+  onOpenTask?: (taskId: string) => void;
   onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element | null {
   const { outcome, workflowHandoff } = detail.run;
   if (!outcome && !workflowHandoff) return null;
+  const materializedTaskId =
+    outcome && "materializedTaskId" in outcome ? outcome.materializedTaskId : null;
 
   const candidates = (ids: string[]): string =>
     ids
@@ -283,8 +297,7 @@ function EnsembleOutcome({
         <p className="ensemble-outcome-line">
           {outcome.kind === "selected" && (
             <>
-              Selected member {candidates(outcome.memberIds)}
-              {outcome.materializedTaskId && " (relaunched as a fresh task)"}.
+              Selected member {candidates(outcome.memberIds)}.
             </>
           )}
           {outcome.kind === "synthesized" && <>Synthesized from member #{memberOrdinal(outcome.memberId)}.</>}
@@ -292,30 +305,105 @@ function EnsembleOutcome({
           {outcome.kind === "no_consensus" && <>No consensus: {outcome.reason}</>}
         </p>
       )}
+      {materializedTaskId && (
+        <dl className="ensemble-workflow-resolution">
+          <div>
+            <dt>Materialized task</dt>
+            <dd>
+              <code>{materializedTaskId}</code>
+              {onOpenTask && (
+                <Tooltip label="Open the materialized winner Task">
+                  <button className="btn btn-ghost" onClick={() => onOpenTask(materializedTaskId)}>
+                    Open task
+                  </button>
+                </Tooltip>
+              )}
+            </dd>
+          </div>
+        </dl>
+      )}
       {workflowHandoff && (
         <div className="ensemble-handoff">
           <h5>Workflow handoff</h5>
-          <p>
-            {workflowHandoff.workflowName} v{workflowHandoff.workflowVersion} ·{" "}
-            {titleCaseEnum(workflowHandoff.triggerMode)} · {titleCaseEnum(workflowHandoff.deliveryMode)}
-          </p>
-          <p className="ensemble-muted">
-            State: {titleCaseEnum(workflowHandoff.state)}
-            {workflowHandoff.expectedHeadSha
-              ? ` · reviewing ${shortSha(workflowHandoff.expectedHeadSha)}`
-              : ""}
-          </p>
+          <dl className="ensemble-workflow-resolution">
+            <div>
+              <dt>Pinned workflow</dt>
+              <dd>
+                {workflowHandoff.workflowName} v{workflowHandoff.workflowVersion}
+              </dd>
+            </div>
+            <div>
+              <dt>Workflow · version ids</dt>
+              <dd>
+                <code>{workflowHandoff.workflowId}</code> ·{" "}
+                <code>{workflowHandoff.workflowVersionId}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Trigger · delivery</dt>
+              <dd>
+                {titleCaseEnum(workflowHandoff.triggerMode)} ·{" "}
+                {titleCaseEnum(workflowHandoff.deliveryMode)}
+              </dd>
+            </div>
+            <div>
+              <dt>Completion</dt>
+              <dd>
+                {titleCaseEnum(workflowHandoff.completionPolicy)} ·{" "}
+                {workflowHandoff.maxRepairRounds} repair rounds
+              </dd>
+            </div>
+            <div>
+              <dt>Handoff state</dt>
+              <dd>{titleCaseEnum(workflowHandoff.state)}</dd>
+            </div>
+            <div>
+              <dt>Expected head</dt>
+              <dd>
+                {workflowHandoff.expectedHeadSha ? (
+                  <code>{workflowHandoff.expectedHeadSha}</code>
+                ) : (
+                  <span className="ensemble-muted">Not pinned yet</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Binding id</dt>
+              <dd>
+                {workflowHandoff.bindingId ? (
+                  <code>{workflowHandoff.bindingId}</code>
+                ) : (
+                  <span className="ensemble-muted">Not bound yet</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Workflow run</dt>
+              <dd>
+                {workflowHandoff.runId ? (
+                  <>
+                    <code>{workflowHandoff.runId}</code>
+                    {onOpenWorkflowRun && (
+                      <Tooltip label="Open the linked workflow run reviewing this winner">
+                        <button
+                          className="btn btn-ghost"
+                          onClick={() => onOpenWorkflowRun(workflowHandoff.runId!)}
+                        >
+                          Open workflow run
+                        </button>
+                      </Tooltip>
+                    )}
+                  </>
+                ) : (
+                  <span className="ensemble-muted">Not started yet</span>
+                )}
+              </dd>
+            </div>
+          </dl>
           {workflowHandoff.error && (
             <p className="ensemble-error" role="alert">
               {workflowHandoff.error}
             </p>
-          )}
-          {workflowHandoff.runId && onOpenWorkflowRun && (
-            <Tooltip label="Open the linked workflow run reviewing this winner">
-              <button className="btn btn-ghost" onClick={() => onOpenWorkflowRun(workflowHandoff.runId!)}>
-                Open workflow run
-              </button>
-            </Tooltip>
           )}
         </div>
       )}

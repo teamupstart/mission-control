@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { EnsembleDispatch } from "../src/web/ensembles/dispatch/EnsembleDispatch.tsx";
+import type { WorkflowSummary, WorkflowVersion } from "../src/shared/workflow.ts";
+import {
+  compatibilityForWorkflowVersion,
+  EnsembleDispatch,
+} from "../src/web/ensembles/dispatch/EnsembleDispatch.tsx";
 import {
   buildEnsembleCreateInput,
   ensemblePreviewFingerprint,
@@ -66,6 +70,62 @@ test("the dispatch renders descriptor-driven strategy cards, a roster, and a two
   assert.match(html, /no workflow/i); // the optional workflow-placement selector
 });
 
+test("workflow placement disables versions until compatibility is known", () => {
+  const workflow: WorkflowSummary = {
+    id: "workflow-1",
+    name: "Review winner",
+    description: "",
+    draftRevision: 1,
+    currentVersionId: "workflow-version-1",
+    publishedVersion: 1,
+    archivedAt: null,
+    updatedAt: 1,
+    errorCount: 0,
+    warningCount: 0,
+    nodeCount: 2,
+    personaCount: 0,
+  };
+  const html = render({ workflowSummaries: [workflow] });
+  assert.match(html, /Review winner \(v1\) · checking compatibility/);
+  assert.match(html, /value="workflow-1" disabled/);
+  assert.match(html, /confirmed by the backend at Review/);
+});
+
+test("workflow placement identifies unsupported Live and Foreman modes", () => {
+  const version: WorkflowVersion = {
+    id: "workflow-version-1",
+    workflowId: "workflow-1",
+    version: 1,
+    sourceDraftRevision: 1,
+    graph: { nodes: [], edges: [] },
+    completionPolicy: { kind: "none" },
+    bindingDefaults: {
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+    },
+    publishedAt: 1,
+  };
+  assert.deepEqual(compatibilityForWorkflowVersion(version), {
+    supported: true,
+    reason: null,
+  });
+  assert.match(
+    compatibilityForWorkflowVersion({
+      ...version,
+      bindingDefaults: { ...version.bindingDefaults, deliveryMode: "live" },
+    }).reason ?? "",
+    /Live delivery is not available/,
+  );
+  assert.match(
+    compatibilityForWorkflowVersion({
+      ...version,
+      bindingDefaults: { ...version.bindingDefaults, triggerMode: "foreman_complete" },
+    }).reason ?? "",
+    /trigger mode is not available/,
+  );
+});
+
 test("uploading attachments blocks the launch controls", () => {
   const html = render({ uploading: true });
   // The primary launch button reads Uploading and is disabled while an upload is in flight.
@@ -95,7 +155,12 @@ test("preview and launch reconciliation preserve newer dispatch input", () => {
   assert.doesNotMatch(dispatch, /onEnsembleChange\(\{ \.\.\.ensemble, previewFingerprint: fingerprint \}\)/);
   assert.match(modal, /draftsEqual\(draftRef\.current, submitted\)/);
   assert.match(modal, /ensembleDraftsEqual\(ensembleDraftRef\.current, submittedEnsemble\)/);
+  assert.match(modal, /const draftChanged =/);
   assert.match(modal, /requestId: crypto\.randomUUID\(\)/);
+  assert.match(
+    modal,
+    /if \(draftChanged\) \{[\s\S]*?\} else \{[\s\S]*?\}\s*onEnsembleLaunched\?\.\(runId\);\s*onClose\(\);/,
+  );
 });
 
 test("review uses server estimates, routes nested issues, and hides unsupported task metadata", () => {

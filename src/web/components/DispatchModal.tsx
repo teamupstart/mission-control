@@ -318,20 +318,20 @@ export function DispatchLayer({
    */
   const onEnsembleLaunchedInternal = useCallback(
     (runId: string, submitted: DispatchDraft, submittedEnsemble: EnsembleDispatchDraft) => {
-      if (
+      const draftChanged =
         !draftsEqual(draftRef.current, submitted) ||
-        !ensembleDraftsEqual(ensembleDraftRef.current, submittedEnsemble)
-      ) {
+        !ensembleDraftsEqual(ensembleDraftRef.current, submittedEnsemble);
+      if (draftChanged) {
         setEnsembleDraft({
           ...ensembleDraftRef.current,
           requestId: crypto.randomUUID(),
           previewFingerprint: null,
         });
-        return;
+      } else {
+        revokeAttachments(draftRef.current.attachments);
+        setDraft(freshDispatchDraft());
+        setEnsembleDraft(freshEnsembleDraft());
       }
-      revokeAttachments(draftRef.current.attachments);
-      setDraft(freshDispatchDraft());
-      setEnsembleDraft(freshEnsembleDraft());
       onEnsembleLaunched?.(runId);
       onClose();
     },

@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowSummary, WorkflowVersion } from "@shared/workflow.ts";
 import {
   ENSEMBLE_STRATEGY_INFO,
   type StrategyFormField,
@@ -12,6 +12,7 @@ import {
 import { readyAttachments, type PendingAttachment } from "../../components/ImageDrop.tsx";
 import { Tooltip } from "../../components/Tooltip.tsx";
 import { createEnsemble, previewEnsemble } from "../../lib/api.ts";
+import { workflowRequest } from "../../workflows/workflowApi.ts";
 import type { EnsemblePreviewResult, StrategyIssue } from "../types.ts";
 import {
   buildEnsembleCreateInput,
@@ -541,6 +542,42 @@ function WorkflowPlacement({
   onChange: (workflow: EnsembleDispatchDraft["workflow"]) => void;
 }): React.JSX.Element {
   const published = workflows.filter((w) => w.publishedVersion !== null && w.archivedAt === null);
+  const [compatibility, setCompatibility] = useState<Record<string, WorkflowCompatibility>>({});
+  const publishedSignature = published
+    .map((workflow) => `${workflow.id}:${workflow.publishedVersion}`)
+    .join("|");
+
+  useEffect(() => {
+    let current = true;
+    setCompatibility({});
+    void Promise.all(
+      published.map(async (workflow): Promise<[string, WorkflowCompatibility]> => {
+        try {
+          const version = await workflowRequest<WorkflowVersion>(
+            `/api/workflows/${encodeURIComponent(workflow.id)}/versions/${workflow.publishedVersion}`,
+          );
+          return [workflow.id, compatibilityForWorkflowVersion(version)];
+        } catch {
+          return [
+            workflow.id,
+            {
+              supported: null,
+              reason: "Compatibility could not be loaded; the backend will confirm it at Review.",
+            },
+          ];
+        }
+      }),
+    ).then((entries) => {
+      if (current) setCompatibility(Object.fromEntries(entries));
+    });
+    return () => {
+      current = false;
+    };
+  }, [publishedSignature]);
+
+  const selectedCompatibility = selected
+    ? compatibility[selected.workflowId]
+    : null;
   return (
     <div className="ensemble-workflow-placement">
       <Tooltip label="Optionally hand the confirmed winner to a published workflow">
@@ -558,14 +595,41 @@ function WorkflowPlacement({
             }}
           >
             <option value="">Continue normally (no workflow)</option>
-            {published.map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>
-                {workflow.name} (v{workflow.publishedVersion})
-              </option>
-            ))}
+            {published.map((workflow) => {
+              const status = compatibility[workflow.id];
+              return (
+                <option
+                  key={workflow.id}
+                  value={workflow.id}
+                  disabled={status === undefined || status.supported === false}
+                >
+                  {workflow.name} (v{workflow.publishedVersion})
+                  {status === undefined
+                    ? " · checking compatibility"
+                    : status.supported === false
+                      ? ` · unavailable: ${status.reason}`
+                      : ""}
+                </option>
+              );
+            })}
           </select>
           <small>
             A workflow reviews the confirmed winner only; it is not part of the candidate comparison.
+            {!resolution && (
+              <> Published-version compatibility is loaded here and confirmed by the backend at Review.</>
+            )}
+            {!resolution && selectedCompatibility?.reason && (
+              <span
+                className={
+                  selectedCompatibility.supported === false
+                    ? "ensemble-field-error"
+                    : "ensemble-muted"
+                }
+              >
+                {" "}
+                {selectedCompatibility.reason}
+              </span>
+            )}
             {resolution && resolution.supported && (
               <>
                 {" "}
@@ -609,6 +673,31 @@ function WorkflowPlacement({
       )}
     </div>
   );
+}
+
+export type WorkflowCompatibility = {
+  supported: boolean | null;
+  reason: string | null;
+};
+
+export function compatibilityForWorkflowVersion(
+  version: WorkflowVersion,
+): WorkflowCompatibility {
+  if (version.bindingDefaults.deliveryMode !== "preview") {
+    return {
+      supported: false,
+      reason:
+        "Live delivery is not available for an ensemble handoff on this build; only Preview is",
+    };
+  }
+  if (version.bindingDefaults.triggerMode !== "manual") {
+    return {
+      supported: false,
+      reason:
+        "This workflow's trigger mode is not available for an ensemble handoff on this build",
+    };
+  }
+  return { supported: true, reason: null };
 }
 
 function LaunchSummary({

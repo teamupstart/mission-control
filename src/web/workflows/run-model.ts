@@ -98,15 +98,26 @@ const attemptsFor = (
 ): WorkflowNodeAttempt[] =>
   detail.attempts.filter((attempt) => attempt.submissionId === submissionId);
 
-/** The newest attempt per node, which is the only one whose state is current. */
-function latestAttempts(attempts: readonly WorkflowNodeAttempt[]): WorkflowNodeAttempt[] {
+/**
+ * Node id -> the newest attempt on it in one submission.
+ *
+ * The only attempt whose state is current, and - the reason this is exported rather than
+ * private to the status map - the only one whose runner and model are. A retry resolves the
+ * provider again, so reading the status off the newest attempt while reading `runner · model`
+ * off the first one puts a live chip beside stale metadata about a call that is over.
+ */
+export function latestAttemptsFor(
+  detail: WorkflowRunDetail,
+  submissionId: string | null,
+): Map<string, WorkflowNodeAttempt> {
   const newest = new Map<string, WorkflowNodeAttempt>();
-  for (const attempt of attempts) {
+  if (!submissionId) return newest;
+  for (const attempt of attemptsFor(detail, submissionId)) {
     const previous = newest.get(attempt.nodeId);
     if (previous && previous.attempt > attempt.attempt) continue;
     newest.set(attempt.nodeId, attempt);
   }
-  return [...newest.values()];
+  return newest;
 }
 
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
@@ -127,9 +138,8 @@ export function nodeStatusesForSubmission(
   submissionId: string | null,
 ): Record<string, string> {
   const statuses: Record<string, string> = {};
-  if (!submissionId) return statuses;
-  for (const attempt of latestAttempts(attemptsFor(detail, submissionId))) {
-    statuses[attempt.nodeId] = verdictOf(attempt)?.verdict ?? attempt.state;
+  for (const [nodeId, attempt] of latestAttemptsFor(detail, submissionId)) {
+    statuses[nodeId] = verdictOf(attempt)?.verdict ?? attempt.state;
   }
   return statuses;
 }

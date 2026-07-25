@@ -21,6 +21,7 @@ import {
   eventLine,
   eventsByRound,
   gateWaitSentence,
+  latestAttemptsFor,
   nodeStatusesForSubmission,
   readCapturedContext,
   reviewerStatus,
@@ -151,6 +152,27 @@ test("node statuses come from one submission, newest attempt, verdict first", ()
   });
   assert.deepEqual(nodeStatusesForSubmission(run, "s1"), { quality: "pass" });
   assert.deepEqual(nodeStatusesForSubmission(run, null), {});
+});
+
+test("the newest attempt answers for a node - its state AND its provider", () => {
+  // One map, two readers: the strip's chip and its `runner · model` line. Read apart, a
+  // retry that resolved a different provider shows a live status beside metadata about the
+  // call that already failed.
+  const run = detail(
+    [submission("s1", 1)],
+    [
+      attempt("first", "s1", "quality", { attempt: 1, state: "error", runner: "claude", model: "old" }),
+      attempt("retry", "s1", "quality", { attempt: 2, state: "running", runner: "codex", model: "new" }),
+      attempt("only", "s1", "security", { attempt: 1, state: "queued" }),
+    ],
+  );
+  const latest = latestAttemptsFor(run, "s1");
+  assert.equal(latest.get("quality")?.id, "retry");
+  assert.equal(latest.get("quality")?.model, "new");
+  assert.equal(latest.get("security")?.id, "only");
+  assert.deepEqual(nodeStatusesForSubmission(run, "s1"), { quality: "running", security: "queued" });
+  assert.equal(latestAttemptsFor(run, null).size, 0);
+  assert.equal(latestAttemptsFor(run, "gone").size, 0);
 });
 
 test("a reviewer with no attempt this round has not started, which is not 'nothing to say'", () => {

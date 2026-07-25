@@ -582,6 +582,42 @@ test("an orphaned binding refuses the send-side recoveries instead of failing at
   assert.doesNotMatch(bound, /<button[^>]*disabled[^>]*>Discard and send new round/);
 });
 
+test("the strip's meta line follows the retry, not the attempt that failed", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    attempts: [
+      ...base.attempts,
+      attempt("attempt-5", "submission-2", NODE.quality, snapshot("p-quality", "Quality reviewer"), {
+        attempt: 2,
+        state: "running",
+        runner: "codex",
+        model: "gpt-reviewer",
+        finishedAt: null,
+      }),
+    ],
+  } as WorkflowRunDetail);
+  // Attempt 1 ran on claude/reviewer and errored; the retry resolved a different provider.
+  // The chip is the retry's, so the line beneath it has to be too - asserted on that row
+  // rather than on the page, because Security ran once and still reads claude · reviewer.
+  const metaOf = (name: string): string | undefined =>
+    new RegExp(`${name}</span><span class="wf-pipeline-reviewer-meta">([^<]*)`).exec(html)?.[1];
+  assert.equal(metaOf("Quality reviewer"), "codex · gpt-reviewer");
+  assert.equal(metaOf("Security reviewer"), "claude · reviewer");
+});
+
+test("the header's session link is disabled with the binding, not with a cached summary", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    // An orphaned binding: the summary still carries the id it had.
+    binding: { ...base.binding, sessionId: null },
+  } as WorkflowRunDetail);
+  assert.match(html, /<button class="wf-run-session" disabled/);
+  assert.match(html, /The bound session is no longer available/);
+  assert.match(render(base), /<button class="wf-run-session"[^>]*>harness\/runs-monitor/);
+});
+
 test("the Inspector gate keeps its state, findings, actions, and bypass audit", () => {
   const base = runningDetail();
   const state = {

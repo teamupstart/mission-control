@@ -32,6 +32,7 @@ import {
   deliveryStateView,
   gateSummaryStatus,
   gateWaitSentence,
+  latestAttemptsFor,
   nodeStatusesForSubmission,
   readCapturedContext,
   runRounds,
@@ -300,6 +301,7 @@ export function WorkflowRunView({
   const inspectorGate = detail.inspectorGate;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
+  const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
   const completionClaims = detail.events.flatMap((event) => {
@@ -347,7 +349,13 @@ export function WorkflowRunView({
   }, [uncertainDeliveries.length, uncertainIds]);
 
   const preview = detail.binding.deliveryMode !== "live";
-  /** Whether the binding still names a live conversation - the two send-side recoveries need one. */
+  /**
+   * Whether the binding still names a live conversation.
+   *
+   * ONE field answers it for every control that needs a session - the header's link and the
+   * two send-side delivery recoveries. `summary.sessionId` reads the same column today, but
+   * a second source for one fact is how a link stays enabled onto a session that is gone.
+   */
   const sessionBound = detail.binding.sessionId !== null;
   return (
     <section className="wf-run-detail">
@@ -363,12 +371,12 @@ export function WorkflowRunView({
             <span className={`workflow-chip workflow-${workflowRunTone(detail.summary)}`}>
               {runStatusLabel(detail.run.status)}
             </span>
-            <Tooltip label={detail.summary.sessionId
+            <Tooltip label={sessionBound
               ? "Jump to the session this run is reviewing"
               : "The bound session is no longer available"}>
               <button
                 className="wf-run-session"
-                disabled={!detail.summary.sessionId}
+                disabled={!sessionBound}
                 onClick={onOpenSession}
               >
                 {detail.binding.sessionName}
@@ -585,7 +593,10 @@ export function WorkflowRunView({
             : { tone: "waiting", label: "No submission yet" }}
           end={endStatus(detail, viewed, isLatest)}
           metaFor={(nodeId) => {
-            const attempt = roundAttempts.find((candidate) => candidate.nodeId === nodeId);
+            // The NEWEST attempt, the same one the chip above it reads: a retry resolves the
+            // provider again, so the first attempt's runner and model describe a call that is
+            // over.
+            const attempt = latestAttemptByNode.get(nodeId);
             return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
           }}
           repair={detail.summary.maxRepairRounds > 0
@@ -1509,7 +1520,11 @@ export function WorkflowRuns({
               });
             }}
             onOpenSession={() => {
-              if (detail.summary.sessionId) onOpenSession(detail.summary.sessionId);
+              // The BINDING's session, which is the one that goes null when a session
+              // disappears. The summary carries the same column today, but it is also the
+              // shape SSE caches per run, and offering to open a session that has gone is
+              // the failure that costs an operator a click and a wrong selection.
+              if (detail.binding.sessionId) onOpenSession(detail.binding.sessionId);
             }}
           />
         )}

@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import {
   ENSEMBLE_LIMITS,
-  ensembleJsonEqual,
+  canonicalEnsembleJson,
   ensembleIsTerminal,
   ensemblePayload,
   ensembleStrategyKey,
@@ -459,21 +460,19 @@ export class EnsembleManager {
     const request = parsed.data;
     const existing = this.store.runBySource(request.sourceKind, request.sourceKey);
     if (!existing) return null;
+    // A source key is a per-submission idempotency key: a retry that reuses it must be the SAME
+    // request. Any difference - a different repository, title, source id, strategy version, config,
+    // or workflow placement - is a conflict, never a silent adoption of the old run. The whole
+    // normalized request is compared through one durable fingerprint, so no field is left out (a
+    // field-by-field check missed repoRoot, whose stored value is canonicalized and cannot be
+    // compared to the raw request directly). An unreadable existing run cannot be proven equivalent.
     const descriptor = descriptorFor(this.catalog, request.strategyId);
     const parsedConfig = descriptor?.configSchema.safeParse(request.strategyConfig);
-    const workflowMatches =
-      request.workflow === null
-        ? existing.workflowHandoff === null
-        : existing.workflowHandoff !== null &&
-          existing.workflowHandoff.workflowId === request.workflow.workflowId &&
-          existing.workflowHandoff.workflowVersion === request.workflow.workflowVersion;
+    const fingerprint = parsedConfig?.success
+      ? createRequestFingerprint(request, parsedConfig.data as EnsembleJson)
+      : null;
     const equivalent =
-      existing.unreadable === null &&
-      existing.strategyId === request.strategyId &&
-      parsedConfig?.success === true &&
-      ensembleJsonEqual(existing.strategyConfig, parsedConfig.data as EnsembleJson) &&
-      existing.intent === request.intent &&
-      workflowMatches;
+      existing.unreadable === null && fingerprint !== null && fingerprint === this.store.requestFingerprint(existing.id);
     if (!equivalent) {
       return {
         ok: false,
@@ -591,6 +590,7 @@ export class EnsembleManager {
         strategyConfig: config,
         status,
         workflowHandoff,
+        requestFingerprint: createRequestFingerprint(request, config),
         members,
       },
       now,
@@ -870,7 +870,7 @@ export class EnsembleManager {
    * pins no base and touches no repository beyond what compilation needs, so it is safe to call on
    * every keystroke.
    */
-  preview(input: EnsembleCreateInput, now = this.now()): EnsemblePreviewResult {
+  async preview(input: EnsembleCreateInput, now = this.now()): Promise<EnsemblePreviewResult> {
     const compiled = this.compile(input, now);
     if (!compiled.ok) {
       const outcome = compiled.outcome;
@@ -882,28 +882,31 @@ export class EnsembleManager {
         workflow: null,
       };
     }
+    const estimate = compiled.value.descriptor.estimate(compiled.value.config);
     const placement = input.workflow ?? null;
     let workflow: ResolvedWorkflowVersion | null = null;
     if (placement !== null) {
+      workflow = this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null;
       const handoff = this.resolveHandoff(placement);
       if (!handoff.ok) {
         return {
           ok: false,
           reason: handoff.outcome.ok ? null : handoff.outcome.reason,
           issues: handoff.outcome.ok ? [] : handoff.outcome.issues,
-          estimate: compiled.value.descriptor.estimate(compiled.value.config),
-          workflow: this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null,
+          estimate,
+          workflow,
         };
       }
-      workflow = this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null;
     }
-    return {
-      ok: true,
-      reason: null,
-      issues: [],
-      estimate: compiled.value.descriptor.estimate(compiled.value.config),
-      workflow,
-    };
+    // Preview shares create's validation: run the SAME read-only launch preflight (repository, base
+    // commit, agent binaries, Mission MCP) that `createAndLaunch` runs, so a draft for an unavailable
+    // harness or an invalid repository does not preview as launchable and then fail on create. It
+    // pins no base and writes nothing.
+    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
+    if (!preflight.ok) {
+      return { ok: false, reason: "preflight_failed", issues: preflight.issues, estimate, workflow };
+    }
+    return { ok: true, reason: null, issues: [], estimate, workflow };
   }
 
   /**
@@ -1110,6 +1113,36 @@ export class EnsembleManager {
     };
     return { ok: true, value: { repoRoot, persona, now } };
   }
+}
+
+/**
+ * A stable fingerprint of a create request, for source-key replay-conflict detection.
+ *
+ * Built from the RAW parsed request (a legitimate idempotent retry is byte-identical, so its
+ * fingerprint matches), and from the descriptor-parsed config rather than the raw config blob so
+ * that key ordering and defaults do not spuriously differ. `repoRoot` is the raw request value, not
+ * the canonicalized one stored on the row - a different repository yields a different fingerprint,
+ * while the same retry yields the same one. Any differing field makes the fingerprint differ, which
+ * is exactly the conflict this detects.
+ */
+function createRequestFingerprint(
+  request: ReturnType<typeof EnsembleCreateInputSchema.parse>,
+  config: EnsembleJson,
+): string {
+  const material: EnsembleJson = {
+    sourceKind: request.sourceKind,
+    sourceId: request.sourceId,
+    title: request.title.trim(),
+    intent: request.intent,
+    repoRoot: request.repoRoot,
+    strategyId: request.strategyId,
+    strategyVersion: request.strategyVersion ?? null,
+    config,
+    workflow: request.workflow
+      ? { workflowId: request.workflow.workflowId, workflowVersion: request.workflow.workflowVersion }
+      : null,
+  };
+  return createHash("sha256").update(canonicalEnsembleJson(material)).digest("hex");
 }
 
 function readPersonaId(evaluator: unknown): string | null {

@@ -248,14 +248,23 @@ test("a source-key retry resolves before mutable compilation prerequisites", () 
   const first = firstManager.create(personaRequest, 100);
   assert.equal(first.ok, true);
 
+  // A byte-identical retry resolves to the existing run BEFORE any mutable compilation prerequisite
+  // runs - here the persona resolver now returns null (the Persona was archived), which would fail a
+  // fresh compile, but the source-key match short-circuits first.
   const retryManager = new EnsembleManager(new Registry(), store, {
     resolvePersona: () => null,
   });
-  const retry = retryManager.create({ ...personaRequest, strategyVersion: 99 }, 200);
+  const retry = retryManager.create(personaRequest, 200);
   assert.equal(retry.ok, true);
   if (!first.ok || !retry.ok) return;
   assert.equal(retry.created, false);
   assert.equal(retry.run.id, first.run.id);
+
+  // But a retry that CHANGES the request (a different strategy version) is a conflict, not a silent
+  // replay of the old run - the whole request is compared through its durable fingerprint.
+  const conflict = retryManager.create({ ...personaRequest, strategyVersion: 99 }, 300);
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.equal(conflict.reason, "request_conflict");
 });
 
 test("a create the strategy refuses persists nothing and publishes nothing", () => {

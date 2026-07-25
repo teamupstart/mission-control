@@ -24,7 +24,7 @@ const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { FakeGateway, FakeFinalize, stubAdapters, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
+const { FakeGateway, FakeFinalize, stubAdapters, decidePlan, runInsert, gitRepo } = await import("./ensemble-fixture.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -43,7 +43,15 @@ function build() {
   const store = new EnsembleStore(db);
   const gateway = new FakeGateway();
   const finalize = new FakeFinalize();
-  const manager = new EnsembleManager(registry, store, { tasks: gateway, finalize, adapters: stubAdapters() });
+  // Preview and create share the read-only launch preflight, so stub the harness/MCP availability
+  // it probes; the repository is a real one per test where preflight must actually pass.
+  const manager = new EnsembleManager(registry, store, {
+    tasks: gateway,
+    finalize,
+    adapters: stubAdapters(),
+    agentBinPresent: async () => true,
+    missionMcpAvailable: async () => true,
+  });
   const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry), undefined, undefined, undefined, undefined, manager);
   // A separate engine on the SAME store/gateway/finalize drives a run to awaiting_decision without
   // needing the manager's private launch path or a real repository.
@@ -79,11 +87,14 @@ test("GET /api/ensembles lists compact summaries and filters by status", async (
 
 test("POST /api/ensembles/preview validates a draft side-effect-free and never persists", async () => {
   const { store, app } = build();
+  const { path } = gitRepo();
+  // A valid draft (real repository, stubbed harness/MCP) previews as launchable through the SAME
+  // preflight create runs.
   const ok = await req(app, "/api/ensembles/preview", {
     sourceKey: "p1",
     title: "Try it",
     intent: "implement the feature",
-    repoRoot: "/repo",
+    repoRoot: path,
     strategyId: "best_of_n",
     strategyConfig: { members: [{}, {}, {}] },
   });
@@ -96,7 +107,7 @@ test("POST /api/ensembles/preview validates a draft side-effect-free and never p
     sourceKey: "p2",
     title: "Too few",
     intent: "x",
-    repoRoot: "/repo",
+    repoRoot: path,
     strategyId: "best_of_n",
     strategyConfig: { members: [{}] },
   });
@@ -104,6 +115,19 @@ test("POST /api/ensembles/preview validates a draft side-effect-free and never p
   const badBody = (await bad.json()) as { ok: boolean; issues: unknown[] };
   assert.equal(badBody.ok, false);
   assert.ok(badBody.issues.length > 0);
+  // A draft for an invalid repository previews as NOT launchable - preview shares create's preflight.
+  const badRepo = await req(app, "/api/ensembles/preview", {
+    sourceKey: "p3",
+    title: "No repo",
+    intent: "implement the feature",
+    repoRoot: "/does/not/exist",
+    strategyId: "best_of_n",
+    strategyConfig: { members: [{}, {}] },
+  });
+  assert.equal(badRepo.status, 200);
+  const badRepoBody = (await badRepo.json()) as { ok: boolean; reason: string | null };
+  assert.equal(badRepoBody.ok, false);
+  assert.equal(badRepoBody.reason, "preflight_failed");
   // Preview persisted nothing.
   assert.equal(store.listRuns().length, 0);
 });
@@ -146,6 +170,12 @@ test("POST /api/ensembles refuses a mismatched source-key replay with a 409", as
   assert.equal(conflict.status, 409);
   const body = (await conflict.json()) as { code: string };
   assert.equal(body.code, "ensemble_create_request_conflict");
+
+  // Reusing the source key against a DIFFERENT repository is the same conflict - the caller must not
+  // be told it launched against the new repo when it got the old run. Every field is compared.
+  const repoConflict = await req(app, "/api/ensembles", { ...request, repoRoot: "/a/different/repo" });
+  assert.equal(repoConflict.status, 409);
+  assert.equal(((await repoConflict.json()) as { code: string }).code, "ensemble_create_request_conflict");
 });
 
 test("POST /api/ensembles/:id/actions decides through the manager and reaches completed", async () => {

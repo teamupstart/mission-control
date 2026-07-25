@@ -178,6 +178,7 @@ const RunRowSchema = z.object({
   active_stage_id: nullableText,
   outcome_json: nullableText,
   workflow_handoff_json: nullableText,
+  request_fingerprint: z.string(),
   created_at: integer,
   updated_at: integer,
   completed_at: integer.nullable(),
@@ -232,6 +233,7 @@ function readRunRow(value: unknown): { row: RunRow; issues: RunRowIssue[] } {
       active_stage_id: read("active_stage_id", nullableText, null),
       outcome_json: read("outcome_json", nullableText, null),
       workflow_handoff_json: read("workflow_handoff_json", nullableText, null),
+      request_fingerprint: read("request_fingerprint", z.string(), ""),
       created_at: read("created_at", integer, 0),
       updated_at: read("updated_at", integer, 0),
       completed_at: read("completed_at", integer.nullable(), null),
@@ -791,6 +793,8 @@ export interface EnsembleRunInsert {
   status: EnsembleStatus;
   /** The pinned post-selection Workflow handoff snapshot, or null when none was chosen. */
   workflowHandoff: EnsembleWorkflowHandoff | null;
+  /** A stable fingerprint of the raw create request, for source-key replay-conflict detection. */
+  requestFingerprint: string;
   members: EnsembleMemberInsert[];
 }
 
@@ -998,9 +1002,9 @@ export class EnsembleStore {
           `INSERT INTO ensemble_runs (id, source_kind, source_key, source_id, strategy_id,
              strategy_version, strategy_key, strategy_label, title, intent, repo_root,
              base_branch, base_sha, compiled_plan_json, strategy_config_json, status,
-             active_stage_id, outcome_json, workflow_handoff_json, created_at, updated_at,
-             completed_at, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, NULL, NULL)`,
+             active_stage_id, outcome_json, workflow_handoff_json, request_fingerprint, created_at,
+             updated_at, completed_at, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL)`,
         )
         .run(
           id,
@@ -1026,6 +1030,7 @@ export class EnsembleStore {
           input.workflowHandoff === null
             ? null
             : serializedJson(input.workflowHandoff as unknown as EnsembleJson, ENSEMBLE_LIMITS.artifactMetadataJsonBytes, "workflow handoff"),
+          bounded(input.requestFingerprint, ENSEMBLE_LIMITS.sourceKey),
           now,
           now,
         );
@@ -1064,6 +1069,14 @@ export class EnsembleStore {
       .prepare(`SELECT * FROM ensemble_runs WHERE source_kind = ? AND source_key = ?`)
       .get(sourceKind, sourceKey) as unknown;
     return row ? rowToRun(row) : null;
+  }
+
+  /** The raw create-request fingerprint recorded for a run, or '' for a pre-feature row. */
+  requestFingerprint(runId: string): string {
+    const row = this.db
+      .prepare(`SELECT request_fingerprint AS fp FROM ensemble_runs WHERE id = ?`)
+      .get(runId) as { fp?: string } | undefined;
+    return row?.fp ?? "";
   }
 
   listRuns(): EnsembleRun[] {

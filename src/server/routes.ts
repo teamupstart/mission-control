@@ -1279,7 +1279,7 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     // Side-effect-free: nothing is pinned or launched, so a bad draft is a 200 carrying its own
     // validation result, never a refusal status - the form shows the issues inline.
-    return c.json(manager.preview(parsed.data));
+    return c.json(await manager.preview(parsed.data));
   });
 
   app.post("/api/ensembles", async (c) => {

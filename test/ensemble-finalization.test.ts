@@ -258,6 +258,31 @@ test("a restored winner that exits before delivery is replaced once", async () =
   assert.equal(finalize.continuations.length, 0);
 });
 
+test("a restored winner that drifts while cleanup is parked is re-verified and restored before completion", async () => {
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const loser = store.listMembers(runId).find((m) => m.id !== winner.memberId)!;
+  const loserTask = store.listAttempts(runId).find((a) => a.memberId === loser.id)!.taskId!;
+  // A loser cancel fails, parking finalization AFTER the winner was restored - long enough for the
+  // restored checkout to drift.
+  gateway.failCancel(loserTask);
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.restored.length, 1);
+  assert.equal(finalize.continuations.length, 0, "nothing delivered while cleanup is parked");
+
+  // The winner drifts off its snapshot during the park; resuming must re-verify and restore it again
+  // before it can reap the loser and complete - never complete around a drifted winner.
+  finalize.driftPending = true;
+  gateway.cancelFailures.delete(loserTask);
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.restored.length, 2, "the drifted winner was restored again before completion");
+  assert.equal(store.getMember(loser.id)!.status, "eliminated");
+});
+
 test("a loser whose cancel fails leaves the run finalizing, and a retry completes it", async () => {
   const finalize = new FakeFinalize();
   const { store, gateway, engine } = harness(finalize);

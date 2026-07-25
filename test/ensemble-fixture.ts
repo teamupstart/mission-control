@@ -253,6 +253,8 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   safeIdle = true;
   restoreOk = true;
   headClean = true;
+  /** When set, the next `worktreeHead` reports the checkout drifted; a restore clears it. */
+  driftPending = false;
   deliverOk = true;
   deliverRetryable = true;
   materializeOk = true;
@@ -271,9 +273,11 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   async restoreWinner(input: { sessionId: string; snapshotSha: string; ref: string }) {
     this.restored.push({ sessionId: input.sessionId, snapshotSha: input.snapshotSha });
     this.lastRestoredSha = input.snapshotSha;
+    this.driftPending = false; // a successful restore returns the checkout to its snapshot
     return this.restoreOk ? { ok: true as const } : { ok: false as const, detail: "restore failed" };
   }
   async worktreeHead() {
+    if (this.driftPending) return { headSha: this.lastRestoredSha, clean: false };
     return { headSha: this.lastRestoredSha, clean: this.headClean };
   }
   async deliverContinuation(input: { sessionId: string; text: string }) {
@@ -493,6 +497,7 @@ export function runInsert(
     strategyConfig: {},
     status: "running",
     workflowHandoff: null,
+    requestFingerprint: "",
     members: plan.roles.map((r) => ({ roleKey: r.key, roleLabel: r.label, ordinal: r.ordinal, wave: r.wave })),
     ...over,
   };

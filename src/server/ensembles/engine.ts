@@ -2415,11 +2415,10 @@ export class EnsembleEngine {
         run.workflowHandoff !== null &&
         run.workflowHandoff.bindingId !== null &&
         run.workflowHandoff.state !== "skipped";
-      if (
-        (sessionId !== null && worktreePath !== null) ||
-        progress.continuationDelivered ||
-        handoffBound
-      ) {
+      // Once the winner has been handed its continuation or bound to a Workflow it may be WORKING,
+      // and re-touching its checkout would erase that work - so honor the receipt as-is. This is the
+      // post-delivery window.
+      if (progress.continuationDelivered || handoffBound) {
         return {
           ok: true,
           winner: { mode: "restored", ready: true },
@@ -2429,6 +2428,32 @@ export class EnsembleEngine {
           continuationInIntent: false,
         };
       }
+      // Pre-delivery: the winner should still stand exactly on its snapshot, but a parked step (a
+      // loser cancel that failed) can leave the run finalizing long enough for the checkout to drift.
+      // Re-verify HEAD/cleanliness and restore again if needed BEFORE resuming past the receipt, so a
+      // no-handoff run can never reap the rest and complete around a winner that no longer matches.
+      if (sessionId !== null && worktreePath !== null) {
+        let head = await deps.worktreeHead({ worktreePath });
+        if (head.headSha !== snapshotSha || !head.clean) {
+          const restored = await deps.restoreWinner({ sessionId, snapshotSha, ref });
+          if (!restored.ok) {
+            return { ok: false, winner: { mode: "restored", ready: false }, detail: `restoring the drifted winner failed: ${restored.detail}` };
+          }
+          head = await deps.worktreeHead({ worktreePath });
+          if (head.headSha !== snapshotSha || !head.clean) {
+            return { ok: false, winner: { mode: "restored", ready: false }, detail: "the winner's checkout did not settle back on its snapshot; retry" };
+          }
+        }
+        return {
+          ok: true,
+          winner: { mode: "restored", ready: true },
+          sessionId,
+          worktreePath,
+          mode: "restored",
+          continuationInIntent: false,
+        };
+      }
+      // The restored session is gone before any delivery: fall through to materialize one replacement.
     }
     const outcome = run.outcome;
     const materializedTaskId = outcome && outcome.kind === "selected" ? outcome.materializedTaskId : null;

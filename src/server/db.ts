@@ -915,6 +915,10 @@ export function openDb(): DatabaseSync {
       -- as the handoff runs. Nullable: most runs choose no handoff, and the linkage lives here
       -- rather than on workflow_bindings so Workflow retention never reaches an ensemble ref.
       workflow_handoff_json TEXT,
+      -- A stable fingerprint of the raw create request. A retry that reuses a source key with any
+      -- different field (a different repository, title, config, or workflow) is a conflict rather
+      -- than a silent idempotent replay of the old run. Empty string on rows written before it.
+      request_fingerprint    TEXT NOT NULL DEFAULT '',
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER,
@@ -1204,6 +1208,10 @@ function migrate(d: DatabaseSync): void {
   // appeared. Nullable with no default: a run created before handoffs existed genuinely pinned
   // none, and NULL is exactly that.
   addColumn(d, "ensemble_runs", "workflow_handoff_json", "TEXT");
+  // The create-request idempotency fingerprint. NOT NULL DEFAULT '' so a pre-feature row reads as
+  // "no recorded fingerprint"; a replay against such a run compares against '' and, when the new
+  // request carries a real fingerprint, is a conflict rather than a silent adoption of a stranger.
+  addColumn(d, "ensemble_runs", "request_fingerprint", "TEXT NOT NULL DEFAULT ''");
 
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the

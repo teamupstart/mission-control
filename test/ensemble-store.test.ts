@@ -92,6 +92,7 @@ function insert(store: InstanceType<typeof EnsembleStore>, sourceKey = "manual:1
       strategyConfig: { members: [{}, {}] },
       status: "planning",
       workflowHandoff: null,
+      requestFingerprint: "",
       members: [
         { roleKey: "candidate-1", roleLabel: "Candidate 1", ordinal: 1, wave: 1 },
         { roleKey: "candidate-2", roleLabel: "Candidate 2", ordinal: 2, wave: 1 },
@@ -142,6 +143,7 @@ test("a partial roster is impossible: a failing member insert takes the run with
         strategyConfig: {},
         status: "planning",
         workflowHandoff: null,
+        requestFingerprint: "",
         // Two members claiming ordinal 1. The UNIQUE index refuses the second, and the
         // transaction must take the first and the run with it.
         members: [

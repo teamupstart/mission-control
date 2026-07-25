@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow pipeline UI - phased implementation</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --dim: #6e7781;
+    --panel: #f6f8fa; --border: #d0d7de; --accent: #0969da;
+    --idle: #1a7f37; --danger: #cf222e; --purple: #8250df; --attention: #9a6700;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0c0f; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+      --panel: #14181e; --border: #232a33; --accent: #4a9eff;
+      --idle: #35c08a; --danger: #f85149; --purple: #a371f7; --attention: #f6a733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 880px; padding: 40px 24px 80px; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
+  h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 38px 0 10px; letter-spacing: -0.015em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+  .lede { color: var(--muted); }
+  code { font-family: var(--mono); font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 5px 0; }
+  li::marker { color: var(--dim); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+  .figure { margin: 18px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 16px; overflow-x: auto; }
+  .figure figcaption { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .contract { border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: 8px; background: var(--panel); padding: 10px 14px; margin: 10px 0; font-size: 14px; }
+  .contract b { color: var(--purple); }
+  .src { font-size: 13px; color: var(--dim); }
+  svg text { font-family: var(--sans); }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">Phased plan · docs/plans/workflow-pipeline-ui</p>
+<h1>Workflow pipeline UI - phased implementation</h1>
+<p class="lede">Implementation index for <code>plan.md</code> (approved 2026-07-25, all five
+dashboard decisions submitted). Each phase is a merge unit that leaves the repository green and
+operable; the <code>phase-&lt;n&gt;-*.md</code> files beside this index are the authoritative
+per-phase instructions.</p>
+
+<h2>Incorporated decisions</h2>
+<ol>
+  <li>Session fan-out: relax <code>session_submitted_route</code> to at-least-one.</li>
+  <li>Graph view: co-equal fallback editor (pipeline default for stage-expressible graphs).</li>
+  <li>Stage naming: derived only; no model change.</li>
+  <li>Workflow settings: migrate into a Settings page category.</li>
+  <li>Follow-up: this phased plan plus dependency-linked Mission Control tasks.</li>
+</ol>
+
+<h2>Investigated findings that shaped the phases</h2>
+<ul>
+  <li>The engine already fans out (one idempotent receipt per outgoing edge), so the fan-out change
+  is validator + tests only - it anchors phase 1 rather than an engine phase.</li>
+  <li>All draft writes flow through <code>useWorkflowDraft.update</code>'s CAS autosave, so the
+  pipeline editor needs no persistence work - stages compile to ordinary graphs (phase 1's module)
+  and the editor is pure UI (phase 2).</li>
+  <li>The runs reader already computes <code>workflowNodeStatuses(detail)</code> and renders
+  <code>version.graph</code> read-only, so the pipeline strip is a re-presentation, not new data
+  (phase 3).</li>
+  <li><b>Discrepancies</b>: the settings registry is <code>SETTINGS_CATEGORIES</code> in
+  <code>src/web/lib/settings-registry.ts</code> with <code>renderCategory</code> in
+  <code>SettingsPage.tsx</code> - AGENTS.md still points at a deleted <code>SettingsModal.tsx</code>
+  (phase 4 fixes the sentence). The Graph-view banner needs reasons, not a boolean, so phase 1's
+  API grew <code>stageBlockers(graph)</code> during decomposition.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="table-wrap">
+<table>
+  <tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+  <tr><td>1</td><td>Model groundwork</td><td><code>phase-1-model-groundwork.md</code></td><td>none</td></tr>
+  <tr><td>2</td><td>Pipeline editor</td><td><code>phase-2-pipeline-editor.md</code></td><td>1</td></tr>
+  <tr><td>3</td><td>Runs monitor</td><td><code>phase-3-runs-monitor.md</code></td><td>2</td></tr>
+  <tr><td>4</td><td>Settings placement and final sweep</td><td><code>phase-4-settings-and-sweep.md</code></td><td>3</td></tr>
+</table>
+</div>
+
+<figure class="figure">
+<svg viewBox="0 0 800 90" width="100%" role="img" aria-label="Serial dependency chain: phase 1 model groundwork, then phase 2 pipeline editor, then phase 3 runs monitor, then phase 4 settings and sweep">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity="0.7"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-opacity="0.35">
+    <rect x="10" y="20" width="170" height="50" rx="9" stroke="#4a9eff" stroke-opacity="0.9"/>
+    <rect x="215" y="20" width="170" height="50" rx="9"/>
+    <rect x="420" y="20" width="170" height="50" rx="9"/>
+    <rect x="625" y="20" width="165" height="50" rx="9"/>
+    <line x1="180" y1="45" x2="213" y2="45" marker-end="url(#arr)"/>
+    <line x1="385" y1="45" x2="418" y2="45" marker-end="url(#arr)"/>
+    <line x1="590" y1="45" x2="623" y2="45" marker-end="url(#arr)"/>
+  </g>
+  <g fill="currentColor" font-size="13" text-anchor="middle">
+    <text x="95" y="42">1 · Model groundwork</text>
+    <text x="95" y="58" font-size="10.5" opacity="0.6">shared module + validator</text>
+    <text x="300" y="42">2 · Pipeline editor</text>
+    <text x="300" y="58" font-size="10.5" opacity="0.6">pipeline-bits + toggle</text>
+    <text x="505" y="42">3 · Runs monitor</text>
+    <text x="505" y="58" font-size="10.5" opacity="0.6">strip + verdict cards</text>
+    <text x="707" y="42">4 · Settings + sweep</text>
+    <text x="707" y="58" font-size="10.5" opacity="0.6">category + cleanup</text>
+  </g>
+</svg>
+<figcaption>Deliberately serial: phase 3 beside phase 2 would fork a second stage-rendering
+dialect - the defect this migration removes - and phase 4 must see both merged surfaces. Merge
+order equals phase order; there are no concurrent groups.</figcaption>
+</figure>
+
+<h2>Cross-phase contracts</h2>
+<div class="contract"><b>Phase 1 → all:</b> <code>workflow-stages.ts</code> exports
+(<code>projectStages</code>, <code>compileStages</code>, <code>stageBlockers</code>,
+<code>stageExpressible</code>, <code>stageName</code>, <code>nodeLabel</code>), the compiler's
+id-reuse guarantees, the relaxed validator, unchanged diagnostic codes.</div>
+<div class="contract"><b>Phase 2 → 3, 4:</b> <code>pipeline-bits.tsx</code> component props
+(including <code>ReviewerRow</code>'s status chip slot), the <code>wf-pipeline-*</code> CSS
+vocabulary, the <code>workflowConfirm</code> overlay id, the <code>onBindWorkflow</code> threading
+through <code>WorkflowPage</code>.</div>
+<div class="contract"><b>Phase 3 → 4:</b> <code>wf-run-*</code> CSS vocabulary; no
+<code>window.confirm</code> left in the runs reader.</div>
+<div class="contract"><b>Invariant:</b> diagnostics codes, wire shapes and every server route are
+unchanged across all phases.</div>
+
+<h2>Final verification</h2>
+<p>After phase 4 merges: author the 2-parallel-reviewer workflow in pipeline mode, publish, bind to
+an isolated-daemon session, run a Preview through a fail round and a repair resubmission, and watch
+it on the runs monitor - the flow the 2026-07-25 review found impossible, jargon-bound, or
+UUID-labelled at every step. Then <code>git grep</code> gates: no <code>window.confirm</code> under
+<code>src/web/workflows/</code>, no node UUIDs in rendered markup fixtures, no orphaned
+<code>workflow-*</code> CSS classes, settings search finds "live delivery". CI green on Node 24 and
+26 at every intermediate merge, not only at the end.</p>
+
+<p class="src">Source of truth: <code>phased-plan.md</code> beside this page; per-phase detail in
+<code>phase-1</code>..<code>phase-4</code> Markdown files; parent plan <code>plan.md</code> /
+<code>plan.html</code>.</p>
+
+</body>
+</html>

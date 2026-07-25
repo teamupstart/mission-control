@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow pipeline UI - plan</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --dim: #6e7781;
+    --panel: #f6f8fa; --border: #d0d7de; --accent: #0969da;
+    --idle: #1a7f37; --danger: #cf222e; --purple: #8250df; --attention: #9a6700;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0c0f; --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+      --panel: #14181e; --border: #232a33; --accent: #4a9eff;
+      --idle: #35c08a; --danger: #f85149; --purple: #a371f7; --attention: #f6a733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 880px; padding: 40px 24px 80px; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
+  h1 { font-size: 28px; letter-spacing: -0.02em; margin: 0 0 4px; }
+  h2 { font-size: 20px; margin: 40px 0 10px; letter-spacing: -0.015em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); font-size: 15.5px; }
+  code { font-family: var(--mono); font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 5px 0; }
+  li::marker { color: var(--dim); }
+  strong { font-weight: 650; }
+  .figure { margin: 18px 0; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 16px; overflow-x: auto; }
+  .figure figcaption { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  .decision { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); padding: 12px 16px; margin: 12px 0; }
+  .decision .q { font-weight: 650; margin: 0 0 4px; }
+  .decision .opts { margin: 0; color: var(--muted); font-size: 14px; }
+  .rec { color: var(--idle); font-weight: 600; }
+  .phase { display: grid; grid-template-columns: 34px 1fr; gap: 12px; margin: 14px 0; }
+  .phase .n { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--panel); border: 1px solid var(--border); font: 700 14px var(--mono); color: var(--accent); }
+  .phase h3 { margin: 3px 0 4px; }
+  .phase p { margin: 0; color: var(--muted); font-size: 14px; }
+  .risk { margin: 8px 0; }
+  .risk b { color: var(--attention); }
+  .src { font-size: 13px; color: var(--dim); }
+  svg text { font-family: var(--sans); }
+  svg .mono { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">Plan · docs/plans/workflow-pipeline-ui</p>
+<h1>Workflow pipeline UI</h1>
+<p class="lede">Migrate the Workflows builder and runs monitor to the stage-based pipeline design
+(review mockups B and C, 2026-07-25). Authoring becomes "stages of reviewers"; a run is watched on
+the pipeline its author drew. Graph storage, publish, engine, bindings and deliveries keep their
+shape; the one semantic change lifts the one-submitted-route restriction so a first stage can hold
+parallel reviewers.</p>
+<p class="src">Implements the recommendations of the 2026-07-25 workflow feature review (fan-out
+refusal reproduced live; UUID vocabulary; 8 hand-drawn edges for a 2-reviewer workflow; unthemed
+canvas chrome; jargon empty states).</p>
+
+<h2>Why</h2>
+<ul>
+  <li>The validator (<code>src/shared/workflow-graph.ts:170</code>) requires exactly one
+  <code>submitted</code> edge, so the all-pass Join's headline case - N reviewers in parallel on the
+  submission - cannot be authored at all. The engine already fans out (one durable receipt per
+  outgoing edge); the cap is validator-only.</li>
+  <li>Every legal workflow today is "Session, then waves of reviewers, then End, with every fail
+  returning to Session". The canvas makes operators hand-draw that grammar and then polices misses
+  with codes. A stage editor makes the grammar unrepresentable instead of policed.</li>
+  <li>The runs monitor is a wall of stacked sections naming nodes by UUID. Operators think in the
+  pipeline they authored; the run should be displayed on it.</li>
+</ul>
+
+<h2>Goals</h2>
+<ol>
+  <li>Parallel first-wave review: N reviewers in stage 1.</li>
+  <li>Authoring is stages; joins, fail routes, return edges and reachability are generated.</li>
+  <li>The runs monitor replays a run on the pipeline: live status, verdict cards, round scrubber,
+  timeline - all current data, none of the UUIDs.</li>
+  <li>Human vocabulary everywhere; machine codes demoted to detail affordances.</li>
+  <li>No storage migration; published versions stay immutable; existing drafts keep working.</li>
+</ol>
+
+<h2>Non-goals</h2>
+<ul>
+  <li>Mockup A's full canvas restyle (the Graph view stays a co-equal fallback editor but only
+  inherits shared vocabulary work).</li>
+  <li>Engine, delivery, binding, Inspector-gate or persona-editor changes beyond the validator rule.</li>
+  <li>New run capabilities; the monitor re-presents existing detail data.</li>
+</ul>
+
+<h2>Design</h2>
+
+<h3>Stages are a projection, not a second model</h3>
+<p>The persisted model stays <code>WorkflowDraftGraph</code> / published graphs. A new browser-safe
+module <code>src/shared/workflow-stages.ts</code> owns:</p>
+<ul>
+  <li><code>projectStages(graph)</code> - the stage pipeline a graph expresses, or <code>null</code>
+  when the graph is not stage-expressible.</li>
+  <li><code>compileStages(pipeline, previousGraph)</code> - emits a graph, reusing node and edge ids
+  wherever the same stage member survives so autosave diffs, undo history and version comparisons
+  stay stable. Positions are generated deterministically.</li>
+  <li><code>stageExpressible(graph)</code> and <code>nodeLabel(graph, node, personas)</code> - the shared
+  vocabulary helper adopted by every surface.</li>
+</ul>
+<p><strong>Stage-expressible</strong>: one Session; a linear chain of zero or more stages; a stage
+is one Persona (pass onward, fail to Session) or N Personas plus one <code>all_pass</code> Join
+(every member's pass and fail into the Join, Join pass onward, Join fail to Session); one End;
+nothing else. The zero-stage form covers the canonical empty pipeline
+(<code>submitted → terminal</code>) and the fresh Session-plus-End draft, so a brand-new workflow
+opens in Pipeline mode without being edited by the act of opening. Round-trip invariants are pinned
+by tests.</p>
+<p>The editor never mutates edges directly - every pipeline edit compiles and hands the graph to the
+existing <code>useWorkflowDraft.update</code>, so CAS autosave, conflicts, undo/redo, publish and
+versions behave exactly as today.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 800 240" width="100%" role="img" aria-label="Authoring flow before and after: the pipeline editor and compileStages join the path in front of the unchanged autosave, validator and publish chain">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity="0.7"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-opacity="0.35">
+    <text x="10" y="24" fill="currentColor" opacity="0.6" font-size="11" class="mono">BEFORE</text>
+    <rect x="10" y="36" width="190" height="44" rx="9"/>
+    <rect x="250" y="36" width="150" height="44" rx="9"/>
+    <rect x="450" y="36" width="180" height="44" rx="9"/>
+    <rect x="680" y="36" width="100" height="44" rx="9"/>
+    <line x1="200" y1="58" x2="248" y2="58" marker-end="url(#arr)"/>
+    <line x1="400" y1="58" x2="448" y2="58" marker-end="url(#arr)"/>
+    <line x1="630" y1="58" x2="678" y2="58" marker-end="url(#arr)"/>
+  </g>
+  <g fill="currentColor" font-size="12.5" text-anchor="middle">
+    <text x="105" y="62">Canvas edits edges directly</text>
+    <text x="325" y="62">useWorkflowDraft</text>
+    <text x="540" y="62">validateWorkflowGraph</text>
+    <text x="730" y="62">Publish</text>
+  </g>
+  <g fill="none" stroke="currentColor" stroke-opacity="0.35">
+    <text x="10" y="128" fill="currentColor" opacity="0.6" font-size="11" class="mono">AFTER</text>
+    <rect x="10" y="140" width="150" height="44" rx="9" stroke="#4a9eff" stroke-opacity="0.9"/>
+    <rect x="10" y="196" width="150" height="36" rx="9"/>
+    <rect x="205" y="140" width="170" height="44" rx="9" stroke="#a371f7" stroke-opacity="0.9"/>
+    <rect x="250" y="196" width="150" height="36" rx="9" stroke-dasharray="4 3"/>
+    <rect x="420" y="140" width="130" height="44" rx="9"/>
+    <rect x="590" y="140" width="130" height="44" rx="9"/>
+    <rect x="680" y="196" width="100" height="36" rx="9"/>
+    <line x1="160" y1="162" x2="203" y2="162" marker-end="url(#arr)"/>
+    <line x1="160" y1="214" x2="248" y2="214" marker-end="url(#arr)"/>
+    <line x1="325" y1="196" x2="325" y2="186" marker-end="url(#arr)"/>
+    <line x1="375" y1="162" x2="418" y2="162" marker-end="url(#arr)"/>
+    <line x1="550" y1="162" x2="588" y2="162" marker-end="url(#arr)"/>
+    <line x1="655" y1="184" x2="700" y2="196" marker-end="url(#arr)"/>
+  </g>
+  <g fill="currentColor" font-size="12.5" text-anchor="middle">
+    <text x="85" y="166">Pipeline editor</text>
+    <text x="85" y="218" font-size="11.5">Graph view (fallback)</text>
+    <text x="290" y="160">compileStages</text>
+    <text x="290" y="176" font-size="10.5" opacity="0.65">shared/workflow-stages</text>
+    <text x="325" y="218" font-size="11.5">projectStages</text>
+    <text x="485" y="166">useWorkflowDraft</text>
+    <text x="655" y="160">validate</text>
+    <text x="655" y="176" font-size="10.5" opacity="0.65">rule relaxed: submitted ≥ 1</text>
+    <text x="730" y="218">Publish</text>
+  </g>
+</svg>
+<figcaption>The authoring path change. Everything right of the compiler is unchanged; the Graph view
+keeps writing to the same draft, and <code>projectStages</code> is how both the editor and the runs
+monitor read a graph back as stages.</figcaption>
+</figure>
+
+<h3>The validator change</h3>
+<p><code>session_submitted_route</code> relaxes from exactly-one to at-least-one (zero still
+errors). The engine gains a test proving N submitted edges activate N personas in parallel; the
+fan-out sentence in <code>docs/plans/workflow-builder/phase-2-builder-publishing.md</code> and
+<code>test/workflow-graph.test.ts</code> are updated in the same change. Compatibility: published
+versions are immutable and older engines execute fan-out correctly; only re-publishing a fan-out
+graph on an older build would refuse.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 800 210" width="100%" role="img" aria-label="Compiled topology of a two-stage pipeline: Session fans out is not needed in stage one here, correctness feeds a parallel stage of two reviewers joined by an all-pass node, fails return to Session">
+  <g fill="none" stroke="currentColor" stroke-opacity="0.35">
+    <rect x="10" y="80" width="120" height="46" rx="9" stroke="#4a9eff" stroke-opacity="0.9"/>
+    <rect x="185" y="80" width="150" height="46" rx="9" stroke="#a371f7" stroke-opacity="0.8"/>
+    <rect x="390" y="30" width="150" height="46" rx="9" stroke="#a371f7" stroke-opacity="0.8"/>
+    <rect x="390" y="130" width="150" height="46" rx="9" stroke="#a371f7" stroke-opacity="0.8"/>
+    <rect x="590" y="80" width="90" height="46" rx="9"/>
+    <rect x="716" y="80" width="74" height="46" rx="9" stroke="#35c08a" stroke-opacity="0.9"/>
+  </g>
+  <g fill="none" stroke="#35c08a" stroke-opacity="0.8">
+    <line x1="130" y1="103" x2="183" y2="103" marker-end="url(#arr)"/>
+    <path d="M 335 96 C 360 96, 365 53, 388 53" marker-end="url(#arr)"/>
+    <path d="M 335 110 C 360 110, 365 153, 388 153" marker-end="url(#arr)"/>
+    <path d="M 540 53 C 565 53, 568 96, 588 96" marker-end="url(#arr)"/>
+    <path d="M 540 153 C 565 153, 568 110, 588 110" marker-end="url(#arr)"/>
+    <line x1="680" y1="103" x2="714" y2="103" marker-end="url(#arr)"/>
+  </g>
+  <g fill="none" stroke="#f85149" stroke-opacity="0.6" stroke-dasharray="5 4">
+    <path d="M 545 60 C 572 62, 574 90, 590 92"/>
+    <path d="M 545 160 C 572 158, 574 116, 590 114"/>
+    <path d="M 260 126 C 250 178, 120 190, 70 190 C 40 190, 38 150, 50 126" marker-end="url(#arr)"/>
+    <path d="M 635 126 C 620 200, 200 205, 90 200" />
+  </g>
+  <g fill="currentColor" font-size="12.5" text-anchor="middle">
+    <text x="70" y="99">Session</text>
+    <text x="70" y="115" font-size="10.5" opacity="0.65" class="mono">submitted</text>
+    <text x="260" y="99">Correctness</text>
+    <text x="260" y="115" font-size="10.5" opacity="0.65">stage 1</text>
+    <text x="465" y="49">Security</text>
+    <text x="465" y="65" font-size="10.5" opacity="0.65">stage 2 · parallel</text>
+    <text x="465" y="149">Performance</text>
+    <text x="465" y="165" font-size="10.5" opacity="0.65">stage 2 · parallel</text>
+    <text x="635" y="99">all_pass</text>
+    <text x="635" y="115" font-size="10.5" opacity="0.65">generated</text>
+    <text x="753" y="99">End</text>
+    <text x="380" y="200" font-size="11" fill="#f85149" fill-opacity="0.85">every fail returns to Session (generated)</text>
+  </g>
+</svg>
+<figcaption>What <code>compileStages</code> emits for a two-stage pipeline. With the adopted
+fan-out rule, stage 1 can equally hold several reviewers activated straight from
+<code>submitted</code>. Operators never draw any of these edges.</figcaption>
+</figure>
+
+<h3>Pipeline editor (mockup B)</h3>
+<ul>
+  <li><code>PipelineEditor.tsx</code> rendered by <code>WorkflowLibrary</code> when the draft is
+  stage-expressible; a Pipeline | Graph toggle switches surfaces, defaulting to Pipeline when
+  expressible and Graph otherwise with a banner naming exactly why.</li>
+  <li>Session and End as fixed termini; stages between; seams carry the "all pass" gate mark and an
+  insert-stage affordance. Stages list reviewers with an inline Add reviewer picker, per-reviewer
+  remove, and drag or keyboard reordering.</li>
+  <li>Destructive removals confirm through an overlay-hosted modal, not <code>window.confirm</code>.</li>
+  <li>Right rail: workflow settings (stale "(Phase 4/5)" labels removed), sentence-first validation,
+  version history, and a working "Bind to a session..." call to action.</li>
+  <li>Accessibility parity: roving focus, announcements in persona names, new keys registered in
+  <code>ACTIONS</code> and the README keyboard table.</li>
+</ul>
+
+<h3>Runs monitor (mockup C)</h3>
+<ul>
+  <li>Rail with tone chips and filter chips (All, Running, Needs you, Done) over the existing status
+  filter; session branch and relative time per run.</li>
+  <li>Header keeps every contextual action: Export, Cancel, Resubmit, Retry provider call, Prepare
+  PR, Recheck Inspector, Restart all Personas.</li>
+  <li>Round scrubber over <code>detail.submissions</code>; scopes strip, verdicts and timeline.</li>
+  <li>Pipeline strip: <code>projectStages(version.graph)</code> plus the existing
+  <code>workflowNodeStatuses(detail)</code> drive per-reviewer status chips. Non-stage-expressible
+  versions fall back to today's read-only canvas with statuses.</li>
+  <li>Verdict, Inspector-gate, completion-claim and delivery sections restyled into the fleet card
+  grammar, keeping all recovery machinery (uncertain deliveries, retry, resolve).</li>
+  <li>Empty state gains the "Bind to a session..." button, replacing the jargon sentence.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="phase"><span class="n">1</span><div><h3>Model groundwork</h3>
+<p>Validator relaxation + engine fan-out test + <code>workflow-stages.ts</code> (projection,
+compiler, expressibility, <code>nodeLabel</code>) with round-trip, id-stability and taxonomy tests.
+No UI change; ships green on its own.</p></div></div>
+<div class="phase"><span class="n">2</span><div><h3>Pipeline editor</h3>
+<p><code>PipelineEditor.tsx</code>, the Pipeline | Graph toggle, overlay confirm modal, right-rail
+updates, vocabulary adoption in the Graph view's panels, keyboard registry + README.</p></div></div>
+<div class="phase"><span class="n">3</span><div><h3>Runs monitor</h3>
+<p>The <code>WorkflowRuns</code> rebuild: rail, header actions, round scrubber, pipeline strip with
+statuses, verdict/gate/delivery cards, timeline, bind CTA, canvas fallback.</p></div></div>
+<div class="phase"><span class="n">4</span><div><h3>Cleanup and settings placement</h3>
+<p>Remove obsoleted strings and affordances; move the Workflow settings drawer into a Settings page
+category registered in <code>SETTINGS_CATEGORIES</code>, with the Workflows page linking to it.</p></div></div>
+<p class="src">Each phase updates the README in the same change and lands its tests. Suites
+expected to change: <code>workflow-graph.test.ts</code>, <code>workflow-builder-*</code>; new:
+<code>workflow-stages.test.ts</code>, <code>workflow-runs-render.test.ts</code>.</p>
+
+<h2>Risks</h2>
+<ul>
+  <li class="risk"><b>Projection round-trip subtleties.</b> Id stability across edits is the hard
+  invariant; getting it wrong breaks undo or manufactures CAS churn. Property-style tests land
+  before any UI.</li>
+  <li class="risk"><b>Almost-expressible graphs</b> open in Graph view; the banner must say
+  precisely what blocks projection or it reads as a bug.</li>
+  <li class="risk"><b>Runs parity.</b> Inventory the current reader's recovery affordances first so
+  none are dropped silently.</li>
+  <li class="risk"><b>Cross-build re-publish</b> of fan-out graphs fails validation on older builds;
+  acceptable for a single-operator tool, noted in the README.</li>
+</ul>
+
+<h2>Adopted decisions <span style="font-size:13px; color:var(--dim); font-weight:400">(submitted 2026-07-25)</span></h2>
+<div class="decision"><p class="q">1 · Session fan-out rule</p>
+<p class="opts"><span class="rec">Relax to at-least-one.</span> The engine is ready and stage 1
+parallelism depends on it.</p></div>
+<div class="decision"><p class="q">2 · Graph view's role</p>
+<p class="opts"><span class="rec">Co-equal fallback editor.</span> Pipeline is the default for
+stage-expressible graphs; the canvas still edits anything, so no migration pressure.</p></div>
+<div class="decision"><p class="q">3 · Stage naming</p>
+<p class="opts"><span class="rec">Derived names only.</span> No model change.</p></div>
+<div class="decision"><p class="q">4 · Workflow settings placement</p>
+<p class="opts"><span class="rec">Migrate into a Settings page category in phase 4.</span> Restores
+the registry convention and settings-search coverage.</p></div>
+<div class="decision"><p class="q">5 · Follow-up</p>
+<p class="opts"><span class="rec">Create the phased implementation plan.</span> Phase documents
+beside this plan plus dependency-linked Mission Control tasks.</p></div>
+
+<p class="src">Source of truth: <code>docs/plans/workflow-pipeline-ui/plan.md</code>. This page is a
+rendering of it.</p>
+
+</body>
+</html>

@@ -135,6 +135,32 @@ test("a menu is still a menu - the split does not reach single-select", () => {
   assert.ok(html.includes("pd-current"));
 });
 
+test("a driver form offers a custom answer for every question", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-form",
+    kind: "question",
+    prompt: "Choose or type",
+    options: [],
+    highlighted: 0,
+    multiSelect: true,
+    questions: [
+      {
+        question: "Which linter?",
+        options: [{ number: 1, label: "biome" }],
+      },
+      {
+        question: "Which checks?",
+        options: [{ number: 1, label: "types" }],
+        multiSelect: true,
+      },
+    ],
+  });
+  assert.equal((html.match(/placeholder="Or type a custom answer"/g) ?? []).length, 2);
+  assert.ok(html.includes("Custom answer for Which linter?"));
+  assert.ok(html.includes("Custom answer for Which checks?"));
+});
+
 // ---- The board has to SHOW that the session is blocked ----
 
 const base = {

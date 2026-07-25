@@ -63,6 +63,7 @@ export type ClaudeSdkPermissionUpdate = Record<string, unknown>;
 export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
   interrupt(): Promise<unknown>;
   setPermissionMode(mode: string): Promise<void>;
+  applyFlagSettings(settings: { effortLevel?: ThinkingLevel | null }): Promise<void>;
   setModel(model?: string): Promise<void>;
 }
 

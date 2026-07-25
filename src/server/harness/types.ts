@@ -583,6 +583,7 @@ export interface SdkSessionHandle {
    * null only after pointing the driver at a real install.
    */
   setPermissionMode: ((mode: PermissionMode) => Promise<void>) | null;
+  setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */

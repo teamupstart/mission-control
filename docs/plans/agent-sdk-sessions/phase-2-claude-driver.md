@@ -171,6 +171,16 @@ to reach a handle, or add per-dispatch runtime selection (resolved decision).
     registry doctrine forbids (`Reach a capability through a registry, never by testing
     s.agent`). Phase 4 and phase 6 fill it for their harness; `codex resume <threadId>` and
     pi's equivalent are the same shape. C4 is extended, not changed.
+  - **`SdkSessionHandle` gained nullable `setEffort(effort)`.** Like
+    `setPermissionMode`, this is a live, session-scoped capability; Claude implements it
+    through the Agent SDK query's `applyFlagSettings({ effortLevel })`. Later drivers must
+    implement a real control or declare `null`, and callers must treat that null as a
+    refusal rather than a successful no-op.
+  - **Restart resolution and pending asks belong to the supervisor/registry seams.** A
+    resumed launch re-resolves the Mission MCP descriptor instead of persisting it, and a
+    descriptor failure degrades only that capability rather than losing the conversation.
+    Concurrent driver requests remain ordered behind the registry's one visible
+    `PaneDialog`; resolving one promotes the next.
   - **PR authorship is a `PreToolUse` + `PostToolUse` PAIR, not `PreToolUse` alone.** Step 2
     names only the pre-hook, but `applyDriverEvent`'s `pr_created` arm is gated on
     `evt.url`, so a pre-hook on its own emits an event nothing consumes. Both halves are

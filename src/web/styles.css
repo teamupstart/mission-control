@@ -12201,6 +12201,23 @@ select.foreman-model-input {
   font-weight: 650;
   letter-spacing: 0.02em;
 }
+.pd-text-answer {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+}
+.pd-text-answer:focus {
+  outline: none;
+  border-color: var(--attention);
+}
+.pd-text-answer:disabled {
+  opacity: 0.6;
+}
 .pd-options {
   list-style: none;
   margin: 0;

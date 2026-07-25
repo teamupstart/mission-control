@@ -99,6 +99,7 @@ function fakeHandle(): {
     interrupt: async () => {},
     answer: async () => {},
     setPermissionMode: null,
+    setEffort: null,
     setModel: null,
     clearContext: null,
     stop: async () => {

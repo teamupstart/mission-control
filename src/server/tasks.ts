@@ -45,6 +45,7 @@ import { resetSession } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import { stopSession } from "./sdk/control.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
@@ -314,6 +315,7 @@ export class TaskManager {
       // The other end of a merged task's life, for an agent that is still here. See
       // `settleIfEpisodeFinished`.
       if (e.type === "session_upsert") {
+        this.rebindTaskAtCwd(e.session);
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
         // And the rows no session can settle: a terminal task whose pull request has since
@@ -656,7 +658,11 @@ export class TaskManager {
     ) {
       return;
     }
-    const killed = await this.closeMergedSessionDeps.kill(currentSession);
+    const killed = await stopSession(
+      currentSession,
+      this.supervisor,
+      this.closeMergedSessionDeps.kill,
+    );
     if (!killed.ok) {
       throw new Error(killed.error ?? "could not close the merged task's session");
     }
@@ -701,6 +707,28 @@ export class TaskManager {
     for (const t of this.registry.listTasks()) {
       if (t.sessionId && !this.registry.getSession(t.sessionId)) this.agentWentAway(t);
     }
+  }
+
+  private rebindTaskAtCwd(session: Session): void {
+    if (!session.cwd || session.state === "exited") return;
+    const tasks = this.registry.listTasks();
+    if (
+      tasks.some(
+        (task) =>
+          task.sessionId === session.id &&
+          (task.status === "running" || task.status === "dispatching"),
+      )
+    ) return;
+    const candidates = tasks.filter(
+      (task) =>
+        task.sessionId === null &&
+        task.worktreePath === session.cwd &&
+        task.status === "running",
+    );
+    if (candidates.length !== 1) return;
+    const task = candidates[0]!;
+    this.registry.upsertTask({ ...task, sessionId: session.id, updatedAt: Date.now() });
+    this.registry.bindTaskToWorkEpisode(task.id, session.id);
   }
 
   /**
@@ -1643,6 +1671,14 @@ export class TaskManager {
     };
   }
 
+  private async stopEmbeddedAgentBeforeReclaim(t: Task): Promise<void> {
+    if (!t.sessionId || !t.worktreePath) return;
+    const session = this.registry.getSession(t.sessionId);
+    if (session?.runtime !== "sdk") return;
+    if (!this.supervisor) throw new Error("this build has no session supervisor");
+    if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
+  }
+
   /**
    * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
    * cancelled. A dispatched agent's tree is throwaway - to preserve work you
@@ -1661,15 +1697,16 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task" };
     this.autoCompleted.delete(id);
 
-    if (t.sessionId && t.homeName) {
-      const s = this.registry.getSession(t.sessionId);
-      if (s) await kill(s);
-    }
-    // Re-read before tearing down so we don't miss resources a concurrent dispatch
-    // created during the kill above. teardownWorktree also kills the terminal home.
-    const teardownTarget = this.registry.getTask(id) ?? t;
     let teardownError: string | null = null;
     try {
+      await this.stopEmbeddedAgentBeforeReclaim(t);
+      if (t.sessionId && t.homeName) {
+        const s = this.registry.getSession(t.sessionId);
+        if (s) await kill(s);
+      }
+      // Re-read before tearing down so we don't miss resources a concurrent dispatch
+      // created during the kill above. teardownWorktree also kills the terminal home.
+      const teardownTarget = this.registry.getTask(id) ?? t;
       await teardownWorktree(teardownTarget);
     } catch (error) {
       teardownError = error instanceof Error ? error.message : String(error);
@@ -1816,7 +1853,9 @@ export class TaskManager {
       this.autoCompleted.delete(id);
       if (t.worktreePath || t.homeName) {
         try {
-          await teardownWorktree(this.registry.getTask(id) ?? t);
+          const current = this.registry.getTask(id) ?? t;
+          await this.stopEmbeddedAgentBeforeReclaim(current);
+          await teardownWorktree(current);
         } catch (error) {
           return {
             ok: false,
@@ -1865,7 +1904,9 @@ export class TaskManager {
     if (!t) return { ok: false, error: "no such task" };
     this.autoCompleted.delete(id);
     try {
-      await teardownWorktree(this.registry.getTask(id) ?? t);
+      const current = this.registry.getTask(id) ?? t;
+      await this.stopEmbeddedAgentBeforeReclaim(current);
+      await teardownWorktree(current);
     } catch (error) {
       return {
         ok: false,
@@ -1897,6 +1938,7 @@ export class TaskManager {
     // reclaim it so removing the record never leaks a worktree/lease.
     if (t.worktreePath || t.homeName) {
       try {
+        await this.stopEmbeddedAgentBeforeReclaim(t);
         await teardownWorktree(t);
       } catch (error) {
         return {

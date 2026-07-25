@@ -219,3 +219,29 @@ export function setSdkSessionStatus(
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
 }
+
+export function clearSdkSessionTask(id: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET task_id = NULL, updated_at = ? WHERE id = ?`)
+    .run(now, id);
+}
+
+export function setSdkSessionPermissionMode(
+  id: string,
+  permissionMode: PermissionMode,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`)
+    .run(permissionMode, now, id);
+}
+
+export function setSdkSessionEffort(
+  id: string,
+  effort: ThinkingLevel,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET effort = ?, updated_at = ? WHERE id = ?`)
+    .run(effort, now, id);
+}

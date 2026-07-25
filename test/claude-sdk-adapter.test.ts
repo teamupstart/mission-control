@@ -61,6 +61,10 @@ class FakeQuery implements ClaudeSdkQuery {
     this.control.push(`mode:${mode}`);
   }
 
+  async applyFlagSettings(settings: { effortLevel?: import("../src/shared/types.ts").ThinkingLevel | null }): Promise<void> {
+    this.control.push(`effort:${settings.effortLevel}`);
+  }
+
   async setModel(model?: string): Promise<void> {
     this.control.push(`model:${model}`);
   }
@@ -478,8 +482,9 @@ test("live controls delegate, and a mode this CLI has never heard of is refused"
   const { query } = await started;
   query.emit(INIT("agent-1"));
   await handle.setPermissionMode!("acceptEdits");
+  await handle.setEffort!("xhigh");
   await handle.setModel!("claude-opus-5");
-  assert.deepEqual(query.control, ["mode:acceptEdits", "model:claude-opus-5"]);
+  assert.deepEqual(query.control, ["mode:acceptEdits", "effort:xhigh", "model:claude-opus-5"]);
   // `askForApproval` is a Codex profile sharing our union. The SDK validates the value, so
   // passing it through would fail the call for a reason no operator typed.
   await assert.rejects(() => handle.setPermissionMode!("askForApproval"), /no permission mode/);

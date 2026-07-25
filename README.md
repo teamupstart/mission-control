@@ -313,9 +313,13 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 - the task's prompt is the conversation's first turn - there is no paste to verify, no
   settle window, and no retry that can make an agent read its task twice;
 - permission prompts, `AskUserQuestion` (all of its questions at once, not one tab at a
-  time) and plan approvals render on the card and are answered from it. Claude's own
-  question tool is left enabled - the MCP ask-channel redirect exists because a menu on a
-  child's terminal is unreadable, and here it is not;
+  time) and plan approvals render on the card and are answered from it. Each question can
+  take one of Claude's choices or a custom typed answer, and parallel asks wait their turn
+  on the same card instead of replacing one another. Claude's own question tool is left
+  enabled - the MCP ask-channel redirect exists because a menu on a child's terminal is
+  unreadable, and here it is not;
+- the permission-mode and reasoning-effort pickers control the live embedded conversation,
+  just as they control a pane-backed one;
 - the transcript, goal, cost and PR chips all work unchanged: the SDK subprocess writes the
   same `~/.claude/projects/…` session file the interactive CLI does, so the whole read path
   is untouched;
@@ -324,8 +328,8 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 **What it costs.** One real regression: the subprocess is the daemon's child, so restarting
 the daemon interrupts whatever turn was in flight. The conversation itself survives - the
 supervisor records the session and resumes it on the next start, before anything else runs -
-but the interrupted turn's remaining work has to be re-prompted. In exchange, delivery stops
-being probabilistic and menus stop being screens.
+including its Mission MCP tools - but the interrupted turn's remaining work has to be
+re-prompted. In exchange, delivery stops being probabilistic and menus stop being screens.
 
 **Foreman's work queue is not available on an Agent SDK session yet.** It still drives
 sessions through their terminal, so a queue there is refused with a sentence saying so; use
@@ -338,7 +342,8 @@ the handoff, or dispatch that task in a terminal. (Automation parity is the next
 reopens **the same conversation** in a terminal home (`claude --resume <session id>`) in the
 same checkout - the vendors keep one session store across their programmatic and interactive
 surfaces, which is what makes this a handoff rather than a lost conversation. Discovery
-adopts the new process, and the task's binding follows it across.
+adopts the new process, and the task's binding follows it across even when discovery takes
+longer than the handoff request waits.
 
 It is one way. After the handoff the terminal session is the one holding the conversation;
 the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error

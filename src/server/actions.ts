@@ -383,28 +383,74 @@ export interface EffortResult extends ActionResult {
   effort: ThinkingLevel | null;
 }
 
-export async function setSessionEffort(
+export function sessionEffortTargetResult(
   session: Session,
   target: ThinkingLevel,
-  deps: PaneDeps = defaultPaneDeps,
-): Promise<EffortResult> {
+): EffortResult | null {
   const spec = harnessFor(session.agent).effort;
   const modelId = session.meta?.modelId ?? null;
   const model = session.meta?.model ?? null;
   const current = session.meta?.thinkingLevel ?? null;
   if (!spec) return { ok: false, error: "this agent has no reasoning-effort control", effort: null };
-  const picker = spec.sessionPicker;
-  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control", effort: null };
   if (!model) return { ok: false, error: "the selected model is not known yet", effort: null };
   if (!modelId) return { ok: false, error: "the selected model id is not known yet", effort: null };
   if (!current) return { ok: false, error: "the selected model's current effort is not known yet", effort: null };
   if (!supportsSessionEffort(session.agent, modelId, current, target)) {
     return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
   }
-  const from = spec.levelsFor(modelId).indexOf(current);
-  const to = spec.levelsFor(modelId).indexOf(target);
-  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed", effort: null };
-  if (from === to) return { ok: true, effort: current };
+  const levels = spec.levelsFor(modelId);
+  if (levels.indexOf(current) < 0 || levels.indexOf(target) < 0) {
+    return { ok: false, error: "the selected model's effort options changed", effort: null };
+  }
+  if (current === target) return { ok: true, effort: current };
+  return null;
+}
+
+function resolveTerminalSessionEffort(
+  session: Session,
+  target: ThinkingLevel,
+):
+  | { change: false; result: EffortResult }
+  | {
+      change: true;
+      spec: EffortSpec;
+      picker: NonNullable<EffortSpec["sessionPicker"]>;
+      modelId: string;
+      model: string;
+      current: ThinkingLevel;
+    } {
+  const spec = harnessFor(session.agent).effort;
+  if (spec && !spec.sessionPicker) {
+    return {
+      change: false,
+      result: {
+        ok: false,
+        error: "this agent has no session-only reasoning-effort control",
+        effort: null,
+      },
+    };
+  }
+  const result = sessionEffortTargetResult(session, target);
+  if (result) return { change: false, result };
+  const picker = spec!.sessionPicker!;
+  return {
+    change: true,
+    spec: spec!,
+    picker,
+    modelId: session.meta!.modelId!,
+    model: session.meta!.model!,
+    current: session.meta!.thinkingLevel!,
+  };
+}
+
+export async function setSessionEffort(
+  session: Session,
+  target: ThinkingLevel,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<EffortResult> {
+  const resolved = resolveTerminalSessionEffort(session, target);
+  if (!resolved.change) return resolved.result;
+  const { spec, picker, modelId, model, current } = resolved;
 
   return withPaneLock<EffortResult>(session, () => ({ ok: false, error: PANE_BUSY, effort: null }), async () => {
     const pane = deps.pane(session);

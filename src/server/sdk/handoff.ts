@@ -3,6 +3,7 @@ import { resolveAgentBin, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
+import { clearSdkSessionTask } from "./store.ts";
 
 /**
  * "Continue in terminal": end the embedded session and reopen the SAME conversation in a
@@ -71,6 +72,7 @@ export async function handOffToTerminal(
   // Before the stop, deliberately. See the ordering note above.
   const task = registry.listTasks().find((t) => t.sessionId === session.id) ?? null;
   if (task) {
+    clearSdkSessionTask(session.id);
     registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
   }
 

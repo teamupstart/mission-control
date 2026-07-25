@@ -4,13 +4,15 @@ import type { AgentType, PermissionMode, Session, ThinkingLevel } from "@shared/
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
 import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
-import type { MissionMcpDescriptor } from "../mission-mcp.ts";
+import { missionMcpDescriptor, type MissionMcpDescriptor } from "../mission-mcp.ts";
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import { sleep } from "../util/timers.ts";
 import {
   listSdkSessions,
   recordSdkSessionBinding,
   sdkSessionIsLive,
+  setSdkSessionEffort,
+  setSdkSessionPermissionMode,
   setSdkSessionStatus,
   upsertSdkSession,
   type SdkSessionRow,
@@ -57,7 +59,12 @@ export class SdkSupervisor {
    */
   private shuttingDown = false;
 
-  constructor(private readonly registry: Registry) {}
+  constructor(
+    private readonly registry: Registry,
+    private readonly deps: {
+      missionMcpDescriptor?: typeof missionMcpDescriptor;
+    } = {},
+  ) {}
 
   /**
    * Restore what the previous daemon left behind - BEFORE the discovery poller starts.
@@ -222,6 +229,26 @@ export class SdkSupervisor {
     return this.serialize(id, (handle) => handle.answer(requestId, answer));
   }
 
+  setPermissionMode(id: string, mode: PermissionMode): Promise<void> {
+    return this.serialize(id, async (handle) => {
+      if (!handle.setPermissionMode) {
+        throw new Error("this session's embedded driver cannot change permission mode");
+      }
+      await handle.setPermissionMode(mode);
+      setSdkSessionPermissionMode(id, mode);
+    });
+  }
+
+  setEffort(id: string, effort: ThinkingLevel): Promise<void> {
+    return this.serialize(id, async (handle) => {
+      if (!handle.setEffort) {
+        throw new Error("this session's embedded driver cannot change reasoning effort");
+      }
+      await handle.setEffort(effort);
+      setSdkSessionEffort(id, effort);
+    });
+  }
+
   /**
    * Stop a session's driver.
    *
@@ -332,6 +359,15 @@ export class SdkSupervisor {
       throw new Error("it never reported a session id, so there is nothing to continue");
     }
     const task = row.taskId ? this.registry.getTask(row.taskId) : null;
+    let mcp: MissionMcpDescriptor | null = null;
+    try {
+      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+    } catch (err) {
+      console.error(
+        `[sdk] could not resolve Mission MCP while resuming ${row.id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     const handle = await spec.launch({
       cwd: row.cwd,
       // No prompt: this is a continuation, and re-sending the original intent would make the
@@ -340,9 +376,7 @@ export class SdkSupervisor {
       model: row.model,
       effort: row.effort,
       permissionMode: row.permissionMode,
-      // A resumed session re-registers our MCP server on the next launch's own terms; the
-      // descriptor is resolved by the dispatcher and is not part of what a row persists.
-      mcp: null,
+      mcp,
       resume: row.agentSessionId,
     });
     this.adopt({
@@ -421,7 +455,7 @@ export class SdkSupervisor {
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        this.registry.applyDriverEvent(id, evt);
+        if (!this.shuttingDown) this.registry.applyDriverEvent(id, evt);
         if (evt.kind === "exited") break;
       }
     } catch (err) {
@@ -437,16 +471,18 @@ export class SdkSupervisor {
       } catch (err) {
         console.error(`[sdk] final status write for ${id} failed:`, err);
       }
-      try {
-        // Idempotent: an `exited` event already began the eviction, and this repeat is what
-        // covers the streams that end without one.
-        this.registry.applyDriverEvent(id, {
-          kind: "exited",
-          reason: "driver ended",
-          resumable: false,
-        });
-      } catch (err) {
-        console.error(`[sdk] final eviction for ${id} failed:`, err);
+      if (!this.shuttingDown) {
+        try {
+          // Idempotent: an `exited` event already began the eviction, and this repeat is what
+          // covers the streams that end without one.
+          this.registry.applyDriverEvent(id, {
+            kind: "exited",
+            reason: "driver ended",
+            resumable: false,
+          });
+        } catch (err) {
+          console.error(`[sdk] final eviction for ${id} failed:`, err);
+        }
       }
     }
   }

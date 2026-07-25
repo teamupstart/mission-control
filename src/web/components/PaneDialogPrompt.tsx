@@ -116,6 +116,7 @@ export function PaneDialogPrompt({
   if (dialog.questions && dialog.questions.length > 0 && dialog.multiSelect) {
     return (
       <DriverForm
+        key={identity}
         sessionId={sessionId}
         dialog={dialog}
         questions={dialog.questions}
@@ -242,6 +243,7 @@ function DriverForm({
   // enforced where the row is clicked rather than at submit - the human should never be
   // able to build a state the daemon will refuse.
   const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [typed, setTyped] = useState<Record<string, string>>({});
 
   function toggle(question: string, label: string, multi: boolean): void {
     setPicked((p) => {
@@ -254,7 +256,9 @@ function DriverForm({
     });
   }
 
-  const complete = questions.every((q) => (picked[q.question] ?? []).length > 0);
+  const complete = questions.every(
+    (q) => (picked[q.question] ?? []).length > 0 || Boolean(typed[q.question]?.trim()),
+  );
 
   async function submit(): Promise<void> {
     if (busy !== null || !complete) return;
@@ -262,7 +266,11 @@ function DriverForm({
     setError(null);
     const r = await api.submitAnswers(
       sessionId,
-      questions.map((q) => ({ question: q.question, labels: picked[q.question] ?? [] })),
+      questions.map((q) => ({
+        question: q.question,
+        labels: picked[q.question] ?? [],
+        ...(typed[q.question]?.trim() ? { text: typed[q.question]!.trim() } : {}),
+      })),
     );
     setBusy(null);
     // No success branch, as above: answering resolves the tool call, the request clears,
@@ -313,6 +321,17 @@ function DriverForm({
               );
             })}
           </ul>
+          <input
+            className="pd-text-answer"
+            type="text"
+            value={typed[q.question] ?? ""}
+            disabled={busy !== null}
+            aria-label={`Custom answer for ${q.question}`}
+            placeholder="Or type a custom answer"
+            onChange={(event) =>
+              setTyped((current) => ({ ...current, [q.question]: event.target.value }))
+            }
+          />
         </div>
       ))}
 

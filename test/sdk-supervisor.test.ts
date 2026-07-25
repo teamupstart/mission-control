@@ -84,6 +84,7 @@ function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; 
     async interrupt() {},
     async answer() {},
     setPermissionMode: null,
+    setEffort: null,
     setModel: null,
     clearContext: null,
     async stop() {
@@ -215,6 +216,12 @@ test("an exit evicts the card through the ordinary sequence", async (t) => {
 test("restore resumes the same conversation rather than starting a new one", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
+  const descriptor = {
+    serverName: "mission-control",
+    command: "/usr/bin/node",
+    args: ["/mission/mcp.mjs"],
+    env: { MISSION_CONTROL_URL: "http://127.0.0.1:7317" },
+  };
   try {
     upsertSdkSession({
       id: "sdk:restore-1",
@@ -228,7 +235,9 @@ test("restore resumes the same conversation rather than starting a new one", asy
       status: "running",
     });
     const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry);
+    const supervisor = new SdkSupervisor(registry, {
+      missionMcpDescriptor: async () => descriptor,
+    });
     await supervisor.restore();
 
     assert.equal(fake.calls.length, 1);
@@ -239,6 +248,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
     assert.equal(fake.calls[0]!.prompt, "");
     assert.equal(fake.calls[0]!.model, "m");
     assert.equal(fake.calls[0]!.effort, "high");
+    assert.deepEqual(fake.calls[0]!.mcp, descriptor);
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
     // The row keeps the id it is being picked up from - it must not be blanked to `null`
     // and then re-learned, or a crash in that window loses the only thing a resume needs.
@@ -289,6 +299,10 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
+    const removed: string[] = [];
+    registry.subscribe((event: ServerEvent) => {
+      if (event.type === "session_remove") removed.push(event.id);
+    });
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start(START);
     handle.push({ kind: "bound", agentSessionId: "agent-5", transcriptPath: null, pid: null });
@@ -300,6 +314,8 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
     // `git worktree remove --force` over work that was merely interrupted.
     assert.equal(getSdkSession(session.id)?.status, "suspended");
     assert.equal(supervisor.handleFor(session.id), null);
+    assert.notEqual(registry.getSession(session.id)?.state, "exited");
+    assert.deepEqual(removed, []);
 
     const resumed = fakeHandle();
     const again = withFakeDriver(async () => resumed);
@@ -348,6 +364,27 @@ test("a task re-dispatched after a failure is answered by its newest row", async
   );
   assert.equal(listSdkSessions().length, 2);
   assert.equal(supervisor.taskLiveness("t"), true);
+});
+
+test("live controls reach the handle and persist what restart will reuse", async () => {
+  const handle = fakeHandle();
+  const modes: string[] = [];
+  const efforts: string[] = [];
+  handle.setPermissionMode = async (mode) => void modes.push(mode);
+  handle.setEffort = async (effort) => void efforts.push(effort);
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    await supervisor.setPermissionMode(session.id, "acceptEdits");
+    await supervisor.setEffort(session.id, "xhigh");
+    assert.deepEqual(modes, ["acceptEdits"]);
+    assert.deepEqual(efforts, ["xhigh"]);
+    assert.equal(getSdkSession(session.id)?.permissionMode, "acceptEdits");
+    assert.equal(getSdkSession(session.id)?.effort, "xhigh");
+  } finally {
+    fake.restore();
+  }
 });
 
 /** Poll until `check` holds. The event pump is detached, so nothing here is synchronous. */

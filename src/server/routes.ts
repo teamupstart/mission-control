@@ -123,6 +123,7 @@ import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { deliverToDriver } from "./sdk/deliver.ts";
+import { stopSession } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
@@ -160,13 +161,13 @@ import {
   cyclePermissionMode,
   focus,
   injectPrompt,
-  kill,
   rename,
   resetPreview,
   selectPaneOption,
   sendText,
   setPermissionMode,
   setSessionEffort,
+  sessionEffortTargetResult,
   defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
@@ -1684,7 +1685,7 @@ export function buildApp(
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await kill(session);
+    const r = await stopSession(session, sdkSessions);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -1711,12 +1712,36 @@ export function buildApp(
     if (refusal) return c.json({ error: refusal }, 400);
     const parsed = await parseBody(c, SetPermissionModeSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await setPermissionMode(session, parsed.data.mode);
+    const r = session.runtime === "sdk"
+      ? await (async () => {
+          const modes = harnessFor(session.agent).permissionModes;
+          if (!modes?.pickable.includes(parsed.data.mode)) {
+            return {
+              ok: false,
+              error: `${parsed.data.mode} is not available for this agent`,
+              mode: session.permissionMode,
+            };
+          }
+          if (!sdkSessions) {
+            return { ok: false, error: "this build has no session supervisor", mode: null };
+          }
+          try {
+            await sdkSessions.setPermissionMode(session.id, parsed.data.mode);
+            return { ok: true, mode: parsed.data.mode };
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+              mode: session.permissionMode,
+            };
+          }
+        })()
+      : await setPermissionMode(session, parsed.data.mode);
     // A cycle walk can stop early in a mode it read off the footer, so retain that
     // observation even on failure. A menu failure observed no new mode: recording its
     // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
     const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
-    if (r.ok || liveControl?.kind === "cycle") {
+    if (r.ok || (session.runtime === "terminal" && liveControl?.kind === "cycle")) {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);
@@ -1744,15 +1769,37 @@ export function buildApp(
         effort: null,
       }, 409);
     }
-    const r = await setSessionEffort(session, parsed.data.effort, {
-      ...defaultPaneDeps,
-      assertBeforeWrite: () => {
-        const current = registry.getSession(session.id);
-        return current?.agent === session.agent &&
-          current.agentSessionId === session.agentSessionId &&
-          current.transcriptPath === session.transcriptPath;
-      },
-    });
+    const r = session.runtime === "sdk"
+      ? await (async () => {
+          const targetResult = sessionEffortTargetResult(session, parsed.data.effort);
+          if (targetResult) return targetResult;
+          if (!sdkSessions) {
+            return {
+              ok: false,
+              error: "this build has no session supervisor",
+              effort: null,
+            };
+          }
+          try {
+            await sdkSessions.setEffort(session.id, parsed.data.effort);
+            return { ok: true, effort: parsed.data.effort };
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+              effort: null,
+            };
+          }
+        })()
+      : await setSessionEffort(session, parsed.data.effort, {
+          ...defaultPaneDeps,
+          assertBeforeWrite: () => {
+            const current = registry.getSession(session.id);
+            return current?.agent === session.agent &&
+              current.agentSessionId === session.agentSessionId &&
+              current.transcriptPath === session.transcriptPath;
+          },
+        });
     if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
       return c.json({
         ok: false,

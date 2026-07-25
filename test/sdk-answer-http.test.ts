@@ -25,6 +25,8 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
+const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
 
 type Registry_ = InstanceType<typeof Registry>;
 type SessionRequest = import("../src/server/harness/types.ts").SessionRequest;
@@ -77,9 +79,14 @@ const FORM: SessionRequest = {
 function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
   const answered: { id: string; requestId: string; answer: SessionRequestAnswer }[] = [];
   const stopped: string[] = [];
+  const modes: string[] = [];
   return {
     answered,
     stopped,
+    modes,
+    handleFor() {
+      return {};
+    },
     async answer(id: string, requestId: string, answer: SessionRequestAnswer) {
       answered.push({ id, requestId, answer });
       if (over.answer) await over.answer();
@@ -87,8 +94,15 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     async stop(id: string) {
       stopped.push(id);
     },
+    async setPermissionMode(id: string, mode: string) {
+      modes.push(`${id}:${mode}`);
+    },
     taskLiveness: () => null,
-  } as unknown as SdkSupervisor & { answered: typeof answered; stopped: string[] };
+  } as unknown as SdkSupervisor & {
+    answered: typeof answered;
+    stopped: string[];
+    modes: string[];
+  };
 }
 
 function mkApp(
@@ -275,6 +289,17 @@ test("the projection a card renders is what the answer is verified against", () 
   assert.deepEqual(dialog.options.map((o) => o.label), ["Yes", "No"]);
 });
 
+test("parallel driver requests stay ordered and promote the next unanswered ask", () => {
+  const registry = new Registry();
+  seed(registry, PERMISSION);
+  registry.applyDriverEvent("sdk:one", { kind: "request", request: FORM });
+  assert.equal(registry.getSession("sdk:one")?.paneDialog?.requestId, "req-1");
+  registry.applyDriverEvent("sdk:one", { kind: "request_resolved", requestId: "req-1" });
+  assert.equal(registry.getSession("sdk:one")?.paneDialog?.requestId, "req-2");
+  registry.applyDriverEvent("sdk:one", { kind: "request_resolved", requestId: "req-2" });
+  assert.equal(registry.getSession("sdk:one")?.paneDialog, null);
+});
+
 test("the handoff clears the task binding BEFORE stopping the driver, so nothing settles", async () => {
   const registry = new Registry();
   const session = seed(registry, null, "sdk:hand");
@@ -289,6 +314,17 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
   );
   const order: string[] = [];
   const supervisor = fakeSupervisor();
+  upsertSdkSession({
+    id: "sdk:hand",
+    agent: "claude",
+    agentSessionId: "agent-1",
+    cwd: "/wt/one",
+    taskId: "task-h",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+  });
   const realStop = supervisor.stop.bind(supervisor);
   supervisor.stop = async (id: string) => {
     // `session_remove` is what settles a task, and it comes from the eviction this stop
@@ -318,6 +354,57 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
   assert.equal(task.status, "running");
   assert.equal(task.sessionId, "proc:tty:1:2");
   assert.equal(task.homeName, body.homeName);
+  assert.equal(getSdkSession("sdk:hand")?.taskId, null);
+});
+
+test("a late terminal successor rebinds an unbound running task by its worktree", () => {
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "task-late",
+      status: "running",
+      sessionId: null,
+      worktreePath: "/wt/late",
+      repoRoot: "/repo",
+    }),
+  );
+  new RealTaskManager(registry, undefined, fakeSupervisor());
+  registry.applyDiscovery([
+    {
+      syntheticId: "proc:late:9:1",
+      agent: "claude",
+      pid: 9,
+      tty: "late",
+      cwd: "/wt/late",
+      name: "late",
+      nameSource: "process",
+      terminals: [],
+      startedAt: 1,
+    } as never,
+  ]);
+  assert.equal(registry.getTask("task-late")?.sessionId, "proc:late:9:1");
+});
+
+test("kill and mode controls use the embedded driver", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:controls");
+  const supervisor = fakeSupervisor();
+  const app = mkApp(registry, supervisor);
+  const mode = await app.request("/api/sessions/sdk:controls/mode", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ mode: "acceptEdits" }),
+  });
+  assert.equal(mode.status, 200);
+  assert.deepEqual(supervisor.modes, ["sdk:controls:acceptEdits"]);
+  assert.equal(registry.getSession("sdk:controls")?.permissionMode, "acceptEdits");
+
+  const killed = await app.request("/api/sessions/sdk:controls/kill", {
+    method: "POST",
+    headers: HEADERS,
+  });
+  assert.equal(killed.status, 200);
+  assert.deepEqual(supervisor.stopped, ["sdk:controls"]);
 });
 
 test("a handoff with no identity to resume from is refused before anything is stopped", async () => {

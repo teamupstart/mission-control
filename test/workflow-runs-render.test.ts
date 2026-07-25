@@ -699,6 +699,49 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assertNoGraphIds(html);
 });
 
+test("scrubbing to an earlier round never withdraws a live recovery action", () => {
+  // The reader's rule: what a ROUND says is scoped to the round, what the RUN offers is not.
+  // With the live submission an Inspector-only repair and the run waiting on Inspector rather
+  // than on a new head, reading round 1 used to remove Restart full workflow entirely - the
+  // only way to abandon the active repair, gone because of a view choice.
+  const base = runningDetail();
+  const inspectorOnly = submission("submission-3", 3, {
+    mode: "inspector_only",
+    context: { failedHeadSha: "oldhead0123456789", newHeadSha: "newhead0123456789" },
+    prHeadSha: "newhead0123456789",
+  });
+  const gated = {
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_inspector", round: 3, gate: "waiting_inspector" },
+    run: { ...base.run, status: "waiting_for_inspector", currentPhase: "inspector_gate" },
+    submissions: [...base.submissions, inspectorOnly],
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: null,
+        targetHeadSha: "newhead0123456789",
+        failedHeadSha: "oldhead0123456789",
+        enteredAt: 8,
+        lastObservedAt: 9,
+        observedHeadSha: "newhead0123456789",
+        reviewPosture: "live",
+        waitReason: "review_pending",
+        findingFingerprints: [],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: null,
+      findings: [],
+    },
+  } as WorkflowRunDetail;
+  assert.match(render(gated), /Restart full workflow/);
+  const earlier = render(gated, { roundId: "submission-1" });
+  assert.match(earlier, /Restart full workflow/);
+  // The round-scoped statements still follow the scrubber: round 1 ran Personas, so it carries
+  // no bypass notice, and round 3 does.
+  assert.doesNotMatch(earlier, /Persona review bypassed/);
+  assert.match(render(gated, { roundId: "submission-3" }), /Persona review bypassed/);
+});
+
 test("Prepare PR and Retry provider call appear only under their own conditions", () => {
   const base = runningDetail();
   const waitingForPr = render({

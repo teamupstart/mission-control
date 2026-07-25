@@ -276,7 +276,19 @@ export function WorkflowRunView({
   const viewed = selectedSubmission(detail, roundId);
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
+  /**
+   * Two different questions, and they were one variable until the Inspector caught it.
+   *
+   * `inspectorOnly` describes the round BEING READ - it is what the bypass notice and the
+   * "ran no Personas" line are about, and scrubbing is exactly how an operator reaches them.
+   * `liveInspectorRepair` describes the run RIGHT NOW, and it is what may enable a recovery
+   * action: with the live submission Inspector-only and the run waiting on Inspector rather
+   * than on a new head, reading round 1 made Restart full workflow disappear - a live control
+   * withdrawn by a view choice, which is the one thing the scrubber must never do.
+   */
   const inspectorOnly = viewed?.mode === "inspector_only";
+  const liveInspectorRepair = detail.submissions.some((submission) =>
+    submission.id === latest?.submissionId && submission.mode === "inspector_only");
   const bypassSourceHead = inspectorOnly
     && viewed.context !== null
     && typeof viewed.context === "object"
@@ -495,7 +507,7 @@ export function WorkflowRunView({
         {/* The two that cannot be undone, kept apart from the rest and never filled red:
             they sit beside actions an operator clicks all day. */}
         <div className="wf-run-actions wf-run-actions-danger">
-          {inspectorGate && (inspectorOnly || detail.run.status === "waiting_for_new_head") && (
+          {inspectorGate && (liveInspectorRepair || detail.run.status === "waiting_for_new_head") && (
             <Tooltip label="Abandon this repair path and rerun every Persona from fresh evidence">
               <button
                 className="btn btn-danger-ghost"

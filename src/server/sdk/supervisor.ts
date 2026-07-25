@@ -84,11 +84,12 @@ export class SdkSupervisor {
   }
 
   /**
-   * Take ownership of a launched handle: put the card on the dashboard, then pump.
+   * Take ownership of a launched handle: persist it, put the card on the dashboard, then pump.
    *
-   * Registration comes first so the session exists before any event about it can arrive -
-   * `applyDriverEvent` refuses an id it does not know, and an ordering that let the first
-   * `bound` race the registration would drop the identity that makes the read path work.
+   * The row has to land before registration emits an SSE frame: an emission cannot be
+   * rolled back, so writing it second could leave a card nobody can restore when SQLite
+   * refuses the write. The pump still starts only after registration, so its first `bound`
+   * cannot race the card into existence and lose the identity the read path needs.
    */
   adopt(input: {
     registration: SdkSessionRegistration;
@@ -101,20 +102,24 @@ export class SdkSupervisor {
     durable: { taskId: string | null; model: string | null; effort: ThinkingLevel | null };
   }): void {
     const { registration, handle, durable } = input;
-    const session = this.registry.registerSdkSession(registration);
     upsertSdkSession({
-      id: session.id,
-      agent: session.agent,
-      agentSessionId: session.agentSessionId,
-      cwd: session.cwd ?? registration.cwd,
+      id: registration.id,
+      agent: registration.agent,
+      agentSessionId: null,
+      cwd: registration.cwd,
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
-      permissionMode: session.permissionMode,
+      permissionMode: registration.permissionMode ?? null,
       status: "starting",
     });
-    this.handles.set(session.id, handle);
-    this.pumps.set(session.id, this.pump(session.id, handle));
+    this.registry.registerSdkSession(registration);
+    this.handles.set(registration.id, handle);
+    const pump = this.pump(registration.id, handle);
+    this.pumps.set(registration.id, pump);
+    void pump.catch((err) => {
+      console.error(`[sdk] detached event pump for ${registration.id} failed:`, err);
+    });
   }
 
   /** The live handle for a session, or null when nothing is driving it. */
@@ -180,10 +185,9 @@ export class SdkSupervisor {
    * is gone is a card whose Send button lies.
    */
   private async pump(id: string, handle: SdkSessionHandle): Promise<void> {
-    // Decided here and written ONCE, in the finally, rather than on the `exited` event: a
-    // stream can end without one (an adapter that returns, or throws), and a row left saying
-    // `running` for a session that is gone is exactly what the next restart has to guess
-    // about. The only distinction that matters durably is whether it ended or broke.
+    // The final write covers a stream that returns or throws without an `exited` event; the
+    // event path writes earlier too, because a daemon dying between that event and the
+    // stream ending must not leave a row claiming the session is still resumable.
     let outcome: SdkSessionStatus = "exited";
     try {
       for await (const evt of handle.events) {
@@ -193,6 +197,7 @@ export class SdkSupervisor {
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, "exited");
         this.registry.applyDriverEvent(id, evt);
+        if (evt.kind === "exited") break;
       }
     } catch (err) {
       console.error(`[sdk] event stream for ${id} failed:`, err);
@@ -201,14 +206,22 @@ export class SdkSupervisor {
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
-      setSdkSessionStatus(id, outcome);
-      // Idempotent: an `exited` event already began the eviction, and this repeat is what
-      // covers the streams that end without one.
-      this.registry.applyDriverEvent(id, {
-        kind: "exited",
-        reason: "driver ended",
-        resumable: false,
-      });
+      try {
+        setSdkSessionStatus(id, outcome);
+      } catch (err) {
+        console.error(`[sdk] final status write for ${id} failed:`, err);
+      }
+      try {
+        // Idempotent: an `exited` event already began the eviction, and this repeat is what
+        // covers the streams that end without one.
+        this.registry.applyDriverEvent(id, {
+          kind: "exited",
+          reason: "driver ended",
+          resumable: false,
+        });
+      } catch (err) {
+        console.error(`[sdk] final eviction for ${id} failed:`, err);
+      }
     }
   }
 }

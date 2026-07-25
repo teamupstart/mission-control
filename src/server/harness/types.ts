@@ -642,8 +642,17 @@ export interface SdkUsage {
  * started.
  */
 export type SdkEvent =
-  /** Identity, as soon as the harness mints it. This is what keeps the READ path working. */
-  | { kind: "bound"; agentSessionId: string; transcriptPath: string | null }
+  | {
+      /** Identity, as soon as the harness mints it. This is what keeps the READ path working. */
+      kind: "bound";
+      agentSessionId: string;
+      transcriptPath: string | null;
+      /**
+       * The subprocess the driver spawned, or null when there is no separate process to
+       * name. This is the ONE place a pid can arrive for a driver-run session.
+       */
+      pid: number | null;
+    }
   | { kind: "state"; state: "working" | "idle"; activity: string | null }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }

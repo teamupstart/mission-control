@@ -191,11 +191,13 @@ test("bound fills the identity the read path needs and confirms instrumentation"
     kind: "bound",
     agentSessionId: "agent-abc",
     transcriptPath: "/transcripts/agent-abc.jsonl",
+    pid: 4321,
   });
   await settle();
   const s = r.getSession(SDK_ID)!;
   assert.equal(s.agentSessionId, "agent-abc");
   assert.equal(s.transcriptPath, "/transcripts/agent-abc.jsonl");
+  assert.equal(s.pid, 4321);
   // All three, and each buys something: `hooksSeen` is what the work queue refuses on,
   // `stateConfirmed` is what the report buckets trust, `instrumented` is the live badge.
   // An embedded session is instrumented BY CONSTRUCTION - the handle IS the push channel.
@@ -205,6 +207,15 @@ test("bound fills the identity the read path needs and confirms instrumentation"
   // Durable too, so a restart can cut a resume from it.
   assert.equal(getSdkSession(SDK_ID)?.agentSessionId, "agent-abc");
   assert.equal(getSdkSession(SDK_ID)?.status, "running");
+
+  driver.emit({
+    kind: "bound",
+    agentSessionId: "agent-def",
+    transcriptPath: "/transcripts/agent-def.jsonl",
+    pid: null,
+  });
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.pid, 4321, "a driver with no separate process keeps the pid");
   await sup.stop(SDK_ID);
 });
 
@@ -338,6 +349,11 @@ test("an exited driver leaves through session_remove, on the ordinary linger", a
     "and lingers first - removal is not immediate for either runtime",
   );
   assert.equal(getSdkSession(SDK_ID)?.status, "exited");
+  assert.equal(
+    sup.handleFor(SDK_ID),
+    null,
+    "an exited event is terminal even when the iterable stays open",
+  );
 
   // The same 8s eviction timer `applyDiscovery` starts. Not a second teardown: both
   // subscribers of `session_remove` (workflow bindings, task settling) depend on this exact
@@ -398,6 +414,7 @@ test("a driver event about a pane-backed session is refused", async () => {
     kind: "bound",
     agentSessionId: "not-ours",
     transcriptPath: "/nope.jsonl",
+    pid: 9999,
   });
   // Same shape of refusal `applyHook` makes for a harness that declares no hooks: a card we
   // reach by typing must not have its identity rewritten by something claiming its handle.

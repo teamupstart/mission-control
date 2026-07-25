@@ -171,10 +171,11 @@ export const SDK_SESSION_ID_PREFIX = "sdk:";
  * What the supervisor has to say to put a driver-run session on the dashboard.
  *
  * The required four are the identity and the checkout; everything else is optional because
- * it is either not known yet (the subprocess pid, which arrives with the launch) or a fact
- * about the checkout the caller resolves once (the git triple, which discovery computes for
- * a pane-backed session and the supervisor computes for this one). An omitted field is the
- * same "not known" a freshly discovered session carries, never a guess.
+ * it is either not known yet (the subprocess pid, which may arrive only when the driver
+ * binds) or a fact about the checkout the caller resolves once (the git triple, which
+ * discovery computes for a pane-backed session and the supervisor computes for this one).
+ * An omitted field is the same "not known" a freshly discovered session carries, never a
+ * guess.
  */
 export interface SdkSessionRegistration {
   /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
@@ -1156,9 +1157,9 @@ export class Registry extends EventEmitter {
       gitRoot: input.gitRoot ?? null,
       repoRoot: input.repoRoot ?? null,
       nomistakesGated: input.nomistakesGated ?? false,
-      // 0 until the driver reports the subprocess it spawned. Nothing acts on this pid: an
-      // SDK session is stopped through its handle, not signalled - which is why an unknown
-      // value can be a number here rather than forcing `pid` nullable across the app.
+      // 0 until registration or `bound` identifies the subprocess the driver spawned. A
+      // driver with no separate process leaves it there, and `signalProcess` must keep
+      // refusing that sentinel because POSIX interprets pid 0 as the caller's process group.
       pid: input.pid ?? 0,
       // No controlling tty, and no pane. Both are what keeps the discovery sweep, the pane
       // lock, the capture-miss counter and the overlay maps from ever keying this session.
@@ -1222,7 +1223,7 @@ export class Registry extends EventEmitter {
     const now = Date.now();
     switch (evt.kind) {
       case "bound":
-        this.applyDriverBinding(s, evt.agentSessionId, evt.transcriptPath, now);
+        this.applyDriverBinding(s, evt.agentSessionId, evt.transcriptPath, evt.pid, now);
         return;
       case "state":
         this.applyDriverState(s, evt.state, evt.activity, now);
@@ -1274,12 +1275,14 @@ export class Registry extends EventEmitter {
     s: Session,
     agentSessionId: string,
     transcriptPath: string | null,
+    pid: number | null,
     now: number,
   ): void {
     const next: Session = {
       ...s,
       agentSessionId,
       transcriptPath,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : s.pid,
       instrumented: true,
       stateConfirmed: true,
       hooksSeen: true,

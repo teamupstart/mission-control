@@ -136,3 +136,36 @@ Later phases must not add a competing completion path or a second poller.
   `markWorkEpisodeMerged` as contracts; the historical-binding deletion audit item from
   Phase 1 matters here (the harvest reads historical rows - Phase 1's chosen
   rule must leave unmerged-but-open URLs readable until terminal `done`).
+- 2026-07-25: implemented. Five decisions worth carrying into Phase 3:
+  - **A `running`/`dispatching` task whose agent is STILL on the process table is
+    skipped**, and left to `settleIfEpisodeFinished`. Scope 3 read as "complete any of the
+    four statuses on merged evidence", which would have erased the asymmetry Phase 1
+    documented and `task-merge-settles.test.ts` pins ("a merge does NOT complete the task
+    while its agent is mid-turn", "a reopened task stays running when its next idle turn
+    is on an unmerged episode"): a present agent handed follow-up work may still be
+    mid-turn, so only its own idleness on the merged episode may conclude it, reversibly.
+    The reconciler owns everything after that. `failed`/`cancelled` are never gated on the
+    session - the status was already concluded.
+  - **Phase 1's retention rule had to widen, as that audit item predicted.**
+    `preservesHistoricalMergeEvidence` kept merged bindings for
+    `running`/`dispatching`/`done` only, so a `failed` task's merge evidence was deleted
+    before it could be upgraded, and an UNMERGED historical URL was deleted before the
+    harvest could ever poll it. It is now `preservesCompletionEvidence(task, merged)`:
+    merged evidence survives every status but `backlog`, unmerged PR-carrying evidence
+    survives exactly while `completableByMerge` holds.
+  - **`completableByMerge` (exported from `registry.ts`) is the one status predicate**,
+    shared by the harvest, the retention rule and the reconciler. Phase 3 must extend that,
+    not restate the tuple.
+  - **Naming, deviating from the letter of the plan.** `taskPrPollTargets()` returns
+    `string[]`, not `{url, episodeTuple}`: the poller needs only what to ask about, and
+    `reconcilePrMerges` re-reads the owning binding anyway - handing tuples out and back
+    would be a second copy of the same lookup. `DependencyPrPollState` →
+    `PrUrlPollState` and `reconcileDependencyPrMerges` → `reconcilePrMerges`, both now
+    serving two harvests; the exit criterion (ONE cadence, one entry point) is met, and
+    folding the reconcile was required rather than optional - it is not a pure write, so
+    two passes would roll the same episode over twice in one tick.
+  - **Two tests were reversed, deliberately**: `task-merge-settles.test.ts`'s "a cancelled
+    task is left cancelled" (now the upgrade) and `task-dependencies.test.ts`'s "reset
+    after delayed merge rollover..." tail, where the reset-cancelled prerequisite is now
+    upgraded from its OWN merge - the case still pins that the replacement episode's merge
+    is not attributed to it.

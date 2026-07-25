@@ -12,7 +12,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { PrUrlPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const {
   firstWorkEpisodePromptAfter,
@@ -1041,6 +1041,19 @@ test("reset after delayed merge rollover stops pending task provenance", async (
 
   const branch = `${setup.branch}-after-reset`;
   setup.registry.applyDiscovery([discovered(setup.id, setup.cwd, { gitBranch: branch })]);
+
+  // The reset cancelled the prerequisite, but its OWN pull request had already merged, so
+  // the completion reconciler upgrades it (phase 2's adopted decision: a merge outranks
+  // what was concluded before it could be seen, and nothing is ever going to run this task
+  // again). The outcome names pull request 94 - which is the thing this case is really
+  // about, because what the reset discarded is the PROVENANCE that would let a merge on the
+  // REPLACEMENT episode be read as this task's.
+  const upgraded = setup.registry.getTask(setup.prerequisiteId)!;
+  assert.equal(upgraded.status, "done");
+  assert.equal(upgraded.outcomeUrl, setup.url);
+  const satisfiedAt = setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt;
+  assert.notEqual(satisfiedAt, null, "closed by the completion above, not by any later merge");
+
   const replacement = setup.registry.workEpisodeForSession(setup.id)!;
   setup.registry.reconcilePrs(
     new Map([[setup.id, prMatch({
@@ -1055,9 +1068,13 @@ test("reset after delayed merge rollover stops pending task provenance", async (
     new Set(),
   );
 
-  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.status, "cancelled");
-  assert.equal(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt, null);
-  assert.equal(setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!).length, 1);
+  // And 194 moves nothing: the discarded provenance means the replacement episode's merge
+  // is not this task's, so neither the outcome nor the edge's timestamp comes from it.
+  assert.equal(setup.registry.getTask(setup.prerequisiteId)?.outcomeUrl, setup.url);
+  assert.equal(
+    setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt,
+    satisfiedAt,
+  );
 });
 
 test("pending reset identity resolution leaves discarded task provenance stopped", async () => {
@@ -1379,7 +1396,7 @@ test("persisted dependency PR polling is bounded and backs off per URL", async (
       }],
     }));
   }
-  const state = new DependencyPrPollState();
+  const state = new PrUrlPollState();
   let active = 0;
   let maxActive = 0;
   let calls = 0;

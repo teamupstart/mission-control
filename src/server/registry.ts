@@ -611,6 +611,24 @@ export class Registry extends EventEmitter {
     return () => this.off("task_pr_merged", fn);
   }
 
+  /**
+   * Fired once per by-URL reconciliation pass that recorded at least one merge.
+   *
+   * The periodic backstop behind session-independent completion, and deliberately not a
+   * second timer: the PR poller's own tick is the clock. `task_pr_merged` above cannot
+   * serve this - it announces the merge of the binding a LIVE session currently holds, so
+   * it is silent for exactly the rows this exists for (a killed agent's task, a cancelled
+   * one whose pull request landed anyway). This says only "the durable record moved",
+   * leaving `TaskManager.reconcileMergedTasks` to decide what that completes: the Registry
+   * stores, the TaskManager decides, the same split `session_remove` makes.
+   *
+   * Listeners must not throw; this runs inside the PR poller's reconciliation.
+   */
+  onPrMergesRecorded(fn: () => void): () => void {
+    this.on("pr_merges_recorded", fn);
+    return () => this.off("pr_merges_recorded", fn);
+  }
+
   /** Internal Inspector-to-workflow wakeup. This is deliberately not browser SSE. */
   onInspectionUpdated(fn: (e: InspectionUpdated) => void): () => void {
     this.on("inspection_updated", fn);
@@ -1821,17 +1839,16 @@ export class Registry extends EventEmitter {
       }
     }
     for (const binding of historicalTaskWorkEpisodeBindings()) {
-      // A historical binding survives for two independent reasons, and the merge one is new
-      // (durable completion, phase 1): a recorded merge on a rolled-past episode is the
-      // completion evidence `mergedPrFor` reads, so it must outlive rollover. A `done` task
-      // may be an idle auto-completion that the same prompt will reopen only after rollover
-      // cleanup returns; a genuinely done task never reaches `agentWentAway`, and keeping its
-      // row until task eviction or removal is harmless. Failed and cancelled tasks remain
-      // outside phase 1. The dependency reason is unchanged: a legacy edge still pointing at
-      // the task keeps its PR-carrying binding.
+      // A historical binding survives for two independent reasons, and the completion one
+      // is the newer: a rolled-past episode's pull request is what `mergedPrFor` reads to
+      // complete the task, and - once a merge can be observed by URL rather than only
+      // through a live session - what the poller is still WATCHING before that. Both are
+      // `preservesCompletionEvidence`. The dependency reason is unchanged: a legacy edge
+      // still pointing at the task keeps its PR-carrying binding.
       const owner = this.tasks.get(binding.taskId);
       const mergeEvidence =
-        binding.mergedAt !== null && preservesHistoricalMergeEvidence(owner);
+        binding.prUrl !== null &&
+        preservesCompletionEvidence(owner, binding.mergedAt !== null);
       const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
       if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
@@ -2705,7 +2722,56 @@ export class Registry extends EventEmitter {
     return [...urls];
   }
 
-  reconcileDependencyPrMerges(mergedUrls: Map<string, number>): void {
+  /**
+   * Every pull request URL a task's OWN completion could still be waiting on.
+   *
+   * The second harvest feeding the one by-URL poller; `dependencyPrPollTargets` above is
+   * the first, and the two share a cadence rather than each keeping one. A standalone
+   * task - one nothing declared a dependency on - had no merge observer at all once its
+   * agent was gone: the branch poller asks `gh` about LIVE sessions only, so a killed
+   * agent's pull request could merge on GitHub and nothing here would ever look. Its task
+   * then sat `running` or `failed` for ever, holding a blocker over every dependent for
+   * work that shipped.
+   *
+   * Only bindings whose merge has NOT been recorded are returned: `merged_at` is stamped
+   * once and never re-read from GitHub, so a landed pull request costs exactly one `gh`
+   * call in total. Statuses come from `completableByMerge`, so the harvest and the
+   * reconciler cannot disagree about which rows are still in question.
+   *
+   * URLs, not episode tuples: the poller only needs to know what to ask about, and
+   * `reconcilePrMerges` re-reads the binding that owns each merged URL anyway - handing
+   * tuples out and back would be a second copy of the same lookup, free to drift.
+   */
+  taskPrPollTargets(): string[] {
+    const urls = new Set<string>();
+    const historical = new Map<string, TaskWorkEpisodeBinding[]>();
+    for (const binding of historicalTaskWorkEpisodeBindings()) {
+      const list = historical.get(binding.taskId) ?? [];
+      list.push(binding);
+      historical.set(binding.taskId, list);
+    }
+    for (const task of this.tasks.values()) {
+      if (!completableByMerge(task.status)) continue;
+      const candidates = [
+        taskWorkEpisodeForTask(task.id),
+        ...(historical.get(task.id) ?? []),
+      ];
+      for (const candidate of candidates) {
+        if (candidate?.prUrl && candidate.mergedAt === null) urls.add(candidate.prUrl);
+      }
+    }
+    return [...urls];
+  }
+
+  /**
+   * Record every merge the by-URL poller observed, against the episode that produced it.
+   *
+   * One entry point for both harvests on purpose. `reconcileWorkEpisodeMerge` is not a
+   * pure write - it satisfies dependency edges, can roll a live episode over and announces
+   * `task_pr_merged` - so running a dependency pass and a task-completion pass separately
+   * would put the same episode through it twice in one tick.
+   */
+  reconcilePrMerges(mergedUrls: Map<string, number>): void {
     if (mergedUrls.size === 0) return;
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
     const targets = new Map<string, {
@@ -2804,6 +2870,34 @@ export class Registry extends EventEmitter {
         }
       }
     }
+    // The other harvest's merges: a URL carried by a task's own binding, whether or not
+    // anything ever declared a dependency on that task. Recorded with THAT binding's
+    // episode tuple, which is what lets `markWorkEpisodeMerged` reach a row that rolled to
+    // historical long before the merge was seen - the ordering a standalone task produces.
+    //
+    // No task id is contributed to `taskIds`, and no historical row is queued for deletion.
+    // Both belong to dependency satisfaction, which the loop above decides and
+    // `complete(..., satisfyDependents)` finishes once `TaskManager` acts on this record.
+    // Widening either here would satisfy an edge from a merge that has completed nothing
+    // yet, and would delete the very evidence the completion is about to read.
+    for (const task of this.tasks.values()) {
+      if (!completableByMerge(task.status)) continue;
+      let binding = bindings.get(task.id);
+      if (binding === undefined) {
+        binding = taskWorkEpisodeForTask(task.id);
+        bindings.set(task.id, binding);
+      }
+      for (const candidate of [binding, ...(historical.get(task.id) ?? [])]) {
+        if (!candidate?.prUrl || !mergedUrls.has(candidate.prUrl)) continue;
+        addTarget({
+          sessionId: candidate.sessionId,
+          episodeId: candidate.episodeId,
+          agentSessionId: candidate.agentSessionId,
+          branch: candidate.branch,
+          prUrl: candidate.prUrl,
+        });
+      }
+    }
     for (const target of targets.values()) {
       this.reconcileWorkEpisodeMerge(
         target.episode,
@@ -2814,16 +2908,20 @@ export class Registry extends EventEmitter {
         // This cleanup ran unconditionally before durable completion. Now the same
         // historical binding is also this task's merge evidence: `reconcileWorkEpisodeMerge`
         // just stamped its `merged_at`, and `mergedPrFor` must still be able to read it to
-        // complete the task. Preserve `done` for the transient auto-completed rollover window
-        // as well as running and dispatching; genuinely done evidence is inert and is pruned
-        // with the task. Failed and cancelled evidence remains outside phase 1.
+        // complete the task - including from `failed` or `cancelled`, which is precisely the
+        // upgrade this row is the evidence for. Only a `backlog` task (rescheduled: being
+        // re-run, so a previous attempt's merge is not its outcome) drops it here; the rest
+        // are pruned with the task itself.
         const owner = this.tasks.get(binding.taskId);
-        if (!preservesHistoricalMergeEvidence(owner)) {
+        if (!preservesCompletionEvidence(owner, true)) {
           deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
         }
       }
     }
     this.cleanupDependencyProvenance();
+    // Announced after the cleanup above, so the listener that reads this record reads it
+    // settled. See `onPrMergesRecorded`.
+    if (targets.size > 0) this.emit("pr_merges_recorded");
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -4624,12 +4722,46 @@ function isTerminalTask(status: Task["status"]): boolean {
   return status === "done" || status === "failed" || status === "cancelled";
 }
 
-function preservesHistoricalMergeEvidence(task: Task | undefined): boolean {
+/**
+ * The task statuses a merged pull request can still decide.
+ *
+ * Three readers share it so they cannot drift: `taskPrPollTargets` (which URLs are still
+ * worth a `gh` call), `preservesCompletionEvidence` (which bindings must outlive rollover
+ * to be read later), and `TaskManager.reconcileMergedTasks` (which rows a merge completes).
+ *
+ * `failed` and `cancelled` are in it because a merge UPGRADES them - the adopted decision
+ * that a pull request which actually landed is the task's outcome, whatever was concluded
+ * before anyone could see it merge. Only a merge does that; a closed-unmerged pull request
+ * changes nothing. `done` is not in it: its outcome is already recorded, and rewriting one
+ * would overwrite what an operator typed. `backlog` is not either: a rescheduled task is
+ * being re-run, so its previous attempt's merge is not this run's outcome.
+ */
+export function completableByMerge(status: Task["status"]): boolean {
   return (
-    task?.status === "running" ||
-    task?.status === "dispatching" ||
-    task?.status === "done"
+    status === "running" ||
+    status === "dispatching" ||
+    status === "failed" ||
+    status === "cancelled"
   );
+}
+
+/**
+ * Does a rolled-past binding still answer a question about its task?
+ *
+ * Two answers, retiring at different moments. A binding whose pull request was OBSERVED
+ * MERGED is the task's outcome - what `mergedPrFor` reads - and is kept for every status
+ * but `backlog`: `done` because an idle auto-completion may still be reopened by a prompt,
+ * `failed` and `cancelled` because `reconcileMergedTasks` upgrades them from exactly this
+ * row. A binding whose pull request has NOT been seen merged is what the by-URL poller is
+ * still watching, so it survives precisely while `taskPrPollTargets` would harvest it;
+ * once the task is `done` there is nothing left for that URL to decide, and deleting it
+ * is what stops an abandoned branch being polled for ever.
+ *
+ * A task that has left memory keeps nothing - nothing can read the row again.
+ */
+function preservesCompletionEvidence(task: Task | undefined, merged: boolean): boolean {
+  if (!task) return false;
+  return merged ? task.status !== "backlog" : completableByMerge(task.status);
 }
 
 /**

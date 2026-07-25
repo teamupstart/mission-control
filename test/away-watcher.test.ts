@@ -29,6 +29,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s",
     agent: "claude",
     name: "sess",
+    runtime: "terminal",
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,

@@ -8,7 +8,7 @@ import type {
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { foremanAutomationAuthorized } from "../harness/index.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
@@ -136,13 +136,17 @@ export function waitingOnHuman(item: WorkItem): boolean {
 }
 
 /**
- * True when the session has a pane we can actually type into.
+ * True when an item's session can be DELIVERED to at all.
  *
  * A named alias for the shared predicate, not a second one: the queue machine reads as a
- * sequence of questions about an ITEM, and "does its session have a pane" is one of them.
+ * sequence of questions about an ITEM, and "can its session be reached" is one of them.
+ *
+ * Still spelled `hasPane` because that is what every decision site calls it and the name is
+ * load-bearing in the refusal wording, but it asks `canMessage`: the queue's question was
+ * never about a pane, it was about whether the item it is about to hand over can arrive.
  */
 export function hasPane(s: Session): boolean {
-  return canWriteTo(s);
+  return canMessage(s);
 }
 
 /** True once an item has no further lifecycle. */

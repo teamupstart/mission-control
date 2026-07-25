@@ -27,6 +27,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s",
     agent: "claude",
     name: "sess",
+    runtime: "terminal",
     nameSource: "process",
     state: "working" as SessionState,
     cwd: null,
@@ -120,6 +121,18 @@ test("kill: a session with no terminal handle signals the pid and touches no bac
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(signalled, [4242]);
   assert.deepEqual(killedGroups, [], "no multiplexer handle -> no group to kill");
+});
+
+test("kill: a session with no process id of its own is refused, not signalled", async () => {
+  // The REAL signal, deliberately: this is the one case where calling it is safe, and the
+  // one case where getting it wrong is unrecoverable. POSIX reads pid 0 as "every process in
+  // the caller's process group", so `process.kill(0, "SIGTERM")` from the daemon signals the
+  // DAEMON. Every discovered session's pid comes from `ps` and is positive; a session the
+  // daemon runs itself has no subprocess pid until its driver reports one, which is what
+  // made 0 reachable at all.
+  const r = await kill(mkSession({ runtime: "sdk", pid: 0, terminals: [] }));
+
+  assert.deepEqual(r, { ok: false, error: "this session has no process id to signal" });
 });
 
 test("kill: a handleless session surfaces a failed signal", async () => {

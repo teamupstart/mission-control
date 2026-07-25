@@ -74,6 +74,11 @@ test("a visible change emits", () => {
     { prNumber: 1 },
     { prState: "open" },
     { prChecks: "failing" },
+    // The runtime axis. Fixed for the life of an entry, so this is a statement about the
+    // COMPARATOR rather than about a transition anyone can make: `runtime` decides which
+    // affordances a card draws (a Send box with no pane behind it, no Focus, no Rename), so
+    // an entry left out of the record would render the wrong set once and never correct it.
+    { runtime: "sdk" as const, terminals: [], tty: null },
   ];
   for (const over of cases) {
     const field = Object.keys(over)[0];
@@ -147,6 +152,29 @@ test("schedule provenance rides inside Session.task, and a change to it still em
           },
         },
       }),
+    ),
+    false,
+  );
+});
+
+test("a driver-sourced dialog compares like any other - the fields are new, the rule is not", () => {
+  // `paneDialog` is `byJson`, which is what lets the driver fields ride inside it with no
+  // comparator of their own. Two reads of the same pending request must be equal (or every
+  // event would re-render the buttons), and a NEW request must not be: an ask replaced by
+  // another ask is the one tick where nothing else about the session moves.
+  const dialog = {
+    options: [{ number: 1, label: "Yes" }],
+    highlighted: 0,
+    prompt: "Run npm test?",
+    source: "driver" as const,
+    requestId: "req-1",
+    kind: "permission" as const,
+  };
+  assert.equal(sessionEqual(mkSession({ paneDialog: dialog }), mkSession({ paneDialog: dialog })), true);
+  assert.equal(
+    sessionEqual(
+      mkSession({ paneDialog: dialog }),
+      mkSession({ paneDialog: { ...dialog, requestId: "req-2" } }),
     ),
     false,
   );

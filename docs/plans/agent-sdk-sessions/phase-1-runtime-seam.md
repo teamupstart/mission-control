@@ -25,11 +25,11 @@ an operator or by Foreman.
 
 ## Repository findings and inherited contracts
 
-- `Session` (`src/shared/types.ts:234-457`); id today is always
+- At phase entry, `Session` (`src/shared/types.ts:234-457`) ids were always
   `proc:<tty>:<pid>:<startMs>` minted in `discovery/correlate.ts`.
 - `SESSION_FIELD_COMPARATORS` at `src/server/registry.ts:4798`; a new `Session` field
   fails typecheck until it has a comparator (AGENTS.md contract).
-- `applyDiscovery` (`registry.ts:770-830`) is the registry's only session source;
+- At phase entry, `applyDiscovery` (`registry.ts:770-830`) was the registry's only session source;
   eviction at `:803-812` marks anything a completed sweep did not see as `exited`, then
   `remove(id)` (`:3257-3273`) emits `session_remove`. Two subscribers (WorkflowManager,
   TaskManager) depend on that exact sequence - reuse it, never a parallel teardown.
@@ -84,10 +84,11 @@ an operator or by Foreman.
    `runtimes.includes("sdk") === (HARNESSES[a].sdk !== null)` for every agent.
 7. **`src/server/registry.ts`**:
    - `SESSION_FIELD_COMPARATORS.runtime = byValue`.
-   - `registerSdkSession(input: { id: "sdk:"-prefixed; agent; name; cwd; taskId?; ... })`
+   - `registerSdkSession(input: { id: "sdk:"-prefixed; agent; name; cwd; ... })`
      creating a full `Session` (runtime `"sdk"`, `tty: null`, `terminals: []`,
      `nameSource: "sdk"`, `pid` of the subprocess once known, state `"starting"`) and
-     emitting the normal session-new event.
+     emitting the normal session-new event. Task state is resolved through the Registry's
+     existing session helper; the durable SDK row owns the task id used for resume.
    - `applyDriverEvent(id, evt: SdkEvent)`: `bound` fills `agentSessionId` /
      `transcriptPath` and sets `instrumented` / `stateConfirmed` / `hooksSeen` true
      (C5 - this is what keeps the read path and instrumentation gates working);
@@ -105,8 +106,9 @@ an operator or by Foreman.
    index outside the block, no REFERENCES, no backticks in the SQL block.
 9. **`src/server/sdk/supervisor.ts`** (skeleton): the class, its persistence
    (read/write `sdk_sessions`), a `restore()` that loads rows and - with no drivers
-   declared yet - marks any row `status = "running"` as `failed` (defensive; none can
-   exist), and the event-pump plumbing typed against `SdkSessionHandle`. Construct it in
+   declared yet - marks any row with a live status (`starting` or `running`) as `failed`
+   (defensive; this build cannot create one), and the event-pump plumbing typed against
+   `SdkSessionHandle`. Construct it in
    `src/server/index.ts` and `await supervisor.restore()` BEFORE `startPoller(registry)`
    (`:140`), with a comment stating the C5 ordering contract next to the existing `:135`
    comment.
@@ -148,3 +150,28 @@ SDK sessions from discovery code.
 - 2026-07-24: initial version. Claude's `runtimes` deliberately stays `["terminal"]`
   here so the phase is inert; phase 2 flips it with the driver (C4's contract test forces
   the two to move together).
+- 2026-07-25: implemented. Four notes for later phases, three of them corrections to the
+  call-site sweep in step 3, which was written against a tree that has since moved:
+  - **`App.tsx:1467` is gone.** That `canWriteTo` was the <kbd>⇧</kbd><kbd>Tab</kbd> cycle
+    gate, and #239 folded it into the shared `canCycleMode` (`@shared/session.ts`). It is a
+    KEYSTROKE gate, so it stays on `canWriteTo`; nothing in `App.tsx` moved.
+  - **`lib/format.ts:308` is `canRenameSession`**, which stays on `canWriteTo` too. Rename
+    moves a multiplexer session name and retitles tabs - it is pane mechanics, and the same
+    step's "keep `canWriteTo`" list names rename explicitly. Moving it would have offered
+    Rename on a session with no terminal to rename.
+  - `tasks.ts`'s `clearsContext` is at `:1435`, and `foreman/pending.ts` has two `canSend`
+    sites (`:248`, `:299`). Both moved as specified.
+  - **`McpLaunchDescriptor` is spelled `MissionMcpDescriptor`** in the repository
+    (`src/server/mission-mcp.ts`); `SdkLaunchOptions.mcp` names that type rather than
+    restating it, per the single-declaration rule for launch-scoped MCP.
+  - Additions the phase did not enumerate but C4/C5 imply: `SessionRequest` (the
+    harness-neutral ask that projects into `PaneDialog`, in `harness/types.ts`),
+    `driverDialog` (that projection, `sdk/dialog.ts`), `SDK_SESSION_STATUSES` (the persisted
+    status vocabulary, append-only, in `sdk/store.ts` beside the row IO), and
+    `Registry.beginEviction` (the extracted exited-then-linger-then-`remove` sequence the
+    sweep and the driver now share). `applyDriverEvent` also handles `pr_created` - the
+    variant is in C4's type, and the two things a proving hook does (decorate the card, emit
+    `pr_opened` once) are the same two here; phase 3 owns the rest of PR provenance.
+  - `turn_done.usage` is deliberately NOT applied to the session: the ledger keeps one
+    writer per harness and both still see an embedded session's own files, so spending it
+    here would double-count. Phase 3 owns that verification.

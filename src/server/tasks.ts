@@ -14,7 +14,7 @@ import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
@@ -1544,9 +1544,11 @@ export class TaskManager {
   private async resetConfirmFor(s: Session): Promise<AssignResetConfirm> {
     return {
       queuedItems: s.queue?.openCount ?? 0,
-      // A pane is what `/clear` needs, and `assign` has already refused a session
-      // without one by the time this is asked.
-      clearsContext: canWriteTo(s),
+      // Whether the handover can clear the agent's context, which is a delivery question
+      // rather than a pane one: a pane-backed session is typed at, a driver-run one is asked
+      // through its handle. `assign` has already refused a session it cannot reach at all by
+      // the time this is asked.
+      clearsContext: canMessage(s),
       branch: await branchReleasedByReset(s),
     };
   }

@@ -23,6 +23,7 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
 | `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
 | `src/server/terminal` | `registry.ts` | tmux/wezterm behind two interfaces. Mechanism only; the write policy stays in `actions.ts`. |
+| `src/server/sdk` | `supervisor.ts` | Owns sessions the daemon RUNS (`runtime: "sdk"`). In the daemon, for the Inspector's reasons. |
 | `hooks/` | `harness-hook.mjs`, `codex-hook.mjs` | One bare node per hook event, one bridge per hook-capable harness. POSTs to the daemon. |
 
 - The Foreman is a separate process and **never touches the DB**. If it needs state, add a
@@ -30,6 +31,17 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
 - The **Inspector is in the daemon**, deliberately: Electron never starts the Foreman
   worker, so a packaged build would silently not have the feature, and every piece of its
   state has to survive a restart. Do not move it.
+- The **SdkSupervisor is in the daemon too, for the Inspector's two reasons**: Electron never
+  starts the Foreman worker, so a packaged build would silently not have the feature, and
+  every piece of its state has to survive a restart. It is the second and only other producer
+  of Registry sessions (the Registry remains the map's owner), and it has three invariants.
+  `restore()` completes BEFORE
+  `startPoller(registry)` (`src/server/index.ts`), because every restart twin hangs off
+  `onSessionsObserved` and a session registered after the first completed sweep is invisible
+  to the reconciliation that would settle its task. `applyDiscovery`'s unseen-means-exited
+  loop is scoped to `runtime === "terminal"`, because "no process on a tty matched" is no
+  information at all about a session that has no tty. And a driver-run session leaves through
+  the SAME `beginEviction` a vanished pane does - see "A session going away".
 - The live channel is SSE only. The web app does not poll.
 
 ## Compiler-enforced contracts
@@ -58,7 +70,11 @@ and no component needs editing: the accent is a literal colour that reaches CSS 
 inline `--agent-accent`, and every sentence naming which agents a feature reaches is
 computed (`agentList`, `skillsAgents`, `autoModeAgents`). Test:
 `session-contracts.test.ts`, which pins that list, and `agent-accent.test.ts`, which
-fails if an agent id turns up in the stylesheet again.
+fails if an agent id turns up in the stylesheet again. It must also say which RUNTIMES it
+offers (`runtimes`, `@shared/harness-capabilities.ts`) and, if `"sdk"` is one of them, hold a
+driver behind it (`Harness.sdk`) - one fact in two files, pinned by `harness-sdk.test.ts`.
+`["terminal"]` with `sdk: null` is the honest answer for a harness nobody has written a
+driver for.
 
 ## Layout parity
 
@@ -136,7 +152,16 @@ reset caller through it, never copy the cleanup into a handler.
 `session_remove` is the durable signal, and the ONLY one: Registry emits it from its eviction
 timer, 8s after a completed sweep stopped seeing the process, so a session marked `exited` by
 one sweep and rediscovered by the next never reaches it. Anything keyed to `state === "exited"`
-instead fires on that hiccup. Two subscribers today - `WorkflowManager` orphans its bindings,
+instead fires on that hiccup.
+
+**There are two ways a session can stop existing and ONE sequence for both.**
+`beginEviction` (`registry.ts`) is it - exited emitted now, `remove` after the linger - and it
+is shared by the discovery sweep's unseen loop and by the SdkSupervisor's `exited` driver
+event. A second teardown that skipped it would be a card that vanishes from the dashboard
+while its task stays `running` for ever, because both subscribers below are keyed on that
+event and on nothing else. Correspondingly, the sweep's loop is scoped to
+`runtime === "terminal"`: it reads the process table, and a driver-run session was never in
+it. Do not add an eviction path, and do not widen that scope. Two subscribers today - `WorkflowManager` orphans its bindings,
 `TaskManager.reconcileTasksBoundTo` settles the task that session was running - and a third
 piece of durable state bound to a session belongs here rather than in a poller of its own.
 
@@ -721,7 +746,18 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   about one axis - a named session to kill or rename, a tab to raise - and for nothing
   else. `bindPane` (`terminal/registry.ts`) defers to `innermostPane` rather than
   restating it, so the write lock guards the pane the write reaches by construction.
-  Test: `session-terminals.test.ts`, `pane-lock.test.ts`, `terminal-registry.test.ts`.
+  **`canMessage` is the other half of that question and they must not be conflated.**
+  `canWriteTo` is about a PANE - focus, rename, the write lock, Shift+Tab, capture
+  tolerance, `canCycleMode` - and `canMessage` (`canWriteTo(s) || s.runtime === "sdk"`) is
+  about a CONVERSATION: the Send box, the queue's `hasPane`, `clearsContext`, Foreman's
+  `canSend`, the mode and effort pickers. They answer identically for every session that has
+  a pane, so getting one wrong fails silently: a delivery site left on `canWriteTo` greys out
+  a driver-run session it could have reached, and a pane site widened to `canMessage` offers
+  Rename on a session with no terminal to rename. `canMessage` takes
+  `PaneHandles & { runtime }`, which is what keeps `DiscoveredSession` consumers (the
+  `paneDialog` stickiness fallback) on the predicate that needs no field they have.
+  Test: `session-terminals.test.ts`, `pane-predicates.test.ts`, `pane-lock.test.ts`,
+  `terminal-registry.test.ts`.
 - **Pane token**: `paneToken` (`@shared/pane.ts`) spells the key every pane-scoped map uses -
   the write lock, the hook overlay, the capture-miss counter, the Foreman's send guard. There
   were four copies in two spellings (`wezterm:` and `wez:`); each subsystem only compared the

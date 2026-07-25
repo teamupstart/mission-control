@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PermissionMode, Session } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -45,8 +45,11 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
     tone: "default" as const,
     title: "Permission mode has not been observed yet",
   };
-  // Driving the mode writes to the agent TUI, which needs a live pane.
-  const canPick = session.state !== "exited" && canWriteTo(session);
+  // Whether the mode can be CHANGED at all, which is not a claim about a pane: a
+  // pane-backed session is driven through its TUI, a driver-run one through
+  // `handle.setPermissionMode`. The Shift+Tab keycap is the pane-only half and keeps its
+  // own gate (`canCycleMode`), which still asks `canWriteTo`.
+  const canPick = session.state !== "exited" && canMessage(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

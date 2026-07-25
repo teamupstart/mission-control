@@ -112,6 +112,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s1",
     agent: "claude",
     name: "atlas",
+    runtime: "terminal",
     nameSource: "process",
     state: "idle",
     cwd: "/work/alpha",

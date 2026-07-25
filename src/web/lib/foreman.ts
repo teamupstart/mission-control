@@ -96,7 +96,7 @@ export type DeliveryTarget =
   | { kind: "send" }
   /** The review this text was written to answer has already been resolved. */
   | { kind: "stale" }
-  /** A terminal draft with no pane to type into - Foreman had no channel either. */
+  /** A session draft with no delivery channel - Foreman could not send it either. */
   | { kind: "no-channel" };
 
 /**
@@ -107,8 +107,8 @@ export type DeliveryTarget =
  * text was written to answer a question that is now closed, and sending it at whatever
  * review happens to be open next answers the wrong one in the human's name.
  *
- * A terminal marker types into the session, but only when there is something to type
- * into. `canSend` is the same `canWriteTo` the server's `classifyPending` asks, and
+ * A terminal marker delivers to the session, but only when something can deliver to it.
+ * `canSend` is the same `canMessage` the server's `classifyPending` asks, and
  * it is asked here for the same reason it is asked there: an escalation carrying
  * "no reply channel" was raised BECAUSE nothing could deliver it, so offering the human a
  * button whose whole job is to deliver it describes a send that cannot happen.
@@ -126,7 +126,7 @@ export function deliveryTarget(o: {
   handledMarker: string | null;
   inputReviewId: string | null;
   pendingReviewIds: ReadonlySet<string> | undefined;
-  /** Whether the session has a pane to type into. Absent reads as "yes", see below. */
+  /** Whether the session has a delivery channel. Absent reads as "yes", see below. */
   canSend?: boolean;
 }): DeliveryTarget {
   const marker = o.handledMarker;

@@ -2,13 +2,20 @@ import type { HookIngest } from "@shared/protocol.ts";
 import type {
   AgentType,
   MetaSource,
+  PaneDialog,
+  PaneOption,
   PermissionMode,
   Session,
+  SessionRequestQuestion,
   SessionState,
   ThinkingLevel,
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
+// Type-only, so this file keeps its no-`node:`-imports rule: the import is erased at emit
+// (verbatimModuleSyntax). The descriptor is named here rather than restated because
+// launch-scoped MCP is declared ONCE, in `mission-mcp.ts`.
+import type { MissionMcpDescriptor } from "../mission-mcp.ts";
 
 // The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
 //
@@ -476,6 +483,185 @@ export type ControlSpec =
   | { kind: "stream-json" };
 
 /**
+ * How this harness runs EMBEDDED - driven over its own programmatic interface, with no
+ * terminal pane anywhere in the picture.
+ *
+ * `null` on `Harness` means no driver exists for this harness yet, which is a real absence
+ * with a tested degradation rather than a stub: `HarnessCapabilities.runtimes` does not
+ * offer `"sdk"`, so no toggle renders, dispatch stays on the terminal path, and the
+ * sentence the panel shows is composed from the capability. The two halves are ONE FACT in
+ * two files and `harness-sdk.test.ts` fails until they agree.
+ *
+ * This is the sibling of `ControlSpec`, not a replacement for it: `control` says how a turn
+ * reaches a PANE-backed session of this harness, and a session an operator started is
+ * pane-backed whatever this slot says. See `docs/plans/agent-sdk-sessions/plan.md`.
+ */
+export interface SdkSpec {
+  /**
+   * Start (or resume) an embedded session.
+   *
+   * REJECTS rather than degrades. A driver that cannot honour what it was asked for - a
+   * model this build cannot select, a resume id the harness no longer holds - must throw,
+   * because the alternative is a card that looks dispatched and is running something else.
+   */
+  launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+}
+
+export interface SdkLaunchOptions {
+  cwd: string;
+  /** The task intent, delivered as turn one - there is no separate "type the prompt" step. */
+  prompt: string;
+  model: string | null;
+  effort: ThinkingLevel | null;
+  /** From `dispatchPermissionMode` - the same source the terminal path renders as argv. */
+  permissionMode: PermissionMode | null;
+  /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
+  mcp: MissionMcpDescriptor | null;
+  /** Harness-native session/thread id to continue, for a restart. Null starts fresh. */
+  resume: string | null;
+}
+
+/** An image accompanying a turn. A PATH, because that is what an upload durably is. */
+export interface SdkImage {
+  /** Absolute path on the daemon's host. The adapter reads and encodes it. */
+  path: string;
+  /** MIME type when the upload recorded one; null lets the adapter decide. */
+  mediaType: string | null;
+}
+
+/** One turn of user input. */
+export interface SdkTurn {
+  text: string;
+  images?: readonly SdkImage[];
+}
+
+/**
+ * A live embedded session: the supervisor's ONLY view of it.
+ *
+ * Everything a caller can do to an SDK session is a method here, which is what keeps the
+ * protocol inside the adapter. Nothing above this interface knows whether it is talking to
+ * a stream-json subprocess, a JSON-RPC server or a JSONL pipe.
+ */
+export interface SdkSessionHandle {
+  /** Structured lifecycle. The supervisor pumps this until it ends. */
+  events: AsyncIterable<SdkEvent>;
+  /**
+   * Deliver a user turn, resolving when the harness ACCEPTED it.
+   *
+   * That ack is the thing `injectPrompt` never had: no settle window, no paste
+   * placeholder to read back, no Enter that a mention popup may have eaten. A driver that
+   * cannot ack must reject - "probably landed" is the failure mode this replaces.
+   */
+  send(turn: SdkTurn): Promise<void>;
+  interrupt(): Promise<void>;
+  /** Resolve a pending `SessionRequest` (permission, question, plan, approval). */
+  answer(requestId: string, answer: SessionRequestAnswer): Promise<void>;
+  /**
+   * Live controls, or `null` when this driver genuinely cannot offer one.
+   *
+   * The capability-null doctrine, at method granularity: null here is an ANSWER ("this
+   * transport has no way to change the mode of a running session"), never a stub. A stub
+   * that resolved would report a mode change that never happened, which is exactly the
+   * silent lie `pastePlaceholder: null` exists to prevent on the pane side. Declare one
+   * null only after pointing the driver at a real install.
+   */
+  setPermissionMode: ((mode: PermissionMode) => Promise<void>) | null;
+  setModel: ((model: string) => Promise<void>) | null;
+  clearContext: (() => Promise<void>) | null;
+  /** Stop the session's driver. Graceful; the handle must then emit `exited`. */
+  stop(): Promise<void>;
+}
+
+/**
+ * An ask a driver is BLOCKED on, in harness-neutral form.
+ *
+ * Projected into `PaneDialog` (`sdk/dialog.ts`) rather than being a second wire shape, so
+ * every surface that already renders a menu, buckets a session as `needs-you`, or lets
+ * Foreman answer one keeps working with no new arm. What a driver adds over a screen is
+ * everything the screen could not say: a correlation id, what kind of ask this is, and -
+ * for `AskUserQuestion` - all of its questions at once instead of the one visible tab.
+ */
+export interface SessionRequest {
+  /** Correlation id. An answer must echo it; the driver resolves the callback it names. */
+  id: string;
+  kind: NonNullable<PaneDialog["kind"]>;
+  /** What is being asked, in the words the human sees. */
+  prompt: string;
+  /**
+   * The rows offered for a single ask, ascending from 1. Empty when this request is a
+   * form - `questions` carries the rows then, one set per question.
+   */
+  options: readonly PaneOption[];
+  /** The questions of a multi-question form; absent for a single ask. */
+  questions?: readonly SessionRequestQuestion[];
+}
+
+/** One question's answer inside a form submission. */
+export interface SessionRequestFormAnswer {
+  /** The question this answers, verbatim, so the driver can match it back. */
+  question: string;
+  /** Chosen row labels - one for a single-select question, several for a multi-select. */
+  labels: readonly string[];
+  /** Free text, which a driver form admits and a pane form has to refuse. */
+  text?: string;
+}
+
+/**
+ * How a pending request is answered.
+ *
+ * A row number alone is never authoritative: it is a position on a list that may have
+ * been re-read since, and the label check (`optionRowMiss`) is what has always caught a
+ * miscounting caller. `option` carries both because that is what `/select-option` sends on
+ * either runtime (C3) - the number identifies, the label verifies.
+ */
+export type SessionRequestAnswer =
+  | { kind: "option"; number: number; label: string }
+  | { kind: "form"; answers: readonly SessionRequestFormAnswer[] }
+  /** Prose: a deny-with-message, or a free-text reply where the harness admits one. */
+  | { kind: "text"; text: string };
+
+/** Per-turn token usage as a driver reports it. Display enrichment, never a ledger writer. */
+export interface SdkUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoningOutput?: number;
+  modelId: string | null;
+  /** The harness's own cost figure for the turn, when it reports one. */
+  costUsd: number | null;
+}
+
+/**
+ * What a driver tells the daemon about its session.
+ *
+ * The counterpart of a hook ingest, with one difference that removes a whole class of
+ * guard: the supervisor OWNS the binding it reports here, so there is no attribution
+ * question to answer. `applyHook`'s `discoveredIdentity` check exists because a hook is a
+ * claim about a process we read separately; a driver event comes from the handle the
+ * supervisor owns, whether or not that handle has a separate subprocess.
+ */
+export type SdkEvent =
+  | {
+      /** Identity, as soon as the harness mints it. This is what keeps the READ path working. */
+      kind: "bound";
+      agentSessionId: string;
+      transcriptPath: string | null;
+      /**
+       * The subprocess the driver spawned, or null when there is no separate process to
+       * name. This is the ONE place a pid can arrive for a driver-run session.
+       */
+      pid: number | null;
+    }
+  | { kind: "state"; state: "working" | "idle"; activity: string | null }
+  | { kind: "request"; request: SessionRequest }
+  | { kind: "request_resolved"; requestId: string }
+  | { kind: "turn_done"; usage: SdkUsage | null }
+  /** `gh pr create` observed on the tool stream - authorship evidence, not a url sniff. */
+  | { kind: "pr_created"; url: string | null }
+  | { kind: "exited"; reason: string; resumable: boolean };
+
+/**
  * Reading the agent's own permission-mode footer off a pane.
  *
  * Null on `TuiSpec` means the pane has no permission-mode footer grammar - not that the
@@ -634,4 +820,6 @@ export interface Harness extends HarnessCapabilities {
   tui: TuiSpec | null;
   /** How a turn reaches this harness. Not nullable - see `ControlSpec`. */
   control: ControlSpec;
+  /** How to run this harness embedded, or null when no driver exists (yet). See `SdkSpec`. */
+  sdk: SdkSpec | null;
 }

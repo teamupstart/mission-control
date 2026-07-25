@@ -8,6 +8,7 @@ import type {
   Harness,
   HookSpec,
   ModeLineSpec,
+  SdkSpec,
   TranscriptMessages,
   TranscriptSpec,
   TuiSpec,
@@ -65,6 +66,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: claudeBin,
     tui: claudeTui,
     control: claudeControl,
+    // Phase 2 of `docs/plans/agent-sdk-sessions/plan.md` fills this with the
+    // `@anthropic-ai/claude-agent-sdk` adapter, and flips `runtimes` in the same change.
+    sdk: null,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -93,6 +97,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: codexBin,
     tui: codexTui,
     control: codexControl,
+    // Phase 4 fills this with the `codex app-server` adapter (JSON-RPC over stdio, the only
+    // Codex interface whose approvals are answerable), and flips `runtimes` with it.
+    sdk: null,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -119,6 +126,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: piBin,
     tui: null,
     control: piControl,
+    // Phase 6 fills this with pi's `--mode rpc` adapter, which is also where pi first gains
+    // structured needs-you evidence: its `hooks: null` and `workQueue: null` are both
+    // consequences of having no push channel, and the driver IS one.
+    sdk: null,
   },
 };
 
@@ -177,6 +188,18 @@ export function usageFor(session: Session): UsageSpec | null {
  */
 export function hooksFor(agent: AgentType): HookSpec | null {
   return HARNESSES[agent].hooks;
+}
+
+/**
+ * How to run this agent embedded, or null when no driver exists for it yet.
+ *
+ * Beside `hooksFor` because it answers the same shape of question and degrades the same
+ * way: null means the runtime is not offered at all, so the toggle does not render and
+ * dispatch stays on the terminal path. Ask this rather than testing `agent === "claude"`,
+ * and never test the `sdk:` id prefix - `Session.runtime` is the axis.
+ */
+export function sdkFor(agent: AgentType): SdkSpec | null {
+  return HARNESSES[agent].sdk;
 }
 
 /** Whether Foreman may automate this session. */

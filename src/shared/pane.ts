@@ -4,6 +4,7 @@ import type {
   TerminalBackendId,
   TerminalHandle,
 } from "./terminal.ts";
+import type { SessionRuntime } from "./types.ts";
 
 /**
  * What a session's pane is called, which pane that is, and whether there is one at all.
@@ -103,6 +104,31 @@ export function paneToken(s: PaneHandles): string | null {
  */
 export function canWriteTo(s: PaneHandles): boolean {
   return innermostPane(s) !== null;
+}
+
+/**
+ * True when Mission Control can DELIVER A TURN to this session - by typing into its pane,
+ * or by handing it to the driver that is running it.
+ *
+ * Split from `canWriteTo` because ~20 call sites were using that predicate to ask this
+ * question, and once a session can exist with no pane at all the two answers diverge. They
+ * are genuinely different questions:
+ *
+ *  - `canMessage` is about a CONVERSATION: may the Send box be enabled, may the work queue
+ *    hand this session an item, will a reset be able to clear its context, may Foreman
+ *    reply. None of those care how the bytes land.
+ *  - `canWriteTo` is about a PANE: focus and raise it, rename the multiplexer session that
+ *    holds it, take the write lock on it, press Shift+Tab in it, tolerate a capture miss
+ *    on it. Every one of those is meaningless without a pane, and an SDK session must NOT
+ *    be admitted to any of them - so the literal predicate keeps its literal meaning
+ *    rather than being widened underneath its callers.
+ *
+ * Takes `runtime` as well as the handles because a `DiscoveredSession` has no runtime to
+ * ask about: discovery only ever produces pane-backed sessions, so its consumers stay on
+ * `canWriteTo` by construction rather than by remembering to.
+ */
+export function canMessage(s: PaneHandles & { runtime: SessionRuntime }): boolean {
+  return canWriteTo(s) || s.runtime === "sdk";
 }
 
 /**

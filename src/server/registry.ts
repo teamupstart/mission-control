@@ -9,6 +9,7 @@ import type {
   NmRunSummary,
   FleetCost,
   OrphanedQueueHint,
+  PaneDialog,
   PermissionMode,
   RateLimits,
   RateLimitWindow,
@@ -61,7 +62,10 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead, SessionActivityRead } from "./harness/types.ts";
+import type { RuntimeMetaRead, SdkEvent, SessionActivityRead } from "./harness/types.ts";
+// The one projection of a driver request into the dialog shape every surface already
+// renders. Pure and its own module - see `sdk/dialog.ts`.
+import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
@@ -152,6 +156,43 @@ export interface PrOpened {
   sessionId: string;
   cwd: string | null;
   repoRoot: string | null;
+}
+
+/**
+ * The id space of driver-run sessions.
+ *
+ * Disjoint from discovery's `proc:<tty>:<pid>:<startMs>` so the two writers into one map
+ * cannot collide, and that is ALL it is for: it is validated once, at registration, and
+ * nothing else in the codebase may branch on it. `Session.runtime` is the axis - an id
+ * prefix is a spelling, and a spelling is exactly what stops being reliable the moment
+ * someone needs a second one.
+ */
+export const SDK_SESSION_ID_PREFIX = "sdk:";
+
+/**
+ * What the supervisor has to say to put a driver-run session on the dashboard.
+ *
+ * The required four are the identity and the checkout; everything else is optional because
+ * it is either not known yet (the subprocess pid, which may arrive only when the driver
+ * binds) or a fact about the checkout the caller resolves once (the git triple, which
+ * discovery computes for a pane-backed session and the supervisor computes for this one).
+ * An omitted field is the same "not known" a freshly discovered session carries, never a
+ * guess.
+ */
+export interface SdkSessionRegistration {
+  /** `sdk:<uuid>`, minted by the supervisor and durable across a daemon restart. */
+  id: string;
+  agent: AgentType;
+  name: string;
+  cwd: string;
+  pid?: number;
+  permissionMode?: PermissionMode | null;
+  gitBranch?: string | null;
+  gitRoot?: string | null;
+  repoRoot?: string | null;
+  nomistakesGated?: boolean;
+  /** Injectable clock, for the same reason every other seam in here has one: tests. */
+  now?: number;
 }
 
 /** A task whose work landed: the PR of the episode it was bound to merged. */
@@ -326,14 +367,21 @@ interface PassiveState {
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
  *
- * Sessions are keyed by their synthetic discovery id (tty+pid+start). Hook
- * events can't see that id, so they bind to a session by its terminal pane
- * (tmux `%id` or wezterm pane id) via a "hook overlay" that also survives the
- * next discovery sweep, keeping hook-driven state from being clobbered.
+ * Terminal sessions are keyed by their synthetic discovery id (tty+pid+start). Hook
+ * events cannot see that id, so they bind through a terminal-pane overlay that survives
+ * the next discovery sweep. SDK sessions use the supervisor's durable `sdk:<uuid>` and
+ * report directly through the handle that owns that entry.
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private prObservations = new Map<string, PrObservation>();
+  /**
+   * Pull requests each session has already been announced as the author of.
+   *
+   * See `announcePrOpened`. In memory and per session, because the durable half of this
+   * fact is the adoption row the announcement produces.
+   */
+  private announcedPrs = new Map<string, Set<string>>();
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
@@ -825,15 +873,19 @@ export class Registry extends EventEmitter {
     // still resume was never offered on any card - stranded, with nothing to heal it.
     // Keying the skip on the TIMER instead says what was meant ("already on its way
     // out"), and makes the two ways a session can be marked exited converge here.
+    //
+    // SCOPED TO PANE-BACKED SESSIONS, and that scope is load-bearing rather than tidy.
+    // "Unseen" here means "no process on a tty matched", which is a statement about the
+    // process table - and an SDK session has no tty by construction (discovery's own rule
+    // is that an interactive session requires one), so this loop would have evicted every
+    // one of them on the very first sweep after it was registered. Their lifecycle has an
+    // authority that cannot be wrong about it: the supervisor holds the handle, and its
+    // `exited` event goes through `beginEviction` below - the same sequence, so
+    // `session_remove` reaches WorkflowManager and TaskManager identically.
     for (const [id, s] of this.sessions) {
+      if (s.runtime !== "terminal") continue;
       if (seen.has(id) || this.exitTimers.has(id)) continue;
-      if (s.state !== "exited") {
-        const exited: Session = { ...s, state: "exited" };
-        this.sessions.set(id, exited);
-        this.emitSession(exited);
-      }
-      const t = unref(setTimeout(() => this.remove(id), EXIT_LINGER_MS));
-      this.exitTimers.set(id, t);
+      this.beginEviction(s);
     }
 
     // Hints LAST, once the map is whole. `mergeDiscovered` resolved each session's
@@ -922,6 +974,10 @@ export class Registry extends EventEmitter {
     const base: Session = {
       id: d.syntheticId,
       agent: d.agent,
+      // Discovery finds processes on ttys, so everything it produces is pane-backed by
+      // definition. An SDK session never passes through here at all - it arrives through
+      // `registerSdkSession`, which is the only other door into this map.
+      runtime: "terminal",
       name: d.name,
       nameSource: d.nameSource,
       state: "working",
@@ -1084,6 +1140,309 @@ export class Registry extends EventEmitter {
     return base;
   }
 
+  // ---- sdk-driven sessions ----
+  //
+  // The counterpart of passive discovery for sessions no `ps` sweep will ever see. Two
+  // methods, mirroring the two the terminal axis has: one that puts a session in the map,
+  // one that ingests what the thing running it says about it. Everything else about an SDK
+  // session - its note, goal, queue, task, cost, eviction - goes through the SAME machinery
+  // a pane-backed session does, which is the entire point of making this a runtime axis
+  // rather than a second kind of card.
+
+  /**
+   * Put a driver-run session in the map, as `applyDiscovery` does for a pane-backed one.
+   *
+   * The supervisor owns the id and mints it as `sdk:<uuid>`, disjoint from
+   * `proc:<tty>:<pid>:<startMs>` by construction. That prefix is checked HERE and nowhere
+   * else: it exists so the two id spaces cannot collide, not as a thing to branch on -
+   * `Session.runtime` is the axis every reader asks (see `Session.runtime`'s doc).
+   *
+   * No attribution guard, unlike `applyHook`: the supervisor started the subprocess it is
+   * reporting, which is a stronger claim than any hook can make. `discoveredIdentity` stays
+   * exactly as it is - it holds what `lsof` read off a live process, and there is no process
+   * on a tty here to read.
+   */
+  registerSdkSession(input: SdkSessionRegistration): Session {
+    const refusal = this.sdkRegistrationRefusal(input.id);
+    if (refusal) throw new Error(refusal);
+    const now = input.now ?? Date.now();
+    const s: Session = {
+      id: input.id,
+      agent: input.agent,
+      runtime: "sdk",
+      name: input.name,
+      // Nothing holds a pane to name this session, so the supervisor that launched it said
+      // what it is called - which is what this `NameSource` value records.
+      nameSource: "sdk",
+      // The driver has not reported `bound` yet, so this is the same "launched, not yet
+      // talking" window a SessionStart hook closes for a pane-backed session.
+      state: "starting",
+      cwd: input.cwd,
+      gitBranch: input.gitBranch ?? null,
+      gitRoot: input.gitRoot ?? null,
+      repoRoot: input.repoRoot ?? null,
+      nomistakesGated: input.nomistakesGated ?? false,
+      // 0 until registration or `bound` identifies the subprocess the driver spawned. A
+      // driver with no separate process leaves it there, and `signalProcess` must keep
+      // refusing that sentinel because POSIX interprets pid 0 as the caller's process group.
+      pid: input.pid ?? 0,
+      // No controlling tty, and no pane. Both are what keeps the discovery sweep, the pane
+      // lock, the capture-miss counter and the overlay maps from ever keying this session.
+      tty: null,
+      permissionMode: input.permissionMode ?? null,
+      terminals: [],
+      agentSessionId: null,
+      transcriptPath: null,
+      instrumented: false,
+      stateConfirmed: false,
+      hooksSeen: false,
+      activity: null,
+      startedAt: now,
+      firstSeen: now,
+      lastSeen: now,
+      lastActivity: null,
+      pendingReviews: this.countPending(input.id),
+      nomistakes: null,
+      nomistakesFixes: [],
+      task: null,
+      nomistakesNarration: null,
+      prUrl: null,
+      prNumber: null,
+      prState: null,
+      prChecks: null,
+      meta: null,
+      effortBaselineReady: false,
+      cost: null,
+      note: null,
+      goal: null,
+      queue: null,
+      orphanedQueue: null,
+      inspector: null,
+      paneDialog: null,
+    };
+    s.task = this.taskSummaryFor(s.id, s.cwd);
+    s.note = this.noteSummaryFor(s);
+    s.goal = this.goalSummaryFor(s);
+    s.cost = sessionCostFor(noteKeyFor(s));
+    s.queue = this.queueSummaryFor(s);
+    s.inspector = this.inspectorSummaryFor(s);
+    this.sessions.set(s.id, s);
+    this.emitSession(s);
+    // A newly live key is the mirror of `remove`'s reason for doing this: a queue looks
+    // orphaned exactly while no live session holds its key, so registering one can
+    // un-orphan a hint on a sibling card that has no other reason to re-emit.
+    this.syncAllOrphanHints();
+    return s;
+  }
+
+  sdkRegistrationRefusal(id: string): string | null {
+    if (!id.startsWith(SDK_SESSION_ID_PREFIX)) {
+      return `an SDK session id must start with "${SDK_SESSION_ID_PREFIX}": ${id}`;
+    }
+    if (this.sessions.has(id)) {
+      // One id per launch. A repeat means two handles believe they own one card, and
+      // silently returning the existing entry would leave the loser pumping events into a
+      // session it does not drive.
+      return `SDK session ${id} is already registered`;
+    }
+    return null;
+  }
+
+  /**
+   * Ingest one event from a session's driver - the first-class sibling of `applyHook`.
+   *
+   * Refuses anything about a session that is not driver-run, which is the same shape of
+   * refusal `applyHook` makes for a harness that declares no hooks: a card we reach by
+   * typing must not have its state written by something claiming to hold its handle.
+   */
+  applyDriverEvent(id: string, evt: SdkEvent): void {
+    const s = this.sessions.get(id);
+    if (!s || s.runtime !== "sdk") return;
+    const now = Date.now();
+    switch (evt.kind) {
+      case "bound":
+        this.applyDriverBinding(s, evt.agentSessionId, evt.transcriptPath, evt.pid, now);
+        return;
+      case "state":
+        this.applyDriverState(s, evt.state, evt.activity, now);
+        return;
+      case "turn_done":
+        // The turn ended, so the session is idle - the same fact a `Stop` hook carries.
+        // `usage` is deliberately NOT applied: the usage ledger has one writer per harness
+        // (OTel for Claude, the rollout reader for Codex) and both still see an SDK
+        // session's own files, so spending this figure here would double-count. It stays on
+        // the event as display enrichment for the phase that verifies that (see the plan's
+        // Automation parity section).
+        this.applyDriverState(s, "idle", null, now);
+        return;
+      case "request":
+        this.applyDriverDialog(s, driverDialog(evt.request), now);
+        return;
+      case "request_resolved":
+        // Only when it is still THIS request on the card. A newer one may already have
+        // replaced it, and clearing that would withhold the buttons for an ask nobody has
+        // answered - the failure `paneDialog`'s comparator note describes, arrived at from
+        // the other direction.
+        if (s.paneDialog?.requestId === evt.requestId) this.applyDriverDialog(s, null, now);
+        return;
+      case "pr_created":
+        if (evt.url) this.applyDriverPrCreated(s, evt.url);
+        return;
+      case "exited":
+        // The same exited-then-linger-then-`session_remove` sequence a vanished pane gets.
+        // `reason` and `resumable` are the supervisor's to act on (a resumable exit is what
+        // a restart relaunches from); the card only ever needed to know it is over.
+        this.beginEviction(s);
+        return;
+    }
+  }
+
+  /**
+   * The driver reported the identity the harness minted for this session.
+   *
+   * This one event is what keeps the entire FILE-BASED READ PATH working for a session with
+   * no pane: `transcript.locate` and the goal/queue/verification readers all key on
+   * `agentSessionId` and `transcriptPath`, and they are the same fields a hook fills. And
+   * the three instrumentation flags go true here for a reason that is stronger than a
+   * hook's: an SDK session is instrumented BY CONSTRUCTION - the push channel is the handle
+   * itself - so every gate that asks "can we see this session's lifecycle?"
+   * (`hooksSeen` for the work queue, `stateConfirmed` for the buckets) is satisfied the
+   * moment it binds rather than 20 seconds later on hope.
+   */
+  private applyDriverBinding(
+    s: Session,
+    agentSessionId: string,
+    transcriptPath: string | null,
+    pid: number | null,
+    now: number,
+  ): void {
+    const next: Session = {
+      ...s,
+      agentSessionId,
+      transcriptPath,
+      pid: pid !== null && Number.isInteger(pid) && pid > 0 ? pid : s.pid,
+      instrumented: true,
+      stateConfirmed: true,
+      hooksSeen: true,
+      lastActivity: now,
+    };
+    if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
+      next.meta = { ...next.meta, thinkingLevel: null };
+    }
+    // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
+    // than on some later event, exactly as `applyHook` does and for the same reason: until
+    // it is, the card shows the synthetic id's (empty) note, queue and goal.
+    this.rememberAgentSession(next, s.agentSessionId);
+    this.ensureWorkEpisode(next, now, { kind: "driver_identity" });
+    next.task = this.taskSummaryFor(next.id, next.cwd);
+    next.note = this.noteSummaryFor(next);
+    next.goal = this.goalSummaryFor(next);
+    if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
+    next.queue = this.queueSummaryFor(next);
+    next.orphanedQueue = this.orphanedQueueFor(next);
+    next.inspector = this.inspectorSummaryFor(next);
+    this.sessions.set(next.id, next);
+    logEvent(next.id, now, "SdkBound", { agentSessionId });
+    this.emitSession(next);
+  }
+
+  private applyDriverState(
+    s: Session,
+    state: "working" | "idle",
+    activity: string | null,
+    now: number,
+  ): void {
+    const next: Session = {
+      ...s,
+      state,
+      activity,
+      // Stays true for as long as the session lives, and that is truthful rather than
+      // sticky: `instrumented` means "we have current push-sourced state", and for an SDK
+      // session the push channel is the handle we are holding. Nothing has to age it out
+      // because nothing rebuilds this entry - when the handle ends, so does the card.
+      instrumented: true,
+      stateConfirmed: true,
+      lastActivity: now,
+    };
+    this.sessions.set(next.id, next);
+    if (!sessionEqual(s, next) || s.lastActivity !== now) this.emitSession(next);
+  }
+
+  private applyDriverDialog(s: Session, paneDialog: PaneDialog | null, now: number): void {
+    const next: Session = { ...s, paneDialog, lastActivity: now };
+    this.sessions.set(next.id, next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
+  }
+
+  /**
+   * The driver watched this session's agent run `gh pr create`.
+   *
+   * The same two things a proving hook does, and for the same reasons: decorate the card at
+   * once (the poller confirms it and later flips it to merged), and announce the AUTHORSHIP,
+   * because nothing persists it. `prUrl` alone is a text match anything could trip; this
+   * event means the command was observed, which is the only evidence `adoptPr` accepts.
+   *
+   * A repeat is safe HERE (the fields it writes are the same ones) and dangerous downstream,
+   * which is why the announcement is not made inline - see `announcePrOpened`.
+   */
+  private applyDriverPrCreated(s: Session, url: string): void {
+    const next: Session = {
+      ...s,
+      prUrl: url,
+      prNumber: prNumberFromUrl(url),
+      prState: "open",
+      // Unknown at creation, and cleared so a session cannot carry a previous PR's rollup.
+      prChecks: null,
+    };
+    next.inspector = this.inspectorSummaryFor(next);
+    this.sessions.set(next.id, next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
+    this.announcePrOpened(next, url);
+  }
+
+  /**
+   * Announce, ONCE per session per pull request, that this session's agent opened it.
+   *
+   * The one emitter of `pr_opened`, shared by the hook path and the driver path, because
+   * "once" is a property of the ANNOUNCEMENT and a rule with two implementations has one
+   * too many. Both callers hold proof-grade evidence - the hook matched the `gh pr create`
+   * COMMAND, the driver watched it on its own tool stream - and `prUrl` alone never
+   * reaches here, because a text match is what `gh pr view` also trips.
+   *
+   * The dedupe is what makes the sentence above true rather than aspirational. A hook
+   * fires once per command, but a driver's event stream is a stream: an adapter that
+   * reconnects, replays, or reports a tool result twice would announce the same authorship
+   * again, and the listener that catches this writes to a ledger that decides where the
+   * Inspector comments in public. Today `adoptInspectorPr` absorbs a repeat (its upsert is
+   * `ON CONFLICT DO NOTHING`, and every side effect the listener has is gated on the insert
+   * having happened), so this closes the gap at the source rather than relying on a
+   * downstream table to keep being forgiving.
+   *
+   * Keyed on the PR as well as the session, so a session that legitimately opens a SECOND
+   * pull request still announces it - the thing being suppressed is a repeat, not a
+   * sequence. Held in memory and dropped with the session (see `remove`), like every other
+   * per-session decoration: nothing here is durable, because the adoption row it produces
+   * is.
+   */
+  private announcePrOpened(s: Session, url: string): void {
+    const announced = this.announcedPrs.get(s.id);
+    if (announced?.has(url)) return;
+    if (announced) announced.add(url);
+    else this.announcedPrs.set(s.id, new Set([url]));
+    try {
+      this.emit("pr_opened", {
+        url,
+        sessionId: s.id,
+        cwd: s.cwd,
+        repoRoot: s.repoRoot,
+      } satisfies PrOpened);
+    } catch (err) {
+      // Guarded because both callers are on an INGEST path: adoption must never be able to
+      // break the event that a live session's whole card depends on.
+      console.error("[registry] pr_opened listener threw:", err);
+    }
+  }
+
   // ---- hooks ----
 
   applyHook(evt: HookIngest): void {
@@ -1223,22 +1582,11 @@ export class Registry extends EventEmitter {
       // unrelated event.
       this.captureGoalPrompt(next, spec, evt, now);
       // Last of all, and only on the proof-grade signal. `prUrl` alone is a text match
-      // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. The
-      // listener writes a durable adoption row, so this firing is the only chance to
-      // record that this PR is ours - but it must never be able to break hook ingest,
-      // hence the guard.
-      if (evt.prCreated && evt.prUrl) {
-        try {
-          this.emit("pr_opened", {
-            url: evt.prUrl,
-            sessionId: next.id,
-            cwd: next.cwd,
-            repoRoot: next.repoRoot,
-          } satisfies PrOpened);
-        } catch (err) {
-          console.error("[registry] pr_opened listener threw:", err);
-        }
-      }
+      // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. Nothing
+      // persists that distinction, so this firing is the only chance to record that this PR
+      // is ours - see `announcePrOpened`, which owns both the once-per-PR rule and the
+      // guard that keeps adoption from breaking hook ingest.
+      if (evt.prCreated && evt.prUrl) this.announcePrOpened(next, evt.prUrl);
     }
     this.pruneOverlays(now);
   }
@@ -2285,7 +2633,13 @@ export class Registry extends EventEmitter {
     session: Session,
     now = Date.now(),
     evidence:
-      | { kind: "none" | "hook_identity" | "hook_work" | "new_work" }
+      // `driver_identity` is `hook_identity`'s counterpart for a session whose harness
+      // reports through a handle rather than a hook script: the AGENT announced who it is,
+      // which is what the ownership rules below weigh (see `agentAnnouncedNewIdentity`).
+      // Kept distinct from `hook_identity` rather than borrowed, because the vocabularies
+      // are, and a driver event read as a hook event is the kind of thing that only shows
+      // up once the two stop meaning the same thing.
+      | { kind: "none" | "hook_identity" | "driver_identity" | "hook_work" | "new_work" }
       | {
           kind: "clear_start" | "passive_identity";
           agentSessionId: string;
@@ -3380,9 +3734,35 @@ export class Registry extends EventEmitter {
       if (now - p.updatedAt > OVERLAY_TTL_MS) this.passiveStates.delete(k);
   }
 
+  /**
+   * Mark a session exited and start its eviction timer - the ONE way a session leaves.
+   *
+   * Extracted from `applyDiscovery`'s unseen loop so the supervisor's `exited` event runs
+   * the identical sequence rather than a lookalike: exited state emitted first (the card
+   * greys out immediately), then `remove` after the linger, which is what emits
+   * `session_remove`. Both durable subscribers - `WorkflowManager` orphaning its bindings
+   * and `TaskManager.reconcileTasksBoundTo` settling the task - are keyed on that event and
+   * on nothing else, so a second teardown path would be a session that disappears from the
+   * dashboard while its task stays `running` forever.
+   *
+   * Idempotent by way of the timer: a session already on its way out keeps its original
+   * deadline instead of having it pushed back by a repeat signal.
+   */
+  private beginEviction(s: Session): void {
+    if (this.exitTimers.has(s.id)) return;
+    if (s.state !== "exited") {
+      const exited: Session = { ...s, state: "exited" };
+      this.sessions.set(s.id, exited);
+      this.emitSession(exited);
+    }
+    const t = unref(setTimeout(() => this.remove(s.id), EXIT_LINGER_MS));
+    this.exitTimers.set(s.id, t);
+  }
+
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
+    this.announcedPrs.delete(id);
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
@@ -4971,10 +5351,10 @@ const alwaysEqual = (): boolean => true;
  * follows `Session`'s own field order, so the two can be diffed by eye.
  */
 export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
-  // Invariant for the life of a map entry, not state: sessions are keyed by
-  // `proc:<tty>:<pid>:<startMs>` (see `discovery/correlate.ts`) and both call sites compare a
-  // session against its own prior value under that key. These cannot differ, so
-  // comparing them would only cost work.
+  // Invariant for the life of a map entry, not state: terminal sessions use one
+  // `proc:<tty>:<pid>:<startMs>` identity and SDK sessions one `sdk:<uuid>` registration;
+  // both call sites compare a session against its prior value under that same key. These
+  // fields cannot differ without creating a new entry, so comparing them would only cost work.
   id: alwaysEqual,
   agent: alwaysEqual,
   tty: alwaysEqual,
@@ -4982,6 +5362,12 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Set once, on first sight (`prev?.firstSeen ?? now`), and never rewritten.
   firstSeen: alwaysEqual,
 
+  // Fixed for the life of an entry, like the identity block above - but compared anyway
+  // rather than declared `alwaysEqual`, because it decides which affordances a card draws
+  // and the cost of the compare is one string. `alwaysEqual` is for fields whose comparison
+  // could only ever waste work; this one would be a silent lie if the invariant ever
+  // loosened.
+  runtime: byValue,
   name: byValue,
   nameSource: byValue,
   state: byValue,

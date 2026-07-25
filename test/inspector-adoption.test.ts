@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// Type-only, so it is erased rather than resolved before the state-dir preamble below.
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 // Isolate the state dir BEFORE any value import that can resolve it - static imports are
 // hoisted above this line, so every server module below must load dynamically. Without
@@ -26,6 +28,8 @@ const { getInspectorConfig, setInspectorConfig } = await import(
   "../src/server/inspector/config.ts"
 );
 const { opensPullRequest } = await import("../src/shared/pr-command.mjs");
+const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
+const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -43,7 +47,59 @@ beforeEach(() => {
 });
 
 const URL_1 = "https://github.com/mancej/ai-harness/pull/56";
+const URL_2 = "https://github.com/mancej/ai-harness/pull/57";
 const CTX = { sessionId: "s1", cwd: "/wt/a", repoRoot: "/repo/a" };
+
+test("authorship is announced once per session per PR, on either evidence path", () => {
+  // `pr_opened` is the ONLY push that can put a row in the table above, and the table is
+  // the permission to comment in public. So "announce once" has to be enforced, not merely
+  // intended: an adapter whose event stream reconnects or replays a tool result would
+  // otherwise re-announce the same authorship, and the fact that `adoptInspectorPr` is an
+  // `ON CONFLICT DO NOTHING` upsert is a downstream table being forgiving rather than this
+  // side being correct.
+  //
+  // Both evidence paths go through one announcer, because "once" is a property of the
+  // announcement and a rule with two implementations has one too many. Neither of them is
+  // reachable from a `prUrl` sniff - see the tests below for what that distinction costs.
+  const r = new Registry();
+  const opened: Array<{ url: string; sessionId: string }> = [];
+  r.onPrOpened((e) => opened.push({ url: e.url, sessionId: e.sessionId }));
+
+  // The hook path: the bridge matched the `gh pr create` COMMAND.
+  const pane = mkMuxHandle({ session: "s", paneId: "%77" });
+  const discovered = {
+    syntheticId: "proc:ttys7:900:0",
+    agent: "claude",
+    name: "pane work",
+    nameSource: "process",
+    cwd: "/wt/a",
+    gitBranch: "feature",
+    nomistakesGated: false,
+    pid: 900,
+    tty: "ttys7",
+    terminals: [pane],
+    startedAt: 0,
+  } as DiscoveredSession;
+  r.applyDiscovery([discovered]);
+  const hook = { agent: "claude" as const, event: "PostToolUse", sessionId: null, cwd: null, transcriptPath: null, env: { tmuxPane: "%77" }, prUrl: URL_1, prCreated: true };
+  r.applyHook(hook);
+  r.applyHook(hook);
+  assert.deepEqual(opened, [{ url: URL_1, sessionId: "proc:ttys7:900:0" }], "a repeated hook is not news");
+
+  // The driver path: the same claim, from a session with no pane at all.
+  const sdkId = `${SDK_SESSION_ID_PREFIX}22222222-2222-4222-8222-222222222222`;
+  r.registerSdkSession({ id: sdkId, agent: "claude", name: "embedded", cwd: "/wt/b" });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_2 });
+  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_2 });
+  assert.deepEqual(opened.slice(1), [{ url: URL_2, sessionId: sdkId }], "nor is a replayed driver event");
+
+  // What is suppressed is a REPEAT, not a sequence: an agent that opens a second pull
+  // request is still its author, and a PR two different sessions both claim is a claim each
+  // of them made. Adoption itself de-duplicates on the PR key, which is a separate rule
+  // (see "adopting twice is a no-op" below).
+  r.applyDriverEvent(sdkId, { kind: "pr_created", url: URL_1 });
+  assert.deepEqual(opened.at(-1), { url: URL_1, sessionId: sdkId });
+});
 
 test("adopting records the PR under a key that survives clones and worktrees", () => {
   assert.equal(adoptPr(URL_1, CTX, "hook", 1000), true);

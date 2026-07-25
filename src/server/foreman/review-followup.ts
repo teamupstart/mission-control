@@ -209,7 +209,7 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     if (fb.ciFailing) return skip("the no-mistakes CI monitor owns this failure");
   }
 
-  // 8. Only a settled-idle session, and only one with a pane. The idle gate is what keeps
+  // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge
   //    it is no longer idle, so it is not re-selected until it parks again.
   if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");

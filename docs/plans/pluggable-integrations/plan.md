@@ -1157,7 +1157,16 @@ as the one way the delivery path asks. Two deltas from the sketch:
 
 `stream-json` is declared and deliberately unimplemented: `injectPrompt` and
 `paneAcceptsPrompt` refuse a non-keystroke harness by name rather than falling through to
-the pane paths and typing at nothing. Tests: `harness-control.test.ts` (every harness
+the pane paths and typing at nothing.
+
+**The later this seam was held open for is `docs/plans/agent-sdk-sessions/plan.md`**, and it
+took a slightly different shape than this section guessed. Programmatic delivery turned out
+not to be a second `ControlSpec` variant on the harness: whether a session is driven by
+keystrokes or by a driver is a fact about THAT SESSION (an operator's own `claude` in a pane
+is pane-driven whatever the harness can do), so it lands as `Session.runtime` plus a separate
+`Harness.sdk` slot, and `controlFor(session)` taking a `Session` rather than an `AgentType` is
+what made that possible without touching a call site. `{ kind: "stream-json" }` therefore
+stays declared and unimplemented, and its two refusal sites stay exactly as they are. Tests: `harness-control.test.ts` (every harness
 declares a delivery; a null placeholder is a capability absence and not "the composer is
 clear"; ok-without-evidence is reported as unverified), `inject-prompt-submit.test.ts`,
 which now takes Claude's placeholder from its harness rather than restating the regex.

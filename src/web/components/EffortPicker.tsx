@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Session, ThinkingLevel } from "@shared/types.ts";
 import { sessionEffortLevels } from "@shared/harness-capabilities.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -53,7 +53,9 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
 
   const level = optimistic?.level ?? reported;
   const levels = sessionEffortLevels(session.agent, modelId, level);
-  const canPick = session.effortBaselineReady && session.state !== "exited" && canWriteTo(session);
+  // Delivery intent, like the mode picker beside it: the TUI walk is one way to apply a
+  // level, a driver's own control is another.
+  const canPick = session.effortBaselineReady && session.state !== "exited" && canMessage(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

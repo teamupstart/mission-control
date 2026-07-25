@@ -2995,6 +2995,62 @@ export function loadResourceHoldingTerminalTasks(): Task[] {
   return rows.map(rowToTask);
 }
 
+/**
+ * Terminal tasks a merged pull request could still complete: `failed` or `cancelled`,
+ * carrying a pull request on some work episode of theirs.
+ *
+ * The same argument as `loadResourceHoldingTerminalTasks` above, about a different kind of
+ * loose end. That one keeps a task whose RESOURCES still need reconciling; this one keeps a
+ * task whose OUTCOME does. A reclaimed `failed` row holds no worktree, so once fifty newer
+ * terminal tasks exist it is not loaded at all - and then nothing polls the pull request it
+ * left behind, nothing observes the merge, and it stays a `stopped` blocker over every
+ * dependent for work that shipped. `running` and `dispatching` candidates need no query of
+ * their own: `loadActiveTasks` already loads every one of them.
+ *
+ * Both binding tables, because a merge can land on an episode the task rolled past long
+ * before anyone looked. `done` is excluded (its outcome is recorded) and so is `backlog`
+ * (a rescheduled task is being re-run, so its previous attempt's pull request is not this
+ * run's outcome) - the same rule `completableByMerge` states for the harvest itself.
+ */
+export function loadPrPendingTerminalTasks(): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks t
+       WHERE t.status IN ('failed','cancelled')
+         AND EXISTS (
+           SELECT 1 FROM task_work_episode_bindings b
+           WHERE b.task_id = t.id AND b.pr_url IS NOT NULL
+           UNION ALL
+           SELECT 1 FROM historical_task_work_episode_bindings h
+           WHERE h.task_id = t.id AND h.pr_url IS NOT NULL
+         )`,
+    )
+    .all() as unknown as TaskRow[];
+  return rows.map(rowToTask);
+}
+
+/**
+ * Does this task carry a pull request on any of its work episodes?
+ *
+ * What `pruneTerminalTasks` asks before dropping a terminal row from memory: a task with an
+ * unresolved pull request is one the completion reconciler is still waiting on, so evicting
+ * it would silently stop the polling that was going to settle it - undoing the load above
+ * on the very next terminal task to arrive.
+ */
+export function taskHasPrCarryingBinding(taskId: string): boolean {
+  const row = openDb()
+    .prepare(
+      `SELECT 1 AS present FROM task_work_episode_bindings
+       WHERE task_id = ? AND pr_url IS NOT NULL
+       UNION ALL
+       SELECT 1 AS present FROM historical_task_work_episode_bindings
+       WHERE task_id = ? AND pr_url IS NOT NULL
+       LIMIT 1`,
+    )
+    .get(taskId, taskId) as { present: number } | undefined;
+  return row !== undefined;
+}
+
 // ---- task sources: what has already been filed ----
 //
 // Read the `task_source_seen` CREATE TABLE above before touching any of this. The one

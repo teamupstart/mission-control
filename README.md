@@ -1042,8 +1042,10 @@ nothing to collect and says nothing about cleanup.
 With no recorded merge, `failed` is the honest reading rather than a flattering one: an
 agent that finished and exited looks exactly like one that crashed, and the only thing
 actually observed is that the session went away without an outcome being recorded. Mark a
-task done *before* the agent goes, and that outcome stands - a task already in a terminal
-state is never rewritten.
+task done *before* the agent goes, and that outcome stands - an outcome you recorded is
+never rewritten. A `failed` or `cancelled` row is not the last word, though: if its pull
+request is later observed to merge, it is
+[upgraded to done](#a-merge-that-lands-when-nobody-is-watching).
 
 The same reconciliation runs against the first process sweep after a restart, which is what
 catches a task whose agent died while the daemon was down.
@@ -3143,6 +3145,39 @@ running and drops the outcome. Only conclusions Mission Control drew from idlene
 undone this way - an outcome you recorded yourself is never overwritten. This correction
 is deliberately limited to the current daemon run; after a restart, a completed task
 stays done.
+
+#### A merge that lands when nobody is watching
+
+Neither of those two moments is guaranteed to arrive. An agent killed while the daemon was
+down is never seen being evicted, and a pull request you merge days later belongs to a
+session that no longer exists - so the merge had no observer at all, and the task sat
+`running` or `failed` for as long as you left it there.
+
+So while its row is still present in Mission Control, a task's own pull requests are
+**polled by URL** for as long as its completion is still in question, alongside the ones a
+declared dependency is waiting on and at the same rate. No session needs to exist. When one
+of them merges, the task is completed from the durable record - and that includes rows that
+had already been written off:
+
+| Status when the merge is observed | What happens |
+|---|---|
+| `running`, `dispatching`, agent gone | **done**, with the pull request as its outcome |
+| `running`, `dispatching`, agent still here | nothing yet - the narrower rule above owns it, because the agent may be mid-turn |
+| `failed`, `cancelled` | **upgraded to done**: the error is cleared and the pull request becomes the outcome |
+| `done` | untouched - your outcome is never overwritten |
+| `backlog` | untouched: a rescheduled task is being re-run, so its previous attempt's merge is not this run's result |
+
+Only a **merged** pull request does this. One that was closed without merging changes
+nothing, and neither does one still open. An upgrade records an outcome and nothing else:
+the worktree, branch and terminal home stay exactly where they were, still behind the
+**Clean up** button, because freeing a checkout runs `git worktree remove --force` and
+stays a human's click. Tasks that declared a dependency on the upgraded one are released
+at the same moment, which is the point - a `stopped` blocker over work that shipped is
+what stalls a backlog.
+
+Unlike the idle conclusion, this one is **not reversible**: it was drawn from a pull
+request in main, not from an agent that had gone quiet, so an agent typing again does not
+reopen it.
 
 What happens to the agent is yours to choose, in **Settings → Shipping**:
 

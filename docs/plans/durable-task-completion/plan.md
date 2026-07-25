@@ -45,9 +45,9 @@ never learned its work merged. When the session then went away, `agentWentAway` 
 task `failed`, stranding every dependent behind a `stopped` blocker for work that shipped.
 
 The machinery was **only half-wired**: the historical table and its readers existed, but
-rollover did not populate it. The *dependency* merge path
-(`reconcileDependencyPrMerges`) already read current **and** historical bindings, while
-standalone task completion did not.
+rollover did not populate it. The *dependency* merge path (now folded into
+`reconcilePrMerges`) already read current **and** historical bindings, while standalone
+task completion did not.
 
 ## Requirement
 
@@ -82,33 +82,37 @@ Resolved via the Mission Control dashboard review (2026-07-24):
 Pull apart two things that are currently entangled:
 
 1. **Task completion** - a durable fact: *this task's work was satisfied by a merged PR we
-   opened for it*. Independent of session liveness and episode currency.
+   opened for it*. A live executing agent may defer that conclusion because the merge can
+   be intermediate, but the evidence itself is independent of session liveness and episode
+   currency.
 2. **Session disposition** - *should the agent be closed/killed* - stays gated on session
    state (idle **and** not moved on to new work) and never blocks (1).
 
 Concrete changes:
 
 - **Durable merge lookup.** `mergedPrFor(taskId)` consults the task's current **and
-  historical** bindings, so a merge recorded on *any* of the task's episodes completes it.
-  (Reads a record already retained.)
+  historical** bindings, so a merge recorded on *any* of the task's episodes can complete
+  it once the relevant live-session boundary permits. (Reads a record already retained.)
 - **Durable merge recording.** When a merge is observed for a task's PR, record it on the
   task's binding even after the session rolled to a new episode - extend the standalone
   path the way the dependency path already records merges onto historical bindings.
-- **A completion reconciler that ignores session state.** One predicate - *does any binding
-  for this task show a merged PR?* - run on every relevant signal: a merge observed, a
-  session going idle (`session_upsert`), a session removed (`session_remove`), the first
-  discovery sweep (`onSessionsObserved`), startup, and a periodic backstop. It never reads
-  the current episode or requires the session to be alive.
-- **Terminal-state upgrade.** The reconciler applies to `running`/`dispatching` tasks AND
-  to `failed`/`cancelled` ones: any task whose binding shows a merged PR is upgraded to
-  `done` with the PR recorded as its outcome (adopted decision 2). `done` rows are never
-  touched.
+- **A session-independent completion reconciler, with one live-session boundary.** One
+  predicate - *does any binding for this task show a merged PR?* - runs when a merge is
+  observed, on `session_upsert` / `session_remove`, and after the first discovery sweep.
+  It upgrades `failed`/`cancelled` rows and completes `running`/`dispatching` rows whose
+  agent is gone. A live agent still executing the latter statuses stays under
+  `settleIfEpisodeFinished`, because its merged pull request may be intermediate.
+- **Terminal-state upgrade.** The reconciler applies to `running`/`dispatching` tasks
+  whose agent is gone AND to all `failed`/`cancelled` ones: an eligible task whose binding
+  shows a merged PR is upgraded to `done` with the PR recorded as its outcome (adopted
+  decision 2). `done` rows are never touched.
 - **Completion keeps resources.** `complete` marks the task `done`, records the merged PR as
   the outcome, and **keeps** the worktree/home for the operator's Clean up. "Mark done must
   not discard work" is preserved; `git worktree remove --force` stays behind a human click.
 - **Session-kill unchanged in spirit.** Close-after-merge still only fires for an idle
   session that has **not** moved on to new work; a session that rolled to new work is never
-  killed. Completion no longer waits on it.
+  killed. If that session later goes away, the durable binding completes the task without
+  requiring an eviction-time merge observation.
 
 ### Multiple tasks per session (adopted decision 3)
 
@@ -144,8 +148,9 @@ flowchart LR
   end
   subgraph after [After - completion follows the durable PR]
     B1[PR merged] --> B2[record merge on the task's binding, current or historical]
-    B2 --> B3[completion reconciler: any binding merged? - session-independent]
-    B3 --> B4[task done, resources kept]
+    B2 --> B3{live running agent?}
+    B3 -- no --> B4[completion reconciler: task done, resources kept]
+    B3 -- yes --> B7[settle only when idle on the merged episode] --> B4
     B4 --> B5[dependents unblocked, agent freed for its next task]
     B4 -. separate, still gated on idle + not-moved-on .-> B6[optionally close the agent]
   end

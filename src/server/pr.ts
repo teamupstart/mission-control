@@ -17,7 +17,13 @@ import { run } from "./util/exec.ts";
 // different branch. Only a *closed-unmerged* PR is treated as "no PR".
 //
 // Cheap by construction: live sessions cost one `gh` call per distinct worktree;
-// persisted dependency links are concurrency-limited and back off independently.
+// persisted links are concurrency-limited and back off independently.
+//
+// The by-URL half answers for pull requests no live session can be asked about. It serves
+// two harvests - unsatisfied dependency edges, and the bindings of tasks a merge could
+// still complete - through ONE cadence, because they overlap constantly (the task you are
+// waiting on is usually also a task) and two would poll the same URL twice at two
+// backoffs.
 
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -26,10 +32,14 @@ type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "ep
 type PrStateMatch = { state: PrState; mergedAt: number | null };
 type PrStateLookup = "error" | PrStateMatch | null;
 
-const DEPENDENCY_PR_CONCURRENCY = 4;
-const DEPENDENCY_PR_MAX_BACKOFF_MS = 5 * 60_000;
+const PR_URL_CONCURRENCY = 4;
+const PR_URL_MAX_BACKOFF_MS = 5 * 60_000;
 
-export class DependencyPrPollState {
+/**
+ * Per-URL cadence for the by-URL poller: when each pull request may be asked about again,
+ * and how far its backoff has grown. One instance serves every harvest - see the header.
+ */
+export class PrUrlPollState {
   private entries = new Map<string, { attempts: number; nextAt: number }>();
 
   due(urls: string[], now: number): string[] {
@@ -48,7 +58,7 @@ export class DependencyPrPollState {
     const attempts = (this.entries.get(url)?.attempts ?? 0) + 1;
     const delay = Math.min(
       PR_POLL_MS * 2 ** Math.min(attempts - 1, 8),
-      DEPENDENCY_PR_MAX_BACKOFF_MS,
+      PR_URL_MAX_BACKOFF_MS,
     );
     this.entries.set(url, { attempts, nextAt: now + delay });
   }
@@ -229,16 +239,21 @@ export async function pollAndReconcilePrs(
   registry: Registry,
   lookup: (cwd: string, branch: string) => Promise<PrLookup> = queryPr,
   lookupUrl: (url: string) => Promise<PrStateLookup> = queryPrUrl,
-  dependencyState = new DependencyPrPollState(),
+  urlState = new PrUrlPollState(),
   now = Date.now(),
 ): Promise<void> {
   const targets = registry.prPollTargets();
-  const dependencyUrls = registry.dependencyPrPollTargets();
+  // Both harvests, deduplicated: a task waiting on its own merge is very often also the
+  // task something else declared a dependency on, and asking twice would spend two `gh`
+  // calls and two backoffs on one pull request.
+  const linkedUrls = [
+    ...new Set([...registry.dependencyPrPollTargets(), ...registry.taskPrPollTargets()]),
+  ];
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
 
   const queryable = targets.filter((t) => t.branch && !DEFAULT_BRANCHES.has(t.branch));
-  if (queryable.length === 0 && dependencyUrls.length === 0) {
+  if (queryable.length === 0 && linkedUrls.length === 0) {
     registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
     return;
   }
@@ -269,8 +284,8 @@ export async function pollAndReconcilePrs(
   }
   const observed = new Map([...found.values()].map((match) => [match.url, match]));
   const mergedUrls = new Map<string, number>();
-  const dueUrls = dependencyState.due(dependencyUrls, now);
-  for (const url of dependencyUrls) {
+  const dueUrls = urlState.due(linkedUrls, now);
+  for (const url of linkedUrls) {
     const match = observed.get(url);
     if (!match) continue;
     if (match.state === "merged" && match.mergedAt !== null) {
@@ -279,33 +294,33 @@ export async function pollAndReconcilePrs(
   }
   await forEachConcurrent(
     dueUrls.filter((url) => !observed.has(url)),
-    DEPENDENCY_PR_CONCURRENCY,
+    PR_URL_CONCURRENCY,
     async (url) => {
       const result = await lookupUrl(url);
-      dependencyState.record(url, result, now);
+      urlState.record(url, result, now);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
       }
     },
   );
   registry.reconcilePrs(found, skip);
-  registry.reconcileDependencyPrMerges(mergedUrls);
+  registry.reconcilePrMerges(mergedUrls);
 }
 
 /**
  * Drive PR reconciliation on an interval. Ticks never overlap; a slow sweep just
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
- * feature branch.
+ * feature branch and no dependency or task binding contributes a URL.
  */
 export function startPrPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const dependencyState = new DependencyPrPollState();
+  const urlState = new PrUrlPollState();
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      await pollAndReconcilePrs(registry, queryPr, queryPrUrl, dependencyState);
+      await pollAndReconcilePrs(registry, queryPr, queryPrUrl, urlState);
     } catch (err) {
       console.error("[pr] poll failed:", err);
     }

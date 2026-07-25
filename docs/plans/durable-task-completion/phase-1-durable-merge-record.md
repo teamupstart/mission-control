@@ -50,7 +50,7 @@ reconciler (Phase 2) and the multi-task formalization (Phase 3) read from.
    `acceptPrForEpisode` (it guards live-card attribution). Instead note explicitly in this
    phase that full coverage of the rolled/killed case arrives with Phase 2's by-URL
    harvest, which routes through `reconcileWorkEpisodeMerge` with the binding's own
-   episode tuple - the same way `reconcileDependencyPrMerges` already does. This phase
+   episode tuple - the same way `reconcilePrMerges` does. This phase
    makes those calls land durably; Phase 2 makes them happen for standalone tasks.
 
 ## Non-goals
@@ -71,7 +71,7 @@ reconciler (Phase 2) and the multi-task formalization (Phase 3) read from.
   populate it before relying on it for completion.
 - `agentWentAway` (tasks.ts:549) already calls `mergedPrFor` and completes on a hit; it
   needs no change beyond what `mergedPrFor` now returns.
-- `deleteHistoricalTaskWorkEpisodeBinding` is called from `reconcileDependencyPrMerges`
+- `deleteHistoricalTaskWorkEpisodeBinding` is called from `reconcilePrMerges`
   after a historical binding satisfies a dependency (registry.ts:2748). **Audit that
   deletion**: after this phase a historical binding is also completion evidence, so
   deleting it must not erase an unread merge. Preserve merged bindings while their task is

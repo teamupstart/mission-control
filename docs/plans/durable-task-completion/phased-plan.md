@@ -23,7 +23,7 @@ operable.
    (requires `acceptPrForEpisode` on the *current* episode - refuses rolled sessions) and
    a by-URL poller fed **only** by dependency URLs. A standalone task whose session died
    has no observer at all.
-4. The retained `historical_task_work_episode_bindings` + `DependencyPrPollState` cadence
+4. The retained `historical_task_work_episode_bindings` + `PrUrlPollState` cadence
    machinery mean all three phases are wiring, not new infrastructure.
 5. PR [#224](https://github.com/mancej/ai-harness/pull/224) reorders
    `settleMergedTask`/`closeMergedSession` (complete-then-close). It landed on `main` as
@@ -61,7 +61,7 @@ numbering.
   through it. Upgrades stamp dependency edges (`satisfyDependents: true`) and keep
   resources; they never register in `autoCompleted`.
 - **One by-URL poll pipeline** (from Phase 2): dependency and task-completion URLs share
-  `DependencyPrPollState`; no second cadence.
+  `PrUrlPollState`; no second cadence.
 - **`Task.sessionId` = "currently executing on"** (from Phase 3): provenance reads
   bindings; serial invariant enforced at `agentIsFree` + `TaskManager.assign`.
 

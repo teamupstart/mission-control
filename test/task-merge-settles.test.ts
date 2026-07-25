@@ -308,14 +308,25 @@ test("a task an operator already completed is not rewritten", () => {
   assert.equal(t.outcome, "done by hand");
 });
 
-test("a cancelled task is left cancelled", () => {
+test("a cancelled task whose pull request merged anyway is upgraded to done", () => {
+  // The completion reconciler's upgrade (phase 2), and the reversal of what this case used
+  // to assert. `cancelled` records what was concluded before anyone could see the pull
+  // request merge; the merge is evidence that outranks it, and leaving the row terminal
+  // means every task declared to wait on it deadlocks behind a `stopped` blocker for work
+  // that shipped. Only a MERGE does this - a closed-unmerged pull request changes nothing -
+  // and an outcome an operator recorded is still never overwritten (`done` is untouchable).
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-cancelled");
   const cur = f.registry.getTask(f.taskId)!;
   f.registry.upsertTask({ ...cur, status: "cancelled" });
   merge(f);
   agentGone(f);
-  assert.equal(f.registry.getTask(f.taskId)?.status, "cancelled");
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
+  // Whatever the cancel left behind stays where it is: the upgrade records an outcome, it
+  // does not run a teardown. Freeing a checkout is still the operator's confirmed click.
+  assert.equal(t.worktreePath, cur.worktreePath);
 });
 
 // ---- the switch only governs the AGENT ---------------------------------------------------

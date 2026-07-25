@@ -17,7 +17,7 @@ import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
-import type { Registry, TaskPrMerged } from "./registry.ts";
+import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
   Dispatcher,
   deriveTitle,
@@ -252,6 +252,9 @@ export class TaskManager {
   private reschedulingTasks = new Set<string>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
   private autoCompleted = new Map<string, string>();
+  /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
+  private reconcilingMergedTasks = false;
+  private completedInitialSessionSweep = false;
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -279,7 +282,15 @@ export class TaskManager {
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
     registry.subscribe((e) => {
-      if (e.type === "session_remove") this.reconcileTasksBoundTo(e.id);
+      if (e.type === "session_remove") {
+        // Before `agentWentAway`, so a task whose work landed reads as done rather than
+        // as a failure with a merged pull request sitting in its record. Registry deletes
+        // the session before it emits this, so the reconciler sees the agent as gone;
+        // `agentWentAway` keeps its own `mergedPrFor` check as the belt for any caller
+        // that does not.
+        this.reconcileMergedTasks();
+        this.reconcileTasksBoundTo(e.id);
+      }
       if (e.type === "task_remove") this.autoCompleted.delete(e.id);
       if (
         e.type === "task_upsert" &&
@@ -294,6 +305,10 @@ export class TaskManager {
       if (e.type === "session_upsert") {
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
+        // And the rows no session can settle: a terminal task whose pull request has since
+        // merged, or one still bound to a session id nothing answers to. Cheap on the hot
+        // path - a task whose agent is right here costs no query at all.
+        this.reconcileMergedTasks();
       }
     });
 
@@ -302,10 +317,17 @@ export class TaskManager {
     // the half the startup loop above cannot reach: it only visits a task still holding a
     // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
     // it never had resources of ours - was skipped by it on every restart, forever.
-    registry.onSessionsObserved(() => this.reconcileTasksWithNoLiveSession());
+    registry.onSessionsObserved(() => {
+      this.completedInitialSessionSweep = true;
+      this.reconcileMergedTasks();
+      this.reconcileTasksWithNoLiveSession();
+    });
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
     registry.onTaskPrMerged((e) => void this.settleMergedTask(e));
+    // And the periodic backstop for the tasks that announcement cannot reach: whatever the
+    // by-URL poller recorded this tick. No timer of its own - the poller's tick is it.
+    registry.onPrMergesRecorded(() => this.reconcileMergedTasks());
   }
 
   /**
@@ -449,22 +471,25 @@ export class TaskManager {
    * The newest pull request any of this task's work episodes produced, if one was observed
    * merged - or null.
    *
-   * The durable-record contract: a merge on ANY of this task's episodes completes it, and
-   * the session's CURRENT episode is irrelevant here. Read from `task_work_episode_bindings`
-   * AND `historical_task_work_episode_bindings`, both stamped by `markWorkEpisodeMerged` at
-   * the moment the merge is seen. That is the durable acknowledgement the settle needs: it
-   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a timer
-   * it is a FACT rather than an inference.
+   * The durable-record contract: a merge on ANY of this task's episodes is durable
+   * completion evidence, and the session's CURRENT episode is irrelevant to the
+   * session-independent consumers. They wait for a live `running`/`dispatching` turn to
+   * disappear, while already-concluded `failed`/`cancelled` rows need no liveness gate.
+   * Read from `task_work_episode_bindings` AND `historical_task_work_episode_bindings`, both
+   * stamped by `markWorkEpisodeMerged` at the moment the merge is seen. That is the durable
+   * acknowledgement the settle needs: it survives a restart, it cannot be outrun by a
+   * prompt arriving later, and unlike a timer it is a FACT rather than an inference.
    *
    * This reverses the earlier "current binding only" rule deliberately (adopted plan
    * decision). That rule read only the current binding so that a task whose episode rolled
    * over after its merge stayed `failed` - the reasoning being the agent was handed more
-   * work and then vanished mid-flight. But the only caller is `agentWentAway`: the session
-   * is GONE, so there is no "more work" in progress to strand, and a merged pull request IS
-   * the outcome the task was dispatched for. Reporting it as `failed` behind a `stopped`
-   * blocker strands every dependent for work that shipped. When several episodes merged
-   * (a fix-forward task can open more than one PR), the NEWEST `mergedAt` is the outcome to
-   * display.
+   * work and then vanished mid-flight. Its consumers, `agentWentAway` and
+   * `reconcileMergedTasks`, only use this to conclude a `running`/`dispatching` task once
+   * the session is GONE, so there is no "more work" in progress to strand; the reconciler
+   * also upgrades already-concluded `failed`/`cancelled` rows. Reporting any of those as a
+   * stopped blocker strands every dependent for work that shipped. When several episodes
+   * merged (a fix-forward task can open more than one PR), the NEWEST `mergedAt` is the
+   * outcome to display.
    */
   private mergedPrFor(taskId: string): string | null {
     const current = taskWorkEpisodeForTask(taskId);
@@ -480,6 +505,95 @@ export class TaskManager {
       }
     }
     return best?.prUrl ?? null;
+  }
+
+  /**
+   * Complete every task whose durable record shows a merged pull request, whatever became
+   * of the session that produced it.
+   *
+   * The single owner of pull-request-driven completion, and the answer to the requirement
+   * the two session-shaped paths could not reach between them: `settleIfEpisodeFinished`
+   * needs an agent that is here and idle, `agentWentAway` needs the exact moment one is
+   * evicted. A task whose agent was killed while the daemon was down, or whose merge only
+   * happened days after everyone stopped looking, met neither - and sat behind a `stopped`
+   * blocker holding up every dependent for work that had shipped.
+   *
+   * Three rules, each load-bearing:
+   *
+   *  - **A live agent is left to the narrower path.** While the session that owns a
+   *    `running` task is still on the process table, the merge is not necessarily its
+   *    outcome: an agent routinely lands an intermediate pull request and carries on, so
+   *    only `settleIfEpisodeFinished`'s idle-and-still-on-that-episode evidence may
+   *    conclude it, and that conclusion stays reversible. This path is what happens
+   *    afterwards, when there is no turn left to interrupt.
+   *  - **`failed` and `cancelled` are upgraded**, per `completableByMerge`. Those statuses
+   *    record what was concluded before anyone could see the pull request merge, and a
+   *    merge is evidence that outranks it. `complete` clears the error, records the pull
+   *    request as the outcome, and keeps the worktree and terminal home for the operator's
+   *    confirmed Clean up - freeing a checkout stays a human's click.
+   *  - **The completion is NOT registered in `autoCompleted`.** `reopenIfWorkResumed`
+   *    exists to reverse an inference drawn from idleness; this one is drawn from a merged
+   *    pull request. An agent typing again must not resurrect a task whose work landed.
+   *
+   * `satisfyDependents` is on for the same reason `satisfyDeclaredEdgesTo` writes on the
+   * edge: terminal rows are eventually pruned, so a completion recorded only in this task's
+   * row stops being readable and every dependent silently re-blocks.
+   *
+   * Idempotent, and it must stay that way - it runs from four signals. A `done` task is
+   * never revisited, and a merge already recorded costs one indexed read per task.
+   */
+  reconcileMergedTasks(): void {
+    // Completing re-enters here: `complete` upserts, which resyncs the bound session, which
+    // emits `session_upsert`, which this class listens to. The inner pass would re-scan the
+    // same rows the outer loop is still walking, so it is refused and the outer pass simply
+    // carries on to them.
+    if (this.reconcilingMergedTasks) return;
+    this.reconcilingMergedTasks = true;
+    try {
+      for (const { id } of this.registry.listTasks()) {
+        // Re-read rather than trusting the snapshot: a completion mid-loop can settle
+        // another row through that same re-entrancy, and can evict a terminal one entirely.
+        const t = this.registry.getTask(id);
+        if (!t || !completableByMerge(t.status)) continue;
+        // A reschedule mid-teardown holds a cancelled/failed row it is about to re-file as
+        // backlog. `complete` throws on that, and this runs inside event listeners and the
+        // PR poller's reconciliation, where a throw abandons the rest of the sweep.
+        if (this.reschedulingTasks.has(t.id)) continue;
+        if (this.agentMayStillBeUndiscovered(t)) continue;
+        if (this.agentIsStillHere(t)) continue;
+        const merged = this.mergedPrFor(t.id);
+        if (!merged) continue;
+        this.complete(t.id, `merged ${merged}`, merged, true);
+      }
+    } finally {
+      this.reconcilingMergedTasks = false;
+    }
+  }
+
+  /**
+   * Before the first completed discovery sweep, an absent session map entry means the
+   * process table has not been authoritatively observed, not that the task's agent is gone.
+   */
+  private agentMayStillBeUndiscovered(t: Task): boolean {
+    return (
+      !this.completedInitialSessionSweep &&
+      (t.status === "running" || t.status === "dispatching")
+    );
+  }
+
+  /**
+   * Is the agent that was executing this task still on the process table?
+   *
+   * Only asked of live statuses: a `failed` or `cancelled` task may still name the session
+   * it ran on (`cancel` leaves `sessionId` alone), and that agent being alive says nothing
+   * about a status something already concluded.
+   */
+  private agentIsStillHere(t: Task): boolean {
+    return (
+      (t.status === "running" || t.status === "dispatching") &&
+      t.sessionId !== null &&
+      this.registry.getSession(t.sessionId) !== undefined
+    );
   }
 
   /**

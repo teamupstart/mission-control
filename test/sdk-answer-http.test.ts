@@ -80,12 +80,26 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
   const answered: { id: string; requestId: string; answer: SessionRequestAnswer }[] = [];
   const stopped: string[] = [];
   const modes: string[] = [];
+  // A real claim set, not a stub: the concurrency test below is only meaningful if the
+  // fake refuses a second handoff the way the supervisor does.
+  const handingOff = new Set<string>();
+  let live = true;
   return {
     answered,
     stopped,
     modes,
+    /** Let a test say the driver has already gone, which is what refuses a REPEAT. */
+    killDriver: () => (live = false),
     handleFor() {
-      return {};
+      return live ? {} : null;
+    },
+    beginHandoff(id: string) {
+      if (handingOff.has(id)) return false;
+      handingOff.add(id);
+      return true;
+    },
+    endHandoff(id: string) {
+      handingOff.delete(id);
     },
     async answer(id: string, requestId: string, answer: SessionRequestAnswer) {
       answered.push({ id, requestId, answer });
@@ -102,6 +116,8 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     answered: typeof answered;
     stopped: string[];
     modes: string[];
+    /** Say the driver has gone, so the live-driver preflight refuses the next handoff. */
+    killDriver: () => void;
   };
 }
 
@@ -604,6 +620,8 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
     },
     // Still holding the handle: the driver survived its own stop.
     handleFor: () => ({}) as never,
+    beginHandoff: () => true,
+    endHandoff: () => {},
   } as unknown as SdkSupervisor;
 
   const res = await mkApp(registry, supervisor, {
@@ -642,9 +660,14 @@ test("a stop that fails with the driver already gone settles instead", async () 
     async stop() {
       throw new Error("the driver died mid-stop");
     },
-    // No handle left: there is nothing to rebind to, so this is the same dead end the
-    // spawn-failure path reaches and it takes the same exit.
-    handleFor: () => null,
+    // No handle left once the stop has run, but one BEFORE it - otherwise the preflight
+    // would refuse this as a repeat rather than exercising the stop-failure path.
+    handleFor: (() => {
+      let calls = 0;
+      return () => (calls++ === 0 ? ({} as never) : null);
+    })(),
+    beginHandoff: () => true,
+    endHandoff: () => {},
   } as unknown as SdkSupervisor;
 
   const res = await mkApp(registry, supervisor, {
@@ -729,4 +752,83 @@ test("a question answered twice is refused, not last-write-wins", async () => {
   assert.equal(res.status, 409);
   assert.match(((await res.json()) as { error: string }).error, /answered twice/);
   assert.equal(supervisor.answered.length, 0);
+});
+
+test("two concurrent handoffs spawn ONE terminal, and the loser changes nothing", async () => {
+  const registry = new Registry();
+  const session = seed(registry, null, "sdk:race");
+  registry.upsertTask(
+    mkTask({
+      id: "task-race",
+      status: "running",
+      sessionId: "sdk:race",
+      repoRoot: "/repo",
+      worktreePath: "/wt/one",
+      title: "Add a toggle",
+    }),
+  );
+  const supervisor = fakeSupervisor();
+  const spawned: string[] = [];
+  let release = (): void => {};
+  const held = new Promise<void>((r) => (release = r));
+
+  const app = mkApp(registry, supervisor, {
+    // Hold the first request inside the spawn so the second one overlaps it - which is the
+    // only window where two callers can both see a live driver.
+    spawn: async (name) => {
+      spawned.push(name);
+      await held;
+      return `${name}-abc123`;
+    },
+    waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
+    settleTask: () => assert.fail("a successful handoff settles nothing"),
+  });
+  const post = () =>
+    app.request("/api/sessions/sdk:race/handoff", { method: "POST", headers: HEADERS });
+
+  const first = post();
+  await new Promise((r) => setImmediate(r));
+  const second = await post();
+  release();
+  const firstRes = await first;
+
+  // Two agents continuing ONE conversation in one checkout is the outcome this prevents,
+  // and only one of them could ever hold the task binding.
+  assert.equal(second.status, 409);
+  assert.match(((await second.json()) as { error: string }).error, /already being handed over/);
+  assert.equal(firstRes.status, 200);
+  assert.deepEqual(spawned, ["Add a toggle"], "exactly one terminal was opened");
+  assert.deepEqual(supervisor.stopped, ["sdk:race"], "the driver was stopped once");
+});
+
+test("a repeat handoff after a successful one is refused too", async () => {
+  const registry = new Registry();
+  const session = seed(registry, null, "sdk:again");
+  const supervisor = fakeSupervisor();
+  const spawned: string[] = [];
+  const app = mkApp(registry, supervisor, {
+    spawn: async (name) => {
+      spawned.push(name);
+      return `${name}-abc123`;
+    },
+    waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
+    settleTask: () => {},
+  });
+
+  assert.equal(
+    (await app.request("/api/sessions/sdk:again/handoff", { method: "POST", headers: HEADERS }))
+      .status,
+    200,
+  );
+  // The claim is released once the transfer finishes, so it is the LIVE-DRIVER check that
+  // has to refuse this one - a double click, a retry, or the card lingering out its
+  // eviction would otherwise stop nothing and spawn a second `claude --resume`.
+  supervisor.killDriver();
+  const repeat = await app.request("/api/sessions/sdk:again/handoff", {
+    method: "POST",
+    headers: HEADERS,
+  });
+  assert.equal(repeat.status, 409);
+  assert.match(((await repeat.json()) as { error: string }).error, /no live embedded driver/);
+  assert.equal(spawned.length, 1);
 });

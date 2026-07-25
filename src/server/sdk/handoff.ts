@@ -60,6 +60,40 @@ export async function handOffToTerminal(
   if (session.runtime !== "sdk") {
     return { ok: false, error: "this session already runs in a terminal" };
   }
+  // TWO guards, because they catch different races and neither covers the other.
+  //
+  // A live driver is what makes this a handoff at all, and requiring one is what refuses a
+  // REPEAT: after a successful transfer the handle is gone, so a second request (a double
+  // click, a retry, the card lingering its eviction out) cannot stop nothing and then spawn
+  // a second `claude --resume` on the same conversation.
+  //
+  // The claim below is for the CONCURRENT case, which the check above cannot see: two
+  // requests can both read a live handle before either has stopped it. Taken before any
+  // mutation - the task binding is cleared a few lines down, and two callers doing that is
+  // how one conversation ends up with two agents and one of them holding the task.
+  if (!supervisor.handleFor(session.id)) {
+    return { ok: false, error: "this session has no live embedded driver to hand over" };
+  }
+  if (!supervisor.beginHandoff(session.id)) {
+    return { ok: false, error: "this session is already being handed over to a terminal" };
+  }
+  try {
+    return await transfer(registry, supervisor, session, deps);
+  } finally {
+    // Released either way. On success the session is gone and the handle check above is
+    // what keeps a later request out; on failure the session may still be live and a
+    // retry has to be possible.
+    supervisor.endHandoff(session.id);
+  }
+}
+
+/** The transfer itself, once this caller holds the only claim on it. */
+async function transfer(
+  registry: Registry,
+  supervisor: SdkSupervisor,
+  session: Session,
+  deps: HandoffDeps,
+): Promise<HandoffResult> {
   const spec = sdkFor(session.agent);
   if (!spec) return { ok: false, error: `${session.agent} has no embedded driver` };
   if (!session.agentSessionId) {

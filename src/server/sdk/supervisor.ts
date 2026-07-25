@@ -48,6 +48,8 @@ export class SdkSupervisor {
   private sends = new Map<string, Promise<unknown>>();
   private pumps = new Map<string, Promise<void>>();
   private stopping = new Set<string>();
+  /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
+  private handingOff = new Set<string>();
   /**
    * Set once the daemon is going down, and read by the event pump.
    *
@@ -212,6 +214,32 @@ export class SdkSupervisor {
   /** The live handle for a session, or null when nothing is driving it. */
   handleFor(id: string): SdkSessionHandle | null {
     return this.handles.get(id) ?? null;
+  }
+
+  /**
+   * Claim this session for a terminal handoff, or refuse because one is already under way.
+   *
+   * The pane lock's job again, for the one operation that is neither a send nor a stop.
+   * A handoff is NOT idempotent: it clears the task binding, stops the driver, and spawns
+   * `claude --resume` on the conversation. Two of them racing would each pass their own
+   * preflight, both stop a driver only one of them actually stopped, and both spawn - two
+   * agents continuing ONE conversation in one checkout, with the task binding reachable by
+   * only one of them. So the second is REFUSED rather than queued: waiting would just run
+   * the same duplicate spawn a moment later.
+   *
+   * Lives here rather than in `handoff.ts` because per-session exclusion is what this class
+   * already owns (`sends`, `stopping`), and a second place that serializes one session is a
+   * second place to get it wrong.
+   */
+  beginHandoff(id: string): boolean {
+    if (this.handingOff.has(id)) return false;
+    this.handingOff.add(id);
+    return true;
+  }
+
+  /** Release the claim. Safe to call whether the handoff succeeded or not. */
+  endHandoff(id: string): void {
+    this.handingOff.delete(id);
   }
 
   /**

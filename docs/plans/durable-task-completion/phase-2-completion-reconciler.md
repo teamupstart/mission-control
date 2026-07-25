@@ -169,3 +169,9 @@ Later phases must not add a competing completion path or a second poller.
     after delayed merge rollover..." tail, where the reset-cancelled prerequisite is now
     upgraded from its OWN merge - the case still pins that the replacement episode's merge
     is not attributed to it.
+  - **A durable-candidate query remains a later-phase follow-up.** The Registry's bounded
+    task map includes every active task and every terminal task still holding resources,
+    but not a reclaimed `failed`/`cancelled` task once it has aged past
+    `RECENT_TERMINAL_TASKS`. After a restart, a pull request that merges for that residue
+    is not harvested until completion candidates are loaded independently of the recent
+    history cap.

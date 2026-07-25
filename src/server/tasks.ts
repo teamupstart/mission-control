@@ -254,6 +254,7 @@ export class TaskManager {
   private autoCompleted = new Map<string, string>();
   /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
   private reconcilingMergedTasks = false;
+  private completedInitialSessionSweep = false;
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -317,6 +318,7 @@ export class TaskManager {
     // worktree or a home, so an ASSIGNED task - handed to an agent the operator started, so
     // it never had resources of ours - was skipped by it on every restart, forever.
     registry.onSessionsObserved(() => {
+      this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession();
     });
@@ -554,6 +556,7 @@ export class TaskManager {
         // backlog. `complete` throws on that, and this runs inside event listeners and the
         // PR poller's reconciliation, where a throw abandons the rest of the sweep.
         if (this.reschedulingTasks.has(t.id)) continue;
+        if (this.agentMayStillBeUndiscovered(t)) continue;
         if (this.agentIsStillHere(t)) continue;
         const merged = this.mergedPrFor(t.id);
         if (!merged) continue;
@@ -562,6 +565,17 @@ export class TaskManager {
     } finally {
       this.reconcilingMergedTasks = false;
     }
+  }
+
+  /**
+   * Before the first completed discovery sweep, an absent session map entry means the
+   * process table has not been authoritatively observed, not that the task's agent is gone.
+   */
+  private agentMayStillBeUndiscovered(t: Task): boolean {
+    return (
+      !this.completedInitialSessionSweep &&
+      (t.status === "running" || t.status === "dispatching")
+    );
   }
 
   /**

@@ -345,6 +345,58 @@ test("a task whose agent is still here is left to the narrower path", () => {
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
 });
 
+test("a live task is not completed from a partial startup session map", () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const presentRegistry = new Registry();
+  const presentTasks = new TaskManager(presentRegistry);
+  const presentId = "startup-live";
+  const presentTaskId = "task-startup-live";
+  presentRegistry.upsertTask(baseTask({
+    id: presentTaskId,
+    title: "Live through startup",
+    status: "running",
+    sessionId: presentId,
+    repoRoot: "/repo",
+  }));
+  insertHistorical({
+    taskId: presentTaskId,
+    episodeId: "startup-live-episode",
+    sessionId: presentId,
+    prUrl: "https://github.com/example/repo/pull/411",
+    mergedAt: NOW - 1,
+  });
+
+  presentTasks.reconcileMergedTasks();
+  assert.equal(presentRegistry.getTask(presentTaskId)?.status, "running");
+
+  presentRegistry.applyDiscovery([discovered(presentId, "/repo/startup-live")]);
+  assert.equal(presentRegistry.getTask(presentTaskId)?.status, "running");
+
+  const absentRegistry = new Registry();
+  const absentTasks = new TaskManager(absentRegistry);
+  const absentTaskId = "task-startup-absent";
+  absentRegistry.upsertTask(baseTask({
+    id: absentTaskId,
+    title: "Gone before startup",
+    status: "running",
+    sessionId: "startup-absent",
+    repoRoot: "/repo",
+  }));
+  insertHistorical({
+    taskId: absentTaskId,
+    episodeId: "startup-absent-episode",
+    sessionId: "startup-absent",
+    prUrl: "https://github.com/example/repo/pull/412",
+    mergedAt: NOW - 1,
+  });
+
+  absentTasks.reconcileMergedTasks();
+  assert.equal(absentRegistry.getTask(absentTaskId)?.status, "running");
+
+  absentRegistry.applyDiscovery([]);
+  assert.equal(absentRegistry.getTask(absentTaskId)?.status, "done");
+});
+
 test("an upgraded task is not reopened by its agent working again", () => {
   // `reopenIfWorkResumed` reverses an inference drawn from IDLENESS. This completion is
   // drawn from a merged pull request, so it is not the kind of conclusion an agent can

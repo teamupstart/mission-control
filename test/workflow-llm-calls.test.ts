@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkflowLlmCall } from "../src/shared/workflow.ts";
-import { workflowCallCost } from "../src/web/workflows/WorkflowRuns.tsx";
+import { workflowCallCost } from "../src/web/workflows/run-model.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-llm-calls-"));
 process.env.MISSION_HOME = home;

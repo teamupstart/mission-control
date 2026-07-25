@@ -104,7 +104,7 @@ test("the app stays dark-only - no OS light-mode override", () => {
 test("workflow fail, uncertain, focus, disabled, and stale states have non-color labels", () => {
   assert.match(css, /\.workflow-runtime-fail \.workflow-node::before/);
   assert.match(css, /stroke-dasharray/);
-  assert.match(css, /\.workflow-pruned-badge/);
+  assert.match(css, /\.wf-run-pruned/);
   assert.match(css, /\.workflow-node:focus-within/);
   assert.match(css, /\.persona-pane > header \.is-over-limit/);
 });

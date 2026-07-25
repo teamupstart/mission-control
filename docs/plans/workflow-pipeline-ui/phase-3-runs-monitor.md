@@ -95,3 +95,23 @@ the empty-state bind CTA. Phase 4 must not restyle these.
 - 2026-07-25: depends on phase 2 (not phase 1 directly) because it consumes `pipeline-bits.tsx` and
   the CSS vocabulary; running it concurrently with phase 2 would fork a second visual dialect,
   which is the defect this migration exists to remove.
+- 2026-07-25 (implementation): decisions taken while building it, each of which the section above
+  left open.
+  - **Filter chips map onto ONE durable status each** (All clears it, Running / Needs you / Done
+    select `running` / `waiting_for_session` / `completed`), because history is cursor-paginated by
+    the daemon and a client-side union would silently drop rows out of a page. The full `State`
+    select stays beside them and still reaches every status, so nothing became unreachable. A
+    multi-status filter is a route + server change, which section 6 excludes.
+  - **The rail row names the conversation, not a branch.** `WorkflowRunSummary` carries `noteKey`
+    and no branch; adding one is a wire change this phase excludes.
+  - **The header's session link is the session's NAME** rather than an "Open session" button. Same
+    enabling condition, struck through when the binding was orphaned.
+  - **`WorkflowConfirmModal` grew one optional field, `requirePhrase`.** The two `window.prompt`
+    confirmations exist because the DAEMON demands an exact phrase; a plain confirm would have
+    quietly weakened that gate, so the modal gates its own button on the typed phrase instead.
+    Phase 2's callers are untouched.
+  - Two defects found by exercising the surface, both pre-existing and both fixed here because
+    they make an inventory affordance useless: a failed action's message was wiped by the reload
+    it triggers (so a refused action looked like a button that did nothing), and the two
+    session-bound delivery recoveries were offered on an orphaned binding, where the route refuses
+    every call - silently for the retry, with a raw schema dump for the discard.

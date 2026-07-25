@@ -235,20 +235,59 @@
   margin: 0 0 10px auto;
 }
 
+/* ---- runs monitor (a run read on the pipeline it was authored on) ----
+
+   Beside the shared `workflow-chip` tone vocabulary above, which its rail, round scrubber and
+   card headers all wear, and where the run rules have always lived. The STRIP is drawn with
+   the pipeline editor's own `wf-pipeline-*` rules (in the pipeline section further down), so
+   the authored shape and the watched shape cannot drift into two dialects. Everything here is
+   the reading furniture around it: the rail, the round scrubber, and ONE card grammar every
+   section is built from - verdicts, gate findings, completion claims and deliveries are the
+   same card with a different accent, because they are the same kind of statement. */
 .workflow-runs {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
   min-height: 0;
   flex: 1;
 }
 
-.workflow-run-list {
+.wf-run-rail {
   overflow: auto;
   border-right: 1px solid var(--border);
   padding: 10px;
 }
 
-.workflow-run-filters {
+.wf-run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 9px;
+}
+
+.wf-run-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.wf-run-chip:hover {
+  border-color: var(--working);
+  color: var(--fg);
+}
+
+.wf-run-chip.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 14%, var(--panel));
+  color: var(--fg);
+}
+
+.wf-run-filters {
   display: grid;
   gap: 8px;
   margin-bottom: 10px;
@@ -258,15 +297,15 @@
   background: var(--panel);
 }
 
-.workflow-run-filters label {
+.wf-run-filters label {
   display: grid;
   gap: 4px;
   color: var(--muted);
   font-size: 10.5px;
 }
 
-.workflow-run-filters input,
-.workflow-run-filters select {
+.wf-run-filters input,
+.wf-run-filters select {
   min-width: 0;
   width: 100%;
   padding: 7px 8px;
@@ -277,14 +316,15 @@
   background: var(--bg);
 }
 
-.workflow-run-empty-filter {
+.wf-run-empty-filter {
   padding: 18px 10px;
   color: var(--muted);
 }
 
-.workflow-run-list button {
+.wf-run-row {
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  justify-items: start;
   width: 100%;
   margin-bottom: 7px;
   border: 1px solid transparent;
@@ -295,92 +335,187 @@
   text-align: left;
 }
 
-.workflow-run-list button:hover,
-.workflow-run-list button.active {
+.wf-run-row:hover,
+.wf-run-row.active {
   border-color: var(--border);
   background: var(--panel);
 }
 
-.workflow-run-list span,
-.workflow-run-list small {
-  color: var(--muted);
+.wf-run-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
-.workflow-run-reader {
+.wf-run-row-session,
+.wf-run-row-gate,
+.wf-run-row small {
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-version {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+
+.wf-run-more {
+  width: 100%;
+}
+
+.wf-run-reader {
   min-width: 0;
   overflow: auto;
   padding: 16px;
 }
 
-.workflow-run-detail {
+.wf-run-detail {
   display: grid;
   gap: 16px;
 }
 
-.workflow-run-detail-head {
+/* A grid or flex child's `min-width` is `auto`, so ONE wide thing - a delivery's fact grid,
+   the model-call table, a long payload line - stretches its whole ancestry and the reader
+   scrolls sideways with its right-hand column clipped off. Every level that owns its own
+   `overflow-x` has to be allowed to shrink first, or that overflow never engages. */
+.wf-run-detail > *,
+.wf-run-section > *,
+.wf-run-card > *,
+.wf-run-head > * {
+  min-width: 0;
+}
+
+.wf-run-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.workflow-run-detail-head > div {
+.wf-run-identity {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
   margin-right: auto;
 }
 
-/* Provenance for a run something other than an operator started. Reads as metadata, not
-   as a control: there is nothing to click here until the source has a route of its own. */
-.workflow-run-provenance {
-  margin-top: 2px;
+.wf-run-identity h3,
+.wf-run-identity p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-identity small {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-run-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The bound session, as a link rather than a labelled button: the name IS the affordance,
+   and a disabled one still has to say which session has gone. */
+.wf-run-session {
+  border: 0;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.wf-run-session:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+
+.wf-run-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Cancel and Restart sit beside actions an operator clicks all day, so they are separated
+   rather than merely tinted. */
+.wf-run-actions-danger {
+  padding-left: 12px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.wf-run-rounds {
+  display: grid;
+  gap: 8px;
+}
+
+.wf-run-scrubber {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The button carries the shared `workflow-<tone>` class, which sets `color`. Nothing here
+   may set colour ON the button, or the tone loses to it on source order - the state line
+   inherits it and the name overrides only itself. */
+.wf-run-round {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  font: inherit;
+  padding: 7px 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wf-run-round:hover {
+  border-color: var(--working);
+}
+
+.wf-run-round.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 12%, var(--panel));
+}
+
+.wf-run-round-name {
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.wf-run-round-state {
+  font-size: 10px;
+}
+
+.wf-run-stale {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 45%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--attention) 9%, var(--panel));
+  padding: 9px 11px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.5;
 }
 
-.workflow-run-provenance code {
-  font-size: 11px;
-}
-
-.workflow-run-state {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 9px;
-  text-transform: capitalize;
-}
-
-.workflow-run-detail .workflow-canvas {
-  min-height: 340px;
-}
-
-.workflow-node-runtime {
-  margin-top: 5px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  padding: 3px 7px;
-  font-size: 10px;
-  text-transform: capitalize;
-}
-
-.workflow-runtime-pass .workflow-node,
-.workflow-runtime-completed .workflow-node {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--idle) 65%, transparent);
-}
-
-.workflow-runtime-fail .workflow-node,
-.workflow-runtime-error .workflow-node {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 65%, transparent);
-}
-
-.workflow-runtime-running .workflow-node,
-.workflow-runtime-queued .workflow-node,
-.workflow-runtime-retry_wait .workflow-node {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--working) 65%, transparent);
-}
-
-.workflow-run-context,
-.workflow-inspector-gate,
-.workflow-verdicts,
-.workflow-run-timeline,
-.workflow-model-calls {
+.wf-run-section {
+  display: grid;
+  gap: 12px;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -388,32 +523,149 @@
   padding: 14px;
 }
 
-.workflow-model-calls > header {
+.wf-run-section > h4,
+.wf-run-section > h5,
+.wf-run-section-head h4 {
+  margin: 0;
+}
+
+.wf-run-section-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
-.workflow-model-calls table {
-  width: 100%;
-  margin-top: 10px;
-  border-collapse: collapse;
-  font-size: 11px;
+.wf-run-section-head h4 {
+  margin-right: auto;
 }
 
-.workflow-model-calls th,
-.workflow-model-calls td {
-  padding: 7px;
-  text-align: left;
-  border-bottom: 1px solid var(--border-soft);
+.wf-run-cards {
+  display: grid;
+  gap: 10px;
 }
 
-.workflow-model-calls th {
+/* Font size lives on the head rather than on its children so a `.workflow-chip` inside it
+   keeps its own size instead of losing a specificity race to a descendant selector. */
+.wf-run-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   color: var(--muted);
+  font-size: 10.5px;
 }
 
-.workflow-pruned-badge {
+.wf-run-card-head strong {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.wf-run-card {
+  display: grid;
+  gap: 8px;
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 12px;
+}
+
+.wf-run-card p,
+.wf-run-card h5 {
+  margin: 0;
+}
+
+.wf-run-card pre,
+.wf-run-context pre,
+.wf-run-packet pre {
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.wf-run-verdict.is-pass { border-left-color: var(--idle); }
+.wf-run-verdict.is-fail { border-left-color: var(--danger); }
+.wf-run-delivery.is-delivered { border-left-color: var(--idle); }
+.wf-run-delivery.is-uncertain,
+.wf-run-delivery.is-refused { border-left-color: var(--danger); }
+.wf-run-finding.is-blocker,
+.wf-run-finding.is-major { border-left-color: var(--danger); }
+.wf-run-finding.is-minor,
+.wf-run-finding.is-nit { border-left-color: var(--attention); }
+
+.wf-run-gate {
+  border-left: 4px solid var(--working);
+}
+
+.wf-run-gate.is-findings,
+.wf-run-gate.is-blocked { border-left-color: var(--danger); }
+.wf-run-gate.is-clean { border-left-color: var(--idle); }
+
+.wf-run-findings,
+.wf-run-recovery {
+  display: grid;
+  gap: 9px;
+}
+
+.wf-run-recovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wf-run-summary {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wf-run-sentence {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wf-run-meta,
+.wf-run-confidence {
+  color: var(--dim);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* A durable failure, said as a sentence with its machine code kept beside it - the code is
+   what an operator quotes into a bug report, so it is demoted rather than dropped. */
+.wf-run-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wf-run-code {
+  color: var(--dim);
+  font: 10px var(--mono);
+}
+
+.wf-run-notice {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--attention) 60%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel));
+  padding: 12px;
+  line-height: 1.55;
+}
+
+.wf-run-pruned {
   display: inline-flex;
   align-items: center;
   width: fit-content;
@@ -425,174 +677,134 @@
   background: color-mix(in oklab, var(--attention) 8%, var(--panel));
 }
 
-.workflow-inspector-gate {
+.wf-run-evidence,
+.wf-run-changes,
+.wf-run-decisions {
   display: grid;
-  gap: 12px;
-  border-left: 4px solid var(--working);
-}
-
-.workflow-inspector-gate > header,
-.workflow-inspector-finding > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workflow-inspector-gate h4,
-.workflow-inspector-gate p {
+  gap: 6px;
   margin: 0;
-}
-
-.workflow-inspector-gate dl,
-.workflow-delivery dl {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 8px 18px;
-}
-
-.workflow-inspector-gate dl > div,
-.workflow-delivery dl > div {
-  min-width: 0;
-}
-
-.workflow-inspector-gate dt,
-.workflow-delivery dt {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.workflow-inspector-gate dd,
-.workflow-delivery dd {
-  margin: 3px 0 0;
-  overflow-wrap: anywhere;
-}
-
-.workflow-gate-findings,
-.workflow-gate-blocked {
-  border-left-color: var(--danger);
-}
-
-.workflow-gate-clean {
-  border-left-color: var(--idle);
-}
-
-.workflow-inspector-findings {
-  display: grid;
-  gap: 9px;
-}
-
-.workflow-inspector-finding {
-  border-left: 3px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  padding: 11px;
-}
-
-.workflow-inspector-finding.finding-blocker,
-.workflow-inspector-finding.finding-major {
-  border-left-color: var(--danger);
-}
-
-.workflow-inspector-finding.finding-minor,
-.workflow-inspector-finding.finding-nit {
-  border-left-color: var(--attention);
-}
-
-.workflow-inspector-finding small {
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-.workflow-inspector-bypass {
-  margin: 0;
-  border: 1px solid color-mix(in srgb, var(--attention) 60%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--attention) 12%, var(--panel));
-  padding: 12px;
-}
-
-.workflow-run-context > header,
-.workflow-verdict > header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workflow-run-context pre,
-.workflow-join-packet pre {
-  max-height: 340px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.workflow-compaction-fallback {
-  color: var(--attention);
-}
-
-.workflow-verdict {
-  margin-top: 10px;
-  border-left: 3px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-  padding: 12px;
-}
-
-.workflow-verdict-pass { border-left-color: var(--idle); }
-.workflow-verdict-fail { border-left-color: var(--danger); }
-
-.workflow-verdict-evidence {
-  display: grid;
-  gap: 5px;
   padding-left: 18px;
 }
 
-.workflow-verdict-evidence li {
+.wf-run-evidence li,
+.wf-run-decisions li {
   display: grid;
   gap: 2px;
 }
 
-.workflow-verdict-evidence span,
-.workflow-attempt-list,
-.workflow-context-warning {
+.wf-run-evidence span,
+.wf-run-changes p,
+.wf-run-decisions small {
   color: var(--muted);
 }
 
-.workflow-attempt-list {
+.wf-run-facts-list {
   display: grid;
-  gap: 4px;
-  margin-top: 12px;
-}
-
-.workflow-attempt-list p {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 18px;
   margin: 0;
 }
 
-.workflow-run-timeline ol {
-  display: grid;
-  gap: 8px;
-  padding-left: 22px;
+.wf-run-facts-list > div {
+  min-width: 0;
 }
 
-.workflow-run-timeline li {
-  display: grid;
-  grid-template-columns: 150px minmax(140px, 220px) minmax(0, 1fr);
-  gap: 10px;
+.wf-run-facts-list dt {
+  color: var(--muted);
+  font-size: 11px;
 }
 
-.workflow-run-timeline time,
-.workflow-run-timeline code {
+.wf-run-facts-list dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-packet summary {
+  cursor: pointer;
+  color: var(--attention);
+  font-size: 11px;
+}
+
+.wf-run-table {
+  overflow-x: auto;
+}
+
+.wf-run-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.wf-run-table th,
+.wf-run-table td {
+  padding: 7px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.wf-run-table th {
   color: var(--muted);
 }
 
-.workflow-timeline-round + .workflow-timeline-round {
+.wf-run-provenance {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-provenance code {
+  font-size: 11px;
+}
+
+/* The version's graph, for a run of a workflow drawn before stages existed. */
+.wf-run-graph {
+  display: grid;
+  gap: 8px;
+}
+
+.wf-run-graph-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-run-timeline ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.wf-run-timeline li {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 3px 12px;
+}
+
+.wf-run-timeline li strong {
+  font-size: 11.5px;
+}
+
+.wf-run-timeline li span {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-timeline time {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-run-timeline-round + .wf-run-timeline-round {
   margin-top: 16px;
   padding-top: 10px;
   border-top: 1px solid var(--border-soft);
 }
 
-.workflow-timeline-round h5 {
-  margin: 0;
+.wf-run-timeline-round h5 {
+  margin: 0 0 6px;
 }
 
 @media (max-width: 900px) {
@@ -600,14 +812,18 @@
     grid-template-columns: 1fr;
   }
 
-  .workflow-run-list {
+  .wf-run-rail {
     max-height: 220px;
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
 
-  .workflow-run-timeline li {
+  .wf-run-timeline li {
     grid-template-columns: 1fr;
+  }
+
+  .wf-run-timeline li span {
+    grid-column: 1;
   }
 }
 
@@ -6650,9 +6866,7 @@ select:not([multiple]) option {
 }
 
 .workflow-config-panel li,
-.workflow-config-panel > div,
-.workflow-delivery header,
-.workflow-delivery-recovery {
+.workflow-config-panel > div {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -6709,26 +6923,6 @@ select:not([multiple]) option {
   overflow-wrap: anywhere;
 }
 
-.workflow-deliveries {
-  display: grid;
-  gap: 12px;
-}
-
-.workflow-delivery {
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.workflow-delivery header {
-  justify-content: space-between;
-}
-
-.workflow-delivery pre {
-  max-height: 360px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
 .app-console > .workflow-page,
 .app-board > .workflow-page {
   flex: 1;
@@ -7311,6 +7505,30 @@ select:not([multiple]) option {
   color: var(--dim);
   font-size: 9px;
 }
+/* A node's runtime status on a READ-ONLY canvas: the runs monitor's fallback for a version
+   drawn freehand rather than as stages. The status word rides in the node; the ring and the
+   mark below say the same thing at a glance. */
+.workflow-node-runtime {
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 3px 7px;
+  font-size: 10px;
+  text-transform: capitalize;
+}
+.workflow-runtime-pass .workflow-node,
+.workflow-runtime-completed .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--idle) 65%, transparent);
+}
+.workflow-runtime-fail .workflow-node,
+.workflow-runtime-error .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 65%, transparent);
+}
+.workflow-runtime-running .workflow-node,
+.workflow-runtime-queued .workflow-node,
+.workflow-runtime-retry_wait .workflow-node {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--working) 65%, transparent);
+}
 .workflow-runtime-pass .workflow-node::before,
 .workflow-runtime-completed .workflow-node::before { content: "✓"; color: var(--idle); }
 .workflow-runtime-fail .workflow-node::before,
@@ -7531,6 +7749,19 @@ select:not([multiple]) option {
 .workflow-confirm { width: min(460px, 100%); }
 .workflow-confirm-body { padding: 16px 18px; }
 .workflow-confirm-body p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+/* The typed phrase the daemon also demands, for the two actions that cannot be undone. */
+.workflow-confirm-phrase { display: grid; gap: 7px; margin-top: 14px; }
+.workflow-confirm-phrase > span { color: var(--muted); font-size: 11.5px; }
+.workflow-confirm-phrase strong { color: var(--fg); font: 11px var(--mono); }
+.workflow-confirm-phrase input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px var(--mono);
+}
 
 @media (max-width: 1180px) {
   .workflow-builder { grid-template-columns: 210px minmax(380px, 1fr) 260px; }

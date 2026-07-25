@@ -1802,6 +1802,43 @@ captured context, and model-call metadata through the same session reset owner. 
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded only for the selected run. Cards, Console, and Board show the same workflow status.
 
+### Watching a run
+
+The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
+stages and End the Pipeline view draws, with a live status on every reviewer: queued,
+reviewing, passed, or changes requested. A stage of two reviewers shows both and passes only
+when both do. A version drawn freehand in the Graph view is not a pipeline, so its run falls
+back to that graph, read-only, carrying the same statuses. No surface prints a node id.
+
+The rail lists history newest first with a state chip, the bound conversation and a relative
+time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the
+same single-state filter the **State** dropdown offers in full; the dropdown still reaches
+every state, and workflow id and session filters sit beside it. Filters and the selected run
+are part of the bookmarkable hash, and history pages 50 rows at a time.
+
+A run is read one **round** at a time. The scrubber lists every submission with the round it
+is - Inspector-only repair rounds marked as such - and the round that asked for changes is
+marked even though its submission is a healthy `waiting for the session`. Selecting a round
+scopes the pipeline statuses, the verdicts, the join packets and the timeline to it; the
+latest round is selected by default. The Inspector gate, completion claims, deliveries and
+every recovery action always reflect the live run whatever round is on screen, and a note
+says so while an earlier one is selected.
+
+Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
+requested changes with evidence references, and the runner, model, duration and cost that
+actually ran. Inspector gate state, Foreman completion claims and repair deliveries are the
+same card with a different accent. Durable failures read as sentences - "The write may or may
+not have landed" - with the machine code kept beside them for a bug report, never instead of
+them. The timeline names Personas and rounds rather than printing payload JSON; **Export
+run** remains the complete durable record.
+
+Destructive actions confirm in the app rather than in a browser dialog. **Cancel run** and
+the delivery's **Mark delivered** ask once; **Restart full workflow** and **Discard and send
+new round** require the exact phrase the daemon also demands, typed into the confirm.
+
+With no runs at all the tab offers **Bind to a session…**, the same dialog the builder's
+right rail opens.
+
 ### Runs Mission Control started for itself
 
 Almost every run is one an operator submitted. A run can also be started by Mission Control

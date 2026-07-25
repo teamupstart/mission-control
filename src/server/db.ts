@@ -2664,6 +2664,30 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at`,
     ).run(binding.taskId, binding.episodeId);
+    // And archive any OTHER task's PR-carrying binding that the cross-task DELETE below is
+    // about to drop. A session rebound from task A to task B removes A's current binding
+    // here; if A's PR had merged while A was still active, losing that row leaves A with
+    // neither a current nor a historical merge, so a later departure fails it. This is the
+    // same durable-record contract as the rollover archival above, on the other key
+    // (session_id, task_id <>) - #167 archived by both keys for exactly this reason.
+    d.prepare(
+      `INSERT INTO historical_task_work_episode_bindings
+         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+          merged_at, bound_at, updated_at)
+       SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
+              merged_at, bound_at, updated_at
+       FROM task_work_episode_bindings
+       WHERE session_id = ? AND task_id <> ? AND pr_url IS NOT NULL
+       ON CONFLICT(task_id, episode_id) DO UPDATE SET
+         session_id       = excluded.session_id,
+         agent_session_id = excluded.agent_session_id,
+         branch           = excluded.branch,
+         pr_url           = excluded.pr_url,
+         pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
+         bound_at         = excluded.bound_at,
+         updated_at       = excluded.updated_at`,
+    ).run(binding.sessionId, binding.taskId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);

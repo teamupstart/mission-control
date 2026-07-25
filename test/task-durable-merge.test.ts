@@ -16,6 +16,8 @@ const {
   openDb,
   markWorkEpisodeMerged,
   historicalTaskWorkEpisodeBindingsForTask,
+  bindTaskWorkEpisode,
+  taskWorkEpisodeForTask,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -393,4 +395,48 @@ test("with no merge on any binding, a departed agent still fails", () => {
   const t = registry.getTask(taskId)!;
   assert.equal(t.status, "failed");
   assert.match(t.error ?? "", /no outcome recorded/);
+});
+
+// ---- a session rebound to a new task preserves the prior task's merge ---------------------
+
+test("rebinding a session to a new task archives the prior task's merged binding", () => {
+  // The cross-task counterpart to rollover archival: when a session that ran task A is
+  // rebound to task B, bindTaskWorkEpisode's `task_id <> ?` DELETE drops A's current binding.
+  // If A's PR had merged while A was active, that row is A's only merge proof, so it must be
+  // archived before the delete - otherwise a later departure fails A for shipped work.
+  const sessionId = "durable-rebind-session";
+  const taskA = "durable-rebind-task-a";
+  const taskB = "durable-rebind-task-b";
+  const prA = "https://github.com/example/repo/pull/330";
+  bindTaskWorkEpisode({
+    taskId: taskA,
+    episodeId: "durable-rebind-episode-a",
+    sessionId,
+    agentSessionId: sessionId,
+    branch: "feat/a",
+    prUrl: prA,
+    prHeadSha: "sha",
+    mergedAt: 5_000,
+    boundAt: 1,
+    updatedAt: 1,
+  });
+  bindTaskWorkEpisode({
+    taskId: taskB,
+    episodeId: "durable-rebind-episode-b",
+    sessionId,
+    agentSessionId: sessionId,
+    branch: "feat/b",
+    prUrl: null,
+    prHeadSha: null,
+    mergedAt: null,
+    boundAt: 2,
+    updatedAt: 2,
+  });
+
+  assert.equal(taskWorkEpisodeForTask(taskA), null, "A's current binding is gone with the session");
+  const histA = historicalTaskWorkEpisodeBindingsForTask(taskA);
+  assert.equal(histA.length, 1, "A's merge is preserved in history, not lost with the delete");
+  assert.equal(histA[0]?.episodeId, "durable-rebind-episode-a");
+  assert.equal(histA[0]?.prUrl, prA);
+  assert.equal(histA[0]?.mergedAt, 5_000);
 });

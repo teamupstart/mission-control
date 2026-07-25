@@ -1,0 +1,308 @@
+// The settings search index: one flat, control-level list of everything the settings
+// page can be told to do, plus the deterministic matcher the ⌘K palette runs over it.
+//
+// Pure data and pure functions - no React, no `node:` anything - for the same reason
+// `settings-registry.ts` is: the palette, the page (which wires the runtime toggle
+// bindings), and the integrity test all read this SAME list. It sits BESIDE the registry
+// rather than inside it because the registry is category-level (the rail) and this is
+// control-level (the palette); keeping them apart is what lets the anchor integrity test
+// prove every entry here points at a control the page actually renders.
+//
+// This is the one control-level index (the Phase 5 cross-phase contract). A new setting
+// adds an entry HERE, next to its control's `data-anchor`, rather than starting a second
+// list somewhere a search can miss.
+
+import {
+  SETTINGS_CATEGORIES,
+  type SettingsCategoryId,
+} from "./settings-registry.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+
+/**
+ * One searchable control.
+ *
+ *  - `anchor` is the `data-anchor="<category>/<slug>"` the jump scrolls to and flashes.
+ *    Its prefix MUST equal `category`, and it MUST be one the page renders - the anchor
+ *    integrity test (`settings-search.test.ts`) fails otherwise, which is the whole point
+ *    of pinning it from day one.
+ *  - `kind` is `"toggle"` for a boolean the palette can flip in place, `"jump"` for
+ *    everything else (a scalar, a picker, a whole sub-panel). A `"toggle"` the page did
+ *    not wire a binding for degrades to a jump rather than drawing a dead switch.
+ *  - `risky` marks the D5 exemption set: booleans that ALWAYS jump to their panel so their
+ *    consent copy is on screen when they change, never flipped anonymously from a search
+ *    result. The page never builds a binding for a risky control, so it renders as a jump
+ *    by the same degrade path - the flag is what keeps that deliberate rather than a
+ *    forgotten binding.
+ */
+export interface SettingsControl {
+  id: string;
+  label: string;
+  description: string;
+  category: SettingsCategoryId;
+  anchor: string;
+  keywords: readonly string[];
+  kind: "toggle" | "jump";
+  risky?: true;
+}
+
+/**
+ * The per-harness cards, derived from the harness union rather than hand-listed, so a new
+ * agent's card is searchable the moment it exists - the same reason `HarnessesPanel` builds
+ * its cards from `AGENT_TYPES`. Each points at that card's `harnesses/<agent>` anchor.
+ */
+const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
+  id: `harness-${agent}`,
+  label: `${AGENT_IDENTITY[agent].label} defaults`,
+  description: "What a dispatch of this harness launches with - default model and effort.",
+  category: "harnesses",
+  anchor: `harnesses/${agent}`,
+  keywords: ["model", "effort", "dispatch", "default", AGENT_IDENTITY[agent].label.toLowerCase()],
+  kind: "jump",
+}));
+
+/**
+ * Every settings control worth searching for, in a stable order (the empty-query preview
+ * shows the first few). One entry per control except where a dynamic set collapses to one:
+ * the Skills catalog is a single entry (its per-skill rows are runtime data, not indexed),
+ * and Foreman's four models and the daemon's background jobs are each one entry over a
+ * cluster of `ModelField`s.
+ */
+export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
+  {
+    id: "layout",
+    label: "Layout",
+    description: "Arrange the fleet as Cards, Console, or Board.",
+    category: "display",
+    anchor: "display/layout",
+    keywords: ["grid", "console", "board", "cards", "arrangement", "view"],
+    kind: "jump",
+  },
+  {
+    id: "format-messages",
+    label: "Format messages",
+    description: "Render transcripts as markdown rather than the literal text an agent emitted.",
+    category: "display",
+    anchor: "display/format-messages",
+    keywords: ["rich text", "markdown", "appearance", "code blocks", "syntax"],
+    kind: "toggle",
+  },
+  {
+    id: "keyboard",
+    label: "Keyboard shortcuts",
+    description: "Rebind any action's chord.",
+    category: "keyboard",
+    anchor: "keyboard/roundup",
+    keywords: ["keys", "chord", "binding", "hotkey", "shortcut", "rebind"],
+    kind: "jump",
+  },
+  {
+    id: "auto-mode",
+    label: "Auto mode on dispatch",
+    description: "Launch every dispatched session in its most autonomous permission mode.",
+    category: "harnesses",
+    anchor: "harnesses/auto-mode",
+    keywords: ["permission", "bypass", "autonomous", "yolo", "accept edits"],
+    kind: "toggle",
+  },
+  ...HARNESS_CONTROLS,
+  {
+    id: "skills-enabled",
+    label: "Enable Mission Control skills",
+    description: "Master switch - symlink the skill set into every harness's skills directory.",
+    category: "skills",
+    anchor: "skills/enabled",
+    keywords: ["skill", "slash command", "symlink", "master"],
+    kind: "toggle",
+  },
+  {
+    id: "skills-catalog",
+    label: "Skills catalog",
+    description: "Which individual skills every session gets.",
+    category: "skills",
+    anchor: "skills/catalog",
+    keywords: ["skill", "catalog", "slash command", "no-mistakes"],
+    kind: "jump",
+  },
+  {
+    id: "cost-track",
+    label: "Track Claude estimated cost",
+    description: "Write a telemetry env block so sessions report usage to the daemon.",
+    category: "cost",
+    anchor: "cost/track",
+    keywords: ["telemetry", "otel", "usage", "spend", "money", "estimate"],
+    kind: "toggle",
+  },
+  {
+    id: "cost-interval",
+    label: "Export interval",
+    description: "How often each session reports its usage.",
+    category: "cost",
+    anchor: "cost/interval",
+    keywords: ["telemetry", "frequency", "seconds", "interval"],
+    kind: "jump",
+  },
+  {
+    id: "cost-view",
+    label: "Lead with",
+    description: "Whether the topbar's usage strip leads with estimated cost or plan usage.",
+    category: "cost",
+    anchor: "cost/view",
+    keywords: ["topbar", "usd", "dollars", "plan", "tokens", "strip"],
+    kind: "jump",
+  },
+  {
+    id: "foreman-tier",
+    label: "Cheap tier",
+    description: "Whether the Foreman answers the easy prompts itself - off, shadow, or on.",
+    category: "foreman",
+    anchor: "foreman/cheap-tier",
+    keywords: ["triage", "shadow", "router", "auto-responder"],
+    kind: "jump",
+  },
+  {
+    id: "foreman-models",
+    label: "Foreman provider and models",
+    description: "The provider and the four models behind Review, Verify, Triage, and Backlog.",
+    category: "foreman",
+    anchor: "foreman/provider",
+    keywords: ["model", "review", "verify", "triage", "backlog", "provider", "runner"],
+    kind: "jump",
+  },
+  {
+    id: "task-sources",
+    label: "Task sources",
+    description: "The upstreams that pull work into the backlog.",
+    category: "task-sources",
+    anchor: "task-sources/sources",
+    keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
+    kind: "jump",
+  },
+  {
+    id: "llm-jobs",
+    label: "Background job models",
+    description: "The provider and models behind the app's own titling, goals, and digests.",
+    category: "models",
+    anchor: "models/provider",
+    keywords: ["title", "goal", "digest", "workflow", "provider", "runner", "job"],
+    kind: "jump",
+  },
+  {
+    id: "inspector-enabled",
+    label: "Run the Inspector",
+    description: "Whether the Inspector reviews the pull requests we open.",
+    category: "inspector",
+    anchor: "inspector/enabled",
+    keywords: ["review", "pull request", "pr", "enable"],
+    kind: "toggle",
+    risky: true,
+  },
+  {
+    id: "inspector-mode",
+    label: "Inspector mode",
+    description: "Dry run - record findings and post nothing - or live, posting review comments.",
+    category: "inspector",
+    anchor: "inspector/mode",
+    keywords: ["dry run", "live", "publish", "post", "comments"],
+    kind: "jump",
+    risky: true,
+  },
+  {
+    id: "review-model",
+    label: "Review model",
+    description: "The provider and model the Inspector reviews with.",
+    category: "inspector",
+    anchor: "inspector/provider",
+    keywords: ["model", "provider", "runner", "review"],
+    kind: "jump",
+  },
+  {
+    id: "yolo",
+    label: "YOLO mode",
+    description: "Whether clean pull requests we open merge themselves.",
+    category: "shipping",
+    anchor: "shipping/yolo",
+    keywords: ["auto merge", "automerge", "ship", "self-merge"],
+    kind: "toggle",
+    risky: true,
+  },
+  {
+    id: "soak",
+    label: "Soak time",
+    description: "Minutes a clean pull request stays open before it may merge.",
+    category: "shipping",
+    anchor: "shipping/soak",
+    keywords: ["soak", "window", "delay", "minutes", "wait"],
+    kind: "jump",
+  },
+  {
+    id: "merge-method",
+    label: "How to merge",
+    description: "Squash, merge commit, or rebase.",
+    category: "shipping",
+    anchor: "shipping/method",
+    keywords: ["squash", "rebase", "merge commit", "method"],
+    kind: "jump",
+  },
+  {
+    id: "trust-grants",
+    label: "Trust grants",
+    description: "Which repositories each subsystem may act in.",
+    category: "trust",
+    anchor: "trust/matrix",
+    keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix"],
+    kind: "jump",
+  },
+];
+
+/**
+ * The control ids the page is expected to wire a boolean binding for: every `"toggle"`
+ * that is not risky. The page builds its `Map<controlId, ToggleBinding>` for exactly these
+ * (see `SettingsPage`), so a risky control can never receive a binding and can never flip
+ * from a search result - it degrades to a jump. Exported so the test can pin that without
+ * reaching into the page's runtime wiring.
+ */
+export const BINDABLE_CONTROL_IDS: readonly string[] = SETTINGS_CONTROLS.filter(
+  (c) => c.kind === "toggle" && !c.risky,
+).map((c) => c.id);
+
+/** A runtime get/set pair for one boolean control, supplied by the page. */
+export interface ToggleBinding {
+  get: () => boolean;
+  set: (on: boolean) => void;
+}
+
+/** The bindings the page hands the palette, keyed by control id. */
+export type SettingsBindings = Map<string, ToggleBinding>;
+
+/** How many controls the empty-query palette previews before the user types anything. */
+export const SEARCH_PREVIEW_COUNT = 6;
+
+export interface SettingsSearchResult {
+  /** Control-level hits, in registry order. */
+  controls: SettingsControl[];
+  /** Category-name hits, offered as "Jump to" rows below the controls. */
+  categories: SettingsCategoryId[];
+}
+
+function haystack(c: SettingsControl): string {
+  return `${c.label} ${c.description} ${c.keywords.join(" ")}`.toLowerCase();
+}
+
+/**
+ * Deterministic substring search over label + description + keywords, plus category-name
+ * matches from the registry's own `keywords`. No fuzzy ranking on purpose (D5 / the phase
+ * non-goals): the same query always returns the same rows in the same order, which is a
+ * registry order, not a relevance guess. An empty query previews the first few controls.
+ */
+export function searchSettings(query: string): SettingsSearchResult {
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    return { controls: SETTINGS_CONTROLS.slice(0, SEARCH_PREVIEW_COUNT), categories: [] };
+  }
+  const controls = SETTINGS_CONTROLS.filter((c) => haystack(c).includes(q));
+  const categories = SETTINGS_CATEGORIES.filter((cat) =>
+    `${cat.label} ${cat.keywords.join(" ")}`.toLowerCase().includes(q),
+  ).map((cat) => cat.id);
+  return { controls, categories };
+}

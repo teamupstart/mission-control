@@ -664,6 +664,9 @@ body {
 .is-desktop .alert-pop,
 .is-desktop .combobox-list,
 .is-desktop .cmdbar,
+/* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
+   the bar. Its backdrop is the shared `.modal-backdrop` above. */
+.is-desktop .pal,
 .is-desktop .file-window,
 .is-desktop .workflow-config-panel,
 .is-desktop .workflow-library-sidebar,
@@ -6802,6 +6805,228 @@ kbd {
     animation: none;
     outline-color: var(--attention);
   }
+}
+
+/* ---- settings search (Phase 5) ----
+   The rail box and the ⌘K palette over the whole control-level index. Phase 1 shipped no
+   rail box on purpose - a dead one would lie about a palette that did not exist yet - so
+   this is that box, live. The palette is the approved prototype's Mockup D, retoned to the
+   app's own switch language (an accent-color checkbox, not the prototype's pill). */
+.settings-rail-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 2px 0 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+.settings-rail-search:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+  color: var(--muted);
+}
+.settings-rail-search-glyph {
+  flex: none;
+}
+.settings-rail-search-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-rail-search-kbd {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: var(--panel);
+}
+
+/* The panel sits inside the shared `.modal-backdrop` (from `<Overlay>`), which is the veil.
+   position: fixed takes it out of the backdrop's flex centering and pins it near the top,
+   command-palette style, rather than dead-center like a modal. */
+.pal {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 40px));
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.pal-in {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pal-glass {
+  flex: none;
+  color: var(--dim);
+}
+.pal-input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+}
+.pal-input::placeholder {
+  color: var(--dim);
+}
+.pal-results {
+  padding: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.pal-glabel {
+  margin: 6px 8px 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+.pal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 11px;
+  /* It is a <button> now (for the shared Tooltip and real click semantics), so it needs the
+     usual button reset before the row styling reads. */
+  appearance: none;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.pal-row.is-active {
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  border-color: color-mix(in oklab, var(--working) 30%, var(--border));
+}
+.pal-row-icon {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--dim);
+}
+.pal-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  /* The whole row is the click target (jump, or flip for a bound toggle); the text must
+     not intercept it, or a click on the label would miss the row's handler. */
+  pointer-events: none;
+}
+.pal-row-label {
+  font-size: 12.5px;
+  font-weight: 570;
+  color: var(--fg);
+}
+.pal-row-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Presentational pill: it reflects the binding, the row (a button) handles the flip, so a
+   click lands once and there is no nested control to steal the row's tooltip. */
+.pal-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: 9px;
+  background: var(--border);
+  pointer-events: none;
+  transition: background 0.14s ease;
+}
+.pal-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition:
+    left 0.14s ease,
+    background 0.14s ease;
+}
+.pal-switch[data-on="true"] {
+  background: var(--working);
+}
+.pal-switch[data-on="true"]::after {
+  left: 14px;
+  background: var(--fg);
+}
+.pal-badge {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1.5px 6px;
+  white-space: nowrap;
+}
+.pal .settings-scope {
+  flex: none;
+}
+.pal-empty {
+  padding: 18px 12px;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: center;
+}
+.pal-foot {
+  display: flex;
+  gap: 16px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.pal-foot b {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 /* ---- skills (the dashboard-wide skill catalog) ----

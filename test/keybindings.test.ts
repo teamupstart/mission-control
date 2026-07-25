@@ -194,6 +194,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),
     chordFromEvent(key("k")),
+    chordFromEvent(key("k", { meta: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });
@@ -237,6 +238,25 @@ test("complete is a first-class action defaulting to c, and sits just before kil
     ACTIONS.findIndex((a) => a.id === "complete") + 1,
     ACTIONS.findIndex((a) => a.id === "kill"),
   );
+});
+
+test("settings search is a global action defaulting to ⌘K, and it rebinds and resets", () => {
+  const search = ACTIONS.find((a) => a.id === "settingsSearch");
+  assert.ok(search, "settingsSearch missing from the customizable registry");
+  assert.equal(search.group, "global");
+  // "cmd+k", not "meta+k": the chord grammar spells the Meta modifier `cmd`, so a real ⌘K
+  // keydown produces this and the handler matches it. "meta+k" would be a dead shortcut.
+  assert.equal(search.defaultBinding, "cmd+k");
+  assert.equal(chordFromEvent(key("k", { meta: true })), "cmd+k");
+  assert.equal(formatChord(search.defaultBinding), "⌘K");
+
+  // Rebind to another chord and back to default, the way the Keyboard panel drives it.
+  setBinding("settingsSearch", "cmd+shift+k");
+  assert.equal(stored().settingsSearch, "cmd+shift+k");
+  assert.equal(sent().settingsSearch, "cmd+shift+k");
+  resetBinding("settingsSearch");
+  assert.equal(stored().settingsSearch, undefined);
+  assert.equal(sent().settingsSearch, undefined);
 });
 
 // ---- the override store ----

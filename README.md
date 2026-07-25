@@ -2531,6 +2531,30 @@ inherits the worst of them** - red over amber over green - so a subsystem that n
 shows from the fleet; the gear's tooltip names what the dot means. Before the first status
 arrives (a cold tab, a reconnect) the dots stay dark rather than claim an all-clear.
 
+### Search settings (⌘K)
+
+Roughly seventy controls span the eleven categories, so **search** is how you reach one you
+half-remember without knowing which panel it lives in. Open the palette with <kbd>⌘</kbd><kbd>K</kbd>
+(rebindable, like every other shortcut - **Settings → Keyboard**) or the **search box at the
+top of the rail**, which shows the current chord as its hint. From the fleet the shortcut
+jumps to the page and opens the palette in one step; the topbar ⚙ gear keeps its one job of
+navigating to the page. Type any part of a control's name, description, or keywords -
+matching is plain substring, so the same query always returns the same rows in the same
+order, no fuzzy guessing. Arrows move the selection, <kbd>Enter</kbd> acts on it,
+<kbd>Esc</kbd> (or a click on the dimmed backdrop) closes.
+
+The index covers controls, not content: every switch, picker, model field and sub-panel is
+in it, but repo names and PR numbers are not. A **boolean control flips inline** right in the
+results - the switch re-reads the daemon on the next poll, so a change that has not landed
+shows honestly as unmoved rather than an optimistic guess. Everything else - a scalar, a
+picker, a whole panel - **jumps** to its category and flashes the control it named.
+
+The one exception is the **risky set** - YOLO mode and the Inspector's enable and mode. Those
+never flip from a search result: they always jump to their panel, so the consent copy that
+explains what merges or gets published is on screen when they change. A category-name match
+also appears, under **Jump to**, so searching "shipping" or "keyboard" lands you on the
+whole panel.
+
 ### Trust (who may act in which repository)
 
 Three subsystems act on GitHub under your account, and each keeps its own list of the repos
@@ -2759,6 +2783,7 @@ shortcut works in every layout:
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
+| <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |

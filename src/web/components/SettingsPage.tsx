@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -14,8 +14,12 @@ import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
+import { SettingsSearch } from "./SettingsSearch.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
+import { useRichText } from "../lib/rich-text.ts";
+import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import type { SettingsBindings, ToggleBinding } from "../lib/settings-search.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
@@ -128,6 +132,8 @@ export function SettingsPage({
   layout,
   onLayoutChange,
   settingsStatus,
+  searchOpen = false,
+  onSearchOpenChange,
 }: {
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
@@ -163,6 +169,15 @@ export function SettingsPage({
    * NOT come from here: it derives from the App-owned `foreman` prop above.
    */
   settingsStatus: SettingsStatus | null;
+  /**
+   * Whether the ⌘K search palette is open. App owns it so the shortcut can open the
+   * palette from the fleet (navigate here, then open) as well as from inside the page.
+   * Optional so the render tests can mount the page without it - a closed palette draws
+   * nothing.
+   */
+  searchOpen?: boolean;
+  /** Open (rail box) or close (Escape, veil, ⌘K again) the palette. */
+  onSearchOpenChange?: (open: boolean) => void;
 }): React.JSX.Element {
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
@@ -178,7 +193,51 @@ export function SettingsPage({
   // than merely tidy: it is what keeps each source's last-swept line and its error moving
   // while you watch the panel, including for a sweep the background loop ran.
   const taskSources = useTaskSources();
+  // The formatting toggle's store, owned here so the search palette can flip it inline -
+  // `AppearancePanel` reads the same module-level store, so there is no second copy to keep
+  // in step (see `lib/rich-text.ts`).
+  const [richText, setRichText] = useRichText();
+  // The resolved chord for the search action, shown as the rail box's hint so the box and
+  // the shortcut always agree even after a rebind.
+  const { bindings: keyBindings } = useKeybindings();
+  const searchChord = formatChord(keyBindings.settingsSearch);
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
+
+  // Runtime get/set for the bindable boolean controls, wired from the hooks this page
+  // already owns and handed to the palette so a matching result can flip in place. Exactly
+  // the non-risky toggles in `SETTINGS_CONTROLS`: the risky set (YOLO, Inspector
+  // enable/mode) is deliberately absent, so it degrades to a jump and its consent copy is
+  // on screen when it changes. A control whose config has not polled yet reads its shipped
+  // default and its `set` is a no-op until the first read lands - the same guard the panels
+  // draw as a disabled switch, never a state that is not in force.
+  const toggleBindings = useMemo<SettingsBindings>(
+    () =>
+      new Map<string, ToggleBinding>([
+        ["format-messages", { get: () => richText, set: (v) => setRichText(v) }],
+        [
+          "auto-mode",
+          {
+            get: () => harnesses.config?.autoModeOnDispatch ?? false,
+            set: (v) => void harnesses.update({ autoModeOnDispatch: v }),
+          },
+        ],
+        [
+          "skills-enabled",
+          {
+            get: () => skills.view?.enabled ?? false,
+            set: (v) => void skills.update({ enabled: v }),
+          },
+        ],
+        [
+          "cost-track",
+          {
+            get: () => cost.status?.config.enabled ?? false,
+            set: (v) => void cost.update({ enabled: v }),
+          },
+        ],
+      ]),
+    [richText, setRichText, harnesses.config, harnesses.update, skills.view, skills.update, cost.status, cost.update],
+  );
 
   // Deep-link with a flash: a panel (Shipping's dependency warnings, the outbound panels'
   // "Manage in Trust") asks to move to a category and light up one control there. The route
@@ -343,6 +402,7 @@ export function SettingsPage({
   const active = settingsCategory(category);
 
   return (
+    <>
     <main className="settings-page">
       <div className="settings-rail">
         {/* Outside the tablist, deliberately: a tablist's children are its tabs, and a
@@ -356,6 +416,23 @@ export function SettingsPage({
             </button>
           </Tooltip>
         </div>
+        {/* Phase 1 deliberately shipped no rail box - a dead one would lie. This is that box,
+            live now that the palette exists, showing the current chord so it doubles as the
+            shortcut's discovery point. Outside the tablist for the same reason the title is. */}
+        <Tooltip label={`Search every setting (${searchChord})`}>
+          <button
+            type="button"
+            className="settings-rail-search"
+            onClick={() => onSearchOpenChange?.(true)}
+            aria-label="Search settings"
+          >
+            <span className="settings-rail-search-glyph" aria-hidden>
+              ⌕
+            </span>
+            <span className="settings-rail-search-text">Search settings…</span>
+            <kbd className="settings-rail-search-kbd">{searchChord}</kbd>
+          </button>
+        </Tooltip>
         <div
           className="settings-nav"
           role="tablist"
@@ -416,5 +493,12 @@ export function SettingsPage({
         {renderCategory(category)}
       </div>
     </main>
+    <SettingsSearch
+      open={searchOpen}
+      onClose={() => onSearchOpenChange?.(false)}
+      onNavigate={navigateWithAnchor}
+      bindings={toggleBindings}
+    />
+    </>
   );
 }

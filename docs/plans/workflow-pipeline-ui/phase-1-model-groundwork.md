@@ -23,10 +23,10 @@ so phases 2 and 3 are pure UI work against a tested contract.
 Non-goals: any component, stylesheet or route change; any change to diagnostics codes (they are a
 stable UI/test contract); any persisted-model change (decision 3 adopted derived naming).
 
-## 4. Repository findings this phase relies on
+## 4. Repository findings this phase relied on
 
-- `validateWorkflowGraph` emits `session_submitted_route` when submitted-edge count `!== 1`
-  (`src/shared/workflow-graph.ts:169-175`). Zero and two currently produce the same message.
+- Before this phase, `validateWorkflowGraph` emitted `session_submitted_route` when submitted-edge
+  count was `!== 1` (`src/shared/workflow-graph.ts:169-175`); zero and two produced the same message.
 - `connectionAllowed` (`workflow-graph.ts:265-274`) is stateless and needs no change: with the rule
   relaxed, the second submitted edge it already permits becomes legal.
 - The engine fans out structurally: `edgesFrom` returns all matching edges and one receipt is
@@ -124,18 +124,18 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
   `errorCount` can only decrease.
 - A fan-out graph published by this build re-validates as invalid on older builds (publish-time
   only; published versions are immutable and older engines execute fan-out correctly). Noted in the
-  README line this phase adds.
+  README compatibility note this phase adds.
 
 ## 7. Tests and verification
 
-`npm run typecheck`, `npm test`, `npm run build`. New suite `workflow-stages.test.ts`; updated
-`workflow-graph.test.ts`, `workflow-engine.test.ts`. Any test touching the db sets `HARNESS_HOME`
-to a fresh temp dir before imports (house rule).
+`npm run typecheck`, `npm test`, `npm run build`, `npm run smoke`. New suite
+`workflow-stages.test.ts`; updated `workflow-graph.test.ts`, `workflow-engine.test.ts`. Any test
+touching the db sets `HARNESS_HOME` to a fresh temp dir before imports (house rule).
 
 ## 8. Merge and exit criteria
 
-- All suites green on Node 24 and 26; no UI diffs; README gains one line under the Workflows
-  section noting parallel first-wave review is supported.
+- All suites green on Node 24 and 26; no UI diffs; README notes under the Workflows section that
+  parallel first-wave review is supported.
 - `workflow-stages.ts` exports exactly the API above.
 
 ## 9. Downstream handoff

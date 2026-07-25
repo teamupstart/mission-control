@@ -13,10 +13,10 @@ canvas chrome; jargon empty states).
 
 ## Why
 
-- The validator (`src/shared/workflow-graph.ts:170`) requires exactly one `submitted` edge, so the
-  all-pass Join's headline case - N reviewers in parallel on the submission, all must pass - cannot
-  be authored at all. The engine already fans out (one durable receipt per outgoing edge), so the
-  cap is validator-only.
+- Before Phase 1, the validator required exactly one `submitted` edge, so the all-pass Join's
+  headline case - N reviewers in parallel on the submission, all must pass - could not be authored
+  at all. The engine already fanned out (one durable receipt per outgoing edge), so the cap was
+  validator-only.
 - Every legal workflow today is "Session, then waves of reviewers, then End, with every fail
   returning to Session". The canvas makes the operator hand-draw that grammar (8 precision edge
   drags for 2 reviewers, paired pass+fail edges into each Join) and then scolds them with codes
@@ -48,16 +48,11 @@ canvas chrome; jargon empty states).
 
 ### Stages are a projection, not a second model
 
-The persisted model stays `WorkflowDraftGraph` / published graphs, untouched. A new browser-safe
-module `src/shared/workflow-stages.ts` owns two pure functions and one predicate:
-
-- `projectStages(graph)` returns the stage pipeline a graph expresses, or `null` when the graph is
-  not stage-expressible.
-- `compileStages(pipeline, previousGraph)` emits a `WorkflowDraftGraph`. It reuses node and edge
-  ids from `previousGraph` wherever the same stage member survives, so autosave diffs, undo/redo
-  history and version comparisons stay stable; only genuinely new members mint ids. Positions are
-  generated deterministically (the pipeline has no free-form layout).
-- `stageExpressible(graph)` is `projectStages(graph) !== null`.
+The persisted model stays `WorkflowDraftGraph` / published graphs, untouched. The browser-safe
+module `src/shared/workflow-stages.ts` owns stage projection, compilation, blocker analysis and
+human naming. Its [Phase 1 contract](phase-1-model-groundwork.md#5-implementation-steps) is the
+authoritative API; in particular, compilation reuses surviving node and edge ids so autosave
+diffs, undo/redo history and version comparisons stay stable.
 
 **Stage-expressible** means exactly: one Session; a linear chain of zero or more stages; a stage is
 either one Persona (pass to the next stage or End, fail to Session) or N Personas plus one

@@ -68,9 +68,10 @@ chrome; Persona library changes; any server change.
      persona and stage names.
 3. **`WorkflowLibrary.tsx`** - view state `"pipeline" | "graph"`, defaulting per
    `stageExpressible(workflow.draft)`; a Pipeline | Graph toggle in the toolbar; in graph mode with
-   blockers, a banner listing `stageBlockers(graph)` sentences ("Pipeline view unavailable: ...").
-   The node palette section renders only in graph mode. Toolbar order regrouped: edit actions
-   together, Archive separated from Publish (danger-ghost, not filled red).
+   blockers, a banner listing `stageBlockers(graph, personas)` sentences ("Pipeline view
+   unavailable: ..."). Passing the live Persona names keeps draft blockers human-readable. The node
+   palette section renders only in graph mode. Toolbar order regrouped: edit actions together,
+   Archive separated from Publish (danger-ghost, not filled red).
 4. **Overlay confirm.** Add `workflowConfirm` to `OVERLAY_IDS` and the host; a small
    `WorkflowConfirmModal` (title, body naming what is removed with `nodeLabel`/stage names, confirm
    + cancel) replaces every `window.confirm` in `WorkflowLibrary.tsx` and `WorkflowProperties.tsx`.

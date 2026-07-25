@@ -94,7 +94,7 @@ Node ports make routing explicit without exposing runtime checkpoint machinery:
 
 | Node | Inputs | Outputs | Runtime meaning |
 |---|---|---|---|
-| Session | `return_for_changes` | `submitted` | The original submission and every later repair resubmission. Exactly one per graph. Any incoming failure closes the current review round and waits here. |
+| Session | `return_for_changes` | `submitted` | The original submission and every later repair resubmission. Submission routing follows the [Phase 2 graph-validation contract](phase-2-builder-publishing.md#graph-validation). Any incoming failure closes the current review round and waits here. |
 | Persona | incoming activation | `pass`, `fail` | Run one structured Persona review against the current submission snapshot. |
 | All-pass Join | Persona results | `pass`, `fail` | Wait for one result from every predecessor. Pass only when all passed; otherwise emit one aggregated failure. |
 | End | `pass` or `fail` | none | Finish the run with a named terminal outcome. |
@@ -587,7 +587,8 @@ Publish runs all of these checks and stores the validated, resolved graph only o
 - unique node and edge ids;
 - every edge references existing nodes and valid ports;
 - every Persona has both pass and fail routes;
-- Session has one submitted route and every incoming edge is a failure/return-for-changes route;
+- Session routing follows the authoritative
+  [Phase 2 graph-validation contract](phase-2-builder-publishing.md#graph-validation);
 - every Join has at least two distinct predecessors and exactly one pass and fail route;
 - each Join predecessor sends both possible Persona outcomes to that Join, so it cannot
   wait forever on a result path that was routed elsewhere;

@@ -1567,6 +1567,9 @@ export function buildApp(
     const r = await handOffToTerminal(registry, sdkSessions, session, handoffDeps ?? {
       spawn: spawnUniquely,
       waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
+      // Reached only when the driver was stopped and no terminal could replace it, which is
+      // the one case nothing else can settle - see `settleAfterFailedHandoff`.
+      settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
     });
     return c.json(r, r.ok ? 200 : 409);
   });

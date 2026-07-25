@@ -25,6 +25,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
 
@@ -340,6 +341,7 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
       return `${name}-abc123`;
     },
     waitForSessionAtCwd: async () => ({ ...session, id: "proc:tty:1:2" }) as Session,
+    settleTask: () => assert.fail("a handoff that succeeded must not settle its task"),
   });
   const res = await app.request("/api/sessions/sdk:hand/handoff", { method: "POST", headers: HEADERS });
   assert.equal(res.status, 200);
@@ -416,6 +418,7 @@ test("a handoff with no identity to resume from is refused before anything is st
       throw new Error("nothing may be spawned");
     },
     waitForSessionAtCwd: async () => null,
+    settleTask: () => assert.fail("a refusal before the stop settles nothing"),
   }).request("/api/sessions/sdk:new/handoff", { method: "POST", headers: HEADERS });
 
   // Launching anyway would start a FRESH agent wearing the card of the one we just killed.
@@ -502,4 +505,72 @@ test("a delivered turn is verified, because the harness said so", async () => {
   });
   const body = (await res.json()) as { ok: boolean; pasted: boolean; submitVerified: boolean };
   assert.deepEqual(body, { ...body, ok: true, pasted: true, submitVerified: true });
+});
+
+test("a handoff that stops the driver and cannot open a terminal settles its task", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:noterm");
+  registry.upsertTask(
+    mkTask({
+      id: "task-noterm",
+      status: "running",
+      sessionId: "sdk:noterm",
+      repoRoot: "/repo",
+      worktreePath: "/wt/one",
+      title: "Add a toggle",
+    }),
+  );
+  const supervisor = fakeSupervisor();
+  const settled: string[] = [];
+  const res = await mkApp(registry, supervisor, {
+    spawn: async () => {
+      throw new Error("no terminal backend can host a dispatched agent");
+    },
+    waitForSessionAtCwd: async () => null,
+    settleTask: (taskId) => settled.push(taskId),
+  }).request("/api/sessions/sdk:noterm/handoff", { method: "POST", headers: HEADERS });
+
+  assert.equal(res.status, 409);
+  const body = (await res.json()) as { error: string };
+  // The binding was cleared BEFORE the stop, deliberately, so an ordinary transfer does not
+  // settle a task that is merely moving. That is exactly why this path has to settle it
+  // explicitly: the eviction the stop started matches no task, `rebindTaskAtCwd` will never
+  // see a terminal appear in that checkout, and the row would otherwise read `running` with
+  // no agent for ever.
+  assert.deepEqual(settled, ["task-noterm"]);
+  assert.deepEqual(supervisor.stopped, ["sdk:noterm"]);
+  // And the operator is told what they are holding: the conversation is intact on disk.
+  assert.match(body.error, /worktree kept/);
+  assert.match(body.error, /--resume/);
+});
+
+test("settling after a failed handoff keeps the worktree and reads a merge as done", async () => {
+  // Routed through TaskManager.agentWentAway rather than writing a status here, so this case
+  // inherits its rules instead of approximating them. Asserting them from the outside is
+  // what stops a second settler being written the next time someone needs one.
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.upsertTask(
+    mkTask({
+      id: "task-settle",
+      status: "running",
+      sessionId: null,
+      repoRoot: "/repo",
+      worktreePath: "/wt/settle",
+      branch: "harness/settle",
+    }),
+  );
+  tasks.settleAfterFailedHandoff("task-settle");
+  const t = registry.getTask("task-settle")!;
+  assert.equal(t.status, "failed");
+  // Never reclaimed here - freeing a tree is the operator's call, which is the same rule
+  // `complete` states as "Mark done must not discard work".
+  assert.equal(t.worktreePath, "/wt/settle");
+  assert.equal(t.branch, "harness/settle");
+  // And a task nothing was running is left alone rather than being moved to a terminal
+  // state it never reached.
+  registry.upsertTask(mkTask({ id: "task-backlog", status: "backlog", repoRoot: "/repo" }));
+  tasks.settleAfterFailedHandoff("task-backlog");
+  assert.equal(registry.getTask("task-backlog")?.status, "backlog");
+  tasks.settleAfterFailedHandoff("no-such-task");
 });

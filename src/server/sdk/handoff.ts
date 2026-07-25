@@ -33,6 +33,15 @@ import { clearSdkSessionTask } from "./store.ts";
 export interface HandoffDeps {
   spawn: typeof spawnUniquely;
   waitForSessionAtCwd: (cwd: string, timeoutMs: number) => Promise<Session | null>;
+  /**
+   * Settle a task whose agent this handoff stopped and then could not replace.
+   *
+   * Injected rather than reached for, because settling a task has exactly one owner
+   * (`TaskManager.agentWentAway`) and this module must not become a second one - the rules
+   * that matter here are its rules: keep the worktree, and read a merged pull request as
+   * `done` rather than as a failure.
+   */
+  settleTask: (taskId: string) => void;
 }
 
 /** How long to wait for the `ps` sweep to find the terminal successor. */
@@ -84,13 +93,25 @@ export async function handOffToTerminal(
     homeName = await deps.spawn(name, session.id.slice(-6), cwd, argv[0]!, argv.slice(1));
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    // The driver is already gone, so say plainly what the operator is left holding: the
-    // conversation is intact on disk and the resume command is theirs to run.
+    // The agent is gone and nothing is going to replace it, so the task has to be SETTLED
+    // here or it never will be. Its binding was cleared before the stop - deliberately, so
+    // an ordinary transfer does not settle it - which means the eviction this handoff
+    // started matches no task, and `rebindTaskAtCwd` cannot rescue it either: no terminal
+    // is ever going to appear in that checkout. Left alone the row sits `running` with no
+    // agent for ever, which is the exact failure the ordering exists to prevent, arriving
+    // through the error path instead.
+    //
+    // Settled, not restored: restoring the binding would race the eviction's linger and
+    // strand the task again whenever the spawn took longer than it to fail.
+    if (task) deps.settleTask(task.id);
+    // The conversation itself is intact on disk, so tell the operator plainly what they are
+    // holding and the exact command that picks it back up.
     return {
       ok: false,
       error:
         `the embedded session was stopped but no terminal could be opened (${why}) - ` +
-        `run \`${argv.join(" ")}\` in ${cwd} to continue it yourself`,
+        `its task was marked failed with its worktree kept; run \`${argv.join(" ")}\` in ` +
+        `${cwd} to continue the conversation yourself`,
     };
   }
   if (task) registry.upsertTask({ ...registry.getTask(task.id)!, homeName, updatedAt: Date.now() });

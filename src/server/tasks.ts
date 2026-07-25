@@ -709,6 +709,26 @@ export class TaskManager {
     }
   }
 
+  /**
+   * Settle a task whose terminal handoff stopped its agent and then could not open a home.
+   *
+   * The one narrow door into `agentWentAway` from outside the eviction path, and it exists
+   * because that path cannot reach this case: the handoff clears `Task.sessionId` BEFORE
+   * stopping the driver (so the ordinary stop does not settle a task that is merely
+   * transferring), and when the spawn then fails there is no session left to bind to and no
+   * `session_remove` anyone can key on. The task would sit `running` with no agent for ever,
+   * and `rebindTaskAtCwd` cannot rescue it either - no terminal is ever going to appear in
+   * that checkout.
+   *
+   * Routed through `agentWentAway` rather than writing a status here so this case inherits
+   * its two rules rather than approximating them: work that MERGED still reads `done`, and
+   * the worktree, branch and home are KEPT for the operator's confirmed Clean up.
+   */
+  settleAfterFailedHandoff(taskId: string): void {
+    const t = this.registry.getTask(taskId);
+    if (t) this.agentWentAway(t);
+  }
+
   private rebindTaskAtCwd(session: Session): void {
     if (!session.cwd || session.state === "exited") return;
     const tasks = this.registry.listTasks();

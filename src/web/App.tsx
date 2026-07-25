@@ -1187,7 +1187,9 @@ export function App(): React.JSX.Element {
               label={
                 route.page === "fleet"
                   ? `Open Workflows - author and run the personas agents follow (${formatChord(bindings.workflows)})`
-                  : `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
+                  : route.page === "workflows"
+                    ? `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
+                    : "Return to the fleet of running sessions"
               }
             >
               <button

@@ -124,6 +124,20 @@ test("rapid edits debounce to a single write of the final value", () => {
   assert.deepEqual(commits, [12], "the intermediate '1' should never have been written");
 });
 
+test("an incoming setting change cancels a stale pending write without flushing it", () => {
+  const clock = fakeClock();
+  const commits: number[] = [];
+  const saver = saverOn(clock, commits);
+
+  saver.edit("6", 8, 1, 20);
+  clock.tick(100);
+  saver.cancel();
+  clock.tick(1000);
+
+  assert.deepEqual(commits, []);
+  assert.equal(clock.pending(), 0);
+});
+
 test("an empty, unchanged, or out-of-range edit arms nothing, so flush stays silent", () => {
   const clock = fakeClock();
   const commits: number[] = [];

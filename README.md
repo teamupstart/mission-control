@@ -2664,9 +2664,10 @@ earns two surfaces a card has nowhere to put:
   detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
   you're in, the arrow keys keep moving the open detail through the board - the drill-in
   is always the selected session. Clicking a tile still does both in the one gesture.
-  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd>,
-  <kbd>⇧</kbd><kbd>Tab</kbd> and <kbd>k</kbd> pressed on the overview drill in and then do
-  what they say, so no shortcut is missing from the board.
+  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd> and
+  <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
+  is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
+  without opening its detail.
 - **Killing a session closes its detail**, without waiting for the session to disappear -
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few

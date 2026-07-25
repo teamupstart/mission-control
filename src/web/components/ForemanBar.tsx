@@ -72,6 +72,7 @@ export function pendingCommit(draft: string, value: number, min: number, max: nu
 export interface NumberFieldSaver {
   /** A draft changed. Arm a debounced commit of it - or disarm, if it is not committable. */
   edit: (draft: string, value: number, min: number, max: number) => void;
+  cancel: () => void;
   /** Commit the armed value NOW (blur, Enter, unmount) and cancel the debounce. No-op when
    *  nothing is armed, so an idle blur or an unmount after a settled edit sends nothing. */
   flush: () => void;
@@ -119,6 +120,9 @@ export function createNumberFieldSaver(
         if (n !== null) onCommit(n);
       }, delayMs);
     },
+    cancel() {
+      disarm();
+    },
     flush() {
       const n = armed;
       disarm();
@@ -162,16 +166,6 @@ export function NumberSetting({
 }): React.JSX.Element {
   const [draft, setDraft] = useState(String(value));
 
-  // Follow the setting whenever it actually moves - a commit landing, a rejected
-  // edit reverting, another tab changing it. Keyed on `value` alone, so a poll that
-  // returns the same number doesn't fire and typing is never yanked out from under.
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  const legal = draft.trim() !== "" && Number.isInteger(Number(draft)) &&
-    Number(draft) >= min && Number(draft) <= max;
-
   // One auto-save controller for the life of the field. `onCommit` is a fresh closure each
   // parent render, so the saver (created once) reaches it through a ref rather than capturing
   // a stale one. `edit` debounces a change; `flush` commits the pending value now.
@@ -179,6 +173,17 @@ export function NumberSetting({
   onCommitRef.current = onCommit;
   const saverRef = useRef<NumberFieldSaver | null>(null);
   const saver = saverRef.current ?? (saverRef.current = createNumberFieldSaver((n) => onCommitRef.current(n)));
+
+  // Follow the setting whenever it actually moves - a commit landing, a rejected
+  // edit reverting, another tab changing it. Keyed on `value` alone, so a poll that
+  // returns the same number doesn't fire and typing is never yanked out from under.
+  useEffect(() => {
+    saver.cancel();
+    setDraft(String(value));
+  }, [saver, value]);
+
+  const legal = draft.trim() !== "" && Number.isInteger(Number(draft)) &&
+    Number(draft) >= min && Number(draft) <= max;
 
   // Closing the popover unmounts this field and kills the debounce timer, so flush the
   // pending edit on the way out - a change made and immediately dismissed was the "you have

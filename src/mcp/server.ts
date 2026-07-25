@@ -131,6 +131,9 @@ server.registerTool(
       if (review.status === "dismissed") {
         return textResult("Decision request dismissed without a response.");
       }
+      if (review.status === "orphaned") {
+        return textResult("Review channel went away before a human answered.", true);
+      }
       return textResult(review.response ?? "(no selections given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
@@ -153,6 +156,9 @@ server.registerTool(
     try {
       const id = await createReview("diff", title, diff);
       const review = await waitForResolution(id);
+      if (review.status === "orphaned") {
+        return textResult("Review channel went away before a human answered.", true);
+      }
       const verdict = review.status === "approved" ? "APPROVED" : "CHANGES REQUESTED";
       const note = review.response ? `\nReviewer note: ${review.response}` : "";
       return textResult(`${verdict}${note}`);
@@ -303,6 +309,9 @@ server.registerTool(
       const review = await waitForResolution(id);
       if (review.status === "dismissed") {
         return textResult("Input request dismissed without a response.");
+      }
+      if (review.status === "orphaned") {
+        return textResult("Review channel went away before a human answered.", true);
       }
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {

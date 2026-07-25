@@ -158,19 +158,21 @@ instead fires on that hiccup.
 `beginEviction` (`registry.ts`) is it - exited emitted now, `remove` after the linger - and it
 is shared by the discovery sweep's unseen loop and by the SdkSupervisor's `exited` driver
 event. A second teardown that skipped it would be a card that vanishes from the dashboard
-while its task stays `running` for ever, because both subscribers below are keyed on that
+while its task stays `running` for ever, because the durable subscribers below are keyed on that
 event and on nothing else. Correspondingly, the sweep's loop is scoped to
 `runtime === "terminal"`: it reads the process table, and a driver-run session was never in
-it. Do not add an eviction path, and do not widen that scope. Two subscribers today - `WorkflowManager` orphans its bindings,
-`TaskManager.reconcileTasksBoundTo` settles the task that session was running - and a third
+it. Do not add an eviction path, and do not widen that scope. Three subscribers today -
+`WorkflowManager` orphans its bindings, `TaskManager.reconcileTasksBoundTo` settles the task
+that session was running, and `ReviewManager` orphans its pending reviews - and a fourth
 piece of durable state bound to a session belongs here rather than in a poller of its own.
 
 **Each has a restart twin, and both halves are needed.** Sessions are rebuilt from the process
 table, so nothing bound to one is reconcilable until the first completed sweep says what is out
 there; `registry.onSessionsObserved` is that moment (`reconcileTasksWithNoLiveSession`,
-`reconcileBindingsAfterDiscovery`). The startup loop in `TaskManager`'s constructor is NOT that
-twin - it visits only tasks still holding a worktree or home, so an assigned task, which owns
-neither, was invisible to it on every restart and stayed `running` forever.
+`reconcileBindingsAfterDiscovery`, `orphanReviewsWithNoLiveSession`). The startup loop in
+`TaskManager`'s constructor is NOT that twin - it visits only tasks still holding a worktree or
+home, so an assigned task, which owns neither, was invisible to it on every restart and stayed
+`running` forever.
 
 **Settling is not tearing down.** `agentWentAway` marks the task `done` when any of its work
 episodes produced a merged PR (using the newest merge when several did), and `failed` only

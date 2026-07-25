@@ -3740,10 +3740,11 @@ export class Registry extends EventEmitter {
    * Extracted from `applyDiscovery`'s unseen loop so the supervisor's `exited` event runs
    * the identical sequence rather than a lookalike: exited state emitted first (the card
    * greys out immediately), then `remove` after the linger, which is what emits
-   * `session_remove`. Both durable subscribers - `WorkflowManager` orphaning its bindings
-   * and `TaskManager.reconcileTasksBoundTo` settling the task - are keyed on that event and
-   * on nothing else, so a second teardown path would be a session that disappears from the
-   * dashboard while its task stays `running` forever.
+   * `session_remove`. All three durable subscribers - `WorkflowManager` orphaning its
+   * bindings, `TaskManager.reconcileTasksBoundTo` settling the task, and
+   * `ReviewManager` orphaning the questions that session was blocked on - are keyed on that
+   * event and on nothing else, so a second teardown path would be a session that disappears
+   * from the dashboard while its task stays `running` forever.
    *
    * Idempotent by way of the timer: a session already on its way out keeps its original
    * deadline instead of having it pushed back by a repeat signal.
@@ -3903,6 +3904,25 @@ export class Registry extends EventEmitter {
 
   getReview(id: string): ReviewItem | undefined {
     return this.reviews.get(id);
+  }
+
+  /**
+   * Every review still awaiting a human, optionally narrowed to one session.
+   *
+   * The read half of the map `ReviewManager` decides over - the registry stores, the
+   * manager decides, the same split `session_remove` makes. Its two callers are that
+   * manager's eviction halves, which have to ask "what is still outstanding for a session
+   * that has gone?" and "which of these is bound to nothing at all?" without either
+   * reaching into this map or re-querying SQLite for rows already held here.
+   */
+  pendingReviews(sessionId?: string): ReviewItem[] {
+    const out: ReviewItem[] = [];
+    for (const r of this.reviews.values()) {
+      if (r.status !== "pending") continue;
+      if (sessionId !== undefined && r.sessionId !== sessionId) continue;
+      out.push(r);
+    }
+    return out;
   }
 
   private refreshPendingCount(sessionId: string): void {

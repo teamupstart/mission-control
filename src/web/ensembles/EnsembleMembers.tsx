@@ -40,8 +40,15 @@ export function EnsembleMembers({
   ) => Promise<string | null>;
 }): React.JSX.Element {
   const waves = [...new Set(detail.members.map((m) => m.wave))].sort((a, b) => a - b);
+  const attemptsPartial = detail.pagination.attemptsReturned < detail.pagination.attemptsTotal;
   return (
     <div className="ensemble-members">
+      {attemptsPartial && (
+        <p className="ensemble-warn" role="note">
+          Showing {detail.pagination.attemptsReturned} of {detail.pagination.attemptsTotal} attempts.
+          Member histories and current-session links may be incomplete.
+        </p>
+      )}
       {waves.map((wave) => {
         const members = detail.members
           .filter((m) => m.wave === wave)
@@ -55,6 +62,7 @@ export function EnsembleMembers({
                   key={member.id}
                   member={member}
                   detail={detail}
+                  attemptsPartial={attemptsPartial}
                   pending={pending}
                   onAction={onAction}
                   onOpenSession={onOpenSession}
@@ -79,22 +87,30 @@ function attemptsForMember(
     .sort((a, b) => b.attempt - a.attempt);
 }
 
-function selectedAttemptForMember(
+function currentAttemptForMember(
   attempts: EnsembleAttempt[],
   member: EnsembleMember,
-): EnsembleAttempt | null {
+  attemptsPartial: boolean,
+): { attempt: EnsembleAttempt | null; unavailable: boolean } {
   if (member.selectedAttemptId) {
     const selected = attempts.find((attempt) => attempt.id === member.selectedAttemptId);
-    if (selected) return selected;
+    return { attempt: selected ?? null, unavailable: selected === undefined };
   }
-  return attempts[0] ?? null;
+  if (member.taskId) {
+    const current = attempts.find((attempt) => attempt.taskId === member.taskId);
+    if (current) return { attempt: current, unavailable: false };
+    if (attemptsPartial) return { attempt: null, unavailable: true };
+  }
+  return { attempt: attempts[0] ?? null, unavailable: false };
 }
 
 function artifactsForMember(
   detail: EnsembleRunDetailResponse,
   attempts: EnsembleAttempt[],
+  member: EnsembleMember,
 ): EnsembleArtifact[] {
   const attemptIds = new Set(attempts.map((attempt) => attempt.id));
+  if (member.selectedAttemptId) attemptIds.add(member.selectedAttemptId);
   return detail.artifacts
     .filter((artifact) => artifact.attemptId && attemptIds.has(artifact.attemptId))
     .sort((a, b) => b.createdAt - a.createdAt || b.attempt - a.attempt);
@@ -111,6 +127,7 @@ function section(metadata: unknown, key: string): Record<string, unknown> | null
 function MemberCard({
   member,
   detail,
+  attemptsPartial,
   pending,
   onAction,
   onOpenSession,
@@ -119,6 +136,7 @@ function MemberCard({
 }: {
   member: EnsembleMember;
   detail: EnsembleRunDetailResponse;
+  attemptsPartial: boolean;
   pending: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
@@ -129,13 +147,18 @@ function MemberCard({
   ) => Promise<string | null>;
 }): React.JSX.Element {
   const attempts = attemptsForMember(detail, member);
-  const attempt = selectedAttemptForMember(attempts, member);
-  const artifacts = artifactsForMember(detail, attempts);
+  const current = currentAttemptForMember(attempts, member, attemptsPartial);
+  const attempt = current.attempt;
+  const artifacts = artifactsForMember(detail, attempts, member);
+  const evidenceAttemptId = member.selectedAttemptId ?? attempt?.id ?? null;
   const artifact =
     artifacts.find(
-      (candidate) => candidate.status === "ready" && candidate.attemptId === attempt?.id,
+      (candidate) =>
+        candidate.status === "ready" && candidate.attemptId === evidenceAttemptId,
     ) ??
-    artifacts.find((candidate) => candidate.status === "ready") ??
+    (!current.unavailable
+      ? artifacts.find((candidate) => candidate.status === "ready")
+      : undefined) ??
     null;
   const attemptById = new Map(attempts.map((candidate) => [candidate.id, candidate]));
   const reported = section(artifact?.metadata, "reported");
@@ -179,7 +202,7 @@ function MemberCard({
             </button>
           </Tooltip>
         )}
-        {member.status === "active" && !artifact && onManualSubmit && (
+        {member.status === "active" && !artifact && !current.unavailable && onManualSubmit && (
           <ManualSubmit memberId={member.id} disabled={busy} onSubmit={onManualSubmit} />
         )}
         {active && (
@@ -206,6 +229,13 @@ function MemberCard({
         )}
       </div>
       {facts.length > 0 && <p className="ensemble-member-facts">{facts.join(" · ")}</p>}
+      {current.unavailable && (
+        <p className="ensemble-warn" role="note">
+          {attemptsPartial
+            ? "The current attempt is beyond the returned history window."
+            : "The current attempt is unavailable."}
+        </p>
+      )}
       <div className="ensemble-member-durable-state">
         <div>
           <h6>Attempt state</h6>

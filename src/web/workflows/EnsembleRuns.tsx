@@ -198,10 +198,24 @@ export function EnsembleRuns({
   ): Promise<string | null> => {
     const actedRunId = selected;
     if (!actedRunId) return "No run selected.";
+    const actionToken = ++actionGeneration.current;
+    setActionPending("submit_member");
+    setActionError(null);
+    setActionErrorKind(null);
     const response = await submitEnsembleMember(actedRunId, memberId, result);
-    if (selectedRef.current !== actedRunId) return null;
-    if (!response.ok) return response.error;
+    if (
+      selectedRef.current !== actedRunId ||
+      actionGeneration.current !== actionToken
+    ) {
+      return null;
+    }
+    setActionPending(null);
     load(actedRunId, false);
+    if (!response.ok) {
+      setActionError(response.error);
+      setActionErrorKind("submit_member");
+      return response.error;
+    }
     return null;
   };
 

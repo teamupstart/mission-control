@@ -6141,6 +6141,77 @@ select:not([multiple]) option {
   color: var(--muted);
 }
 
+.ensemble-evaluation-list {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.ensemble-evaluation {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.ensemble-evaluation-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ensemble-evaluation-section {
+  margin-top: 9px;
+}
+
+.ensemble-evaluation-section h6 {
+  margin: 0 0 4px;
+  color: var(--muted);
+}
+
+.ensemble-evaluation-subjects,
+.ensemble-evaluation-uncertainty {
+  display: grid;
+  gap: 4px;
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.ensemble-evaluation-subjects li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ensemble-evaluation-calls {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.ensemble-evaluation-result {
+  margin-top: 9px;
+}
+
+.ensemble-evaluation-result pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 6px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 9px;
+  font-size: 11px;
+  white-space: pre;
+}
+
 .ensemble-event-kind {
   font-weight: 600;
   margin-right: 8px;

@@ -16,6 +16,7 @@ export function EnsembleArtifacts({
   onLoadPatch,
   onRestore,
   restorePendingId,
+  actionsDisabled,
   autoOpenId,
 }: {
   detail: EnsembleRunDetailResponse;
@@ -23,6 +24,7 @@ export function EnsembleArtifacts({
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
   onRestore: (artifactId: string) => void;
   restorePendingId: string | null;
+  actionsDisabled: boolean;
   autoOpenId: string | null;
 }): React.JSX.Element {
   if (detail.artifacts.length === 0) {
@@ -39,6 +41,7 @@ export function EnsembleArtifacts({
           onLoadPatch={onLoadPatch}
           onRestore={onRestore}
           restorePending={restorePendingId === artifact.id}
+          restoreDisabled={actionsDisabled}
           autoOpen={autoOpenId === artifact.id}
         />
       ))}
@@ -53,6 +56,7 @@ function ArtifactRow({
   onLoadPatch,
   onRestore,
   restorePending,
+  restoreDisabled,
   autoOpen,
 }: {
   artifact: EnsembleArtifact;
@@ -61,6 +65,7 @@ function ArtifactRow({
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
   onRestore: (artifactId: string) => void;
   restorePending: boolean;
+  restoreDisabled: boolean;
   autoOpen: boolean;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -121,7 +126,7 @@ function ArtifactRow({
               <Tooltip label="Hard-reset this member's existing checkout to the submitted snapshot">
                 <button
                   className="btn btn-ghost"
-                  disabled={restorePending}
+                  disabled={restoreDisabled}
                   onClick={() => setConfirmRestore(true)}
                 >
                   {restorePending ? "Resetting…" : "Reset checkout…"}
@@ -141,7 +146,7 @@ function ArtifactRow({
             <Tooltip label="Confirm: discard later edits and reset the existing checkout">
               <button
                 className="btn btn-primary danger"
-                disabled={restorePending}
+                disabled={restoreDisabled}
                 onClick={() => {
                   setConfirmRestore(false);
                   onRestore(artifact.id);

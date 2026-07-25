@@ -1,13 +1,15 @@
 import { useState } from "react";
 import type {
   EnsembleBarrierSpec,
+  EnsembleEvaluation,
   EnsembleFinalizationProgress,
   EnsembleJson,
+  EnsembleLlmCall,
 } from "@shared/ensemble.ts";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { relativeTime } from "../lib/format.ts";
-import { shortSha, titleCaseEnum } from "./format.ts";
+import { duration, fmtUsd, relativeTime } from "../lib/format.ts";
+import { fmtBytes, shortSha, titleCaseEnum } from "./format.ts";
 
 /**
  * The run's orchestration history: stage attempts (with their retries and errors), the
@@ -17,8 +19,10 @@ import { shortSha, titleCaseEnum } from "./format.ts";
  */
 export function EnsembleTimeline({
   detail,
+  subjectLabel,
 }: {
   detail: EnsembleRunDetailResponse;
+  subjectLabel: (artifactId: string) => string;
 }): React.JSX.Element {
   const stages = [...detail.stageAttempts].sort((a, b) => a.createdAt - b.createdAt);
   const events = [...detail.events].sort((a, b) => b.ts - a.ts);
@@ -88,41 +92,16 @@ export function EnsembleTimeline({
       {detail.evaluations.length > 0 && (
         <div className="ensemble-timeline-block">
           <h5>Evaluations</h5>
-          <div className="ensemble-table-scroll">
-            <table className="ensemble-table">
-              <thead>
-                <tr>
-                  <th>Method</th>
-                  <th>Runner · model</th>
-                  <th>Subjects</th>
-                  <th>Attempt</th>
-                  <th>State</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.evaluations.map((evaluation) => (
-                  <tr key={evaluation.id}>
-                    <td>{evaluation.method}</td>
-                    <td>
-                      {evaluation.runnerId ?? "-"}
-                      {evaluation.modelId ? ` · ${evaluation.modelId}` : ""}
-                    </td>
-                    <td>{evaluation.subjectArtifactIds.length}</td>
-                    <td>{evaluation.attempt}</td>
-                    <td>{evaluation.status ? titleCaseEnum(evaluation.status) : "Unknown"}</td>
-                    <td>
-                      {evaluation.error ? (
-                        <span className="ensemble-stage-error">{evaluation.error}</span>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ul className="ensemble-evaluation-list">
+            {detail.evaluations.map((evaluation) => (
+              <EvaluationEvidence
+                key={evaluation.id}
+                evaluation={evaluation}
+                calls={detail.llmCalls.filter((call) => call.evaluationId === evaluation.id)}
+                subjectLabel={subjectLabel}
+              />
+            ))}
+          </ul>
         </div>
       )}
 
@@ -161,6 +140,176 @@ export function EnsembleTimeline({
         </div>
       )}
     </div>
+  );
+}
+
+function EvaluationEvidence({
+  evaluation,
+  calls,
+  subjectLabel,
+}: {
+  evaluation: EnsembleEvaluation;
+  calls: EnsembleLlmCall[];
+  subjectLabel: (artifactId: string) => string;
+}): React.JSX.Element {
+  const uncertainty = evaluationUncertainty(evaluation.result?.body ?? null, subjectLabel);
+  const orderedCalls = [...calls].sort(
+    (a, b) => a.attempt - b.attempt || a.startedAt - b.startedAt,
+  );
+  return (
+    <li className="ensemble-evaluation">
+      <div className="ensemble-evaluation-head">
+        <strong>{evaluation.method}</strong>
+        <span className="ensemble-pill">
+          {evaluation.status ? titleCaseEnum(evaluation.status) : "Unknown"}
+        </span>
+        <span>attempt {evaluation.attempt}</span>
+        <span>
+          Actual provider · model: {evaluation.runnerId ?? "unknown"} ·{" "}
+          {evaluation.modelId ?? "unknown"}
+        </span>
+      </div>
+      {evaluation.error && <p className="ensemble-stage-error">{evaluation.error}</p>}
+
+      <div className="ensemble-evaluation-section">
+        <h6>Subject artifact set</h6>
+        <ul className="ensemble-evaluation-subjects">
+          {evaluation.subjectArtifactIds.map((artifactId) => (
+            <li key={artifactId}>
+              <span>{subjectLabel(artifactId)}</span>
+              <code>{artifactId}</code>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="ensemble-evaluation-section">
+        <h6>LLM call attempts</h6>
+        {orderedCalls.length > 0 ? (
+          <div className="ensemble-table-scroll ensemble-evaluation-calls">
+            <table className="ensemble-table">
+              <thead>
+                <tr>
+                  <th>Attempt</th>
+                  <th>Provider · model</th>
+                  <th>State</th>
+                  <th>Duration</th>
+                  <th>Input / output</th>
+                  <th>Cost</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orderedCalls.map((call) => (
+                  <tr key={call.id}>
+                    <td>{call.attempt}</td>
+                    <td>{call.runnerId} · {call.modelId}</td>
+                    <td>{call.state ? titleCaseEnum(call.state) : "Unknown"}</td>
+                    <td>{call.durationMs === null ? "-" : duration(call.durationMs)}</td>
+                    <td>{fmtBytes(call.inputBytes)} / {fmtBytes(call.outputBytes)}</td>
+                    <td>{call.costUsd === null ? "Not reported" : fmtUsd(call.costUsd)}</td>
+                    <td>{call.errorCode ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="ensemble-muted">No LLM calls recorded for this evaluation.</p>
+        )}
+      </div>
+
+      <div className="ensemble-evaluation-section">
+        <h6>Uncertainty</h6>
+        {uncertainty.length > 0 ? (
+          <ul className="ensemble-evaluation-uncertainty">
+            {uncertainty.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        ) : (
+          <p className="ensemble-muted">No explicit uncertainty fields recorded.</p>
+        )}
+      </div>
+
+      {evaluation.result && (
+        <EvaluationResultPayload
+          payloadVersion={evaluation.result.payloadVersion}
+          body={evaluation.result.body}
+        />
+      )}
+    </li>
+  );
+}
+
+function evaluationUncertainty(
+  body: EnsembleJson,
+  subjectLabel: (artifactId: string) => string,
+): string[] {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+  const record = body as Record<string, EnsembleJson>;
+  const items: string[] = [];
+  if (record.evidenceTruncated === true) {
+    items.push("Artifact evidence was truncated.");
+  }
+  if (Array.isArray(record.caveats)) {
+    for (const caveat of record.caveats) {
+      if (typeof caveat === "string") items.push(caveat);
+    }
+  }
+  if (typeof record.uncertainty === "string") {
+    items.push(record.uncertainty);
+  } else if (Array.isArray(record.uncertainty)) {
+    for (const uncertainty of record.uncertainty) {
+      if (typeof uncertainty === "string") items.push(uncertainty);
+    }
+  }
+  if (typeof record.confidence === "number") {
+    items.push(`Confidence: ${Math.round(record.confidence * 100)}%`);
+  }
+  if (Array.isArray(record.scorecards)) {
+    for (const scorecard of record.scorecards) {
+      if (!scorecard || typeof scorecard !== "object" || Array.isArray(scorecard)) continue;
+      const artifactId = scorecard.artifactId;
+      const confidence = scorecard.confidence;
+      if (typeof artifactId === "string" && typeof confidence === "number") {
+        items.push(`${subjectLabel(artifactId)} confidence: ${Math.round(confidence * 100)}%`);
+      }
+    }
+  }
+  return items.slice(0, 50);
+}
+
+function EvaluationResultPayload({
+  payloadVersion,
+  body,
+}: {
+  payloadVersion: number;
+  body: EnsembleJson;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="ensemble-evaluation-result">
+      <Tooltip label={open ? "Hide this evaluation's bounded result payload" : "Show this evaluation's bounded result payload"}>
+        <button
+          className="btn btn-ghost"
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? "Hide result payload" : `Show result payload · v${payloadVersion}`}
+        </button>
+      </Tooltip>
+      {open && <EvaluationResultBody body={body} />}
+    </div>
+  );
+}
+
+function EvaluationResultBody({ body }: { body: EnsembleJson }): React.JSX.Element {
+  const view = boundedJson(body);
+  return (
+    <>
+      <pre>{view.text}</pre>
+      {view.truncated && <p className="ensemble-muted">Result payload truncated for display.</p>}
+    </>
   );
 }
 

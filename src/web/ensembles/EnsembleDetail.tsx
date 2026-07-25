@@ -233,13 +233,14 @@ export function EnsembleDetail({
           onLoadPatch={onLoadPatch}
           onRestore={restore}
           restorePendingId={restorePendingId}
+          actionsDisabled={actionBusy}
           autoOpenId={openArtifactId}
         />
       </section>
 
       <section className="ensemble-section" aria-label="Timeline">
         <h4>Timeline</h4>
-        <EnsembleTimeline detail={detail} />
+        <EnsembleTimeline detail={detail} subjectLabel={subjectLabel} />
       </section>
 
       <section className="ensemble-section" aria-label="Actions">

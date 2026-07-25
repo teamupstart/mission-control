@@ -369,6 +369,72 @@ test("the timeline exposes plan barriers, commands, bounded payload controls, an
   assert.match(html, /review provider unavailable/);
 });
 
+test("evaluation evidence exposes subjects, call attempts, uncertainty, and bounded results", () => {
+  const failedEvaluation: EnsembleEvaluation = {
+    ...evaluation,
+    id: "eval-failed",
+    runnerId: "codex",
+    modelId: "gpt-eval",
+    status: "failed",
+    result: null,
+    error: "review infrastructure failed",
+  };
+  const html = renderDetail({
+    evaluations: [failedEvaluation, evaluation],
+    llmCalls: [
+      {
+        id: "call-failed",
+        runId: run.id,
+        stageAttemptId: stage.id,
+        evaluationId: failedEvaluation.id,
+        purpose: "comparative_review",
+        runnerId: "codex",
+        modelId: "gpt-eval",
+        attempt: 1,
+        state: "failed",
+        startedAt: 1000,
+        finishedAt: 3000,
+        durationMs: 2000,
+        inputBytes: 1024,
+        outputBytes: 2048,
+        costUsd: null,
+        errorCode: "review_infrastructure",
+      },
+      {
+        id: "call-retry",
+        runId: run.id,
+        stageAttemptId: stage.id,
+        evaluationId: failedEvaluation.id,
+        purpose: "comparative_review",
+        runnerId: "codex",
+        modelId: "gpt-eval",
+        attempt: 2,
+        state: "succeeded",
+        startedAt: 4000,
+        finishedAt: 5000,
+        durationMs: 1000,
+        inputBytes: 1024,
+        outputBytes: 1024,
+        costUsd: 0.12,
+        errorCode: null,
+      },
+    ],
+  });
+  assert.match(html, /Actual provider · model: codex · gpt-eval/);
+  assert.match(html, /Subject artifact set/);
+  assert.match(html, /Candidate 1/);
+  assert.match(html, /Candidate 2/);
+  assert.match(html, /LLM call attempts/);
+  assert.match(html, /review_infrastructure/);
+  assert.match(html, /2s/);
+  assert.match(html, /1\.0 KiB \/ 2\.0 KiB/);
+  assert.match(html, /Not reported/);
+  assert.match(html, /\$0\.12/);
+  assert.match(html, /Neither added a regression test/);
+  assert.match(html, /Candidate 1 \(claude · claude-opus\) confidence: 80%/);
+  assert.match(html, /Show result payload · v1/);
+});
+
 test("Best-of-N scorecards render anonymously-ranked but de-anonymised to their member", () => {
   const html = renderDetail();
   assert.match(html, /Comparison/);
@@ -523,7 +589,7 @@ test("unreadable runs can still be cancelled and healthy handoffs cannot be skip
   assert.doesNotMatch(healthyHtml, /Skip workflow handoff/);
 });
 
-test("decision rationale and partial review cost are explicit", () => {
+test("decision rationale, partial aggregate cost, and per-call cost are explicit", () => {
   const html = renderDetail({
     llmCalls: [
       {
@@ -566,7 +632,8 @@ test("decision rationale and partial review cost are explicit", () => {
   });
   assert.match(html, /Rationale \(required/);
   assert.match(html, /partial cost telemetry/);
-  assert.doesNotMatch(html, /\$0\.10/);
+  assert.match(html, /\$0\.10/);
+  assert.match(html, /Not reported/);
 });
 
 test("the ensembles list sorts attention-first and marks it accessibly", () => {
@@ -594,6 +661,8 @@ test("the run controller refetches on a 409 and never replays automatically", ()
   assert.match(controller, /load\(actedRunId, false\)/);
   assert.match(controller, /actionGeneration\.current !== actionToken/);
   assert.match(controller, /setActionErrorKind\(body\.kind\)/);
+  assert.match(controller, /setActionPending\("submit_member"\)/);
+  assert.match(controller, /setActionErrorKind\("submit_member"\)/);
   assert.match(
     controller,
     /setActionPending\(null\);[\s\S]*setActionErrorKind\(null\);[\s\S]*}, \[selected\]\)/,
@@ -601,6 +670,39 @@ test("the run controller refetches on a 409 and never replays automatically", ()
   // Detail is fetched per selection with a generation guard, not polled.
   assert.match(controller, /loadGeneration/);
   assert.doesNotMatch(controller, /setInterval/);
+});
+
+test("partial attempt history never presents an older session as current", () => {
+  const partialMember = member({
+    id: "m-partial",
+    ordinal: 1,
+    taskId: "task-current",
+    selectedAttemptId: "attempt-current",
+  });
+  const html = renderDetail({
+    members: [partialMember],
+    attempts: [
+      attempt({
+        id: "attempt-old",
+        memberId: partialMember.id,
+        taskId: "task-old",
+        sessionId: "session-old",
+        observedModel: "legacy-model",
+      }),
+    ],
+    artifacts: [],
+    pagination: {
+      eventsTotal: 1,
+      eventsReturned: 1,
+      attemptsTotal: 2,
+      attemptsReturned: 1,
+    },
+  });
+  assert.match(html, /Showing 1 of 2 attempts/);
+  assert.match(html, /current attempt is beyond the returned history window/i);
+  assert.doesNotMatch(html, /Open session/);
+  assert.doesNotMatch(html, /legacy-model/);
+  assert.match(html, /Open task/);
 });
 
 test("decision busy state and errors stay owned by their action surface", () => {
@@ -615,6 +717,7 @@ test("decision busy state and errors stay owned by their action surface", () => 
   assert.match(detailSource, /busy: actionBusy/);
   assert.match(detailSource, /actionErrorKind === "decide" \? actionError : null/);
   assert.match(detailSource, /actionErrorKind !== "decide" \? actionError : null/);
+  assert.match(detailSource, /actionsDisabled=\{actionBusy\}/);
   assert.match(decisionSource, /!decision\.busy/);
 });
 

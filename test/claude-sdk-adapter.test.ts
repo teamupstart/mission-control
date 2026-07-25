@@ -590,3 +590,35 @@ test("stop still wins the race against a later abort, with no double resolve", a
   assert.equal(first.behavior, "deny");
   assert.match(first.behavior === "deny" ? first.message : "", /Mission Control stopped/);
 });
+
+test("the adapter refuses a duplicated question too, against its own request", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query, options } = await started;
+  query.emit(INIT("agent-1"));
+  void options.canUseTool(
+    "AskUserQuestion",
+    {
+      questions: [
+        { question: "A?", multiSelect: false, options: [{ label: "x" }, { label: "y" }] },
+      ],
+    },
+    { requestId: "dup", signal: new AbortController().signal },
+  );
+  await collect(handle.events, (e) => e.kind === "request");
+
+  // The route checks this against the card the operator saw; this checks it against the
+  // request being answered. Both matter - the answers map is where the damage happens, and
+  // a second write there silently replaces an answer the caller sent.
+  await assert.rejects(
+    () =>
+      handle.answer("dup", {
+        kind: "form",
+        answers: [
+          { question: "A?", labels: ["x"] },
+          { question: "A?", labels: ["y"] },
+        ],
+      }),
+    /answered twice/,
+  );
+});

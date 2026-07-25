@@ -79,11 +79,21 @@ export function driverFormAnswer(
   if (questions.length === 0) {
     return { ok: false, error: "this ask is not a form - answer one of its rows instead" };
   }
+  const seen = new Set<string>();
   for (const one of submitted) {
     const question = questions.find((q) => q.question === one.question);
     if (!question) {
       return { ok: false, error: `this form no longer asks "${one.question}" - it changed` };
     }
+    // One entry per question. The answers map is keyed by the question text, so a second
+    // entry for the same question overwrites the first - and the completeness check below
+    // counts DISTINCT questions, so a duplicate would sail through it while quietly
+    // discarding one of the two answers the caller sent. Same rule as the mixed-answer
+    // refusal above, for the same reason: a submission must never mean less than it said.
+    if (seen.has(one.question)) {
+      return { ok: false, error: `"${one.question}" was answered twice - send one entry per question` };
+    }
+    seen.add(one.question);
     if (!one.text?.trim() && one.labels.length === 0) {
       return { ok: false, error: `"${one.question}" was not answered` };
     }
@@ -108,8 +118,10 @@ export function driverFormAnswer(
       }
     }
   }
-  const answered = new Set(submitted.map((a) => a.question));
-  const missing = questions.find((q) => !answered.has(q.question));
+  // `seen` is that same set, already built and already proven duplicate-free above - which
+  // is what makes counting distinct questions a sound completeness check rather than one a
+  // repeated entry can satisfy on another question's behalf.
+  const missing = questions.find((q) => !seen.has(q.question));
   if (missing) return { ok: false, error: `"${missing.question}" was not answered` };
   return {
     ok: true,

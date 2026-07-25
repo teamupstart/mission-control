@@ -27,6 +27,8 @@ const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
   "../src/server/sdk/store.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
+const { mkTask } = await import("./helpers/session-fixture.ts");
 
 type Handle = import("../src/server/harness/types.ts").SdkSessionHandle;
 type SdkEvent = import("../src/server/harness/types.ts").SdkEvent;
@@ -407,3 +409,73 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 async function drain(turns = 10): Promise<void> {
   for (let i = 0; i < turns; i++) await new Promise((r) => setImmediate(r));
 }
+
+test("a dispatch interrupted mid-launch is COMPLETED on restart, not failed", async () => {
+  // The window is real and narrow: `start()` persists the row and registers the card, and
+  // `dispatchEmbedded` records `running` plus the session id only after that returns. A
+  // daemon that died between the two comes back to a `dispatching` task whose conversation
+  // exists on disk and whose driver `restore()` is about to resume - so failing it would
+  // leave a live agent working under a failed row nothing can settle.
+  //
+  // The terminal path's reason for failing a `dispatching` task does not apply here: the
+  // intent is turn ONE, delivered by the launch itself, so there is no pasted prompt whose
+  // landing a restart cannot confirm.
+  upsertSdkSession({
+    id: "sdk:midflight",
+    agent: "claude",
+    agentSessionId: "agent-mid",
+    cwd: "/wt/mid",
+    taskId: "task-mid",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+  });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({
+      id: "task-mid",
+      status: "dispatching",
+      repoRoot: "/repo",
+      worktreePath: "/wt/mid",
+      sessionId: null,
+    }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+  assert.equal(supervisor.taskLiveness("task-mid"), true);
+  // The id is what finishes the dispatch - liveness alone cannot bind anything.
+  assert.equal(supervisor.liveSessionForTask("task-mid"), "sdk:midflight");
+
+  new TaskManager(registry, undefined, supervisor);
+  await waitFor(() => registry.getTask("task-mid")?.status !== "dispatching");
+  const t = registry.getTask("task-mid")!;
+  assert.equal(t.status, "running");
+  // Bound to the session `restore()` is about to bring back, so `applyDriverBinding` finds
+  // the task when the resumed driver reports its identity.
+  assert.equal(t.sessionId, "sdk:midflight");
+  assert.equal(t.error, null);
+});
+
+test("a dead embedded row still fails an interrupted dispatch", async () => {
+  // The other half: liveness false means no agent is coming back, so the honest outcome is
+  // the ordinary interrupted-dispatch failure rather than a `running` task with nothing
+  // behind it.
+  upsertSdkSession({
+    id: "sdk:deadmid",
+    agent: "claude",
+    agentSessionId: "agent-dead",
+    cwd: "/wt/dead",
+    taskId: "task-dead",
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "exited",
+  });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-dead", status: "dispatching", repoRoot: "/repo", worktreePath: "/wt/dead" }),
+  );
+  const supervisor = new SdkSupervisor(registry);
+  assert.equal(supervisor.liveSessionForTask("task-dead"), null);
+  assert.equal(supervisor.taskLiveness("task-dead"), false);
+});

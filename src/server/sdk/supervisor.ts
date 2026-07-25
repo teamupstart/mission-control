@@ -314,12 +314,36 @@ export class SdkSupervisor {
    * handle map at that moment would reclaim its worktree out from under it.
    */
   taskLiveness(taskId: string): boolean | null {
-    const rows = listSdkSessions().filter((r) => r.taskId === taskId);
-    if (rows.length === 0) return null;
-    // Newest wins: a task re-dispatched after a failure has two rows, and only the last one
-    // answers for it.
-    const newest = rows[rows.length - 1]!;
+    const newest = this.newestRowForTask(taskId);
+    if (!newest) return null;
     return this.handles.has(newest.id) || sdkSessionIsLive(newest);
+  }
+
+  /**
+   * The embedded session id this task's agent is (or is about to be) driving, or null.
+   *
+   * Same row `taskLiveness` reads, and it exists because a caller sometimes needs to bind
+   * to that session rather than merely know it is there. Startup reconciliation is the one:
+   * a daemon that died between `start()` persisting the row and the dispatcher recording
+   * `sessionId` left a `dispatching` task whose agent is real and about to be resumed, and
+   * the id is the only thing that can finish that dispatch.
+   *
+   * Answers only for a LIVE row, so a task whose last embedded session ended is not handed
+   * a dead id to bind itself to.
+   */
+  liveSessionForTask(taskId: string): string | null {
+    const newest = this.newestRowForTask(taskId);
+    if (!newest) return null;
+    return this.handles.has(newest.id) || sdkSessionIsLive(newest) ? newest.id : null;
+  }
+
+  /**
+   * The row that answers for a task. Newest wins: a task re-dispatched after a failure has
+   * two rows, and only the last one is about it now.
+   */
+  private newestRowForTask(taskId: string): SdkSessionRow | null {
+    const rows = listSdkSessions().filter((r) => r.taskId === taskId);
+    return rows.length === 0 ? null : rows[rows.length - 1]!;
   }
 
   private serialize(id: string, op: (handle: SdkSessionHandle) => Promise<void>): Promise<void> {

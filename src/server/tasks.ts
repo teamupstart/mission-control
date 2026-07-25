@@ -2010,6 +2010,29 @@ export class TaskManager {
     const alive = embedded ?? (t.homeName ? await homeAlive(t.homeName) : null);
     if (alive !== false) {
       if (t.status === "dispatching") {
+        // An embedded dispatch that was interrupted mid-flight is COMPLETED, not failed,
+        // and the difference is that its agent is real. `supervisor.start()` persists the
+        // row and registers the card before `dispatchEmbedded` records `running` and the
+        // session id, so a daemon that died between the two left a task whose conversation
+        // exists and whose driver `restore()` is about to resume. Failing it there would
+        // leave that agent working under a failed row nothing can settle - and the
+        // dispatch's own reason for failing here does not apply: the intent is turn ONE of
+        // the conversation, delivered by the launch itself, so there is no pasted prompt
+        // whose landing a restart cannot confirm.
+        const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
+        if (embedded === true && session) {
+          this.registry.upsertTask({
+            ...t,
+            status: "running",
+            sessionId: session,
+            error: null,
+            updatedAt: Date.now(),
+          });
+          // Its work episode binds when the resumed driver reports `bound`, exactly as it
+          // would have on the original dispatch - the task now records the session id that
+          // `applyDriverBinding` looks up.
+          return;
+        }
         this.registry.upsertTask({
           ...t,
           status: "failed",

@@ -707,3 +707,26 @@ test("either half on its own still answers", async () => {
     ],
   });
 });
+
+test("a question answered twice is refused, not last-write-wins", async () => {
+  const registry = new Registry();
+  seed(registry, FORM);
+  const supervisor = fakeSupervisor();
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:one/submit-options", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      answers: [
+        { question: "Which linter?", labels: ["biome"] },
+        // The answers map is keyed by question text, so this would overwrite the entry
+        // above - and the completeness check counts DISTINCT questions, so the duplicate
+        // sails through it while "Which checks?" goes unanswered and one supplied answer
+        // is silently discarded before Claude ever sees the form.
+        { question: "Which linter?", labels: ["eslint"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 409);
+  assert.match(((await res.json()) as { error: string }).error, /answered twice/);
+  assert.equal(supervisor.answered.length, 0);
+});

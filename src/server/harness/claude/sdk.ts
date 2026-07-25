@@ -439,6 +439,13 @@ class ClaudeSdkSession implements SdkSessionHandle {
             `"${one.question}" has both a chosen option and custom text - send one or the other`,
           );
         }
+        // One entry per question, checked HERE too because this map is where a duplicate
+        // would do its damage: the second write silently replaces the first, so an answer
+        // the caller sent would never reach Claude. The route refuses this against the card
+        // the operator saw; this refuses it against the request being answered.
+        if (one.question in answers) {
+          throw new Error(`"${one.question}" was answered twice - send one entry per question`);
+        }
         answers[one.question] = typed || one.labels.join(", ");
       }
       for (const question of questions) {

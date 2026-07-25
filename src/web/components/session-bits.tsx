@@ -293,7 +293,6 @@ export function ScheduleOriginRailMark({
     <Tooltip label={label}>
       <span
         className="rail-schedule"
-        role="button"
         aria-label={label}
         onClick={(event) => {
           event.stopPropagation();

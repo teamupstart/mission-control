@@ -2,7 +2,7 @@ import { test } from "node:test";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import assert from "node:assert/strict";
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
@@ -724,6 +724,8 @@ test("all four scheduled-origin surfaces share one Tooltip copy, live name and a
   assert.match(label, /Scheduled by Dependency audit/);
   assert.equal((tile?.props as { label: string }).label, label);
   assert.equal((rail?.props as { label: string }).label, label);
+  const railMark = (rail?.props as { children: ReactElement }).children;
+  assert.equal(railMark.props.role, undefined);
 });
 
 test("a task with no schedule provenance draws no origin mark on any surface", () => {

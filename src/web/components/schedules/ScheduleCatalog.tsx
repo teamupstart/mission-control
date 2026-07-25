@@ -144,7 +144,9 @@ function ScheduleRow({
       </span>
       <span className="rm-row-cadence">
         <span>{cadenceLabel(schedule.expression)}</span>
-        <span className="rm-dim rm-tiny">{schedule.timezone}</span>
+        <span className="rm-dim rm-tiny">
+          {schedule.timezone} · {schedule.executionMode ?? "unreadable"}
+        </span>
       </span>
       <span className="rm-row-next">
         {schedule.nextRunAt != null ? (

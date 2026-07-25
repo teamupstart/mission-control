@@ -428,7 +428,7 @@ export function availableTimezones(): string[] {
   };
   try {
     const zones = withValues.supportedValuesOf?.("timeZone");
-    if (zones && zones.length > 0) return zones;
+    if (zones && zones.length > 0) return zones.includes("UTC") ? zones : ["UTC", ...zones];
   } catch {
     // fall through to the common set
   }

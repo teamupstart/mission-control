@@ -53,6 +53,7 @@ test("the catalog lists live schedules with their server-derived health", () => 
   assert.match(html, /Alpha/);
   assert.match(html, /Beta/);
   assert.match(html, /rm-pill-attention/);
+  assert.match(html, /local-catchup/);
   // The selected row is marked, so an SSE reorder can keep it highlighted.
   assert.match(html, /rm-row is-selected/);
 });
@@ -103,6 +104,7 @@ test("the detail is honest about local catch-up: never on-time, never asleep exe
   assert.match(html, /\/Users\/dev\/workspace\/mission-control/);
   assert.match(html, /local-catchup/);
   assert.ok(html.includes(new Date(schedule.nextRunAt!).toISOString()));
+  assert.match(html, /on time/);
 });
 
 test("the detail's Run now explains it files a backlog task, not that it runs an agent", () => {
@@ -134,6 +136,30 @@ test("the editor distinguishes Save paused from Save & enable, and only offers l
   assert.match(html, /Future/);
   // The availability copy never promises on-time or asleep execution.
   assert.match(html, /No work runs while this laptop is asleep or powered off/);
+});
+
+test("the catalog marks an unreadable execution mode", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleCatalog, {
+      schedules: [mkSchedule({ executionMode: null })],
+      selectedId: null,
+      onSelect: () => {},
+      connected: true,
+      hasSnapshot: true,
+    }),
+  );
+  assert.match(html, /unreadable/);
+});
+
+test("the editor preserves a current timezone absent from the browser list", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ timezone: "Etc/UTC" }),
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /<option value="Etc\/UTC" selected="">Etc\/UTC<\/option>/);
 });
 
 test("the preview renders the daemon's own results, and shows a loading state until they arrive", () => {

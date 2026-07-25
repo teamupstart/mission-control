@@ -136,6 +136,7 @@ export function ScheduleEditor({
   onSaved,
   onCancel,
   onDirtyChange,
+  onBusyChange,
 }: {
   /** The schedule being edited, or null to create a new one. */
   schedule: MissionSchedule | null;
@@ -144,6 +145,7 @@ export function ScheduleEditor({
   onCancel: () => void;
   /** Report unsaved edits up, so closing the overlay can confirm before discarding. */
   onDirtyChange?: (dirty: boolean) => void;
+  onBusyChange?: (busy: boolean) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<EditorDraft>(() =>
     schedule ? draftFromSchedule(schedule) : emptyDraft(),
@@ -158,11 +160,21 @@ export function ScheduleEditor({
   // re-previews anyway (the authoritative gate), but this drives the "preview is stale" hint.
   const [previewedOk, setPreviewedOk] = useState<string | null>(null);
 
-  const timezones = useMemo(() => availableTimezones(), []);
+  const timezones = useMemo(() => {
+    const available = availableTimezones();
+    return available.includes(draft.timezone) ? available : [draft.timezone, ...available];
+  }, [draft.timezone]);
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
   }, []);
+
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
+
+  const setSaving = (saving: boolean): void => {
+    setBusy(saving);
+    onBusyChange?.(saving);
+  };
 
   const update = (patch: Partial<EditorDraft>): void => {
     setDraft((prev) => ({ ...prev, ...patch }));
@@ -199,7 +211,7 @@ export function ScheduleEditor({
       setFormError("Fix the highlighted fields before saving.");
       return;
     }
-    setBusy(true);
+    setSaving(true);
     setFieldErrors({});
     setFormError(null);
 
@@ -209,7 +221,7 @@ export function ScheduleEditor({
     if (enable) {
       const preview = await previewSchedule({ ...definition, excludeScheduleId: schedule?.id });
       if (!preview.ok) {
-        setBusy(false);
+        setSaving(false);
         setFieldErrors({ [preview.error.field]: preview.error.message });
         setFormError("The cadence must preview successfully before it can be enabled.");
         return;
@@ -220,7 +232,7 @@ export function ScheduleEditor({
     if (schedule && !enable && schedule.enabled) {
       const paused = await setScheduleEnabled(schedule.id, false);
       if (!paused.ok) {
-        setBusy(false);
+        setSaving(false);
         setFormError(paused.error ?? "Could not pause the schedule.");
         return;
       }
@@ -231,7 +243,7 @@ export function ScheduleEditor({
       : await createSchedule({ ...definition, enabled: enable });
     if (result.ok && schedule && enable && result.schedule && !result.schedule.enabled) {
       const toggled = await setScheduleEnabled(schedule.id, true);
-      setBusy(false);
+      setSaving(false);
       if (toggled.ok && toggled.schedule) {
         onSaved(toggled.schedule);
         return;
@@ -241,7 +253,7 @@ export function ScheduleEditor({
         return;
       }
     }
-    setBusy(false);
+    setSaving(false);
     if (!result.ok) {
       if (result.field) setFieldErrors({ [result.field]: result.error ?? "Invalid value." });
       setFormError(result.error ?? "Could not save the schedule.");
@@ -252,7 +264,7 @@ export function ScheduleEditor({
 
   return (
     <div className="rm-editor">
-      <div className="rm-editor-form">
+      <fieldset className="rm-editor-form" disabled={busy}>
         <FormSection
           title="Task template"
           blurb="Every occurrence creates an ordinary backlog task from this immutable revision."
@@ -564,7 +576,7 @@ export function ScheduleEditor({
             </Tooltip>
           </Field>
         </FormSection>
-      </div>
+      </fieldset>
 
       <aside className="rm-editor-preview">
         <div className="rm-panel-head">
@@ -594,7 +606,7 @@ export function ScheduleEditor({
         )}
         <span className="rm-spacer" />
         <Tooltip label="Discard and return to the catalog">
-          <button className="btn" onClick={onCancel} disabled={busy}>
+          <button className="btn" onClick={() => !busy && onCancel()} disabled={busy}>
             Cancel
           </button>
         </Tooltip>

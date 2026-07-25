@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  availableTimezones,
   cadenceLabel,
   delayIsLate,
   expressionToForm,
@@ -68,6 +69,10 @@ test("presets and expressions round-trip so the editor reopens on the right cont
     presetToExpression({ preset: "daily", weekday: 1, monthday: 1, time: "25:00", expression: "" }),
     "",
   );
+});
+
+test("the timezone list always contains UTC", () => {
+  assert.ok(availableTimezones().includes("UTC"));
 });
 
 test("a delay under a minute reads as on time; anything more is spelled and flagged", () => {

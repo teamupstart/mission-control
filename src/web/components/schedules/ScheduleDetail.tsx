@@ -9,6 +9,8 @@ import {
 import {
   SCHEDULE_HEALTH_REASON_LABELS,
   cadenceLabel,
+  delayIsLate,
+  formatDelay,
   formatInstantLong,
   missedPolicyLabel,
   occurrenceStatusView,
@@ -215,6 +217,10 @@ export function ScheduleDetail({
             <span>
               <span className={`rm-badge-inline rm-badge-${occurrenceStatusView(last.status).tone}`}>
                 {occurrenceStatusView(last.status).label}
+              </span>{" "}
+              ·{" "}
+              <span className={delayIsLate(last.delayMs) ? "rm-late" : ""}>
+                {formatDelay(last.delayMs)}
               </span>{" "}
               {last.taskId ? "· task filed" : ""}
             </span>

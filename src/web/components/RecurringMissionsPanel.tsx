@@ -76,6 +76,7 @@ export function RecurringMissionsPanel({
     initialScheduleId ?? sorted[0]?.id ?? null,
   );
   const [editorDirty, setEditorDirty] = useState(false);
+  const [editorBusy, setEditorBusy] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
   // Where a confirmed discard should land: closing the overlay (Escape/✕) or returning to
   // the catalog (the Back/Cancel routes). Null when no confirmation is pending.
@@ -105,6 +106,7 @@ export function RecurringMissionsPanel({
   }, [schedules, screen]);
 
   function handleClose(): void {
+    if (editorBusy) return;
     if (screen.kind === "editor" && editorDirty) {
       setConfirmDiscard("close");
       return;
@@ -113,6 +115,7 @@ export function RecurringMissionsPanel({
   }
 
   function handleBack(): void {
+    if (editorBusy) return;
     if (screen.kind === "editor" && editorDirty) {
       setConfirmDiscard("catalog");
       return;
@@ -121,6 +124,7 @@ export function RecurringMissionsPanel({
   }
 
   function toCatalog(id?: string | null): void {
+    setEditorBusy(false);
     setEditorDirty(false);
     if (id !== undefined && id !== null) setSelectedId(id);
     setScreen({ kind: "catalog" });
@@ -168,13 +172,18 @@ export function RecurringMissionsPanel({
             </Tooltip>
           ) : (
             <Tooltip label="Back to the catalog">
-              <button className="btn" onClick={handleBack}>
+              <button className="btn" onClick={handleBack} disabled={editorBusy}>
                 ← Catalog
               </button>
             </Tooltip>
           )}
           <Tooltip label="Close (Escape)">
-            <button className="icon-btn" aria-label="Close" onClick={handleClose}>
+            <button
+              className="icon-btn"
+              aria-label="Close"
+              onClick={handleClose}
+              disabled={editorBusy}
+            >
               ✕
             </button>
           </Tooltip>
@@ -228,6 +237,7 @@ export function RecurringMissionsPanel({
             <ScheduleEditor
               schedule={routedSchedule}
               onDirtyChange={setEditorDirty}
+              onBusyChange={setEditorBusy}
               onSaved={(saved) => toCatalog(saved.id)}
               onCancel={handleBack}
             />

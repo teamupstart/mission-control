@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   SchedulePreviewInstant,
   SchedulePreviewResult,
@@ -74,6 +74,9 @@ export function SchedulePreview({
   const [standby, setStandby] = useState<SchedulePreviewResult | null>(null);
   const [standbyBusy, setStandbyBusy] = useState(false);
   const [standbyError, setStandbyError] = useState<string | null>(null);
+  const standbyRequestRef = useRef(0);
+  const fingerprintRef = useRef(fingerprint);
+  fingerprintRef.current = fingerprint;
 
   // Re-run the base preview whenever the definition or requested count changes, debounced
   // so typing the intent does not fire a request per keystroke. A stale base is the exact
@@ -107,8 +110,13 @@ export function SchedulePreview({
 
   // A definition edit invalidates a standby simulation just as it does the base preview.
   useEffect(() => {
+    standbyRequestRef.current += 1;
     setStandby(null);
+    setStandbyBusy(false);
     setStandbyError(null);
+    return () => {
+      standbyRequestRef.current += 1;
+    };
   }, [fingerprint]);
 
   const runStandby = (): void => {
@@ -124,6 +132,8 @@ export function SchedulePreview({
     }
     setStandbyError(null);
     setStandbyBusy(true);
+    const requestId = ++standbyRequestRef.current;
+    const requestFingerprint = fingerprint;
     void previewSchedule({
       ...definition,
       count,
@@ -131,6 +141,12 @@ export function SchedulePreview({
       sleepStartedAt,
       resumedAt,
     }).then((result) => {
+      if (
+        requestId !== standbyRequestRef.current ||
+        requestFingerprint !== fingerprintRef.current
+      ) {
+        return;
+      }
       setStandbyBusy(false);
       if (!result.ok) {
         setStandbyError(result.error.message);

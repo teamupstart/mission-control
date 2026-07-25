@@ -8,6 +8,7 @@ import { fetchScheduleHistory } from "../../lib/api.ts";
 import {
   formatDelay,
   formatInstant,
+  formatInstantUtc,
   delayIsLate,
   occurrenceStatusView,
   shortTaskId,
@@ -187,7 +188,10 @@ export function ScheduleHistory({
                       onClick={() => setSelectedId(occ.id)}
                     >
                       <td className="rm-mono">
-                        {formatInstant(occ.scheduledFor, schedule?.timezone ?? null)}
+                        <div>{formatInstant(occ.scheduledFor, schedule?.timezone ?? null)}</div>
+                        <div className="rm-dim rm-tiny">
+                          {formatInstantUtc(occ.scheduledFor)} UTC
+                        </div>
                       </td>
                       <td>{triggerKindLabel(occ.triggerKind)}</td>
                       <td>
@@ -270,6 +274,8 @@ function OccurrenceDetail({
       <dl className="rm-kv">
         <dt>Scheduled for</dt>
         <dd>{formatInstant(occurrence.scheduledFor, timezone)}</dd>
+        <dt>Scheduled (UTC)</dt>
+        <dd className="rm-mono">{formatInstantUtc(occurrence.scheduledFor)} UTC</dd>
         <dt>Trigger</dt>
         <dd>{triggerKindLabel(occurrence.triggerKind)}</dd>
         <dt>Claimed at</dt>

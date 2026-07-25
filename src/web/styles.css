@@ -12101,12 +12101,35 @@ select.foreman-model-input {
   border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
 }
-.rm-table tbody tr {
-  cursor: pointer;
-}
 .rm-table tbody tr:hover,
 .rm-table tbody tr.is-selected {
   background: color-mix(in oklab, var(--purple) 7%, transparent);
+}
+/* The row's selection control: a button styled as the leftmost timestamp cell, so the
+   whole time reads as clickable while staying a real, focusable, tooltip-wrapped button. */
+.rm-history-select {
+  display: block;
+  width: 100%;
+  padding: 0;
+  color: var(--working);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: left;
+}
+.rm-history-select:hover {
+  text-decoration: underline;
+}
+.rm-history-select[aria-pressed="true"] {
+  color: var(--fg);
+  font-weight: 600;
+}
+.rm-history-local {
+  display: block;
+  margin-top: 2px;
 }
 .rm-load-older {
   margin-top: 10px;

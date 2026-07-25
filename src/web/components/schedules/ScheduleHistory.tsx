@@ -211,27 +211,31 @@ export function ScheduleHistory({
                 {rows.map((occ) => {
                   const status = occurrenceStatusView(occ.status);
                   return (
-                    <tr
-                      key={occ.id}
-                      className={occ.id === selectedId ? "is-selected" : ""}
-                      onClick={() => setSelectedId(occ.id)}
-                      onKeyDown={(event) => {
-                        if (
-                          event.currentTarget === event.target &&
-                          (event.key === "Enter" || event.key === " ")
-                        ) {
-                          event.preventDefault();
-                          setSelectedId(occ.id);
-                        }
-                      }}
-                      tabIndex={0}
-                      aria-label={`${formatAuditInstantUtc(occ.scheduledFor)}, ${status.label}`}
-                    >
+                    <tr key={occ.id} className={occ.id === selectedId ? "is-selected" : ""}>
+                      {/* The selection affordance is this cell's button, not the row: a
+                          native <button> is focusable and Enter/Space-activated for free and
+                          CAN be wrapped in the shared Tooltip, which a <tr> cannot (its
+                          description span would be an invalid tbody child). aria-pressed
+                          reports which occurrence's audit is showing. */}
                       <td className="rm-mono">
-                        <HistoryInstant
-                          at={occ.scheduledFor}
-                          timezone={schedule?.timezone ?? null}
-                        />
+                        <Tooltip
+                          label={`Show this ${status.label.toLowerCase()} run's audit (${formatAuditInstantUtc(occ.scheduledFor)})`}
+                        >
+                          <button
+                            type="button"
+                            className="rm-history-select"
+                            aria-pressed={occ.id === selectedId}
+                            onClick={() => setSelectedId(occ.id)}
+                          >
+                            {formatAuditInstantUtc(occ.scheduledFor)}
+                          </button>
+                        </Tooltip>
+                        {schedule?.timezone && (
+                          <span className="rm-dim rm-tiny rm-history-local">
+                            Current zone ({schedule.timezone}):{" "}
+                            {formatInstant(occ.scheduledFor, schedule.timezone)}
+                          </span>
+                        )}
                       </td>
                       <td>{triggerKindLabel(occ.triggerKind)}</td>
                       <td>

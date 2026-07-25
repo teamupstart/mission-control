@@ -309,9 +309,12 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   assert.match(history, /initialScheduledFor \+ 1/);
   assert.doesNotMatch(history, /DEEP_LINK_PAGE_LIMIT/);
   assert.match(history, /page\.nextCursor === null/);
-  assert.match(history, /event\.key === "Enter" \|\| event\.key === " "/);
-  assert.match(history, /tabIndex=\{0\}/);
-  assert.match(history, /aria-label=\{`\$\{formatAuditInstantUtc\(occ\.scheduledFor\)\}/);
+  // Row selection is a focusable, tooltip-wrapped <button> (a <tr> cannot be Tooltip-wrapped
+  // - its description span would be an invalid tbody child), per the Inspector round on #241.
+  assert.match(history, /className="rm-history-select"/);
+  assert.match(history, /aria-pressed=\{occ\.id === selectedId\}/);
+  assert.match(history, /onClick=\{\(\) => setSelectedId\(occ\.id\)\}/);
+  // Timestamps stay unambiguous: UTC with year in both the row and the audit head.
   assert.match(history, /Current zone \(\{timezone\}\):/);
   assert.match(history, /<h3>\{formatAuditInstantUtc\(occurrence\.scheduledFor\)\}<\/h3>/);
 });

@@ -30,7 +30,6 @@ import {
   StateBadge,
   WorkflowChip,
   EnsembleChip,
-  subtitle,
   SessionWhere,
 } from "./session-bits.tsx";
 

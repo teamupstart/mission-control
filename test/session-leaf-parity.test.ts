@@ -11,6 +11,9 @@ import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
 import {
   AgentDot,
   CostChip,
+  RuntimeTileFlag,
+  SessionWhere,
+  runtimeRailMark,
   InspectorChip,
   InspectorRailMark,
   InspectorTileFlag,
@@ -776,4 +779,43 @@ test("an archived schedule keeps auditable provenance and isolates chip gestures
     },
   });
   assert.equal(stopped, 2);
+});
+
+// ---- the session runtime, across the three mark vocabularies ----
+
+test("all three surfaces say an embedded session has no pane, from one decision", () => {
+  // The three-vocabularies rule (CLAUDE.md): a new session-level signal has to reach the
+  // rail's glyphs, the tile's flags and the card's chips, or two layouts out of three
+  // silently omit it. This one matters more than most - it is the reason Focus and Rename
+  // are missing from the same card - so the words come from one place and each surface only
+  // chooses how terse it is.
+  const session = mkSession({ runtime: "sdk", nameSource: "sdk", terminals: [] });
+
+  assert.ok(containsMarkup(card({ runtime: "sdk", nameSource: "sdk", terminals: [] }), bit(SessionWhere, { session })));
+  assert.ok(containsMarkup(tile(session), bit(RuntimeTileFlag, { session })));
+  const rail = renderToStaticMarkup(
+    createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+  );
+  assert.match(rail, new RegExp(runtimeRailMark(session)!));
+});
+
+test("a pane-backed session renders none of it, which is every session by default", () => {
+  // The whole feature is invisible until an operator turns the runtime on, so the terminal
+  // card must be byte-identical to what it was: no chip, no flag, no glyph.
+  const session = mkSession({});
+  assert.equal(RuntimeTileFlag({ session }), null);
+  assert.equal(runtimeRailMark(session), null);
+  assert.doesNotMatch(tile(session), /runtime-flag/);
+  assert.doesNotMatch(card({}), /runtime-chip/);
+});
+
+test("the card and the console detail agree about where a session is", () => {
+  // Both draw it under the title, and both go through `SessionWhere` - the pane string and
+  // the runtime chip are answers to the same question, so a card carrying both would say it
+  // twice and a detail carrying neither would leave the operator hunting for a pane.
+  const session = mkSession({ runtime: "sdk", nameSource: "sdk", terminals: [] });
+  const detail = renderToStaticMarkup(
+    createElement(ConsoleDetail, { session, view: scheduledView(session) }),
+  );
+  assert.ok(containsMarkup(detail, bit(SessionWhere, { session })));
 });

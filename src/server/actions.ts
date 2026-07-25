@@ -6,11 +6,11 @@ import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
 import type { ControlSpec } from "./harness/types.ts";
 import {
+  describeOptionRowMiss,
   hasUnansweredWarning,
   optionRowMiss,
   parsePaneDialog,
   submitAnswersRow,
-  type OptionRowMiss,
   type PaneDialog,
   type PaneOption,
 } from "./discovery/pane-dialog.ts";
@@ -1400,7 +1400,7 @@ async function selectOptionLocked(
   // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
   // pressing Enter would confirm whatever replaced it.
   const miss = optionRowMiss(dialog, target);
-  if (miss) return { ok: false, error: describeMiss(miss, dialog, target) };
+  if (miss) return { ok: false, error: describeOptionRowMiss(miss, dialog, target) };
 
   // A checkbox row is not answerable by pressing it: Enter TOGGLES it and the form stays
   // up, so this would report a delivered answer for a keystroke that sent nothing. That is
@@ -1535,7 +1535,7 @@ async function submitFormLocked(
   // has moved on is refused whole rather than half-ticked.
   for (const t of targets) {
     const miss = optionRowMiss(dialog, t);
-    if (miss) return { ok: false, error: describeMiss(miss, dialog, t) };
+    if (miss) return { ok: false, error: describeOptionRowMiss(miss, dialog, t) };
     if (dialog.options.find((o) => o.number === t.number)!.checked === undefined) {
       return { ok: false, error: `option ${t.number} is not a checkbox on this form` };
     }
@@ -1659,20 +1659,6 @@ async function awaitDialogChange(
     if (d && dialogIdentity(d) !== from) return d;
     if (Date.now() >= deadline) return null;
     await sleep(REPAINT_POLL_MS);
-  }
-}
-
-/** Say which way the screen failed to be the menu we were told to answer. */
-function describeMiss(miss: OptionRowMiss, dialog: PaneDialog, target: OptionTarget): string {
-  switch (miss) {
-    case "no-such-row":
-      return `this menu has no option ${target.number}`;
-    case "label-differs": {
-      const row = dialog.options.find((o) => o.number === target.number);
-      return `option ${target.number} now reads "${row?.label}" - the screen changed`;
-    }
-    case "label-ambiguous":
-      return `"${target.label}" reads the same as another row on this menu`;
   }
 }
 

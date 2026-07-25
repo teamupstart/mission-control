@@ -163,3 +163,45 @@ to reach a handle, or add per-dispatch runtime selection (resolved decision).
 - 2026-07-24 (phase 4 audit): the step 10 refusal must be RUNTIME-scoped
   (`runtime === "sdk"`), never agent-scoped, because phase 4 may merge before phase 3
   and its Codex SDK sessions need the same interim guard without an edit.
+- 2026-07-25: implemented. Seven notes for later phases, four of them corrections to this
+  file written against a tree (and an SDK) that has since moved:
+  - **`SdkSpec` gained a second member, `resumeArgv(agentSessionId)`.** Step 11 spells the
+    handoff argv as a literal `["--resume", agentSessionId]`, which would have put a
+    harness-specific command line in a harness-neutral route - the one thing the whole
+    registry doctrine forbids (`Reach a capability through a registry, never by testing
+    s.agent`). Phase 4 and phase 6 fill it for their harness; `codex resume <threadId>` and
+    pi's equivalent are the same shape. C4 is extended, not changed.
+  - **PR authorship is a `PreToolUse` + `PostToolUse` PAIR, not `PreToolUse` alone.** Step 2
+    names only the pre-hook, but `applyDriverEvent`'s `pr_created` arm is gated on
+    `evt.url`, so a pre-hook on its own emits an event nothing consumes. Both halves are
+    what the shell bridge already carries (`harness-hook.mjs`): the COMMAND is the
+    authorship evidence `adoptPr` accepts, the URL is what there is to adopt. Phase 3, which
+    owns provenance, inherits both.
+  - **`SDK_SESSION_STATUSES` gained `suspended`** (append-only, so this is allowed). Without
+    it a clean daemon restart is indistinguishable from an agent that finished, and
+    `reconcileOnStartup` reclaims the worktree of work that was merely interrupted - which
+    would have made "resume on restart" true only after a crash. `stopAll` sets the flag the
+    pump reads; `sdkSessionIsLive` treats it as live.
+  - **`/submit-options` grew a second body shape** (`answers`, one entry per question),
+    because a driver form genuinely is not a flat row list: `AskUserQuestion` carries up to
+    four questions, each numbering its options from 1, and `driverDialog` refuses to flatten
+    them. C3 said the route "carries the full answers map" without saying it needed a
+    schema; it does. The pane shape is unchanged and the two are refused for each other's
+    runtime rather than coerced.
+  - `dispatchPermissionModeArgs` was split into `dispatchPermissionMode` (the mode, which
+    the embedded launch takes) and the argv renderer, whose extra `launchArgs` gate belongs
+    to the renderer alone.
+  - The subprocess env DROPS `TMUX_PANE` / `WEZTERM_PANE` / `TERM_PROGRAM`. Machine-installed
+    `~/.claude/settings.json` hooks fire inside the SDK subprocess too, and a daemon started
+    from a terminal would hand its own pane down - `findSessionByEnv` prefers a pane key over
+    everything else, so every embedded session's hooks would key to one stranger's card.
+    Phases 4 and 6 need the same subtraction if their transports inherit the daemon's env.
+  - **Packaging needed no change.** The SDK bundles cleanly into `dist/server/index.mjs`
+    (3.8MB, up from ~780KB) and its subprocess spawn was verified against the bundled copy,
+    so it is not marked external and `electron-builder.yml` is untouched. Its optional
+    platform package (~250MB of native CLI) is installed by npm and never used: the adapter
+    always pins `pathToClaudeCodeExecutable` to `resolveAgentBin("claude")`, because running
+    the copy inside the package would silently be a different Claude Code build from the one
+    the operator logged in with. A `zod` peer conflict (the SDK wants ^4, this repo is on ^3)
+    is resolved by a `package.json` `overrides` entry rather than a zod upgrade; the SDK
+    inlines its own zod and imports nothing but node builtins at runtime.

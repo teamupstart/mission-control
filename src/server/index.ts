@@ -72,7 +72,12 @@ try {
 warnIfSessionAttributionDisabled();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
-const tasks = new TaskManager(registry);
+// Embedded (SDK-runtime) sessions. Constructed HERE, above `TaskManager`, because the
+// dispatcher branches on it and the startup reconciliation below asks it whether an
+// embedded task's agent survived. `restore()` is a separate step further down, and its
+// ordering against `startPoller` is the contract - see the comment there.
+const sdkSessions = new SdkSupervisor(registry);
+const tasks = new TaskManager(registry, undefined, sdkSessions);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
@@ -162,11 +167,11 @@ registry.onSessionsObserved(() => {
 // hangs off it, so a session registered after that moment is invisible to the reconciliation
 // that would have settled its task. Restoring first is what makes an embedded session look
 // exactly like a rediscovered terminal one to `reconcileTasksWithNoLiveSession` and
-// `reconcileBindingsAfterDiscovery`. Inert until a harness declares an `sdk` driver: with
-// none declared there is nothing to resume and no row can exist. Awaited rather than
-// fire-and-forget for the ordering itself, and best-effort because a daemon that refused to
-// start over one unresumable session would be worse than one running without it.
-const sdkSessions = new SdkSupervisor(registry);
+// `reconcileBindingsAfterDiscovery`. Inert on an installation nobody has turned the runtime on
+// for: with every harness's `sessionRuntime` at its shipped `terminal`, no row was ever
+// written and there is nothing to resume. Awaited rather than fire-and-forget for the ordering
+// itself, and best-effort because a daemon that refused to start over one unresumable session
+// would be worse than one running without it.
 try {
   await sdkSessions.restore();
 } catch (err) {
@@ -209,7 +214,9 @@ const schedules = new ScheduleManager({
 });
 let stopSchedules = () => {};
 
-const app = buildApp(registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles);
+const app = buildApp(
+  registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles, sdkSessions,
+);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

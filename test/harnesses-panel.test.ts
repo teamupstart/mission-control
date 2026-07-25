@@ -5,12 +5,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { HarnessesPanel } from "../src/web/components/HarnessesPanel.tsx";
 import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import type { HarnessesConfig } from "../src/shared/protocol.ts";
-import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "../src/shared/types.ts";
+import {
+  AGENT_TYPES,
+  type AgentType,
+  type SessionRuntime,
+  type ThinkingLevel,
+} from "../src/shared/types.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import {
   HARNESS_CAPABILITIES,
   autoModeAgents,
   autoModeUnsupportedWhy,
+  sdkRuntimeUnsupportedWhy,
 } from "../src/shared/harness-capabilities.ts";
 import { hasTooltip } from "./helpers/markup.ts";
 
@@ -55,12 +61,14 @@ function mkConfig(
     autoModeOnDispatch?: boolean;
     defaultModel?: Partial<Record<AgentType, string | null>>;
     defaultEffort?: Partial<Record<AgentType, ThinkingLevel | null>>;
+    sessionRuntime?: Partial<Record<AgentType, SessionRuntime>>;
   } = {},
 ): HarnessesConfig {
   return {
     autoModeOnDispatch: over.autoModeOnDispatch ?? false,
     defaultModel: { ...fullRecord<string | null>(null), ...over.defaultModel },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), ...over.defaultEffort },
+    sessionRuntime: { ...fullRecord<string>("terminal"), ...over.sessionRuntime },
   };
 }
 
@@ -265,4 +273,49 @@ test("the card sentence restates both the model and the effort a dispatch will u
   // dispatch of THIS harness does, model and effort together.
   const html = render({ defaultModel: { claude: "claude-opus-4-8" }, defaultEffort: { claude: "high" } });
   assert.match(html, /--model claude-opus-4-8[^.]*\.\s*They start with high reasoning effort\./);
+});
+
+// ---- session runtime on the card ----
+
+test("the runtime control renders only for a harness that declares a driver", () => {
+  const html = render({});
+  // Claude declares `sdk`, so the operator gets the choice. A harness that does not is not
+  // given a toggle that changes nothing - the absence is a sentence, not a greyed-out row.
+  for (const a of AGENT_TYPES) {
+    const label = `aria-label="Session runtime for dispatched ${reEscape(AGENT_IDENTITY[a].label)} sessions"`;
+    const declares = HARNESS_CAPABILITIES[a].runtimes.includes("sdk");
+    assert.equal(
+      new RegExp(label).test(html),
+      declares,
+      `${a}: control rendered=${!declares} but runtimes says otherwise`,
+    );
+    if (!declares) {
+      assert.match(html, new RegExp(reEscape(sdkRuntimeUnsupportedWhy(a)!)), `${a} states why not`);
+    }
+  }
+});
+
+test("terminal is what a card shows until an operator changes it", () => {
+  // The shipped value, and the one every existing installation reads back: cut-over is an
+  // operator flipping this per harness, never a default this phase moved.
+  const html = render({});
+  assert.match(html, /<option value="terminal" selected/);
+  assert.doesNotMatch(html, /<option value="sdk" selected/);
+  assert.match(html, /run in a terminal pane, as they always have/);
+});
+
+test("turning it on says what changes, in the card's own sentence", () => {
+  const html = render({ sessionRuntime: { claude: "sdk" } });
+  assert.match(html, /<option value="sdk" selected/);
+  assert.match(html, /no terminal pane/);
+  assert.match(html, /Continue in terminal/);
+});
+
+test("a stored runtime this build cannot read is reported, not silently healed", () => {
+  // The `ResolvedLlmRunner.unknown` precedent: swallowed, a value from a newer build is
+  // indistinguishable from an unset one, and the panel would render the fallback as the
+  // operator's own choice.
+  const html = render({ sessionRuntime: { claude: "quantum" as SessionRuntime } });
+  assert.match(html, /<option value="terminal" selected/);
+  assert.match(html, /doesn&#x27;t know \(quantum\) was ignored/);
 });

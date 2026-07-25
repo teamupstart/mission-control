@@ -287,27 +287,62 @@ wrong: the permission-mode chip, dialog detection, and the read-back that confir
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
 else, if you want those too.
 
-### How a session is driven is an axis too (terminal today)
+### Session runtimes (terminal, or the Agent SDK)
 
 Everything above answers "which terminal holds this session". A separate question is how
-Mission Control *talks* to it at all, and every session on your machine today answers it the
-same way: through a pane. That is a session's **runtime**, and `terminal` is the only one any
-harness currently offers - so nothing in the product behaves differently yet, and no setting
-exists to change it.
+Mission Control *talks* to it at all, and until now every session answered it the same way:
+through a pane. That is a session's **runtime**, and there are two.
 
-The groundwork is in place because the other answer is coming: Claude, Codex and Pi all have
-programmatic interfaces where a permission prompt is a callback with the tool name as data
-rather than a menu to be read off a screen, and a delivered turn is acknowledged instead of
-pasted and hoped for. A session driven that way has no pane, so the daemon has to be able to
-hold one that no `ps` sweep will ever find. Two predicates keep that honest: "can a turn
-reach this session" (which such a session answers yes to) and "is there a pane to drive"
-(which it answers no to) - the same distinction the Send box and Rename have always needed
-and, until now, shared one answer for. Whether a harness offers the runtime is a declaration
-next to its other capabilities, and it stays off until a driver exists behind it.
+- **Terminal** - the default, and what every session you start yourself always is. Delivery
+  is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
+- **Agent SDK** - the daemon runs Claude Code itself, through
+  `@anthropic-ai/claude-agent-sdk`. There is no pane. A turn is a call that is
+  *acknowledged*, and a permission prompt arrives as data - the tool name, its input, and
+  the exact rows to offer - which the card renders directly.
 
-The design, the tradeoffs (a daemon restart interrupts an in-flight turn; a terminal takeover
-becomes an explicit handoff), and the phases are in
-`docs/plans/agent-sdk-sessions/plan.md`.
+The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
+time, so flipping it mid-batch reaches the next session you launch. It ships as `terminal`
+for every harness and stays there until you change it: there is no per-task override and no
+default flip. It is also scoped to dispatch, exactly like the model and effort defaults next
+to it - a Claude session you started yourself is pane-backed whatever this says, because
+Mission Control does not own your terminal.
+
+**What changes when you turn it on.** A dispatched Claude session appears as a card with no
+pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
+
+- the task's prompt is the conversation's first turn - there is no paste to verify, no
+  settle window, and no retry that can make an agent read its task twice;
+- permission prompts, `AskUserQuestion` (all of its questions at once, not one tab at a
+  time) and plan approvals render on the card and are answered from it. Claude's own
+  question tool is left enabled - the MCP ask-channel redirect exists because a menu on a
+  child's terminal is unreadable, and here it is not;
+- the transcript, goal, cost and PR chips all work unchanged: the SDK subprocess writes the
+  same `~/.claude/projects/…` session file the interactive CLI does, so the whole read path
+  is untouched;
+- **Focus** is replaced by **Continue in terminal** (below).
+
+**What it costs.** One real regression: the subprocess is the daemon's child, so restarting
+the daemon interrupts whatever turn was in flight. The conversation itself survives - the
+supervisor records the session and resumes it on the next start, before anything else runs -
+but the interrupted turn's remaining work has to be re-prompted. In exchange, delivery stops
+being probabilistic and menus stop being screens.
+
+**Foreman's work queue is not available on an Agent SDK session yet.** It still drives
+sessions through their terminal, so a queue there is refused with a sentence saying so; use
+the handoff, or dispatch that task in a terminal. (Automation parity is the next phase of
+`docs/plans/agent-sdk-sessions/plan.md`, which also carries the full design and tradeoffs.)
+
+#### Continue in terminal
+
+`⇧P`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
+reopens **the same conversation** in a terminal home (`claude --resume <session id>`) in the
+same checkout - the vendors keep one session store across their programmatic and interactive
+surfaces, which is what makes this a handoff rather than a lost conversation. Discovery
+adopts the new process, and the task's binding follows it across.
+
+It is one way. After the handoff the terminal session is the one holding the conversation;
+the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
+tells you the exact `claude --resume` to run yourself.
 
 ### What each agent can do is declared, not assumed
 
@@ -1267,6 +1302,21 @@ All three ship as **Harness default**, so Mission Control passes no effort overr
 CLI keeps its own configured choice. Like the model default, this is resolved when the
 task launches: changing it applies to already-shelved tasks unless a task selected its
 own effort in the dispatch form.
+
+### Session runtime
+
+**Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
+in a **Terminal pane**, or embedded on the **Agent SDK**. It ships as Terminal for every
+harness, and stays there until you change it - see
+[Session runtimes](#session-runtimes-terminal-or-the-agent-sdk) for what turning it on
+changes, what it costs, and how to hand a session back to a terminal.
+
+The row renders only for a harness that actually has a driver behind it (Claude, today);
+the others say so on the card rather than offering a control that would change nothing. Like
+the model and effort defaults beside it, it is read **when a task launches** and reaches only
+the sessions Mission Control dispatches. A stored value this build cannot read, or one naming
+a runtime it has no driver for, falls back to Terminal and says so on the card instead of
+quietly launching something else.
 
 ## Task sources (pulling work into the backlog)
 
@@ -2989,6 +3039,7 @@ shortcut works in every layout:
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>⇧</kbd><kbd>P</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |

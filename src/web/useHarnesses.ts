@@ -75,6 +75,7 @@ export function useHarnesses(): HarnessesState {
         ...patch,
         defaultModel: { ...before.defaultModel, ...(patch.defaultModel ?? {}) },
         defaultEffort: { ...before.defaultEffort, ...(patch.defaultEffort ?? {}) },
+        sessionRuntime: { ...before.sessionRuntime, ...(patch.sessionRuntime ?? {}) },
       });
       const res = await api.setHarnessesConfig(patch);
       if (!res.ok) {

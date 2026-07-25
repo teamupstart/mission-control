@@ -205,6 +205,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("s")),
     chordFromEvent(key("f")),
     chordFromEvent(key("p")),
+    chordFromEvent(key("P", { shift: true })),
     chordFromEvent(key("q")),
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
@@ -397,4 +398,17 @@ test("rebinding reset onto another action's chord is reported as a conflict", ()
   const conflicts = findConflicts({ ...defaults(), reset: defaults().kill });
   assert.deepEqual(conflicts.get("reset"), ["kill"]);
   assert.deepEqual(conflicts.get("kill"), ["reset"]);
+});
+
+test("handoff is a first-class selection action, bound beside focus", () => {
+  // A registry entry rather than a hard-coded key, which is also what puts it in the
+  // settings editor and on the button's own face. Bound as Focus's Shift because the pair
+  // is the point: `p` goes to a session's pane, and this is what a session with no pane
+  // does instead - it MAKES one, by handing the conversation to a terminal.
+  const handoff = ACTIONS.find((a) => a.id === "handoff");
+  assert.ok(handoff, "handoff missing from the customizable registry");
+  assert.equal(handoff.defaultBinding, "shift+p");
+  assert.equal(handoff.group, "selection");
+  const focus = ACTIONS.indexOf(ACTIONS.find((a) => a.id === "focus")!);
+  assert.equal(ACTIONS.indexOf(handoff), focus + 1, "it reads next to focus in the panel");
 });

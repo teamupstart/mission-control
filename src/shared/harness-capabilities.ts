@@ -1,4 +1,4 @@
-import { AGENT_TYPES } from "./types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES } from "./types.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type {
   AgentType,
@@ -360,9 +360,11 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
 export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   claude: {
     id: "claude",
-    // Phase 2 of `docs/plans/agent-sdk-sessions/plan.md` adds `"sdk"` here, in the same
-    // change that lands the driver - the contract test forces the two to move together.
-    runtimes: ["terminal"],
+    // `terminal` first, and that order is the default rather than a preference ranking: a
+    // dispatch takes the operator's `sessionRuntime` choice, which ships as `terminal` for
+    // every harness and is only ever changed by hand. `"sdk"` here and
+    // `HARNESSES.claude.sdk` are one fact in two files (`harness-sdk.test.ts`).
+    runtimes: ["terminal", "sdk"],
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It
@@ -587,6 +589,68 @@ export function sessionEffortLevels(
 }
 
 /**
+ * A stored runtime choice, resolved against what this build and this harness can actually
+ * do - and carrying whatever it had to drop.
+ *
+ * The `ResolvedLlmRunner.unknown` shape, for the same reason: swallowed, a stored value
+ * from a newer build is indistinguishable from an unset one, and the panel would render
+ * the fallback as the operator's own choice. Two different drops, kept apart because they
+ * are two different sentences for a human - "this build has never heard of that" and "this
+ * harness has no driver behind that".
+ */
+export interface ResolvedSessionRuntime {
+  runtime: SessionRuntime;
+  /** The stored string this build could not read at all, if that is what happened. */
+  unknown: string | null;
+  /** A runtime this build knows that this harness does not offer, if that is what happened. */
+  unsupported: SessionRuntime | null;
+}
+
+/** Whether this harness can be driven over `runtime` at all. */
+export function harnessOffersRuntime(agent: AgentType, runtime: SessionRuntime): boolean {
+  return HARNESS_CAPABILITIES[agent].runtimes.includes(runtime);
+}
+
+/**
+ * The runtime a dispatch of `agent` should actually use, given what was stored.
+ *
+ * The ONE narrowing gate for the persisted choice, shared by the dispatcher and the
+ * settings panel so the daemon and the card cannot disagree about which runtime is in
+ * force. Falls back to `"terminal"` in both failure cases, which is the safe direction by
+ * construction: it is the runtime every harness declares and the path this app shipped on.
+ *
+ * The unsupported case is not hypothetical bookkeeping. A toggle stored while a harness had
+ * a driver, read back by a build where that driver was removed, must dispatch into a
+ * terminal and SAY it did - silently launching the other runtime is a session that behaves
+ * nothing like the operator's last instruction.
+ */
+export function resolveSessionRuntime(
+  agent: AgentType,
+  stored: string | null | undefined,
+): ResolvedSessionRuntime {
+  const known = SESSION_RUNTIMES.find((r) => r === stored);
+  if (!known) {
+    return { runtime: "terminal", unknown: stored ? stored : null, unsupported: null };
+  }
+  if (!harnessOffersRuntime(agent, known)) {
+    return { runtime: "terminal", unknown: null, unsupported: known };
+  }
+  return { runtime: known, unknown: null, unsupported: null };
+}
+
+/**
+ * Why this harness cannot be driven over the Agent SDK, or null when it can.
+ *
+ * Composed from the capability and `AGENT_IDENTITY`, never typed at the panel, for the
+ * reason `workQueueUnsupportedWhy` gives: a fourth harness gets a correct sentence for
+ * free instead of inheriting the third one's.
+ */
+export function sdkRuntimeUnsupportedWhy(agent: AgentType): string | null {
+  if (harnessOffersRuntime(agent, "sdk")) return null;
+  return `Mission Control has no embedded driver for ${AGENT_IDENTITY[agent].label} yet, so its dispatched sessions run in a terminal.`;
+}
+
+/**
  * Why Foreman cannot run a work queue on this harness at all, or null when it can.
  *
  * Composed from the capability rather than written out at each refusing surface: the
@@ -600,12 +664,31 @@ export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   return `Foreman doesn't drive ${AGENT_IDENTITY[agent].label} sessions, so anything queued here would never be picked up.`;
 }
 
+/**
+ * Why an embedded session cannot hold a work queue YET.
+ *
+ * INTERIM, and scoped to the RUNTIME rather than to an agent, which is the whole reason it
+ * is one line: the second driver (Codex's) may land before the parity work does, and a
+ * guard written as `agent === "claude"` would have let its sessions through without an
+ * edit. Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` deletes this and gives the queue
+ * its driver arm - pickup and completion arrive as `state` / `turn_done` events and
+ * delivery rides the acked `send()`.
+ *
+ * What it prevents in the meantime is a half-driven session: `foremanAutomationAuthorized`
+ * says yes for Claude on the strength of machine-scoped hooks, so without this a queue
+ * would be accepted and then driven by pane machinery (`mayHaveLanded`, `paneBlocked`, the
+ * pane-recreated guard) that an embedded session has none of.
+ */
+const SDK_QUEUE_INTERIM_WHY =
+  "This session runs on the Agent SDK, and Foreman's work queue still drives sessions through their terminal - queue it after handing it back to a terminal, or dispatch it there.";
+
 /** Why this particular session cannot hold a work queue, or null when it can. */
 export function workQueueBlockedReason(
-  session: Pick<Session, "agent" | "hooksSeen">,
+  session: Pick<Session, "agent" | "hooksSeen" | "runtime">,
 ): string | null {
   const queue = HARNESS_CAPABILITIES[session.agent].workQueue;
   if (!queue) return workQueueUnsupportedWhy(session.agent);
+  if (session.runtime === "sdk") return SDK_QUEUE_INTERIM_WHY;
   return session.hooksSeen ? null : queue.uninstrumentedWhy;
 }
 

@@ -685,6 +685,31 @@ export const api = {
     options: Array<{ number: number; label: string; checked: boolean }>,
   ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { options }),
+  /**
+   * Submit a DRIVER form - one answer per question, keyed by the question's own text.
+   *
+   * A second call rather than a wider `submitOptions`, because the bodies are not
+   * interchangeable: a pane form is a list of checkbox rows on one screen, and a driver
+   * form is several questions each numbering its options from 1. Flattening them would tick
+   * the right-numbered row of the wrong question. `text` carries free prose where the
+   * harness accepts it, which a pane form has to refuse for want of a field to type into.
+   */
+  submitAnswers: (
+    id: string,
+    answers: Array<{ question: string; labels: string[]; text?: string }>,
+  ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { answers }),
+  /**
+   * Hand an embedded session back to a terminal, continuing the same conversation.
+   *
+   * One-way and not a toggle: the driver stops, `claude --resume <id>` opens on the same
+   * session file, and discovery adopts the new process. There is no route back, because
+   * after this the terminal session is the one holding the conversation.
+   */
+  handoff: (
+    id: string,
+  ): Promise<ActionResult & { homeName?: string; sessionId?: string | null }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",

@@ -28,6 +28,7 @@ import {
   WorkflowChip,
   EnsembleChip,
   subtitle,
+  SessionWhere,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
@@ -225,7 +226,7 @@ export function ConsoleDetail({
             onRenameClose={view.onRenameClose}
           />
           {view.renamingId !== session.id && (
-            <span className="name-source">{subtitle(session)}</span>
+            <SessionWhere session={session} />
           )}
         </div>
         <PrChip session={session} />

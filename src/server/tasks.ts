@@ -44,6 +44,7 @@ import {
 import { resetSession } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
+import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
@@ -258,8 +259,18 @@ export class TaskManager {
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
+    /**
+     * The owner of embedded (SDK-runtime) sessions, when the daemon built one.
+     *
+     * Optional so the many route-unit tests that construct a bare TaskManager still
+     * compile; production always supplies it. Without it, dispatch refuses the SDK runtime
+     * out loud rather than taking the terminal path an operator did not ask for, and
+     * startup reconciliation falls through to the terminal axis - which for a task with no
+     * `homeName` means "keep the worktree", the safe direction.
+     */
+    private supervisor?: SdkSupervisor,
   ) {
-    this.dispatcher = new Dispatcher(registry);
+    this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
@@ -1922,13 +1933,28 @@ export class TaskManager {
    * knowledge that no home was ever spawned, not a value that might have been lost.)
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
-    const alive = t.homeName ? await homeAlive(t.homeName) : null;
+    // The embedded arm answers first, and it answers `true` or `false` - never the `null`
+    // that means "nobody could tell us". `homeAlive`'s uncertainty is about terminal
+    // backends, a question an embedded session never poses: the supervisor either holds
+    // this task's handle or has a durable row saying what became of it. Asking it before
+    // `homeName` also closes the trap that shape would otherwise set - an embedded task has
+    // no home name at all, so the terminal reading would be a confident "gone".
+    //
+    // Note this runs BEFORE `restore()` has relaunched anything, which is why the
+    // supervisor answers from the row: a row that says it was alive is a session this
+    // daemon is about to pick back up, and reading the empty handle map would reclaim its
+    // worktree out from under it.
+    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    const alive = embedded ?? (t.homeName ? await homeAlive(t.homeName) : null);
     if (alive !== false) {
       if (t.status === "dispatching") {
         this.registry.upsertTask({
           ...t,
           status: "failed",
-          error: "dispatch interrupted by a restart - Focus or Cancel it",
+          error:
+            embedded === true
+              ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
+              : "dispatch interrupted by a restart - Focus or Cancel it",
           updatedAt: Date.now(),
         });
       }

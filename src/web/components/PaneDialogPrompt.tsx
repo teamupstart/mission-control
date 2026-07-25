@@ -108,6 +108,25 @@ export function PaneDialogPrompt({
   const checkboxes = boxes(dialog);
   const form = dialog.multiSelect === true && checkboxes.length > 0;
 
+  // A DRIVER form is a third shape, and it needs its own render for the same reason it
+  // needs its own wire body: its rows live on its questions, each numbering from 1, so
+  // there is no single numbered list to draw. Drawn here rather than in a component of its
+  // own so the two forms share this file's refusal handling, its identity-keyed reset and
+  // its "nothing was sent" wording - the parts a human reads when something goes wrong.
+  if (dialog.questions && dialog.questions.length > 0 && dialog.multiSelect) {
+    return (
+      <DriverForm
+        sessionId={sessionId}
+        dialog={dialog}
+        questions={dialog.questions}
+        busy={busy}
+        setBusy={setBusy}
+        error={error}
+        setError={setError}
+      />
+    );
+  }
+
   return (
     // Stops the click from reaching the card, which would toggle it expanded underneath.
     <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
@@ -186,6 +205,136 @@ export function PaneDialogPrompt({
       )}
 
       {note && <p className="pd-note dim">{note}</p>}
+      {error && <p className="pd-error">{error}</p>}
+    </section>
+  );
+}
+
+/**
+ * A driver's multi-question form: every question at once, each with its own rows.
+ *
+ * The whole shape the pane could never show. Claude's `AskUserQuestion` carries up to four
+ * questions in one call, and the TUI renders them as tabs - so the parser only ever saw
+ * one, the human answered it, and the walk stepped `→` hoping to find either the next
+ * question or a Submit tab. Here all of them are on screen, single-select questions render
+ * as radios and multi-select ones as checkboxes, and one Submit sends the whole map. The
+ * "you have not answered all questions" banner has no equivalent because the button is
+ * simply disabled until every question has an answer.
+ */
+function DriverForm({
+  sessionId,
+  dialog,
+  questions,
+  busy,
+  setBusy,
+  error,
+  setError,
+}: {
+  sessionId: string;
+  dialog: PaneDialog;
+  questions: NonNullable<PaneDialog["questions"]>;
+  busy: number | "form" | null;
+  setBusy: (b: number | "form" | null) => void;
+  error: string | null;
+  setError: (e: string | null) => void;
+}): React.JSX.Element {
+  // Per question, the labels chosen. A single-select question holds at most one, which is
+  // enforced where the row is clicked rather than at submit - the human should never be
+  // able to build a state the daemon will refuse.
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+
+  function toggle(question: string, label: string, multi: boolean): void {
+    setPicked((p) => {
+      const cur = p[question] ?? [];
+      if (!multi) return { ...p, [question]: cur[0] === label ? [] : [label] };
+      return {
+        ...p,
+        [question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
+      };
+    });
+  }
+
+  const complete = questions.every((q) => (picked[q.question] ?? []).length > 0);
+
+  async function submit(): Promise<void> {
+    if (busy !== null || !complete) return;
+    setBusy("form");
+    setError(null);
+    const r = await api.submitAnswers(
+      sessionId,
+      questions.map((q) => ({ question: q.question, labels: picked[q.question] ?? [] })),
+    );
+    setBusy(null);
+    // No success branch, as above: answering resolves the tool call, the request clears,
+    // and this whole component unmounts on the next frame.
+    if (!r.ok) setError(failure(r));
+  }
+
+  return (
+    <section className="pane-dialog" onClick={(e) => e.stopPropagation()}>
+      <header className="pd-head">
+        <span className="pd-badge">Waiting on you</span>
+        <span className="pd-hint dim">answer each, then submit</span>
+      </header>
+
+      {dialog.prompt && questions.length > 1 && <p className="pd-prompt">{dialog.prompt}</p>}
+
+      {questions.map((q) => (
+        <div className="pd-question" key={q.question}>
+          <p className="pd-question-text">
+            {q.header && <span className="pd-question-tag">{q.header}</span>}
+            {q.question}
+          </p>
+          <ul className="pd-options">
+            {q.options.map((o) => {
+              const on = (picked[q.question] ?? []).includes(o.label);
+              return (
+                <li key={o.number}>
+                  <Tooltip label={o.detail ?? `Choose ${o.label}`}>
+                    <button
+                      type="button"
+                      role={q.multiSelect ? "checkbox" : "radio"}
+                      aria-checked={on}
+                      className={`pd-option pd-check${on ? " pd-checked" : ""}`}
+                      disabled={busy !== null}
+                      onClick={() => toggle(q.question, o.label, q.multiSelect === true)}
+                    >
+                      <span className="pd-num">{o.number}</span>
+                      <span className="pd-box" aria-hidden="true">
+                        {on ? "✔" : ""}
+                      </span>
+                      <span className="pd-body">
+                        <span className="pd-label">{o.label}</span>
+                        {o.detail && <span className="pd-detail">{o.detail}</span>}
+                      </span>
+                    </button>
+                  </Tooltip>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+
+      <div className="pd-actions">
+        <Tooltip
+          label={
+            complete
+              ? "Send these answers back to the agent"
+              : "Every question needs an answer before this can be sent"
+          }
+        >
+          <button
+            type="button"
+            className="pd-submit"
+            disabled={busy !== null || !complete}
+            onClick={() => void submit()}
+          >
+            {busy === "form" ? "Submitting…" : "Submit answers"}
+          </button>
+        </Tooltip>
+      </div>
+
       {error && <p className="pd-error">{error}</p>}
     </section>
   );

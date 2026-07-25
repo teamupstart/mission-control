@@ -42,6 +42,14 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
   loop is scoped to `runtime === "terminal"`, because "no process on a tty matched" is no
   information at all about a session that has no tty. And a driver-run session leaves through
   the SAME `beginEviction` a vanished pane does - see "A session going away".
+  Two more arrived with the first driver. **A shutdown SUSPENDS, it does not exit**:
+  `stopAll` sets `shuttingDown`, which is the only thing deciding whether the pump writes
+  `exited` or `suspended`, and an embedded subprocess is OUR child - recording a restart as
+  `exited` makes every clean one indistinguishable from an agent that finished, and
+  `reconcileOnStartup` would then run `git worktree remove --force` over work that was
+  merely interrupted. **`taskLiveness` answers from the ROW, not the handle map**, because
+  it is consulted during startup reconciliation, which runs before `restore()` has
+  relaunched anything.
 - The live channel is SSE only. The web app does not poll.
 
 ## Compiler-enforced contracts
@@ -74,7 +82,11 @@ fails if an agent id turns up in the stylesheet again. It must also say which RU
 offers (`runtimes`, `@shared/harness-capabilities.ts`) and, if `"sdk"` is one of them, hold a
 driver behind it (`Harness.sdk`) - one fact in two files, pinned by `harness-sdk.test.ts`.
 `["terminal"]` with `sdk: null` is the honest answer for a harness nobody has written a
-driver for.
+driver for. An `SdkSpec` answers TWO questions, not one: how to `launch` an embedded
+session, and `resumeArgv` - the argv that continues that same conversation INTERACTIVELY,
+which is what "Continue in terminal" spawns. Both live on the spec for the reason every
+other capability does: the handoff route must reach it through the registry, never by
+testing `session.agent`.
 
 ## Layout parity
 
@@ -264,6 +276,31 @@ did - `mission-mcp.test.ts` scrapes that file's `registerTool` calls and fails o
 its `--allowed-tools` rather than adding a second registration. None of this touches what
 `claude mcp add` / `codex mcp add` wrote machine-wide (`src/main/integrations.ts`), and none
 of it reaches a session an operator started. Test: `mission-mcp.test.ts`.
+
+**A dispatch branches ONCE on the runtime, after provisioning, and everything the terminal
+path does after that branch is absent on the other side rather than skipped.** No home (so
+`Task.homeName` stays null and teardown has nothing to kill), no `waitForSessionAtCwd` (we
+are holding the session), no `awaitReady` (the driver's `bound` IS readiness, and it cannot
+be missed), no `deliverIntent` (the intent is turn one). `resolveDispatchRuntime`
+(`harnesses.ts`) is the only reader of the stored choice, and it composes
+`resolveSessionRuntime` (`@shared/harness-capabilities.ts`), which the settings panel
+narrows through too - the daemon and the card must not disagree about which runtime is in
+force. An unreadable stored value, or one naming a runtime the harness declares no driver
+for, falls back to `"terminal"` and REPORTS what it dropped; a build with no supervisor
+FAILS the dispatch rather than quietly taking the terminal path, because the operator asked
+for one thing and would have got another. The three-valued liveness contract gains its SDK
+arm here: `taskLiveness` is asked BEFORE `homeAlive`, because an embedded task has no
+`homeName` at all and the terminal reading of that absence is a confident "gone" over a
+worktree an agent is working in. Test: `dispatcher-runtime.test.ts`.
+
+**A handoff TRANSFERS a task's binding; it must not settle it.** `handOffToTerminal`
+(`sdk/handoff.ts`) clears `Task.sessionId` BEFORE stopping the driver, not after: the stop
+begins the eviction, `session_remove` is what settles a task, and relying on the 8s linger
+to outrun a patch would work today and be a silent `failed` on the day it does not. It then
+waits for the pump (so the harness has closed its session file before another process opens
+the same conversation), spawns through the SAME `spawnUniquely` a dispatch uses, records the
+home name so teardown can still find it, and rebinds to whatever discovery adopts. The argv
+comes from `SdkSpec.resumeArgv`, never composed at the route. Test: `sdk-answer-http.test.ts`.
 
 **A dispatch may pin its input commit, and that is mechanism with no policy in it.**
 `TaskDispatchOptions` (`src/server/dispatcher.ts`) is ephemeral and server-only - nothing on
@@ -510,14 +547,24 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   iterates `detect` and names no vendor - including the background roles, which are TOKENS
   matched at argv[1]/argv[2] and never substrings of a command line carrying an operator's
   paths and a 1.2KB prompt. `resolveAgentBin` (`harness/index.ts`) is the ONE bin resolver,
-  for dispatched sessions and headless runs alike; it lived in `config.ts` while
-  `claude-cli.ts` kept a second chain, and the two disagreed. A `clearContext: null` still
+  for dispatched sessions, headless runs and embedded ones alike; it lived in `config.ts`
+  while `claude-cli.ts` kept a second chain, and the two disagreed. The CHAIN itself is
+  `resolveBinSpec` (`harness/bin.ts`) so a module this record imports - the Claude driver,
+  which has to pin its subprocess to the operator's own `claude` rather than the copy inside
+  the npm package - can resolve a spec it already holds without closing an import cycle
+  around the registry. A `clearContext: null` still
   degrades reset to the byte-identical `cleared: false` a pane-less session produces, but no
   shipped harness declares one any more: `codex.clearContext` was null on the assertion that
   `/clear` was Claude's alone and would land in Codex's prompt as text, and it is Codex's own
   command. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
-  refusing surface. `HARNESSES.codex.tui` was the FIRST counter-example, and is still the
+  refusing surface. **The work queue's `runtime === "sdk"` refusal is INTERIM and
+  runtime-scoped**, in both halves - `foremanAutomationAuthorized` (`harness/index.ts`) and
+  `workQueueBlockedReason` (`@shared/harness-capabilities.ts`). Scoped to the runtime rather
+  than to an agent deliberately: the second driver may land before the parity work does, and
+  a guard written as `agent === "claude"` would let its sessions through without an edit.
+  Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` deletes both lines and gives the queue
+  its driver arm. `HARNESSES.codex.tui` was the FIRST counter-example, and is still the
   one to read before declaring any capability `null` - the five corrections above are what
   taking it seriously cost. It is NOT null. The guard it replaced said
   `agent !== "claude"`, with a comment above it asserting Codex "doesn't render these

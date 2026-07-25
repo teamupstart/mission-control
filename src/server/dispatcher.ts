@@ -1,6 +1,13 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
+import type {
+  AgentType,
+  PermissionMode,
+  Session,
+  Task,
+  ThinkingLevel,
+  WorktreeProvider,
+} from "@shared/types.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
@@ -8,13 +15,19 @@ import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelArgs } from "./ask-channel.ts";
 import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
-import { getHarnessesConfig, resolveDispatchEffort, resolveDispatchModel } from "./harnesses.ts";
+import {
+  getHarnessesConfig,
+  resolveDispatchEffort,
+  resolveDispatchModel,
+  resolveDispatchRuntime,
+} from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
+import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
-import type { MissionMcpRequirement } from "./mission-mcp.ts";
+import { missionMcpDescriptor, type MissionMcpRequirement } from "./mission-mcp.ts";
 import { run } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
@@ -82,11 +95,20 @@ export interface TaskDispatchOptions {
  * read the mode off the pane footer, which a fresh session's folder-trust dialog hides,
  * so it silently left the session in its default mode. A flag needs no readable footer.
  */
+export function dispatchPermissionMode(agent: AgentType): PermissionMode | null {
+  if (!getHarnessesConfig().autoModeOnDispatch) return null;
+  return harnessFor(agent).permissionModes?.onDispatch ?? null;
+}
+
 export function dispatchPermissionModeArgs(agent: AgentType): string[] {
-  if (!getHarnessesConfig().autoModeOnDispatch) return [];
+  const mode = dispatchPermissionMode(agent);
   const spec = harnessFor(agent).permissionModes;
-  if (!spec?.onDispatch || !spec.launchArgs) return [];
-  return [...spec.launchArgs(spec.onDispatch)];
+  // The extra `launchArgs` gate belongs to THIS renderer, not to the mode: a harness that
+  // names an autonomous mode reachable only through its live TUI has a mode to arm and no
+  // flag to arm it with, and the embedded runtime - which sets the mode through its own
+  // control protocol rather than through argv - is not held back by that absence.
+  if (!mode || !spec?.launchArgs) return [];
+  return [...spec.launchArgs(mode)];
 }
 
 /**
@@ -106,6 +128,18 @@ export class Dispatcher {
       inject?: typeof injectPrompt;
       waitForPiReady?: typeof waitForPiLaunchReady;
       waitForPiAcceptance?: typeof waitForPiPromptAccepted;
+      /**
+       * The owner of embedded sessions, when the daemon constructed one.
+       *
+       * Optional so the existing route-unit and dispatcher tests still build a Dispatcher
+       * with a Registry and nothing else; a dispatch that RESOLVES to the SDK runtime with
+       * no supervisor fails loudly rather than silently taking the terminal path, because
+       * the operator asked for one thing and would have got another.
+       */
+      supervisor?: SdkSupervisor;
+      /** How the launch reaches our own MCP server. Injected for the same reason. */
+      missionMcpDescriptor?: typeof missionMcpDescriptor;
+      resolveRuntime?: typeof resolveDispatchRuntime;
     } = {},
   ) {}
 
@@ -153,6 +187,16 @@ export class Dispatcher {
       // from the harness registry. Null means let the harness's own configuration decide.
       const model = resolveDispatchModel(task.agent, task.model);
       const effort = resolveDispatchEffort(task.agent, task.effort);
+      // Which of the two runtimes this launch takes, resolved here for the same reason the
+      // model and effort are: a toggle flipped mid-batch reaches the next session rather
+      // than the next restart. Everything above this line is identical on both paths -
+      // provisioning a worktree is not a runtime question - and everything below the branch
+      // is the terminal path's own business (an argv, a home, a paste, and the waits that
+      // exist because none of those three can be acked).
+      if ((this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent) === "sdk") {
+        await this.dispatchEmbedded(taskId, task, wt, model, effort, options.missionMcp ?? null);
+        return;
+      }
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
       // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
       // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
@@ -278,13 +322,20 @@ export class Dispatcher {
       // land on the KEEP side with the `true` case rather than on the reclaim side with
       // `false`: erring towards keeping costs one Reclaim click, erring the other way runs
       // `git worktree remove --force` over a checkout an agent is working in.
-      const alive = cur.homeName ? await homeAlive(cur.homeName) : false;
+      // An embedded session has no home to ask after, and the supervisor always knows: it
+      // either holds the handle or has a row saying what became of it. Asked FIRST because
+      // a `homeName`-less task would otherwise read as "no home was ever spawned" - true,
+      // and the wrong reason - and reclaim a worktree an embedded agent is working in.
+      const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
+      const alive = embedded ?? (cur.homeName ? await homeAlive(cur.homeName) : false);
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
           error:
             alive === true
-              ? `${message} - its terminal home and worktree were kept; Focus or Cancel it`
+              ? embedded === true
+                ? `${message} - its session and worktree were kept; open or Cancel it`
+                : `${message} - its terminal home and worktree were kept; Focus or Cancel it`
               : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
@@ -296,6 +347,80 @@ export class Dispatcher {
         await this.teardownTaskResources(taskId, cur, message);
       }
     }
+  }
+
+  /**
+   * The embedded arm of the dispatch: hand the task to the supervisor and stop.
+   *
+   * What is NOT here is the point of it. No terminal home, so no `homeName`, no name
+   * collision to dodge and nothing to kill at teardown. No `waitForSessionAtCwd`, because
+   * this session does not have to be discovered - we are holding it. No `awaitReady`,
+   * because there is no TUI that might not exist yet and no 20-second hook wait to hedge
+   * with; the driver's own `bound` is the readiness signal, and it cannot be missed. And no
+   * `deliverIntent`, because the intent IS turn one of the conversation the supervisor
+   * starts - there is no paste to verify, no settle window, and no retry whose cost is the
+   * agent reading its task twice.
+   *
+   * The ask channel is dropped with them, and deliberately: it exists because a menu on a
+   * child's terminal is unreadable to the dashboard, and an embedded session's questions
+   * arrive as structured requests the card draws directly. Our MCP server still rides
+   * along, because `report_status` and the rest were never about asking questions.
+   */
+  private async dispatchEmbedded(
+    taskId: string,
+    task: Task,
+    wt: ProvisionedWorktree,
+    model: string | null,
+    effort: ThinkingLevel | null,
+    missionMcp: MissionMcpRequirement | null,
+  ): Promise<void> {
+    const supervisor = this.deps.supervisor;
+    if (!supervisor) {
+      // Never silently fall back to the terminal path: the operator set this harness to the
+      // Agent SDK, and a session that quietly launched the other way is one whose whole
+      // behaviour - where its questions appear, whether it survives a restart - is not what
+      // they asked for.
+      throw new Error("this build has no session supervisor, so it cannot dispatch embedded");
+    }
+    const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)();
+    // Same rule the terminal path applies to its argv, asked of the thing that actually
+    // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
+    // session that cannot call them would run to completion unable to report it.
+    if (missionMcp && !mcp) {
+      throw new Error(
+        `the launch could not carry the required Mission MCP tools ` +
+          `${missionMcp.tools.join(", ")} (is the MCP bundle built?), so this ${task.agent} ` +
+          `session could not submit its result`,
+      );
+    }
+    const session = await supervisor.start({
+      agent: task.agent,
+      // The task's own title, unsanitized: `sessionLabel` cuts a name down to a terminal
+      // backend's target grammar, and there is no terminal here to satisfy. It is also what
+      // makes a restored card come back under the same name (see `restoredName`).
+      name: task.title.trim() || wt.path,
+      cwd: wt.path,
+      prompt: task.intent,
+      model,
+      effort,
+      permissionMode: dispatchPermissionMode(task.agent),
+      mcp,
+      taskId,
+      gitBranch: wt.branch,
+      gitRoot: wt.path,
+      repoRoot: task.repoRoot,
+    });
+    if (await this.abortIfSettled(taskId)) {
+      // A cancel landed while the driver was starting. `abortIfSettled` tore down the
+      // worktree; the session it would have worked in has to go with it.
+      await supervisor.stop(session.id).catch(() => {});
+      return;
+    }
+    this.patch(taskId, { status: "running", sessionId: session.id });
+    // Both orders are covered on purpose. If the driver has already bound, the episode
+    // exists and this binds it; if it has not, `applyDriverBinding` binds it when it does,
+    // because the task now records this session id. Neither can be relied on alone.
+    this.registry.bindTaskToWorkEpisode(taskId, session.id);
   }
 
   /**
@@ -915,8 +1040,11 @@ export function deriveTitle(intent: string): string {
  * unique name. "We could not ask" is not "the name is free" - taking the bare label on that
  * basis is how two dispatches end up sharing a home, which for a multiplexer means the second
  * agent's prompt is typed into the first agent's pane.
+ *
+ * Exported for the terminal handoff, which opens a home for a session that already exists:
+ * the same race, the same rule, and no reason for a second spelling of it.
  */
-async function spawnUniquely(
+export async function spawnUniquely(
   baseName: string,
   shortId: string,
   cwd: string,

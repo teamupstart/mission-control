@@ -70,19 +70,60 @@ export function applyWorkflowPoll(
   };
 }
 
+/**
+ * A reading of the write clock: taken when a poll's requests go out, and again when they
+ * come back.
+ */
+export interface WriteClock {
+  /** Writes that have FINISHED, success or refusal. */
+  completed: number;
+  /** Writes in flight at this instant. */
+  inFlight: number;
+}
+
+/**
+ * Whether a write overlapped the poll that ran between these two clock readings.
+ *
+ * A single "generation" counter bumped per write is the obvious shape and it does not
+ * work, because the window that matters opens before the counter moves. A `PUT` that is
+ * still in flight has not changed anything the counter can see, so a poll issued just
+ * after the save started reads the PRE-write config from the daemon, finds the counter
+ * exactly where it left it, and applies that read over the operator's optimistic value -
+ * the Live-delivery switch snaps back to off for the length of the write and then flips on
+ * again when the `PUT` lands. Measured at 7 seconds against a deliberately slowed write.
+ *
+ * So the question is not "did anything change" but "was a write anywhere near this poll",
+ * and the three disjuncts are the three ways it can be, each unreachable by the others:
+ * a write was already in flight when the reads went out; a write started while they were
+ * out and is still going; or a write began AND finished entirely inside the poll's window,
+ * which leaves `inFlight` at zero on both readings and is visible only in `completed`.
+ *
+ * Erring towards "raced" costs one poll interval of slightly older data, which the next
+ * tick corrects. Erring the other way is the snap-back.
+ */
+export function pollRacedByWrite(before: WriteClock, after: WriteClock): boolean {
+  return before.inFlight > 0 || after.inFlight > 0 || after.completed !== before.completed;
+}
+
 export function useWorkflowSettings(): WorkflowSettingsState {
   const [config, setConfigState] = useState<WorkflowConfig | null>(null);
   const [status, setStatus] = useState<WorkflowStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<WorkflowConfig | null>(null);
   /**
-   * Bumped by every write, and read by a poll before its request and again after. Without
-   * it a tick that left just before the operator enables Live delivery lands after the
-   * click and paints the pre-write config back: the switch visibly snaps off while the
-   * daemon is going live, which is the one direction this particular toggle must never
-   * lie in.
+   * The write clock a poll is checked against, in two refs so `pollRacedByWrite` can see
+   * an unfinished write as well as a finished one. Refs rather than state: a poll in
+   * flight has to read the value that is true NOW, not the one its closure captured.
    */
-  const writes = useRef(0);
+  const writesCompleted = useRef(0);
+  const writesInFlight = useRef(0);
+  const readClock = useCallback(
+    (): WriteClock => ({
+      completed: writesCompleted.current,
+      inFlight: writesInFlight.current,
+    }),
+    [],
+  );
 
   const setConfig = useCallback((next: WorkflowConfig | null): void => {
     configRef.current = next;
@@ -92,7 +133,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
-      const at = writes.current;
+      const before = readClock();
       const [config, status] = await Promise.all([
         // A refusal is not thrown at the operator: it becomes a null reading, which is what
         // every "the daemon has not said" affordance in the panel is keyed on. 503 while the
@@ -101,9 +142,11 @@ export function useWorkflowSettings(): WorkflowSettingsState {
         workflowRequest<WorkflowStatus>("/api/workflows/status").catch(() => null),
       ]);
       if (!alive) return;
+      // The second clock reading sits directly after the await with nothing between them,
+      // so no write can slip in unseen between the reads landing and being judged.
       const next = applyWorkflowPoll(
         { config, status },
-        writes.current !== at,
+        pollRacedByWrite(before, readClock()),
         configRef.current,
       );
       setStatus(next.status);
@@ -115,7 +158,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig]);
+  }, [setConfig, readClock]);
 
   /**
    * Apply a config change optimistically, and TAKE IT BACK if the daemon refuses.
@@ -128,14 +171,15 @@ export function useWorkflowSettings(): WorkflowSettingsState {
   const update = useCallback(
     async (next: WorkflowConfig): Promise<boolean> => {
       const before = configRef.current;
-      writes.current += 1;
+      // Marked in flight BEFORE the request goes out, which is the whole point: the window
+      // a poll has to be kept out of opens at the click, not when the daemon answers.
+      writesInFlight.current += 1;
       setConfig(next);
       try {
         const saved = await workflowRequest<WorkflowConfig>("/api/workflows/config", {
           method: "PUT",
           body: JSON.stringify(next),
         });
-        writes.current += 1;
         setConfig(saved);
         setError(null);
         return true;
@@ -143,6 +187,12 @@ export function useWorkflowSettings(): WorkflowSettingsState {
         setConfig(before);
         setError(why(caught, "Could not save Workflow settings"));
         return false;
+      } finally {
+        // Both halves in a `finally`, so a refused write closes its window too - otherwise
+        // one failed save leaves `inFlight` above zero and every later poll is discarded as
+        // raced, which is a panel that quietly stops updating.
+        writesInFlight.current -= 1;
+        writesCompleted.current += 1;
       }
     },
     [setConfig],

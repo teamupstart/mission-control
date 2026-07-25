@@ -24,6 +24,7 @@ import {
 } from "../src/web/components/WorkflowSettingsPanel.tsx";
 import {
   applyWorkflowPoll,
+  pollRacedByWrite,
   type WorkflowSettingsState,
 } from "../src/web/useWorkflowSettings.ts";
 import type { WorkflowConfig } from "../src/shared/workflow.ts";
@@ -248,4 +249,44 @@ test("a config read that lost a race with a write is dropped, failed or not", ()
   assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).config, SAVED);
   // Status is never raced - nothing in this panel writes it - so it lands either way.
   assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).status, STATUS);
+});
+
+// The race the Inspector caught on round 2 of #258, and the reason the write clock counts
+// in-flight writes rather than bumping one generation number.
+//
+// The window that matters opens at the CLICK, not when the daemon answers. A poll issued
+// just after a save started reads the pre-write config, finds a generation counter exactly
+// where it left it, and applies that read over the operator's optimistic value - so Live
+// delivery snapped back to off for the length of the write and flipped on again when the
+// PUT landed. Measured at ~7 seconds in a browser against a deliberately slowed write:
+// `11000000000000000000000000000001111111111111111111` sampled every 250ms.
+const IDLE = { completed: 3, inFlight: 0 };
+
+test("a poll is raced by a write that merely OVERLAPS it, not only one that finished", () => {
+  // Nothing happening on either side: the poll's reads are trusted.
+  assert.equal(pollRacedByWrite(IDLE, IDLE), false);
+
+  // A write was already in flight when the reads went out - the defect's exact shape, and
+  // the one a generation counter cannot see, because nothing has completed yet.
+  assert.equal(
+    pollRacedByWrite({ completed: 3, inFlight: 1 }, { completed: 3, inFlight: 1 }),
+    true,
+  );
+  // A write started while the reads were out and is still going.
+  assert.equal(pollRacedByWrite(IDLE, { completed: 3, inFlight: 1 }), true);
+  // A write began AND finished entirely inside the poll's window: `inFlight` is zero at
+  // both readings, so only `completed` shows it.
+  assert.equal(pollRacedByWrite(IDLE, { completed: 4, inFlight: 0 }), true);
+  // The in-flight write from the first case, now landed.
+  assert.equal(
+    pollRacedByWrite({ completed: 3, inFlight: 1 }, { completed: 4, inFlight: 0 }),
+    true,
+  );
+});
+
+// A poll that starts after everything has settled is trusted again - the guard must not
+// latch. If it did, the panel would quietly stop updating after the first save, which is
+// the same "showing something that is no longer true" failure in a slower form.
+test("the race guard clears once writes have settled", () => {
+  assert.equal(pollRacedByWrite({ completed: 4, inFlight: 0 }, { completed: 4, inFlight: 0 }), false);
 });

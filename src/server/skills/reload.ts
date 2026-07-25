@@ -1,5 +1,6 @@
 import type { Session } from "@shared/types.ts";
 import type { SkillsConfig } from "@shared/protocol.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { harnessFor } from "../harness/index.ts";
 import { hasPane, settledIdle } from "../foreman/queue-machine.ts";
 import { injectPrompt } from "../actions.ts";
@@ -247,7 +248,23 @@ export async function reloadOne(
   if (!skills?.reloadCommand) return false;
 
   if (!hasCurrentReloadIdleSource(session)) return false;
-  if (harness.tui?.modeLine) {
+  // The gate above's driver arm, and it is a REPLACEMENT rather than a skip.
+  //
+  // The pane read exists to prove no dialog is up before an Enter is pressed. An embedded
+  // session has no pane, so `readPaneModeLine` answers null for every one of them - leaving
+  // this refusing them for ever, which is the panel claiming a skill is live in a session
+  // that will never hear about it (precisely the "toggle that silently no-ops" failure the
+  // rollback below exists to avoid).
+  //
+  // So the same QUESTION is asked of better evidence: a driver reports what it is blocked
+  // on as structured data, so "nothing is waiting on a human" is a field rather than an
+  // inference off a footer. The stakes are lower too - `send()` delivers a turn, it does not
+  // press Enter into whatever happens to be highlighted - so the worst case here is a slash
+  // command queued behind a pending request, not an unattended answer to a permission
+  // prompt. Runtime-scoped, not agent-scoped, so a later driver inherits it.
+  if (session.runtime === "sdk") {
+    if (activePaneDialog(session)) return false;
+  } else if (harness.tui?.modeLine) {
     const line = await deps.readModeLine(session);
     if (!line) return false;
   }

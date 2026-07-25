@@ -221,10 +221,21 @@ export async function queueSendStillValid(
       return { ok: false, why: "the session is no longer settled" };
     }
 
-    // 5. Pane unchanged - inject targets a RAW pane id, and a recreated pane can
-    //    reuse one, so a stale id could type into someone else's terminal.
+    // 5. Still deliverable, and - on the runtime where delivery is addressed by a raw pane
+    //    id - still the SAME pane. A recreated pane can reuse an id, so a stale one could
+    //    type into someone else's terminal.
+    //
+    //    The second half is deliberately conditional on there BEING a pane key, rather than
+    //    on `null === null` happening to compare equal. An embedded session is addressed by
+    //    its session id and driven through a handle the supervisor owns, so there is no id
+    //    to go stale and no pane to be recreated: `paneKeyOf` answers null for every one of
+    //    them, and a guard that reads as "the pane was recreated" would be either a no-op
+    //    that looks load-bearing or, the day a pane key becomes derivable for some other
+    //    reason, a refusal nobody could explain. Say which sessions it is about.
     if (!hasPane(fresh)) return { ok: false, why: "the session has no pane" };
-    if (paneKeyOf(fresh) !== obs.paneKey) return { ok: false, why: "the pane was recreated" };
+    if (obs.paneKey !== null && paneKeyOf(fresh) !== obs.paneKey) {
+      return { ok: false, why: "the pane was recreated" };
+    }
 
     // 6. The item itself hasn't moved (the human may have edited or reordered it).
     const queue = await actions.queue(fresh.id);
@@ -441,6 +452,17 @@ export async function applyQueueAction(
         // first and mangle the work instruction. That is the same hazard the crash
         // path already refuses to gamble on (see the `recoveredAt` branch): absence
         // of evidence is not evidence, so hand it to the human instead of guessing.
+        //
+        // ON THE DRIVER RUNTIME THIS ARM AND THE NEXT ARE UNREACHABLE, and that is a
+        // property of the delivery rather than a case handled below. `send()` resolves
+        // only when the harness ACCEPTED the turn, so there is no half-landed state to be
+        // uncertain about: the daemon reports `pasted: false` on every failure
+        // (`sdk/deliver.ts`), which is the one thing `InjectError` reads as positive
+        // evidence that nothing was written, and it never reports `paneBlocked` because
+        // there is no pane for a human to be scrolling. So an embedded delivery lands on
+        // the ordinary counted-attempt arm at the bottom: it spends one of the item's
+        // rationed attempts, re-queues, and escalates at the cap - a definite failure,
+        // never limbo and never an unbounded park-and-retry.
         if (mayHaveLanded(err)) {
           await actions.setItemState(target.id, action.item.id, {
             state: "escalated",

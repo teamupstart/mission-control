@@ -127,6 +127,55 @@ test("exactly one command is typed, and it is the literal /reload-skills", async
   assert.deepEqual(typed, ["/reload-skills"]);
 });
 
+test("an embedded session reloads without a pane read, because there is no pane to read", async () => {
+  // The gate above is a PANE read, and it answers null for every session that has no pane.
+  // Left in force, it refuses embedded sessions for ever - the panel says a skill is on and
+  // one of the machine's runtimes silently never hears about it, which is exactly the
+  // "toggle that silently no-ops" failure the rollback above exists to avoid.
+  const { deps, log } = spy();
+  const sent = await reloadOne(mkSession({ runtime: "sdk", terminals: [] }), GEN, PRIOR, deps);
+  assert.equal(sent, true);
+  assert.deepEqual(log, [`ack:${GEN}`, "inject"], "no pane read, and the ack still precedes the send");
+});
+
+test("an embedded session parked on a request is not typed at either", async () => {
+  // The pane read's QUESTION - is anything waiting on a human? - is answered from better
+  // evidence here: a driver reports what it is blocked on as structured data. The stakes are
+  // lower (a `send()` is a turn, not an Enter into whatever is highlighted), but sending a
+  // slash command in front of a pending ask is still not a thing to do unprompted.
+  const { deps, log } = spy();
+  const parked = mkSession({
+    runtime: "sdk",
+    terminals: [],
+    paneDialog: {
+      options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }],
+      highlighted: 0,
+      source: "driver",
+      requestId: "req-1",
+      kind: "permission",
+    },
+  });
+  assert.equal(await reloadOne(parked, GEN, PRIOR, deps), false);
+  assert.deepEqual(log, [], "nothing acked and nothing typed");
+});
+
+test("a pane-backed session still pays for its pane read", async () => {
+  // The driver arm is a REPLACEMENT scoped to the runtime, not a loosening of the gate. A
+  // session with a pane must still prove no dialog is up before an Enter is pressed - and a
+  // dialog on ITS screen is invisible to `paneDialog` when the parser could not read it,
+  // which is the whole reason the read is still the last gate there.
+  let reads = 0;
+  const { deps, log } = spy({
+    readModeLine: async () => {
+      reads++;
+      return null;
+    },
+  });
+  assert.equal(await reloadOne(mkSession({ paneDialog: null }), GEN, PRIOR, deps), false);
+  assert.equal(reads, 1, "the pane read still runs for a session that has a pane");
+  assert.deepEqual(log, [], "and it refused: nothing acked, nothing typed");
+});
+
 test("pi reloads from a current passive binding without a mode-line read", async () => {
   const transcript = HARNESSES.pi.transcript!;
   const locate = transcript.locate;

@@ -41,7 +41,7 @@ import {
   historicalTaskWorkEpisodeBindingsForTask,
   taskWorkEpisodeForTask,
 } from "./db.ts";
-import { resetSession } from "./reset.ts";
+import { driverClearFor, resetSession } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -1399,7 +1399,15 @@ export class TaskManager {
   ): Promise<AssignOutcome> {
     const inject = opts.inject ?? injectPrompt;
     const paneReady = opts.paneReady ?? paneAcceptsPrompt;
-    const reset = opts.reset ?? ((session: Session) => resetSession(this.registry, session, true));
+    const reset =
+      opts.reset ??
+      ((session: Session) =>
+        // The supervisor is what lets an embedded agent's context actually be wiped before
+        // its next task's intent is typed at it. Without it the reset reports
+        // `cleared: false`, `workIdentityReady` stays false, and `assignReserved` correctly
+        // refuses to hand the task over - so this is the difference between an SDK session
+        // taking a second task and never taking one.
+        resetSession(this.registry, session, true, undefined, driverClearFor(this.supervisor)));
     const doRename = opts.rename ?? rename;
 
     if (s.state !== "idle") {

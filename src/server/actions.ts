@@ -2360,6 +2360,7 @@ export async function resetToOrigin(
   clear: boolean,
   deps: InjectDeps = defaultInjectDeps,
   lockOwner?: PaneLockToken,
+  driverClear?: DriverClear,
 ): Promise<ResetResult> {
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
@@ -2401,20 +2402,75 @@ export async function resetToOrigin(
   }
   const detached = await releaseBranch(root, branch, target);
 
-  // `clearContext` is null for a harness that has no such command, and that answer lands
-  // on the SAME `cleared: false` a pane-less session has always produced - the already
-  // tested degradation, not a new branch. Before this, `/clear` was typed at every agent
-  // type ungated, so an agent that does not speak Claude's slash commands got a literal
-  // `/clear` submitted as a prompt.
-  const clearing = clear ? harnessFor(session.agent).clearContext : null;
-  if (!clearing) return { ok: true, error: null, root, cleared: false, detached };
+  const wipe = clear ? await clearAgentContext(session, deps, lockOwner, driverClear) : null;
+  if (!wipe) return { ok: true, error: null, root, cleared: false, detached };
+  return { ok: true, error: null, root, cleared: wipe.cleared, detached, clearIssuedAt: wipe.clearIssuedAt };
+}
+
+/**
+ * How an EMBEDDED session's context is wiped: the supervisor asking the handle to do it.
+ *
+ * A seam rather than a direct import because `actions.ts` is the pane layer and must not
+ * acquire an opinion about drivers - and because the ONE thing this returns is the thing
+ * the reset needs to know: `false` is a driver that genuinely cannot clear (a null handle
+ * capability), which lands on the same `cleared: false` a pane-less session produces. It
+ * REJECTS when there is no live driver, which is a different fact and is reported as an
+ * uncleared reset rather than a failed one - the git half has already landed by then.
+ */
+export type DriverClear = (session: Session) => Promise<boolean>;
+
+/**
+ * Wipe the agent's context, whichever way this session can be reached - or null when its
+ * harness has no such command at all.
+ *
+ * The one branch a reset takes on the runtime axis, and it is here rather than at each of
+ * the two callers because both of them (`resetToOrigin`, `resetToCommit`) need the same
+ * answer and a second copy would be a second set of degradations to keep in step.
+ *
+ * `clearContext` null for a harness that has no such command lands on the SAME
+ * `cleared: false` a pane-less session has always produced - the already tested
+ * degradation, not a new branch. Before that gate existed, `/clear` was typed at every
+ * agent type ungated, so an agent that does not speak Claude's slash commands got a literal
+ * `/clear` submitted as a prompt.
+ *
+ * On the driver side the whole pane sequence is not merely skipped, it is MEANINGLESS:
+ * there is no screen to read before the command, so there is no screen change to wait for
+ * afterwards. `awaitClearProcessed` exists because keystrokes reaching a terminal is not
+ * the same event as the agent acting on them; `handle.clearContext()` resolves when the
+ * harness took the turn, which is that event. Waiting on a capture that always answers null
+ * would turn every embedded reset into a five-second timeout reporting `cleared: false`.
+ */
+async function clearAgentContext(
+  session: Session,
+  deps: InjectDeps,
+  lockOwner: PaneLockToken | undefined,
+  driverClear: DriverClear | undefined,
+): Promise<{ cleared: boolean; clearIssuedAt: number } | null> {
+  const clearing = harnessFor(session.agent).clearContext;
+  if (!clearing) return null;
+  if (session.runtime === "sdk") {
+    const clearIssuedAt = Date.now();
+    if (!driverClear) return { cleared: false, clearIssuedAt };
+    try {
+      return { cleared: await driverClear(session), clearIssuedAt };
+    } catch (err) {
+      // Best-effort, exactly like the two steps below it in `resetToOrigin`: the git reset
+      // has already landed, so telling the caller the whole operation failed would be a
+      // lie about work that is done. Report an uncleared reset and say why.
+      console.error(
+        `[reset] could not clear ${session.id} through its driver:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return { cleared: false, clearIssuedAt };
+    }
+  }
   // Read the screen BEFORE the keystrokes, so "nothing has happened yet" is a state we
   // can recognise rather than one we mistake for a clear that already landed.
   const before = await deps.capture(session);
   const clearIssuedAt = Date.now();
   const sent = await sendText(session, clearing.command, true, deps, undefined, lockOwner);
   const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
-  return { ok: true, error: null, root, cleared, detached, clearIssuedAt };
+  return { cleared, clearIssuedAt };
 }
 
 /**
@@ -2438,6 +2494,7 @@ export async function resetToCommit(
   clear: boolean,
   deps: InjectDeps = defaultInjectDeps,
   lockOwner?: PaneLockToken,
+  driverClear?: DriverClear,
 ): Promise<ResetResult> {
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     return { ok: false, error: "a snapshot restore needs a full commit id", root: null, cleared: false, detached: false };
@@ -2463,15 +2520,19 @@ export async function resetToCommit(
     };
   }
 
-  // The same context-clear tail as `resetToOrigin`: `clearContext` is null for a harness with no
-  // such command and lands on the already-tested `cleared: false` degradation, not a new branch.
-  const clearing = clear ? harnessFor(session.agent).clearContext : null;
-  if (!clearing) return { ok: true, error: null, root, cleared: false, detached: false };
-  const before = await deps.capture(session);
-  const clearIssuedAt = Date.now();
-  const sent = await sendText(session, clearing.command, true, deps, undefined, lockOwner);
-  const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
-  return { ok: true, error: null, root, cleared, detached: false, clearIssuedAt };
+  // The same context-clear tail as `resetToOrigin`, shared rather than restated - including
+  // its runtime branch, so an ensemble winner that ran embedded is cleared through its
+  // driver instead of silently reporting `cleared: false` and failing the restore.
+  const wipe = clear ? await clearAgentContext(session, deps, lockOwner, driverClear) : null;
+  if (!wipe) return { ok: true, error: null, root, cleared: false, detached: false };
+  return {
+    ok: true,
+    error: null,
+    root,
+    cleared: wipe.cleared,
+    detached: false,
+    clearIssuedAt: wipe.clearIssuedAt,
+  };
 }
 
 /** How long to give the agent to act on a `/clear` before we stop claiming it did. */

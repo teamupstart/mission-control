@@ -206,18 +206,33 @@ export function sdkFor(agent: AgentType): SdkSpec | null {
 /**
  * Whether Foreman may automate this session.
  *
- * The `runtime` arm is INTERIM and deliberately runtime-scoped, not agent-scoped: an
- * embedded session is instrumented by construction (its push channel is the handle the
- * supervisor holds), so this would say yes on the hook capability alone - and Foreman's
- * queue would then be driven by pane machinery the session has none of. It is one line
- * rather than a per-harness list so the next driver inherits the guard without an edit.
- * Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` replaces it with the driver arm; the
- * human-visible half of the same refusal is `workQueueBlockedReason`.
+ * TWO ARMS, split by RUNTIME rather than by agent, and the split is the whole of it: the
+ * question underneath is "can we see this session's lifecycle well enough to drive it?",
+ * and the two runtimes answer it from different evidence.
+ *
+ * An EMBEDDED session is instrumented by construction. Its push channel is the handle the
+ * supervisor is holding - pickup and completion arrive as `state` / `turn_done` events, and
+ * delivery is an acked `send()` that either happened or definitively did not. So the hook
+ * capability is not merely satisfied here, it is the wrong question: `harness.hooks` is
+ * about a script a harness installs on this machine, and a driver-run session's evidence
+ * does not come from one. That is exactly why this arm is runtime-scoped - phase 6's pi
+ * driver lands against it unchanged, and pi declares `hooks: null` (its extensions are
+ * in-process TS, not a shell-out), so an arm written as `agent === "claude"`, or one that
+ * kept requiring `hooks`, would silently refuse every pi session that had a working driver.
+ *
+ * A TERMINAL session is unchanged: it needs a hook capability, and - unless those hooks are
+ * installed machine-wide - it needs to have actually reported one, because a session that
+ * has never pushed anything is one whose idleness we would be guessing at.
+ *
+ * `workQueue` gates both, because that is a claim about the HARNESS (does Foreman know how
+ * to hand this agent work at all) and is true or false whichever way the session is driven.
+ * The human-visible half of the same decision is `workQueueBlockedReason`.
  */
 export function foremanAutomationAuthorized(session: Session): boolean {
   const harness = HARNESSES[session.agent];
-  if (!harness.workQueue || !harness.hooks) return false;
-  if (session.runtime === "sdk") return false;
+  if (!harness.workQueue) return false;
+  if (session.runtime === "sdk") return true;
+  if (!harness.hooks) return false;
   return harness.hooks.scope === "machine" || session.hooksSeen;
 }
 

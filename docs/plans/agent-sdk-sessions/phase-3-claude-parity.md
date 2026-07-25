@@ -134,3 +134,18 @@ adapter, never a special case in Foreman.
 - 2026-07-24: initial version. Step 5's runtime arm is deliberately here (not phase 6)
   so pi's driver lands against a stable authorization contract; phase 6 references it as
   C9. Phase 2's step 10 refusal removal is owned here - recorded in both files.
+- 2026-07-25: implemented. Step 6 required two edits inside C4/C5 machinery, both
+  additive and recorded here because they are phase 1/2 surfaces:
+  - `SdkEvent`'s `bound` gains optional `cleared?: true` (C4). A rotation looks identical
+    from outside whether the agent was cleared or merely reported a new id, and only the
+    party that issued `clearContext()` knows which - so the driver latches it and spends
+    it on the first rotation after. Absent means "an ordinary binding", so every existing
+    emitter is unchanged.
+  - `ensureWorkEpisode`'s identity evidence gains `driver_clear` beside `clear_start`,
+    and its `pathReplaced` corroboration is weakened FOR THAT KIND ONLY: a driver reports
+    the new identity the instant the harness mints it and Claude writes the session file
+    lazily, so `claudeSdkTranscriptPath` legitimately answers null. Measured live against
+    Claude 2.1.220 - three consecutive `/clear` resets, three null paths, three episodes
+    stranded with `workIdentityReady: false` on a reset that had worked. The hook path's
+    `clear_start` and the passive path are byte-identical. Test:
+    `reset-sdk.test.ts`.

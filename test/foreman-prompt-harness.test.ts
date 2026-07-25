@@ -35,6 +35,7 @@ function input(agent: AgentType, over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
       agent,
+      runtime: "terminal",
       name: "worktree cleanup",
       cwd: "/repo",
       gitBranch: "mancej/reap-leaked-worktree-leases",
@@ -94,7 +95,7 @@ test("the menu grammar is carried exactly for the harnesses that render a readab
 // explicitly admits. Same bargain `pane-write-capabilities.test.ts` strikes with a
 // hand-built `BoundPane` whose `write` is null.
 test("a harness that renders no readable dialog is never told its prose will be discarded", () => {
-  const prompt = policyFor({ child: "Pi", menus: false });
+  const prompt = policyFor({ child: "Pi", menus: false, runtime: "terminal" });
   // The sentence that makes the model choose a row instead of writing a reply. Believed on a
   // harness with no row to select, it is how Foreman stops answering that harness at all.
   assert.ok(!prompt.includes("discards typed characters"));
@@ -108,7 +109,7 @@ test("a harness that renders no readable dialog is never told its prose will be 
 });
 
 test("a harness that DOES render dialogs gets the whole menu contract", () => {
-  const prompt = policyFor({ child: "Pi", menus: true });
+  const prompt = policyFor({ child: "Pi", menus: true, runtime: "terminal" });
   assert.ok(prompt.includes("ANSWERING A MENU"));
   assert.ok(prompt.includes("discards typed characters"));
   assert.ok(prompt.includes('"option"'));
@@ -118,7 +119,7 @@ test("the router names the child from the same projection, whatever its menus do
   // The router BUCKETS and never selects a row, so it carries no menu grammar - and must not
   // acquire one by reading `menus` a second time in a second place.
   for (const menus of [true, false]) {
-    const prompt = routerFor({ child: "Pi", menus });
+    const prompt = routerFor({ child: "Pi", menus, runtime: "terminal" });
     assert.ok(prompt.includes("A Pi"));
     assert.ok(!prompt.includes("ANSWERING A MENU"));
   }
@@ -126,10 +127,30 @@ test("the router names the child from the same projection, whatever its menus do
 
 test("promptHarness reads the registry, not the id", () => {
   for (const agent of AGENT_TYPES) {
-    const h = promptHarness(agent);
+    const h = promptHarness(agent, "terminal");
     assert.equal(h.child, AGENT_IDENTITY[agent].label);
     assert.equal(h.menus, dialogSpecFor(agent) !== null);
+    assert.equal(h.runtime, "terminal");
   }
+});
+
+test("on the driver runtime every harness answers rows, whatever its screen does", () => {
+  // The half phase 6 rests on. `menus` is "can an answer be delivered by naming a row",
+  // and on this runtime that is true for EVERY harness - including pi, whose `tui` is null
+  // and which therefore reads as menu-less on the terminal axis. Were this projection to
+  // keep asking the TUI, pi's driver would land and its sessions would be told to answer
+  // structured requests in prose that has nowhere to go.
+  for (const agent of AGENT_TYPES) {
+    const h = promptHarness(agent, "sdk");
+    assert.equal(h.child, AGENT_IDENTITY[agent].label);
+    assert.equal(h.runtime, "sdk");
+    assert.equal(h.menus, true, `${agent}: an embedded session always has a row to name`);
+  }
+  assert.equal(
+    promptHarness("pi", "terminal").menus,
+    dialogSpecFor("pi") !== null,
+    "the terminal projection is still exactly the TUI fact",
+  );
 });
 
 test("everything that is about JUDGMENT is the same for every harness", () => {

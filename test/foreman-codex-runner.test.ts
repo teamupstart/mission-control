@@ -25,6 +25,7 @@ test("Foreman structured review actually routes through Codex with the selected 
   const result = await reviewSession({
     session: {
       agent: "codex",
+      runtime: "terminal",
       name: "worker",
       cwd: "/repo",
       gitBranch: "feature",

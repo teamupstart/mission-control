@@ -15,6 +15,7 @@ function mkInput(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
       agent: "claude",
+      runtime: "terminal",
       name: "goal-feature",
       cwd: "/wt/goal",
       gitBranch: "harness/goal",

@@ -173,7 +173,7 @@ import {
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
-import { resetSession } from "./reset.ts";
+import { driverClearFor, resetSession } from "./reset.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
@@ -1829,7 +1829,13 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     // The git reset AND every piece of session-scoped state that described the work it
     // discarded - see `resetSession`, which `TaskManager.assign` shares.
-    const r = await resetSession(registry, session, parsed.data.clear);
+    const r = await resetSession(
+      registry,
+      session,
+      parsed.data.clear,
+      undefined,
+      driverClearFor(sdkSessions),
+    );
     return c.json(r, r.ok ? 200 : 500);
   });
 

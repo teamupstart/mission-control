@@ -278,6 +278,26 @@ export class SdkSupervisor {
   }
 
   /**
+   * Wipe this session's conversation, and say whether the driver could.
+   *
+   * Serialized with sends because it IS one on every driver that implements it by sending a
+   * command: a clear that overtook a queued turn would wipe the context that turn was
+   * written for.
+   *
+   * A false is the honest answer for a driver whose transport cannot clear, and it lands on
+   * the byte-identical `cleared: false` a pane-less terminal session has always produced -
+   * the tested degradation, not a new branch. It REJECTS only when there is no live driver
+   * at all, which is a different fact and the caller's to report as one.
+   */
+  clearContext(id: string): Promise<boolean> {
+    return this.serialize(id, async (handle) => {
+      if (!handle.clearContext) return false;
+      await handle.clearContext();
+      return true;
+    });
+  }
+
+  /**
    * Stop a session's driver.
    *
    * Deliberately NOT queued behind pending sends: stopping is what a caller asks for when
@@ -374,7 +394,7 @@ export class SdkSupervisor {
     return rows.length === 0 ? null : rows[rows.length - 1]!;
   }
 
-  private serialize(id: string, op: (handle: SdkSessionHandle) => Promise<void>): Promise<void> {
+  private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
     if (!handle || this.stopping.has(id)) return Promise.reject(noLiveDriver());

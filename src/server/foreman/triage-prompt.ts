@@ -1,4 +1,4 @@
-import { formatTranscript, paneSection, promptHarness } from "./prompt.ts";
+import { formatTranscript, paneSection, promptHarness, requestSection } from "./prompt.ts";
 import type { PromptHarness } from "./prompt.ts";
 import { fromChild, instructionsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
@@ -65,7 +65,7 @@ RULES:
 export function buildTriagePrompt(input: ReviewInput): string {
   const { session, surface, question, transcript, truncated } = input;
   return [
-    routerFor(promptHarness(session.agent)),
+    routerFor(promptHarness(session.agent, session.runtime)),
     "",
     // Shared verbatim with the full reviewer, which is the point: this tier disposes
     // `routine-access` on its own, so the operator's instructions have to bind here or
@@ -96,6 +96,10 @@ export function buildTriagePrompt(input: ReviewInput): string {
     // have been confident about, and unlike Tier 2 it has no "skip, I can't tell" instinct to
     // fall back on: it would answer `routine-access` on an ask it had not read.
     ...paneSection(input),
+    // The same argument as the screen above, one runtime over: an embedded session's ask is
+    // not on a screen and not in the transcript, so without this the router buckets a
+    // permission request it has not read. Exactly one of the two ever renders.
+    ...requestSection(input),
     "Now output your bucketing as a single raw JSON object and NOTHING else - no prose, no markdown",
     "fences. Begin your reply with { and end it with }.",
   ].join("\n");

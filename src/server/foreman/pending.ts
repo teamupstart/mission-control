@@ -16,6 +16,12 @@ import { canMessage } from "@shared/pane.ts";
  * - `non-input-review` - a plan/diff review: human-only, Foreman can't deliver.
  * - `terminal-pane`    - a stopped child (`awaiting_input`, or a menu on its screen) with a
  *                        terminal pane: answerable by typing, or by selecting a row.
+ * - `structured-request` - a driver-run child blocked on a REQUEST rather than a screen:
+ *                        answerable by naming an option, submitting a whole form, or in
+ *                        prose. Distinguished from `terminal-pane` because the reviewer
+ *                        prompt describes the two differently (see `promptHarness`) and
+ *                        because the record on the card should say which it was - the two
+ *                        are answerable by the same code and answerable in different words.
  * - `terminal-no-pane` - the same ask with no pane: a real question, no channel.
  * - `gate-parked`      - a no-mistakes gate whose agent has stopped: answerable by typing.
  * - `no-question`      - needs-you for some other state, with no answerable question.
@@ -24,6 +30,7 @@ export type PendingSituation =
   | "input-review"
   | "non-input-review"
   | "terminal-pane"
+  | "structured-request"
   | "terminal-no-pane"
   | "gate-parked"
   | "no-question";
@@ -250,7 +257,15 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
     // driver-run session has one without holding a pane.
     const canSend = canMessage(s);
     return {
-      situation: canSend ? "terminal-pane" : "terminal-no-pane",
+      // Named off the DIALOG's own source, never off the session's runtime: what makes this
+      // situation different is that the ask arrived as data, and that is a property of the
+      // ask. A driver that ever reported a screen-read dialog would be described as one, and
+      // a future runtime whose asks are structured inherits the framing with no edit here.
+      situation: !canSend
+        ? "terminal-no-pane"
+        : dialog?.source === "driver"
+          ? "structured-request"
+          : "terminal-pane",
       surface: "terminal",
       // Left as the activity even for a dialog, which reads "running AskUserQuestion". The
       // reviewer does not learn the question from this field on this surface - the prompt

@@ -1263,7 +1263,7 @@ export class Registry extends EventEmitter {
     const now = Date.now();
     switch (evt.kind) {
       case "bound":
-        this.applyDriverBinding(s, evt.agentSessionId, evt.transcriptPath, evt.pid, now);
+        this.applyDriverBinding(s, evt, now);
         return;
       case "state":
         this.applyDriverState(s, evt.state, evt.activity, now);
@@ -1325,11 +1325,10 @@ export class Registry extends EventEmitter {
    */
   private applyDriverBinding(
     s: Session,
-    agentSessionId: string,
-    transcriptPath: string | null,
-    pid: number | null,
+    evt: Extract<SdkEvent, { kind: "bound" }>,
     now: number,
   ): void {
+    const { agentSessionId, transcriptPath, pid } = evt;
     const next: Session = {
       ...s,
       agentSessionId,
@@ -1347,7 +1346,18 @@ export class Registry extends EventEmitter {
     // than on some later event, exactly as `applyHook` does and for the same reason: until
     // it is, the card shows the synthetic id's (empty) note, queue and goal.
     this.rememberAgentSession(next, s.agentSessionId);
-    this.ensureWorkEpisode(next, now, { kind: "driver_identity" });
+    // A CLEARED rotation is `clear_start`'s counterpart, and it has to be distinguished
+    // here or a reset that worked reports that it did not: `resetSession` arms the work
+    // episode for a rebind, and only clear-grade evidence can resolve that arm (see
+    // `ensureWorkEpisode`). `driver_identity` is the ordinary case - the agent reported a
+    // new id for some reason of its own - and must not be able to claim a reset's arm.
+    this.ensureWorkEpisode(
+      next,
+      now,
+      evt.cleared
+        ? { kind: "driver_clear", agentSessionId, transcriptPath }
+        : { kind: "driver_identity" },
+    );
     next.task = this.taskSummaryFor(next.id, next.cwd);
     next.note = this.noteSummaryFor(next);
     next.goal = this.goalSummaryFor(next);
@@ -2655,7 +2665,13 @@ export class Registry extends EventEmitter {
       // up once the two stop meaning the same thing.
       | { kind: "none" | "hook_identity" | "driver_identity" | "hook_work" | "new_work" }
       | {
-          kind: "clear_start" | "passive_identity";
+          // `driver_clear` is `clear_start`'s counterpart on the driver channel: the agent
+          // announced a new identity BECAUSE we asked it to wipe its context. It is grouped
+          // with the two identity-carrying kinds rather than with `driver_identity` because
+          // that is what it is - a rotation we caused, whose new id and transcript path are
+          // both known - and that grouping is exactly what lets a pre-armed reset resolve
+          // against it instead of timing out and stranding the episode on a dead key.
+          kind: "clear_start" | "driver_clear" | "passive_identity";
           agentSessionId: string;
           transcriptPath: string | null;
         } = { kind: "none" },
@@ -2681,13 +2697,38 @@ export class Registry extends EventEmitter {
     }
     if (existing.agentSessionId !== session.agentSessionId) {
       const identityEvidence =
-        evidence.kind === "clear_start" || evidence.kind === "passive_identity"
+        evidence.kind === "clear_start" ||
+        evidence.kind === "driver_clear" ||
+        evidence.kind === "passive_identity"
           ? evidence
           : null;
+      const clearEvidence =
+        identityEvidence?.kind === "clear_start" || identityEvidence?.kind === "driver_clear";
+      // What the transcript path is doing here is CORROBORATION: a hook can report the same
+      // identity twice, so "the file it names is a different one" is what separates a genuine
+      // rotation from a re-read of the session we were already on.
+      //
+      // A DRIVER clear needs a weaker form of it, and the difference is not a relaxation - it
+      // is what the two channels can actually know. A hook fires after the harness has opened
+      // the new session file, so its path is always there to compare. A driver reports the new
+      // identity the instant the harness mints it, and the file is written lazily: measured
+      // against Claude 2.1.220, the `bound` that follows a `/clear` carries `transcriptPath:
+      // null` roughly every time, because `claudeSdkTranscriptPath` returns null for a file
+      // that is not on disk YET rather than inventing a path that might never exist. Demanding
+      // a non-null path there fails every embedded reset - `workIdentityReady: false` on a
+      // reset that worked - and strands the episode, and with it the task's ownership of its
+      // branch, on the identity the clear just destroyed.
+      //
+      // Nothing is being taken on trust to buy that. A `driver_clear` is latched by the
+      // `clearContext()` WE issued and spent by the first rotation after it, and the id is
+      // already proven different two lines below. So the path can only ever confirm what is
+      // established; when the harness does report one it must still not be the old file.
       const pathReplaced = existing.rebindFromTranscriptPath === null
-        ? identityEvidence?.kind === "clear_start" || identityEvidence?.transcriptPath !== null
-        : identityEvidence?.transcriptPath !== null &&
-          identityEvidence?.transcriptPath !== existing.rebindFromTranscriptPath;
+        ? clearEvidence || identityEvidence?.transcriptPath !== null
+        : identityEvidence?.kind === "driver_clear"
+          ? identityEvidence.transcriptPath !== existing.rebindFromTranscriptPath
+          : identityEvidence?.transcriptPath !== null &&
+            identityEvidence?.transcriptPath !== existing.rebindFromTranscriptPath;
       const canResolvePending = Boolean(
         existing.awaitingAgentRebind &&
         identityEvidence &&

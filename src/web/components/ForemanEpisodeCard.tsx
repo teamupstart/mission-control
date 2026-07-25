@@ -142,6 +142,8 @@ function pendingSituationLabel(situation: string): string {
   switch (situation) {
     case "terminal-pane":
       return "pane available";
+    case "structured-request":
+      return "structured request";
     case "terminal-no-pane":
       return "no pane available";
     default:

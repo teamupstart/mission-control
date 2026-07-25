@@ -1,8 +1,9 @@
 import { z } from "zod";
-import type { ForemanConfig, RecordEpisode, SetNote } from "@shared/protocol.ts";
+import type { ForemanConfig, RecordEpisode, SetNote, SubmitOptions } from "@shared/protocol.ts";
 import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
+import { driverFormAnswer } from "../sdk/answer.ts";
 import type { GateRef, Pending } from "./pending.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
@@ -47,6 +48,31 @@ const AnswerField = z.preprocess(
         .object({
           number: z.number().int().min(1).max(99),
           label: z.string().min(1),
+        })
+        .optional(),
+      /**
+       * A whole multi-question form, answered at once - the driver runtime's answer to what
+       * `option` is for a single ask.
+       *
+       * It exists because a form genuinely is not a list of rows. `AskUserQuestion` carries
+       * up to four questions, each numbering its own options from 1, so `option` is ambiguous
+       * across them - two questions both have a row 1. The pane path had to refuse these
+       * outright (pressing a row of one only ticks a box, and nothing reaches the agent until
+       * its Submit tab is confirmed); a driver hands over every question at once and takes
+       * them back answered together, so the refusal was a pane limitation and never a
+       * reviewer one.
+       *
+       * Keyed by the QUESTION's own text rather than by an index, because an index is a
+       * position in a list the reviewer read seconds ago - the same reason `option` carries a
+       * label beside its number. A value is one of that question's option labels, several of
+       * them when it takes several, or the reviewer's own words: `resolveFormAnswers` decides
+       * which by looking the value up in the question's options, and `driverFormAnswer` then
+       * checks the whole submission against the live request exactly as the route does for a
+       * human's click.
+       */
+      form: z
+        .object({
+          answers: z.record(z.string().min(1), z.union([z.string(), z.array(z.string())])),
         })
         .optional(),
     })
@@ -133,6 +159,15 @@ export interface SendPlan {
    * rationale for the note and the gate byline, and is never typed.
    */
   option?: { number: number; label: string };
+  /**
+   * Set only for a driver FORM: every question answered at once, submitted whole.
+   *
+   * A third delivery shape rather than a variant of `option`, and mutually exclusive with
+   * it, because it is a different route (`/submit-options`) answering a different kind of
+   * ask. `text` rides along as the rationale exactly as it does for `option` - the answers
+   * below are the whole of what the agent receives.
+   */
+  form?: SubmitOptions["answers"];
 }
 
 /** The concrete outcome of a verdict: the note to write + an optional reply. */
@@ -258,7 +293,9 @@ export function planFromVerdict(
   // falling back to typing is the fix itself: the fallback is what silently confirmed the
   // default and signed the human's name to it. The reviewer's reasoning is kept as the
   // recommendation, so its judgment reaches the human even though it couldn't reach the child.
-  const menuMiss = chan.channel === "send" ? menuMismatch(ctx.menu, answer.option) : null;
+  const delivery: MenuAnswer =
+    chan.channel === "send" ? resolveMenuAnswer(ctx.menu, answer) : { ok: true };
+  const menuMiss = delivery.ok ? null : delivery.why;
   if (menuMiss) {
     return {
       note: {
@@ -273,10 +310,13 @@ export function planFromVerdict(
   }
 
   if (mayActLive) {
-    // Only a menu send carries the option: `pickChannel` can route to an `input-review`
-    // (answered over the API, no pane involved) while a menu happens to be on the screen,
-    // and an option there would be a row nothing navigates.
-    const option = ctx.menu && chan.channel === "send" ? answer.option : undefined;
+    // Only a menu send carries the option or the form: `pickChannel` can route to an
+    // `input-review` (answered over the API, no pane involved) while an ask happens to be
+    // open, and an option there would be a row nothing navigates. Both come from the ONE
+    // resolution above rather than being re-read off the verdict, so what was validated is
+    // what is delivered.
+    const option = ctx.menu && delivery.ok ? delivery.option : undefined;
+    const form = ctx.menu && delivery.ok ? delivery.form : undefined;
     return {
       note: {
         ...base,
@@ -285,7 +325,9 @@ export function planFromVerdict(
         recommendation: null,
         lastAction: option
           ? `answered: option ${option.number}. ${oneLine(option.label, 60)}`
-          : `answered: ${oneLine(answer.text)}`,
+          : form
+            ? `answered a ${form.length}-question form: ${oneLine(describeForm(form), 60)}`
+            : `answered: ${oneLine(answer.text)}`,
       },
       send: {
         channel: chan.channel,
@@ -293,6 +335,7 @@ export function planFromVerdict(
         reviewId: chan.reviewId,
         submit: answer.submit ?? true,
         ...(option ? { option } : {}),
+        ...(form ? { form } : {}),
       },
     };
   }
@@ -369,8 +412,15 @@ export function episodeFromPlan(p: {
     lastAction: plan.note.lastAction ?? null,
     // What actually reached the child. A menu send types NOTHING - the row's label is
     // the whole of what it received, and `text` rides along only as the rationale -
-    // so the label is the sent text there, exactly as the gate byline reads it.
-    sentText: send ? (send.option ? send.option.label : send.text) : null,
+    // so the label is the sent text there, exactly as the gate byline reads it. A form
+    // send is the same claim over several answers.
+    sentText: send
+      ? send.option
+        ? send.option.label
+        : send.form
+          ? describeForm(send.form)
+          : send.text
+      : null,
     sentOption: send?.option ?? null,
     sentBy: send ? "foreman" : null,
   };
@@ -432,6 +482,15 @@ export interface ForemanActions {
    * row against the live screen before confirming it (see `selectPaneOption`).
    */
   selectOption(sessionId: string, option: { number: number; label: string }): Promise<unknown>;
+  /**
+   * Submit a driver form's answers as a whole.
+   *
+   * Separate from `selectOption` for the reason that one is separate from `sendText`: it is
+   * a different act on a different route, not a different payload. A form is answered
+   * together or not at all, and the daemon re-checks the whole submission against the live
+   * request before any of it reaches the agent.
+   */
+  submitForm(sessionId: string, answers: NonNullable<SubmitOptions["answers"]>): Promise<unknown>;
   resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown>;
   /**
    * Record what we just said to a no-mistakes gate, for the fix log's byline.
@@ -485,6 +544,11 @@ export async function applyVerdict(
       // one on screen, which lands in the catch below and leaves the session queued with a
       // `skipped` note - the child untouched, still parked, for the next sweep or a human.
       await actions.selectOption(ctx.sessionId, plan.send.option);
+    } else if (plan.send.form) {
+      // A driver form: submit every answer at once. Throws on the same terms as the row
+      // select above - the daemon refuses a submission the live request no longer matches,
+      // and refusing means nothing was delivered, so the session is left exactly as found.
+      await actions.submitForm(ctx.sessionId, plan.send.form);
     } else {
       await actions.sendText(ctx.sessionId, plan.send.text, plan.send.submit);
     }
@@ -507,7 +571,13 @@ export async function applyVerdict(
   // byline - the card reads `replied` with no author, exactly as it did before this
   // existed. Letting it throw would instead skip the note below and leave a
   // delivered send unstamped, which the worker's idempotency check would re-send.
-  const delivered = plan.send.option ? plan.send.option.label : plan.send.submit ? plan.send.text : null;
+  const delivered = plan.send.option
+    ? plan.send.option.label
+    : plan.send.form
+      ? describeForm(plan.send.form)
+      : plan.send.submit
+        ? plan.send.text
+        : null;
   if (ctx.gate && delivered !== null) {
     await actions
       .logGateReply(ctx.sessionId, ctx.gate, delivered)
@@ -532,9 +602,46 @@ export async function applyVerdict(
  */
 function menuMismatch(
   menu: PaneDialog | null | undefined,
-  option: { number: number; label: string } | undefined,
+  answer: NonNullable<Verdict["answer"]> | undefined,
 ): string | null {
-  if (!menu) return null;
+  const resolved = resolveMenuAnswer(menu, answer);
+  return resolved.ok ? null : resolved.why;
+}
+
+/**
+ * How this verdict's answer would be DELIVERED to the ask on screen (or in the driver), or
+ * why it cannot be.
+ *
+ * One function rather than a check plus a separate "and now pick the field", because those
+ * two were the same decision: the thing that says a form answer is valid is the thing that
+ * produced the submission to send. Splitting them is how a verdict passes validation as a
+ * form and is then delivered as an option, which is a well-formed answer to a different
+ * question.
+ *
+ * Deliberately says nothing when there is NO ask: an ordinary prompt is answered with prose,
+ * which is the majority path (a parked no-mistakes gate, a plain question), and an `option`
+ * volunteered against no menu is simply ignored rather than treated as an error.
+ */
+type MenuAnswer =
+  | { ok: true; option?: { number: number; label: string }; form?: SubmitOptions["answers"] }
+  | { ok: false; why: string };
+
+function resolveMenuAnswer(
+  menu: PaneDialog | null | undefined,
+  answer: NonNullable<Verdict["answer"]> | undefined,
+): MenuAnswer {
+  if (!menu) return { ok: true };
+  const questions = menu.questions ?? [];
+  // A DRIVER form is answerable whole, and this is where the pane's limitation stops being
+  // inherited. The submission is checked against the live request by exactly the rule the
+  // route applies to a human's click (`driverFormAnswer`) - every question answered, with
+  // labels that still exist, one entry each - so a reviewer that invented a question or
+  // dropped one is refused here rather than half-submitting under the operator's name.
+  if (menu.source === "driver" && questions.length > 0 && answer?.form) {
+    const submitted = resolveFormAnswers(menu, answer.form.answers);
+    const checked = driverFormAnswer(menu, submitted);
+    return checked.ok ? { ok: true, form: submitted } : { ok: false, why: checked.error };
+  }
   // A multi-select is a FORM, and no row of one is an answer: pressing a row ticks a box,
   // and the answers reach Claude only when its Submit tab is confirmed. `selectPaneOption`
   // refuses those rows outright, so without this the planner routes a well-formed verdict
@@ -542,21 +649,65 @@ function menuMismatch(
   // dropping the only copy of the ask (the pane capture) on every sweep, forever. Declining
   // here makes the refusal what it was meant to be: an escalation, spent once, with the
   // reviewer's reasoning kept as the recommendation for the human who can fill the form in.
+  //
+  // Still reached by a DRIVER form whose verdict named no `answer.form` - the reviewer could
+  // have answered it and did not - so the sentence says which kind of ask went unanswered
+  // rather than describing a pane the session may not have.
   if (menu.multiSelect) {
-    return "the pane is showing a multi-select form, which is submitted as a whole rather than answered by picking a row";
+    return {
+      ok: false,
+      why:
+        menu.source === "driver"
+          ? "this ask is a form of several questions and the reviewer filled in no answer.form, so there is nothing to submit"
+          : "the pane is showing a multi-select form, which is submitted as a whole rather than answered by picking a row",
+    };
   }
-  if (!option) return "a menu is open and the reviewer named no option to select";
+  const option = answer?.option;
+  if (!option) return { ok: false, why: "a menu is open and the reviewer named no option to select" };
   const miss = optionRowMiss(menu, option);
-  if (!miss) return null;
+  if (!miss) return { ok: true, option };
   const chose = `the reviewer's option ${option.number} ("${oneLine(option.label, 40)}")`;
   switch (miss) {
     case "no-such-row":
-      return `the reviewer chose option ${option.number}, which this menu doesn't have`;
+      return { ok: false, why: `the reviewer chose option ${option.number}, which this menu doesn't have` };
     case "label-differs":
-      return `${chose} isn't what that row says`;
+      return { ok: false, why: `${chose} isn't what that row says` };
     case "label-ambiguous":
-      return `${chose} reads the same as another row, so it can't say which was meant`;
+      return {
+        ok: false,
+        why: `${chose} reads the same as another row, so it can't say which was meant`,
+      };
   }
+}
+
+/**
+ * Turn the reviewer's `{question: answer}` map into the submission the route takes.
+ *
+ * The one place the model's grammar and the wire's part company, and the asymmetry is
+ * deliberate. The wire distinguishes a CHOSEN OPTION from FREE TEXT because the operator's
+ * click genuinely knows which it was; a model writing a string does not, and asking it to
+ * declare which would be asking it to answer a question about its own answer. So the value
+ * is looked up in the question's own options: a value that IS one of them is that choice,
+ * and anything else is the reviewer answering in its own words - which this runtime accepts
+ * and the pane path cannot.
+ *
+ * An answer naming a question the request does not have is passed through UNCHANGED rather
+ * than dropped, so `driverFormAnswer` refuses the submission and says which question moved.
+ * Silently discarding it would turn a reviewer that answered the wrong form into one that
+ * submitted a partial answer to the right one.
+ */
+function resolveFormAnswers(
+  menu: PaneDialog,
+  answers: Record<string, string | string[]>,
+): NonNullable<SubmitOptions["answers"]> {
+  const questions = menu.questions ?? [];
+  return Object.entries(answers).map(([question, value]) => {
+    const offered = questions.find((q) => q.question === question)?.options ?? [];
+    if (Array.isArray(value)) return { question, labels: value };
+    return offered.some((o) => o.label === value)
+      ? { question, labels: [value] }
+      : { question, labels: [], text: value };
+  });
 }
 
 /**
@@ -574,7 +725,12 @@ export function menuBlocksAnswer(v: Verdict, ctx: ReviewContext): boolean {
   if (v.action !== "answer") return false;
   const chan = pickChannel(ctx);
   if (chan?.channel !== "send") return false;
-  return menuMismatch(ctx.menu, v.answer?.option) !== null;
+  return menuMismatch(ctx.menu, v.answer) !== null;
+}
+
+/** A form submission as one short line, for the note's audit field. */
+function describeForm(form: NonNullable<SubmitOptions["answers"]>): string {
+  return form.map((a) => (a.labels.length > 0 ? a.labels.join(", ") : (a.text ?? ""))).join("; ");
 }
 
 /** Collapse whitespace and cap a string to one short line for the audit field. */

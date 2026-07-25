@@ -665,30 +665,24 @@ export function workQueueUnsupportedWhy(agent: AgentType): string | null {
 }
 
 /**
- * Why an embedded session cannot hold a work queue YET.
+ * Why this particular session cannot hold a work queue, or null when it can.
  *
- * INTERIM, and scoped to the RUNTIME rather than to an agent, which is the whole reason it
- * is one line: the second driver (Codex's) may land before the parity work does, and a
- * guard written as `agent === "claude"` would have let its sessions through without an
- * edit. Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` deletes this and gives the queue
- * its driver arm - pickup and completion arrive as `state` / `turn_done` events and
- * delivery rides the acked `send()`.
+ * The browser-side half of `foremanAutomationAuthorized` (`server/harness/index.ts`), and
+ * the two must agree arm for arm - this decides whether the panel offers an add box, that
+ * decides whether the daemon will drive what the box produced, and a session that can be
+ * queued into but never driven is a queue that silently never moves.
  *
- * What it prevents in the meantime is a half-driven session: `foremanAutomationAuthorized`
- * says yes for Claude on the strength of machine-scoped hooks, so without this a queue
- * would be accepted and then driven by pane machinery (`mayHaveLanded`, `paneBlocked`, the
- * pane-recreated guard) that an embedded session has none of.
+ * The `sdk` arm returns null (no blocker) for the reason stated there: an embedded session's
+ * instrumentation IS the handle the supervisor holds, so `hooksSeen` - a question about a
+ * hook script on this machine - is not the evidence that applies to it. It is scoped to the
+ * runtime and not to an agent so the next driver inherits it without an edit.
  */
-const SDK_QUEUE_INTERIM_WHY =
-  "This session runs on the Agent SDK, and Foreman's work queue still drives sessions through their terminal - queue it after handing it back to a terminal, or dispatch it there.";
-
-/** Why this particular session cannot hold a work queue, or null when it can. */
 export function workQueueBlockedReason(
   session: Pick<Session, "agent" | "hooksSeen" | "runtime">,
 ): string | null {
   const queue = HARNESS_CAPABILITIES[session.agent].workQueue;
   if (!queue) return workQueueUnsupportedWhy(session.agent);
-  if (session.runtime === "sdk") return SDK_QUEUE_INTERIM_WHY;
+  if (session.runtime === "sdk") return null;
   return session.hooksSeen ? null : queue.uninstrumentedWhy;
 }
 

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
+import { describeRequest } from "./prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -283,6 +284,11 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
     }
     case "input-review":
     case "terminal-pane":
+    // A driver request is answerable by the same machinery a pane menu is (name a row, or
+    // submit the whole form) and needs the same judgment to decide WHICH row - so it gets no
+    // Tier 0 shortcut either. What differs is only how the reviewer is told to answer it,
+    // which is `policyFor`'s business and not this gate's.
+    case "structured-request":
     // A parked gate is answerable prose-to-prose: the child relayed the finding and stopped, so
     // the reviewer reads the ask from the transcript and Foreman types the decision back. It
     // gets no Tier 0 shortcut precisely because the call needs a model - which was the whole
@@ -319,6 +325,22 @@ export interface ScanWindow {
    * made it possible. Here the screen can only ever ADD a reason to escalate.
    */
   pane?: string | null;
+  /**
+   * The driver's pending request, flattened (see `describeRequest`) - the other runtime's
+   * answer to `pane`, and scanned on exactly the same terms.
+   *
+   * It has to be here or backstop 1 goes blind on an entire runtime: an embedded session has
+   * no screen, its `question` is the same generic activity line, and the tool call it is
+   * blocked on is not in the transcript until it returns - so the command being approved
+   * lives in the request and nowhere else. Without this, a driver session's `rm -rf` reached
+   * the denylist only if the agent happened to narrate it in prose first, which is the exact
+   * hole the `pane` field was added to close on the other side.
+   *
+   * Kept OUT of `hasProse`/backstop 3 for the reason `pane` is: that gate still keys on the
+   * turns alone, and relaxing it would let a Tier 1 auto-answer through where one is refused
+   * today. This can only ever ADD a reason to escalate.
+   */
+  request?: string | null;
 }
 
 /**
@@ -355,6 +377,8 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
     (pending.situation === "gate-parked" ? false : isDestructive(pending.question)) ||
     isDestructive(riskContextFrom(scan.messages)) ||
     isDestructive(scan.pane ?? "") ||
+    // The same claim as the screen above, one runtime over - see `ScanWindow.request`.
+    isDestructive(scan.request ?? "") ||
     (report.answer ? isDestructive(report.answer.text) : false);
 
   // needs-judgment always routes up: Tier 1 never invents a substantive answer.
@@ -406,8 +430,12 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // stay allowed however little was scanned.
   //
   // (a) Nothing scannable in the window - but only where the question can't carry the command
-  // itself. The answerable surfaces genuinely differ here, and this must not be re-broadened to
-  // cover all of them: on `terminal-pane` the question is the Notification hook's generic line
+  // itself. `structured-request` sits with `terminal-pane` here on the same footing its screen
+  // does: the REQUEST is scannable and is scanned (backstop 1 above), which makes "a prose-free
+  // window means the ask went unread" false for it too - but relaxing this gate LOOSENS it, so
+  // it stays as conservative as the runtime it was written for, per the precedent on
+  // `ScanWindow.pane`. The answerable surfaces genuinely differ here, and this must not be
+  // re-broadened to cover all of them: on `terminal-pane` the question is the generic line
   // ("Claude needs your permission") and the reply is the router's own "Approve - go ahead.", so
   // the window's prose is the ONLY text backstop 1 could match a command in - with none,
   // `risky === false` means "unknown" rather than "safe". `gate-parked` sits on that same side:
@@ -422,7 +450,9 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // window corroborates it, it is not the only witness, so its absence proves nothing and gating
   // on it would route up asks that were perfectly scannable.
   if (
-    (pending.situation === "terminal-pane" || pending.situation === "gate-parked") &&
+    (pending.situation === "terminal-pane" ||
+      pending.situation === "structured-request" ||
+      pending.situation === "gate-parked") &&
     !hasProse(scan.messages)
   ) {
     return { kind: "route-up", reason: scan.unavailable ? "no-transcript-file" : "no-transcript-context" };
@@ -563,7 +593,7 @@ export async function triageSession(
    */
   captured: CapturedInputs,
 ): Promise<TriageOutcome> {
-  const { pane, instructions } = captured;
+  const { pane, request, instructions } = captured;
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
@@ -585,6 +615,8 @@ export async function triageSession(
     session: {
       // Which harness this is, so the prompt describes ITS screen - see `ReviewInput.session.agent`.
       agent: session.agent,
+      // ...and how an answer reaches it, which decides whether there IS a screen to describe.
+      runtime: session.runtime,
       name: session.name,
       cwd: session.cwd,
       gitBranch: session.gitBranch,
@@ -599,8 +631,11 @@ export async function triageSession(
     transcript: messages,
     truncated,
     pane,
-    // This tier can dispose, so it must have read the operator's instructions before it
-    // does - see `captured` above.
+    // The structured ask, on the runtime that has one - the router needs it for exactly the
+    // reason it needs the screen: without it the ONLY thing it could bucket an embedded
+    // permission ask on is ambient prose, which is a bucketing it should never be confident
+    // about. Same object the reviewer is shown and the same object `menuMismatch` re-reads.
+    request,
     instructions,
   };
 
@@ -615,6 +650,7 @@ export async function triageSession(
   return mapTriage(report, pending, {
     messages: recent.messages,
     pane,
+    request: request ? describeRequest(request).join("\n") : null,
     unavailable: window.unavailable,
     boundaryUnknown: recent.boundaryUnknown,
   });

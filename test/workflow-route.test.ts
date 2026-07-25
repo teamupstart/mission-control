@@ -67,7 +67,10 @@ test("ensemble deep links wait for the live snapshot and preserve direct 404 rea
   );
   assert.match(page, /hasSnapshot/);
   assert.match(page, /observedRunIds/);
-  assert.match(page, /fetchEnsembleDetail\(selected\)/);
+  // Selection enters the generation-guarded loader; the loader owns the actual
+  // fetch so stale responses cannot replace the current deep link.
+  assert.match(page, /load\(selected, true\)/);
+  assert.match(page, /fetchEnsembleDetail\(runId\)/);
   assert.match(page, /This ensemble is no longer retained/);
 });
 

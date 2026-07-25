@@ -771,9 +771,11 @@ test("outcome exposes the materialized task and pinned workflow handoff identity
   assert.match(html, /Materialized task/);
   assert.match(html, /task-winner/);
   assert.match(html, /Open task/);
-  assert.match(html, /Review winner<!-- --> v<!-- -->7/);
-  assert.match(html, /Manual<!-- --> · <!-- -->Preview/);
-  assert.match(html, /Inspector<!-- --> · <!-- -->4<!-- --> repair rounds/);
+  // React may coalesce adjacent text expressions into one text node; assert the
+  // operator-visible pinned identity instead of renderer-internal comment markers.
+  assert.match(html, /Review winner v7/);
+  assert.match(html, /Manual · Preview/);
+  assert.match(html, /Inspector · 4 repair rounds/);
   assert.match(html, /binding-1/);
   assert.match(html, /1234567890abcdef/);
   assert.match(html, /workflow-run-1/);

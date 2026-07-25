@@ -383,6 +383,38 @@ export interface EffortResult extends ActionResult {
   effort: ThinkingLevel | null;
 }
 
+/**
+ * The same question for a session with NO PANE: refuse, short-circuit, or go ahead.
+ *
+ * Split from `sessionEffortTargetResult` because that function's preconditions are almost
+ * all facts about a keystroke walk, and applying them to a driver refuses changes that are
+ * not merely possible but atomic. `sessionEffortLevels` narrows a `shortcuts` picker to the
+ * levels ONE Shift+Up or Shift+Down away, which is the truth about Codex's TUI and says
+ * nothing at all about `turn/start`'s `effort` parameter; the "current effort is not known
+ * yet" refusals exist because the walk has to know where it is starting from, and a driver
+ * does not walk.
+ *
+ * What survives is the only thing that is still true with no pane in the picture: the level
+ * has to be one this harness offers for the model this session is on. A driver refuses the
+ * rest itself (`SdkSessionHandle.setEffort` is nullable and Codex's rejects `max`), which is
+ * the `answer` arrangement again - the route checks against the card, the adapter checks
+ * against the handle it holds.
+ */
+export function driverEffortTargetResult(
+  session: Session,
+  target: ThinkingLevel,
+): EffortResult | null {
+  const spec = harnessFor(session.agent).effort;
+  if (!spec) return { ok: false, error: "this agent has no reasoning-effort control", effort: null };
+  const levels = spec.levelsFor(session.meta?.modelId ?? null);
+  if (!levels.includes(target)) {
+    return { ok: false, error: `${target} effort is not offered for this model`, effort: null };
+  }
+  // Nothing to change, and saying so beats spending a turn parameter on it.
+  if (session.meta?.thinkingLevel === target) return { ok: true, effort: target };
+  return null;
+}
+
 export function sessionEffortTargetResult(
   session: Session,
   target: ThinkingLevel,

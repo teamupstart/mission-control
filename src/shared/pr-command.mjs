@@ -34,3 +34,20 @@ export const PR_CREATE_RE =
 export function opensPullRequest(command) {
   return typeof command === "string" && PR_CREATE_RE.test(command);
 }
+
+/**
+ * A GitHub PR URL as `gh pr create` prints it, scoped to a real pull path so a repo or
+ * compare link never masquerades as one.
+ *
+ * The OTHER half of the two-signal provenance rule the module header describes, and here
+ * for the same reason the first half is: three surfaces need it - the Claude hook bridge,
+ * and both embedded drivers - and each was carrying its own copy of the same regex. The
+ * command says the agent OPENED a pull request; this says which one, and neither reaches
+ * `adoptPr` without the other.
+ */
+export const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
+
+/** The first PR URL in `text`, or null. Non-strings are stringified by the caller. */
+export function pullRequestUrlIn(text) {
+  return typeof text === "string" ? (PR_URL_RE.exec(text)?.[0] ?? null) : null;
+}

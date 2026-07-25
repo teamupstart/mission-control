@@ -298,10 +298,11 @@ through a pane. That is a session's **runtime**, and there are two.
 
 - **Terminal** - the default, and what every session you start yourself always is. Delivery
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
-- **Agent SDK** - the daemon runs Claude Code itself, through
-  `@anthropic-ai/claude-agent-sdk`. There is no pane. A turn is a call that is
-  *acknowledged*, and a permission prompt arrives as data - the tool name, its input, and
-  the exact rows to offer - which the card renders directly.
+- **Agent SDK** - the daemon runs the agent itself: Claude Code through
+  `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
+  There is no pane. A turn is a call that is *acknowledged*, and a permission prompt or an
+  approval arrives as data - what is being asked, and the exact rows to offer - which the
+  card renders directly.
 
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
 time, so flipping it mid-batch reaches the next session you launch. It ships as `terminal`
@@ -310,7 +311,7 @@ default flip. It is also scoped to dispatch, exactly like the model and effort d
 to it - a Claude session you started yourself is pane-backed whatever this says, because
 Mission Control does not own your terminal.
 
-**What changes when you turn it on.** A dispatched Claude session appears as a card with no
+**What changes when you turn it on.** A dispatched session appears as a card with no
 pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 
 - the task's prompt is the conversation's first turn - there is no paste to verify, no
@@ -324,9 +325,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one;
-- the transcript still comes from the same `~/.claude/projects/…` session file the
-  interactive CLI reads. Goal, cost and PR state reaches the same card fields through the
-  driver, so those surfaces keep working too;
+- the transcript still comes from the same session file the interactive CLI reads -
+  `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which
+  `thread/start` hands the daemon directly. Goal, cost and PR state reaches the same card
+  fields through those files and the driver, so those surfaces keep working too;
 - **Focus** is replaced by **Continue in terminal** (below).
 
 **What it costs.** One real regression: the subprocess is the daemon's child, so restarting
@@ -358,18 +360,51 @@ and the differences all fall the same way:
 
 (The full design and its tradeoffs are in `docs/plans/agent-sdk-sessions/plan.md`.)
 
+#### What an embedded Codex session does differently
+
+Codex speaks a different protocol, and two of its answers are its own rather than the
+runtime's.
+
+- **Approvals, not permission prompts.** Codex asks when a command needs to escape its
+  sandbox - network access, a write outside the workspace. That arrives as the same
+  three-row ask (**Yes** / **Yes, and don't ask again** / **No**) on the card, carrying the
+  command and the directory it would run in, and answering it releases the turn. If Codex
+  also asks a question (`request_user_input`), it renders as a form exactly as Claude's
+  does.
+- **The permission profile is partly fixed for the life of a thread.** Approvals and the
+  reviewer are per-turn settings, so switching between **Ask for approval** and **Approve
+  for me** takes effect on the session's next turn. The *sandbox* is not: Codex cannot move
+  a running thread between `read-only`, `workspace-write` and `danger-full-access`, so
+  picking a profile that would need a different one is refused with a sentence saying to
+  clear the context (which starts a fresh thread) or continue in a terminal and use
+  `/permissions`. The card's profile chip is read back from the rollout either way, so it
+  always shows what the agent is really running under.
+- **Auto mode on dispatch** gives an embedded Codex the same posture it gives a terminal one
+  (`workspace-write` with approvals on request), with approvals routed to you rather than to
+  Codex's own auto-reviewer - the point of the runtime being that you can answer them.
+- Codex's launch-scoped hooks are not injected: the event stream reports everything they
+  did, so an embedded session needs neither them nor the
+  `--dangerously-bypass-hook-trust` that rides with them. A Codex session dispatched in a
+  terminal is unchanged.
+
+The app-server protocol is experimental upstream. Its TypeScript bindings are generated from
+the installed binary and committed (`src/server/harness/codex/app-server/protocol.ts`,
+regenerated with `node scripts/codex-app-server-bindings.mjs`); a Codex upgrade that moves a
+field is a regenerate-and-read-the-diff, not a hunt.
+
 #### Continue in terminal
 
 `⇧P`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
-reopens **the same conversation** in a terminal home (`claude --resume <session id>`) in the
-same checkout - Claude keeps one session store across its programmatic and interactive
-surfaces, which is what makes this a handoff rather than a lost conversation. Discovery
-adopts the new process, and the task's binding follows it across even when discovery takes
-longer than the handoff request waits.
+reopens **the same conversation** in a terminal home in the same checkout -
+`claude --resume <session id>` or `codex resume <thread id>`, whichever harness the card is.
+Both vendors keep one session store across their programmatic and interactive surfaces,
+which is what makes this a handoff rather than a lost conversation. Discovery adopts the new
+process, and the task's binding follows it across even when discovery takes longer than the
+handoff request waits.
 
 It is one way. After the handoff the terminal session is the one holding the conversation;
 the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
-tells you the exact `claude --resume` to run yourself.
+tells you the exact resume command to run yourself.
 
 ### What each agent can do is declared, not assumed
 
@@ -961,8 +996,8 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    still live, and injects your task as its first prompt. A dispatched Pi proves startup
    when its injected-id session file appears, then proves delivery only when that exact
    file appends a new user turn. Metadata changes and generic `working` state do not
-   count. **Agent SDK** (Claude today) instead starts the embedded driver with the task as
-   turn one. It creates no terminal home and needs no discovery, readiness wait, paste,
+   count. **Agent SDK** (Claude and Codex today) instead starts the embedded driver with
+   the task as turn one. It creates no terminal home and needs no discovery, readiness wait, paste,
    or delivery retry; the driver's binding is the readiness signal.
 
 If either launch path cannot prove it started as requested, dispatch fails instead of
@@ -1350,8 +1385,9 @@ harness, and stays there until you change it - see
 [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk) for what turning it on
 changes, what it costs, and how to hand a session back to a terminal.
 
-The row renders only for a harness that actually has a driver behind it (Claude, today);
-the others say so on the card rather than offering a control that would change nothing. Like
+The row renders only for a harness that actually has a driver behind it (Claude and Codex
+today); the others say so on the card rather than offering a control that would change
+nothing. Like
 the model and effort defaults beside it, it is read **when a task launches** and reaches only
 the sessions Mission Control dispatches. A stored value this build cannot read, or one naming
 a runtime it has no driver for, falls back to Terminal and says so on the card instead of
@@ -3805,6 +3841,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
+node scripts/codex-app-server-bindings.mjs  # regenerate the pinned Codex app-server types (on a Codex upgrade)
 ```
 
 ## Security

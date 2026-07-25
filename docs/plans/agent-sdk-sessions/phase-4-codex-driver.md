@@ -139,3 +139,38 @@ bindings module.
   except `harness-capabilities.ts` (phase 3 does not edit it) and tests are additive.
   The phase 2 interim queue refusal was confirmed runtime-scoped so it covers Codex
   regardless of merge order - recorded also in phase 2's audit.
+- 2026-07-25: implemented and merged-ready. Five findings changed the phase as written,
+  each measured against codex-cli 0.145.0 rather than argued:
+  - **`approveForMe` is not `never` + `workspace-write`.** The repository's own
+    `parseRolloutPermissionModeRead` (`harness/codex/rollout.ts`) separates it from
+    `askForApproval` by the `approvals_reviewer` field alone, both being
+    `workspace-write` + `on-request`. The mapping table follows the reader (it renders
+    the card's chip, so a posture it cannot map back is a chip showing a mode nobody
+    picked) and carries a reviewer as a third axis. `codex-sdk-modes.test.ts` drives the
+    table against the reader.
+  - **The sandbox cannot be changed on a live thread**, so "permission posture applies as
+    a per-turn override" is only two thirds true. `turn/start` takes approval policy,
+    reviewer, model and effort; its `sandboxPolicy` is a fully RESOLVED policy whose
+    writable roots and network settings are the operator's, not ours. `thread/resume`
+    looked like the way round it and is not: against a thread the connection is already
+    running it REJOINS and reports the original sandbox back, silently ignoring the
+    override. A mode needing a different sandbox is refused with a sentence, rather than
+    reported as applied.
+  - **Effort is not on `thread/start`** (no `modelReasoningEffort` field exists there); it
+    is a per-turn override, which is what the Outcome section already described.
+  - **A pane fact was gating a pane-less session.** `sessionEffortTargetResult` narrows to
+    the levels one keystroke away, which is true of Codex's `shortcuts` picker and false of
+    `turn/start`. Invisible while Claude - whose picker is `horizontal` - was the only
+    driver. `driverEffortTargetResult` (`actions.ts`) is the SDK arm; phase 5's
+    keystroke-deprecation sweep should expect more of this shape.
+  - **Auto mode on dispatch needed a mode named on the harness.** `permissionModes.
+    onDispatch` for Codex was `null`, so the toggle reached an embedded session through no
+    channel at all. It is `askForApproval` now, which costs the terminal path nothing -
+    `launchArgs` is null, so `dispatchPermissionModeArgs` still renders no flags and
+    `prepareCodexLaunch` still owns the pane launch - and is pinned by
+    `dispatch-auto-mode.test.ts`.
+  Bindings are a PRUNED generated subset: `codex app-server generate-ts` emits 617 files
+  and 2.5MB covering the accounts API, app marketplace and realtime voice, so
+  `scripts/codex-app-server-bindings.mjs` takes the transitive closure of declared roots
+  and flattens it into one version-stamped module. Phase 3 had not merged at
+  implementation time; phase 5 owns the combined parity gate, as this file says.

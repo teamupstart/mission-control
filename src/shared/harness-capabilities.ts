@@ -405,8 +405,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
-    // Phase 4 adds `"sdk"` here, with the app-server adapter.
-    runtimes: ["terminal"],
+    // `codex app-server` JSON-RPC, behind `HARNESSES.codex.sdk` - one fact in two files
+    // (`harness-sdk.test.ts`). `terminal` stays first for the reason Claude's entry gives:
+    // the order is the shipped default, not a ranking, and only an operator moves it.
+    runtimes: ["terminal", "sdk"],
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -426,10 +428,17 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         // Codex deliberately puts its most permissive profile behind a second menu.
         confirmations: { fullAccess: "Yes, continue anyway" },
       },
-      // `prepareCodexLaunch` owns the launch-time sandbox flags. This slot is about a
-      // post-launch mode to arm, and Approve for me may not even be offered unless the
-      // Guardian Approval feature is enabled, so dispatch does not drive this menu.
-      onDispatch: null,
+      // The mode an auto dispatch arms, and it costs the TERMINAL path nothing: with
+      // `launchArgs` null, `dispatchPermissionModeArgs` still renders no flags for Codex,
+      // so a dispatched pane is byte-identical - `prepareCodexLaunch` goes on owning its
+      // launch-time sandbox flags, and the live `/permissions` menu is still reserved for a
+      // human. It is the EMBEDDED runtime that needed a mode named here: it sets its
+      // posture through the app-server's own turn parameters rather than through argv,
+      // which is the case `dispatchPermissionModeArgs` documents itself as not holding
+      // back. `askForApproval` is `workspace-write` + `on-request` - the same posture the
+      // auto flags produce - with approvals routed to the human, because an approval a card
+      // can answer is the whole reason that runtime exists.
+      onDispatch: "askForApproval",
       launchArgs: null,
     },
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex

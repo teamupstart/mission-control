@@ -168,6 +168,7 @@ import {
   setPermissionMode,
   setSessionEffort,
   sessionEffortTargetResult,
+  driverEffortTargetResult,
   defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
@@ -1774,7 +1775,9 @@ export function buildApp(
     }
     const r = session.runtime === "sdk"
       ? await (async () => {
-          const targetResult = sessionEffortTargetResult(session, parsed.data.effort);
+          // The DRIVER gate, not the pane one: a `shortcuts` picker's one-step-at-a-time
+          // reachability is a fact about keystrokes, and an embedded session has none.
+          const targetResult = driverEffortTargetResult(session, parsed.data.effort);
           if (targetResult) return targetResult;
           if (!sdkSessions) {
             return {

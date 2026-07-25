@@ -28,6 +28,7 @@ import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
 import { codexHooks } from "./codex/hooks.ts";
 import { codexUsage } from "./codex/usage.ts";
+import { codexSdk } from "./codex/sdk.ts";
 import { piTranscript } from "./pi/transcript.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
@@ -102,9 +103,12 @@ export const HARNESSES: Record<AgentType, Harness> = {
     bin: codexBin,
     tui: codexTui,
     control: codexControl,
-    // Phase 4 fills this with the `codex app-server` adapter (JSON-RPC over stdio, the only
-    // Codex interface whose approvals are answerable), and flips `runtimes` with it.
-    sdk: null,
+    // `codex app-server` over stdio - the only Codex interface whose approvals are
+    // ANSWERABLE rather than merely readable: a pane can show the numbered prompt, but
+    // nothing on that screen carries a correlation id, so an answer is a keystroke aimed at
+    // whatever is highlighted now. See `codex/sdk.ts`. Paired with `runtimes` in
+    // `HARNESS_CAPABILITIES.codex` (`harness-sdk.test.ts` fails until they agree).
+    sdk: codexSdk,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process

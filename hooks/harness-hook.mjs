@@ -18,11 +18,7 @@
 
 import { captureTerminalEnv } from "../src/shared/harness-runtime.mjs";
 import { postHookEvent, readStdin } from "../src/shared/hook-bridge.mjs";
-import { opensPullRequest } from "../src/shared/pr-command.mjs";
-
-// A GitHub PR URL as printed by `gh pr create` / `gh pr view`. Scoped to a real
-// pull path so a repo or compare link never masquerades as a PR.
-const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
+import { opensPullRequest, pullRequestUrlIn } from "../src/shared/pr-command.mjs";
 
 /**
  * Sniff a PR URL out of a PostToolUse payload. `gh pr create` prints the new
@@ -38,8 +34,7 @@ function sniffPrUrl(payload, event) {
   const field = payload.tool_response;
   if (field == null) return undefined;
   const text = typeof field === "string" ? field : JSON.stringify(field);
-  const m = PR_URL_RE.exec(text);
-  return m ? m[0] : undefined;
+  return pullRequestUrlIn(text) ?? undefined;
 }
 
 /**

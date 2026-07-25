@@ -14,8 +14,11 @@ import { join } from "node:path";
 //     in auto mode with no post-launch keystrokes and no readable footer required (a
 //     fresh session's folder-trust dialog hides that footer, which is what broke the old
 //     Shift+Tab walk);
-//   - ON + codex -> no permission-mode flag: Codex exposes live native modes but declares
-//     no autonomous on-dispatch mode, while its launch builder applies a widened sandbox;
+//   - ON + codex -> no permission-mode flag, EVEN THOUGH Codex now names an `onDispatch`
+//     mode: it declares no `launchArgs`, and that gate is what keeps a dispatched pane
+//     byte-identical while the embedded runtime - which sets its posture through the
+//     app-server's own turn parameters rather than through argv - still learns which mode
+//     an auto dispatch means. Its widened launch sandbox stays `prepareCodexLaunch`'s;
 //   - ON + pi -> no flag: pi declares no permission modes at all;
 //   - OFF (or unconfigured) -> nothing, for every agent.
 
@@ -38,10 +41,13 @@ test("setting ON + claude: the launch carries --permission-mode auto", () => {
   assert.deepEqual(dispatchPermissionModeArgs("claude"), ["--permission-mode", "auto"]);
 });
 
-test("setting ON + codex: its native picker is not armed at launch", () => {
+test("setting ON + codex: a mode is resolved, and no flag is rendered for it", async () => {
   setHarnessesConfig({ autoModeOnDispatch: true });
-  // The absence is the point: Codex has live modes but no autonomous `onDispatch` mode;
-  // its widened launch sandbox remains the responsibility of `prepareCodexLaunch`.
+  // The two halves have to be checked together, because the risk is that naming an
+  // `onDispatch` mode for the embedded runtime quietly starts changing the terminal argv.
+  // It cannot: `launchArgs` is null for Codex and `dispatchPermissionModeArgs` gates on it.
+  const { dispatchPermissionMode } = await import("../src/server/dispatcher.ts");
+  assert.equal(dispatchPermissionMode("codex"), "askForApproval");
   assert.deepEqual(dispatchPermissionModeArgs("codex"), []);
 });
 

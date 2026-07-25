@@ -6,3 +6,8 @@ export const PR_CREATE_RE: RegExp;
 /** Whether `command` opens a pull request. Deliberately accepts unknown - the hook feeds
  *  it a field off a JSON payload, and a non-string is never a match. */
 export function opensPullRequest(command: unknown): boolean;
+
+export const PR_URL_RE: RegExp;
+
+/** The first PR URL in `text`, or null. Accepts unknown for the same reason as above. */
+export function pullRequestUrlIn(text: unknown): string | null;

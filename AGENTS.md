@@ -88,6 +88,40 @@ which is what "Continue in terminal" spawns. Both live on the spec for the reaso
 other capability does: the handoff route must reach it through the registry, never by
 testing `session.agent`.
 
+**A driver's transport is spoken in ONE module and its deps module, and nowhere else.**
+Claude's is `@anthropic-ai/claude-agent-sdk` behind `ClaudeSdkDeps.query`; Codex's is
+`codex app-server` JSON-RPC behind `CodexSdkDeps.connect`. Both seams exist so a test drives
+the REAL adapter - every projection, the pending-request bookkeeping, the answer mapping -
+on a scripted stream with no agent binary on the machine, and both are the `PaneDeps.pane`
+pattern. Codex's protocol is EXPERIMENTAL upstream, which is exactly why its bindings are
+generated and committed rather than hand-typed: `scripts/codex-app-server-bindings.mjs`
+runs `codex app-server generate-ts`, takes the transitive closure of the roots declared in
+it, and flattens that into `harness/codex/app-server/protocol.ts` with the generating
+version stamped in. The full generator output is 617 files and 2.5MB of accounts, app
+marketplace and realtime-voice types nothing imports; pruning is what makes a version bump a
+diff a human reads. `codex-app-server-bindings.test.ts` fails if a second module starts
+naming app-server methods.
+
+**A driver's SANDBOX is not the same kind of setting as its approval policy, and Codex is
+where that bites.** `CODEX_POSTURES` (`harness/codex/sdk.ts`) is the single statement of
+Codex mode posture for embedded sessions, and it is the exact inverse of
+`parseRolloutPermissionModeRead` (`codex/rollout.ts`) - the card's chip is rendered from the
+rollout, so a posture the reader cannot map back is a session whose chip shows a mode nobody
+picked. `codex-sdk-modes.test.ts` drives one against the other. Measured against codex-cli
+0.145.0: approval policy, reviewer, model and effort are per-TURN overrides and apply on the
+next `turn/start`; the sandbox is fixed for the life of a thread, and `thread/resume`
+silently REJOINS a running thread rather than reconfiguring it, so a mode needing a
+different sandbox is refused rather than reported as applied. `approvalsReviewer` is on the
+table because it is the only thing separating `askForApproval` from `approveForMe`.
+
+**A pane fact must not gate a pane-less session, and the effort route is the worked
+example.** `sessionEffortTargetResult` (`actions.ts`) refuses a level more than one
+keystroke from the current one, which is the truth about a `shortcuts` picker and says
+nothing about `turn/start`'s `effort` parameter. `driverEffortTargetResult` beside it is the
+SDK arm: the level has to be one the harness offers for that model, and nothing else. This
+was invisible while Claude was the only driver, because its picker is `horizontal` and that
+narrowing is a no-op.
+
 ## Layout parity
 
 `LAYOUTS` in `src/web/lib/layout.ts`: `grid` (Cards), `console`, `board`. `App.tsx` owns all

@@ -6,6 +6,7 @@ import type {
   EnsembleMember,
   EnsembleSelectOneSelection,
 } from "@shared/ensemble.ts";
+import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
 import { fmtUsd } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
@@ -100,6 +101,10 @@ export function EnsembleDetail({
   const reviewCost = detail.llmCalls.reduce((sum, c) => sum + (c.costUsd ?? 0), 0);
   const allAuthoritativeCost =
     detail.llmCalls.length > 0 && detail.llmCalls.every((call) => call.costUsd !== null);
+  // Aggregate agent cost, attributed per submitted member from the immutable artifacts and kept
+  // honestly separate from the evaluator's own model cost above. Unknown stays unknown: a member
+  // whose runner reported no cost is counted as unreported, never as $0.
+  const agentCost = aggregateEnsembleAgentCost(detail.attempts, detail.artifacts);
   const budget = run.plan?.budget ?? null;
   const tone = ensembleStatusTone(run.status, run.unreadable);
   const actionBusy = actionPending !== null;
@@ -202,6 +207,20 @@ export function EnsembleDetail({
                 : ""}
           </dd>
         </div>
+        {agentCost.known + agentCost.unknown > 0 && (
+          <div>
+            <dt>Candidate cost</dt>
+            <dd>
+              {agentCost.known === 0 ? (
+                <span className="ensemble-muted">not reported</span>
+              ) : agentCost.unknown === 0 ? (
+                fmtUsd(agentCost.totalUsd)
+              ) : (
+                `${fmtUsd(agentCost.totalUsd)} · ${agentCost.known} of ${agentCost.known + agentCost.unknown} reported`
+              )}
+            </dd>
+          </div>
+        )}
       </dl>
 
       {Renderer && (

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
 // how it survives the moment of return. Real db for the config (as
@@ -78,25 +79,56 @@ function fakeRegistry(
   sessions: Session[] = [],
   tasks: Task[] = [],
   workflowRuns: WorkflowRunSummary[] = [],
+  ensembleSummaries: EnsembleSummary[] = [],
 ) {
-  const state = { sessions, tasks, workflowRuns };
+  const state = { sessions, tasks, workflowRuns, ensembleSummaries };
   return {
     src: {
       snapshot: () => ({
         sessions: state.sessions,
         tasks: state.tasks,
         workflowRunSummaries: state.workflowRuns,
+        ensembleSummaries: state.ensembleSummaries,
       }),
     },
     set(
       next: Session[],
       nextTasks: Task[] = state.tasks,
       nextWorkflowRuns: WorkflowRunSummary[] = state.workflowRuns,
+      nextEnsembles: EnsembleSummary[] = state.ensembleSummaries,
     ) {
       state.sessions = next;
       state.tasks = nextTasks;
       state.workflowRuns = nextWorkflowRuns;
+      state.ensembleSummaries = nextEnsembles;
     },
+  };
+}
+
+function ensembleSummary(over: Partial<EnsembleSummary> = {}): EnsembleSummary {
+  return {
+    id: "ens",
+    title: "Compare approaches",
+    repoRoot: "/repo",
+    strategyId: "best_of_n",
+    strategyKey: "best_of_n@1",
+    strategyLabel: "Best of N",
+    strategyVersion: 1,
+    status: "running",
+    activeStageId: null,
+    memberCount: 3,
+    launchedMembers: 3,
+    maxMembers: 3,
+    readyArtifacts: 0,
+    selectedMemberId: null,
+    outcomeKind: null,
+    unreadable: null,
+    attention: false,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+    completedAt: null,
+    ...over,
   };
 }
 
@@ -187,6 +219,25 @@ test("workflow transitions use the same away window and coalesce stable ids", ()
   assert.deepEqual(events.map((event) => event.key), ["workflow:run:completed"]);
   assert.equal(events[0]?.count, 1);
   assert.equal(rollupLine(w.buffer()!), "1 workflow update");
+  w.stop();
+});
+
+test("an ensemble reaching its decision boundary folds into the same away digest", () => {
+  const running = ensembleSummary();
+  const parked = ensembleSummary({ status: "awaiting_decision", attention: true, updatedAt: 2 });
+  const reg = fakeRegistry([], [], [], [running]);
+  const w = startAwayWatcher(reg.src, () => 1_000);
+  setAwayConfig({ away: true }, 500);
+  w.tick(); // baseline
+
+  reg.set([], [], [], [parked]);
+  w.tick();
+  w.tick(); // a redelivered summary must not re-announce
+
+  const events = w.buffer()?.events ?? [];
+  assert.deepEqual(events.map((event) => event.key), ["ensemble:ens:decision"]);
+  assert.equal(events[0]?.count, 1);
+  assert.equal(rollupLine(w.buffer()!), "1 ensemble update");
   w.stop();
 });
 

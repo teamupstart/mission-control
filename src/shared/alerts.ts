@@ -24,6 +24,7 @@ import {
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 import type { WorkflowRunSummary } from "./workflow.ts";
+import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
 
 export type AlertKind =
   | "needs-input"
@@ -34,7 +35,8 @@ export type AlertKind =
   | "idle"
   | "stuck"
   | "foreman"
-  | "workflow";
+  | "workflow"
+  | "ensemble";
 export type AlertSeverity = "attention" | "info";
 
 export interface Alert {
@@ -45,6 +47,8 @@ export interface Alert {
   body: string;
   sessionId: string | null;
   workflowRunId?: string | null;
+  /** The ensemble a `kind === "ensemble"` alert points at, for deep-linking its toast. */
+  ensembleId?: string | null;
   severity: AlertSeverity;
 }
 
@@ -59,6 +63,14 @@ export interface AlertScope {
    */
   stalls?: Stall[];
   workflowRuns?: WorkflowRunSummary[];
+  /**
+   * The compact ensemble catalog projection, from the same SSE snapshot the rest of the
+   * scope comes from. Optional for the reason `workflowRuns` is: a scope built before the
+   * first snapshot lands simply carries none and emits no `ensemble` alerts. Only the
+   * bounded `EnsembleSummary` enters here - never a member, artifact, patch or evaluation,
+   * so an ensemble alert or an Away digest can never carry run detail.
+   */
+  ensembleSummaries?: EnsembleSummary[];
 }
 
 /**
@@ -396,6 +408,91 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     });
   }
 
+  // ensemble: an orchestration run crossed a boundary worth telling you about. Edge-triggered
+  // per (run, cause) off the compact summary - never off the full detail, which stays on HTTP -
+  // so a reconnect that re-delivers the same summary, or a recovery that re-derives it, does not
+  // re-announce a decision you already saw. Only three kinds are attention (blocked on a person),
+  // and they are detected the same way `ensembleNeedsAttention` derives the dashboard badge, so
+  // the toast and the badge cannot disagree about what is waiting on you.
+  const previousEnsembles = new Map((prev.ensembleSummaries ?? []).map((e) => [e.id, e]));
+  for (const e of next.ensembleSummaries ?? []) {
+    const beforeE = previousEnsembles.get(e.id);
+    const label = e.title || "an ensemble";
+    let transition: {
+      className: string;
+      title: string;
+      body: string;
+      severity: AlertSeverity;
+    } | null = null;
+
+    if (e.status === "awaiting_decision" && beforeE?.status !== "awaiting_decision") {
+      // The one moment an ensemble is genuinely blocked on you: the comparison is done and
+      // nothing destructive happens until you confirm a winner (or declare no consensus).
+      transition = {
+        className: "decision",
+        title: `${label} needs your decision`,
+        body: "Review the candidates and confirm a winner.",
+        severity: "attention",
+      };
+    } else if (e.unreadable !== null && beforeE?.unreadable == null) {
+      // A run this build cannot execute - written by a newer build, or naming a driver this
+      // binary no longer has. Actionable in that it will never proceed until it is upgraded or
+      // cancelled, and it must never be read as "the only strategy we have".
+      transition = {
+        className: "unreadable",
+        title: `${label} can't be run by this build`,
+        body: e.unreadable.reason,
+        severity: "attention",
+      };
+    } else if (
+      e.status === "finalizing"
+      && e.error != null
+      && !(beforeE?.status === "finalizing" && beforeE.error != null)
+    ) {
+      // Finalization is normally a few milliseconds; a `finalizing` run holding an error is
+      // stuck part-way through a destructive, restart-safe sequence and needs `resolve_finalization`.
+      transition = {
+        className: "finalizing",
+        title: `${label} finalization needs attention`,
+        body: e.error,
+        severity: "attention",
+      };
+    } else if (e.status === "completed" && beforeE?.status !== "completed") {
+      transition = {
+        className: "completed",
+        title: `${label} completed`,
+        body: e.outcomeKind === "selected" ? "A winner was selected." : "The ensemble finished.",
+        severity: "info",
+      };
+    } else if (e.status === "cancelled" && beforeE?.status !== "cancelled") {
+      transition = {
+        className: "cancelled",
+        title: `${label} cancelled`,
+        body: "The ensemble was cancelled; its snapshots are kept.",
+        severity: "info",
+      };
+    } else if (e.status === "failed" && beforeE?.status !== "failed") {
+      // Informational, not attention: a failed run offers Retry/Restore/Cancel from the
+      // dashboard, so it belongs in the digest rather than interrupting you mid-coffee.
+      transition = {
+        className: "failed",
+        title: `${label} failed`,
+        body: e.error ?? "The ensemble could not continue.",
+        severity: "info",
+      };
+    }
+    if (!transition) continue;
+    alerts.push({
+      id: `ensemble:${e.id}:${transition.className}`,
+      kind: "ensemble",
+      title: transition.title,
+      body: transition.body,
+      sessionId: null,
+      ensembleId: e.id,
+      severity: transition.severity,
+    });
+  }
+
   return alerts;
 }
 
@@ -416,7 +513,9 @@ export function hasReportable(scope: AlertScope): boolean {
   for (const s of scope.sessions) if (reportBucket(s) !== "exited") return true;
   return scope.tasks.some((t) => t.status === "backlog")
     || (scope.workflowRuns ?? []).some((run) =>
-      !["completed", "cancelled", "failed"].includes(run.status));
+      !["completed", "cancelled", "failed"].includes(run.status))
+    || (scope.ensembleSummaries ?? []).some((e) =>
+      e.attention || e.status === null || !ensembleIsTerminal(e.status));
 }
 
 /** Compact scope digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
@@ -439,5 +538,7 @@ export function digestLine(scope: AlertScope): string {
     ["blocked", "failed", "waiting_for_session", "waiting_for_pr"].includes(run.status)
     || (run.uncertainDeliveryCount ?? 0) > 0).length;
   if (workflowAttention > 0) parts.push(`${workflowAttention} workflow attention`);
+  const ensembleAttention = (scope.ensembleSummaries ?? []).filter((e) => e.attention).length;
+  if (ensembleAttention > 0) parts.push(`${ensembleAttention} ensemble attention`);
   return parts.join(" · ");
 }

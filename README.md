@@ -1623,8 +1623,22 @@ artifact evidence/patch and manual-member-submission routes under that run, and
 `DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
 run id, which never deletes a task or linked workflow state and resumes the same remaining refs
 after a crash). The dashboard drives all of it from that one surface; on a machine that never
-starts an ensemble the tables stay empty and the product behaves exactly as before. The plan is
+starts an ensemble the tables stay empty and the product behaves exactly as before. The operator
+and extension reference is [`docs/ensembles.md`](docs/ensembles.md) (states, private refs,
+retention and deletion, costs, restart, recovery, security limits, and how a new strategy composes);
+the design plan is
 [`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
+
+**Attention and cost are honest.** Ensemble transitions feed the same
+[alert engine](#alerts--away-mode) every other "needs you" flows through - a run reaching its
+decision, turning unreadable, or stuck finalizing interrupts you; completion, cancellation and
+failure land in the Away digest - with no separate notifier. Each candidate's agent cost is summed
+from its session telemetry at submission and frozen into its immutable artifact, so the run detail
+shows an aggregate attributed per member; a runner that reports no cost is shown as *unreported*,
+never `$0.00`, and the comparison's own model cost and any linked workflow review cost are reported
+separately rather than folded in. Hard ceilings no strategy can exceed - 16 members, 8 concurrent, 8
+waves, 5 stage attempts - sit above Best of N's own 2-5 candidates, and the preview shows the exact
+figures before you launch.
 
 Four decisions are worth knowing now, because everything later is built on them:
 

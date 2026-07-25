@@ -116,6 +116,16 @@ export class FakeGateway implements EnsembleTaskGateway {
   observedModel(): string | null {
     return null;
   }
+  private readonly costs = new Map<string, number | null>();
+  sessionCostUsd(taskId: string): number | null {
+    // Default null - "unknown, not zero" - so a test that never sets a cost proves the
+    // unknown path, and one that does proves per-member attribution and aggregation.
+    return this.costs.has(taskId) ? (this.costs.get(taskId) ?? null) : null;
+  }
+  /** Set the agent cost a member's session will report at submission. */
+  setCost(taskId: string, costUsd: number | null): void {
+    this.costs.set(taskId, costUsd);
+  }
 
   // ---- test controls ----
 

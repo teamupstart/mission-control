@@ -15,6 +15,7 @@ import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
 // timer, runs the stall rules against a real clock, and folds what happened into
@@ -35,6 +36,7 @@ export interface AwaySource {
     sessions: Session[];
     tasks: Task[];
     workflowRunSummaries?: WorkflowRunSummary[];
+    ensembleSummaries?: EnsembleSummary[];
   };
 }
 
@@ -112,6 +114,7 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
         tasks: snap.tasks,
         stalls,
         workflowRuns: snap.workflowRunSummaries ?? [],
+        ensembleSummaries: snap.ensembleSummaries ?? [],
       };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than

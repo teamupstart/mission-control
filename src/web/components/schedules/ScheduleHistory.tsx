@@ -90,6 +90,7 @@ export function ScheduleHistory({
           return;
         }
 
+        setError(null);
         const seen = new Set(accumulated.map((occurrence) => occurrence.id));
         accumulated = [
           ...accumulated,
@@ -121,6 +122,7 @@ export function ScheduleHistory({
   function loadOlder(): void {
     if (done || loading || cursor === null) return;
     const stamp = requestRef.current;
+    setError(null);
     setLoading(true);
     void fetchScheduleHistory(scheduleId, {
       before: cursor,
@@ -132,6 +134,7 @@ export function ScheduleHistory({
         setError("Could not load older occurrences.");
         return;
       }
+      setError(null);
       setRows((prev) => {
         const seen = new Set(prev.map((o) => o.id));
         return [...prev, ...page.occurrences.filter((o) => !seen.has(o.id))];
@@ -160,6 +163,11 @@ export function ScheduleHistory({
         {error && (
           <p className="rm-error" role="alert">
             {error}
+            <br />
+            <span className="rm-mono rm-tiny">
+              Schedule {scheduleId}
+              {initialOccurrenceId ? ` · occurrence ${initialOccurrenceId}` : ""}
+            </span>
           </p>
         )}
         {rows.length === 0 && !loading && !error && (

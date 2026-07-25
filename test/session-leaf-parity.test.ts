@@ -738,11 +738,35 @@ test("a task with no schedule provenance draws no origin mark on any surface", (
   assert.equal(bit(ScheduleOriginChip, { task: { ...ordinaryTask }, scheduleNames: SCHEDULE_NAMES }), "");
 });
 
-test("an archived schedule with no live name falls back to a generic label, link intact", () => {
+test("an archived schedule keeps auditable provenance and isolates chip gestures", () => {
   // The name map holds only live catalog schedules, so a task from an archived one gets a
   // generic label - but the mark still renders and still deep-links, because history
   // carries the schedule even after it leaves the catalog.
   const chip = ScheduleOriginChip({ task: SCHEDULED_TASK, scheduleNames: new Map() });
   assert.equal(chip?.type, Tooltip);
-  assert.match((chip?.props as { label: string }).label, /Filed by a recurring mission/);
+  const label = (chip?.props as { label: string }).label;
+  assert.match(label, /Filed by a recurring mission/);
+  assert.match(label, /schedule sched-1/);
+  assert.match(label, /occurrence occ-1/);
+
+  const button = (
+    chip?.props as {
+      children: ReactElement<{
+        onMouseDown: (event: { stopPropagation: () => void }) => void;
+        onDragStart: (event: { stopPropagation: () => void }) => void;
+      }>;
+    }
+  ).children;
+  let stopped = 0;
+  button.props.onMouseDown({
+    stopPropagation: () => {
+      stopped += 1;
+    },
+  });
+  button.props.onDragStart({
+    stopPropagation: () => {
+      stopped += 1;
+    },
+  });
+  assert.equal(stopped, 2);
 });

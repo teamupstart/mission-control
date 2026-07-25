@@ -267,3 +267,16 @@ test("confirmation and standby simulation seal their underlying controls", () =>
     /value=\{sleepValue\}[\s\S]*?disabled=\{standbyBusy\}[\s\S]*?value=\{resumeValue\}[\s\S]*?disabled=\{standbyBusy\}/,
   );
 });
+
+test("history errors preserve provenance and clear after pagination recovers", () => {
+  const history = readFileSync(
+    path.join(WEB, "components/schedules/ScheduleHistory.tsx"),
+    "utf8",
+  );
+  assert.match(
+    history,
+    /function loadOlder\(\): void \{[\s\S]*?setError\(null\);\s+setLoading\(true\);[\s\S]*?if \(!page\) \{[\s\S]*?return;\s+\}\s+setError\(null\);/,
+  );
+  assert.match(history, /Schedule \{scheduleId\}/);
+  assert.match(history, /occurrence \$\{initialOccurrenceId\}/);
+});

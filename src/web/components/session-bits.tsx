@@ -209,9 +209,18 @@ export function scheduleProvenance(
 }
 
 /** The one hover sentence, shared by all three surfaces so their copy cannot diverge. */
-function scheduleOriginTooltip(scheduleName: string | null, scheduledFor: number | null): string {
-  const who = scheduleName ? `Scheduled by ${scheduleName}` : "Filed by a recurring mission";
-  const when = scheduledFor != null ? ` for ${formatScheduledFor(scheduledFor)}` : "";
+function scheduleOriginTooltip(
+  scheduleName: string | null,
+  origin: ResolvedScheduleOrigin,
+): string {
+  const ids = origin.occurrenceId
+    ? `schedule ${origin.scheduleId}, occurrence ${origin.occurrenceId}`
+    : `schedule ${origin.scheduleId}`;
+  const who = scheduleName
+    ? `Scheduled by ${scheduleName}`
+    : `Filed by a recurring mission (${ids})`;
+  const when =
+    origin.scheduledFor != null ? ` for ${formatScheduledFor(origin.scheduledFor)}` : "";
   return `${who}${when} - open its run history`;
 }
 
@@ -238,9 +247,11 @@ export function ScheduleOriginChip({
   if (!origin) return null;
   const name = scheduleNames?.get(origin.scheduleId) ?? null;
   return (
-    <Tooltip label={scheduleOriginTooltip(name, origin.scheduledFor)}>
+    <Tooltip label={scheduleOriginTooltip(name, origin)}>
       <button
         className="schedule-chip"
+        onMouseDown={(event) => event.stopPropagation()}
+        onDragStart={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined);
@@ -262,7 +273,7 @@ export function ScheduleOriginTileFlag({
   const origin = scheduleProvenance(task);
   if (!origin) return null;
   const name = scheduleNames?.get(origin.scheduleId) ?? null;
-  const label = scheduleOriginTooltip(name, origin.scheduledFor);
+  const label = scheduleOriginTooltip(name, origin);
   return (
     <Tooltip label={label}>
       <button
@@ -288,7 +299,7 @@ export function ScheduleOriginRailMark({
   const origin = scheduleProvenance(task);
   if (!origin) return null;
   const name = scheduleNames?.get(origin.scheduleId) ?? null;
-  const label = scheduleOriginTooltip(name, origin.scheduledFor);
+  const label = scheduleOriginTooltip(name, origin);
   return (
     <Tooltip label={label}>
       <span

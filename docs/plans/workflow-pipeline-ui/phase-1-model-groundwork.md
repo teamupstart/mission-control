@@ -23,10 +23,10 @@ so phases 2 and 3 are pure UI work against a tested contract.
 Non-goals: any component, stylesheet or route change; any change to diagnostics codes (they are a
 stable UI/test contract); any persisted-model change (decision 3 adopted derived naming).
 
-## 4. Repository findings this phase relies on
+## 4. Repository findings this phase relied on
 
-- `validateWorkflowGraph` emits `session_submitted_route` when submitted-edge count `!== 1`
-  (`src/shared/workflow-graph.ts:169-175`). Zero and two currently produce the same message.
+- Before this phase, `validateWorkflowGraph` emitted `session_submitted_route` when submitted-edge
+  count was `!== 1` (`src/shared/workflow-graph.ts:169-175`); zero and two produced the same message.
 - `connectionAllowed` (`workflow-graph.ts:265-274`) is stateless and needs no change: with the rule
   relaxed, the second submitted edge it already permits becomes legal.
 - The engine fans out structurally: `edgesFrom` returns all matching edges and one receipt is
@@ -70,10 +70,13 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      0-reviewer workflow that completes on submission) and the fresh-draft state (Session + End
      with no edges at all, invalid but draftable) project to - this is what lets a brand-new
      workflow open in Pipeline mode (phase 2) without editing the graph on open.
-   - `stageBlockers(graph): string[]` - human sentences naming what blocks projection ("Two End
-     nodes", "Security reviewer's fail route does not return to Session"), for the Graph-view
-     banner. `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and
-     `projectStages` returns non-null exactly then.
+   - `stageBlockers(graph, personas?): string[]` - human sentences naming what blocks projection
+     ("This graph has 2 End nodes; a pipeline has exactly one.", "Security reviewer's fail route
+     does not return to Session."), for the Graph-view banner. `personas` is optional and only
+     resolves draft reviewer names; omitting it cannot change how many blockers there are, so
+     `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and `projectStages` returns
+     non-null exactly then. A parallel stage is named in a blocker the way `stageName` names it
+     ("Stage 2's all-pass join ..."), never by a node id.
    - `compileStages(pipeline, previousGraph): WorkflowDraftGraph` - deterministic emission. Id
      reuse: session and end keep their ids; a member with a non-null `nodeId` keeps it; a stage
      with a non-null `joinId` keeps it; an edge with the same
@@ -121,18 +124,18 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
   `errorCount` can only decrease.
 - A fan-out graph published by this build re-validates as invalid on older builds (publish-time
   only; published versions are immutable and older engines execute fan-out correctly). Noted in the
-  README line this phase adds.
+  README compatibility note this phase adds.
 
 ## 7. Tests and verification
 
-`npm run typecheck`, `npm test`, `npm run build`. New suite `workflow-stages.test.ts`; updated
-`workflow-graph.test.ts`, `workflow-engine.test.ts`. Any test touching the db sets `HARNESS_HOME`
-to a fresh temp dir before imports (house rule).
+`npm run typecheck`, `npm test`, `npm run build`, `npm run smoke`. New suite
+`workflow-stages.test.ts`; updated `workflow-graph.test.ts`, `workflow-engine.test.ts`. Any test
+touching the db sets `HARNESS_HOME` to a fresh temp dir before imports (house rule).
 
 ## 8. Merge and exit criteria
 
-- All suites green on Node 24 and 26; no UI diffs; README gains one line under the Workflows
-  section noting parallel first-wave review is supported.
+- All suites green on Node 24 and 26; no UI diffs; README notes under the Workflows section that
+  parallel first-wave review is supported.
 - `workflow-stages.ts` exports exactly the API above.
 
 ## 9. Downstream handoff
@@ -155,6 +158,19 @@ unchanged. They must not change these without editing this phase's tests.
   expressibility rule. `stages: []` projects from both the fresh no-edge draft and the canonical
   `submitted -> terminal` form; compile canonicalizes on first edit only. Round-trip tests extended
   to cover it; phase 2's empty-state wording aligned in the same change.
+- 2026-07-25 (implementation): `stageBlockers` gained an OPTIONAL second `personas` argument. Its
+  own worked example ("Security reviewer's fail route ...") names a reviewer, and a draft Persona
+  node carries only a `personaId` - so with the one-argument signature every blocker about a draft
+  reviewer, which is the Graph-view banner's whole case, would have read "Missing persona". The
+  argument defaults to `[]`, so the frozen one-argument call still compiles and still answers
+  expressibility identically; `stageExpressible` passes nothing on purpose. Published graphs need
+  no list: `nodeLabel` and the projection read the immutable snapshot names off the nodes.
+- 2026-07-25 (operator-approved API clarification): the phase's "exports exactly the API above"
+  criterion means the behavioural API plus the types it is structurally composed of.
+  `StageGraph`, `StageNode`, `StagePersonaNames`, and `StageMember` are approved type exports:
+  `Stage.members` contains `StageMember` values, and the public projection and naming functions
+  accept the other three types. Removing them would force every phase 2-3 consumer to re-derive
+  the public parameter and member types.
 - 2026-07-25 (Inspector round 3, PR #244): `Stage.members[].nodeId` became `string | null` - a
   reviewer being added has no graph node yet, and requiring an id would have forced the editor to
   mint one, breaking the compiler's id-ownership contract. Null identities are minted by

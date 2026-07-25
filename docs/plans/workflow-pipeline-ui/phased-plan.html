@@ -73,7 +73,9 @@ per-phase instructions.</p>
   <code>src/web/lib/settings-registry.ts</code> with <code>renderCategory</code> in
   <code>SettingsPage.tsx</code> - AGENTS.md still points at a deleted <code>SettingsModal.tsx</code>
   (phase 4 fixes the sentence). The Graph-view banner needs reasons, not a boolean, so phase 1's
-  API grew <code>stageBlockers(graph)</code> during decomposition.</li>
+  API grew blocker analysis during decomposition; the
+  <a href="phase-1-model-groundwork.md#5-implementation-steps">Phase 1 contract</a> owns its
+  signature.</li>
 </ul>
 
 <h2>Phases</h2>
@@ -120,10 +122,10 @@ order equals phase order; there are no concurrent groups.</figcaption>
 </figure>
 
 <h2>Cross-phase contracts</h2>
-<div class="contract"><b>Phase 1 → all:</b> <code>workflow-stages.ts</code> exports
-(<code>projectStages</code>, <code>compileStages</code>, <code>stageBlockers</code>,
-<code>stageExpressible</code>, <code>stageName</code>, <code>nodeLabel</code>), the compiler's
-id-reuse guarantees, the relaxed validator, unchanged diagnostic codes.</div>
+<div class="contract"><b>Phase 1 → all:</b> the
+<a href="phase-1-model-groundwork.md#9-downstream-handoff">authoritative Phase 1 contract</a>,
+including the <code>workflow-stages.ts</code> API, compiler id reuse, relaxed validator, and
+unchanged diagnostic codes.</div>
 <div class="contract"><b>Phase 2 → 3, 4:</b> <code>pipeline-bits.tsx</code> component props
 (including <code>ReviewerRow</code>'s status chip slot), the <code>wf-pipeline-*</code> CSS
 vocabulary, the <code>workflowConfirm</code> overlay id, the <code>onBindWorkflow</code> threading

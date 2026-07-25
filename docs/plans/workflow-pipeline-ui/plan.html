@@ -64,10 +64,10 @@ canvas chrome; jargon empty states).</p>
 
 <h2>Why</h2>
 <ul>
-  <li>The validator (<code>src/shared/workflow-graph.ts:170</code>) requires exactly one
-  <code>submitted</code> edge, so the all-pass Join's headline case - N reviewers in parallel on the
-  submission - cannot be authored at all. The engine already fans out (one durable receipt per
-  outgoing edge); the cap is validator-only.</li>
+  <li>Before Phase 1, the validator required exactly one <code>submitted</code> edge, so the
+  all-pass Join's headline case - N reviewers in parallel on the submission - could not be authored
+  at all. The engine already fanned out (one durable receipt per outgoing edge), so the cap was
+  validator-only.</li>
   <li>Every legal workflow today is "Session, then waves of reviewers, then End, with every fail
   returning to Session". The canvas makes operators hand-draw that grammar and then polices misses
   with codes. A stage editor makes the grammar unrepresentable instead of policed.</li>
@@ -96,17 +96,11 @@ canvas chrome; jargon empty states).</p>
 <h2>Design</h2>
 
 <h3>Stages are a projection, not a second model</h3>
-<p>The persisted model stays <code>WorkflowDraftGraph</code> / published graphs. A new browser-safe
-module <code>src/shared/workflow-stages.ts</code> owns:</p>
-<ul>
-  <li><code>projectStages(graph)</code> - the stage pipeline a graph expresses, or <code>null</code>
-  when the graph is not stage-expressible.</li>
-  <li><code>compileStages(pipeline, previousGraph)</code> - emits a graph, reusing node and edge ids
-  wherever the same stage member survives so autosave diffs, undo history and version comparisons
-  stay stable. Positions are generated deterministically.</li>
-  <li><code>stageExpressible(graph)</code> and <code>nodeLabel(graph, node, personas)</code> - the shared
-  vocabulary helper adopted by every surface.</li>
-</ul>
+<p>The persisted model stays <code>WorkflowDraftGraph</code> / published graphs. The browser-safe
+module <code>src/shared/workflow-stages.ts</code> owns stage projection, compilation, blocker
+analysis and human naming. Its <a href="phase-1-model-groundwork.md#5-implementation-steps">Phase 1
+contract</a> is the authoritative API; in particular, compilation reuses surviving node and edge
+ids so autosave diffs, undo history and version comparisons stay stable.</p>
 <p><strong>Stage-expressible</strong>: one Session; a linear chain of zero or more stages; a stage
 is one Persona (pass onward, fail to Session) or N Personas plus one <code>all_pass</code> Join
 (every member's pass and fail into the Join, Join pass onward, Join fail to Session); one End;

@@ -25,8 +25,9 @@ and operable; phase files beside this index are the authoritative per-phase inst
 - **Discrepancies vs the source plan's environment**: the settings registry is
   `SETTINGS_CATEGORIES` in `src/web/lib/settings-registry.ts` with `renderCategory` in
   `SettingsPage.tsx` - AGENTS.md still points at a deleted `SettingsModal.tsx` (phase 4 fixes the
-  sentence). And the Graph-view banner needs reasons, not a boolean, so phase 1's API grew
-  `stageBlockers(graph): string[]` during decomposition.
+  sentence). And the Graph-view banner needs reasons, not a boolean, so phase 1's API grew blocker
+  analysis during decomposition; the
+  [Phase 1 contract](phase-1-model-groundwork.md#5-implementation-steps) owns its signature.
 
 ## Phases
 
@@ -51,9 +52,10 @@ There are no concurrent groups; merge order equals phase order.
 
 ## Cross-phase contracts
 
-- **Phase 1 -> all**: `src/shared/workflow-stages.ts` exports (`projectStages`, `compileStages`,
-  `stageBlockers`, `stageExpressible`, `stageName`, `nodeLabel`, `StagePipeline`, `Stage`), the
-  compiler's id-reuse guarantees, the relaxed validator, and unchanged diagnostic codes.
+- **Phase 1 -> all**: the
+  [authoritative Phase 1 contract](phase-1-model-groundwork.md#9-downstream-handoff), including the
+  `src/shared/workflow-stages.ts` API, compiler id reuse, relaxed validator, and unchanged
+  diagnostic codes.
 - **Phase 2 -> 3, 4**: `pipeline-bits.tsx` component props (including `ReviewerRow`'s status chip
   slot), the `wf-pipeline-*` CSS vocabulary, the `workflowConfirm` overlay id, and the
   `onBindWorkflow` prop threading through `WorkflowPage`.

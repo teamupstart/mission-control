@@ -180,7 +180,8 @@ Codes are stable UI and test contracts. Include at least:
 Rules:
 
 1. Exactly one Session and at least one End.
-2. Session has exactly one `submitted` route. Its incoming edges must be `fail` to
+2. Session has at least one `submitted` route, and it may fan out so a first wave of reviewers runs
+   in parallel; zero routes is still an error. Its incoming edges must be `fail` to
    `return_for_changes`.
 3. Every Persona and Join has at least one route for both `pass` and `fail`.
 4. A `pass` or `fail` may fan out, except a paired Join input must contain exactly one of each from

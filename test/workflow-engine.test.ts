@@ -261,6 +261,58 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
   assert.equal(store.getRun("run")?.currentPhase, "persona_feedback");
 });
 
+// The validator used to refuse a second submitted route, so this shape could not be authored at
+// all. Nothing in the engine changed to allow it: one submission writes one receipt per outgoing
+// edge and each receipt queues its Persona. What has to stay true is that replaying the structure
+// after a restart re-asserts those receipts idempotently instead of activating a second attempt.
+test("one submission fans out to every submitted route and replay adds no duplicate receipt", async () => {
+  const fanOutGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p1", kind: "persona", persona: persona("first", "First", "claude", "REVIEW"), position: { x: 100, y: 0 } },
+      { id: "p2", kind: "persona", persona: persona("second", "Second", "claude", "REVIEW"), position: { x: 100, y: 170 } },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 85 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 85 } },
+    ],
+    edges: [
+      { id: "s-p1", source: "session", sourcePort: "submitted", target: "p1", targetPort: "activate" },
+      { id: "s-p2", source: "session", sourcePort: "submitted", target: "p2", targetPort: "activate" },
+      { id: "p1-pass", source: "p1", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p1-fail", source: "p1", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "p2-pass", source: "p2", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p2-fail", source: "p2", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("fan-out", fanOutGraph);
+  const idle = new WorkflowEngine(store);
+  idle.activateSubmission("submission-fan-out");
+
+  const activated = store.listAttempts("submission-fan-out")
+    .filter((attempt) => attempt.persona)
+    .map((attempt) => [attempt.nodeId, attempt.attempt, attempt.state])
+    .sort();
+  assert.deepEqual(activated, [["p1", 1, "queued"], ["p2", 1, "queued"]]);
+  const submitReceipts = () => store.listReceipts("submission-fan-out")
+    .filter((receipt) => ["s-p1", "s-p2"].includes(receipt.edgeId));
+  assert.deepEqual(submitReceipts().map((receipt) => receipt.edgeId).sort(), ["s-p1", "s-p2"]);
+
+  const restarted = new WorkflowEngine(store);
+  restarted.start();
+  await restarted.stop();
+
+  assert.deepEqual(submitReceipts().map((receipt) => receipt.edgeId).sort(), ["s-p1", "s-p2"]);
+  assert.deepEqual(
+    store.listAttempts("submission-fan-out")
+      .filter((attempt) => attempt.persona)
+      .map((attempt) => [attempt.nodeId, attempt.attempt])
+      .sort(),
+    [["p1", 1], ["p2", 1]],
+  );
+  store.cancelRun("run-fan-out", "test_cleanup", 30);
+});
+
 test("each structured provider attempt has its own durable LLM call receipt", async () => {
   const retryParseGraph: PublishedWorkflowGraph = {
     nodes: [

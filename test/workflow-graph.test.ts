@@ -37,6 +37,27 @@ test("fan-out, paired Join outcomes, and repair cycles through Session are valid
   assert.deepEqual(validateWorkflowGraph({ graph: graph(), personas, completionPolicy: { kind: "none" } }), { valid: true, diagnostics: [] });
 });
 
+// Parallel first-wave review is the all-pass Join's headline case, and it was unauthorable while
+// the validator demanded exactly one submitted route. The engine always fanned out; only this
+// rule refused. Zero routes still has to fail - nothing would ever run.
+test("Session may fan out its submitted route, but never drop it", () => {
+  const parallel = graph();
+  parallel.edges = [
+    { id: "s-maint", source: "s", sourcePort: "submitted", target: "maint", targetPort: "activate" },
+    { id: "s-design", source: "s", sourcePort: "submitted", target: "design", targetPort: "activate" },
+    ...parallel.edges.filter((edge) => ["e5", "e6", "e7", "e8", "e9", "e10"].includes(edge.id)),
+  ];
+  parallel.nodes = parallel.nodes.filter((node) => node.id !== "code");
+  assert.deepEqual(
+    validateWorkflowGraph({ graph: parallel, personas, completionPolicy: { kind: "none" } }),
+    { valid: true, diagnostics: [] },
+  );
+
+  const stranded = graph();
+  stranded.edges = stranded.edges.filter((edge) => edge.id !== "e1");
+  assert.ok(codes(stranded).includes("session_submitted_route"));
+});
+
 test("directional ports, dangling edges, and missing routes have stable diagnostics", () => {
   const candidate = graph();
   candidate.edges = candidate.edges.filter((edge) => edge.id !== "e8");

@@ -168,9 +168,12 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
 
   const outgoingEdges = (id: string): WorkflowEdge[] => validEdges.filter((edge) => edge.source === id);
   for (const session of sessions) {
+    // At-least-one, not exactly-one: parallel first-wave review is N reviewers on one submission,
+    // and the engine already writes one idempotent receipt per outgoing edge. Zero routes is still
+    // an error - nothing would ever run.
     const submitted = outgoingEdges(session.id).filter((edge) => edge.sourcePort === "submitted");
-    if (submitted.length !== 1) {
-      diagnostics.push(diagnostic("session_submitted_route", "Session must have exactly one submitted route.", { nodeId: session.id }));
+    if (submitted.length === 0) {
+      diagnostics.push(diagnostic("session_submitted_route", "Session needs a submitted route.", { nodeId: session.id }));
     }
   }
   for (const node of graph.nodes) {

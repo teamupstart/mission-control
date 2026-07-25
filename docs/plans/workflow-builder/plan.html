@@ -99,7 +99,7 @@
   <p>Use a left library/palette, center canvas, and right properties/validation pane. Typed ports make execution explicit without exposing runtime checkpoint machinery.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Node</th><th>Inputs</th><th>Outputs</th><th>Meaning</th></tr></thead><tbody>
-      <tr><td>Session</td><td><code>return_for_changes</code></td><td><code>submitted</code></td><td>The original submission and every repair resubmission. Exactly one. Incoming failure closes the current round and waits here.</td></tr>
+      <tr><td>Session</td><td><code>return_for_changes</code></td><td><code>submitted</code></td><td>The original submission and every repair resubmission. Submission routing follows the <a href="phase-2-builder-publishing.md#graph-validation">Phase 2 graph-validation contract</a>. Incoming failure closes the current round and waits here.</td></tr>
       <tr><td>Persona</td><td>activation</td><td><code>pass</code>, <code>fail</code></td><td>One structured review against the submission snapshot.</td></tr>
       <tr><td>All-pass Join</td><td>Persona results</td><td><code>pass</code>, <code>fail</code></td><td>Wait for every predecessor and aggregate failures.</td></tr>
       <tr><td>End</td><td>pass or fail</td><td>none</td><td>Named terminal outcome.</td></tr>
@@ -326,7 +326,7 @@ GET/PUT            /api/workflows/config</code></pre>
   <h2>Validation</h2>
   <ul>
     <li>Exactly one Session, at least one End, unique ids, and valid typed ports.</li>
-    <li>Every Persona has pass and fail routes; Session has one submitted route and only failure/return inputs.</li>
+    <li>Session routing follows the authoritative <a href="phase-2-builder-publishing.md#graph-validation">Phase 2 graph-validation contract</a>.</li>
     <li>Every Join has two predecessors, pass/fail outputs, and both outcomes from each predecessor.</li>
     <li>All nodes are reachable and can reach an End or return to Session.</li>
     <li>Every cyclic strongly connected component contains Session.</li>

@@ -229,33 +229,59 @@ export function ScheduleEditor({
       setPreviewedOk(fingerprint);
     }
 
-    // Persist the definition FIRST, before touching the enabled flag. The Phase 3 API has
-    // no atomic "update + set-enabled" route, so ordering is the safety: a rejected update
-    // (bad cron, repo gone) then changes nothing at all - the mission keeps its previous
-    // revision AND its previous enabled state, so a failed save can never silently pause a
-    // running mission or start a parked one. (Create takes `enabled` atomically.)
-    const result = schedule
-      ? await updateSchedule(schedule.id, definition)
-      : await createSchedule({ ...definition, enabled: enable });
+    // A create is atomic: the route takes `enabled` in one write.
+    if (!schedule) {
+      const result = await createSchedule({ ...definition, enabled: enable });
+      setSaving(false);
+      if (!result.ok) {
+        if (result.field) setFieldErrors({ [result.field]: result.error ?? "Invalid value." });
+        setFormError(result.error ?? "Could not save the schedule.");
+        return;
+      }
+      if (result.schedule) onSaved(result.schedule);
+      return;
+    }
+
+    // An EDIT is two requests - Phase 3 has no atomic update-and-enabled route - so the
+    // ORDER carries the safety, and the rule is: move the enabled flag to its safe side
+    // before the revision changes, never after.
+    //
+    // Pausing (target disabled) pauses FIRST: once the pause is durable no tick can fire,
+    // so the new revision is never runnable while the operator asked for paused (a tick in
+    // the gap could otherwise create a task from a just-saved, immediately-due cadence).
+    // Enabling (target enabled) defers the enable until AFTER the update, so a revision is
+    // only ever runnable once it is saved. Either way the save itself rolls the enabled
+    // flag back on failure, so a rejected edit never changes the mission's running state.
+    const wasEnabled = schedule.enabled;
+    const pauseFirst = !enable && wasEnabled;
+
+    if (pauseFirst) {
+      const paused = await setScheduleEnabled(schedule.id, false);
+      if (!paused.ok) {
+        setSaving(false);
+        setFormError(paused.error ?? "Could not pause the schedule.");
+        return;
+      }
+    }
+
+    const result = await updateSchedule(schedule.id, definition);
     if (!result.ok) {
+      // The save failed: undo the pre-emptive pause so the mission is left exactly as it
+      // was (enabled, previous revision) rather than stopped by a rejected edit.
+      if (pauseFirst) await setScheduleEnabled(schedule.id, true);
       setSaving(false);
       if (result.field) setFieldErrors({ [result.field]: result.error ?? "Invalid value." });
       setFormError(result.error ?? "Could not save the schedule.");
       return;
     }
 
-    // Only once the save has committed do we bring the enabled state to what the button
-    // asked (edit only - create already did it). A failure HERE leaves the saved revision
-    // in its PREVIOUS enabled state, never an unexpected pause of unsaved work, and reports
-    // a clear, retryable error rather than silently stopping future occurrences.
-    if (schedule && result.schedule && result.schedule.enabled !== enable) {
-      const toggled = await setScheduleEnabled(schedule.id, enable);
+    // Enable only now, after the revision is durably saved (never before).
+    if (enable && !wasEnabled) {
+      const toggled = await setScheduleEnabled(schedule.id, true);
       setSaving(false);
       if (!toggled.ok) {
         setFormError(
-          enable
-            ? "Saved, but the mission could not be enabled - it stays paused. Resume it from the catalog."
-            : "Saved, but the mission could not be paused - it stays enabled. Pause it from the catalog.",
+          "Saved, but the mission could not be enabled - it stays paused. Resume it from the catalog.",
         );
         return;
       }

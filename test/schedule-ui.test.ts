@@ -138,6 +138,19 @@ test("the editor distinguishes Save paused from Save & enable, and only offers l
   assert.match(html, /No work runs while this laptop is asleep or powered off/);
 });
 
+test("editing sequences enable/pause to the safe side, and rolls back a failed save", () => {
+  // Phase 3 has no atomic update-and-enabled route, so the editor's request ORDER carries
+  // the safety across two Inspector rounds on #241: pausing pauses FIRST (so no tick can
+  // run a just-saved, immediately-due cadence before the pause is durable), enabling enables
+  // LAST (so a revision is only runnable once saved), and a failed update rolls the pre-empt
+  // pause back (so a rejected edit never silently stops a running mission).
+  const editor = readFileSync(path.join(WEB, "components/schedules/ScheduleEditor.tsx"), "utf8");
+  assert.match(editor, /const pauseFirst = !enable && wasEnabled/);
+  assert.match(editor, /if \(pauseFirst\)[\s\S]*?setScheduleEnabled\(schedule\.id, false\)/);
+  assert.match(editor, /if \(pauseFirst\) await setScheduleEnabled\(schedule\.id, true\)/);
+  assert.match(editor, /if \(enable && !wasEnabled\)[\s\S]*?setScheduleEnabled\(schedule\.id, true\)/);
+});
+
 test("the catalog marks an unreadable execution mode", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleCatalog, {

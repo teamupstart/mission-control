@@ -107,10 +107,13 @@ module <code>src/shared/workflow-stages.ts</code> owns:</p>
   <li><code>stageExpressible(graph)</code> and <code>nodeLabel(graph, node, personas)</code> - the shared
   vocabulary helper adopted by every surface.</li>
 </ul>
-<p><strong>Stage-expressible</strong>: one Session; a linear chain of stages; a stage is one Persona
-(pass onward, fail to Session) or N Personas plus one <code>all_pass</code> Join (every member's
-pass and fail into the Join, Join pass onward, Join fail to Session); one End; nothing else.
-Round-trip invariants are pinned by tests.</p>
+<p><strong>Stage-expressible</strong>: one Session; a linear chain of zero or more stages; a stage
+is one Persona (pass onward, fail to Session) or N Personas plus one <code>all_pass</code> Join
+(every member's pass and fail into the Join, Join pass onward, Join fail to Session); one End;
+nothing else. The zero-stage form covers the canonical empty pipeline
+(<code>submitted → terminal</code>) and the fresh Session-plus-End draft, so a brand-new workflow
+opens in Pipeline mode without being edited by the act of opening. Round-trip invariants are pinned
+by tests.</p>
 <p>The editor never mutates edges directly - every pipeline edit compiles and hands the graph to the
 existing <code>useWorkflowDraft.update</code>, so CAS autosave, conflicts, undo/redo, publish and
 versions behave exactly as today.</p>

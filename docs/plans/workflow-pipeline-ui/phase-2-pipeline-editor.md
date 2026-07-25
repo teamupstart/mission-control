@@ -109,8 +109,10 @@ today's.
 
 ## 8. Merge and exit criteria
 
-- A brand-new workflow opens in pipeline mode with Session -> (empty stage affordance) -> End and
-  zero errors visible; adding two reviewers to stage 1 and publishing succeeds.
+- A brand-new workflow opens in pipeline mode with Session -> (empty stage affordance) -> End
+  (phase 1's zero-stage projection; opening never edits the graph). Its draft diagnostics render as
+  one guidance sentence ("Add a reviewer to route the submission"), not error codes; the first edit
+  compiles the canonical graph. Adding two reviewers to stage 1 and publishing succeeds.
 - Graph mode still edits arbitrary graphs; non-expressible drafts open in graph mode with the
   blockers banner.
 - No `window.confirm` remains under `src/web/workflows/` except in `WorkflowRuns.tsx` and
@@ -127,3 +129,7 @@ Phase 3 must not fork a second stage-rendering dialect.
 
 - 2026-07-25: consumes `stageBlockers` (added to phase 1 during this write-up). Reviewer status
   chip slot included in `ReviewerRow` now so phase 3 does not have to fork the leaf.
+- 2026-07-25 (Inspector round 2, PR #244): the brand-new-workflow exit criterion now names phase
+  1's zero-stage projection instead of implying it, states that opening never mutates the draft,
+  and replaces the false "zero errors visible" claim with the guidance-sentence presentation (a
+  fresh draft IS invalid until first edit).

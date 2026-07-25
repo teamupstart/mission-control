@@ -58,10 +58,14 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      `Stage = { joinId: string | null, members: { nodeId, personaId }[] }`. A single-member stage
      has `joinId: null`.
    - `projectStages(graph): StagePipeline | null` - returns the pipeline exactly when the graph is
-     stage-expressible: one Session, a linear chain of stages, each stage one Persona (pass onward,
-     fail to Session) or N Personas + one `all_pass` (every member's pass and fail into the join,
-     join pass onward, join fail to Session), one End reached by the final stage, no other nodes or
-     edges.
+     stage-expressible: one Session, a linear chain of zero or more stages, each stage one Persona
+     (pass onward, fail to Session) or N Personas + one `all_pass` (every member's pass and fail
+     into the join, join pass onward, join fail to Session), one End reached by the final stage, no
+     other nodes or edges. **The zero-stage projection is first-class**: `stages: []` is what both
+     the canonical empty pipeline (the single edge `session.submitted -> end.terminal`, a valid
+     0-reviewer workflow that completes on submission) and the fresh-draft state (Session + End
+     with no edges at all, invalid but draftable) project to - this is what lets a brand-new
+     workflow open in Pipeline mode (phase 2) without editing the graph on open.
    - `stageBlockers(graph): string[]` - human sentences naming what blocks projection ("Two End
      nodes", "Security reviewer's fail route does not return to Session"), for the Graph-view
      banner. `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and
@@ -71,7 +75,9 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      `member.nodeId`); a surviving stage keeps its join id; an edge with the same
      `(source, sourcePort, target, targetPort)` as one in `previousGraph` keeps that edge's id;
      everything else mints `crypto.randomUUID()`. Positions are generated (column per stage, row
-     per member, constants coherent with the existing auto-layout spacing).
+     per member, constants coherent with the existing auto-layout spacing). A zero-stage pipeline
+     compiles to the canonical empty form (the direct `submitted -> terminal` edge) - so a fresh
+     no-edge draft is canonicalized by the FIRST edit, never by merely opening it.
    - `stageName(stage, index, personas): string` - derived naming: the persona's name for a
      single-member stage, `Stage N` for multi-member.
    - `nodeLabel(graph, node, personas): string` - "Session", persona name (or "Missing persona"),
@@ -84,7 +90,10 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
 6. **`test/workflow-stages.test.ts`**, opening comment stating what is at stake (round-trip
    stability is what keeps autosave, undo and versions honest). Cases:
    - Round-trip: `projectStages(compileStages(p, g))` deep-equals `p` for representative pipelines
-     (1 stage x 1 member; 1 stage x 3 members; 3 stages mixed).
+     (zero stages; 1 stage x 1 member; 1 stage x 3 members; 3 stages mixed).
+   - Empty pipeline: the fresh-draft graph (Session + End, no edges) projects to `stages: []` with
+     no blockers; compiling that projection emits the direct `submitted -> terminal` edge and
+     passes `validateWorkflowGraph`.
    - Compiled output always passes `validateWorkflowGraph` (with the relaxed rule).
    - Id stability: add a member, remove a member, reorder stages - unaffected node and edge ids are
      preserved verbatim against `previousGraph`.
@@ -130,3 +139,8 @@ unchanged. They must not change these without editing this phase's tests.
   to `(graph, node, personas)` - a bare `all_pass` node carries no stage context, so the promised
   stage-consistent join label was underivable; the non-expressible fallback label is now defined
   explicitly. Consumers in phases 2-3 pass the draft or published graph they already hold.
+- 2026-07-25 (Inspector round 2, PR #244): the zero-stage projection is now defined - phase 2's
+  "brand-new workflow opens in Pipeline mode" exit criterion contradicted the previous 1..k-stage
+  expressibility rule. `stages: []` projects from both the fresh no-edge draft and the canonical
+  `submitted -> terminal` form; compile canonicalizes on first edit only. Round-trip tests extended
+  to cover it; phase 2's empty-state wording aligned in the same change.

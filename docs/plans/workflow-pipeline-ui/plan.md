@@ -59,10 +59,13 @@ module `src/shared/workflow-stages.ts` owns two pure functions and one predicate
   generated deterministically (the pipeline has no free-form layout).
 - `stageExpressible(graph)` is `projectStages(graph) !== null`.
 
-**Stage-expressible** means exactly: one Session; a linear chain of 1..k stages; a stage is either
-one Persona (pass to the next stage or End, fail to Session) or N Personas plus one `all_pass` Join
-(every member's pass and fail into the Join, Join pass onward, Join fail to Session); one End
-reached by the final stage; nothing else. Round-trip invariants are pinned by tests:
+**Stage-expressible** means exactly: one Session; a linear chain of zero or more stages; a stage is
+either one Persona (pass to the next stage or End, fail to Session) or N Personas plus one
+`all_pass` Join (every member's pass and fail into the Join, Join pass onward, Join fail to
+Session); one End reached by the final stage; nothing else. The zero-stage form covers both the
+canonical empty pipeline (`submitted -> terminal`, a valid 0-reviewer workflow) and the fresh
+Session-plus-End draft with no edges, so a brand-new workflow opens in Pipeline mode without being
+edited by the act of opening. Round-trip invariants are pinned by tests:
 `projectStages(compileStages(p, g))` equals `p`, and compiling a projection of a stage-expressible
 graph is semantically identical to that graph.
 

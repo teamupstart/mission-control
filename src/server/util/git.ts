@@ -161,7 +161,16 @@ function commonDir(gitDir: string): string {
 function branchFromHead(head: string): string | null {
   const ref = head.match(/^ref:\s*refs\/heads\/(.+)$/);
   if (ref) return ref[1] ?? null;
-  if (/^[0-9a-f]{7,40}$/.test(head)) return head.slice(0, 8);
+  // A detached HEAD is a raw SHA in the HEAD file - the checkout is on NO branch. Returning
+  // the short sha here dressed that up as a branch, and the branch string feeds work-episode
+  // ownership: a pooled worktree is provisioned by resetting to a bare commit, so a dispatched
+  // session starts detached, and the moment the agent correctly cuts its own feature branch to
+  // commit on, `ensureWorkEpisode` saw the sha-"branch" change to a real one, rolled a new
+  // episode invalidating ownership, and cancelled the still-working task - stranding its merged
+  // PR against an episode no task pointed at, with the Complete button dead. A detached HEAD has
+  // no branch, so say so: the branch is adopted in place when the agent creates one, and the
+  // task is never disturbed. `root` still resolves, so "in a repo, detached" stays
+  // distinguishable from "not in a repo" (both-null) for every other caller.
   return null;
 }
 

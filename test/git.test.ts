@@ -81,13 +81,17 @@ test("gitInfo reports the worktree root from a nested subdir", () => {
   assert.equal(gitInfo(sub).root, main);
 });
 
-test("gitInfo returns a short sha for a detached HEAD", () => {
+test("gitInfo reports a detached HEAD as being on no branch, but still in its repo", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "git-det-")));
   const gitDir = join(root, ".git");
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, "HEAD"), "06a99e5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f\n");
   writeFileSync(join(gitDir, "config"), "");
-  assert.deepEqual(gitInfo(root), { branch: "06a99e5b", root, repoRoot: root, nomistakesGated: false });
+  // A detached HEAD is on NO branch - dressing the sha up as one made a dispatched session
+  // provisioned at a bare commit look like it switched branches the instant the agent cut a
+  // real one, which cancelled its task (see `branchFromHead`). `root` still resolves, so this
+  // stays distinct from the not-a-repo case below.
+  assert.deepEqual(gitInfo(root), { branch: null, root, repoRoot: root, nomistakesGated: false });
 });
 
 test("gitInfo returns nulls for a non-repo dir", () => {

@@ -9611,13 +9611,22 @@ select.foreman-model-input {
 
    Only the leaf items move; the DOM does not change and neither does the narrow card.
    Anything a future card adds lands on that line by default rather than needing a rule,
-   because the row is a `wrap` and not a set of slots. */
-.board-col.is-wide .bl-card {
+   because the row is a `wrap` and not a set of slots.
+
+   Scoped to `[data-focus="none"]`, exactly like the width above it, and that pairing is
+   the contract rather than a repeated prefix. `wideCol` deliberately SURVIVES a drill-in
+   so the board you come back to is the one you left, which means during a drill-in there
+   is still a column carrying `is-wide` - one the morph has collapsed to zero width. With
+   only the width rule scoped, its cards kept the wide layout while being squeezed to
+   nothing, so the reflow played out through the 0.34s morph on cards that were on their
+   way off screen. Width and layout are one statement about the same column; either both
+   apply or neither does. */
+.board[data-focus="none"] .board-col.is-wide .bl-card {
   flex-flow: row wrap;
   align-items: center;
   column-gap: 10px;
 }
-.board-col.is-wide .bl-title {
+.board[data-focus="none"] .board-col.is-wide .bl-title {
   /* Its own line, full width: this is the text the widening was for. */
   flex: 0 0 100%;
 }
@@ -9625,7 +9634,7 @@ select.foreman-model-input {
    is now content-sized - harmless there, but it is what made the narrow card's rhythm
    read as a gap when the row got long. Marks read left to right, in one line, in the
    order the card already had them. */
-.board-col.is-wide .bl-added {
+.board[data-focus="none"] .board-col.is-wide .bl-added {
   margin-left: 0;
 }
 

@@ -164,9 +164,25 @@ test("the stylesheet still answers the class, and only off the drill-in", () => 
   assert.match(wide, /flex-grow:\s*2\b/);
   assert.match(rules, /--board-col-wide:/, "the width is a token, not a number in a rule");
 
-  // The card has to USE the width rather than be stretched by it.
-  assert.match(rules, /\.board-col\.is-wide\s+\.bl-card\s*\{[^}]*flex-flow:\s*row wrap/);
-  assert.match(rules, /\.board-col\.is-wide\s+\.bl-title\s*\{[^}]*flex:\s*0 0 100%/);
+  // The card has to USE the width rather than be stretched by it - and every one of
+  // these rules carries the SAME `[data-focus="none"]` scope as the width itself.
+  // `wideCol` survives a drill-in on purpose, so a collapsed column still wears
+  // `is-wide`; a reflow rule that forgot the scope kept re-laying-out cards that the
+  // morph was squeezing to zero width. Width and layout are one statement about one
+  // column, so the test walks every `is-wide` rule rather than naming two of them.
+  const wideSelectors = [...rules.matchAll(/([^{}]*\.is-wide[^{}]*)\{[^}]*\}/g)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+  assert.ok(wideSelectors.length >= 4, "expected the width rule plus the card reflow rules");
+  for (const selector of wideSelectors) {
+    assert.match(
+      selector,
+      /^\.board\[data-focus="none"\]/,
+      `every .is-wide rule must be scoped off the drill-in; "${selector}" is not`,
+    );
+  }
+  assert.match(rules, /\.is-wide\s+\.bl-card\s*\{[^}]*flex-flow:\s*row wrap/);
+  assert.match(rules, /\.is-wide\s+\.bl-title\s*\{[^}]*flex:\s*0 0 100%/);
   // Double-click must not leave the column name selected behind the move.
   assert.match(rules, /\.board-col-head\s*\{[^}]*user-select:\s*none/);
 });

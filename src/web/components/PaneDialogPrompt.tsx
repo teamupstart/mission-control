@@ -40,6 +40,7 @@ export function PaneDialogPrompt({
   const [busy, setBusy] = useState<number | "form" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
 
   // A 409 says "the screen changed" - and the screen changing is precisely what replaces
   // the question above it. Without this the failure message outlives the menu it was
@@ -60,6 +61,7 @@ export function PaneDialogPrompt({
     setPicked(initialPicks(dialog));
     setError(null);
     setNote(null);
+    setTyped("");
   }
 
   async function choose(option: PaneOption): Promise<void> {
@@ -105,8 +107,23 @@ export function PaneDialogPrompt({
     }
   }
 
+  async function submitDriverText(question: string): Promise<void> {
+    const text = typed.trim();
+    if (busy !== null || !text) return;
+    setBusy("form");
+    setError(null);
+    setNote(null);
+    const r = await api.submitAnswers(sessionId, [{ question, labels: [], text }]);
+    setBusy(null);
+    if (!r.ok) setError(failure(r));
+  }
+
   const checkboxes = boxes(dialog);
   const form = dialog.multiSelect === true && checkboxes.length > 0;
+  const driverQuestion =
+    dialog.source === "driver" && dialog.questions?.length === 1 && !dialog.multiSelect
+      ? dialog.questions[0]
+      : null;
 
   // A DRIVER form is a third shape, and it needs its own render for the same reason it
   // needs its own wire body: its rows live on its questions, each numbering from 1, so
@@ -194,6 +211,37 @@ export function PaneDialogPrompt({
           ),
         )}
       </ul>
+
+      {driverQuestion && (
+        <form
+          className="pd-question"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitDriverText(driverQuestion.question);
+          }}
+        >
+          <input
+            className="pd-text-answer"
+            type="text"
+            value={typed}
+            disabled={busy !== null}
+            aria-label={`Custom answer for ${driverQuestion.question}`}
+            placeholder="Or type a custom answer"
+            onChange={(event) => setTyped(event.target.value)}
+          />
+          <div className="pd-actions">
+            <Tooltip label="Send this custom answer back to the agent">
+              <button
+                type="submit"
+                className="pd-submit"
+                disabled={busy !== null || !typed.trim()}
+              >
+                {busy === "form" ? "Submitting…" : "Submit custom answer"}
+              </button>
+            </Tooltip>
+          </div>
+        </form>
+      )}
 
       {form && (
         <div className="pd-actions">

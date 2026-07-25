@@ -312,12 +312,13 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 
 - the task's prompt is the conversation's first turn - there is no paste to verify, no
   settle window, and no retry that can make an agent read its task twice;
-- permission prompts, `AskUserQuestion` (all of its questions at once, not one tab at a
-  time) and plan approvals render on the card and are answered from it. Each question can
-  take one of Claude's choices or a custom typed answer, and parallel asks wait their turn
-  on the same card instead of replacing one another. Claude's own question tool is left
-  enabled - the MCP ask-channel redirect exists because a menu on a child's terminal is
-  unreadable, and here it is not;
+- permission prompts and plan approvals render as one-click rows on the card. A single
+  `AskUserQuestion` keeps those one-click choice rows and adds a separate custom-answer
+  field; multi-question or multi-select asks show every question together and submit once.
+  Each question accepts either its choice rows or non-empty custom text, and parallel asks
+  wait their turn on the same card instead of replacing one another. Claude's own question
+  tool is left enabled - the MCP ask-channel redirect exists because a menu on a child's
+  terminal is unreadable, and here it is not;
 - the permission-mode and reasoning-effort pickers control the live embedded conversation,
   just as they control a pane-backed one;
 - the transcript, goal, cost and PR chips all work unchanged: the SDK subprocess writes the

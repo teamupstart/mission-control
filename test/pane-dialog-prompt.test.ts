@@ -161,6 +161,45 @@ test("a driver form offers a custom answer for every question", () => {
   assert.ok(html.includes("Custom answer for Which checks?"));
 });
 
+test("a single driver question keeps one-click rows and offers custom text", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-single",
+    kind: "question",
+    prompt: "Which linter?",
+    options: [{ number: 1, label: "biome" }],
+    highlighted: 0,
+    questions: [
+      {
+        question: "Which linter?",
+        options: [{ number: 1, label: "biome" }],
+      },
+    ],
+  });
+  assert.ok(html.includes("biome"));
+  assert.ok(html.includes('placeholder="Or type a custom answer"'));
+  assert.ok(html.includes("Custom answer for Which linter?"));
+  assert.ok(html.includes("Submit custom answer"));
+  assert.ok(!html.includes('role="radio"'));
+});
+
+test("driver permissions remain option-only", () => {
+  const html = render({
+    source: "driver",
+    requestId: "req-permission",
+    kind: "permission",
+    prompt: "Allow this tool?",
+    options: [
+      { number: 1, label: "Allow" },
+      { number: 2, label: "Deny" },
+    ],
+    highlighted: 0,
+  });
+  assert.ok(html.includes("Allow"));
+  assert.ok(!html.includes("Or type a custom answer"));
+  assert.ok(!html.includes("Submit custom answer"));
+});
+
 // ---- The board has to SHOW that the session is blocked ----
 
 const base = {

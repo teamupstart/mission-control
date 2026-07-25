@@ -2,10 +2,11 @@
 
 An **ensemble** runs a group of ordinary dispatched tasks under one versioned *strategy* and owns
 the group-level facts a single task cannot: one pinned base commit, member roles, immutable
-submitted artifacts, comparisons, a human decision, and a terminal outcome. The first and only
-enabled strategy is **Best of N**. This document is the operator's reference for what an ensemble
-does, how to recover one, what it keeps and what it costs, and the contract a future strategy
-extends.
+submitted artifacts, evaluations, a human decision, and a terminal outcome. Two strategies are
+enabled: **Best of N**, which ranks and promotes one, and **Consensus**, which mines what the
+attempts disagreed about and promotes nothing. This document is the operator's reference for what
+an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
+strategy extends.
 
 The product overview lives in the [README](../README.md#multi-agent-ensembles); the design
 rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-swarm-dispatch/plan.md).
@@ -36,6 +37,30 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
    and **recommends** a winner - it never promotes one.
 7. You confirm one eligible submission (or declare **no consensus**). Only then does anything
    destructive run.
+
+## What Consensus does differently
+
+Steps 1-5 are identical - three to five attempts (not two), isolated, from one pinned commit,
+submitting the same immutable Git snapshots. The run diverges at step 6:
+
+6. When every live attempt has settled and **at least three** produced a snapshot, one tool-less
+   anonymous pass compares what the submissions **decided** rather than how good they are. What all
+   of them did the same way is filed as an **agreement**; each thing they did differently becomes an
+   open **question** carrying one option per position actually taken, attributed to the attempts
+   that took it. The pass may not rank, score or recommend anything. Its reply is refused - a failed
+   attempt, retried against the same evidence - if it reported nothing at all, named a submission
+   the packet never contained, put one submission on two sides of one question, or left one of the
+   attempts out of every option. Question and option ids are assigned by the daemon after
+   validation, never by the model.
+7. You answer the questions: take a position, or write your own. **Nothing destructive runs at all.**
+   The run terminates `retained` with every snapshot kept and restorable, every member `retained`,
+   and your answers recorded on the decision and on the decision stage's attempt. The questions you
+   were asked are persisted when the stage opens and your answers are validated against exactly
+   those, so a re-run evaluation cannot turn a recorded answer into an answer to a question you
+   never saw.
+
+Use it when the disagreement is the point. Its evaluation shares the same review-call ceiling and
+the same **Settings -> Models -> Ensemble evaluation** job as the Best-of-N comparison.
 
 ## States
 
@@ -136,13 +161,17 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
 - Creating an ensemble authorises launching an exact count or bounded range of **local** agents; the
   preview shows initial, maximum, concurrency, waves and comparison calls before you confirm.
 - Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
-  **8** waves, **5** stage attempts. Best of N's own bounds sit below these: **2-5** candidates
-  (default 3), **3** concurrent by default, and ~**400 KiB** of comparison material split evenly
-  across subjects with truncation disclosed.
+  **8** waves, **5** stage attempts. Each strategy's own bounds sit below these. Best of N: **2-5**
+  candidates (default 3), **3** concurrent by default, and ~**400 KiB** of comparison material split
+  evenly across subjects with truncation disclosed. Consensus: **3-5** attempts (default 3, the same
+  concurrency and material budget), and its result is capped too - at most **12** agreements and
+  **8** questions, each with at most one option per attempt.
+- A model's ranking is advisory and tool-less: it cannot launch, promote, publish, cancel, reap or
+  delete. Every destructive finalization requires an explicit human confirmation. A Consensus run
+  performs no destructive finalization at all, and still requires the human answer before it can
+  terminate - its recorded answers ARE the outcome.
 - Refs and branches are generated from UUIDs; every Git/process call uses argument arrays, never a
   shell.
-- A model's ranking is advisory and tool-less: it cannot launch, promote, publish, cancel, reap or
-  delete. Every destructive finalization requires an explicit human confirmation.
 - Sibling isolation is **behavioural, not a sandbox**: the worktrees share one Git repository and a
   local agent can find its siblings if it goes looking. The UI never claims otherwise.
 
@@ -168,8 +197,8 @@ event, Session field, layout, or engine branch. Compose along these independent 
 | Artifact adapter | `commit` (git snapshot) | members submit something other than a Git tree |
 | Evaluation schedule | one comparative call; several (pairwise / panel) | a genuinely new evaluator (tests gate, aggregation) needs a driver |
 | Advancement / barrier | members-settled, stages-succeeded, human-decision | a new dependency shape is required |
-| Decision authority | human select-one / no-consensus | a new operator authority extends the action schema |
-| Finalization outcome | select one, retain all / no consensus | top-K or a synthesized outcome needs a finalizer |
+| Decision authority | human select-one / no-consensus; answer-divergences | a new operator authority extends the action schema |
+| Finalization outcome | select one (`select_one_finalize@1`); retain all (`retain_all_finalize@1`) | top-K or a synthesized outcome needs a finalizer |
 | Workflow placement | optional after-selection handoff | before-comparison per-member review is wanted |
 
 ### When a change is descriptor-only, and when it is not
@@ -181,7 +210,14 @@ event, Session field, layout, or engine branch. Compose along these independent 
   end to end in `test/ensemble-extension.test.ts` using only the existing primitives.
 - **A new bounded driver, artifact adapter, or result renderer** is warranted only for genuinely new
   *behaviour* or *presentation*: an adaptive spawn-more decision, a non-Git artifact, a tests/gate
-  evaluator, or a strategy-specific result view. Drivers and adapters are versioned append-only keys
+  evaluator, or a strategy-specific result view. **Consensus is the worked example**: it needed a
+  review driver (a different question), a decision driver, a finalizer (a non-destructive terminal),
+  and a result renderer - and nothing else. Its decision driver is also where the kernel's one
+  extension to decision *rendering* landed: `DecisionDriver.openStage` composes the decision stage
+  attempt's persisted input when the stage opens, and `DecisionContext.stageInput` is what an answer
+  is validated against - so a stage can ask a question an evaluator derived, and an answer is
+  always checked against what the operator was actually shown. Both are strategy-neutral.
+  Drivers and adapters are versioned append-only keys
   (`id@version`) in exhaustive `Record` registries; a review/decision/finalize driver key is claimed
   by exactly one registry. The result renderer registry (`ENSEMBLE_RESULT_RENDERERS`) is the one
   strategy-keyed surface and is presentation-only - it imports no server code.

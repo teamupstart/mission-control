@@ -28,10 +28,11 @@ test("electron-builder keeps asar off and ships the external MCP bundle, satelli
 });
 
 test("only production strategy ids are on the runtime path - no test fixture is required at runtime", () => {
-  // The one enabled production strategy, and nothing a Phase 8 fixture invented. If a test id ever
-  // leaked into the shared tuple, a packaged build would offer an unrunnable strategy.
-  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n"]);
-  assert.deepEqual(Object.keys(ENSEMBLE_STRATEGIES).sort(), ["best_of_n"]);
+  // The enabled production strategies, and nothing a Phase 8 fixture invented. If a test id ever
+  // leaked into the shared tuple, a packaged build would offer an unrunnable strategy - which is
+  // why this list is edited deliberately when a real strategy ships, not widened to a count.
+  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n", "consensus"]);
+  assert.deepEqual(Object.keys(ENSEMBLE_STRATEGIES).sort(), ["best_of_n", "consensus"]);
   for (const id of ["fixed_matrix", "successive_halving", "pairwise", "panel", "synthesis"]) {
     assert.equal(
       (ENSEMBLE_STRATEGY_IDS as readonly string[]).includes(id),

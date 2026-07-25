@@ -274,6 +274,24 @@ test("graphs the pipeline cannot express are refused with the reason, not a bool
   assert.equal(stageExpressible(base()), true);
 });
 
+test("blocker count does not depend on persona name resolution", () => {
+  const graph = compileStages(pipeline([solo("intent")]), empty);
+  graph.nodes.push(
+    { id: "security", kind: "persona", personaId: "security", position: { x: 600, y: 60 } },
+    { id: "style", kind: "persona", personaId: "style", position: { x: 600, y: 230 } },
+  );
+  graph.edges.push(
+    { id: "security-stray", source: "security", sourcePort: "pass", target: "missing-1", targetPort: "activate" },
+    { id: "style-stray", source: "style", sourcePort: "pass", target: "missing-2", targetPort: "activate" },
+  );
+
+  const unnamed = stageBlockers(graph);
+  const named = stageBlockers(graph, personas);
+  assert.equal(unnamed.filter((blocker) => blocker.includes("is not part")).length, 2);
+  assert.equal(unnamed.filter((blocker) => blocker.includes("has a route")).length, 2);
+  assert.equal(unnamed.length, named.length);
+});
+
 test("names come from Personas and stages, and never from an id", () => {
   const draft = compileStages(
     pipeline([solo("intent"), parallel("gate", ["security", "style"])]),

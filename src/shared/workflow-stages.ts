@@ -291,14 +291,16 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
   for (const node of graph.nodes) {
     if (!visited.has(node.id)) blockers.push(`${label(node)} is not part of the pipeline.`);
   }
-  const stray = new Set<string>();
+  const straySources = new Set<string>();
   for (const edge of graph.edges) {
     if (used.has(edge.id)) continue;
-    const source = byId.get(edge.source);
-    stray.add(source ? `${label(source)} has a route the pipeline shape does not allow.`
+    straySources.add(edge.source);
+  }
+  for (const sourceId of straySources) {
+    const source = byId.get(sourceId);
+    blockers.push(source ? `${label(source)} has a route the pipeline shape does not allow.`
       : "A route starts from a node that does not exist.");
   }
-  blockers.push(...stray);
   if (blockers.length > 0) return { pipeline: null, blockers };
   return {
     pipeline: { sessionId: session.id, endId: end.id, endOutcome: end.outcome, stages },

@@ -55,8 +55,12 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
    both persona attempts from one submission, and restart replay does not duplicate receipts.
 5. **`src/shared/workflow-stages.ts`** (browser-safe, no `node:` imports), exporting:
    - `StagePipeline`: `{ sessionId, endId, endOutcome, stages: Stage[] }` with
-     `Stage = { joinId: string | null, members: { nodeId, personaId }[] }`. A single-member stage
-     has `joinId: null`.
+     `Stage = { joinId: string | null, members: { nodeId: string | null, personaId }[] }`.
+     `nodeId: null` marks a member that does not exist in any graph yet (the editor adding a
+     reviewer constructs it that way); only `compileStages` mints the real id. `joinId: null`
+     means no join node is bound - because the stage has one member, or because the stage is new;
+     the compiler needs a join exactly when `members.length > 1` and mints one iff `joinId` is
+     null then. Projection always returns fully-identified pipelines (no nulls).
    - `projectStages(graph): StagePipeline | null` - returns the pipeline exactly when the graph is
      stage-expressible: one Session, a linear chain of zero or more stages, each stage one Persona
      (pass onward, fail to Session) or N Personas + one `all_pass` (every member's pass and fail
@@ -71,13 +75,16 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      banner. `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and
      `projectStages` returns non-null exactly then.
    - `compileStages(pipeline, previousGraph): WorkflowDraftGraph` - deterministic emission. Id
-     reuse: session and end keep their ids; a surviving member keeps its persona node id (keyed by
-     `member.nodeId`); a surviving stage keeps its join id; an edge with the same
+     reuse: session and end keep their ids; a member with a non-null `nodeId` keeps it; a stage
+     with a non-null `joinId` keeps it; an edge with the same
      `(source, sourcePort, target, targetPort)` as one in `previousGraph` keeps that edge's id;
-     everything else mints `crypto.randomUUID()`. Positions are generated (column per stage, row
-     per member, constants coherent with the existing auto-layout spacing). A zero-stage pipeline
-     compiles to the canonical empty form (the direct `submitted -> terminal` edge) - so a fresh
-     no-edge draft is canonicalized by the FIRST edit, never by merely opening it.
+     every null identity and every genuinely new edge mints `crypto.randomUUID()`. Callers recover
+     minted ids by re-projecting the compiled graph - the phase-2 editor's state after every edit
+     IS `projectStages(draft)`, so it never holds a stale pipeline with nulls. Positions are
+     generated (column per stage, row per member, constants coherent with the existing auto-layout
+     spacing). A zero-stage pipeline compiles to the canonical empty form (the direct
+     `submitted -> terminal` edge) - so a fresh no-edge draft is canonicalized by the FIRST edit,
+     never by merely opening it.
    - `stageName(stage, index, personas): string` - derived naming: the persona's name for a
      single-member stage, `Stage N` for multi-member.
    - `nodeLabel(graph, node, personas): string` - "Session", persona name (or "Missing persona"),
@@ -97,6 +104,10 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
    - Compiled output always passes `validateWorkflowGraph` (with the relaxed rule).
    - Id stability: add a member, remove a member, reorder stages - unaffected node and edge ids are
      preserved verbatim against `previousGraph`.
+   - New-member identity: compiling a pipeline containing `nodeId: null` members mints fresh ids
+     that collide with nothing in `previousGraph`, and `projectStages` of the compiled graph
+     returns the same pipeline with every null replaced by its minted id (round-trip is exact for
+     fully-identified pipelines and exact-up-to-minted-ids otherwise).
    - Taxonomy: non-expressible graphs return blockers and null projection (two Ends; pass fan-out
      to a non-join persona chain; a fail routed only into the join with no join-fail return; a
      join whose predecessors sit in different stages; an isolated node).
@@ -144,3 +155,8 @@ unchanged. They must not change these without editing this phase's tests.
   expressibility rule. `stages: []` projects from both the fresh no-edge draft and the canonical
   `submitted -> terminal` form; compile canonicalizes on first edit only. Round-trip tests extended
   to cover it; phase 2's empty-state wording aligned in the same change.
+- 2026-07-25 (Inspector round 3, PR #244): `Stage.members[].nodeId` became `string | null` - a
+  reviewer being added has no graph node yet, and requiring an id would have forced the editor to
+  mint one, breaking the compiler's id-ownership contract. Null identities are minted by
+  `compileStages` alone; callers recover them by re-projecting, which is the phase-2 editor's
+  state model anyway. `joinId: null` redefined to also cover new multi-member stages.

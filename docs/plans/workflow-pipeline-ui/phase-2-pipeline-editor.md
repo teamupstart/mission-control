@@ -55,7 +55,10 @@ chrome; Persona library changes; any server change.
    + repair rail). Props take data, never fetch. Status chip vocabulary maps the tones used by
    `workflow-chip` (`running/waiting/passed/failed`).
 2. **`src/web/workflows/PipelineEditor.tsx`** - renders `projectStages(draft)` through the leaves;
-   edits build a new `StagePipeline` and call `onChange(compileStages(next, workflow.draft))`:
+   edits build a new `StagePipeline` and call `onChange(compileStages(next, workflow.draft))`. The
+   editor holds no pipeline state of its own: after every edit its state IS
+   `projectStages(draft)`, so a reviewer being added is constructed with `nodeId: null` and its
+   compiler-minted id comes back on the next projection (phase 1's identity contract).
    - Add reviewer: inline persona picker inside the stage (active personas; archived excluded),
      replacing the sidebar palette's select-then-click for pipeline mode.
    - Remove reviewer / remove stage: overlay confirm (step 4), then compile.
@@ -133,3 +136,6 @@ Phase 3 must not fork a second stage-rendering dialect.
   1's zero-stage projection instead of implying it, states that opening never mutates the draft,
   and replaces the false "zero errors visible" claim with the guidance-sentence presentation (a
   fresh draft IS invalid until first edit).
+- 2026-07-25 (Inspector round 3, PR #244): the editor's state model is now explicit - stateless
+  over `projectStages(draft)`, new reviewers constructed with `nodeId: null`, minted ids recovered
+  on the next projection. This is what keeps id-minting owned by `compileStages` alone.

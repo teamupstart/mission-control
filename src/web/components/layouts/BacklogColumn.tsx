@@ -6,6 +6,7 @@ import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
 import {
+  ColumnWidthToggle,
   DeadBlockerButton,
   LabelChips,
   ScheduleOriginChip,
@@ -53,6 +54,8 @@ export function BacklogColumn({
   tasks,
   allTasks,
   plan,
+  wide = false,
+  onToggleWide,
   onAssignError,
   onDragging,
   onEdit,
@@ -64,6 +67,15 @@ export function BacklogColumn({
   allTasks: Task[];
   /** Foreman's reading of the backlog, or null when it has none. */
   plan: BacklogPlan | null;
+  /**
+   * Whether the board has widened this column to read more of each card.
+   *
+   * Optional, and the default is the honest answer rather than a convenience: width is
+   * a BOARD arrangement, and this component is also rendered on its own in tests. A
+   * column with no board around it has no width to toggle, so it draws no control.
+   */
+  wide?: boolean;
+  onToggleWide?: () => void;
   onAssignError: (message: string) => void;
   /** The repo of the card now in the air, or null when nothing is being dragged. */
   onDragging: (repoRoot: string | null) => void;
@@ -77,10 +89,15 @@ export function BacklogColumn({
   const nextUp = nextUpTaskId(allTasks, plan);
   const index = backlogIndex(allTasks, plan);
   return (
-    <section className="board-col board-backlog">
-      <header className="board-col-head">
+    <section className={`board-col board-backlog${wide ? " is-wide" : ""}`}>
+      {/* The same two ways in as every other column head - see BoardView. */}
+      <header className="board-col-head" onDoubleClick={onToggleWide}>
         <span className="board-swatch" aria-hidden />
         <h2>Backlog</h2>
+        {/* Before the count, for the reason BoardView's head states. */}
+        {onToggleWide && (
+          <ColumnWidthToggle wide={wide} label="Backlog" onToggle={onToggleWide} />
+        )}
         <span className="board-col-n">{tasks.length}</span>
       </header>
       <div className="board-col-body">
@@ -351,8 +368,11 @@ function BacklogCard({
             : "Dispatch into a fresh worktree"
         }
       >
+      {/* `is-waiting` is not decoration: in this one state the label is the card's
+          explanation rather than a verb you cannot press, so it opts out of the generic
+          disabled dimming instead of stacking it on the card's own. See `.bl-launch`. */}
       <button
-        className="bl-launch"
+        className={`bl-launch${declaredBlocked && !busy ? " is-waiting" : ""}`}
         onClick={(e) => {
           // Launching is not opening: without this the card's own handler would fire
           // too and drop the modal over a task that is already on its way out.

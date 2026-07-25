@@ -68,6 +68,15 @@
      sections and board columns, none of which should reorder by spend. */
   --cost: var(--purple);
 
+  /* How wide a board column goes when you widen it to read. Sized to the CONTENT, not
+     picked round: at 520px a tile's one-line name and a backlog card's blocked chip
+     both stop being ellipsed at the lengths this fleet actually produces (a phase
+     title, a branch name), and a two-line goal clamp holds roughly twice the words. Far
+     enough past the 250px floor to be worth the gesture, short enough that the columns
+     beside it stay above their own minimums on a laptop rather than pushing the board
+     straight into a horizontal scroll. */
+  --board-col-wide: 520px;
+
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -9563,6 +9572,124 @@ select.foreman-model-input {
   border-color: var(--border);
   background: var(--panel);
 }
+/* ---- a widened column ----
+   Double-click a column head (or press its toggle) and that column takes the room to
+   show a card properly: a title that was wrapping to three lines, a goal clamped at two,
+   a blocked chip ellipsed after four words. Every card in it is already `stretch` inside
+   the flex body, so they fill the new width without a rule of their own - what changes
+   is how much of each one you can read.
+
+   ONE column at a time, decided in BoardView. Expressed on the same three properties the
+   drill-in animates (`flex-grow` / `flex-basis` / `min-width`), so widening rides the
+   existing transition and reverses for free - and so it can never fight the morph: this
+   is scoped to `[data-focus="none"]`, and opening a session collapses the board exactly
+   as it did before, wide column included.
+
+   A FLOOR plus a double share, not a fixed width and not a big basis. The first version
+   put 520px in the basis, which flexbox settles before it distributes anything: the
+   Backlog took 799px and left `working` - the column with all six live agents in it,
+   the reason the board is open - clamped at its 250px minimum with every tile name
+   ellipsed. Widening one column must not gut the one you are watching. Basis 0 with
+   `flex-grow: 2` makes it twice a normal column's share of the SAME pool, so on a
+   1500px board it reads ~716px while the others hold ~358px each and stay legible, and
+   `min-width` guarantees the gesture is still worth making when the board is narrow.
+   Past that there is genuinely no room and the board scrolls, which it always could. */
+.board[data-focus="none"] .board-col.is-wide {
+  flex-grow: 2;
+  flex-basis: 0;
+  min-width: var(--board-col-wide);
+}
+/* ---- what a card does with the extra width ----
+   Stretching is not using it. A backlog card is a stack of short rows, and at 700px the
+   first version drew each one across the top-left third of a very wide box with the
+   timestamp flung to the far edge - the same card, pulled out of shape, with the space
+   sitting in the middle doing nothing. So a wide card REFLOWS: the title takes its own
+   line and gets the full measure (which is the point - it was wrapping to three), and
+   every mark that was a row of its own joins one wrapping line beneath it. The card
+   gets SHORTER as it gets wider, which is what "more is visible" has to mean in a
+   column you scroll.
+
+   Only the leaf items move; the DOM does not change and neither does the narrow card.
+   Anything a future card adds lands on that line by default rather than needing a rule,
+   because the row is a `wrap` and not a set of slots.
+
+   Scoped to `[data-focus="none"]`, exactly like the width above it, and that pairing is
+   the contract rather than a repeated prefix. `wideCol` deliberately SURVIVES a drill-in
+   so the board you come back to is the one you left, which means during a drill-in there
+   is still a column carrying `is-wide` - one the morph has collapsed to zero width. With
+   only the width rule scoped, its cards kept the wide layout while being squeezed to
+   nothing, so the reflow played out through the 0.34s morph on cards that were on their
+   way off screen. Width and layout are one statement about the same column; either both
+   apply or neither does. */
+.board[data-focus="none"] .board-col.is-wide .bl-card {
+  flex-flow: row wrap;
+  align-items: center;
+  column-gap: 10px;
+}
+.board[data-focus="none"] .board-col.is-wide .bl-title {
+  /* Its own line, full width: this is the text the widening was for. */
+  flex: 0 0 100%;
+}
+/* The one auto margin inside the foot pinned the timestamp to the right of a row that
+   is now content-sized - harmless there, but it is what made the narrow card's rhythm
+   read as a gap when the row got long. Marks read left to right, in one line, in the
+   order the card already had them. */
+.board[data-focus="none"] .board-col.is-wide .bl-added {
+  margin-left: 0;
+}
+
+/* The head's own reveal. `opacity`, never `display` or `visibility`: this control backs
+   up a double-click, which has no keyboard equivalent at all, so it has to stay in the
+   tab order even while it is not drawn. Focus brings it back into view. */
+.board-col-width {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  /* The two chevrons are the `‹` the back button already uses, turned outward to widen
+     and inward to narrow, so the direction IS the label. They need the tracking to stay
+     apart: set solid they close into one smudge at this size and the arrow reads as a
+     glyph nobody recognises. */
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 1px;
+  text-indent: 1px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+}
+.board-col-head:hover .board-col-width,
+.board-col-width:focus-visible,
+/* A wide column keeps it drawn: the way back must not be the thing you hunt for. */
+.board-col-width[aria-pressed="true"] {
+  opacity: 1;
+}
+.board-col-width:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel);
+}
+.board-col-width:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+/* Double-click is the gesture, so the head must not also be a paragraph: without this
+   the second click selects the column name and leaves it highlighted behind the move.
+   On the head only - the cards below stay selectable text. */
+.board-col-head {
+  user-select: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .board-col-width {
+    transition: opacity 0.14s ease;
+  }
+}
+
 /* The detail track: collapsed to nothing until a session is open, then grows to fill.
    Kept in the tree across the morph so it animates both ways; hosts the same
    ConsoleDetail the console layout does. */
@@ -9936,6 +10063,15 @@ select.foreman-model-input {
   cursor: default;
   opacity: 0.6;
 }
+/* Waiting on a dependency you declared is not a control that broke, and the dimming
+   above is written for a button whose label is redundant with something else on screen.
+   Here the label IS the explanation, so it opts out rather than stacking a second
+   dimming on the card's own - see the blocked pair further down for the arithmetic.
+   Only this state: `dispatching…` is a real inert control and keeps the generic
+   treatment, which is what makes the difference between the two visible. */
+.bl-launch.is-waiting:disabled {
+  opacity: 1;
+}
 
 /* ---- backlog autopilot marks ----
    Foreman's reading of the backlog, drawn on the same cards: what is waiting on
@@ -9991,6 +10127,25 @@ select.foreman-model-input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* ---- the blocked pair, and the one thing a container `opacity` costs ----
+   `--dim` is the bottom of the text ramp and is TUNED to clear 4.5:1 (see the token
+   block). That tuning assumes it lands at full strength, and on a blocked card it does
+   not: `.bl-card.is-blocked` composites the whole card at 0.72, which multiplies every
+   colour under it, and this chip arrived at 3.06:1 - the same weight as the `claude`
+   chip beside it, for the sentence that explains why the card is stuck. The launch
+   button had a second dimming of its own on top and arrived at 2.19:1, the dimmest thing
+   on a card whose label was the only thing saying what was wrong.
+
+   So the two marks that EXPLAIN the state are pre-compensated to clear the ramp's floor
+   AS DRAWN, which is the only contrast a reader can check. They are one statement in
+   two pieces - this chip names the blocker, the button names the state - so they carry
+   one weight rather than the specific half reading dimmer than the generic one. Quiet
+   survives: the card keeps its 0.72 recession and its title still leads at 8.07:1. */
+.bl-blocked,
+.bl-launch.is-waiting:disabled {
+  color: color-mix(in oklab, var(--dim) 60%, var(--fg));
+  border-color: color-mix(in oklab, var(--border) 55%, var(--dim));
 }
 .bl-blocked.is-stopped {
   color: var(--attention);

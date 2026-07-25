@@ -158,6 +158,8 @@ test("a declared dependency disables both dragging and manual launch", () => {
     }),
   );
   assert.match(html, /draggable="false"/);
-  assert.match(html, /<button class="bl-launch"[^>]*disabled=""/);
+  // The class list carries the waiting state as well - what this pins is the refusal.
+  // See `backlog-blocked-legibility.test.ts` for what that state is for.
+  assert.match(html, /<button class="bl-launch[^"]*"[^>]*disabled=""/);
   assert.match(html, /waiting for dependencies/);
 });

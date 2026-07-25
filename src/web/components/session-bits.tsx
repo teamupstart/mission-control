@@ -1180,3 +1180,52 @@ export function DeadBlockerButton({
     </span>
   );
 }
+
+/**
+ * The one control that widens a board column, drawn on BOTH kinds of column head.
+ *
+ * The board has two of them - the tone columns BoardView builds and the Backlog column
+ * that builds its own - and a widen affordance written twice is the mark vocabulary
+ * problem this file exists to stop: the two would agree on the day they were written
+ * and drift on the first retune. It lives here for the same reason `ScheduleSwitch`
+ * does, and both heads render THIS.
+ *
+ * It is quiet until wanted: the header reveals it on hover, and it stays out while
+ * narrow so five column heads do not each carry a permanent button nobody is looking
+ * for. It is still focusable at all times though - `opacity`, never `display` - because
+ * a control that leaves the tab order is one a keyboard cannot reach at all, and
+ * double-click, the gesture this backs up, has no keyboard equivalent to fall back on.
+ * A wide column keeps it visible regardless: the way back must never be the thing you
+ * have to hunt for.
+ */
+export function ColumnWidthToggle({
+  wide,
+  label,
+  onToggle,
+}: {
+  wide: boolean;
+  /** The column's own name, so the tooltip and the label name what is moving. */
+  label: string;
+  onToggle: () => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip
+      label={
+        wide
+          ? `Narrow ${label} (or double-click the header)`
+          : `Widen ${label} to read more of each card (or double-click the header)`
+      }
+    >
+      <button
+        className="board-col-width"
+        // A pressed toggle, not two buttons: the column is wide or it is not, and
+        // `aria-pressed` is what says which without a second glyph to keep in sync.
+        aria-pressed={wide}
+        aria-label={wide ? `Narrow ${label}` : `Widen ${label}`}
+        onClick={onToggle}
+      >
+        {wide ? "›‹" : "‹›"}
+      </button>
+    </Tooltip>
+  );
+}

@@ -190,6 +190,33 @@ test("one due instant files exactly one backlog task, with full provenance", asy
   assert.equal(store.getSchedule(created.id)?.nextRunAt, NINE + DAY);
 });
 
+test("a tick that lands ON the due instant runs it, rather than repairing past it", async () => {
+  // This is the tick the LOOP actually performs. `sleepMs` sleeps `due - now`, so the
+  // wake-up lands on the instant or a millisecond or two after it - never the comfortable
+  // five seconds every other test here spends. Enumerating `(cursor - 1, now]` through
+  // `cron-parser`'s `endDate` returned nothing in exactly that band, which
+  // `tickSchedule` reads as a stuck cursor: the mission filed no task, wrote no
+  // occurrence, logged no error, and showed a healthy next run for TOMORROW. It could
+  // never run, on any day, because every day's wake-up landed in the same band.
+  for (const late of [0, 1, 500]) {
+    const h = harness(`on-time-${late}`);
+    const created = ok(await h.manager.create(definition())).schedule;
+    assert.equal(created.nextRunAt, NINE);
+
+    h.clock.now = NINE + late;
+    const summary = await h.manager.tick();
+
+    assert.equal(summary.created, 1, `woken ${late}ms after the instant`);
+    assert.equal(tasksFor(created.id).length, 1);
+    assert.equal(occurrencesFor(created.id)[0]?.scheduledFor, NINE);
+    assert.equal(
+      store.getSchedule(created.id)?.nextRunAt,
+      NINE + DAY,
+      "the cursor advanced by CLAIMING the instant, not by skipping it",
+    );
+  }
+});
+
 test("running the same tick again files nothing more", async () => {
   const h = harness("idem");
   const created = ok(await h.manager.create(definition())).schedule;

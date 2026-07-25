@@ -331,6 +331,33 @@ test("between is exclusive at the start and inclusive at the end", () => {
   ]);
 });
 
+test("the instant AT `through` survives however tight the window is", () => {
+  // The scheduler asks for `(cursor - 1, now]` a millisecond or two after the cursor came
+  // due, because the loop sleeps until exactly that instant. Handing that window to
+  // `cron-parser`'s `endDate` returned NOTHING - read as a stuck cursor, repaired to
+  // tomorrow, so a daily mission never ran once and never said why.
+  //
+  // The three cases below are the measured shape of that defect, not three spellings of
+  // one case: it depended on the EXPRESSION and moved non-monotonically with the anchor,
+  // which is why the bound is compared here and no longer delegated.
+  const instant = Date.parse("2026-01-01T11:00:00Z");
+  for (const [label, expression] of [
+    ["daily", "0 11 * * *"],
+    ["hourly", "0 * * * *"],
+    ["half-hourly", "*/30 * * * *"],
+  ] as const) {
+    for (const back of [1, 999, 1000, 1001, 60_000]) {
+      for (const late of [0, 1, 500, 998]) {
+        assert.deepEqual(
+          recurrence.between(expression, "UTC", instant - back, instant + late, 10),
+          [instant],
+          `${label}, anchored ${back}ms before, asked ${late}ms after`,
+        );
+      }
+    }
+  }
+});
+
 test("between bounds its output before allocating, and never exceeds the hard cap", () => {
   const limited = recurrence.between(
     "0 * * * *",

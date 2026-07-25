@@ -123,13 +123,22 @@ export function zoneOffsetMinutes(at: number, timeZone: string): number {
  * Pull up to `limit` instants after `after`, optionally stopping at `through`.
  *
  * The one place `cron-parser` is actually driven. `hasNext()` is checked before every
- * `next()` because past the end date `next()` THROWS ("Out of the time span range")
- * rather than returning nothing - measured, and the reason a bare `for` loop here would
- * turn an ordinary empty window into a 500.
+ * `next()` because at the end of a computable range `next()` THROWS ("Out of the time
+ * span range") rather than returning nothing - measured, and the reason a bare `for` loop
+ * here would turn an ordinary empty window into a 500.
+ *
+ * The upper bound is enforced here rather than with the parser's `endDate`. Measured
+ * against 5.6.2, `endDate` can omit an instant within a second of the bound, depending
+ * non-monotonically on both the expression and `currentDate`; padding it cannot make the
+ * `(after, through]` contract reliable. Comparing the returned millisecond timestamps
+ * makes the inclusive upper bound exact.
+ *
+ * The lower bound remains the parser's `currentDate`, which is strictly exclusive to the
+ * millisecond and is also the behavior `nextAfter` depends on.
  *
  * `truncated` is honest rather than inferred from the length: one extra instant is
  * requested and dropped, so a window holding exactly `limit` instants does not claim to
- * have held more.
+ * have held more. A window that ends because the cadence left it is not truncated at all.
  */
 function enumerate(
   expression: string,
@@ -144,11 +153,12 @@ function enumerate(
     const it = CronExpressionParser.parse(expression, {
       tz: timezone,
       currentDate: new Date(after),
-      ...(through !== null ? { endDate: new Date(through) } : {}),
     });
     const instants: number[] = [];
     while (instants.length <= limit && it.hasNext()) {
-      instants.push(it.next().toDate().getTime());
+      const at = it.next().toDate().getTime();
+      if (through !== null && at > through) break;
+      instants.push(at);
     }
     const truncated = instants.length > limit;
     if (truncated) instants.pop();

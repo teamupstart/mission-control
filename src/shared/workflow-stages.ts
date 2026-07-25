@@ -345,9 +345,15 @@ export function compileStages(
   pipeline: StagePipeline,
   previousGraph: WorkflowDraftGraph,
 ): WorkflowDraftGraph {
+  const edgeKey = (
+    source: string,
+    sourcePort: WorkflowEdge["sourcePort"],
+    target: string,
+    targetPort: WorkflowEdge["targetPort"],
+  ): string => JSON.stringify([source, sourcePort, target, targetPort]);
   const previousEdges = new Map<string, string>();
   for (const edge of previousGraph.edges) {
-    const key = `${edge.source} ${edge.sourcePort} ${edge.target} ${edge.targetPort}`;
+    const key = edgeKey(edge.source, edge.sourcePort, edge.target, edge.targetPort);
     if (!previousEdges.has(key)) previousEdges.set(key, edge.id);
   }
   const nodes: WorkflowDraftNode[] = [];
@@ -358,7 +364,7 @@ export function compileStages(
     target: string,
     targetPort: WorkflowEdge["targetPort"],
   ): void => {
-    const key = `${source} ${sourcePort} ${target} ${targetPort}`;
+    const key = edgeKey(source, sourcePort, target, targetPort);
     edges.push({
       id: previousEdges.get(key) ?? crypto.randomUUID(),
       source,

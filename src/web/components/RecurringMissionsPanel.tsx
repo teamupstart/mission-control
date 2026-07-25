@@ -78,6 +78,7 @@ export function RecurringMissionsPanel({
   const [editorDirty, setEditorDirty] = useState(false);
   const [editorBusy, setEditorBusy] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
   // Where a confirmed discard should land: closing the overlay (Escape/✕) or returning to
   // the catalog (the Back/Cancel routes). Null when no confirmation is pending.
   const [confirmDiscard, setConfirmDiscard] = useState<null | "close" | "catalog">(null);
@@ -93,6 +94,10 @@ export function RecurringMissionsPanel({
   useEffect(() => {
     headingRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (confirmDiscard) keepEditingRef.current?.focus();
+  }, [confirmDiscard]);
 
   const selectedSchedule = useMemo(
     () => schedules.find((s) => s.id === selectedId) ?? null,
@@ -150,7 +155,7 @@ export function RecurringMissionsPanel({
       role="dialog"
       ariaLabel="Recurring missions"
     >
-      <header className="rm-topline">
+      <header className="rm-topline" inert={confirmDiscard !== null}>
         <div className="rm-topline-titles">
           <span className="rm-eyebrow">Recurring Missions</span>
           <h2 ref={headingRef} tabIndex={-1}>
@@ -190,7 +195,7 @@ export function RecurringMissionsPanel({
         </div>
       </header>
 
-      <div className="rm-content">
+      <div className="rm-content" inert={confirmDiscard !== null}>
         {screen.kind === "catalog" && (
           <div className="rm-catalog-layout">
             <ScheduleCatalog
@@ -261,14 +266,21 @@ export function RecurringMissionsPanel({
             <p>Discard this unsaved schedule?</p>
             <div className="rm-confirm-actions">
               <Tooltip label="Keep editing this schedule">
-                <button className="btn" onClick={() => setConfirmDiscard(null)}>
+                <button
+                  ref={keepEditingRef}
+                  className="btn"
+                  onClick={() => !editorBusy && setConfirmDiscard(null)}
+                  disabled={editorBusy}
+                >
                   Keep editing
                 </button>
               </Tooltip>
               <Tooltip label="Discard the unsaved changes">
                 <button
                   className="btn btn-danger"
+                  disabled={editorBusy}
                   onClick={() => {
+                    if (editorBusy) return;
                     const target = confirmDiscard;
                     setConfirmDiscard(null);
                     setEditorDirty(false);

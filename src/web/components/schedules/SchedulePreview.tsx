@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import type {
   SchedulePreviewInstant,
   SchedulePreviewResult,
@@ -76,7 +83,15 @@ export function SchedulePreview({
   const [standbyError, setStandbyError] = useState<string | null>(null);
   const standbyRequestRef = useRef(0);
   const fingerprintRef = useRef(fingerprint);
+  const standbyWindowRef = useRef<{
+    sleepStartedAt: number | null;
+    resumedAt: number | null;
+  }>({ sleepStartedAt: null, resumedAt: null });
   fingerprintRef.current = fingerprint;
+  standbyWindowRef.current = {
+    sleepStartedAt: localInputToEpoch(sleepValue),
+    resumedAt: localInputToEpoch(resumeValue),
+  };
 
   // Re-run the base preview whenever the definition or requested count changes, debounced
   // so typing the intent does not fire a request per keystroke. A stale base is the exact
@@ -120,8 +135,7 @@ export function SchedulePreview({
   }, [fingerprint]);
 
   const runStandby = (): void => {
-    const sleepStartedAt = localInputToEpoch(sleepValue);
-    const resumedAt = localInputToEpoch(resumeValue);
+    const { sleepStartedAt, resumedAt } = standbyWindowRef.current;
     if (sleepStartedAt === null || resumedAt === null) {
       setStandbyError("Enter both a sleep time and a resume time.");
       return;
@@ -143,7 +157,9 @@ export function SchedulePreview({
     }).then((result) => {
       if (
         requestId !== standbyRequestRef.current ||
-        requestFingerprint !== fingerprintRef.current
+        requestFingerprint !== fingerprintRef.current ||
+        sleepStartedAt !== standbyWindowRef.current.sleepStartedAt ||
+        resumedAt !== standbyWindowRef.current.resumedAt
       ) {
         return;
       }
@@ -155,6 +171,17 @@ export function SchedulePreview({
       }
       setStandby(result);
     });
+  };
+
+  const changeStandbyWindow = (
+    setter: Dispatch<SetStateAction<string>>,
+    value: string,
+  ): void => {
+    standbyRequestRef.current += 1;
+    setStandbyBusy(false);
+    setStandby(null);
+    setStandbyError(null);
+    setter(value);
   };
 
   const collisionsByInstant = useMemo(() => {
@@ -264,7 +291,8 @@ export function SchedulePreview({
                 className="field-input"
                 type="datetime-local"
                 value={sleepValue}
-                onChange={(event) => setSleepValue(event.target.value)}
+                onChange={(event) => changeStandbyWindow(setSleepValue, event.target.value)}
+                disabled={standbyBusy}
               />
             </Tooltip>
           </label>
@@ -275,7 +303,8 @@ export function SchedulePreview({
                 className="field-input"
                 type="datetime-local"
                 value={resumeValue}
-                onChange={(event) => setResumeValue(event.target.value)}
+                onChange={(event) => changeStandbyWindow(setResumeValue, event.target.value)}
+                disabled={standbyBusy}
               />
             </Tooltip>
           </label>

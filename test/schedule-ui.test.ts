@@ -250,3 +250,20 @@ test("no catalog poll loop exists: the panel and catalog consume live state only
   }
   assert.doesNotMatch(stream, /\/api\/schedules/, "useEventStream must not read the schedule route");
 });
+
+test("confirmation and standby simulation seal their underlying controls", () => {
+  const panel = readFileSync(path.join(WEB, "components/RecurringMissionsPanel.tsx"), "utf8");
+  const preview = readFileSync(
+    path.join(WEB, "components/schedules/SchedulePreview.tsx"),
+    "utf8",
+  );
+  assert.match(panel, /className="rm-topline" inert=\{confirmDiscard !== null\}/);
+  assert.match(panel, /className="rm-content" inert=\{confirmDiscard !== null\}/);
+  assert.match(panel, /className="btn btn-danger"\s+disabled=\{editorBusy\}/);
+  assert.match(preview, /sleepStartedAt !== standbyWindowRef\.current\.sleepStartedAt/);
+  assert.match(preview, /resumedAt !== standbyWindowRef\.current\.resumedAt/);
+  assert.match(
+    preview,
+    /value=\{sleepValue\}[\s\S]*?disabled=\{standbyBusy\}[\s\S]*?value=\{resumeValue\}[\s\S]*?disabled=\{standbyBusy\}/,
+  );
+});

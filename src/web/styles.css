@@ -10123,16 +10123,16 @@ select.foreman-model-input {
    `--dim` is the bottom of the text ramp and is TUNED to clear 4.5:1 (see the token
    block). That tuning assumes it lands at full strength, and on a blocked card it does
    not: `.bl-card.is-blocked` composites the whole card at 0.72, which multiplies every
-   colour under it, and this chip arrived at 3.3:1 - the same weight as the `claude`
+   colour under it, and this chip arrived at 3.06:1 - the same weight as the `claude`
    chip beside it, for the sentence that explains why the card is stuck. The launch
-   button had a second dimming of its own on top and arrived at 2.3:1, the dimmest thing
+   button had a second dimming of its own on top and arrived at 2.19:1, the dimmest thing
    on a card whose label was the only thing saying what was wrong.
 
    So the two marks that EXPLAIN the state are pre-compensated to clear the ramp's floor
    AS DRAWN, which is the only contrast a reader can check. They are one statement in
    two pieces - this chip names the blocker, the button names the state - so they carry
    one weight rather than the specific half reading dimmer than the generic one. Quiet
-   survives: the card keeps its 0.72 recession and its title still leads at 8.7:1. */
+   survives: the card keeps its 0.72 recession and its title still leads at 8.07:1. */
 .bl-blocked,
 .bl-launch.is-waiting:disabled {
   color: color-mix(in oklab, var(--dim) 60%, var(--fg));

@@ -26,6 +26,7 @@ import type {
   ErrorNotification,
   FileChangeApprovalDecision,
   FileChangeRequestApprovalParams,
+  FileUpdateChange,
   InitializeParams,
   InitializeResponse,
   ItemCompletedNotification,
@@ -223,6 +224,7 @@ interface Pending {
   kind: "commandExecution" | "fileChange" | "userInput";
   /** For a form: the question ids, so an answer keyed by TEXT maps back to them. */
   questionIds?: Map<string, string>;
+  fileChangeItemId?: string;
 }
 
 /** What a launch was configured with, kept so `clearContext` can start an identical thread. */
@@ -242,6 +244,7 @@ interface LaunchConfig {
 class CodexSdkSession implements SdkSessionHandle {
   private readonly out = new EventStream();
   private readonly pending = new Map<string, Pending>();
+  private readonly fileChanges = new Map<string, readonly FileUpdateChange[]>();
   private threadId: string | null = null;
   /**
    * The turn the server says is running, or null when the thread is idle.
@@ -367,8 +370,9 @@ class CodexSdkSession implements SdkSessionHandle {
    * already running REJOINS it and reports back the ORIGINAL sandbox, silently ignoring the
    * override - so a driver that used it would report a mode change that never happened,
    * which is exactly the lie `pastePlaceholder: null` exists to prevent. A mode whose
-   * sandbox differs from the running thread's is therefore REFUSED, with the two things
-   * that do work named in the sentence. Refusing beats declaring the whole capability null:
+   * sandbox differs from the running thread's is therefore REFUSED. A next-thread posture
+   * is not retained because it would be invisible until it took effect. Refusing beats
+   * declaring the whole capability null:
    * two of Codex's four profiles differ only in who reviews approvals, and those changes
    * are real, immediate on the next turn, and visible on the chip.
    */
@@ -380,8 +384,7 @@ class CodexSdkSession implements SdkSessionHandle {
     if (running !== posture.sandbox) {
       throw new Error(
         `this thread runs in the ${running ?? "current"} sandbox and Codex cannot move a ` +
-          `running thread to ${posture.sandbox} - clear its context to start a new thread ` +
-          `in that sandbox, or continue in a terminal and use /permissions`,
+          `running thread to ${posture.sandbox} - continue in a terminal and use /permissions`,
       );
     }
     this.config = { ...this.config, permissionMode: mode };
@@ -454,9 +457,8 @@ class CodexSdkSession implements SdkSessionHandle {
     const held = this.pending.get(requestId);
     if (!held) throw new Error(`no pending request ${requestId} on this session`);
     const result = this.resultFor(held, answer);
-    this.pending.delete(requestId);
     this.client.respond(held.id, result);
-    this.out.emit({ kind: "request_resolved", requestId });
+    this.forgetPending(requestId, held);
   }
 
   private resultFor(held: Pending, answer: SessionRequestAnswer): unknown {
@@ -548,7 +550,10 @@ class CodexSdkSession implements SdkSessionHandle {
 
   /** Record the thread we are driving and tell the daemon who it is. */
   bind(thread: ThreadStartResponse | ThreadResumeResponse): void {
-    if (this.threadId && this.threadId !== thread.thread.id) this.cancelPending();
+    if (this.threadId && this.threadId !== thread.thread.id) {
+      this.cancelPending();
+      this.fileChanges.clear();
+    }
     const activeTurn = [...thread.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress");
@@ -586,28 +591,12 @@ class CodexSdkSession implements SdkSessionHandle {
    * unexpected payload, on a protocol whose own docs call several of these params unstable.
    */
   onRequest = (method: string, id: RequestId, params: unknown): void => {
-    const threadScoped =
-      method === "item/commandExecution/requestApproval" ||
-      method === "item/fileChange/requestApproval" ||
-      method === "item/tool/requestUserInput";
-    const declaredThread =
-      params && typeof params === "object"
-        ? (params as { threadId?: unknown }).threadId
-        : undefined;
-    if (threadScoped && typeof declaredThread === "string" && !this.isCurrentThread(params)) {
-      this.client.respondError(id, -32602, `Mission Control cannot answer ${method} for another thread`);
-      return;
-    }
     let projected: Pending | null = null;
     try {
       projected = this.project(method, id, params);
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.client.respondError(id, -32602, `Mission Control could not read ${method}: ${why}`);
-      return;
-    }
-    if (projected && threadScoped && !this.isCurrentThread(params)) {
-      this.client.respondError(id, -32602, `Mission Control cannot answer ${method} without its thread`);
       return;
     }
     if (!projected) {
@@ -638,11 +627,19 @@ class CodexSdkSession implements SdkSessionHandle {
     if (method === "item/fileChange/requestApproval") {
       const p = params as FileChangeRequestApprovalParams;
       const reason = p.reason?.trim() || "Codex wants to apply a file change.";
+      const changes = fileChangeSummary(this.fileChanges.get(p.itemId));
+      const detail = changes ? `\n\nChanges: ${changes}` : "";
       const grant = p.grantRoot ? `\n\nIt is asking to write under ${p.grantRoot}.` : "";
       return {
         id,
         kind: "fileChange",
-        request: { id: key, kind: "approval", prompt: `${reason}${grant}`, options: approvalRows() },
+        fileChangeItemId: p.itemId,
+        request: {
+          id: key,
+          kind: "approval",
+          prompt: `${reason}${detail}${grant}`,
+          options: approvalRows(),
+        },
       };
     }
     if (method === "item/tool/requestUserInput") {
@@ -716,8 +713,11 @@ class CodexSdkSession implements SdkSessionHandle {
       }
       case "item/started":
       case "item/completed": {
-        if (!this.isCurrentThread(params)) return;
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
+        if (item.type === "fileChange") {
+          if (method === "item/started") this.fileChanges.set(item.id, item.changes);
+          else this.fileChanges.delete(item.id);
+        }
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
         if (method === "item/completed") this.notePullRequest(item);
@@ -741,19 +741,16 @@ class CodexSdkSession implements SdkSessionHandle {
         return;
       }
       case "serverRequest/resolved": {
-        if (!this.isCurrentThread(params)) return;
         // The server settled a request without us - an auto-review approved it, or the turn
         // that raised it was interrupted. The card has to lose the ask either way.
         const resolved = params as { requestId?: RequestId };
         for (const [key, held] of this.pending) {
           if (held.id !== resolved.requestId) continue;
-          this.pending.delete(key);
-          this.out.emit({ kind: "request_resolved", requestId: key });
+          this.forgetPending(key, held);
         }
         return;
       }
       case "error": {
-        if (!this.isCurrentThread(params)) return;
         const err = params as ErrorNotification;
         const message = err.error?.message?.trim();
         if (message) {
@@ -782,9 +779,14 @@ class CodexSdkSession implements SdkSessionHandle {
   private cancelPending(): void {
     for (const [key, held] of this.pending) {
       this.client.respond(held.id, cancelResponse(held.kind));
-      this.out.emit({ kind: "request_resolved", requestId: key });
+      this.forgetPending(key, held);
     }
-    this.pending.clear();
+  }
+
+  private forgetPending(key: string, held: Pending): void {
+    this.pending.delete(key);
+    if (held.fileChangeItemId) this.fileChanges.delete(held.fileChangeItemId);
+    this.out.emit({ kind: "request_resolved", requestId: key });
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
@@ -828,10 +830,10 @@ class CodexSdkSession implements SdkSessionHandle {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
       this.stopped = true;
-      for (const key of this.pending.keys()) {
-        this.out.emit({ kind: "request_resolved", requestId: key });
+      for (const [key, held] of this.pending) {
+        this.forgetPending(key, held);
       }
-      this.pending.clear();
+      this.fileChanges.clear();
       this.out.emit({ kind: "exited", reason, resumable: this.threadId !== null });
       this.out.end();
     }
@@ -885,6 +887,23 @@ export function commandApprovalPrompt(p: CommandExecutionRequestApprovalParams):
   const command = p.command?.trim();
   const where = p.cwd ? `\nin ${p.cwd}` : "";
   return command ? `${head}\n\n${command}${where}` : head;
+}
+
+export function fileChangeSummary(
+  changes: readonly FileUpdateChange[] | undefined,
+): string | null {
+  if (!changes?.length) return null;
+  return clip(
+    changes
+      .map((change) => {
+        const moved =
+          change.kind.type === "update" && change.kind.move_path
+            ? ` -> ${change.kind.move_path}`
+            : "";
+        return `${change.kind.type} ${change.path}${moved}`;
+      })
+      .join("; "),
+  );
 }
 
 /** One `request_user_input` payload as the questions a card can draw. */

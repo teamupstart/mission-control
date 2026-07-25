@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import {
   codexSdkSpec,
   commandApprovalPrompt,
+  fileChangeSummary,
   itemActivity,
   turnInput,
   userInputQuestions,
 } from "../src/server/harness/codex/sdk.ts";
-import { spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
+import { readFrames, spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
@@ -387,6 +389,142 @@ test("a request this build cannot answer is refused rather than left hanging", a
   await drained;
 });
 
+test("a descendant thread request remains answerable by its correlation id", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.push({
+    method: "item/tool/requestUserInput",
+    id: 8,
+    params: {
+      threadId: "descendant-thread",
+      turnId: "descendant-turn",
+      itemId: "question",
+      autoResolutionMs: null,
+      questions: [
+        {
+          id: "choice",
+          header: "Choice",
+          question: "Proceed?",
+          isOther: false,
+          isSecret: false,
+          options: [{ label: "Yes", description: "" }],
+        },
+      ],
+    },
+  });
+  await settle();
+  const request = events.findLast((event) => event.kind === "request");
+  assert.ok(request && request.kind === "request");
+  await handle.answer(request.request.id, { kind: "option", number: 1, label: "Yes" });
+  assert.deepEqual(server.responseTo(8), {
+    jsonrpc: "2.0",
+    id: 8,
+    result: { answers: { choice: { answers: ["Yes"] } } },
+  });
+  await handle.stop();
+  await drained;
+});
+
+test("a request arriving before resume binds is retained", async () => {
+  let server: FakeServer;
+  const earlyRequest = {
+    method: "item/tool/requestUserInput",
+    id: 10,
+    params: {
+      threadId: THREAD.id,
+      turnId: "turn-live",
+      itemId: "early-question",
+      autoResolutionMs: null,
+      questions: [
+        {
+          id: "early",
+          header: "",
+          question: "Resume this work?",
+          isOther: false,
+          isSecret: false,
+          options: [{ label: "Resume", description: "" }],
+        },
+      ],
+    },
+  };
+  server = new FakeServer(
+    defaultReplies({
+      "thread/resume": () => {
+        server.push(earlyRequest);
+        return threadResponse(THREAD);
+      },
+    }),
+  );
+  const { handle, events, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
+  await settle();
+  const request = events.find((event) => event.kind === "request");
+  assert.ok(request && request.kind === "request");
+  assert.equal(request.request.prompt, "Resume this work?");
+  await handle.stop();
+  await drained;
+});
+
+test("a file approval identifies bounded retained changes and releases them", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.notify("item/started", {
+    threadId: "descendant-thread",
+    turnId: "descendant-turn",
+    startedAtMs: 0,
+    item: {
+      type: "fileChange",
+      id: "file-1",
+      status: "inProgress",
+      changes: [
+        { path: "src/one.ts", kind: { type: "update", move_path: null }, diff: "private patch text" },
+        { path: "src/two.ts", kind: { type: "add" }, diff: "more private patch text" },
+        { path: `src/${"long-".repeat(30)}.ts`, kind: { type: "delete" }, diff: "large patch" },
+      ],
+    },
+  });
+  server.push({
+    method: "item/fileChange/requestApproval",
+    id: 11,
+    params: {
+      threadId: "descendant-thread",
+      turnId: "descendant-turn",
+      itemId: "file-1",
+      startedAtMs: 0,
+      reason: null,
+      grantRoot: null,
+    },
+  });
+  await settle();
+  const request = events.findLast((event) => event.kind === "request");
+  assert.ok(request && request.kind === "request");
+  assert.match(request.request.prompt, /Changes: update src\/one\.ts; add src\/two\.ts/);
+  assert.doesNotMatch(request.request.prompt, /private patch text/);
+  const summary = request.request.prompt.split("Changes: ")[1] ?? "";
+  assert.ok(summary.length <= 120);
+  await handle.answer(request.request.id, { kind: "option", number: 3, label: "No" });
+
+  server.push({
+    method: "item/fileChange/requestApproval",
+    id: 12,
+    params: {
+      threadId: "descendant-thread",
+      turnId: "descendant-turn",
+      itemId: "file-1",
+      startedAtMs: 1,
+      reason: null,
+      grantRoot: null,
+    },
+  });
+  await settle();
+  const fallback = events.findLast((event) => event.kind === "request");
+  assert.ok(fallback && fallback.kind === "request");
+  assert.equal(fallback.request.prompt, "Codex wants to apply a file change.");
+  await handle.stop();
+  await drained;
+});
+
 test("a request the server resolves itself clears the card", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);
@@ -656,7 +794,7 @@ test("a mode change is refused when it would need a different sandbox", async ()
   // it can and silently does not, so this refuses instead of lying.
   await assert.rejects(
     () => handle.setPermissionMode!("fullAccess"),
-    /cannot move a running thread to danger-full-access/,
+    /cannot move a running thread to danger-full-access - continue in a terminal and use \/permissions/,
   );
   await handle.stop();
   await drained;
@@ -1031,6 +1169,30 @@ test("a subprocess spawn error rejects launch with its diagnostic", async () => 
       return true;
     },
   );
+});
+
+test("JSONL framing preserves a UTF-8 code point split across chunks", async () => {
+  const encoded = Buffer.from('{"text":"café"}\n');
+  const split = encoded.indexOf(0xc3) + 1;
+  const frames: unknown[] = [];
+  for await (const frame of readFrames(
+    { stdout: Readable.from([encoded.subarray(0, split), encoded.subarray(split)]) },
+    { error: null },
+  )) {
+    frames.push(frame);
+  }
+  assert.deepEqual(frames, [{ text: "café" }]);
+});
+
+test("file change summaries name kinds and moved paths without patch text", () => {
+  const summary = fileChangeSummary([
+    {
+      path: "src/old.ts",
+      kind: { type: "update", move_path: "src/new.ts" },
+      diff: "do not include this",
+    },
+  ]);
+  assert.equal(summary, "update src/old.ts -> src/new.ts");
 });
 
 test("the activity line says what the session is doing, on one line", () => {

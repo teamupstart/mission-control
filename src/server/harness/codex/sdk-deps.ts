@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { run } from "../../util/exec.ts";
 import { resolveBinSpec } from "../bin.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
@@ -109,15 +110,16 @@ export function spawnAppServer(
  * unparseable line is SKIPPED rather than thrown - the server interleaves nothing on
  * stdout today, but a future banner there must not take a session down.
  */
-async function* readFrames(child: {
+export async function* readFrames(child: {
   stdout: NodeJS.ReadableStream | null;
 }, failure: { error: Error | null }): AsyncGenerator<unknown> {
   if (failure.error) throw failure.error;
   const stdout = child.stdout;
   if (!stdout) return;
+  const decoder = new StringDecoder("utf8");
   let buf = "";
   for await (const chunk of stdout) {
-    buf += chunk.toString();
+    buf += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     let nl: number;
     while ((nl = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, nl).trim();
@@ -130,6 +132,7 @@ async function* readFrames(child: {
       }
     }
   }
+  buf += decoder.end();
   if (failure.error) throw failure.error;
 }
 

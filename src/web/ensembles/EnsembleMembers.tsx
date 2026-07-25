@@ -8,7 +8,12 @@ import {
 } from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
-import { memberStatusLabel, memberStatusTone } from "./format.ts";
+import {
+  artifactStatusLabel,
+  memberStatusLabel,
+  memberStatusTone,
+  titleCaseEnum,
+} from "./format.ts";
 
 /**
  * Members, grouped by wave and shown in ordinal order. Each card states the member's identity,
@@ -65,24 +70,34 @@ export function EnsembleMembers({
   );
 }
 
-function attemptForMember(detail: EnsembleRunDetailResponse, member: EnsembleMember): EnsembleAttempt | null {
-  const mine = detail.attempts.filter((a) => a.memberId === member.id);
-  if (member.selectedAttemptId) {
-    const selected = mine.find((a) => a.id === member.selectedAttemptId);
-    if (selected) return selected;
-  }
-  return mine.sort((a, b) => b.attempt - a.attempt)[0] ?? null;
-}
-
-function readyArtifactForMember(
+function attemptsForMember(
   detail: EnsembleRunDetailResponse,
   member: EnsembleMember,
-): EnsembleArtifact | null {
-  const attemptIds = new Set(detail.attempts.filter((a) => a.memberId === member.id).map((a) => a.id));
-  return (
-    detail.artifacts.find((a) => a.attemptId && attemptIds.has(a.attemptId) && a.status === "ready") ??
-    null
-  );
+): EnsembleAttempt[] {
+  return detail.attempts
+    .filter((attempt) => attempt.memberId === member.id)
+    .sort((a, b) => b.attempt - a.attempt);
+}
+
+function selectedAttemptForMember(
+  attempts: EnsembleAttempt[],
+  member: EnsembleMember,
+): EnsembleAttempt | null {
+  if (member.selectedAttemptId) {
+    const selected = attempts.find((attempt) => attempt.id === member.selectedAttemptId);
+    if (selected) return selected;
+  }
+  return attempts[0] ?? null;
+}
+
+function artifactsForMember(
+  detail: EnsembleRunDetailResponse,
+  attempts: EnsembleAttempt[],
+): EnsembleArtifact[] {
+  const attemptIds = new Set(attempts.map((attempt) => attempt.id));
+  return detail.artifacts
+    .filter((artifact) => artifact.attemptId && attemptIds.has(artifact.attemptId))
+    .sort((a, b) => b.createdAt - a.createdAt || b.attempt - a.attempt);
 }
 
 function section(metadata: unknown, key: string): Record<string, unknown> | null {
@@ -113,8 +128,16 @@ function MemberCard({
     result: { summary: string; checks?: string[]; testEvidence?: string | null },
   ) => Promise<string | null>;
 }): React.JSX.Element {
-  const attempt = attemptForMember(detail, member);
-  const artifact = readyArtifactForMember(detail, member);
+  const attempts = attemptsForMember(detail, member);
+  const attempt = selectedAttemptForMember(attempts, member);
+  const artifacts = artifactsForMember(detail, attempts);
+  const artifact =
+    artifacts.find(
+      (candidate) => candidate.status === "ready" && candidate.attemptId === attempt?.id,
+    ) ??
+    artifacts.find((candidate) => candidate.status === "ready") ??
+    null;
+  const attemptById = new Map(attempts.map((candidate) => [candidate.id, candidate]));
   const reported = section(artifact?.metadata, "reported");
   const observed = section(artifact?.metadata, "observed");
   const busy = pending !== null;
@@ -157,7 +180,7 @@ function MemberCard({
           </Tooltip>
         )}
         {member.status === "active" && !artifact && onManualSubmit && (
-          <ManualSubmit memberId={member.id} onSubmit={onManualSubmit} />
+          <ManualSubmit memberId={member.id} disabled={busy} onSubmit={onManualSubmit} />
         )}
         {active && (
           <Tooltip label="Withdraw this member after cancelling its task">
@@ -183,6 +206,55 @@ function MemberCard({
         )}
       </div>
       {facts.length > 0 && <p className="ensemble-member-facts">{facts.join(" · ")}</p>}
+      <div className="ensemble-member-durable-state">
+        <div>
+          <h6>Attempt state</h6>
+          {attempts.length > 0 ? (
+            <ul className="ensemble-member-history">
+              {attempts.map((candidate) => (
+                <li key={candidate.id}>
+                  <span>
+                    Attempt #{candidate.attempt}
+                    {candidate.id === member.selectedAttemptId ? " · selected" : ""}
+                  </span>
+                  <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
+                    {candidate.status ? titleCaseEnum(candidate.status) : "Unknown"}
+                  </span>
+                  {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="ensemble-muted">No attempts yet.</p>
+          )}
+        </div>
+        <div>
+          <h6>Artifact state</h6>
+          {artifacts.length > 0 ? (
+            <ul className="ensemble-member-history">
+              {artifacts.map((candidate) => {
+                const owner = candidate.attemptId
+                  ? attemptById.get(candidate.attemptId)
+                  : undefined;
+                return (
+                  <li key={candidate.id}>
+                    <span>
+                      Attempt #{owner?.attempt ?? "?"} · {candidate.kind ?? "unknown"} capture #
+                      {candidate.attempt}
+                    </span>
+                    <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
+                      {artifactStatusLabel(candidate.status)}
+                    </span>
+                    {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="ensemble-muted">No artifact captures yet.</p>
+          )}
+        </div>
+      </div>
       {member.error && (
         <p className="ensemble-error" role="alert">
           {member.error}
@@ -223,11 +295,30 @@ function MemberCard({
   );
 }
 
+export function validateManualChecks(value: string): {
+  checks: string[];
+  error: string | null;
+} {
+  const checks = value
+    .split("\n")
+    .map((check) => check.trim())
+    .filter(Boolean);
+  const error =
+    checks.length > ENSEMBLE_LIMITS.submissionChecks
+      ? `Use at most ${ENSEMBLE_LIMITS.submissionChecks} checks.`
+      : checks.some((check) => check.length > ENSEMBLE_LIMITS.submissionCheck)
+        ? `Each check must be at most ${ENSEMBLE_LIMITS.submissionCheck} characters.`
+        : null;
+  return { checks, error };
+}
+
 function ManualSubmit({
   memberId,
+  disabled,
   onSubmit,
 }: {
   memberId: string;
+  disabled: boolean;
   onSubmit: (
     memberId: string,
     result: { summary: string; checks?: string[]; testEvidence?: string | null },
@@ -239,11 +330,13 @@ function ManualSubmit({
   const [testEvidence, setTestEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { checks: normalizedChecks, error: checksIssue } = validateManualChecks(checks);
+  const canSubmit = Boolean(summary.trim()) && checksIssue === null && !disabled;
 
   if (!open) {
     return (
       <Tooltip label="Manually capture this member's current work and submit its reported claims">
-        <button className="btn btn-ghost" onClick={() => setOpen(true)}>
+        <button className="btn btn-ghost" disabled={disabled} onClick={() => setOpen(true)}>
           Submit result…
         </button>
       </Tooltip>
@@ -251,15 +344,12 @@ function ManualSubmit({
   }
 
   const submit = async (): Promise<void> => {
-    if (!summary.trim() || submitting) return;
+    if (!canSubmit || submitting) return;
     setSubmitting(true);
     setError(null);
     const issue = await onSubmit(memberId, {
       summary: summary.trim(),
-      checks: checks
-        .split("\n")
-        .map((check) => check.trim())
-        .filter(Boolean),
+      checks: normalizedChecks,
       testEvidence: testEvidence || null,
     });
     setSubmitting(false);
@@ -300,6 +390,7 @@ function ManualSubmit({
           <textarea
             value={checks}
             rows={2}
+            aria-invalid={checksIssue !== null}
             onChange={(event) => setChecks(event.target.value)}
           />
         </label>
@@ -315,10 +406,11 @@ function ManualSubmit({
           />
         </label>
       </Tooltip>
+      {checksIssue && <p className="ensemble-error" role="alert">{checksIssue}</p>}
       {error && <p className="ensemble-error" role="alert">{error}</p>}
       <div className="ensemble-action-row" aria-live="polite">
         <Tooltip label="Capture the member worktree and submit these claims">
-          <button className="btn btn-primary" type="submit" disabled={submitting || !summary.trim()}>
+          <button className="btn btn-primary" type="submit" disabled={submitting || !canSubmit}>
             {submitting ? "Submitting…" : "Submit result"}
           </button>
         </Tooltip>

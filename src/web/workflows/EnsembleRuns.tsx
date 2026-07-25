@@ -47,7 +47,9 @@ export function EnsembleRuns({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionErrorKind, setActionErrorKind] = useState<string | null>(null);
   const loadGeneration = useRef(0);
+  const actionGeneration = useRef(0);
   const observedRunIds = useRef(new Set<string>());
 
   const strategies = useMemo(
@@ -117,8 +119,6 @@ export function EnsembleRuns({
   // Refetch when the selection changes, or when THIS run's SSE summary revises (a new
   // `updatedAt`). Aborted-by-generation, never polled.
   useEffect(() => {
-    setActionPending(null);
-    setActionError(null);
     load(selected, true);
     return () => {
       loadGeneration.current++;
@@ -126,19 +126,34 @@ export function EnsembleRuns({
     // `selected` and `selectedRevision` are the only inputs that should re-fetch.
   }, [selected, selectedRevision]);
 
+  useEffect(() => {
+    actionGeneration.current++;
+    setActionPending(null);
+    setActionError(null);
+    setActionErrorKind(null);
+  }, [selected]);
+
   const runAction = (body: EnsembleActionBody): void => {
     const actedRunId = selected;
     if (!actedRunId) return;
+    const actionToken = ++actionGeneration.current;
     setActionPending(body.kind);
     setActionError(null);
+    setActionErrorKind(null);
     void ensembleAction(actedRunId, body).then((result) => {
-      if (selectedRef.current !== actedRunId) return;
+      if (
+        selectedRef.current !== actedRunId ||
+        actionGeneration.current !== actionToken
+      ) {
+        return;
+      }
       setActionPending(null);
       if (result.ok) {
         load(actedRunId, false);
       } else {
         // A 409 means the run moved on; show the fresh state, never replay automatically.
         setActionError(result.error);
+        setActionErrorKind(body.kind);
         if (result.status === 409) load(actedRunId, false);
       }
     });
@@ -147,15 +162,23 @@ export function EnsembleRuns({
   const runDelete = (confirmId: string): void => {
     const actedRunId = selected;
     if (!actedRunId) return;
+    const actionToken = ++actionGeneration.current;
     setActionPending("delete");
     setActionError(null);
+    setActionErrorKind(null);
     void deleteEnsemble(actedRunId, confirmId).then((result) => {
-      if (selectedRef.current !== actedRunId) return;
+      if (
+        selectedRef.current !== actedRunId ||
+        actionGeneration.current !== actionToken
+      ) {
+        return;
+      }
       setActionPending(null);
       if (result.ok) {
         onSelect(null);
       } else {
         setActionError(result.error);
+        setActionErrorKind("delete");
         if (result.status === 409) load(actedRunId, false);
       }
     });
@@ -278,6 +301,7 @@ export function EnsembleRuns({
             detail={detail}
             actionPending={actionPending}
             actionError={actionError}
+            actionErrorKind={actionErrorKind}
             onAction={runAction}
             onDelete={runDelete}
             onLoadPatch={loadPatch}

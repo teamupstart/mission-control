@@ -152,7 +152,7 @@ function BestOfNDecisionPanel({
       : { kind: "no_consensus", reason: reason.trim() };
   const ready =
     confirmed &&
-    !decision.pending &&
+    !decision.busy &&
     rationale.trim().length > 0 &&
     (mode === "select" ? Boolean(artifactId) : reason.trim().length > 0);
   const nonRecommended = mode === "select" && artifactId !== comparison.recommendedArtifactId;

@@ -7,18 +7,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import type {
-  EnsembleArtifact,
-  EnsembleAttempt,
-  EnsembleEvaluation,
-  EnsembleMember,
-  EnsembleRun,
-  EnsembleStageAttempt,
-  EnsembleSummary,
+import {
+  ENSEMBLE_LIMITS,
+  type EnsembleArtifact,
+  type EnsembleAttempt,
+  type EnsembleEvaluation,
+  type EnsembleMember,
+  type EnsembleRun,
+  type EnsembleStageAttempt,
+  type EnsembleSummary,
 } from "../src/shared/ensemble.ts";
-import type { EnsembleRunDetailResponse } from "../src/web/ensembles/types.ts";
+import type {
+  EnsembleRunDetailResponse,
+} from "../src/web/ensembles/types.ts";
 import { EnsembleDetail } from "../src/web/ensembles/EnsembleDetail.tsx";
 import { EnsembleActions } from "../src/web/ensembles/EnsembleActions.tsx";
+import { validateManualChecks } from "../src/web/ensembles/EnsembleMembers.tsx";
 import { EnsembleRuns } from "../src/web/workflows/EnsembleRuns.tsx";
 
 const run: EnsembleRun = {
@@ -186,6 +190,7 @@ function renderDetail(over: Partial<EnsembleRunDetailResponse> = {}): string {
       detail: { ...detail, ...over },
       actionPending: null,
       actionError: null,
+      actionErrorKind: null,
       onAction: () => {},
       onDelete: () => {},
       onLoadPatch: async () => ({ error: "not loaded" }),
@@ -225,6 +230,71 @@ test("an active member without a session offers Task focus and manual submission
   });
   assert.match(html, /Open task/);
   assert.match(html, /Submit result…/);
+});
+
+test("member cards expose attempt and artifact capture history", () => {
+  const durableMember = member({
+    id: "m-3",
+    ordinal: 3,
+    selectedAttemptId: "at-4",
+  });
+  const firstAttempt = attempt({
+    id: "at-3",
+    memberId: "m-3",
+    attempt: 1,
+    status: "failed",
+    error: "agent exited",
+  });
+  const selectedAttempt = attempt({
+    id: "at-4",
+    memberId: "m-3",
+    attempt: 2,
+    status: "submitted",
+  });
+  const html = renderDetail({
+    members: [durableMember],
+    attempts: [firstAttempt, selectedAttempt],
+    artifacts: [
+      artifact({
+        id: "art-capturing",
+        attemptId: "at-4",
+        status: "capturing",
+        attempt: 1,
+      }),
+      artifact({
+        id: "art-failed",
+        attemptId: "at-3",
+        status: "failed",
+        attempt: 2,
+        error: "snapshot failed",
+      }),
+    ],
+  });
+  assert.match(html, /Attempt state/);
+  assert.match(html, /Attempt #2 · selected/);
+  assert.match(html, /Attempt #1/);
+  assert.match(html, /agent exited/);
+  assert.match(html, /Artifact state/);
+  assert.match(html, /Capturing/);
+  assert.match(html, /snapshot failed/);
+});
+
+test("manual member checks enforce shared count and per-check limits", () => {
+  const valid = validateManualChecks("npm test\nnpm run typecheck");
+  assert.deepEqual(valid, {
+    checks: ["npm test", "npm run typecheck"],
+    error: null,
+  });
+  assert.match(
+    validateManualChecks(
+      Array.from({ length: ENSEMBLE_LIMITS.submissionChecks + 1 }, (_, index) => `check ${index}`).join("\n"),
+    ).error ?? "",
+    /at most 40 checks/,
+  );
+  assert.match(
+    validateManualChecks("x".repeat(ENSEMBLE_LIMITS.submissionCheck + 1)).error ?? "",
+    /at most 400 characters/,
+  );
 });
 
 test("the timeline renders durable finalization progress receipts", () => {
@@ -522,9 +592,42 @@ test("the run controller refetches on a 409 and never replays automatically", ()
   assert.match(controller, /never replay/i);
   assert.match(controller, /selectedRef\.current !== actedRunId/);
   assert.match(controller, /load\(actedRunId, false\)/);
+  assert.match(controller, /actionGeneration\.current !== actionToken/);
+  assert.match(controller, /setActionErrorKind\(body\.kind\)/);
+  assert.match(
+    controller,
+    /setActionPending\(null\);[\s\S]*setActionErrorKind\(null\);[\s\S]*}, \[selected\]\)/,
+  );
   // Detail is fetched per selection with a generation guard, not polled.
   assert.match(controller, /loadGeneration/);
   assert.doesNotMatch(controller, /setInterval/);
+});
+
+test("decision busy state and errors stay owned by their action surface", () => {
+  const detailSource = readFileSync(
+    new URL("../src/web/ensembles/EnsembleDetail.tsx", import.meta.url),
+    "utf8",
+  );
+  const decisionSource = readFileSync(
+    new URL("../src/web/ensembles/results/BestOfN.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(detailSource, /busy: actionBusy/);
+  assert.match(detailSource, /actionErrorKind === "decide" \? actionError : null/);
+  assert.match(detailSource, /actionErrorKind !== "decide" \? actionError : null/);
+  assert.match(decisionSource, /!decision\.busy/);
+});
+
+test("collapsed stage payloads defer bounded serialization until expansion", () => {
+  const source = readFileSync(
+    new URL("../src/web/ensembles/EnsembleTimeline.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /open && \(\s*<StagePayloadEvidence/);
+  assert.match(
+    source,
+    /function StagePayloadEvidence[\s\S]*const inputView = boundedJson\(input\);[\s\S]*const outputView = boundedJson\(output\);/,
+  );
 });
 
 test("artifact restore accurately describes and confirms the destructive checkout reset", () => {

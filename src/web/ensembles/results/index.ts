@@ -27,6 +27,7 @@ export interface EnsembleResultContext {
    * it with the idempotency key, expected status, and destructive confirmation.
    */
   decision: {
+    busy: boolean;
     pending: boolean;
     error: string | null;
     onDecide: (selection: EnsembleSelectOneSelection, rationale: string) => void;

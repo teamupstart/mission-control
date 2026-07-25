@@ -32,6 +32,7 @@ export function EnsembleDetail({
   detail,
   actionPending,
   actionError,
+  actionErrorKind,
   onAction,
   onDelete,
   onLoadPatch,
@@ -43,6 +44,7 @@ export function EnsembleDetail({
   detail: EnsembleRunDetailResponse;
   actionPending: string | null;
   actionError: string | null;
+  actionErrorKind: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onDelete: (confirmId: string) => void;
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
@@ -91,13 +93,16 @@ export function EnsembleDetail({
     detail.llmCalls.length > 0 && detail.llmCalls.every((call) => call.costUsd !== null);
   const budget = run.plan?.budget ?? null;
   const tone = ensembleStatusTone(run.status, run.unreadable);
+  const actionBusy = actionPending !== null;
+  const decisionPending = actionPending === "decide";
 
   const Renderer = run.strategyId ? ENSEMBLE_RESULT_RENDERERS[run.strategyId] : undefined;
   const decision =
     run.status === "awaiting_decision"
       ? {
-          pending: actionPending === "decide",
-          error: actionPending === null ? actionError : null,
+          busy: actionBusy,
+          pending: decisionPending,
+          error: actionErrorKind === "decide" ? actionError : null,
           onDecide: (selection: EnsembleSelectOneSelection, rationale: string) =>
             onAction({
               kind: "decide",
@@ -242,7 +247,7 @@ export function EnsembleDetail({
         <EnsembleActions
           detail={detail}
           pending={actionPending}
-          error={decision ? null : actionError}
+          error={actionErrorKind !== "decide" ? actionError : null}
           onAction={onAction}
           onDelete={onDelete}
         />

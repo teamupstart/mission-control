@@ -185,8 +185,6 @@ function StagePayloads({
   output: EnsembleJson | null;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const inputView = boundedJson(input);
-  const outputView = boundedJson(output);
   return (
     <div className="ensemble-stage-payloads">
       <Tooltip label={open ? "Hide this stage's bounded input and output" : "Show this stage's bounded input and output"}>
@@ -200,19 +198,33 @@ function StagePayloads({
         </button>
       </Tooltip>
       {open && (
-        <div className="ensemble-stage-payload-grid">
-          <div className="ensemble-stage-payload">
-            <h6>Input</h6>
-            <pre>{inputView.text}</pre>
-            {inputView.truncated && <p className="ensemble-muted">Input truncated for display.</p>}
-          </div>
-          <div className="ensemble-stage-payload">
-            <h6>Output</h6>
-            <pre>{outputView.text}</pre>
-            {outputView.truncated && <p className="ensemble-muted">Output truncated for display.</p>}
-          </div>
-        </div>
+        <StagePayloadEvidence input={input} output={output} />
       )}
+    </div>
+  );
+}
+
+function StagePayloadEvidence({
+  input,
+  output,
+}: {
+  input: EnsembleJson;
+  output: EnsembleJson | null;
+}): React.JSX.Element {
+  const inputView = boundedJson(input);
+  const outputView = boundedJson(output);
+  return (
+    <div className="ensemble-stage-payload-grid">
+      <div className="ensemble-stage-payload">
+        <h6>Input</h6>
+        <pre>{inputView.text}</pre>
+        {inputView.truncated && <p className="ensemble-muted">Input truncated for display.</p>}
+      </div>
+      <div className="ensemble-stage-payload">
+        <h6>Output</h6>
+        <pre>{outputView.text}</pre>
+        {outputView.truncated && <p className="ensemble-muted">Output truncated for display.</p>}
+      </div>
     </div>
   );
 }

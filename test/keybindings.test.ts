@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 // What is at stake: a rebind has to actually leave the machine now.
 //
@@ -52,6 +54,7 @@ const {
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
 const { workflowsToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
@@ -346,6 +349,25 @@ test("the editor rejects another action's chord and keeps the prior binding", ()
   assert.equal(puts.length, before);
   assert.equal(stored().conversation, "v");
   assert.equal(stored().diff, "x");
+  resetAll();
+});
+
+test("reset copy reflects whether the default will be restored", async () => {
+  await updateUiConfig({ keybindings: { conversation: "v" } });
+  const freeDefault = renderToStaticMarkup(createElement(KeyboardPanel));
+  assert.match(freeDefault, /Reset Open conversation to g/);
+  assert.match(freeDefault, /aria-label="Reset Open conversation to default"/);
+
+  await updateUiConfig({ keybindings: { conversation: "v", diff: "g" } });
+  const claimedDefault = renderToStaticMarkup(createElement(KeyboardPanel));
+  assert.match(
+    claimedDefault,
+    /Clear v - g is taken by Open diff, so this stays unset/,
+  );
+  assert.match(
+    claimedDefault,
+    /aria-label="Clear Open conversation v; g is taken by Open diff, so Open conversation stays unset"/,
+  );
   resetAll();
 });
 

@@ -37,7 +37,7 @@ function labelOf(id: ActionId): string {
  * the same contract `Overlay.tsx` relies on.
  */
 export function KeyboardPanel(): React.JSX.Element {
-  const { bindings, isCustom, hasCustom } = useKeybindings();
+  const { bindings, isCustom, hasCustom, previewReset } = useKeybindings();
   const [hints, setHints] = useKeybindingHints();
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +126,21 @@ export function KeyboardPanel(): React.JSX.Element {
             const custom = isCustom(a.id);
             const conflict = conflicts.get(a.id);
             const isRec = recording === a.id;
+            const resetPreview = previewReset(a.id);
+            const resetChord = formatChord(resetPreview.binding);
+            const resetOwner = resetPreview.owner ? labelOf(resetPreview.owner) : null;
+            const resetTooltip =
+              custom && !resetChord && resetOwner
+                ? `Clear ${formattedChord || "custom binding"} - ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so this stays unset`
+                : custom
+                  ? `Reset ${a.label} to ${resetChord}`
+                  : formattedChord
+                    ? "Already the default"
+                    : "No custom binding";
+            const resetAriaLabel =
+              custom && !resetChord && resetOwner
+                ? `Clear ${a.label} ${formattedChord || "custom binding"}; ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so ${a.label} stays unset`
+                : `Reset ${a.label} to default`;
             return (
               <div
                 className={`kb-row${conflict ? " has-conflict" : ""}`}
@@ -157,20 +172,12 @@ export function KeyboardPanel(): React.JSX.Element {
                       {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formattedChord || "Unset"}</kbd>}
                     </button>
                   </Tooltip>
-                  <Tooltip
-                    label={
-                      custom
-                        ? `Reset ${a.label} to ${formatChord(a.defaultBinding)}`
-                        : formattedChord
-                          ? "Already the default"
-                          : "No custom binding"
-                    }
-                  >
+                  <Tooltip label={resetTooltip}>
                     <button
                       className="kb-reset"
                       disabled={!custom}
                       onClick={() => resetBinding(a.id)}
-                      aria-label={`Reset ${a.label} to default`}
+                      aria-label={resetAriaLabel}
                     >
                       ↺
                     </button>

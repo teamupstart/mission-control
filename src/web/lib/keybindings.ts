@@ -371,6 +371,27 @@ export function resolveKeybindings(raw: Record<string, string>): Record<ActionId
   return computeResolved(sanitize(raw));
 }
 
+export interface ResetBindingPreview {
+  binding: string;
+  owner: ActionId | null;
+}
+
+export function previewResetBinding(
+  raw: Record<string, string>,
+  id: ActionId,
+): ResetBindingPreview {
+  const next = sanitize(raw);
+  delete next[id];
+  const bindings = computeResolved(next);
+  const binding = bindings[id];
+  const defaultBinding = ACTION_BY_ID.get(id)?.defaultBinding;
+  const owner =
+    !binding && defaultBinding
+      ? (ACTIONS.find((action) => bindings[action.id] === defaultBinding)?.id ?? null)
+      : null;
+  return { binding, owner };
+}
+
 /**
  * Write the overrides through to the daemon. This store holds NO copy of them - the
  * shared config store is the only one - so there is nothing here to keep in step, and a
@@ -447,6 +468,7 @@ export interface KeybindingsApi {
   isCustom: (id: ActionId) => boolean;
   /** Whether any action has a stored override. */
   hasCustom: boolean;
+  previewReset: (id: ActionId) => ResetBindingPreview;
 }
 
 // Stable references for useSyncExternalStore so it doesn't re-subscribe on every
@@ -495,11 +517,16 @@ export function useKeybindingHints(): [boolean, (on: boolean) => void] {
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */
 export function useKeybindings(): KeybindingsApi {
   const bindings = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const overrides = currentOverrides();
+  const source = uiConfig().keybindings;
+  const overrides = sanitize(source);
   const isCustom = useCallback(
     (id: ActionId) => Object.hasOwn(overrides, id),
     [overrides],
   );
   const hasCustom = Object.keys(overrides).length > 0;
-  return { bindings, isCustom, hasCustom };
+  const previewReset = useCallback(
+    (id: ActionId) => previewResetBinding(source, id),
+    [source],
+  );
+  return { bindings, isCustom, hasCustom, previewReset };
 }

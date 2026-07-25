@@ -32,6 +32,7 @@ export function WorkflowPage({
   onRun = () => {},
   onRunFilters = () => {},
   onBindVersion = () => {},
+  onBindWorkflow,
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
 }: {
@@ -48,6 +49,8 @@ export function WorkflowPage({
   onRun?: (id: string) => void;
   onRunFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
+  /** Opens the binding dialog with no session pinned, for the builder's bind call to action. */
+  onBindWorkflow?: () => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
 }): React.JSX.Element {
@@ -118,6 +121,7 @@ export function WorkflowPage({
             personas={personas}
             onDirtyChange={onDirtyChange}
             onBindVersion={onBindVersion}
+            onBindWorkflow={onBindWorkflow}
           />
         </section>
       )}

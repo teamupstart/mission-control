@@ -68,7 +68,11 @@ test("keyboard editing covers move, connect, confirmed delete, undo, redo, and d
   assert.match(librarySource, /value=\{connectSourcePort\}/);
   assert.match(canvasSource, /setFocusNodeId\(selection\.id\)/);
   assert.match(librarySource, /value=\{connectTargetPort\}/);
-  assert.match(librarySource, /Delete \$\{removable\.size\} node/);
+  // Delete on the canvas still confirms - through the registered overlay now, so the
+  // fleet's key handler stands down while the question is on screen.
+  assert.match(librarySource, /setConfirm\(\{/);
+  assert.match(librarySource, /confirmLabel: "Remove"/);
+  assert.doesNotMatch(librarySource, /window\.confirm/);
   assert.match(librarySource, /event\.metaKey \|\| event\.ctrlKey/);
   assert.match(librarySource, /if \(event\.shiftKey\) draft\.redo\(\)/);
   assert.match(librarySource, /node\.kind !== "session"/);

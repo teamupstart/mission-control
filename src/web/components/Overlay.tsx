@@ -51,6 +51,7 @@ export const OVERLAY_IDS = {
   files: "files",
   filePicker: "file-picker",
   workflowBinding: "workflow-binding",
+  workflowConfirm: "workflow-confirm",
   settingsSearch: "settings-search",
   recurringMissions: "recurring-missions",
 } as const;

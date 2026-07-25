@@ -155,6 +155,26 @@ export function seamGate(stage: Stage | undefined): string | null {
   return stage.members.length > 1 ? "all pass" : "pass";
 }
 
+/**
+ * Where a moved reviewer's destination stage ENDS UP, which is not always where the drop
+ * aimed.
+ *
+ * Taking the last member out of a stage removes that stage (`moveReviewer`), and every
+ * later stage shifts down one - so dragging the only reviewer of Stage 1 into Stage 2 lands
+ * it in what is now Stage 1. The move was always right; naming the destination by its
+ * pre-move index is what made the announcement say "Stage 2" about a stage that no longer
+ * exists. Only a CROSS-stage move can empty a stage, so a reorder within one is unaffected.
+ */
+export function landedStageIndex(
+  pipeline: StagePipeline,
+  from: ReviewerRef,
+  to: ReviewerRef,
+): number {
+  const emptiesSource = from.stage !== to.stage
+    && pipeline.stages[from.stage]?.members.length === 1;
+  return emptiesSource && to.stage > from.stage ? to.stage - 1 : to.stage;
+}
+
 const plural = (count: number, word: string): string =>
   `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -343,7 +363,7 @@ export function PipelineEditor({
     if (moved) {
       apply(
         moveReviewer(pipeline, dragging.ref, to),
-        `Moved ${nameOf(moved.personaId)} into ${refOfStage(to.stage)}`,
+        `Moved ${nameOf(moved.personaId)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
       );
     }
     endDrag();
@@ -358,7 +378,7 @@ export function PipelineEditor({
       if (moved && dragging.ref.stage !== stageIndex) {
         apply(
           moveReviewer(pipeline, dragging.ref, to),
-          `Moved ${nameOf(moved.personaId)} into ${refOfStage(stageIndex)}`,
+          `Moved ${nameOf(moved.personaId)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
         );
       }
     }

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addReviewer,
   insertStage,
+  landedStageIndex,
   moveReviewer,
   moveStage,
   pipelineFocusOrder,
@@ -144,6 +145,32 @@ test("a reviewer dragged between stages leaves no empty stage behind", () => {
   assert.deepEqual(validate(merged.graph), { valid: true, diagnostics: [] });
   // The moved reviewer keeps its node; only its routes changed.
   assert.equal(merged.pipeline.stages[0]!.members[1]!.nodeId, base.pipeline.stages[1]!.members[0]!.nodeId);
+});
+
+test("a drag that empties its source stage names the destination it actually landed in", () => {
+  // Moving the last member out of a stage removes that stage, so every later stage shifts
+  // down one. The move was always correct; the sentence describing it named the stage by
+  // its pre-move index and so announced a stage that no longer existed.
+  const base = edit(
+    edit(FRESH, (p) => insertStage(p, 0, P1)).graph,
+    (p) => insertStage(p, 1, P2),
+  ).pipeline;
+  const from = { stage: 0, member: 0 };
+  const to = { stage: 1, member: 1 };
+  assert.equal(landedStageIndex(base, from, to), 0, "Stage 2 becomes Stage 1 once Stage 1 empties");
+  const merged = moveReviewer(base, from, to);
+  assert.deepEqual(personaIdsOf(merged), [[P2, P1]]);
+  assert.equal(merged.stages.length, 1);
+
+  // Dragging BACKWARDS empties a later stage, which shifts nothing before it.
+  assert.equal(landedStageIndex(base, { stage: 1, member: 0 }, { stage: 0, member: 1 }), 0);
+
+  // A source stage that keeps members removes nothing, so the destination stands.
+  const wide = addReviewer(base, 0, P3);
+  assert.equal(landedStageIndex(wide, from, to), 1);
+
+  // And a reorder within one stage can never empty it.
+  assert.equal(landedStageIndex(base, from, { stage: 0, member: 0 }), 0);
 });
 
 test("removing the last stage returns the canonical zero-stage pipeline, still valid", () => {

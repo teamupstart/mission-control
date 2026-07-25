@@ -33,6 +33,43 @@ function why(caught: unknown, fallback: string): string {
   return caught instanceof Error && caught.message ? caught.message : fallback;
 }
 
+/** One completed poll's two reads. `null` is a read that FAILED, not one that is pending. */
+export interface WorkflowPollReads {
+  config: WorkflowConfig | null;
+  status: WorkflowStatus | null;
+}
+
+/**
+ * What a completed poll does to the two displayed readings.
+ *
+ * The rule is that **a failed read is "unknown", and unknown REPLACES the last good
+ * reading rather than deferring to it.** Keeping the previous value on a failure is the
+ * more natural-looking code (`if (next) set(next)`) and it is wrong in the direction that
+ * matters here: the panel goes on presenting queue depths, a last-sweep time and a
+ * Live-delivery switch as the daemon's current answer while the daemon is not answering at
+ * all. Every "the daemon has not said" affordance this panel draws - the unknown banner,
+ * the disabled controls, the unavailable-health line - is reached from a null, so a null
+ * that never arrives is an affordance that never shows.
+ *
+ * The ONE exception is the config read losing a race with a write: a `PUT` that landed
+ * after this poll's `GET` left holds the newer truth, so its value stands and the poll's is
+ * dropped - including a poll whose read failed, which must not null out a config the
+ * operator just successfully saved. Status is never raced, because nothing here writes it.
+ *
+ * Pure and exported because the hook's own effect cannot be driven without a DOM, and this
+ * is the decision inside it worth pinning.
+ */
+export function applyWorkflowPoll(
+  reads: WorkflowPollReads,
+  racedByWrite: boolean,
+  displayedConfig: WorkflowConfig | null,
+): WorkflowPollReads {
+  return {
+    config: racedByWrite ? displayedConfig : reads.config,
+    status: reads.status,
+  };
+}
+
 export function useWorkflowSettings(): WorkflowSettingsState {
   const [config, setConfigState] = useState<WorkflowConfig | null>(null);
   const [status, setStatus] = useState<WorkflowStatus | null>(null);
@@ -56,17 +93,21 @@ export function useWorkflowSettings(): WorkflowSettingsState {
     let alive = true;
     const tick = async (): Promise<void> => {
       const at = writes.current;
-      const [nextConfig, nextStatus] = await Promise.all([
+      const [config, status] = await Promise.all([
+        // A refusal is not thrown at the operator: it becomes a null reading, which is what
+        // every "the daemon has not said" affordance in the panel is keyed on. 503 while the
+        // manager is starting is the ordinary case, and the next tick asks again.
         workflowRequest<WorkflowConfig>("/api/workflows/config").catch(() => null),
-        // 503 while the manager is starting, which is not an error to shout about - the
-        // panel says health is unavailable and the next tick asks again.
         workflowRequest<WorkflowStatus>("/api/workflows/status").catch(() => null),
       ]);
       if (!alive) return;
-      // Health is a read-only display and cannot be raced by a write, so it always lands;
-      // only the config a PUT may have just changed is dropped.
-      if (nextStatus) setStatus(nextStatus);
-      if (nextConfig && writes.current === at) setConfig(nextConfig);
+      const next = applyWorkflowPoll(
+        { config, status },
+        writes.current !== at,
+        configRef.current,
+      );
+      setStatus(next.status);
+      setConfig(next.config);
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);

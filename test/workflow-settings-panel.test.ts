@@ -22,7 +22,11 @@ import {
   readRetention,
   retentionShortens,
 } from "../src/web/components/WorkflowSettingsPanel.tsx";
-import type { WorkflowSettingsState } from "../src/web/useWorkflowSettings.ts";
+import {
+  applyWorkflowPoll,
+  type WorkflowSettingsState,
+} from "../src/web/useWorkflowSettings.ts";
+import type { WorkflowConfig } from "../src/shared/workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG, type WorkflowStatus } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
@@ -196,4 +200,52 @@ test("only a shortened limit asks first", () => {
 test("a write refused by the daemon is reported, not swallowed", () => {
   const html = render({ ...ANSWERED, error: "Workflow manager unavailable" });
   assert.match(html, /class="settings-error" role="alert">Workflow manager unavailable/);
+});
+
+// A failed read is UNKNOWN, and unknown replaces the last good reading rather than
+// deferring to it. This is the defect the Inspector caught on round 1 of #258: the poll
+// applied each read only `if (next)`, so once the daemon stopped answering the panel went
+// on presenting the queue depths, the last sweep and the Live-delivery switch as its
+// current answer - indefinitely, and with every "the daemon has not said" affordance
+// (the unknown banner, the disabled controls, the unavailable-health line) keyed on a null
+// that could no longer arrive.
+//
+// Driven through the pure rule rather than the hook: the hook's decision lives in an
+// effect, and this runner has no DOM to run one in.
+const CONFIG: WorkflowConfig = { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: true };
+const SAVED: WorkflowConfig = { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: false };
+
+test("a poll that could not read is unknown, not the last thing that was true", () => {
+  // Both reads failed while a good reading was on screen: both go unknown.
+  assert.deepEqual(
+    applyWorkflowPoll({ config: null, status: null }, false, CONFIG),
+    { config: null, status: null },
+  );
+  // One read failed and the other did not - they are independent, so a healthy status does
+  // not vouch for a config nobody could read, or the other way round.
+  assert.deepEqual(
+    applyWorkflowPoll({ config: CONFIG, status: null }, false, CONFIG),
+    { config: CONFIG, status: null },
+  );
+  assert.deepEqual(
+    applyWorkflowPoll({ config: null, status: STATUS }, false, CONFIG),
+    { config: null, status: STATUS },
+  );
+  // And an ordinary successful poll still lands both.
+  assert.deepEqual(
+    applyWorkflowPoll({ config: CONFIG, status: STATUS }, false, null),
+    { config: CONFIG, status: STATUS },
+  );
+});
+
+// The one exception, and the reason the rule takes the race as an argument: a PUT that
+// landed after this poll's GET left holds the newer truth. Without this, a poll that raced
+// a save would repaint the pre-write config - and a poll whose read FAILED would null out a
+// config the operator had just successfully saved, which is the same lie in the other
+// direction.
+test("a config read that lost a race with a write is dropped, failed or not", () => {
+  assert.equal(applyWorkflowPoll({ config: CONFIG, status: STATUS }, true, SAVED).config, SAVED);
+  assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).config, SAVED);
+  // Status is never raced - nothing in this panel writes it - so it lands either way.
+  assert.equal(applyWorkflowPoll({ config: null, status: STATUS }, true, SAVED).status, STATUS);
 });

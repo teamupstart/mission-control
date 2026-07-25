@@ -380,8 +380,11 @@ export function WorkflowSettingsPanel({
             <div><dt>Last sweep error</dt><dd>{status.lastRetentionError ?? "None"}</dd></div>
           </dl>
         ) : (
+          // "has not answered", not "has not answered YET": a null status is the pre-poll
+          // instant AND a daemon that has stopped answering, and the second is the one
+          // where a still-loading sentence would be read as a delay rather than a gap.
           <p className="settings-hint wf-settings-empty">
-            Workflow health is unavailable - the daemon has not answered yet.
+            Workflow health is unavailable - the daemon has not answered.
           </p>
         )}
       </div>

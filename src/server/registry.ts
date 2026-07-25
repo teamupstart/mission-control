@@ -1131,15 +1131,8 @@ export class Registry extends EventEmitter {
    * on a tty here to read.
    */
   registerSdkSession(input: SdkSessionRegistration): Session {
-    if (!input.id.startsWith(SDK_SESSION_ID_PREFIX)) {
-      throw new Error(`an SDK session id must start with "${SDK_SESSION_ID_PREFIX}": ${input.id}`);
-    }
-    if (this.sessions.has(input.id)) {
-      // One id per launch. A repeat means two handles believe they own one card, and
-      // silently returning the existing entry would leave the loser pumping events into a
-      // session it does not drive.
-      throw new Error(`SDK session ${input.id} is already registered`);
-    }
+    const refusal = this.sdkRegistrationRefusal(input.id);
+    if (refusal) throw new Error(refusal);
     const now = input.now ?? Date.now();
     const s: Session = {
       id: input.id,
@@ -1208,6 +1201,19 @@ export class Registry extends EventEmitter {
     // un-orphan a hint on a sibling card that has no other reason to re-emit.
     this.syncAllOrphanHints();
     return s;
+  }
+
+  sdkRegistrationRefusal(id: string): string | null {
+    if (!id.startsWith(SDK_SESSION_ID_PREFIX)) {
+      return `an SDK session id must start with "${SDK_SESSION_ID_PREFIX}": ${id}`;
+    }
+    if (this.sessions.has(id)) {
+      // One id per launch. A repeat means two handles believe they own one card, and
+      // silently returning the existing entry would leave the loser pumping events into a
+      // session it does not drive.
+      return `SDK session ${id} is already registered`;
+    }
+    return null;
   }
 
   /**

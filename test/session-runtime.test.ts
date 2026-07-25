@@ -163,6 +163,49 @@ test("registration refuses an id outside the sdk space, and refuses a second hol
   assert.throws(() => r.registerSdkSession(registration()), /already registered/);
 });
 
+test("adoption refusals do not create or overwrite durable rows", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: "task-original", model: "model-original", effort: null },
+  });
+  driver.emit({
+    kind: "bound",
+    agentSessionId: "agent-original",
+    transcriptPath: "/transcripts/agent-original.jsonl",
+    pid: null,
+  });
+  await settle();
+  const before = getSdkSession(SDK_ID);
+
+  assert.throws(
+    () =>
+      sup.adopt({
+        registration: registration(),
+        handle: fakeHandle().handle,
+        durable: { taskId: "task-replacement", model: "model-replacement", effort: null },
+      }),
+    /already registered/,
+  );
+  assert.deepEqual(getSdkSession(SDK_ID), before);
+
+  const invalidId = "proc:ttys1:1:0";
+  assert.throws(
+    () =>
+      sup.adopt({
+        registration: registration({ id: invalidId }),
+        handle: fakeHandle().handle,
+        durable: { taskId: null, model: null, effort: null },
+      }),
+    /sdk:/,
+  );
+  assert.equal(getSdkSession(invalidId), null);
+  await sup.stop(SDK_ID);
+});
+
 test("a completed discovery sweep does not evict an SDK session", () => {
   const r = new Registry();
   r.registerSdkSession(registration());
@@ -404,6 +447,44 @@ test("delivery is acked and serialized per session, and refused when nothing is 
   // Rejects rather than resolving. "Delivered to nobody" is precisely the failure the acked
   // send exists to remove, and must not come back in as a silent success.
   await assert.rejects(sup.send(SDK_ID, { text: "third" }), /no live driver/);
+});
+
+test("queued delivery is refused when its driver exits before it runs", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  driver.handle.send = async (turn) => {
+    driver.sent.push(turn.text);
+    if (turn.text === "first") {
+      markFirstStarted();
+      await firstBlocked;
+    }
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null },
+  });
+
+  const first = sup.send(SDK_ID, { text: "first" });
+  await firstStarted;
+  const second = sup.send(SDK_ID, { text: "second" });
+  const secondRefused = assert.rejects(second, /no live driver/);
+  await sup.stop(SDK_ID);
+  await settle();
+  releaseFirst();
+
+  await first;
+  await secondRefused;
+  assert.deepEqual(driver.sent, ["first"]);
 });
 
 test("a driver event about a pane-backed session is refused", async () => {

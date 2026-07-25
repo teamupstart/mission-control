@@ -86,10 +86,10 @@ export class SdkSupervisor {
   /**
    * Take ownership of a launched handle: persist it, put the card on the dashboard, then pump.
    *
-   * The row has to land before registration emits an SSE frame: an emission cannot be
-   * rolled back, so writing it second could leave a card nobody can restore when SQLite
-   * refuses the write. The pump still starts only after registration, so its first `bound`
-   * cannot race the card into existence and lose the identity the read path needs.
+   * Refusal comes first because an invalid id must not leave an orphan row and a duplicate
+   * must not erase a live row's binding with null and `starting`. The row comes next because
+   * registration emits an SSE frame that cannot be rolled back if SQLite then refuses the
+   * write. The pump starts last so its first `bound` cannot race the card into existence.
    */
   adopt(input: {
     registration: SdkSessionRegistration;
@@ -102,6 +102,8 @@ export class SdkSupervisor {
     durable: { taskId: string | null; model: string | null; effort: ThinkingLevel | null };
   }): void {
     const { registration, handle, durable } = input;
+    const refusal = this.registry.sdkRegistrationRefusal(registration.id);
+    if (refusal) throw new Error(refusal);
     upsertSdkSession({
       id: registration.id,
       agent: registration.agent,
@@ -163,11 +165,18 @@ export class SdkSupervisor {
 
   private serialize(id: string, op: (handle: SdkSessionHandle) => Promise<void>): Promise<void> {
     const handle = this.handles.get(id);
-    if (!handle) return Promise.reject(new Error(`no live driver for session ${id}`));
+    const noLiveDriver = () => new Error(`no live driver for session ${id}`);
+    if (!handle) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
     // the next one from being attempted, and must still reject for the caller that made it.
-    const next = prior.then(() => op(handle));
+    const next = prior.then(() => {
+      // Exit deletes the ownership maps but cannot cancel a chain that is already built.
+      // The enqueue-time check alone would let a later turn reach a stopped handle after
+      // `session_remove`, bringing "delivered to nobody" back through the acknowledged path.
+      if (this.handles.get(id) !== handle) throw noLiveDriver();
+      return op(handle);
+    });
     this.sends.set(
       id,
       next.catch(() => {}),

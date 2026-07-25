@@ -249,6 +249,9 @@ export class Dispatcher {
       );
 
       if (await this.abortIfSettled(taskId)) return;
+      // First set for a dispatched task: `Task.sessionId` means "currently executing on"
+      // and nothing more. Provenance lives in the work-episode bindings used by
+      // `bindTaskToWorkEpisode` and `mergedPrFor`.
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
     } catch (err) {

@@ -1093,6 +1093,11 @@ export class TaskManager {
    * Waits out any in-flight titling first: the branch and initial terminal home name are cut
    * from `task.title`, and later title edits do not propagate to them. Dispatching
    * mid-titling would name them after the heuristic title and leave the card disagreeing.
+   *
+   * This is the other way a task acquires its `Task.sessionId` "currently executing on"
+   * pointer. Dispatch launches a brand-new agent, so the binding is the pointer's first
+   * value rather than a move from a prior task. It needs no equivalent of `assign`'s serial
+   * re-check; any future path that binds an existing session would.
    */
   async dispatch(id: string, options: DispatchOptions = {}): Promise<DispatchOutcome> {
     await this.titling.get(id);

@@ -155,26 +155,68 @@ export function missionRouteHash(route: MissionRoute): string {
   return route.tab === "workflows" ? "#/workflows" : `#/workflows/${route.tab}`;
 }
 
-/** Hash routing without a router dependency, with one dirty-draft gate for links and back/forward. */
-export function useWorkflowRoute(dirty: boolean): {
+export interface MissionRouter {
   route: MissionRoute;
+  /**
+   * Ask to move. `false` means the move did NOT happen - either because a dirty draft is
+   * now holding it (see `pendingRoute`) or because it was already the current route.
+   */
   navigate: (route: MissionRoute) => boolean;
-} {
+  /**
+   * The route a dirty draft is holding up, or null. App renders the confirm dialog for it;
+   * the router does not import a component, so this hook stays testable without a DOM.
+   */
+  pendingRoute: MissionRoute | null;
+  /** Leave anyway: drop the draft and apply the held route. */
+  confirmPending: () => void;
+  /** Stay put, and forget the held route. */
+  cancelPending: () => void;
+}
+
+/** Hash routing without a router dependency, with one dirty-draft gate for links and back/forward. */
+export function useWorkflowRoute(dirty: boolean): MissionRouter {
   const initial = parseMissionRoute(window.location.hash);
   const [route, setRoute] = useState<MissionRoute>(initial);
   const accepted = useRef(initial);
   const allowHash = useRef<string | null>(null);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  /**
+   * The route the gate is holding, raised as an overlay-hosted dialog instead of the
+   * `window.confirm` this replaced.
+   *
+   * A native dialog answers synchronously, which is what let both branches below read like
+   * ordinary control flow - but it is invisible to the overlay registry, so `anyOpen` stayed
+   * false and the fleet's global key handler was live behind it: `k` while the browser
+   * dialog was up reached the card underneath. The cost of the swap is that the decision is
+   * now deferred, so "what to do once they answer" has to be held somewhere, and this is it.
+   */
+  const [pendingRoute, setPendingRouteState] = useState<MissionRoute | null>(null);
+  // Mirrored in a ref so `confirmPending` can read what is held without navigating from
+  // inside a state updater - React may call an updater twice, and "set the location" is
+  // not a thing to do twice.
+  const pendingRef = useRef<MissionRoute | null>(null);
+  const setPendingRoute = useCallback((next: MissionRoute | null): void => {
+    pendingRef.current = next;
+    setPendingRouteState(next);
+  }, []);
+
+  const applyRoute = useCallback((next: MissionRoute): void => {
+    const hash = missionRouteHash(next);
+    allowHash.current = hash;
+    window.location.hash = hash;
+  }, []);
 
   const navigate = useCallback((next: MissionRoute): boolean => {
     const hash = missionRouteHash(next);
     if (hash === missionRouteHash(accepted.current)) return true;
-    if (dirtyRef.current && !window.confirm("Discard unsaved workflow or Persona changes?")) return false;
-    allowHash.current = hash;
-    window.location.hash = hash;
+    if (dirtyRef.current) {
+      setPendingRoute(next);
+      return false;
+    }
+    applyRoute(next);
     return true;
-  }, []);
+  }, [applyRoute, setPendingRoute]);
 
   useEffect(() => {
     const onHash = (): void => {
@@ -184,10 +226,14 @@ export function useWorkflowRoute(dirty: boolean): {
         allowHash.current = null;
       } else if (
         dirtyRef.current &&
-        missionRouteHash(next) !== missionRouteHash(accepted.current) &&
-        !window.confirm("Discard unsaved workflow or Persona changes?")
+        missionRouteHash(next) !== missionRouteHash(accepted.current)
       ) {
+        // Back/forward has ALREADY moved the address bar, so the URL is put back before
+        // the question is asked rather than after it is answered: a dialog floating over
+        // the page you were on, above an address bar naming the page you were leaving, is
+        // two answers to "where am I" while the one that matters is still undecided.
         history.replaceState(null, "", missionRouteHash(accepted.current));
+        setPendingRoute(next);
         return;
       }
       accepted.current = next;
@@ -195,7 +241,16 @@ export function useWorkflowRoute(dirty: boolean): {
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+    // `setPendingRoute` is stable; the listener is still subscribed exactly once.
+  }, [setPendingRoute]);
 
-  return { route, navigate };
+  const confirmPending = useCallback((): void => {
+    const held = pendingRef.current;
+    setPendingRoute(null);
+    if (held) applyRoute(held);
+  }, [applyRoute, setPendingRoute]);
+
+  const cancelPending = useCallback((): void => setPendingRoute(null), [setPendingRoute]);
+
+  return { route, navigate, pendingRoute, confirmPending, cancelPending };
 }

@@ -1979,9 +1979,9 @@ claim with the rest of the run family.
 
 ### Live repair delivery and Foreman completion
 
-Live workflow delivery is separately off by default. Open **Workflows → Workflow settings**,
-enable Live after its explicit warning, and add canonical repository roots to the Workflow
-allowlist. A Live binding can be saved only while its current session is in an allowlisted
+Live workflow delivery is separately off by default. Open **Settings → Workflows**
+(`#/settings/workflows`), enable Live after its explicit warning, and add canonical repository
+roots to the Workflow allowlist. A Live binding can be saved only while its current session is in an allowlisted
 checkout. Removing consent keeps the binding choice visible but refuses the next delivery;
 it is never silently changed to Preview.
 
@@ -2051,7 +2051,7 @@ and comment ledgers because those records outlive a session.
 
 ### Retention, history, exports, and workflow health
 
-Workflow retention is configured under **Workflows → Workflow settings**. It has two stages:
+Workflow retention is configured under **Settings → Workflows**. It has two stages:
 
 1. Raw evidence is compacted from eligible completed or cancelled runs after 30 days by default.
    The diff, transcript, status paths, standards bodies, and delivered or refused packet text are
@@ -2080,8 +2080,8 @@ output bytes, retry, and classified error. The local runner returns text but no 
 price, so the monetary field remains `null` and the UI says **Cost unavailable from this runner**.
 It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
-Workflow health is fetched only when the settings drawer opens or **Refresh health** is clicked.
-It reports active runs, queued and running Persona calls, waiting and uncertain deliveries,
+Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
+panel is open. It reports active runs, queued and running Persona calls, waiting and uncertain deliveries,
 Inspector gates, retained run count, recovery time, retention time, the last retention error code,
 and the last compacted and deleted counts. It contains no prompt, diff, transcript, Persona
 guidance, model output, or delivery payload.
@@ -2820,14 +2820,14 @@ While the page is up the fleet's shortcuts stand down, exactly as they do on Wor
 nothing you type here can drive the session behind it.
 
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
-settings reach. That is the question a flat list of eleven peers could not answer: which of
+settings reach. That is the question a flat list of twelve peers could not answer: which of
 these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout + message formatting), **Keyboard** |
 | **Sessions** | This machine | **Harnesses**, **Skills** (writes `~/`), **Cost** (writes `~/`) |
-| **Background work** | This machine | **Foreman**, **Task sources**, **Models** |
+| **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Models** |
 | **Leaves the machine** | Acts on GitHub | **Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
@@ -2841,6 +2841,15 @@ requests. And **Task sources is master-detail** - the directory of configured so
 the one you are editing, instead of a drill-in that hid the other three while you repaired
 the one that failed. Adding a source is an inline form above that list; it still resolves the
 repo before the source exists, and the source still starts switched off.
+
+**Workflows** joined the rail later, from a floating drawer on the Workflows page. It carries
+the same four things the drawer did - the [Live delivery](#live-repair-delivery-and-foreman-completion)
+switch and its explicit warning, the repositories Live delivery may send in, the
+[retention](#retention-history-exports-and-workflow-health) limits (shortening one still asks
+first), and the health counters - on the same routes, with nothing about the config changed. What
+it gains by being here is everything a drawer could not have: a rail row, a scope badge, a deep
+link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
+session is findable by searching for what it does. The Workflows page header keeps a link to it.
 
 Deep links work for every category, and the whole list is stable enough to paste into an
 issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming
@@ -2859,7 +2868,7 @@ arrives (a cold tab, a reconnect) the dots stay dark rather than claim an all-cl
 
 ### Search settings (⌘K)
 
-Roughly seventy controls span the eleven categories, so **search** is how you reach one you
+Roughly seventy controls span the twelve categories, so **search** is how you reach one you
 half-remember without knowing which panel it lives in. Open the palette with <kbd>⌘</kbd><kbd>K</kbd>
 (rebindable, like every other shortcut - **Settings → Keyboard**) or the **search box at the
 top of the rail**, which shows the current chord as its hint. From the fleet the shortcut

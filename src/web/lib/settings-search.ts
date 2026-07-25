@@ -182,6 +182,46 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "workflow-live-delivery",
+    label: "Enable Live workflow delivery",
+    description: "Whether Persona repairs may be typed into agent sessions, or only previewed.",
+    category: "workflows",
+    anchor: "workflows/live-delivery",
+    keywords: ["live delivery", "workflow", "repair", "paste", "preview", "persona"],
+    kind: "toggle",
+    // Risky for the Inspector master switch's reason in a local key: flipping it anonymously
+    // from a search row would arm a paste into somebody's live session with the consent copy
+    // off screen. It always jumps to the panel.
+    risky: true,
+  },
+  {
+    id: "workflow-allowlist",
+    label: "Workflow allowed repositories",
+    description: "Where Live workflow delivery may send - and nowhere else.",
+    category: "workflows",
+    anchor: "workflows/allowlist",
+    keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant"],
+    kind: "jump",
+  },
+  {
+    id: "workflow-retention",
+    label: "Workflow run retention",
+    description: "How long raw evidence and finished run history are kept before a sweep prunes them.",
+    category: "workflows",
+    anchor: "workflows/retention",
+    keywords: ["retention", "history", "evidence", "prune", "sweep", "compact", "delete"],
+    kind: "jump",
+  },
+  {
+    id: "workflow-health",
+    label: "Workflow health",
+    description: "Active runs, queued Persona calls, waiting deliveries, and the last sweep.",
+    category: "workflows",
+    anchor: "workflows/health",
+    keywords: ["health", "queue", "deliveries", "recovery", "sweep", "counters"],
+    kind: "jump",
+  },
+  {
     id: "task-sources",
     label: "Task sources",
     description: "The upstreams that pull work into the backlog.",

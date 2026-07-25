@@ -125,7 +125,7 @@ export function WorkflowVersionHistory({
         ))}
       </div>
       {loading && <p>Loading version…</p>}
-      {error && <p className="persona-error" role="alert">{error}</p>}
+      {error && <p className="wf-error" role="alert">{error}</p>}
       {selected && (
         <WorkflowVersionDetail
           version={selected}

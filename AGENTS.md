@@ -463,9 +463,13 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 
 ## Registries - extend these, do not start a parallel list
 
-- **Settings panels**: `SETTINGS_CATEGORIES` in `SettingsModal.tsx` + a `case` in
-  `renderCategory`. `settings-sidebar-render.test.ts` asserts nav count equals array length.
-  State App also renders is passed in as props; state only the modal uses is local.
+- **Settings panels**: `SETTINGS_CATEGORIES` in `lib/settings-registry.ts` + a `case` in
+  `renderCategory` (`components/SettingsPage.tsx` - settings is a page, not a modal) + a
+  sibling `<Name>SettingsPanel.tsx`, whose control rows carry `data-anchor="<category>/<slug>"`
+  and whose entries in `lib/settings-search.ts` point at those anchors.
+  `settings-sidebar-render.test.ts` asserts nav count equals array length, contiguous
+  grouping, and that every anchor is unique and names a real category. State App also renders
+  is passed in as props; state only the page uses is a hook owned by the page.
 - **Keyboard shortcuts**: `ActionId` + `ACTIONS` in `lib/keybindings.ts` (array order is panel
   order), plus a dispatch branch in `App.tsx`, usually an `ActionBarHandle` method and its
   registration, a `CommandBar` keycap, a README table row, and a `keybindings.test.ts` case. A

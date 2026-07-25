@@ -12,6 +12,8 @@ import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
+import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
+import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { SettingsSearch } from "./SettingsSearch.tsx";
@@ -193,6 +195,11 @@ export function SettingsPage({
   // than merely tidy: it is what keeps each source's last-swept line and its error moving
   // while you watch the panel, including for a sweep the background loop ran.
   const taskSources = useTaskSources();
+  // Owned here for the same reason as the four above: nothing outside this page reads the
+  // Workflow config, so it polls only while the page is open. Its poll is load-bearing
+  // rather than tidy - the health counters beside the switches are what it keeps moving,
+  // which is what let the drawer's Refresh health button go.
+  const workflowSettings = useWorkflowSettings();
   // The formatting toggle's store, owned here so the search palette can flip it inline -
   // `AppearancePanel` reads the same module-level store, so there is no second copy to keep
   // in step (see `lib/rich-text.ts`).
@@ -367,6 +374,8 @@ export function SettingsPage({
         return <LlmSettingsPanel state={llm} />;
       case "foreman":
         return <ForemanSettingsPanel state={foreman} onNavigate={navigateWithAnchor} />;
+      case "workflows":
+        return <WorkflowSettingsPanel state={workflowSettings} />;
       case "cost":
         return <CostSettingsPanel state={cost} />;
       case "inspector":

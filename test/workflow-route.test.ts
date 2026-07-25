@@ -125,3 +125,58 @@ test("the Inspector gate action deep-links into the routed settings page", () =>
   );
   assert.doesNotMatch(app, /setSettingsCategory|setSettingsOpen/);
 });
+
+// The dirty-draft gate stopped being a browser dialog in the migration's final phase, which
+// changed its shape: a native confirm answers synchronously, so both branches could decide
+// in place, and the overlay-hosted one cannot. The route has to be HELD somewhere until the
+// answer arrives, and the two halves that make that safe are what this pins.
+//
+// Held route, not held decision: `navigate` reports that it did not move, and the address
+// bar is restored BEFORE the question on the back/forward path - the browser has already
+// moved by the time that listener runs, and a dialog over the old page above a URL naming
+// the new one is two answers to "where am I" while the one that matters is undecided.
+test("the dirty-draft gate holds a route through the overlay, not a browser dialog", () => {
+  const router = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/useWorkflowRoute.ts", import.meta.url)),
+    "utf8",
+  );
+  assert.doesNotMatch(router, /window\.confirm\s*\(/);
+  for (const member of ["pendingRoute", "confirmPending", "cancelPending"]) {
+    assert.match(router, new RegExp(`${member}`), `the router must expose ${member}`);
+  }
+  // The URL is put back on the back/forward path before the route is held, so a cancel
+  // needs no second correction and a confirm has one place to read the destination from.
+  const onHash = router.slice(router.indexOf("const onHash"), router.indexOf("addEventListener"));
+  const restore = onHash.indexOf("history.replaceState");
+  const hold = onHash.indexOf("setPendingRoute");
+  assert.ok(restore > -1 && hold > restore, "restore the URL, then hold the route");
+
+  // App raises the dialog, and does it OUTSIDE the page slots: back/forward can fire the
+  // gate while the Workflows page is already unmounting, and a dialog rendered inside that
+  // page would unmount with it - the question would vanish and the navigation would be
+  // stuck holding a route nobody can answer for.
+  const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  const dialog = app.indexOf("{pendingRoute && (");
+  assert.ok(dialog > -1, "App must render the gate's dialog");
+  assert.ok(dialog > app.indexOf("<AppPageShell"), "the dialog sits after the page shell");
+  assert.ok(dialog < app.indexOf("</OverlayHost>"), "the dialog must be inside the overlay host");
+  assert.match(app.slice(dialog), /<WorkflowConfirmModal[\s\S]*?onConfirm: confirmPending/);
+  assert.match(app.slice(dialog), /onClose=\{cancelPending\}/);
+});
+
+// The header's drawer became a link into the settings rail. Grepped rather than rendered
+// because what is at stake is the WIRING: a button that opens nothing looks identical to
+// one that works until you click it, and the category it names has to be the registered one.
+test("the Workflows page links to its settings category rather than hosting a drawer", () => {
+  const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  assert.match(
+    app,
+    /onOpenWorkflowSettings=\{\(\) =>[\s\S]*?navigate\(\{ page: "settings", category: "workflows" \}\)[\s\S]*?\}/,
+  );
+  const page = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(page, /onClick=\{onOpenWorkflowSettings\}/);
+  assert.doesNotMatch(page, /WorkflowConfigPanel/, "the drawer is gone, not merely hidden");
+});

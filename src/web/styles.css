@@ -941,7 +941,6 @@ body {
    the bar. Its backdrop is the shared `.modal-backdrop` above. */
 .is-desktop .pal,
 .is-desktop .file-window,
-.is-desktop .workflow-config-panel,
 .is-desktop .workflow-library-sidebar,
 .is-desktop .workflow-builder-right,
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
@@ -6891,81 +6890,15 @@ select:not([multiple]) option {
   padding: 4px 0 40px;
 }
 
-.workflow-config-drawer {
-  position: relative;
-}
-
-.workflow-config-panel {
-  position: absolute;
-  z-index: 20;
-  right: 0;
-  top: calc(100% + 8px);
-  width: min(520px, 80vw);
-  max-height: 70vh;
-  overflow: auto;
-  padding: 18px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
-  box-shadow: 0 16px 42px rgb(0 0 0 / 28%);
-}
-
-.workflow-config-panel li,
-.workflow-config-panel > div {
-  display: flex;
+/* The header's link to `#/settings/workflows`. The subsystem's switches used to open as a
+   drawer from this spot; what stays is a pointer at where they live now.
+   `inline-flex` explicitly: `.btn` is an inline-block, so a `gap` alone does nothing and the
+   arrow renders welded to the word. */
+.wf-settings-link {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-}
-
-.workflow-config-panel li {
-  justify-content: space-between;
-}
-
-.workflow-config-panel li code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.workflow-config-panel li button {
-  flex: none;
-}
-
-.workflow-retention-grid,
-.workflow-health-grid {
-  display: grid !important;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px !important;
-}
-
-.workflow-retention-grid label {
-  display: grid;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.workflow-retention-grid input {
-  min-width: 0;
-  width: 100%;
-  padding: 7px 8px;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-}
-
-.workflow-health-grid div {
-  min-width: 0;
-}
-
-.workflow-health-grid dt {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.workflow-health-grid dd {
-  margin: 3px 0 0;
-  overflow-wrap: anywhere;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .app-console > .workflow-page,
@@ -7210,7 +7143,15 @@ select:not([multiple]) option {
 .persona-state.conflict span {
   flex: 1;
 }
-.persona-error {
+/* One boxed failure sentence, shared by the Persona library and the workflow surfaces
+   around it. Two selectors rather than one class used everywhere: `persona-error` was being
+   read by the binding dialog, the workflow library and version history, which made a Persona
+   class the de facto workflow error style and left a rename of the Persona editor silently
+   restyling four surfaces that are not about Personas. Retuning either name now changes
+   exactly what it is named after. (`wf-run-error` is a different shape - an inline row that
+   carries a machine code beside its sentence - and stays its own rule.) */
+.persona-error,
+.wf-error {
   margin: 0;
   padding: 8px 10px;
   font-size: 11.5px;
@@ -9504,6 +9445,129 @@ select.foreman-model-input {
 .fn-hint code {
   font-family: var(--mono);
   font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Workflows settings category (Live delivery, its repos, retention, health) ----
+
+   Was a floating drawer over the Workflows page header, with its own absolute positioning,
+   shadow and desktop no-drag exemption. As a settings panel it needs none of that: the
+   groups below borrow the neighbouring categories' shapes (`.settings-group-label`,
+   `.settings-hint`, `.alert-row`) and only add the two grids and the repo list that have no
+   equivalent there. */
+.wf-settings-live {
+  /* Same reason as `.inspector-toggle`: a master toggle directly under a blurb otherwise
+     touches the text. */
+  margin-top: 12px;
+}
+.wf-settings-repos,
+.wf-settings-retention,
+.wf-settings-health {
+  margin-top: 18px;
+}
+.wf-settings-empty {
+  color: var(--dim);
+}
+/* Capped to about the width of the add row below it, so the two read as one control and
+   Remove sits beside its path rather than a pane's width away from it. A path longer than
+   this wraps (see `overflow-wrap` below) instead of widening the row. */
+.wf-settings-repo-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  max-width: 720px;
+}
+.wf-settings-repo-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+/* A repo root is long and has no spaces to break at, so without `anywhere` it rides out
+   through the side of the row - the same sentence `.fn-hint code` makes in Foreman's. */
+.wf-settings-repo-list code {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.wf-settings-repo-list button {
+  flex: none;
+}
+/* Capped rather than stretched, for the reason `select.foreman-model-input` gives about a
+   model id: a box the width of the pane reads as a prose field. A repository path is longer
+   than a model id, so this one is wider than that 260px - but it is still a path, not an
+   essay. */
+.wf-settings-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.wf-settings-add input {
+  flex: 1;
+  min-width: 0;
+  max-width: 440px;
+}
+/* `auto-fit` with a fixed track, not `1fr`: three boxes holding two- to four-digit numbers
+   have no reason to grow to a third of the pane each, and at 1fr they read as text fields. */
+.wf-settings-retention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, 190px);
+  gap: 10px;
+  margin: 10px 0;
+}
+.wf-settings-retention-grid label {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.wf-settings-retention-grid input {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  font-family: var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+/* Wide enough for a locale timestamp, which is the longest thing in here and the one that
+   decides the track: sized off the counters instead, the last-sweep cells wrap mid-date. */
+.wf-settings-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 210px));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+.wf-settings-health-grid div {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.wf-settings-health-grid dt {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.wf-settings-health-grid dd {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 

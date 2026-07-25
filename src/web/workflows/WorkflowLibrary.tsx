@@ -84,7 +84,7 @@ export function WorkflowLoadError({
 }): React.JSX.Element | null {
   if (!error) return null;
   return (
-    <p className="persona-error" role="alert">
+    <p className="wf-error" role="alert">
       {error}
       {canRetry && (
         <Tooltip label="Try loading this workflow again">

@@ -6,6 +6,10 @@ import { PersonaEditor } from "./PersonaEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import { deriveImportedPersonaName, personaRequest } from "./personaApi.ts";
+import {
+  WorkflowConfirmModal,
+  type WorkflowConfirmRequest,
+} from "./WorkflowConfirmModal.tsx";
 
 const EMPTY_SEED: PersonaDraftSeed = {
   name: "",
@@ -78,6 +82,8 @@ export function PersonaLibrary({
   const [localPersona, setLocalPersona] = useState<PersonaView | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [editorKey, setEditorKey] = useState(0);
   const editorGeneration = useRef(0);
   const importRef = useRef<HTMLInputElement>(null);
@@ -108,32 +114,75 @@ export function PersonaLibrary({
     if (localPersona && streamed && streamed.revision >= localPersona.revision) setLocalPersona(null);
   }, [localPersona, personas]);
 
-  function mayDiscard(): boolean {
-    return !dirty || window.confirm("Discard unsaved Persona changes?");
+  /**
+   * Run `action`, asking first when it would throw away unsaved editor changes.
+   *
+   * Through the overlay registry rather than `window.confirm` for that component's reason:
+   * a native dialog is invisible to the registry, so `anyOpen` stays false and the fleet's
+   * global key handler is live behind it - and this one is raised by a plain click on
+   * another Persona, so it is the easiest of the three to hit by accident.
+   *
+   * The action is closed over and deferred rather than returning a boolean, which is what
+   * the browser dialog's synchronous answer allowed. Everything after the question moves
+   * inside it.
+   */
+  function guardDiscard(what: string, action: () => void): void {
+    if (!dirty) {
+      action();
+      return;
+    }
+    setConfirm({
+      title: "Discard unsaved Persona changes",
+      body: `The editor has changes that have not been saved. ${what} discards them.`,
+      confirmLabel: "Discard changes",
+      confirmHint: "Throw the unsaved edits away and continue",
+      danger: true,
+      onConfirm: action,
+    });
   }
 
   function select(id: string): void {
-    if (!mayDiscard()) return;
-    editorGeneration.current += 1;
-    setSeed(null);
-    setSelectedId(id);
-    setEditorKey((key) => key + 1);
-    setDirty(false);
-    setError(null);
+    const persona = ordered.find((candidate) => candidate.id === id);
+    guardDiscard(`Opening ${persona?.name ?? "another Persona"}`, () => {
+      editorGeneration.current += 1;
+      setSeed(null);
+      setSelectedId(id);
+      setEditorKey((key) => key + 1);
+      setDirty(false);
+      setError(null);
+    });
   }
 
   function start(seedValue: PersonaDraftSeed): void {
-    if (!mayDiscard()) return;
-    editorGeneration.current += 1;
-    setSelectedId(null);
-    setSeed(seedValue);
-    setEditorKey((key) => key + 1);
-    setDirty(false);
-    setError(null);
+    guardDiscard(seedValue.name ? `Duplicating ${seedValue.name}` : "Starting a new Persona", () => {
+      editorGeneration.current += 1;
+      setSelectedId(null);
+      setSeed(seedValue);
+      setEditorKey((key) => key + 1);
+      setDirty(false);
+      setError(null);
+    });
   }
 
-  async function importMarkdown(file: File): Promise<void> {
-    if (!mayDiscard()) return;
+  function importMarkdown(file: File): void {
+    guardDiscard(`Importing ${file.name}`, () => void readImport(file));
+  }
+
+  async function archive(persona: PersonaView): Promise<void> {
+    try {
+      const archived = await personaRequest<PersonaView>(`/api/personas/${persona.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ expectedRevision: persona.revision }),
+      });
+      setLocalPersona(archived);
+      setDirty(false);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not archive Persona");
+    }
+  }
+
+  async function readImport(file: File): Promise<void> {
     const startedAtGeneration = editorGeneration.current;
     try {
       const guidanceMarkdown = await readPersonaImport(file);
@@ -195,7 +244,7 @@ export function PersonaLibrary({
             onChange={(event) => {
               const file = event.target.files?.[0];
               event.currentTarget.value = "";
-              if (file) void importMarkdown(file);
+              if (file) importMarkdown(file);
             }}
           />
         </div>
@@ -259,24 +308,30 @@ export function PersonaLibrary({
               setError(null);
             }}
             onDuplicate={(draft) => start(draft)}
-            onArchive={async (persona) => {
-              if (dirty && !window.confirm("Discard unsaved changes and archive this Persona?")) return;
-              if (!window.confirm(`Archive ${persona.name}? Published history will keep its guidance.`)) return;
-              try {
-                const archived = await personaRequest<PersonaView>(`/api/personas/${persona.id}`, {
-                  method: "DELETE",
-                  body: JSON.stringify({ expectedRevision: persona.revision }),
-                });
-                setLocalPersona(archived);
-                setDirty(false);
-                setError(null);
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : "Could not archive Persona");
-              }
+            onArchive={(persona) => {
+              // One dialog, not the two stacked native prompts this replaced: the unsaved
+              // changes and the archive are a single decision, and asking twice for it
+              // trains the second answer rather than reading it.
+              setConfirm({
+                title: `Archive ${persona.name}`,
+                body: dirty
+                  ? `Unsaved changes in the editor are discarded. ${persona.name} moves to the `
+                    + "Archived list and stops being offered to new workflow stages; every "
+                    + "published version keeps the guidance it was published with."
+                  : `${persona.name} moves to the Archived list and stops being offered to new `
+                    + "workflow stages. Every published version keeps the guidance it was "
+                    + "published with.",
+                confirmLabel: "Archive Persona",
+                confirmHint: "Retire this Persona from new workflows, keeping published history",
+                danger: true,
+                onConfirm: () => void archive(persona),
+              });
             }}
           />
         )}
       </div>
+
+      {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>
   );
 }

@@ -18,7 +18,7 @@ import { SettingsSearch } from "./SettingsSearch.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useRichText } from "../lib/rich-text.ts";
-import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
 import { buildSettingsBindings } from "../lib/settings-search.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
@@ -201,6 +201,7 @@ export function SettingsPage({
   // the shortcut always agree even after a rebind.
   const { bindings: keyBindings } = useKeybindings();
   const searchChord = formatChord(keyBindings.settingsSearch);
+  const [keybindingHints] = useKeybindingHints();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Runtime get/set for the bindable boolean controls, wired from the hooks this page
@@ -421,7 +422,12 @@ export function SettingsPage({
               ⌕
             </span>
             <span className="settings-rail-search-text">Search settings…</span>
-            <kbd className="settings-rail-search-kbd">{searchChord}</kbd>
+            {/* Answers to "Show keybindings on buttons" like every other on-button
+                keycap. Its own class, not `Keycap`: this one is right-aligned in a
+                search box rather than annotating a label, so it keeps that shape - the
+                switch decides only whether it is drawn. The tooltip still names the
+                chord either way. */}
+            {keybindingHints && <kbd className="settings-rail-search-kbd">{searchChord}</kbd>}
           </button>
         </Tooltip>
         <div

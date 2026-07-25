@@ -5,6 +5,7 @@ import { canWriteTo, muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -111,8 +112,8 @@ export function ActionBar({
     ? `Record an outcome for "${session.task.title}" and close this session (${formatChord(bindings.complete)})`
     : "This session has no Mission Control task to complete";
   const killLabel = killsMux
-    ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first`
-    : "Terminates the agent process - confirms first";
+    ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
+    : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
 
   async function run(label: string, fn: () => Promise<{ ok: boolean; error?: string }>) {
     setBusy(label);
@@ -249,13 +250,13 @@ export function ActionBar({
         <>
           <Tooltip label="Bring this session's terminal pane to the front">
             <button className="act act-focus" onClick={focusPane}>
-              <kbd>{formatChord(bindings.focus)}</kbd> focus
+              <Keycap action="focus" /> focus
             </button>
           </Tooltip>
           {onDiff && session.cwd && (
             <Tooltip label="View this checkout's changes vs its source branch">
               <button className="act" onClick={onDiff}>
-                <kbd>{formatChord(bindings.diff)}</kbd> diff
+                <Keycap action="diff" /> diff
               </button>
             </Tooltip>
           )}
@@ -264,7 +265,7 @@ export function ActionBar({
               label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >
               <button className="act act-reset" onClick={onReset}>
-                <kbd>{formatChord(bindings.reset)}</kbd> reset
+                <Keycap action="reset" /> reset
               </button>
             </Tooltip>
           )}
@@ -275,34 +276,42 @@ export function ActionBar({
                 onClick={requestComplete}
                 disabled={!session.task}
               >
-                <kbd>{formatChord(bindings.complete)}</kbd> complete
+                <Keycap action="complete" /> complete
               </button>
             </Tooltip>
           )}
           {onKill && (
             <Tooltip label={killLabel}>
               <button className="act act-danger" onClick={requestKill}>
-                <kbd>{formatChord(bindings.kill)}</kbd> kill
+                <Keycap action="kill" /> kill
               </button>
             </Tooltip>
           )}
         </>
       ) : (
         <>
-          <Tooltip label={canSend ? "Type into this session's prompt" : "No pane to send to"}>
+          <Tooltip
+            label={
+              canSend
+                ? `Type into this session's prompt (${formatChord(bindings.send)})`
+                : "No pane to send to"
+            }
+          >
             <button className="btn" disabled={!canSend} onClick={startSend}>
-              Send
+              <Keycap action="send" /> Send
             </button>
           </Tooltip>
-          <Tooltip label="Bring this session's terminal pane to the front">
+          <Tooltip
+            label={`Bring this session's terminal pane to the front (${formatChord(bindings.focus)})`}
+          >
             <button className="btn" onClick={focusPane}>
-              Focus
+              <Keycap action="focus" /> Focus
             </button>
           </Tooltip>
           {session.cwd && onFiles && (
-            <Tooltip label="Browse and edit checkout files">
+            <Tooltip label={`Browse and edit checkout files (${formatChord(bindings.files)})`}>
               <button className="btn" onClick={onFiles}>
-                Files
+                <Keycap action="files" /> Files
               </button>
             </Tooltip>
           )}
@@ -315,7 +324,7 @@ export function ActionBar({
                 aria-expanded={queueOpen}
                 onClick={onToggleQueue}
               >
-                Queue
+                <Keycap action="queue" /> Queue
                 {openQueued > 0 && <span className="btn-count">{openQueued}</span>}
               </button>
             </Tooltip>
@@ -325,7 +334,7 @@ export function ActionBar({
               label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >
               <button className="btn btn-reset" onClick={onReset}>
-                Reset
+                <Keycap action="reset" /> Reset
               </button>
             </Tooltip>
           )}
@@ -333,14 +342,14 @@ export function ActionBar({
           {onComplete && (
             <Tooltip label={completeLabel}>
               <button className="btn btn-complete" onClick={requestComplete} disabled={!session.task}>
-                Complete
+                <Keycap action="complete" /> Complete
               </button>
             </Tooltip>
           )}
           {onKill && (
             <Tooltip label={killLabel}>
               <button className="btn btn-danger-ghost" onClick={requestKill}>
-                Kill
+                <Keycap action="kill" /> Kill
               </button>
             </Tooltip>
           )}

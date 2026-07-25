@@ -20,6 +20,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
@@ -37,7 +38,13 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
-import { useKeybindings, chordFromEvent, chordHasCommandModifier, formatChord } from "./lib/keybindings.ts";
+import {
+  useKeybindingHints,
+  useKeybindings,
+  chordFromEvent,
+  chordHasCommandModifier,
+  formatChord,
+} from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
@@ -117,6 +124,7 @@ export function App(): React.JSX.Element {
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
+  const [keybindingHints] = useKeybindingHints();
   const [layout, setLayout] = useLayoutMode();
   const [usageBarCollapsed, setUsageBarCollapsed] = useUsageBarCollapsed();
   const foreman = useForeman();
@@ -1203,8 +1211,12 @@ export function App(): React.JSX.Element {
                 }
                 aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
               >
+                {/* Trailing, unlike Dispatch's: this button's glyph is a real icon (and
+                    "←" says which way it goes), so the keycap joins it rather than
+                    taking its place. */}
                 <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
                 {route.page === "fleet" ? "Workflows" : "Fleet"}
+                <Keycap action="workflows" />
               </button>
             </Tooltip>
             <ForemanBar
@@ -1213,7 +1225,13 @@ export function App(): React.JSX.Element {
             />
             <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
               <button className="dispatch-btn" onClick={openDispatch}>
-                <span aria-hidden>＋</span> Dispatch
+                {/* The keycap REPLACES the decorative glyph rather than sitting beside
+                    it: the default chord is "+", so drawing both put a ＋ on each end of
+                    one word and read as a rendering fault. Any other chord takes the
+                    same slot, which is the one place on this button an operator is
+                    already looking. */}
+                {keybindingHints ? <Keycap action="dispatch" /> : <span aria-hidden>＋</span>}
+                Dispatch
               </button>
             </Tooltip>
             <Tooltip

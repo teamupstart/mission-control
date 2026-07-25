@@ -31,6 +31,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.equal(config.usageBarCollapsed, false);
+  assert.equal(config.keybindingHints, true);
 });
 
 test("a written cache round-trips", () => {
@@ -40,6 +41,7 @@ test("a written cache round-trips", () => {
     alerts: { notifications: true, sound: false },
     richText: false,
     usageBarCollapsed: true,
+    keybindingHints: false,
     trustStaged: ["/work/staged"],
   });
   const config = readCache();
@@ -48,6 +50,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
   assert.equal(config.usageBarCollapsed, true);
+  assert.equal(config.keybindingHints, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
 });
 

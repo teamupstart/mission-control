@@ -83,7 +83,11 @@ export function activePaneDialog(s: Session): PaneDialog | null {
  * reason of its own that this function must not undo - see `PaneOption.checked`.
  */
 export function dialogIdentity(dialog: PaneDialog): string {
-  return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);
+  return JSON.stringify([
+    dialog.prompt ?? "",
+    dialog.options.map((o) => [o.number, o.label]),
+    ...(dialog.source === "driver" ? [dialog.requestId ?? ""] : []),
+  ]);
 }
 
 /**

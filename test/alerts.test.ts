@@ -207,6 +207,31 @@ test("a menu replaced by a DIFFERENT one with no observed gap still alerts", () 
   assert.equal(r[0]?.body, "2 options to pick from");
 });
 
+test("a promoted driver request alerts when its visible shape is unchanged", () => {
+  const menu = {
+    source: "driver" as const,
+    kind: "question" as const,
+    prompt: "Choose one",
+    options: [{ number: 1, label: "Yes" }],
+    highlighted: 0,
+  };
+  const first = mkSession({
+    id: "a",
+    state: "idle",
+    runtime: "sdk",
+    paneDialog: { ...menu, requestId: "request-one" },
+  });
+  const second = mkSession({
+    id: "a",
+    state: "idle",
+    runtime: "sdk",
+    paneDialog: { ...menu, requestId: "request-two" },
+  });
+  const r = detectAlerts(scope([first]), scope([second]));
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "needs-input");
+});
+
 test("a menu opening on a session with reviews waiting announces the MENU", () => {
   // `needsYouReason` puts an open review first - correct for triage, where a review is the
   // more specific ask. An alert is the other question: what just happened. Routing the

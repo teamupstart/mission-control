@@ -24,6 +24,7 @@ export type ActionId =
   | "settingsSearch"
   | "workflows"
   | "expand"
+  | "conversation"
   | "diff"
   | "files"
   | "filePicker"
@@ -95,6 +96,17 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Expand / collapse",
     description: "Focus-expand the selected card in Cards, open or close the Board drill-in, or do nothing in Console where it is already expanded.",
     defaultBinding: "e",
+    group: "selection",
+  },
+  {
+    // First in the tab strip, so first of the three tab chords here - this list is the
+    // order the settings panel shows. `g` because the obvious letters were taken twice
+    // over: `c` completes a task, and `t` is not a key a strip walked by Tab should
+    // claim.
+    id: "conversation",
+    label: "Open conversation",
+    description: "Show the selected session's conversation.",
+    defaultBinding: "g",
     group: "selection",
   },
   {

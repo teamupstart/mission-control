@@ -69,6 +69,12 @@ export interface SessionViewProps {
   onOpenFile: (id: string, href: string, probe?: boolean) => boolean | Promise<boolean>;
   /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
   fileTabRequest: { sessionId: string; nonce: number } | null;
+  /**
+   * One-shot request from the conversation shortcut to reveal a session's Conversation
+   * tab. Carries a nonce like the other two: the detail already OPENS on this tab, so
+   * without one a second press after walking to Files would be a no-op.
+   */
+  conversationTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */

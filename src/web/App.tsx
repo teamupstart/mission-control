@@ -38,6 +38,7 @@ import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
+import { conversationReveal } from "./lib/conversationReveal.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import {
   useKeybindingHints,
@@ -191,6 +192,10 @@ export function App(): React.JSX.Element {
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
   const [fileTabRequest, setFileTabRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
+  const [conversationTabRequest, setConversationTabRequest] = useState<{
     sessionId: string;
     nonce: number;
   } | null>(null);
@@ -427,6 +432,9 @@ export function App(): React.JSX.Element {
     files.ensure(sessionId);
     setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, [files.ensure]);
+  const requestConversationTab = useCallback((sessionId: string) => {
+    setConversationTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
+  }, []);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     if (layout === "grid") {
       setDiffCommit(commit ?? null);
@@ -700,6 +708,7 @@ export function App(): React.JSX.Element {
     onOpenFile: openSessionFile,
     fileTabRequest,
     diffTabRequest,
+    conversationTabRequest,
     files,
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
@@ -1091,6 +1100,27 @@ export function App(): React.JSX.Element {
         // below because the reply box only exists after the next render.
         pendingReplyFocus.current = expandedId === selectedId ? null : selectedId;
         toggleExpand(selectedId);
+        return;
+      }
+      // "Show me this session's conversation" - which is a different action in each
+      // layout, so WHICH one is decided by `conversationReveal` and only performed here.
+      // The decision is pure and lives in lib/ because nothing in test/ can dispatch a
+      // keydown into this handler; see that module's comment.
+      if (chord === bindings.conversation) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        const reveal = conversationReveal({
+          layout,
+          hasSelection: sel != null,
+          selectedIsExpanded: sel != null && expandedId === sel.id,
+          boardDetailOpen: boardOpen,
+        });
+        if (reveal === "none" || !sel) return;
+        e.preventDefault();
+        // `already` deliberately falls through all three: the conversation is on screen,
+        // and this chord reveals rather than toggles.
+        if (reveal === "expand") toggleExpand(sel.id);
+        else if (reveal === "drill-in") setBoardOpen(true);
+        else if (reveal === "tab") requestConversationTab(sel.id);
         return;
       }
       if (chord === bindings.diff) {

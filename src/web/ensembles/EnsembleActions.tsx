@@ -32,19 +32,19 @@ export function EnsembleActions({
   const status = run.status;
   const terminal = status ? ensembleIsTerminal(status) : false;
   const cancellable =
-    status !== null &&
-    !terminal &&
-    status !== "cancelling" &&
-    status !== "finalizing";
+    status === null
+      ? run.unreadable !== null
+      : !terminal && status !== "cancelling" && status !== "finalizing";
   const finalizing = status === "finalizing";
   const handoff = run.workflowHandoff;
-  const handoffBlocked =
-    handoff !== null && ["pending", "binding", "failed", "conflict"].includes(handoff.state);
+  const handoffCanBeSkipped =
+    handoff !== null && ["failed", "conflict"].includes(handoff.state);
   const failedStage = [...detail.stageAttempts]
     .filter((s) => s.status === "failed")
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmSkipHandoff, setConfirmSkipHandoff] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteEcho, setDeleteEcho] = useState("");
   const busy = pending !== null;
@@ -79,14 +79,14 @@ export function EnsembleActions({
             </button>
           </Tooltip>
         )}
-        {finalizing && handoffBlocked && (
+        {finalizing && handoffCanBeSkipped && !confirmSkipHandoff && (
           <Tooltip label="Abandon the blocked workflow handoff and finish with the normal continuation">
             <button
               className="btn btn-ghost"
               disabled={busy}
-              onClick={() => onAction({ kind: "resolve_finalization", skipWorkflowHandoff: true })}
+              onClick={() => setConfirmSkipHandoff(true)}
             >
-              Skip workflow handoff
+              Skip workflow handoff…
             </button>
           </Tooltip>
         )}
@@ -105,6 +105,38 @@ export function EnsembleActions({
           </Tooltip>
         )}
       </div>
+
+      {finalizing && handoffCanBeSkipped && confirmSkipHandoff && (
+        <div className="ensemble-inline-confirm" role="group" aria-label="Confirm skip workflow handoff">
+          <p>
+            Abandon this failed Workflow handoff and finish through the normal continuation.
+            The pinned Workflow run will not be retried by finalization.
+          </p>
+          <div className="ensemble-action-row">
+            <Tooltip label="Confirm: abandon the failed workflow handoff">
+              <button
+                className="btn btn-primary danger"
+                disabled={busy}
+                onClick={() => {
+                  onAction({ kind: "resolve_finalization", skipWorkflowHandoff: true });
+                  setConfirmSkipHandoff(false);
+                }}
+              >
+                {pending === "resolve_finalization" ? "Skipping…" : "Skip handoff"}
+              </button>
+            </Tooltip>
+            <Tooltip label="Keep the workflow handoff and leave finalization unchanged">
+              <button
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => setConfirmSkipHandoff(false)}
+              >
+                Keep handoff
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
 
       {confirmCancel && (
         <div className="ensemble-inline-confirm" role="group" aria-label="Confirm cancel">

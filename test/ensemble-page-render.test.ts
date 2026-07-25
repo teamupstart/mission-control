@@ -190,6 +190,8 @@ function renderDetail(over: Partial<EnsembleRunDetailResponse> = {}): string {
       onDelete: () => {},
       onLoadPatch: async () => ({ error: "not loaded" }),
       onOpenSession: () => {},
+      onOpenTask: () => {},
+      onManualSubmit: async () => null,
       onOpenWorkflowRun: () => {},
     }),
   );
@@ -211,6 +213,46 @@ test("the generic detail renders the header, members with reported-vs-observed, 
   // Timeline surfaces the stage and the evaluation.
   assert.match(html, /Evaluations/);
   assert.match(html, /comparative_review/);
+});
+
+test("an active member without a session offers Task focus and manual submission", () => {
+  const activeMember = member({ id: "m-3", ordinal: 3, status: "active", taskId: "task-3" });
+  const activeAttempt = attempt({ id: "at-3", memberId: "m-3", sessionId: null, status: "running" });
+  const html = renderDetail({
+    members: [activeMember],
+    attempts: [activeAttempt],
+    artifacts: [],
+  });
+  assert.match(html, /Open task/);
+  assert.match(html, /Submit result…/);
+});
+
+test("the timeline renders durable finalization progress receipts", () => {
+  const finalize: EnsembleStageAttempt = {
+    ...stage,
+    id: "sa-finalize",
+    stageId: "finalize",
+    driverKind: "finalize",
+    driverKey: "select_one_finalize@1",
+    status: "running",
+    output: {
+      step: "handoff",
+      verifiedSnapshotSha: "1234567890abcdef",
+      winner: { mode: "restored", ready: true },
+      continuationInIntent: false,
+      losersReaped: true,
+      continuationDeliveryKey: "delivery-1",
+      continuationDelivered: false,
+      error: "workflow unavailable",
+    },
+  };
+  const html = renderDetail({ stageAttempts: [finalize] });
+  assert.match(html, /Finalization/);
+  assert.match(html, /Resume step/);
+  assert.match(html, /1234567890/);
+  assert.match(html, /Restored · ready/);
+  assert.match(html, /Losers reaped/);
+  assert.match(html, /workflow unavailable/);
 });
 
 test("Best-of-N scorecards render anonymously-ranked but de-anonymised to their member", () => {
@@ -260,6 +302,102 @@ test("the actions surface offers Cancel while a run is live, but not once termin
   );
   assert.match(html, /Cancel run…/);
   assert.doesNotMatch(html, /Delete run/); // not terminal
+});
+
+test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {
+  const unreadable = {
+    ...run,
+    status: null,
+    unreadable: { reason: "unknown status", fields: ["status"] },
+  };
+  const unreadableHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, run: unreadable },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(unreadableHtml, /Cancel run…/);
+
+  const healthyHandoff = {
+    ...run,
+    status: "finalizing" as const,
+    workflowHandoff: {
+      workflowId: "wf-1",
+      workflowVersionId: "wfv-1",
+      workflowVersion: 1,
+      workflowName: "Review",
+      triggerMode: "manual",
+      deliveryMode: "reply",
+      maxRepairRounds: 1,
+      completionPolicy: "approve",
+      state: "binding" as const,
+      sourceKey: null,
+      expectedHeadSha: null,
+      bindingId: null,
+      runId: null,
+      submissionId: null,
+      error: null,
+    },
+  };
+  const healthyHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, run: healthyHandoff },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(healthyHtml, /Skip workflow handoff/);
+});
+
+test("decision rationale and partial review cost are explicit", () => {
+  const html = renderDetail({
+    llmCalls: [
+      {
+        id: "call-1",
+        runId: run.id,
+        stageAttemptId: stage.id,
+        evaluationId: evaluation.id,
+        purpose: "comparative_review",
+        runnerId: "claude",
+        modelId: "opus",
+        attempt: 1,
+        state: "succeeded",
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+        inputBytes: 100,
+        outputBytes: 100,
+        costUsd: 0.1,
+        errorCode: null,
+      },
+      {
+        id: "call-2",
+        runId: run.id,
+        stageAttemptId: stage.id,
+        evaluationId: evaluation.id,
+        purpose: "comparative_review",
+        runnerId: "codex",
+        modelId: "gpt",
+        attempt: 1,
+        state: "succeeded",
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+        inputBytes: 100,
+        outputBytes: 100,
+        costUsd: null,
+        errorCode: null,
+      },
+    ],
+  });
+  assert.match(html, /Rationale \(required/);
+  assert.match(html, /partial cost telemetry/);
+  assert.doesNotMatch(html, /\$0\.10/);
 });
 
 test("the ensembles list sorts attention-first and marks it accessibly", () => {

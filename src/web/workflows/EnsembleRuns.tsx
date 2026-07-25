@@ -8,6 +8,7 @@ import {
   ensembleAction,
   fetchEnsembleArtifactPatch,
   fetchEnsembleDetail,
+  submitEnsembleMember,
 } from "../lib/api.ts";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "../ensembles/types.ts";
 import { EnsembleDetail } from "../ensembles/EnsembleDetail.tsx";
@@ -24,14 +25,18 @@ import { ensembleStatusLabel, ensembleStatusTone, titleCaseEnum } from "../ensem
 export function EnsembleRuns({
   summaries,
   selectedId,
+  hasSnapshot = false,
   onSelect,
   onOpenSession,
+  onOpenTask,
   onOpenWorkflowRun,
 }: {
   summaries: EnsembleSummary[];
   selectedId: string | null;
+  hasSnapshot?: boolean;
   onSelect: (id: string | null) => void;
   onOpenSession?: (id: string) => void;
+  onOpenTask?: (id: string) => void;
   onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element {
   const [statusFilter, setStatusFilter] = useState<string>("");
@@ -43,6 +48,7 @@ export function EnsembleRuns({
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const loadGeneration = useRef(0);
+  const observedRunIds = useRef(new Set<string>());
 
   const strategies = useMemo(
     () => [...new Set(summaries.map((s) => s.strategyLabel))].sort(),
@@ -65,13 +71,20 @@ export function EnsembleRuns({
   const selectedSummary = summaries.find((s) => s.id === selected) ?? null;
   const selectedRevision = selectedSummary?.updatedAt ?? null;
 
-  // When the selected run disappears (deleted, or filtered out), fall to the nearest survivor
-  // rather than showing a stale detail; an explicitly empty selection stays on the list.
   useEffect(() => {
-    if (selectedId && !summaries.some((s) => s.id === selectedId)) {
+    for (const summary of summaries) observedRunIds.current.add(summary.id);
+  }, [summaries]);
+
+  useEffect(() => {
+    if (
+      hasSnapshot &&
+      selectedId &&
+      observedRunIds.current.has(selectedId) &&
+      !summaries.some((s) => s.id === selectedId)
+    ) {
       onSelect(ordered[0]?.id ?? null);
     }
-  }, [selectedId, summaries, ordered, onSelect]);
+  }, [hasSnapshot, selectedId, summaries, ordered, onSelect]);
 
   const load = (clear: boolean): void => {
     const generation = ++loadGeneration.current;
@@ -145,6 +158,17 @@ export function EnsembleRuns({
     if (!selected) return { error: "No run selected." };
     const result = await fetchEnsembleArtifactPatch(selected, artifactId);
     return result.ok ? result.data : { error: result.error };
+  };
+
+  const manualSubmit = async (
+    memberId: string,
+    result: { summary: string; checks?: string[]; testEvidence?: string | null },
+  ): Promise<string | null> => {
+    if (!selected) return "No run selected.";
+    const response = await submitEnsembleMember(selected, memberId, result);
+    if (!response.ok) return response.error;
+    load(false);
+    return null;
   };
 
   return (
@@ -247,6 +271,8 @@ export function EnsembleRuns({
             onDelete={runDelete}
             onLoadPatch={loadPatch}
             onOpenSession={onOpenSession}
+            onOpenTask={onOpenTask}
+            onManualSubmit={manualSubmit}
             onOpenWorkflowRun={onOpenWorkflowRun}
           />
         )}

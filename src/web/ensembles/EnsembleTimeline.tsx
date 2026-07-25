@@ -1,6 +1,7 @@
+import type { EnsembleFinalizationProgress } from "@shared/ensemble.ts";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 import { relativeTime } from "../lib/format.ts";
-import { titleCaseEnum } from "./format.ts";
+import { shortSha, titleCaseEnum } from "./format.ts";
 
 /**
  * The run's orchestration history: stage attempts (with their retries and errors), the
@@ -30,6 +31,9 @@ export function EnsembleTimeline({
                   {stage.status ? titleCaseEnum(stage.status) : "Unknown"}
                 </span>
                 {stage.error && <span className="ensemble-stage-error">{stage.error}</span>}
+                {stage.driverKind === "finalize" && (
+                  <FinalizationReceipt progress={readFinalizationProgress(stage.output)} />
+                )}
               </li>
             ))}
           </ul>
@@ -105,4 +109,97 @@ export function EnsembleTimeline({
       )}
     </div>
   );
+}
+
+function FinalizationReceipt({
+  progress,
+}: {
+  progress: EnsembleFinalizationProgress | null;
+}): React.JSX.Element {
+  if (!progress) {
+    return <p className="ensemble-muted">No durable finalization receipt yet.</p>;
+  }
+  return (
+    <div className="ensemble-finalization-progress" aria-live="polite">
+      <h6>Finalization</h6>
+      <dl>
+        <div>
+          <dt>Resume step</dt>
+          <dd>{titleCaseEnum(progress.step)}</dd>
+        </div>
+        <div>
+          <dt>Verified snapshot</dt>
+          <dd>{progress.verifiedSnapshotSha ? <code>{shortSha(progress.verifiedSnapshotSha)}</code> : "Not yet"}</dd>
+        </div>
+        <div>
+          <dt>Winner</dt>
+          <dd>
+            {progress.winner
+              ? `${titleCaseEnum(progress.winner.mode)} · ${progress.winner.ready ? "ready" : "pending"}`
+              : "Not materialized"}
+          </dd>
+        </div>
+        <div>
+          <dt>Losers reaped</dt>
+          <dd>{progress.losersReaped ? "Yes" : "No"}</dd>
+        </div>
+        <div>
+          <dt>Continuation</dt>
+          <dd>
+            {progress.continuationDelivered
+              ? "Delivered"
+              : progress.continuationInIntent
+                ? "Included in replacement intent"
+                : "Pending"}
+          </dd>
+        </div>
+      </dl>
+      {progress.error && <p className="ensemble-stage-error" role="alert">{progress.error}</p>}
+    </div>
+  );
+}
+
+const FINALIZATION_STEPS = [
+  "verifying",
+  "materializing",
+  "reaping_losers",
+  "handoff",
+  "completed",
+] as const;
+
+function readFinalizationProgress(output: unknown): EnsembleFinalizationProgress | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const value = output as Record<string, unknown>;
+  if (
+    typeof value.step !== "string" ||
+    !(FINALIZATION_STEPS as readonly string[]).includes(value.step)
+  ) {
+    return null;
+  }
+  const rawWinner = value.winner;
+  const winner =
+    rawWinner &&
+    typeof rawWinner === "object" &&
+    !Array.isArray(rawWinner) &&
+    ((rawWinner as Record<string, unknown>).mode === "restored" ||
+      (rawWinner as Record<string, unknown>).mode === "replacement")
+      ? {
+          mode: (rawWinner as Record<string, unknown>).mode as "restored" | "replacement",
+          ready: (rawWinner as Record<string, unknown>).ready === true,
+        }
+      : null;
+  return {
+    step: value.step as EnsembleFinalizationProgress["step"],
+    verifiedSnapshotSha:
+      typeof value.verifiedSnapshotSha === "string" ? value.verifiedSnapshotSha : null,
+    winner,
+    continuationInIntent: value.continuationInIntent === true,
+    losersReaped: value.losersReaped === true,
+    continuationDeliveryKey:
+      typeof value.continuationDeliveryKey === "string"
+        ? value.continuationDeliveryKey
+        : null,
+    continuationDelivered: value.continuationDelivered === true,
+    error: typeof value.error === "string" ? value.error : null,
+  };
 }

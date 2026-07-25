@@ -5871,6 +5871,19 @@ select:not([multiple]) option {
   font-size: 12px;
 }
 
+.ensemble-manual-submit {
+  flex: 1 0 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.ensemble-manual-submit .ensemble-action-row,
+.ensemble-manual-submit .ensemble-error {
+  grid-column: 1 / -1;
+}
+
 .ensemble-evidence-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -5971,6 +5984,36 @@ select:not([multiple]) option {
 
 .ensemble-stage-error {
   color: var(--danger);
+}
+
+.ensemble-finalization-progress {
+  flex: 1 0 100%;
+  border-left: 3px solid var(--working);
+  padding: 8px 10px;
+}
+
+.ensemble-finalization-progress h6 {
+  margin: 0 0 6px;
+}
+
+.ensemble-finalization-progress dl,
+.ensemble-workflow-resolution {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.ensemble-finalization-progress dt,
+.ensemble-workflow-resolution dt {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.ensemble-finalization-progress dd,
+.ensemble-workflow-resolution dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .ensemble-table-scroll {
@@ -6131,6 +6174,11 @@ select:not([multiple]) option {
 .ensemble-field-error {
   color: var(--danger);
   font-size: 11px;
+}
+
+.ensemble-field-error:where(ul) {
+  margin: 4px 0 0;
+  padding-left: 18px;
 }
 
 .ensemble-confirm-line {
@@ -6307,11 +6355,28 @@ select:not([multiple]) option {
   font: inherit;
 }
 
+.ensemble-roster-row > .ensemble-field-error {
+  grid-column: 2 / -1;
+}
+
 .ensemble-launch-summary {
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   padding: 10px;
   background: var(--panel);
+}
+
+.ensemble-workflow-placement {
+  display: grid;
+  gap: 8px;
+}
+
+.ensemble-workflow-resolution {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel);
+  font-size: 11.5px;
 }
 
 .ensemble-launch-summary h5 {
@@ -6358,6 +6423,9 @@ select:not([multiple]) option {
   }
   .ensemble-roster-row {
     grid-template-columns: 1fr 1fr;
+  }
+  .ensemble-manual-submit {
+    grid-template-columns: 1fr;
   }
 }
 

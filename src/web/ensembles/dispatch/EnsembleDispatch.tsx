@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -45,12 +45,16 @@ export function EnsembleDispatch({
   uploading: boolean;
   personas: PersonaView[];
   workflowSummaries: WorkflowSummary[];
-  onLaunched: (runId: string) => void;
+  onLaunched: (runId: string, submitted: EnsembleDispatchDraft) => void;
 }): React.JSX.Element {
   const [preview, setPreview] = useState<EnsemblePreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const composeRef = useRef(compose);
+  const ensembleRef = useRef(ensemble);
+  composeRef.current = compose;
+  ensembleRef.current = ensemble;
 
   const descriptor = ENSEMBLE_STRATEGY_INFO[ensemble.strategyId];
   const intent = withAttachments(compose.intent.trim(), readyAttachments(compose.attachments));
@@ -69,9 +73,20 @@ export function EnsembleDispatch({
     hasCompose &&
     !workflowUnsupported;
 
+  const previewIssues = reviewed ? preview?.issues ?? [] : [];
   const issuesFor = (key: string): StrategyIssue[] =>
-    (preview?.issues ?? []).filter((issue) => issue.path === key);
-  const generalIssues = (preview?.issues ?? []).filter((issue) => issue.path === "");
+    previewIssues.filter((issue) => issueMatchesField(issue, key));
+  const evaluatorIssues = previewIssues.filter((issue) =>
+    ["evaluator.personaId", "evaluator.personaRevision"].includes(normalizeIssuePath(issue.path)),
+  );
+  const workflowIssues = previewIssues.filter((issue) => issueMatchesField(issue, "workflow"));
+  const routedIssues = new Set([
+    ...descriptor.form.fields.flatMap((field) => issuesFor(field.key)),
+    ...evaluatorIssues,
+    ...workflowIssues,
+  ]);
+  const generalIssues = previewIssues.filter((issue) => !routedIssues.has(issue));
+  const reviewedEstimate = reviewed && preview ? preview.estimate : liveEstimate;
 
   const setConfig = (key: string, value: unknown): void =>
     onEnsembleChange({
@@ -92,18 +107,30 @@ export function EnsembleDispatch({
   const review = async (): Promise<void> => {
     setPreviewing(true);
     setLaunchError(null);
+    const submittedFingerprint = fingerprint;
     const result = await previewEnsemble(createInput);
     setPreviewing(false);
+    const current = ensembleRef.current;
+    const currentCompose = composeRef.current;
+    const currentIntent = withAttachments(
+      currentCompose.intent.trim(),
+      readyAttachments(currentCompose.attachments),
+    );
+    const currentFingerprint = ensemblePreviewFingerprint(
+      buildEnsembleCreateInput(currentCompose, currentIntent, current),
+    );
     setPreview(result);
-    onEnsembleChange({ ...ensemble, previewFingerprint: fingerprint });
+    if (currentFingerprint !== submittedFingerprint) return;
+    onEnsembleChange({ ...current, previewFingerprint: currentFingerprint });
   };
 
   const launch = async (): Promise<void> => {
     setLaunching(true);
     setLaunchError(null);
+    const submitted = ensemble;
     const result = await createEnsemble(createInput);
     setLaunching(false);
-    if (result.ok) onLaunched(result.data.run.id);
+    if (result.ok) onLaunched(result.data.run.id, submitted);
     else setLaunchError(result.error);
   };
 
@@ -147,6 +174,7 @@ export function EnsembleDispatch({
         <EvaluatorPicker
           personas={personas}
           selectedId={stringOrNull(getConfigPath(ensemble.config, "evaluator.personaId"))}
+          issues={evaluatorIssues}
           onChange={(persona) => {
             const withId = setConfigPath(ensemble.config, "evaluator.personaId", persona?.id ?? null);
             const withRevision = setConfigPath(withId, "evaluator.personaRevision", persona?.revision ?? null);
@@ -159,10 +187,11 @@ export function EnsembleDispatch({
         workflows={workflowSummaries}
         selected={ensemble.workflow}
         resolution={reviewed ? preview?.workflow ?? null : null}
+        issues={workflowIssues}
         onChange={setWorkflow}
       />
 
-      <LaunchSummary estimate={liveEstimate} capabilities={descriptor.capabilities} />
+      <LaunchSummary estimate={reviewedEstimate} capabilities={descriptor.capabilities} />
 
       {generalIssues.length > 0 && (
         <ul className="ensemble-issues" role="alert">
@@ -209,7 +238,7 @@ export function EnsembleDispatch({
               ? "Launching…"
               : uploading
                 ? "Uploading…"
-                : `Launch ${liveEstimate ? liveEstimate.initialMembers : ""} agents`.trim()}
+                : `Launch ${reviewedEstimate ? reviewedEstimate.initialMembers : ""} agents`.trim()}
           </button>
         </Tooltip>
         {!reviewed && preview && (
@@ -231,7 +260,7 @@ function FormField({
   issues: StrategyIssue[];
   onChange: (key: string, value: unknown) => void;
 }): React.JSX.Element {
-  const error = issues.length > 0 ? <span className="ensemble-field-error">{issues[0]!.message}</span> : null;
+  const error = <FieldIssues issues={issues} />;
   if (field.kind === "int") {
     const value = Number(getConfigPath(config, field.key) ?? field.min);
     return (
@@ -358,11 +387,7 @@ function Roster({
         {label} <span className="ensemble-muted">({rows.length})</span>
       </legend>
       <p className="ensemble-muted">{help}</p>
-      {issues.length > 0 && (
-        <p className="ensemble-field-error" role="alert">
-          {issues[0]!.message}
-        </p>
-      )}
+      <FieldIssues issues={issues.filter((issue) => normalizeIssuePath(issue.path) === "members")} />
       <ul className="ensemble-roster-rows">
         {rows.map((row, index) => {
           const agent = (row.agent as AgentType | null) ?? null;
@@ -370,6 +395,10 @@ function Roster({
           const effort = (row.effort as ThinkingLevel | null) ?? null;
           const approach = (row.approach as string | null) ?? "";
           const efforts = agent ? capabilitiesFor(agent).effort?.levels ?? [] : [];
+          const rowIssues = issues.filter((issue) => {
+            const path = normalizeIssuePath(issue.path);
+            return path === `members.${index}` || path.startsWith(`members.${index}.`);
+          });
           return (
             <li key={index} className="ensemble-roster-row">
               <span className="ensemble-roster-ordinal">#{index + 1}</span>
@@ -440,6 +469,7 @@ function Roster({
                   ✕
                 </button>
               </Tooltip>
+              <FieldIssues issues={rowIssues} />
             </li>
           );
         })}
@@ -461,10 +491,12 @@ function Roster({
 function EvaluatorPicker({
   personas,
   selectedId,
+  issues,
   onChange,
 }: {
   personas: PersonaView[];
   selectedId: string | null;
+  issues: StrategyIssue[];
   onChange: (persona: PersonaView | null) => void;
 }): React.JSX.Element {
   const usable = personas.filter((p) => p.archivedAt === null);
@@ -489,6 +521,7 @@ function EvaluatorPicker({
           ? `Persona "${selected.name}" revision ${selected.revision} will be pinned at creation.`
           : "The comparison uses the built-in Best-of-N rubric."}
       </small>
+      <FieldIssues issues={issues} />
     </label>
     </Tooltip>
   );
@@ -498,52 +531,83 @@ function WorkflowPlacement({
   workflows,
   selected,
   resolution,
+  issues,
   onChange,
 }: {
   workflows: WorkflowSummary[];
   selected: EnsembleDispatchDraft["workflow"];
   resolution: EnsemblePreviewResult["workflow"];
+  issues: StrategyIssue[];
   onChange: (workflow: EnsembleDispatchDraft["workflow"]) => void;
 }): React.JSX.Element {
   const published = workflows.filter((w) => w.publishedVersion !== null && w.archivedAt === null);
   return (
-    <Tooltip label="Optionally hand the confirmed winner to a published workflow">
-    <label className="ensemble-field">
-      <span>After a winner is chosen (optional)</span>
-      <select
-        value={selected?.workflowId ?? ""}
-        onChange={(e) => {
-          const workflow = published.find((w) => w.id === e.target.value);
-          onChange(
-            workflow && workflow.publishedVersion !== null
-              ? { workflowId: workflow.id, workflowVersion: workflow.publishedVersion }
-              : null,
-          );
-        }}
-      >
-        <option value="">Continue normally (no workflow)</option>
-        {published.map((workflow) => (
-          <option key={workflow.id} value={workflow.id}>
-            {workflow.name} (v{workflow.publishedVersion})
-          </option>
-        ))}
-      </select>
-      <small>
-        A workflow reviews the confirmed winner only; it is not part of the candidate comparison.
-        {resolution && resolution.supported && (
-          <>
-            {" "}
-            Pinning {resolution.workflowName} v{resolution.workflowVersion} · {resolution.deliveryMode}
-            {" · round cap "}
-            {resolution.maxRepairRounds}.
-          </>
-        )}
-        {resolution && !resolution.supported && resolution.unsupportedReason && (
-          <span className="ensemble-field-error"> {resolution.unsupportedReason}</span>
-        )}
-      </small>
-    </label>
-    </Tooltip>
+    <div className="ensemble-workflow-placement">
+      <Tooltip label="Optionally hand the confirmed winner to a published workflow">
+        <label className="ensemble-field">
+          <span>After a winner is chosen (optional)</span>
+          <select
+            value={selected?.workflowId ?? ""}
+            onChange={(e) => {
+              const workflow = published.find((w) => w.id === e.target.value);
+              onChange(
+                workflow && workflow.publishedVersion !== null
+                  ? { workflowId: workflow.id, workflowVersion: workflow.publishedVersion }
+                  : null,
+              );
+            }}
+          >
+            <option value="">Continue normally (no workflow)</option>
+            {published.map((workflow) => (
+              <option key={workflow.id} value={workflow.id}>
+                {workflow.name} (v{workflow.publishedVersion})
+              </option>
+            ))}
+          </select>
+          <small>
+            A workflow reviews the confirmed winner only; it is not part of the candidate comparison.
+            {resolution && resolution.supported && (
+              <>
+                {" "}
+                Pinning {resolution.workflowName} v{resolution.workflowVersion} · {resolution.deliveryMode}
+                {" · round cap "}
+                {resolution.maxRepairRounds}.
+              </>
+            )}
+            {resolution && !resolution.supported && resolution.unsupportedReason && (
+              <span className="ensemble-field-error"> {resolution.unsupportedReason}</span>
+            )}
+          </small>
+          <FieldIssues issues={issues} />
+        </label>
+      </Tooltip>
+      {resolution && (
+        <dl className="ensemble-workflow-resolution">
+          <div>
+            <dt>Resolved workflow</dt>
+            <dd>
+              {resolution.workflowName} v{resolution.workflowVersion}
+            </dd>
+          </div>
+          <div>
+            <dt>Workflow · version ids</dt>
+            <dd><code>{resolution.workflowId}</code> · <code>{resolution.workflowVersionId}</code></dd>
+          </div>
+          <div>
+            <dt>Trigger · delivery</dt>
+            <dd>{resolution.triggerMode} · {resolution.deliveryMode}</dd>
+          </div>
+          <div>
+            <dt>Completion</dt>
+            <dd>{resolution.completionPolicy} · {resolution.maxRepairRounds} repair rounds</dd>
+          </div>
+          <div>
+            <dt>Supported</dt>
+            <dd>{resolution.supported ? "Yes" : `No${resolution.unsupportedReason ? ` — ${resolution.unsupportedReason}` : ""}`}</dd>
+          </div>
+        </dl>
+      )}
+    </div>
   );
 }
 
@@ -588,4 +652,25 @@ function isObject(value: unknown): boolean {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function normalizeIssuePath(path: string): string {
+  if (path === "strategyConfig") return "";
+  if (path.startsWith("strategyConfig.")) return path.slice("strategyConfig.".length);
+  if (path.startsWith("roles.")) return `members.${path.slice("roles.".length)}`;
+  return path;
+}
+
+function issueMatchesField(issue: StrategyIssue, key: string): boolean {
+  const path = normalizeIssuePath(issue.path);
+  return path === key || path.startsWith(`${key}.`);
+}
+
+function FieldIssues({ issues }: { issues: StrategyIssue[] }): React.JSX.Element | null {
+  if (issues.length === 0) return null;
+  return (
+    <ul className="ensemble-field-error" role="alert">
+      {issues.map((issue, index) => <li key={`${issue.path}:${index}`}>{issue.message}</li>)}
+    </ul>
+  );
 }

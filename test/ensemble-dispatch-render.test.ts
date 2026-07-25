@@ -83,3 +83,30 @@ test("the dispatch modal wires Single/Ensemble mode with no second composer and 
   // Dispatch is its own attachment surface; it introduces no session DraftKind.
   assert.doesNotMatch(modal, /DraftKind/);
 });
+
+test("preview and launch reconciliation preserve newer dispatch input", () => {
+  const dispatch = readFileSync(
+    new URL("../src/web/ensembles/dispatch/EnsembleDispatch.tsx", import.meta.url),
+    "utf8",
+  );
+  const modal = readFileSync(new URL("../src/web/components/DispatchModal.tsx", import.meta.url), "utf8");
+  assert.match(dispatch, /const ensembleRef = useRef\(ensemble\)/);
+  assert.match(dispatch, /currentFingerprint !== submittedFingerprint/);
+  assert.doesNotMatch(dispatch, /onEnsembleChange\(\{ \.\.\.ensemble, previewFingerprint: fingerprint \}\)/);
+  assert.match(modal, /draftsEqual\(draftRef\.current, submitted\)/);
+  assert.match(modal, /ensembleDraftsEqual\(ensembleDraftRef\.current, submittedEnsemble\)/);
+  assert.match(modal, /requestId: crypto\.randomUUID\(\)/);
+});
+
+test("review uses server estimates, routes nested issues, and hides unsupported task metadata", () => {
+  const dispatch = readFileSync(
+    new URL("../src/web/ensembles/dispatch/EnsembleDispatch.tsx", import.meta.url),
+    "utf8",
+  );
+  const modal = readFileSync(new URL("../src/web/components/DispatchModal.tsx", import.meta.url), "utf8");
+  assert.match(dispatch, /reviewed && preview \? preview\.estimate : liveEstimate/);
+  assert.match(dispatch, /normalizeIssuePath/);
+  assert.match(dispatch, /members\.\$\{index\}/);
+  assert.match(dispatch, /workflowVersionId/);
+  assert.match(modal, /\{!ensembleMode && \(\s*<div className="field-row">\s*<label className="field">[\s\S]*?Priority/);
+});

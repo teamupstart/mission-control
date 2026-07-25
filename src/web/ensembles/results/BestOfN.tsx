@@ -153,6 +153,7 @@ function BestOfNDecisionPanel({
   const ready =
     confirmed &&
     !decision.pending &&
+    rationale.trim().length > 0 &&
     (mode === "select" ? Boolean(artifactId) : reason.trim().length > 0);
   const nonRecommended = mode === "select" && artifactId !== comparison.recommendedArtifactId;
 
@@ -221,11 +222,12 @@ function BestOfNDecisionPanel({
         </p>
       )}
       <label className="ensemble-field">
-        <span>Rationale (optional, recorded with the decision)</span>
+        <span>Rationale (required, recorded with the decision)</span>
         <textarea
           value={rationale}
           onChange={(event) => setRationale(event.target.value)}
           rows={2}
+          required
         />
       </label>
       <Tooltip label="Confirm you understand the destructive effect before deciding">

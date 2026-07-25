@@ -60,6 +60,17 @@ test("the Ensembles tab is registered once in the tab source of truth and stays 
   assert.doesNotMatch(shell, /"ensembles"/);
 });
 
+test("ensemble deep links wait for the live snapshot and preserve direct 404 reads", () => {
+  const page = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/EnsembleRuns.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(page, /hasSnapshot/);
+  assert.match(page, /observedRunIds/);
+  assert.match(page, /fetchEnsembleDetail\(selected\)/);
+  assert.match(page, /This ensemble is no longer retained/);
+});
+
 test("global overlays stay mounted on every page, and only one page body renders", () => {
   for (const page of ["fleet", "workflows", "settings"] as const) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {

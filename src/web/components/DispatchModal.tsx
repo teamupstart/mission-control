@@ -76,6 +76,13 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   );
 }
 
+function ensembleDraftsEqual(
+  a: EnsembleDispatchDraft,
+  b: EnsembleDispatchDraft,
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /**
  * Which task the modal is over, when it is over one. `new` writes a task that does
  * not exist yet; `edit` rewrites one that is waiting in the backlog.
@@ -183,7 +190,9 @@ export function DispatchLayer({
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
   const draftRef = useRef(draft);
+  const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  ensembleDraftRef.current = ensembleDraft;
 
   // The working copy of the task being edited, if any, beside the seed it was built
   // from. Seeded during render rather than from an effect: an effect would show one
@@ -308,7 +317,18 @@ export function DispatchLayer({
    * fleet; then it hands the run id up to navigate to its detail.
    */
   const onEnsembleLaunchedInternal = useCallback(
-    (runId: string) => {
+    (runId: string, submitted: DispatchDraft, submittedEnsemble: EnsembleDispatchDraft) => {
+      if (
+        !draftsEqual(draftRef.current, submitted) ||
+        !ensembleDraftsEqual(ensembleDraftRef.current, submittedEnsemble)
+      ) {
+        setEnsembleDraft({
+          ...ensembleDraftRef.current,
+          requestId: crypto.randomUUID(),
+          previewFingerprint: null,
+        });
+        return;
+      }
       revokeAttachments(draftRef.current.attachments);
       setDraft(freshDispatchDraft());
       setEnsembleDraft(freshEnsembleDraft());
@@ -414,7 +434,11 @@ function DispatchModal({
   ensembleDraft?: EnsembleDispatchDraft;
   onEnsembleDraftChange?: (draft: EnsembleDispatchDraft) => void;
   onEnsembleClear?: () => void;
-  onEnsembleLaunched?: (runId: string) => void;
+  onEnsembleLaunched?: (
+    runId: string,
+    submitted: DispatchDraft,
+    submittedEnsemble: EnsembleDispatchDraft,
+  ) => void;
   personas?: PersonaView[];
   workflowSummaries?: WorkflowSummary[];
 }): React.JSX.Element {
@@ -821,6 +845,7 @@ function DispatchModal({
         </>
         )}
 
+        {!ensembleMode && (
         <div className="field-row">
           <label className="field">
             <span className="field-label">
@@ -868,6 +893,7 @@ function DispatchModal({
             )}
           </label>
         </div>
+        )}
 
         <label className="field">
           <span className="field-label">
@@ -964,7 +990,9 @@ function DispatchModal({
             uploading={drop.uploading}
             personas={personas}
             workflowSummaries={workflowSummaries}
-            onLaunched={onEnsembleLaunched}
+            onLaunched={(runId, submittedEnsemble) =>
+              onEnsembleLaunched(runId, draft, submittedEnsemble)
+            }
           />
         )}
 

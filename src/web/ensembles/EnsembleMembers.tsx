@@ -1,7 +1,11 @@
-import type {
-  EnsembleActionBody,
-} from "@shared/protocol.ts";
-import type { EnsembleArtifact, EnsembleAttempt, EnsembleMember } from "@shared/ensemble.ts";
+import { useState } from "react";
+import type { EnsembleActionBody } from "@shared/protocol.ts";
+import {
+  ENSEMBLE_LIMITS,
+  type EnsembleArtifact,
+  type EnsembleAttempt,
+  type EnsembleMember,
+} from "@shared/ensemble.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 import { memberStatusLabel, memberStatusTone } from "./format.ts";
@@ -17,11 +21,18 @@ export function EnsembleMembers({
   pending,
   onAction,
   onOpenSession,
+  onOpenTask,
+  onManualSubmit,
 }: {
   detail: EnsembleRunDetailResponse;
   pending: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  onManualSubmit?: (
+    memberId: string,
+    result: { summary: string; checks?: string[]; testEvidence?: string | null },
+  ) => Promise<string | null>;
 }): React.JSX.Element {
   const waves = [...new Set(detail.members.map((m) => m.wave))].sort((a, b) => a - b);
   return (
@@ -42,6 +53,8 @@ export function EnsembleMembers({
                   pending={pending}
                   onAction={onAction}
                   onOpenSession={onOpenSession}
+                  onOpenTask={onOpenTask}
+                  onManualSubmit={onManualSubmit}
                 />
               ))}
             </ul>
@@ -86,12 +99,19 @@ function MemberCard({
   pending,
   onAction,
   onOpenSession,
+  onOpenTask,
+  onManualSubmit,
 }: {
   member: EnsembleMember;
   detail: EnsembleRunDetailResponse;
   pending: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  onManualSubmit?: (
+    memberId: string,
+    result: { summary: string; checks?: string[]; testEvidence?: string | null },
+  ) => Promise<string | null>;
 }): React.JSX.Element {
   const attempt = attemptForMember(detail, member);
   const artifact = readyArtifactForMember(detail, member);
@@ -128,6 +148,16 @@ function MemberCard({
               Open session
             </button>
           </Tooltip>
+        )}
+        {member.taskId && onOpenTask && (
+          <Tooltip label="Open this member's Task">
+            <button className="btn btn-ghost" onClick={() => onOpenTask(member.taskId!)}>
+              Open task
+            </button>
+          </Tooltip>
+        )}
+        {member.status === "active" && !artifact && onManualSubmit && (
+          <ManualSubmit memberId={member.id} onSubmit={onManualSubmit} />
         )}
         {active && (
           <Tooltip label="Withdraw this member after cancelling its task">
@@ -190,5 +220,114 @@ function MemberCard({
         </div>
       )}
     </li>
+  );
+}
+
+function ManualSubmit({
+  memberId,
+  onSubmit,
+}: {
+  memberId: string;
+  onSubmit: (
+    memberId: string,
+    result: { summary: string; checks?: string[]; testEvidence?: string | null },
+  ) => Promise<string | null>;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [checks, setChecks] = useState("");
+  const [testEvidence, setTestEvidence] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <Tooltip label="Manually capture this member's current work and submit its reported claims">
+        <button className="btn btn-ghost" onClick={() => setOpen(true)}>
+          Submit result…
+        </button>
+      </Tooltip>
+    );
+  }
+
+  const submit = async (): Promise<void> => {
+    if (!summary.trim() || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    const issue = await onSubmit(memberId, {
+      summary: summary.trim(),
+      checks: checks
+        .split("\n")
+        .map((check) => check.trim())
+        .filter(Boolean),
+      testEvidence: testEvidence || null,
+    });
+    setSubmitting(false);
+    if (issue) {
+      setError(issue);
+      return;
+    }
+    setOpen(false);
+    setSummary("");
+    setChecks("");
+    setTestEvidence("");
+  };
+
+  return (
+    <form
+      className="ensemble-manual-submit"
+      aria-label="Manually submit member result"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <Tooltip label="Required summary reported by the member">
+        <label className="ensemble-field">
+          <span>Summary (required)</span>
+          <textarea
+            value={summary}
+            maxLength={ENSEMBLE_LIMITS.submissionSummary}
+            rows={2}
+            required
+            onChange={(event) => setSummary(event.target.value)}
+          />
+        </label>
+      </Tooltip>
+      <Tooltip label="Optional checks, one reported command or check per line">
+        <label className="ensemble-field">
+          <span>Checks (optional, one per line)</span>
+          <textarea
+            value={checks}
+            rows={2}
+            onChange={(event) => setChecks(event.target.value)}
+          />
+        </label>
+      </Tooltip>
+      <Tooltip label="Optional test output reported by the member">
+        <label className="ensemble-field">
+          <span>Test evidence (optional)</span>
+          <textarea
+            value={testEvidence}
+            maxLength={ENSEMBLE_LIMITS.submissionTestEvidence}
+            rows={2}
+            onChange={(event) => setTestEvidence(event.target.value)}
+          />
+        </label>
+      </Tooltip>
+      {error && <p className="ensemble-error" role="alert">{error}</p>}
+      <div className="ensemble-action-row" aria-live="polite">
+        <Tooltip label="Capture the member worktree and submit these claims">
+          <button className="btn btn-primary" type="submit" disabled={submitting || !summary.trim()}>
+            {submitting ? "Submitting…" : "Submit result"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Close the manual submission form without submitting">
+          <button className="btn btn-ghost" type="button" disabled={submitting} onClick={() => setOpen(false)}>
+            Cancel
+          </button>
+        </Tooltip>
+      </div>
+    </form>
   );
 }

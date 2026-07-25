@@ -1397,6 +1397,7 @@ export function App(): React.JSX.Element {
                   : undefined
               }
               ensembleSummaries={ensembleSummaries}
+              hasSnapshot={hasSnapshot}
               selectedEnsembleId={
                 route.page === "workflows" && route.tab === "ensembles"
                   ? route.ensembleId ?? null
@@ -1426,6 +1427,26 @@ export function App(): React.JSX.Element {
                 tab: "ensembles",
                 ...(ensembleId ? { ensembleId } : {}),
               })}
+              onOpenTask={(taskId) => {
+                const task = tasks.find((candidate) => candidate.id === taskId);
+                if (!task) return;
+                const liveSession = task.sessionId
+                  ? sessions.find((session) => session.id === task.sessionId)
+                  : sessions.find((session) => session.task?.id === taskId);
+                if (liveSession) {
+                  navigate({ page: "fleet" });
+                  setFilter("");
+                  setSelectedId(liveSession.id);
+                  if (layout === "board") setBoardOpen(true);
+                  return;
+                }
+                if (task.status === "backlog") {
+                  openTaskEditor(taskId);
+                  return;
+                }
+                navigate({ page: "fleet" });
+                setReportOpen(true);
+              }}
               onOpenSession={(sessionId) => {
                 navigate({ page: "fleet" });
                 setSelectedId(sessionId);

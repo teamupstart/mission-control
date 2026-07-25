@@ -36,6 +36,8 @@ export function EnsembleDetail({
   onDelete,
   onLoadPatch,
   onOpenSession,
+  onOpenTask,
+  onManualSubmit,
   onOpenWorkflowRun,
 }: {
   detail: EnsembleRunDetailResponse;
@@ -45,6 +47,11 @@ export function EnsembleDetail({
   onDelete: (confirmId: string) => void;
   onLoadPatch: (artifactId: string) => Promise<EnsembleArtifactPatch | { error: string }>;
   onOpenSession?: (sessionId: string) => void;
+  onOpenTask?: (taskId: string) => void;
+  onManualSubmit?: (
+    memberId: string,
+    result: { summary: string; checks?: string[]; testEvidence?: string | null },
+  ) => Promise<string | null>;
   onOpenWorkflowRun?: (runId: string) => void;
 }): React.JSX.Element {
   const { run } = detail;
@@ -80,7 +87,8 @@ export function EnsembleDetail({
   }, [detail.attempts, detail.members, detail.artifacts]);
 
   const reviewCost = detail.llmCalls.reduce((sum, c) => sum + (c.costUsd ?? 0), 0);
-  const anyAuthoritativeCost = detail.llmCalls.some((c) => c.costUsd !== null);
+  const allAuthoritativeCost =
+    detail.llmCalls.length > 0 && detail.llmCalls.every((call) => call.costUsd !== null);
   const budget = run.plan?.budget ?? null;
   const tone = ensembleStatusTone(run.status, run.unreadable);
 
@@ -173,7 +181,11 @@ export function EnsembleDetail({
           <dt>Review calls</dt>
           <dd>
             {detail.llmCalls.length}
-            {anyAuthoritativeCost ? ` · ${fmtUsd(reviewCost)}` : ""}
+            {allAuthoritativeCost
+              ? ` · ${fmtUsd(reviewCost)}`
+              : detail.llmCalls.length > 0
+                ? " · partial cost telemetry"
+                : ""}
           </dd>
         </div>
       </dl>
@@ -203,6 +215,8 @@ export function EnsembleDetail({
           pending={actionPending}
           onAction={onAction}
           onOpenSession={onOpenSession}
+          onOpenTask={onOpenTask}
+          onManualSubmit={onManualSubmit}
         />
       </section>
 

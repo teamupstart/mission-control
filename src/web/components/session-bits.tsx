@@ -298,7 +298,6 @@ export function EnsembleRailMark({
     <Tooltip label={ensembleMemberTooltip(link)}>
       <span
         className={`rail-ensemble ensemble-${ensembleMemberTone(link)}`}
-        role="button"
         aria-label={ensembleMemberTooltip(link)}
         onClick={(event) => {
           event.stopPropagation();

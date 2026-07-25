@@ -30,6 +30,7 @@ export function WorkflowPage({
   runFilters,
   ensembleSummaries = [],
   selectedEnsembleId = null,
+  hasSnapshot = false,
   llm,
   isOverlayOpen,
   onTab,
@@ -37,6 +38,7 @@ export function WorkflowPage({
   onRun = () => {},
   onRunFilters = () => {},
   onEnsemble = () => {},
+  onOpenTask = () => {},
   onBindVersion = () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
@@ -49,6 +51,7 @@ export function WorkflowPage({
   runFilters?: WorkflowRunFilters;
   ensembleSummaries?: EnsembleSummary[];
   selectedEnsembleId?: string | null;
+  hasSnapshot?: boolean;
   llm: LlmState;
   isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
@@ -56,6 +59,7 @@ export function WorkflowPage({
   onRun?: (id: string) => void;
   onRunFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onEnsemble?: (id: string | null) => void;
+  onOpenTask?: (id: string) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
@@ -156,8 +160,10 @@ export function WorkflowPage({
           <EnsembleRuns
             summaries={ensembleSummaries}
             selectedId={selectedEnsembleId}
+            hasSnapshot={hasSnapshot}
             onSelect={onEnsemble}
             onOpenSession={onOpenSession}
+            onOpenTask={onOpenTask}
             onOpenWorkflowRun={onRun}
           />
         </section>

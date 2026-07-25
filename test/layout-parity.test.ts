@@ -56,6 +56,7 @@ test("all three ensemble marks render the member with an accessible label and a 
   assert.match(chip, /ensemble-chip/);
   assert.match(tile, /tf-ensemble/);
   assert.match(rail, /rail-ensemble/);
+  assert.doesNotMatch(rail, /role="button"/);
   // Rail keeps the bounded resultLabel; tile keeps the ordinal.
   assert.match(rail, /rank 1/);
   assert.match(tile, /#?\s*2|>2</);

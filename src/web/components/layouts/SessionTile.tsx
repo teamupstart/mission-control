@@ -69,7 +69,7 @@ export function SessionTile({
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   /** Open the Scheduled Catalog from a scheduled task's tile flag. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the tile flag's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {

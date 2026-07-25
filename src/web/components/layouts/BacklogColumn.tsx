@@ -70,7 +70,7 @@ export function BacklogColumn({
   /** Reopen the dispatch modal over this task. */
   onEdit: (taskId: string) => void;
   /** Open the Scheduled Catalog from a generated task's provenance mark. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
@@ -155,7 +155,7 @@ function BacklogCard({
   onAssignError: (message: string) => void;
   onDragging: (repoRoot: string | null) => void;
   onEdit: () => void;
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);

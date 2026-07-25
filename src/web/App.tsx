@@ -175,6 +175,9 @@ export function App(): React.JSX.Element {
   const [missionsTarget, setMissionsTarget] = useState<{
     scheduleId: string;
     occurrenceId: string | null;
+    // The occurrence's instant, so history can seed its cursor and open the exact run
+    // without a page cap - see ScheduleHistory.
+    scheduledFor: number | null;
   } | null>(null);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
@@ -382,10 +385,14 @@ export function App(): React.JSX.Element {
    * the panel consumes the live SSE catalog and fetches history on demand.
    */
   const onOpenSchedule = useCallback(
-    (scheduleId: string, occurrenceId?: string) => {
+    (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => {
       setReportOpen(false);
       closeDispatch();
-      setMissionsTarget({ scheduleId, occurrenceId: occurrenceId ?? null });
+      setMissionsTarget({
+        scheduleId,
+        occurrenceId: occurrenceId ?? null,
+        scheduledFor: scheduledFor ?? null,
+      });
       setMissionsOpen(true);
     },
     [closeDispatch],
@@ -1604,6 +1611,7 @@ export function App(): React.JSX.Element {
                   hasSnapshot={hasSnapshot}
                   initialScheduleId={missionsTarget?.scheduleId ?? null}
                   initialOccurrenceId={missionsTarget?.occurrenceId ?? null}
+                  initialScheduledFor={missionsTarget?.scheduledFor ?? null}
                   onClose={closeMissions}
                   onOpenTask={(taskId) => {
                     const task = tasks.find((candidate) => candidate.id === taskId);

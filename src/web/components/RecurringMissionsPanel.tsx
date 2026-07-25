@@ -30,7 +30,13 @@ type Screen =
   | { kind: "catalog" }
   | { kind: "editor"; scheduleId: string | null }
   | { kind: "preview"; scheduleId: string }
-  | { kind: "history"; scheduleId: string; occurrenceId: string | null };
+  | {
+      kind: "history";
+      scheduleId: string;
+      occurrenceId: string | null;
+      /** The deep-linked occurrence's instant, so history opens the exact run. */
+      scheduledFor: number | null;
+    };
 
 /** Build a preview definition from a saved schedule's active revision (Preview screen). */
 function scheduleToDefinition(schedule: MissionSchedule): ScheduleDefinitionPayload | null {
@@ -51,6 +57,7 @@ export function RecurringMissionsPanel({
   hasSnapshot,
   initialScheduleId = null,
   initialOccurrenceId = null,
+  initialScheduledFor = null,
   onClose,
   onOpenTask,
 }: {
@@ -61,6 +68,8 @@ export function RecurringMissionsPanel({
   initialScheduleId?: string | null;
   /** An occurrence to open history at; its presence sends the panel straight to history. */
   initialOccurrenceId?: string | null;
+  /** The occurrence's instant, so history can open the exact run without a page cap. */
+  initialScheduledFor?: number | null;
   onClose: () => void;
   /** Open a generated task (backlog edit or finished result) from history. */
   onOpenTask?: (taskId: string) => void;
@@ -69,7 +78,12 @@ export function RecurringMissionsPanel({
 
   const [screen, setScreen] = useState<Screen>(() =>
     initialScheduleId && initialOccurrenceId
-      ? { kind: "history", scheduleId: initialScheduleId, occurrenceId: initialOccurrenceId }
+      ? {
+          kind: "history",
+          scheduleId: initialScheduleId,
+          occurrenceId: initialOccurrenceId,
+          scheduledFor: initialScheduledFor,
+        }
       : { kind: "catalog" },
   );
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -212,7 +226,12 @@ export function RecurringMissionsPanel({
                 onEdit={() => setScreen({ kind: "editor", scheduleId: selectedSchedule.id })}
                 onPreview={() => setScreen({ kind: "preview", scheduleId: selectedSchedule.id })}
                 onHistory={() =>
-                  setScreen({ kind: "history", scheduleId: selectedSchedule.id, occurrenceId: null })
+                  setScreen({
+                    kind: "history",
+                    scheduleId: selectedSchedule.id,
+                    occurrenceId: null,
+                    scheduledFor: null,
+                  })
                 }
                 onArchived={() => {
                   // Archive removes it from the live catalog via SSE; drop the selection so
@@ -255,6 +274,7 @@ export function RecurringMissionsPanel({
             scheduleId={screen.scheduleId}
             fallbackName={routedSchedule?.name ?? null}
             initialOccurrenceId={screen.occurrenceId}
+            initialScheduledFor={screen.scheduledFor}
             onOpenTask={onOpenTask}
           />
         )}

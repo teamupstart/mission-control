@@ -160,7 +160,7 @@ export function SessionCard({
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;
   /** Open the Scheduled Catalog from this card's generated-task provenance mark. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's "Scheduled by <name>" copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {

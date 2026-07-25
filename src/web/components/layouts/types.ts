@@ -112,7 +112,7 @@ export interface SessionViewProps {
    * history), from a generated task's provenance mark. A deep link, not a session
    * action: it changes no session state, focus, expansion, drag, or keyboard behavior.
    */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /**
    * Live catalog names by schedule id, so a scheduled task's mark can read "Scheduled by
    * <name>" without every renderer re-deriving it. A `ReadonlyMap` like

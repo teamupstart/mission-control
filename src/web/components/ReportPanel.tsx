@@ -35,7 +35,7 @@ function BacklogReportRow({
   /** Cancelled/failed tasks blocking this row, directly or up its chain. */
   deadBlockers: Task[];
   onEditTask: (taskId: string) => void;
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const [toggleBusy, setToggleBusy] = useState(false);
@@ -190,7 +190,7 @@ export function ReportPanel({
   /** Close this panel and reopen the dispatch modal over a backlog task. */
   onEditTask: (taskId: string) => void;
   /** Close this panel and open the Scheduled Catalog from a generated task's provenance. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for provenance copy on backlog and recent rows. */
   scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {

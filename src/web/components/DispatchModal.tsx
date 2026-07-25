@@ -159,7 +159,7 @@ export function DispatchLayer({
   sessions?: Session[];
   onClose: () => void;
   /** Open the Scheduled Catalog from a generated task's read-only provenance in edit mode. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
@@ -348,7 +348,7 @@ function DispatchModal({
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
   /** Open the Scheduled Catalog from a scheduled task's read-only provenance. */
-  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   const [repos, setRepos] = useState<string[]>([]);
@@ -589,7 +589,11 @@ function DispatchModal({
                 className="btn"
                 type="button"
                 onClick={() =>
-                  onOpenSchedule?.(editing.scheduleId!, editing.scheduleOccurrenceId ?? undefined)
+                  onOpenSchedule?.(
+                    editing.scheduleId!,
+                    editing.scheduleOccurrenceId ?? undefined,
+                    editing.scheduledFor ?? undefined,
+                  )
                 }
               >
                 Open schedule / history

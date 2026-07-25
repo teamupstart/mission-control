@@ -234,7 +234,11 @@ export interface ScheduleOriginProps {
   task: ScheduleProvenanceSource | null | undefined;
   /** Live catalog names by schedule id; absent for an archived or purged schedule. */
   scheduleNames?: ReadonlyMap<string, string>;
-  onOpen?: (scheduleId: string, occurrenceId?: string) => void;
+  /**
+   * Deep-link into run history. `scheduledFor` is the occurrence's instant, passed so
+   * history can seed its cursor and open the exact run without paging - see ScheduleHistory.
+   */
+  onOpen?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
 }
 
 /** Card and Console-detail vocabulary: a labelled pill. */
@@ -254,7 +258,7 @@ export function ScheduleOriginChip({
         onDragStart={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
-          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined);
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
         }}
       >
         <span aria-hidden>◷</span>
@@ -281,7 +285,7 @@ export function ScheduleOriginTileFlag({
         aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
-          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined);
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
         }}
       >
         ◷ scheduled
@@ -307,7 +311,7 @@ export function ScheduleOriginRailMark({
         aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
-          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined);
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
         }}
       >
         ◷

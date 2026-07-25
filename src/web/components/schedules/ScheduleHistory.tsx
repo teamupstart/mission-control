@@ -37,12 +37,21 @@ export function ScheduleHistory({
   scheduleId,
   fallbackName,
   initialOccurrenceId,
+  initialScheduledFor,
   onOpenTask,
 }: {
   scheduleId: string;
   /** A name to show while the first page (which carries the real schedule) is loading. */
   fallbackName?: string | null;
   initialOccurrenceId?: string | null;
+  /**
+   * The instant the deep-linked occurrence is FOR, from the task's provenance. Occurrence
+   * identity is `(schedule, scheduled_for)`, so seeding the cursor just past this instant
+   * lands the target on the FIRST page - an O(1) deep link with no page cap, however old
+   * the occurrence is. Absent (an older link that never carried it), we fall back to
+   * bounded paging.
+   */
+  initialScheduledFor?: number | null;
   /** Open a generated backlog/finished task from a history row. */
   onOpenTask?: (taskId: string) => void;
 }): React.JSX.Element {
@@ -70,9 +79,16 @@ export function ScheduleHistory({
     setError(null);
     setSelectedId(initialOccurrenceId ?? null);
     void (async () => {
-      let before: number | null = null;
+      // With the deep-linked occurrence's own instant, seed the cursor just past it so the
+      // target lands on the first page - occurrence identity is (schedule, scheduled_for),
+      // so `before = instant + 1` returns it at the top of that page. That is an O(1) deep
+      // link with no page cap. Without the instant we fall back to bounded paging from the
+      // newest page, capped so a very old occurrence cannot spin forever.
+      const seededCursor =
+        initialOccurrenceId && initialScheduledFor != null ? initialScheduledFor + 1 : null;
+      let before: number | null = seededCursor;
       let accumulated: ScheduleOccurrence[] = [];
-      const pageLimit = initialOccurrenceId ? DEEP_LINK_PAGE_LIMIT : 1;
+      const pageLimit = initialOccurrenceId && seededCursor === null ? DEEP_LINK_PAGE_LIMIT : 1;
 
       for (let pageIndex = 0; pageIndex < pageLimit; pageIndex += 1) {
         const page = await fetchScheduleHistory(scheduleId, {

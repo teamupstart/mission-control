@@ -20,6 +20,60 @@ test("workflow hashes parse and serialize without aliases drifting", () => {
   assert.equal(missionRouteHash({ page: "workflows", tab: "personas" }), "#/workflows/personas");
 });
 
+test("the ensembles tab parses and serializes, with an id and back to the list", () => {
+  assert.deepEqual(parseMissionRoute("#/workflows/ensembles"), { page: "workflows", tab: "ensembles" });
+  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/run-7"), {
+    page: "workflows",
+    tab: "ensembles",
+    ensembleId: "run-7",
+  });
+  // An undecodable id lands on the list, never a blank pane - the same rule a run id follows.
+  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/%E0%A4%A"), {
+    page: "workflows",
+    tab: "ensembles",
+  });
+  assert.equal(missionRouteHash({ page: "workflows", tab: "ensembles" }), "#/workflows/ensembles");
+  assert.equal(
+    missionRouteHash({ page: "workflows", tab: "ensembles", ensembleId: "run 7" }),
+    "#/workflows/ensembles/run%207",
+  );
+  // A round-trip keeps the id (and its encoding) stable.
+  assert.deepEqual(
+    parseMissionRoute(missionRouteHash({ page: "workflows", tab: "ensembles", ensembleId: "run 7" })),
+    { page: "workflows", tab: "ensembles", ensembleId: "run 7" },
+  );
+});
+
+test("the Ensembles tab is registered once in the tab source of truth and stays inside Workflows", () => {
+  const page = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
+    "utf8",
+  );
+  // One registry drives the tablist, arrow-nav, and labels - a hand-kept count elsewhere is what drifts.
+  assert.match(page, /WORKFLOW_TABS = \[[\s\S]*?\["ensembles",/);
+  assert.match(page, /tab === "ensembles"/);
+  // Ensembles is a Workflows-page tab, not a new top-level page: the shell union is unchanged.
+  const shell = readFileSync(
+    fileURLToPath(new URL("../src/web/components/AppPageShell.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.doesNotMatch(shell, /"ensembles"/);
+});
+
+test("ensemble deep links wait for the live snapshot and preserve direct 404 reads", () => {
+  const page = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/EnsembleRuns.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(page, /hasSnapshot/);
+  assert.match(page, /observedRunIds/);
+  // Selection enters the generation-guarded loader; the loader owns the actual
+  // fetch so stale responses cannot replace the current deep link.
+  assert.match(page, /load\(selected, true\)/);
+  assert.match(page, /fetchEnsembleDetail\(runId\)/);
+  assert.match(page, /This ensemble is no longer retained/);
+});
+
 test("global overlays stay mounted on every page, and only one page body renders", () => {
   for (const page of ["fleet", "workflows", "settings"] as const) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {

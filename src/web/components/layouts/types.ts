@@ -120,6 +120,12 @@ export interface SessionViewProps {
    * generic label, and the deep link still works because history carries the schedule.
    */
   scheduleNameById?: ReadonlyMap<string, string>;
+  /**
+   * Open the Ensemble run a session's member belongs to. No App-owned lookup map is needed:
+   * the member projection already nests on `session.task.ensemble` (a `TaskEnsembleLink`), so
+   * the renderers read it straight off the session and route through this handler by run id.
+   */
+  onOpenEnsemble?: (runId: string) => void;
 }
 
 /**
@@ -159,5 +165,6 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,
     onOpenSchedule: p.onOpenSchedule,
     scheduleNameById: p.scheduleNameById,
+    onOpenEnsemble: p.onOpenEnsemble,
   };
 }

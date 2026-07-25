@@ -86,7 +86,7 @@ Out of scope:
 
 5. Add a review-before-launch step.
    - “Review launch” posts the current draft to `POST /api/ensembles/preview`.
-   - Show exact base SHA/branch, initial and maximum members, concurrency, waves, artifact kind, evaluation count, model-call ceiling, destructive decision requirement, ref retention, information-sharing policy, publishing prohibition, estimated provider/model selections, and Workflow placement.
+   - Show the preview's initial and maximum members, concurrency, waves, artifact kind, evaluation count, model-call ceiling, destructive decision requirement, ref retention, information-sharing policy, publishing prohibition, estimated provider/model selections, and Workflow placement. State separately that create pins the exact base commit at launch; preview does not claim a SHA that create has not pinned yet.
    - Present server validation errors next to their source fields.
    - Fingerprint the normalized preview input; any subsequent draft change invalidates confirmation.
    - The final “Launch N agents” action uses the same stable request UUID and current fingerprint. It remains disabled while attachments upload or preview is stale.

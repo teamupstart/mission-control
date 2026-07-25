@@ -268,7 +268,7 @@ test("run detail renders not-captured and corrupt context states safely", () => 
   assert.match(corrupt, /restore it from backup/);
 });
 
-test("external provenance renders as text, not as a link to a route that does not exist", () => {
+test("external provenance deep-links an ensemble source to its Ensembles-tab route", () => {
   const html = renderToStaticMarkup(
     createElement(WorkflowRunView, {
       detail: {
@@ -281,11 +281,10 @@ test("external provenance renders as text, not as a link to a route that does no
     }),
   );
   assert.match(html, /Started by Ensemble/);
+  // The Ensembles route landed with the Phase 7 dashboard, so the source id is now a deep link
+  // into the run that started this workflow - not dead text.
+  assert.match(html, /<a [^>]*href="#\/workflows\/ensembles\/ens-42"/);
   assert.match(html, /ens-42/);
-  // The Ensembles route lands with the dashboard that owns it. Shipping the link first
-  // would give an operator a control that goes nowhere.
-  assert.doesNotMatch(html, /<a [^>]*ens-42/);
-  assert.doesNotMatch(html, /#\/workflows\/ensembles/);
 });
 
 test("run canvas statuses come only from the latest repair submission", () => {

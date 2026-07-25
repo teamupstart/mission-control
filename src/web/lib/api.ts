@@ -42,7 +42,20 @@ import type {
   TaskSourcesConfigPatch,
   UpdateTask,
   TaskDependencyInput,
+  EnsembleActionBody,
 } from "@shared/protocol.ts";
+import type {
+  EnsembleCreateInput,
+  EnsembleDecision,
+  EnsembleRun,
+  EnsembleSummary,
+} from "@shared/ensemble.ts";
+import type {
+  EnsembleArtifactPatch,
+  EnsemblePreviewResult,
+  EnsembleRunDetailResponse,
+  EnsembleSubmitAck,
+} from "../ensembles/types.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type {
   MissionSchedule,
@@ -197,6 +210,110 @@ export const fetchNomistakesFix = (id: string, sha: string): Promise<NmFixDetail
   fetchJson<NmFixDetail>(
     `/api/sessions/${encodeURIComponent(id)}/nomistakes/fixes/${encodeURIComponent(sha)}`,
   );
+
+// ---- ensembles ----
+//
+// These do not go through the `request`/`post` helpers below: those flatten every 2xx to
+// `ok: true`, which would clobber preview's own `ok` (the draft's validity) and hide the
+// `409` an action's `expectedStatus` mismatch reports. Each ensemble call instead preserves
+// the raw HTTP status and the `code`/body the daemon returns, so the detail controller can
+// tell a deleted run (404) from a real failure and refetch on a stale-state conflict.
+
+/** The result of one ensemble call: the parsed body on success, the status + code on refusal. */
+export type EnsembleFetch<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; error: string; code?: string; data: Record<string, unknown> };
+
+async function ensembleJson<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<EnsembleFetch<T>> {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: body === undefined ? {} : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: typeof data.error === "string" ? data.error : `HTTP ${res.status}`,
+        code: typeof data.code === "string" ? data.code : undefined,
+        data,
+      };
+    }
+    return { ok: true, status: res.status, data: data as T };
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err), data: {} };
+  }
+}
+
+/** Compact run summaries. The dashboard prefers the live SSE collection; this is the fallback. */
+export const fetchEnsembles = (status?: string) =>
+  fetchJson<{ ensembles: EnsembleSummary[]; total: number }>(
+    `/api/ensembles${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+  );
+
+/** The full bounded detail for one run: members, artifacts, stages, evaluations, decisions. */
+export const fetchEnsembleDetail = (id: string) =>
+  ensembleJson<EnsembleRunDetailResponse>("GET", `/api/ensembles/${encodeURIComponent(id)}`);
+
+/** One artifact's on-demand, byte-bounded diff. Never carried in SSE. */
+export const fetchEnsembleArtifactPatch = (runId: string, artifactId: string, maxBytes?: number) =>
+  ensembleJson<EnsembleArtifactPatch>(
+    "GET",
+    `/api/ensembles/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/patch${
+      maxBytes ? `?maxBytes=${maxBytes}` : ""
+    }`,
+  );
+
+/**
+ * The side-effect-free launch/budget/handoff estimate. Always returns a body: `ok: false`
+ * with per-field `issues` for an invalid draft is the ordinary case, not an error.
+ */
+export async function previewEnsemble(input: EnsembleCreateInput): Promise<EnsemblePreviewResult> {
+  const r = await ensembleJson<EnsemblePreviewResult>("POST", "/api/ensembles/preview", input);
+  return r.ok
+    ? r.data
+    : { ok: false, reason: "preview_failed", issues: [{ path: "", message: r.error }], estimate: null, workflow: null };
+}
+
+/** Idempotently create and launch one run. `created: false` is a same-`sourceKey` replay. */
+export const createEnsemble = (input: EnsembleCreateInput) =>
+  ensembleJson<{ run: EnsembleRun; summary: EnsembleSummary; created: boolean }>(
+    "POST",
+    "/api/ensembles",
+    input,
+  );
+
+/** One generic operator action (decide, retry, withdraw, cancel, restore, resolve-finalization). */
+export const ensembleAction = (id: string, body: EnsembleActionBody) =>
+  ensembleJson<{ summary: EnsembleSummary | null; decision: EnsembleDecision | null; replayed: boolean }>(
+    "POST",
+    `/api/ensembles/${encodeURIComponent(id)}/actions`,
+    body,
+  );
+
+/** The manual fallback for a member that cannot reach the MCP submission tool. */
+export const submitEnsembleMember = (
+  runId: string,
+  memberId: string,
+  result: { summary: string; checks?: string[]; testEvidence?: string | null },
+) =>
+  ensembleJson<EnsembleSubmitAck>(
+    "POST",
+    `/api/ensembles/${encodeURIComponent(runId)}/members/${encodeURIComponent(memberId)}/submit`,
+    { result },
+  );
+
+/** Terminal-only history + private-ref deletion, confirmed by echoing the run id. */
+export const deleteEnsemble = (id: string, confirmId: string) =>
+  ensembleJson<{ deleted: true }>("DELETE", `/api/ensembles/${encodeURIComponent(id)}`, {
+    confirmId,
+  });
 
 /**
  * Resolve a typed path to its canonical git repo root, validated server-side.

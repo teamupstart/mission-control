@@ -106,6 +106,7 @@ export function App(): React.JSX.Element {
     personas,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
+    ensembleSummaries,
     fleetCost,
     settingsStatus,
     schedules,
@@ -724,6 +725,7 @@ export function App(): React.JSX.Element {
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
     onOpenSchedule,
     scheduleNameById,
+    onOpenEnsemble: (runId) => navigate({ page: "workflows", tab: "ensembles", ensembleId: runId }),
   };
 
   /**
@@ -1409,6 +1411,13 @@ export function App(): React.JSX.Element {
                   ? route.filters
                   : undefined
               }
+              ensembleSummaries={ensembleSummaries}
+              hasSnapshot={hasSnapshot}
+              selectedEnsembleId={
+                route.page === "workflows" && route.tab === "ensembles"
+                  ? route.ensembleId ?? null
+                  : null
+              }
               llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
@@ -1428,6 +1437,31 @@ export function App(): React.JSX.Element {
                   : {}),
                 filters,
               })}
+              onEnsemble={(ensembleId) => navigate({
+                page: "workflows",
+                tab: "ensembles",
+                ...(ensembleId ? { ensembleId } : {}),
+              })}
+              onOpenTask={(taskId) => {
+                const task = tasks.find((candidate) => candidate.id === taskId);
+                if (!task) return;
+                const liveSession = task.sessionId
+                  ? sessions.find((session) => session.id === task.sessionId)
+                  : sessions.find((session) => session.task?.id === taskId);
+                if (liveSession) {
+                  navigate({ page: "fleet" });
+                  setFilter("");
+                  setSelectedId(liveSession.id);
+                  if (layout === "board") setBoardOpen(true);
+                  return;
+                }
+                if (task.status === "backlog") {
+                  openTaskEditor(taskId);
+                  return;
+                }
+                navigate({ page: "fleet" });
+                setReportOpen(true);
+              }}
               onOpenSession={(sessionId) => {
                 navigate({ page: "fleet" });
                 setSelectedId(sessionId);
@@ -1617,8 +1651,13 @@ export function App(): React.JSX.Element {
                 editTask={editingTask}
                 tasks={tasks}
                 sessions={sessions}
+                personas={personas}
+                workflowSummaries={workflowSummaries}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
+                onEnsembleLaunched={(runId) =>
+                  navigate({ page: "workflows", tab: "ensembles", ensembleId: runId })
+                }
               />
 
               {reportOpen && (

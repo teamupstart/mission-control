@@ -36,6 +36,9 @@ import {
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import { EnsembleDispatch } from "../ensembles/dispatch/EnsembleDispatch.tsx";
+import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -71,6 +74,13 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.dependencies.length === 0
   );
+}
+
+function ensembleDraftsEqual(
+  a: EnsembleDispatchDraft,
+  b: EnsembleDispatchDraft,
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**
@@ -149,24 +159,40 @@ export function DispatchLayer({
   editTask,
   tasks = [],
   sessions = [],
+  personas = [],
+  workflowSummaries = [],
   onClose,
   onOpenSchedule,
+  onEnsembleLaunched,
 }: {
   open: boolean;
   /** The backlog task being edited, or null for a fresh dispatch. */
   editTask: Task | null;
   tasks?: Task[];
   sessions?: Session[];
+  /** Live Personas, for the Ensemble evaluator-guidance selector. */
+  personas?: PersonaView[];
+  /** Live Workflow summaries, for the optional post-selection handoff placement. */
+  workflowSummaries?: WorkflowSummary[];
   onClose: () => void;
   /** Open the Scheduled Catalog from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Navigate to a freshly launched Ensemble run's detail. */
+  onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  // The Single vs Ensemble launch mode and the Ensemble draft live BESIDE the compose draft,
+  // so switching mode or closing the modal loses neither. Edit mode is always Single: an
+  // existing backlog Task cannot be turned into an Ensemble.
+  const [launchMode, setLaunchMode] = useState<"single" | "ensemble">("single");
+  const [ensembleDraft, setEnsembleDraft] = useState<EnsembleDispatchDraft>(freshEnsembleDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
   const draftRef = useRef(draft);
+  const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  ensembleDraftRef.current = ensembleDraft;
 
   // The working copy of the task being edited, if any, beside the seed it was built
   // from. Seeded during render rather than from an effect: an effect would show one
@@ -275,6 +301,43 @@ export function DispatchLayer({
     setDraft(freshDispatchDraft());
   }, []);
 
+  /**
+   * Clear the Ensemble draft: reset the compose fields AND rotate the request id, so the next
+   * launch is a genuinely new request rather than an idempotent replay of a half-abandoned one.
+   */
+  const onEnsembleClear = useCallback(() => {
+    revokeAttachments(draftRef.current.attachments);
+    setDraft(freshDispatchDraft());
+    setEnsembleDraft(freshEnsembleDraft());
+  }, []);
+
+  /**
+   * An Ensemble was accepted. Like a Single dispatch it clears the compose draft and revokes
+   * its attachments, and it mints a fresh request id so the same key never launches a second
+   * fleet; then it hands the run id up to navigate to its detail.
+   */
+  const onEnsembleLaunchedInternal = useCallback(
+    (runId: string, submitted: DispatchDraft, submittedEnsemble: EnsembleDispatchDraft) => {
+      const draftChanged =
+        !draftsEqual(draftRef.current, submitted) ||
+        !ensembleDraftsEqual(ensembleDraftRef.current, submittedEnsemble);
+      if (draftChanged) {
+        setEnsembleDraft({
+          ...ensembleDraftRef.current,
+          requestId: crypto.randomUUID(),
+          previewFingerprint: null,
+        });
+      } else {
+        revokeAttachments(draftRef.current.attachments);
+        setDraft(freshDispatchDraft());
+        setEnsembleDraft(freshEnsembleDraft());
+      }
+      onEnsembleLaunched?.(runId);
+      onClose();
+    },
+    [onClose, onEnsembleLaunched],
+  );
+
   if (!open) return null;
   if (editTask && editDraft) {
     return (
@@ -306,6 +369,14 @@ export function DispatchLayer({
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
+      launchMode={launchMode}
+      onLaunchModeChange={setLaunchMode}
+      ensembleDraft={ensembleDraft}
+      onEnsembleDraftChange={setEnsembleDraft}
+      onEnsembleClear={onEnsembleClear}
+      onEnsembleLaunched={onEnsembleLaunchedInternal}
+      personas={personas}
+      workflowSummaries={workflowSummaries}
     />
   );
 }
@@ -336,6 +407,14 @@ function DispatchModal({
   onClose,
   onSubmitted,
   onOpenSchedule,
+  launchMode = "single",
+  onLaunchModeChange,
+  ensembleDraft,
+  onEnsembleDraftChange,
+  onEnsembleClear,
+  onEnsembleLaunched,
+  personas = [],
+  workflowSummaries = [],
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -349,8 +428,23 @@ function DispatchModal({
   onSubmitted: (submitted: DispatchDraft) => void;
   /** Open the Scheduled Catalog from a scheduled task's read-only provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Single vs Ensemble. Only meaningful for a new dispatch; an edit is always Single. */
+  launchMode?: "single" | "ensemble";
+  onLaunchModeChange?: (mode: "single" | "ensemble") => void;
+  ensembleDraft?: EnsembleDispatchDraft;
+  onEnsembleDraftChange?: (draft: EnsembleDispatchDraft) => void;
+  onEnsembleClear?: () => void;
+  onEnsembleLaunched?: (
+    runId: string,
+    submitted: DispatchDraft,
+    submittedEnsemble: EnsembleDispatchDraft,
+  ) => void;
+  personas?: PersonaView[];
+  workflowSummaries?: WorkflowSummary[];
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
+  // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
+  const ensembleMode = !editing && launchMode === "ensemble" && ensembleDraft !== undefined;
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   // The configured per-harness defaults, so both pickers can name what "Default"
@@ -617,6 +711,35 @@ function DispatchModal({
           />
         </label>
 
+        {!editing && onLaunchModeChange && (
+          <div className="dispatch-mode-toggle" role="radiogroup" aria-label="Launch mode">
+            <Tooltip label="Dispatch one agent to this task">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={launchMode === "single"}
+                className={launchMode === "single" ? "active" : ""}
+                onClick={() => onLaunchModeChange("single")}
+              >
+                Single agent
+              </button>
+            </Tooltip>
+            <Tooltip label="Launch several agents on the same task and compare them">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={launchMode === "ensemble"}
+                className={launchMode === "ensemble" ? "active" : ""}
+                onClick={() => onLaunchModeChange("ensemble")}
+              >
+                Ensemble
+              </button>
+            </Tooltip>
+          </div>
+        )}
+
+        {!ensembleMode && (
+        <>
         <div className="field-row">
           <label className="field">
             <span className="field-label">Kind</span>
@@ -719,7 +842,10 @@ function DispatchModal({
             </select>
           </Tooltip>
         </label>
+        </>
+        )}
 
+        {!ensembleMode && (
         <div className="field-row">
           <label className="field">
             <span className="field-label">
@@ -767,6 +893,7 @@ function DispatchModal({
             )}
           </label>
         </div>
+        )}
 
         <label className="field">
           <span className="field-label">
@@ -788,6 +915,7 @@ function DispatchModal({
           />
         </label>
 
+        {!ensembleMode && (
         <label className="field">
           <span className="field-label">
             Dependencies{" "}
@@ -823,6 +951,7 @@ function DispatchModal({
             {selectedDependenciesUnmet ? " This task will stay in the backlog." : ""}
           </span>
         </label>
+        )}
 
         <label className="field">
           <span className="field-label">
@@ -838,7 +967,9 @@ function DispatchModal({
               onChange={(e) => update({ intent: e.target.value })}
               onPaste={drop.onPaste}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(true);
+                // In Ensemble mode the launch is a deliberate review-then-confirm, so the
+                // dispatch chord does not short-circuit it.
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !ensembleMode) void submit(true);
               }}
             />
             <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
@@ -846,32 +977,59 @@ function DispatchModal({
           </div>
         </label>
 
+        {ensembleMode && ensembleDraft && onEnsembleDraftChange && onEnsembleLaunched && (
+          <EnsembleDispatch
+            compose={{
+              repoRoot: draft.repoRoot,
+              title: draft.title,
+              intent: draft.intent,
+              attachments: draft.attachments,
+            }}
+            ensemble={ensembleDraft}
+            onEnsembleChange={onEnsembleDraftChange}
+            uploading={drop.uploading}
+            personas={personas}
+            workflowSummaries={workflowSummaries}
+            onLaunched={(runId, submittedEnsemble) =>
+              onEnsembleLaunched(runId, draft, submittedEnsemble)
+            }
+          />
+        )}
+
         {error && <p className="dispatch-error">{error}</p>}
       </div>
 
       <footer className="modal-foot">
-        <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
-          <button
-            className="btn btn-ghost"
-            onClick={() => void submit(false)}
-            disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
-          >
-          {editing
-            ? pending === "shelve"
-              ? "Saving…"
-              : "Save"
-            : pending === "shelve"
-              ? "Shelving…"
-                : "Add to backlog"}
-          </button>
-        </Tooltip>
+        {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
+            backlog" makes no sense there; the Launch control lives in the Ensemble body. */}
+        {!ensembleMode && (
+          <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => void submit(false)}
+              disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
+            >
+            {editing
+              ? pending === "shelve"
+                ? "Saving…"
+                : "Save"
+              : pending === "shelve"
+                ? "Shelving…"
+                  : "Add to backlog"}
+            </button>
+          </Tooltip>
+        )}
         <Tooltip label={editing ? "Undo these edits" : "Reset the form"}>
           <button
             className="btn btn-ghost"
-            onClick={clearDraft}
+            onClick={ensembleMode ? onEnsembleClear : clearDraft}
             disabled={
               busy ||
-              (editing ? draftsEqual(draft, draftFromTask(editing)) : isEmptyDispatchDraft(draft))
+              (ensembleMode
+                ? false
+                : editing
+                  ? draftsEqual(draft, draftFromTask(editing))
+                  : isEmptyDispatchDraft(draft))
             }
           >
             {editing ? "Revert" : "Clear"}
@@ -883,35 +1041,37 @@ function DispatchModal({
             Cancel
           </button>
         </Tooltip>
-        <Tooltip
-          label={
-            selectedDependenciesUnmet
-              ? "Dependencies must complete first; schedule this in the backlog"
-              : "Provision a worktree and launch the agent now (⌘/Ctrl+Enter)"
-          }
-        >
-          <button
-            className="btn btn-primary"
-            onClick={() => void submit(true)}
-            disabled={
-              busy ||
-              drop.uploading ||
-              !draft.repoRoot.trim() ||
-              !draft.intent.trim() ||
-              Boolean(editing && selectedDependenciesUnmet)
+        {!ensembleMode && (
+          <Tooltip
+            label={
+              selectedDependenciesUnmet
+                ? "Dependencies must complete first; schedule this in the backlog"
+                : "Provision a worktree and launch the agent now (⌘/Ctrl+Enter)"
             }
           >
-          {pending === "dispatch"
-            ? "Dispatching…"
-            : drop.uploading
-              ? "Uploading…"
-              : selectedDependenciesUnmet
-                ? editing
-                  ? "Waiting for dependencies"
-                  : "Schedule after dependencies"
-                  : "Dispatch now"}
-          </button>
-        </Tooltip>
+            <button
+              className="btn btn-primary"
+              onClick={() => void submit(true)}
+              disabled={
+                busy ||
+                drop.uploading ||
+                !draft.repoRoot.trim() ||
+                !draft.intent.trim() ||
+                Boolean(editing && selectedDependenciesUnmet)
+              }
+            >
+            {pending === "dispatch"
+              ? "Dispatching…"
+              : drop.uploading
+                ? "Uploading…"
+                : selectedDependenciesUnmet
+                  ? editing
+                    ? "Waiting for dependencies"
+                    : "Schedule after dependencies"
+                    : "Dispatch now"}
+            </button>
+          </Tooltip>
+        )}
       </footer>
     </Overlay>
   );

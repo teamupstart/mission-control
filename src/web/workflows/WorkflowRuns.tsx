@@ -56,18 +56,32 @@ const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
 /**
  * Where a run came from, when something other than an operator started it.
  *
- * Deliberately not a link: the route that would open the source does not exist yet, and a
- * dead navigation target reads as a broken product rather than an unfinished one. The id is
- * shown as text so an operator can still find the record it names.
+ * An Ensemble source deep-links to that run's detail under the Ensembles tab (the route landed
+ * with the Phase 7 dashboard). If the ensemble was since deleted, the id lands on the Ensembles
+ * list rather than a fabricated run - the same rule a deleted-run id follows. Ensemble and
+ * Workflow states stay separate: this link never implies the ensemble is approved or shipped.
  */
 function ExternalProvenance({
   source,
 }: {
   source: WorkflowExternalSource;
 }): React.JSX.Element {
+  const href =
+    source.kind === "ensemble"
+      ? `#/workflows/ensembles/${encodeURIComponent(source.sourceId)}`
+      : null;
   return (
     <p className="workflow-run-provenance">
-      Started by {EXTERNAL_SOURCE_LABELS[source.kind]} <code>{source.sourceId}</code>
+      Started by {EXTERNAL_SOURCE_LABELS[source.kind]}{" "}
+      {href ? (
+        <Tooltip label="Open the ensemble run that started this workflow">
+          <a href={href}>
+            <code>{source.sourceId}</code>
+          </a>
+        </Tooltip>
+      ) : (
+        <code>{source.sourceId}</code>
+      )}
       {" · "}{when(source.createdAt)}
     </p>
   );

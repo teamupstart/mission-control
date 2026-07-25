@@ -4,11 +4,13 @@ import type {
   WorkflowSummary,
   WorkflowVersion,
 } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowRunFilters, WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
+import { EnsembleRuns } from "./EnsembleRuns.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { WorkflowConfigPanel } from "./WorkflowConfigPanel.tsx";
 
@@ -16,6 +18,7 @@ const WORKFLOW_TABS = [
   ["workflows", "Author the review workflows agents are bound to"],
   ["personas", "Author the reviewer Personas workflow nodes run"],
   ["runs", "Watch workflow runs and their verdicts"],
+  ["ensembles", "Watch multi-agent ensembles, their evidence, and decisions"],
 ] as const;
 
 export function WorkflowPage({
@@ -25,12 +28,17 @@ export function WorkflowPage({
   workflowRuns = [],
   selectedRunId = null,
   runFilters,
+  ensembleSummaries = [],
+  selectedEnsembleId = null,
+  hasSnapshot = false,
   llm,
   isOverlayOpen,
   onTab,
   onDirtyChange,
   onRun = () => {},
   onRunFilters = () => {},
+  onEnsemble = () => {},
+  onOpenTask = () => {},
   onBindVersion = () => {},
   onBindWorkflow,
   onOpenSession = () => {},
@@ -42,12 +50,17 @@ export function WorkflowPage({
   workflowRuns?: WorkflowRunSummary[];
   selectedRunId?: string | null;
   runFilters?: WorkflowRunFilters;
+  ensembleSummaries?: EnsembleSummary[];
+  selectedEnsembleId?: string | null;
+  hasSnapshot?: boolean;
   llm: LlmState;
   isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
   onRun?: (id: string) => void;
   onRunFilters?: (filters: WorkflowRunFilters | undefined) => void;
+  onEnsemble?: (id: string | null) => void;
+  onOpenTask?: (id: string) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   /** Opens the binding dialog with no session pinned, for the builder's bind call to action. */
   onBindWorkflow?: () => void;
@@ -139,6 +152,23 @@ export function WorkflowPage({
             onFilters={onRunFilters}
             onOpenSession={onOpenSession}
             onOpenInspectorSettings={onOpenInspectorSettings}
+          />
+        </section>
+      )}
+      {tab === "ensembles" && (
+        <section
+          id="workflow-panel-ensembles"
+          role="tabpanel"
+          aria-labelledby="workflow-tab-ensembles"
+        >
+          <EnsembleRuns
+            summaries={ensembleSummaries}
+            selectedId={selectedEnsembleId}
+            hasSnapshot={hasSnapshot}
+            onSelect={onEnsemble}
+            onOpenSession={onOpenSession}
+            onOpenTask={onOpenTask}
+            onOpenWorkflowRun={onRun}
           />
         </section>
       )}

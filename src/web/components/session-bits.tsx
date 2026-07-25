@@ -18,6 +18,7 @@ import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { TaskEnsembleLink } from "@shared/ensemble.ts";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -164,6 +165,147 @@ export function WorkflowRailMark({
         }}
       >
         ⌁
+      </span>
+    </Tooltip>
+  );
+}
+
+// The Ensemble marks are the Workflow marks' sibling, deliberately drawn from a DIFFERENT
+// datum and a DIFFERENT vocabulary so the two never conflate on one session. A Workflow mark
+// answers the review/repair/gate state of one selected session; an Ensemble mark answers which
+// member of a group this session is and how the group ranked it. The member projection already
+// rides on `session.task.ensemble` (a `TaskEnsembleLink`), so - unlike Workflow, which joins a
+// run to a session in App - these read it straight off the session, the way the Inspector marks
+// read `session.inspector`, while taking a Workflow-style open handler for the click.
+export type EnsembleMemberTone = "running" | "waiting" | "kept" | "out";
+
+export function ensembleMemberTone(link: TaskEnsembleLink): EnsembleMemberTone {
+  switch (link.status) {
+    case "retained":
+    case "advanced":
+      return "kept";
+    case "eliminated":
+    case "failed":
+    case "withdrawn":
+      return "out";
+    case "submitted":
+    case "reviewing":
+      return "waiting";
+    default:
+      // pending, launching, active, or a status this build cannot name (null)
+      return "running";
+  }
+}
+
+/**
+ * A short human phrase for this member's current standing. Prefers the server-derived
+ * `resultLabel` ("rank 1", "advanced", "retained") when it exists; components render that string
+ * and never interpret strategy-specific JSON to derive one of their own.
+ */
+export function ensembleMemberStateLabel(link: TaskEnsembleLink): string {
+  if (link.resultLabel) return link.resultLabel;
+  switch (link.status) {
+    case "retained":
+      return "selected";
+    case "advanced":
+      return "advanced";
+    case "eliminated":
+      return "not selected";
+    case "failed":
+      return "failed";
+    case "withdrawn":
+      return "withdrawn";
+    case "submitted":
+      return "submitted";
+    case "reviewing":
+      return "in review";
+    case "active":
+      return "working";
+    case "launching":
+      return "launching";
+    case "pending":
+      return "queued";
+    default:
+      return "member";
+  }
+}
+
+function ensembleMemberTooltip(link: TaskEnsembleLink): string {
+  return `${link.strategyLabel}: candidate ${link.ordinal} of ${link.launchedMembers} - ${ensembleMemberStateLabel(link)}`;
+}
+
+export function EnsembleChip({
+  link,
+  onOpen,
+}: {
+  link: TaskEnsembleLink | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  return (
+    <Tooltip label={ensembleMemberTooltip(link)}>
+      <button
+        className={`ensemble-chip ensemble-${ensembleMemberTone(link)}`}
+        aria-label={ensembleMemberTooltip(link)}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>⧉</span>
+        {link.strategyLabel} · {ensembleMemberStateLabel(link)}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function EnsembleTileFlag({
+  link,
+  onOpen,
+}: {
+  link: TaskEnsembleLink | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  return (
+    <Tooltip label={ensembleMemberTooltip(link)}>
+      <button
+        className={`tile-flag tf-ensemble ensemble-${ensembleMemberTone(link)}`}
+        aria-label={ensembleMemberTooltip(link)}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>E</span> {link.ordinal} · {ensembleMemberStateLabel(link)}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function EnsembleRailMark({
+  link,
+  onOpen,
+}: {
+  link: TaskEnsembleLink | null;
+  onOpen?: () => void;
+}): React.JSX.Element | null {
+  if (!link) return null;
+  // A span, not a button: the whole rail row is already a button, and a button inside a button
+  // is invalid. This matches `WorkflowRailMark`; the row stays the keyboard-focusable element and
+  // the aria-label names what the click opens.
+  return (
+    <Tooltip label={ensembleMemberTooltip(link)}>
+      <span
+        className={`rail-ensemble ensemble-${ensembleMemberTone(link)}`}
+        aria-label={ensembleMemberTooltip(link)}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        <span aria-hidden>E</span>
+        {link.resultLabel && <span className="rail-ensemble-label">{link.resultLabel}</span>}
       </span>
     </Tooltip>
   );

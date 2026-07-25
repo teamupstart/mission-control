@@ -802,7 +802,7 @@ would be reported as such rather than silently skipped.)
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
 exposes six review-channel tools (an ensemble member session also gets
-[`submit_ensemble_result`](#multi-agent-ensembles-backend-complete-dashboard-next)):
+[`submit_ensemble_result`](#multi-agent-ensembles):
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1465,7 +1465,7 @@ Two more properties, both deliberate:
   dies mid-run either finds the task already filed (and just closes the ledger) or files it
   on the id it reserved. Neither path can produce a second task.
 
-## Multi-agent ensembles (backend complete; dashboard next)
+## Multi-agent ensembles
 
 An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
 under one versioned *strategy*, plus the group-level facts a single task cannot express: one
@@ -1474,8 +1474,23 @@ decision, and a terminal outcome. The first strategy is **Best of N** - two to f
 implement the same task alone from the same commit, one tool-less comparison ranks what they
 submitted, and you confirm the winner.
 
-**The backend is complete: a run can be created, compared, decided, finalized, and deleted
-through the API; only the dashboard UI is still to come.** The strategy-neutral runtime pins one
+**Start one from Dispatch, watch it under Workflows.** Open the dispatch modal and flip the
+launch mode from **Single agent** to **Ensemble**. The same title/repo/intent/attachment
+compose area serves both; below it, descriptor-driven strategy cards (Best of N is the only one
+enabled today) render the strategy's own form - a roster of two to five candidate rows, each
+choosing its own agent, model, effort and optional approach hint, plus the judge-blind toggle,
+the optional evaluator Persona, and an optional [workflow](#workflows-and-personas) to hand the
+winner to. **Review launch** posts a side-effect-free preview (member count, concurrency, waves,
+comparison calls, and whether the chosen workflow mode is executable) and any edit after that
+invalidates it, so **Launch N agents** always confirms exactly what you reviewed. The launch is
+idempotent on a stable request id: a lost response and a retry return the same run, never a
+second fleet. Every candidate is grouped in Cards, Console and Board by a distinct **E** mark
+(separate from a workflow's **W**) that opens the run. The **Ensembles** tab beside Workflows,
+Personas and Runs is the monitoring, evidence, decision, recovery and history surface: it lists
+runs attention-first from the one live SSE stream and fetches a selected run's bounded detail -
+members, immutable artifacts and their on-demand diffs, the stage/evaluation timeline, the
+Best-of-N scorecards, and the select-one decision - over HTTP, refetching when that run's summary
+revises rather than polling. The strategy-neutral runtime pins one
 base commit, launches bounded *waves* of ordinary member tasks (creating every task in a wave
 before dispatching the first, and never launching past the concurrency the plan authorizes),
 accepts an explicit submission from each member, captures its working tree as an immutable private
@@ -1536,9 +1551,8 @@ action covering decide, resolve-finalization, retry, withdraw, cancel and restor
 artifact evidence/patch and manual-member-submission routes under that run, and
 `DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
 run id, which never deletes a task or linked workflow state and resumes the same remaining refs
-after a crash). **The dashboard that drives this is the one remaining piece**; until it lands the
-backend is exercised by the API and tests, and on every existing machine the tables stay empty and
-the product behaves exactly as before. The plan is
+after a crash). The dashboard drives all of it from that one surface; on a machine that never
+starts an ensemble the tables stay empty and the product behaves exactly as before. The plan is
 [`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
 
 Four decisions are worth knowing now, because everything later is built on them:
@@ -1546,8 +1560,8 @@ Four decisions are worth knowing now, because everything later is built on them:
 - **Every member is an ordinary task.** Ensembles add no second dispatcher, worktree
   provisioner or cancellation path; the group owns what a task cannot own, and nothing else.
   The member link nests inside the task summary a session already carries instead of adding
-  another field to the session itself. The dashboard does not present that link yet; that
-  arrives with the later UI phase.
+  another field to the session itself, which is what the **E** mark on every layout reads to
+  say which candidate a card is and how the group ranked it.
 - **A model recommends; it never promotes.** The comparison is advisory and runs without
   tools. Anything destructive - resetting a branch to a chosen snapshot, reaping the losing
   worktrees - waits for an explicit human confirmation, and the compiled plan carries that
@@ -3497,7 +3511,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles-backend-complete-dashboard-next): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
+| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |

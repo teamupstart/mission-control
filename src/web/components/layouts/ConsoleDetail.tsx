@@ -26,6 +26,7 @@ import {
   SessionTitle,
   StateBadge,
   WorkflowChip,
+  EnsembleChip,
   subtitle,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
@@ -99,6 +100,7 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   const workflowRun = view.workflowRunBySession?.get(session.id) ?? null;
+  const ensembleLink = session.task?.ensemble ?? null;
   const [diffSelection, setDiffSelection] = useState<DiffSelection>({
     sessionId: session.id,
     commit: null,
@@ -231,6 +233,10 @@ export function ConsoleDetail({
         <WorkflowChip
           run={workflowRun}
           onOpen={workflowRun ? () => view.onOpenWorkflowRun?.(workflowRun.id) : undefined}
+        />
+        <EnsembleChip
+          link={ensembleLink}
+          onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
         />
         {!workflowRun && view.onBindWorkflow && (
           <Tooltip label="Bind a published workflow version">

@@ -345,6 +345,7 @@ test("a partial continuation delivery stays claimed and is never pasted twice", 
   const { store, gateway, engine } = harness(finalize);
   const runId = await driveToDecision(store, gateway, engine);
   const winner = winnerOf(store, runId, 1);
+  const winnerTask = store.listAttempts(runId).find((attempt) => attempt.memberId === winner.memberId)!.taskId!;
   await decide(engine, runId, winner.artifactId);
 
   assert.equal(store.getRun(runId)!.status, "finalizing");
@@ -352,6 +353,7 @@ test("a partial continuation delivery stays claimed and is never pasted twice", 
   assert.equal(finalize.restored.length, 1);
   finalize.deliverOk = true;
   finalize.safeIdle = false;
+  gateway.vanish(winnerTask);
   await engine.resolveFinalization(runId, false);
   assert.equal(store.getRun(runId)!.status, "completed");
   assert.equal(finalize.continuations.length, 1);

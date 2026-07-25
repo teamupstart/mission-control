@@ -218,6 +218,26 @@ test("a crash after binding but before submit reuses the same binding on recover
   assert.equal(workflow.bindings.length, 1, "recovery reused the same binding");
 });
 
+test("a dead restored session with a durable binding is never replaced", async () => {
+  const finalize = new FakeFinalize();
+  const workflow = new FakeWorkflow();
+  workflow.submitResult = { ok: false, reason: "other", detail: "submission unavailable" };
+  finalize.workflow = workflow;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine, PINNED);
+  const artifact = winnerArtifact(store, runId);
+  const winnerTask = store.listAttempts(runId).find((attempt) => attempt.id === artifact.attemptId)!.taskId!;
+  await decide(engine, runId, artifact.id);
+  assert.equal(store.getRun(runId)!.workflowHandoff!.bindingId, "binding-1");
+
+  gateway.vanish(winnerTask);
+  await engine.recover(runId);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(store.getRun(runId)!.workflowHandoff!.bindingId, "binding-1");
+  assert.equal(workflow.bindings.length, 1);
+  assert.equal(finalize.materialized.length, 0);
+});
+
 // ---- the manual-binding guard ----
 
 test("an active ensemble member's session cannot be bound to a workflow; a settled one can", () => {

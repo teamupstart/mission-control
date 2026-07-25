@@ -2411,10 +2411,15 @@ export class EnsembleEngine {
       const taskId = winnerAttempt?.taskId ?? null;
       const sessionId = taskId ? this.tasks.sessionId(taskId) : null;
       const worktreePath = winnerAttempt ? this.ownedWorktree(winnerAttempt) : null;
-      if (sessionId !== null && worktreePath !== null) {
+      const handoffBound = run.workflowHandoff !== null && run.workflowHandoff.bindingId !== null;
+      if (
+        (sessionId !== null && worktreePath !== null) ||
+        progress.continuationDelivered ||
+        handoffBound
+      ) {
         return {
           ok: true,
-          winner: { mode: "restored", ready: true },
+          winner: progress.winner,
           sessionId,
           worktreePath,
           mode: "restored",

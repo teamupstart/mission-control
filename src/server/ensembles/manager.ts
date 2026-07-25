@@ -375,30 +375,85 @@ export class EnsembleManager {
       if (existing.ok) void this.engine.launch(existing.run.id);
       return existing;
     }
-    const compiled = this.compile(input, now);
-    if (!compiled.ok) return compiled.outcome;
-
-    // Resolve an optional Workflow handoff to an immutable version BEFORE any base is pinned or any
-    // Task exists - a Live/Foreman mode or an archived version is a create refusal, not a downgrade.
-    const handoff = this.resolveHandoff(compiled.value.request.workflow);
-    if (!handoff.ok) return handoff.outcome;
-
-    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
-    if (!preflight.ok) return { ok: false, reason: "preflight_failed", issues: preflight.issues };
+    // The SAME validation projection preview runs, so a draft preview claims is launchable is one
+    // create actually launches - compile, resolve the Workflow handoff, and run the read-only
+    // preflight. Only after it passes is anything persisted or dispatched.
+    const validated = await this.validateDraft(input, now);
+    if (!validated.ok) return { ok: false, reason: validated.reason, issues: validated.issues };
 
     const write = this.persistRun(
-      compiled.value,
-      preflight.value.baseSha,
-      preflight.value.baseBranch,
+      validated.compiled,
+      validated.preflight.baseSha,
+      validated.preflight.baseBranch,
       "running",
       now,
-      preflight.value.repoRoot,
-      handoff.value,
+      validated.preflight.repoRoot,
+      validated.handoff,
     );
     const outcome = this.published(write);
     if (write.created) await this.engine.launch(write.run.id);
     else void this.engine.launch(write.run.id);
     return outcome;
+  }
+
+  /**
+   * The ONE validation/preflight projection preview and create share, so their verdicts cannot drift.
+   *
+   * Compile the strategy, resolve an optional Workflow handoff to an immutable version (a Live/Foreman
+   * mode or an archived version is a refusal, never a silent downgrade), and run the read-only launch
+   * preflight (repository, one pinned base commit, agent binaries, effort support, Mission MCP).
+   * Everything here is side-effect-free: it pins no base into the store and dispatches nothing, so it
+   * is safe to call on every keystroke - and because create runs exactly this, a preview that says
+   * "launchable" cannot become a create that refuses.
+   */
+  private async validateDraft(
+    input: EnsembleCreateInput,
+    now: number,
+  ): Promise<
+    | {
+        ok: true;
+        compiled: { descriptor: StrategyDescriptor; plan: CompiledEnsemblePlan; config: EnsembleJson; request: ReturnType<typeof EnsembleCreateInputSchema.parse> };
+        estimate: EnsembleLaunchEstimate | null;
+        workflow: ResolvedWorkflowVersion | null;
+        handoff: EnsembleWorkflowHandoff | null;
+        preflight: PreflightResult;
+      }
+    | { ok: false; reason: EnsembleCreateRefusal; issues: StrategyIssue[]; estimate: EnsembleLaunchEstimate | null; workflow: ResolvedWorkflowVersion | null }
+  > {
+    const compiled = this.compile(input, now);
+    if (!compiled.ok) {
+      const outcome = compiled.outcome;
+      return {
+        ok: false,
+        reason: outcome.ok ? "invalid_config" : outcome.reason,
+        issues: outcome.ok ? [] : outcome.issues,
+        estimate: null,
+        workflow: null,
+      };
+    }
+    const estimate = compiled.value.descriptor.estimate(compiled.value.config);
+    const placement = compiled.value.request.workflow ?? null;
+    let workflow: ResolvedWorkflowVersion | null = null;
+    let handoff: EnsembleWorkflowHandoff | null = null;
+    if (placement !== null) {
+      workflow = this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null;
+      const resolved = this.resolveHandoff(placement);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          reason: resolved.outcome.ok ? "workflow_unavailable" : resolved.outcome.reason,
+          issues: resolved.outcome.ok ? [] : resolved.outcome.issues,
+          estimate,
+          workflow,
+        };
+      }
+      handoff = resolved.value;
+    }
+    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
+    if (!preflight.ok) {
+      return { ok: false, reason: "preflight_failed", issues: preflight.issues, estimate, workflow };
+    }
+    return { ok: true, compiled: compiled.value, estimate, workflow, handoff, preflight: preflight.value };
   }
 
   /**
@@ -871,42 +926,13 @@ export class EnsembleManager {
    * every keystroke.
    */
   async preview(input: EnsembleCreateInput, now = this.now()): Promise<EnsemblePreviewResult> {
-    const compiled = this.compile(input, now);
-    if (!compiled.ok) {
-      const outcome = compiled.outcome;
-      return {
-        ok: false,
-        reason: outcome.ok ? null : outcome.reason,
-        issues: outcome.ok ? [] : outcome.issues,
-        estimate: null,
-        workflow: null,
-      };
+    // Exactly the projection create runs (compile + Workflow resolution + read-only preflight), so a
+    // draft can never preview as launchable and then be refused on create. It persists nothing.
+    const validated = await this.validateDraft(input, now);
+    if (!validated.ok) {
+      return { ok: false, reason: validated.reason, issues: validated.issues, estimate: validated.estimate, workflow: validated.workflow };
     }
-    const estimate = compiled.value.descriptor.estimate(compiled.value.config);
-    const placement = input.workflow ?? null;
-    let workflow: ResolvedWorkflowVersion | null = null;
-    if (placement !== null) {
-      workflow = this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null;
-      const handoff = this.resolveHandoff(placement);
-      if (!handoff.ok) {
-        return {
-          ok: false,
-          reason: handoff.outcome.ok ? null : handoff.outcome.reason,
-          issues: handoff.outcome.ok ? [] : handoff.outcome.issues,
-          estimate,
-          workflow,
-        };
-      }
-    }
-    // Preview shares create's validation: run the SAME read-only launch preflight (repository, base
-    // commit, agent binaries, Mission MCP) that `createAndLaunch` runs, so a draft for an unavailable
-    // harness or an invalid repository does not preview as launchable and then fail on create. It
-    // pins no base and writes nothing.
-    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
-    if (!preflight.ok) {
-      return { ok: false, reason: "preflight_failed", issues: preflight.issues, estimate, workflow };
-    }
-    return { ok: true, reason: null, issues: [], estimate, workflow };
+    return { ok: true, reason: null, issues: [], estimate: validated.estimate, workflow: validated.workflow };
   }
 
   /**

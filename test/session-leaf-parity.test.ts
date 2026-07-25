@@ -725,13 +725,14 @@ test("all four scheduled-origin surfaces share one Tooltip copy, live name and a
   assert.match(label, /Scheduled by Dependency audit/);
   assert.equal((tile?.props as { label: string }).label, label);
   assert.equal((rail?.props as { label: string }).label, label);
-  // The rail glyph sits inside the rail row's native button, so it stays a span - but a
-  // focusable one (role + tabIndex + Enter/Space) so keyboard users reach the deep link
-  // from the rail, not only from the card chip and tile flag.
+  // The rail glyph is a mouse-only span, NOT a focusable/role="button" control: the rail row
+  // is itself a native button, so an interactive descendant would be an invalid nested
+  // control (Inspector round on #241). It matches WorkflowRailMark / InspectorRailMark; the
+  // keyboard path to the deep link is the card chip, console-detail chip, and tile flag.
   const railMark = (rail?.props as { children: ReactElement }).children;
   const railProps = railMark.props as { role?: string; tabIndex?: number };
-  assert.equal(railProps.role, "button");
-  assert.equal(railProps.tabIndex, 0);
+  assert.equal(railProps.role, undefined);
+  assert.equal(railProps.tabIndex, undefined);
 });
 
 test("a task with no schedule provenance draws no origin mark on any surface", () => {

@@ -304,30 +304,20 @@ export function ScheduleOriginRailMark({
   if (!origin) return null;
   const name = scheduleNames?.get(origin.scheduleId) ?? null;
   const label = scheduleOriginTooltip(name, origin);
-  const open = (): void =>
-    onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
   return (
     <Tooltip label={label}>
-      {/* Focusable so keyboard users reach the history deep link from the rail too, not just
-          the card chip and tile flag. It stays a span, not a button: the rail row is itself
-          a native button and a nested button is invalid - tabIndex + role + Enter/Space give
-          it button semantics without that. stopPropagation keeps it from also selecting the
-          row it sits inside, on click and on key alike. */}
+      {/* A mouse-only glyph, deliberately - NOT a focusable/role="button" control. The rail
+          row is itself a native <button>, so any interactive descendant here would be an
+          invalid nested control the a11y tree announces inconsistently (Inspector round on
+          #241). It matches the sibling WorkflowRailMark / InspectorRailMark for that reason.
+          The KEYBOARD-accessible path to this history deep link is the card chip, the console
+          detail chip, and the board tile flag - all proper focusable buttons outside any row
+          button. stopPropagation keeps a click off the row it sits inside. */}
       <span
         className="rail-schedule"
-        role="button"
-        tabIndex={0}
-        aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
-          open();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            event.stopPropagation();
-            open();
-          }
+          onOpen?.(origin.scheduleId, origin.occurrenceId ?? undefined, origin.scheduledFor ?? undefined);
         }}
       >
         ◷

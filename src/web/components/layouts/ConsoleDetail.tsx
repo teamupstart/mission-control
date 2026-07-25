@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
@@ -169,7 +169,7 @@ export function ConsoleDetail({
   const gateNeedsYou = view.gateAlerts.has(session.id);
   const st = stateDisplay(session, gateNeedsYou);
   const live = session.state !== "exited";
-  const canSend = canWriteTo(session);
+  const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);

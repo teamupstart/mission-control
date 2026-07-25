@@ -38,6 +38,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s",
     agent: "claude",
     name: "old",
+    runtime: "terminal",
     nameSource: "tmux",
     state: "working" as SessionState,
     cwd: null,

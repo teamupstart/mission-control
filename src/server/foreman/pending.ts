@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { NmFinding, NmRunSummary, PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { activePaneDialog, dialogIdentity, gateParked } from "@shared/session.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
 // classification the worker and the triage tiers share. Kept out of worker.ts so
@@ -245,7 +245,10 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   // parsed from it, and `selectPaneOption` already verifies the row before pressing anything.
   const dialog = activePaneDialog(s);
   if (dialog || s.state === "awaiting_input") {
-    const canSend = canWriteTo(s);
+    // Whether an ANSWER can be delivered, which is what every downstream plan turns on -
+    // `planFromVerdict` can only escalate "no reply channel" when this is false. A
+    // driver-run session has one without holding a pane.
+    const canSend = canMessage(s);
     return {
       situation: canSend ? "terminal-pane" : "terminal-no-pane",
       surface: "terminal",
@@ -296,7 +299,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       inputReviewId: null,
       // The agent has stopped, so there is no blocked call to release - typing into its pane
       // wakes it with a new prompt, exactly as a human answering this would.
-      canSend: canWriteTo(s),
+      canSend: canMessage(s),
       // Keyed on the RUN id, not its branch (successive runs share one, and the second would
       // inherit the first's handled marker and be silently skipped - the very thing NmRunSummary
       // carries an id to prevent); on the step; and on the findings up at it (see

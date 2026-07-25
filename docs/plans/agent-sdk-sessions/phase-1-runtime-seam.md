@@ -148,3 +148,28 @@ SDK sessions from discovery code.
 - 2026-07-24: initial version. Claude's `runtimes` deliberately stays `["terminal"]`
   here so the phase is inert; phase 2 flips it with the driver (C4's contract test forces
   the two to move together).
+- 2026-07-25: implemented. Four notes for later phases, three of them corrections to the
+  call-site sweep in step 3, which was written against a tree that has since moved:
+  - **`App.tsx:1467` is gone.** That `canWriteTo` was the <kbd>⇧</kbd><kbd>Tab</kbd> cycle
+    gate, and #239 folded it into the shared `canCycleMode` (`@shared/session.ts`). It is a
+    KEYSTROKE gate, so it stays on `canWriteTo`; nothing in `App.tsx` moved.
+  - **`lib/format.ts:308` is `canRenameSession`**, which stays on `canWriteTo` too. Rename
+    moves a multiplexer session name and retitles tabs - it is pane mechanics, and the same
+    step's "keep `canWriteTo`" list names rename explicitly. Moving it would have offered
+    Rename on a session with no terminal to rename.
+  - `tasks.ts`'s `clearsContext` is at `:1435`, and `foreman/pending.ts` has two `canSend`
+    sites (`:248`, `:299`). Both moved as specified.
+  - **`McpLaunchDescriptor` is spelled `MissionMcpDescriptor`** in the repository
+    (`src/server/mission-mcp.ts`); `SdkLaunchOptions.mcp` names that type rather than
+    restating it, per the single-declaration rule for launch-scoped MCP.
+  - Additions the phase did not enumerate but C4/C5 imply: `SessionRequest` (the
+    harness-neutral ask that projects into `PaneDialog`, in `harness/types.ts`),
+    `driverDialog` (that projection, `sdk/dialog.ts`), `SDK_SESSION_STATUSES` (the persisted
+    status vocabulary, append-only, in `sdk/store.ts` beside the row IO), and
+    `Registry.beginEviction` (the extracted exited-then-linger-then-`remove` sequence the
+    sweep and the driver now share). `applyDriverEvent` also handles `pr_created` - the
+    variant is in C4's type, and the two things a proving hook does (decorate the card, emit
+    `pr_opened` once) are the same two here; phase 3 owns the rest of PR provenance.
+  - `turn_done.usage` is deliberately NOT applied to the session: the ledger keeps one
+    writer per harness and both still see an embedded session's own files, so spending it
+    here would double-count. Phase 3 owns that verification.

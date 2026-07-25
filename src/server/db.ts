@@ -670,6 +670,35 @@ export function openDb(): DatabaseSync {
       updated_at INTEGER NOT NULL
     );
 
+    -- Sessions the daemon RUNS rather than finds: one row per embedded (SDK-runtime)
+    -- session. Live sessions are otherwise never persisted because the OS can rebuild
+    -- them, and that argument does not reach these - there is no process on a tty to
+    -- re-find, so without this row a daemon restart loses the session, its harness-native
+    -- thread id (the only way to resume the conversation), and any task bound to it.
+    --
+    -- The id is the supervisor's own sdk:<uuid>, which is why it is durable: it is the
+    -- registry's map key AND this primary key, so a restored row registers the same card
+    -- rather than a second one. agent_session_id is nullable because it does not exist
+    -- until the harness mints it - that is the driver bound event, and a row written before
+    -- it lands is a session that was starting when the daemon died.
+    --
+    -- Ordinary table with no REFERENCES clause (the ensemble family stays the only one
+    -- declaring foreign keys) and no index: the only reads are by primary key and the
+    -- whole-table restore sweep, on a table with one row per live embedded session.
+    CREATE TABLE IF NOT EXISTS sdk_sessions (
+      id                TEXT PRIMARY KEY NOT NULL,
+      agent             TEXT NOT NULL,
+      agent_session_id  TEXT,
+      cwd               TEXT NOT NULL,
+      task_id           TEXT,
+      model             TEXT,
+      effort            TEXT,
+      permission_mode   TEXT,
+      status            TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
       cwd             TEXT,               -- + branch: the re-attach hint when the key dies

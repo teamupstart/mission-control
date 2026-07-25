@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { canCycleMode } from "@shared/session.ts";
-import { canWriteTo, muxHandle } from "@shared/pane.ts";
+import { canMessage, canWriteTo, muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
@@ -97,7 +97,9 @@ export function ActionBar({
   const [flash, setFlash] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const canSend = canWriteTo(session);
+  // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
+  // session, which a driver-run one answers yes to without holding a pane.
+  const canSend = canMessage(session);
   // What Kill tears down beyond the process itself: a multiplexer's named session, which an
   // emulator has no equivalent of. The backend names itself in the sentence, so the tmux
   // copy is unchanged and a second multiplexer's is true rather than borrowed.

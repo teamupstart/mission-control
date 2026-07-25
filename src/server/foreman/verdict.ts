@@ -103,7 +103,7 @@ export interface ReviewContext {
   promptMarker: string;
   /** A pending MCP `input` review's id, if the ask arrived that way. */
   inputReviewId: string | null;
-  /** True when the session has a terminal pane we can type into (`canWriteTo`). */
+  /** True when a reply can be DELIVERED to this session at all (`canMessage`). */
   canSend: boolean;
   /**
    * Which no-mistakes gate this prompt is, when it is one - so a send can be

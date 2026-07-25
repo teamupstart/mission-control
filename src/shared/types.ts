@@ -56,16 +56,32 @@ export type SessionState =
   | "exited";
 
 /**
- * Where the session's display name came from: the terminal backend that supplied it, or
+ * Where the session's display name came from: the terminal backend that supplied it,
  * `process` when no backend holds a pane on its tty and the name is a `<agent> <pid>`
- * fallback.
+ * fallback, or `sdk` when there is no pane to name it at all and the supervisor that
+ * launched it said what it is called.
  *
  * Derived from `TerminalBackendId` rather than written out, so a new multiplexer or
  * emulator widens this automatically. It used to be the closed union `"tmux" | "wezterm" |
  * "process"` with nothing connecting it to the registries - which meant a third backend
  * would stamp a `nameSource` the type did not admit and the dashboard could not read.
  */
-export type NameSource = TerminalBackendId | "process";
+export type NameSource = TerminalBackendId | "process" | "sdk";
+
+/**
+ * How Mission Control TALKS to a session, which is a different axis from which harness
+ * it runs (`AgentType`) and from which terminal backend holds it (`TerminalBackendId`).
+ *
+ *  - `terminal`: a pane-backed session, whether an operator started it or we dispatched
+ *    it into a terminal home. Delivery is keystrokes, structured reads are screen parses.
+ *  - `sdk`: a session the daemon runs through its harness's own programmatic interface,
+ *    with no pane at all. Delivery is an acked call and menus arrive as data.
+ *
+ * An SDK-backed Claude session is still Claude on every axis the registries measure -
+ * same transcript format, same skills directory, same accent - so this is deliberately
+ * NOT a new agent id. See `docs/plans/agent-sdk-sessions/plan.md`.
+ */
+export type SessionRuntime = "terminal" | "sdk";
 
 /**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
@@ -241,6 +257,17 @@ export interface Session {
   id: string;
   agent: AgentType;
   /**
+   * How the daemon talks to this session: `terminal` for a pane-backed session,
+   * `sdk` for one the daemon drives through the harness's programmatic interface.
+   *
+   * FIXED FOR THE LIFE OF AN ENTRY, which is what lets it be `alwaysEqual`-adjacent
+   * reasoning elsewhere: a pane-backed session cannot become an SDK one, and a takeover
+   * ends the SDK session and lets discovery adopt its terminal successor as a NEW entry
+   * under its own id. Read this rather than testing the id prefix - `sdk:` ids are minted
+   * by the supervisor, but nothing outside it may key behaviour on the spelling.
+   */
+  runtime: SessionRuntime;
+  /**
    * Display name, offered by the highest-priority terminal backend holding a pane on this
    * session's tty - a multiplexer's session name, else an emulator's tab title, else (with
    * no pane at all) a `<agent> <pid>` process fallback. `nameSource` says which answered.
@@ -289,7 +316,9 @@ export interface Session {
    *
    * A LIST, replacing the `wezterm` / `tmux` pair of named nullable siblings that made "how
    * many backends are there" a fact of this type. Read it through the shared helpers rather
-   * than by hand: `canWriteTo` for "is there a composer to type into", `innermostPane` /
+   * than by hand: `canMessage` for "can a turn reach this session at all" (which is the
+   * question ~20 call sites were asking), `canWriteTo` for "is there a composer to type
+   * into" - the two differ for a driver-run session - `innermostPane` /
    * `paneToken` for which pane that is (`@shared/pane.ts`). Which handle a given action
    * wants is a rule (writes go innermost, focus walks outward), and it has one statement.
    */
@@ -486,11 +515,50 @@ export interface PaneOption {
   checked?: boolean;
 }
 
-/** An option dialog as read off a pane. */
+/**
+ * One question of a multi-question driver form.
+ *
+ * Claude's `AskUserQuestion` carries several at once, each with its own rows and its own
+ * single/multi choice - a shape a pane can never produce, because the TUI shows one tab at
+ * a time and the parser only ever sees that tab. So this is present only on a
+ * driver-sourced dialog, and its absence is what tells a reader it is looking at a screen.
+ */
+export interface SessionRequestQuestion {
+  /** The question itself, in the words the human is shown. */
+  question: string;
+  /** A short label for the question, when the harness supplies one. */
+  header?: string;
+  /** The rows offered for THIS question. Numbered within the question, from 1. */
+  options: PaneOption[];
+  /** True when this question takes several answers rather than one. */
+  multiSelect?: boolean;
+}
+
+/**
+ * An option dialog: read off a pane, or reported by a session's driver.
+ *
+ * The pane was the only producer when this shape was written, which is why the field names
+ * still describe a screen. It generalizes rather than being replaced because it is already
+ * the wire shape the dashboard renders and Foreman answers - a second shape for the same
+ * question would mean every reading surface deciding which one it is looking at, and
+ * `reportBucket`'s `activePaneDialog` check would have to grow a second arm to keep saying
+ * `needs-you`.
+ *
+ * Every field added for a driver is OPTIONAL, and their ABSENCE means "this came off a
+ * pane" - so a dialog produced by `parsePaneDialog` is byte-identical to what it was
+ * before the runtime axis existed, and the parser was not touched.
+ */
 export interface PaneDialog {
   /** Every row, ascending. Includes Claude's own trailing rows ("Type something."). */
   options: PaneOption[];
-  /** The row the `❯` cursor sits on - where an Enter would land right now. */
+  /**
+   * The row the `❯` cursor sits on - where an Enter would land right now.
+   *
+   * 0 on a driver-sourced dialog, which HAS no cursor: nothing is pre-selected and there
+   * is no keystroke that could confirm a default row. That is the whole hazard the pane
+   * path carries (text typed at a dialog is swallowed and the trailing Enter confirms
+   * whatever was highlighted), and it does not exist when the answer is a callback.
+   */
   highlighted: number;
   /**
    * The question the rows answer, read off the lines above them; absent when nothing
@@ -511,6 +579,31 @@ export interface PaneDialog {
    * each look like they answer.
    */
   multiSelect?: true;
+  /**
+   * Where this dialog came from. Absent means `pane`, which is what keeps the wire
+   * compatible and keeps the parser's output unchanged - a reader that has never heard of
+   * a driver goes on rendering rows exactly as it did.
+   */
+  source?: "pane" | "driver";
+  /**
+   * The driver's correlation id for the pending request. An answer must echo it, so the
+   * driver resolves the callback the human was actually shown rather than whatever is
+   * pending by the time the click lands. Absent for a pane dialog, which has no such
+   * handle - its equivalent guard is re-reading the screen and refusing on `optionRowMiss`.
+   */
+  requestId?: string;
+  /**
+   * What kind of ask this is. DISPLAY ONLY, and absent for a pane dialog, because a pane
+   * dialog cannot classify itself: the parser sees a numbered block with a cursor on it and
+   * has no way to know whether that is a permission prompt, a clarifying question or a
+   * folder-trust check. A driver is told which.
+   */
+  kind?: "permission" | "question" | "plan" | "approval" | "trust";
+  /**
+   * The questions of a multi-question form; absent for a pane dialog and for a driver
+   * request that asks one thing. See `SessionRequestQuestion`.
+   */
+  questions?: SessionRequestQuestion[];
 }
 
 // ---- Foreman session notes (auto-responder) ----

@@ -1,6 +1,12 @@
 import { AGENT_TYPES } from "./types.ts";
 import { THINKING_LEVELS } from "./types.ts";
-import type { AgentType, PermissionMode, Session, ThinkingLevel } from "./types.ts";
+import type {
+  AgentType,
+  PermissionMode,
+  Session,
+  SessionRuntime,
+  ThinkingLevel,
+} from "./types.ts";
 // By value, because `workQueueUnsupportedWhy` composes prose from it. Naming stays
 // `AGENT_IDENTITY`'s job - a second register on a capability object is the exact defect
 // Phase 0 collapsed.
@@ -304,6 +310,20 @@ function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel 
 export interface HarnessCapabilities {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
   id: AgentType;
+  /**
+   * The runtimes this harness can be driven over, in preference order.
+   *
+   * Pure data, and here rather than beside the driver, because the BROWSER asks it: the
+   * Harnesses panel draws a runtime control only for a harness that offers more than
+   * `terminal`, and it cannot import a spec that spawns a subprocess. `terminal` is on
+   * every entry - a harness we cannot type at is not a harness (`ControlSpec` is not
+   * nullable for the same reason).
+   *
+   * `"sdk"` here and `HARNESSES[a].sdk !== null` are ONE FACT IN TWO FILES, the treatment
+   * `GOAL_UNSUPPORTED` gets: `harness-sdk.test.ts` fails until they agree, so a capability
+   * cannot advertise a driver that does not exist and a driver cannot ship invisible.
+   */
+  runtimes: readonly SessionRuntime[];
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
   workQueue: WorkQueueSpec | null;
@@ -340,6 +360,9 @@ export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
 export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   claude: {
     id: "claude",
+    // Phase 2 of `docs/plans/agent-sdk-sessions/plan.md` adds `"sdk"` here, in the same
+    // change that lands the driver - the contract test forces the two to move together.
+    runtimes: ["terminal"],
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It
@@ -380,6 +403,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
+    // Phase 4 adds `"sdk"` here, with the app-server adapter.
+    runtimes: ["terminal"],
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -459,6 +484,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   pi: {
     id: "pi",
+    // Phase 6 adds `"sdk"` here, with the `--mode rpc` adapter.
+    runtimes: ["terminal"],
     // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
     // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
     // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does

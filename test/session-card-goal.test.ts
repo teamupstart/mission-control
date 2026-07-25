@@ -21,6 +21,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s1",
     agent: "claude",
     name: "goal-feature",
+    runtime: "terminal",
     nameSource: "tmux",
     state: "working",
     cwd: "/wt/goal",

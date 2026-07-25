@@ -107,8 +107,8 @@ export type DeliveryTarget =
  * text was written to answer a question that is now closed, and sending it at whatever
  * review happens to be open next answers the wrong one in the human's name.
  *
- * A terminal marker types into the session, but only when there is something to type
- * into. `canSend` is the same `canWriteTo` the server's `classifyPending` asks, and
+ * A terminal marker delivers to the session, but only when something can deliver to it.
+ * `canSend` is the same `canMessage` the server's `classifyPending` asks, and
  * it is asked here for the same reason it is asked there: an escalation carrying
  * "no reply channel" was raised BECAUSE nothing could deliver it, so offering the human a
  * button whose whole job is to deliver it describes a send that cannot happen.

@@ -287,6 +287,28 @@ wrong: the permission-mode chip, dialog detection, and the read-back that confir
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
 else, if you want those too.
 
+### How a session is driven is an axis too (terminal today)
+
+Everything above answers "which terminal holds this session". A separate question is how
+Mission Control *talks* to it at all, and every session on your machine today answers it the
+same way: through a pane. That is a session's **runtime**, and `terminal` is the only one any
+harness currently offers - so nothing in the product behaves differently yet, and no setting
+exists to change it.
+
+The groundwork is in place because the other answer is coming: Claude, Codex and Pi all have
+programmatic interfaces where a permission prompt is a callback with the tool name as data
+rather than a menu to be read off a screen, and a delivered turn is acknowledged instead of
+pasted and hoped for. A session driven that way has no pane, so the daemon has to be able to
+hold one that no `ps` sweep will ever find. Two predicates keep that honest: "can a turn
+reach this session" (which such a session answers yes to) and "is there a pane to drive"
+(which it answers no to) - the same distinction the Send box and Rename have always needed
+and, until now, shared one answer for. Whether a harness offers the runtime is a declaration
+next to its other capabilities, and it stays off until a driver exists behind it.
+
+The design, the tradeoffs (a daemon restart interrupts an in-flight turn; a terminal takeover
+becomes an explicit handoff), and the phases are in
+`docs/plans/agent-sdk-sessions/plan.md`.
+
 ### What each agent can do is declared, not assumed
 
 Claude Code, Codex and Pi are not the same product, and several features below reach

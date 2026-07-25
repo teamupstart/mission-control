@@ -16,6 +16,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     id: "x",
     agent: "claude",
     name: "n",
+    runtime: "terminal",
     nameSource: "tmux",
     state: "working",
     cwd: null,

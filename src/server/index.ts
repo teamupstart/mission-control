@@ -22,6 +22,7 @@ import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
+import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
@@ -156,6 +157,21 @@ registry.onSessionsObserved(() => {
   void ensembles.recoverNonTerminalRuns();
   void ensembles.recoverDeletions();
 });
+// Embedded (SDK-runtime) sessions, restored BEFORE the poller starts - the other half of the
+// gate above. `onSessionsObserved` fires on the first COMPLETED sweep, and every restart twin
+// hangs off it, so a session registered after that moment is invisible to the reconciliation
+// that would have settled its task. Restoring first is what makes an embedded session look
+// exactly like a rediscovered terminal one to `reconcileTasksWithNoLiveSession` and
+// `reconcileBindingsAfterDiscovery`. Inert until a harness declares an `sdk` driver: with
+// none declared there is nothing to resume and no row can exist. Awaited rather than
+// fire-and-forget for the ordering itself, and best-effort because a daemon that refused to
+// start over one unresumable session would be worse than one running without it.
+const sdkSessions = new SdkSupervisor(registry);
+try {
+  await sdkSessions.restore();
+} catch (err) {
+  console.error("[sdk] could not restore embedded sessions:", err);
+}
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
@@ -242,6 +258,10 @@ async function shutdown(): Promise<void> {
   // Kill before awaiting workflow workers, or a 120s Persona timeout becomes a 120s
   // daemon shutdown.
   killLiveLlmRuns();
+  // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
+  // child, unlike an agent in a tmux pane that outlives us, so this is the difference
+  // between a harness closing its session file cleanly and it being killed mid-turn.
+  await sdkSessions.stopAll();
   await workflows.stop();
   ensembles.stop();
   away.stop();

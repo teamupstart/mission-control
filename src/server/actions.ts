@@ -2020,8 +2020,20 @@ async function raiseOutward(
   };
 }
 
-/** Send SIGTERM to a pid, reduced to an ActionResult. */
+/**
+ * Send SIGTERM to a pid, reduced to an ActionResult.
+ *
+ * A non-positive pid is REFUSED rather than passed through, and this is not defensive
+ * padding: POSIX reads pid 0 as "every process in the caller's process group", so
+ * `process.kill(0, "SIGTERM")` from the daemon would signal the daemon. Every discovered
+ * session's pid comes from `ps` and is positive, but a session the daemon RUNS ITSELF has no
+ * subprocess pid until its driver reports one (`registerSdkSession` writes 0 for "not
+ * known"), so the value is now reachable and the syscall's own footgun is what it would find.
+ */
 function signalProcess(pid: number): ActionResult {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { ok: false, error: "this session has no process id to signal" };
+  }
   try {
     process.kill(pid, "SIGTERM");
     return { ok: true };

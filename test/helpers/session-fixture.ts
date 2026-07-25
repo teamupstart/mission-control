@@ -88,6 +88,9 @@ export function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1",
     agent: "claude",
+    // Pane-backed, which is what every fixture here describes: it carries a tmux handle and
+    // a tty. A test about a driver-run session overrides both this and `terminals`.
+    runtime: "terminal",
     name: "App Bugfixes",
     nameSource: "tmux",
     state: "working",

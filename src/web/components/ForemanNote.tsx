@@ -1,7 +1,7 @@
 import { Markdown } from "./Markdown.tsx";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
-import { canWriteTo } from "@shared/pane.ts";
+import { canMessage } from "@shared/pane.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -41,7 +41,7 @@ export function ForemanNote({
     note,
     inputReviewId,
     pendingReviewIds,
-    canSend: canWriteTo(session),
+    canSend: canMessage(session),
   });
 
   const escalated = note.disposition === "escalated";

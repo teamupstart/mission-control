@@ -14,6 +14,7 @@ import {
   ENSEMBLE_LLM_PURPOSES,
   ENSEMBLE_MEMBER_STATUSES,
   ENSEMBLE_SOURCE_KINDS,
+  ENSEMBLE_DELETION_STATUSES,
   ENSEMBLE_STAGE_DRIVER_KINDS,
   ENSEMBLE_STAGE_STATUSES,
   ENSEMBLE_STATUSES,
@@ -29,9 +30,11 @@ import {
   type EnsembleAttemptStatus,
   type EnsembleDecision,
   type EnsembleDecisionActor,
+  type EnsembleDeletionStatus,
   type EnsembleEvaluation,
   type EnsembleEvaluationStatus,
   type EnsembleEvent,
+  type EnsembleFinalizationProgress,
   type EnsembleJson,
   type EnsembleLlmCall,
   type EnsembleLlmCallState,
@@ -48,6 +51,7 @@ import {
   type EnsembleStatus,
   type EnsembleSummary,
   type EnsembleUnreadable,
+  type EnsembleWorkflowHandoff,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
 import { ENSEMBLE_STRATEGY_INFO, knownStrategyId } from "@shared/ensemble-strategies.ts";
@@ -56,6 +60,7 @@ import {
   EnsembleJsonSchema,
   EnsembleOutcomeSchema,
   EnsemblePayloadEnvelopeSchema,
+  EnsembleWorkflowHandoffSchema,
 } from "@shared/protocol.ts";
 import { AGENT_TYPES, THINKING_LEVELS, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { openDb } from "../db.ts";
@@ -91,6 +96,7 @@ export const ENSEMBLE_TABLES = [
   "ensemble_llm_calls",
   "ensemble_events",
   "ensemble_decisions",
+  "ensemble_deletion_intents",
 ] as const;
 export type EnsembleTable = (typeof ENSEMBLE_TABLES)[number];
 
@@ -171,6 +177,8 @@ const RunRowSchema = z.object({
   status: z.string(),
   active_stage_id: nullableText,
   outcome_json: nullableText,
+  workflow_handoff_json: nullableText,
+  request_fingerprint: z.string(),
   created_at: integer,
   updated_at: integer,
   completed_at: integer.nullable(),
@@ -224,6 +232,8 @@ function readRunRow(value: unknown): { row: RunRow; issues: RunRowIssue[] } {
       status: read("status", z.string(), ""),
       active_stage_id: read("active_stage_id", nullableText, null),
       outcome_json: read("outcome_json", nullableText, null),
+      workflow_handoff_json: read("workflow_handoff_json", nullableText, null),
+      request_fingerprint: read("request_fingerprint", z.string(), ""),
       created_at: read("created_at", integer, 0),
       updated_at: read("updated_at", integer, 0),
       completed_at: read("completed_at", integer.nullable(), null),
@@ -366,6 +376,14 @@ const DecisionRowSchema = z.object({
   updated_at: integer,
 });
 
+const DeletionIntentRowSchema = z.object({
+  run_id: idText,
+  status: z.string(),
+  error: nullableText,
+  created_at: integer,
+  updated_at: integer,
+});
+
 /**
  * The artifact ids one evaluation judged. Bounded by what any plan could ever produce -
  * every member, retried to the stage-attempt ceiling - so a corrupt column cannot make a
@@ -426,6 +444,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
   plan: CompiledEnsemblePlan | null;
   strategyConfig: EnsembleJson;
   outcome: EnsembleOutcome | null;
+  workflowHandoff: EnsembleWorkflowHandoff | null;
   unreadable: EnsembleUnreadable | null;
 } {
   const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, row.source_kind);
@@ -437,6 +456,10 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
     row.outcome_json === null
       ? { value: null, detail: null }
       : readJsonColumn(row.outcome_json, EnsembleOutcomeSchema, "its outcome");
+  const workflowHandoff =
+    row.workflow_handoff_json === null
+      ? { value: null, detail: null }
+      : readJsonColumn(row.workflow_handoff_json, EnsembleWorkflowHandoffSchema, "its workflow handoff");
 
   const bad: RunRowIssue[] = [...rowIssues];
   const addBad = (field: string, detail: string): void => {
@@ -447,6 +470,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
   if (status === null) addBad("status", row.status);
   if (config.detail !== null) addBad("strategy_config_json", config.detail);
   if (outcome.detail !== null) addBad("outcome_json", outcome.detail);
+  if (workflowHandoff.detail !== null) addBad("workflow_handoff_json", workflowHandoff.detail);
 
   const storedStrategy = parseEnsembleStrategyKey(row.strategy_key);
   const storedStrategyId = storedStrategy ? knownStrategyId(storedStrategy.id) : null;
@@ -503,6 +527,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
     // `unreadable` above is what stops it being used for anything.
     strategyConfig: config.value ?? null,
     outcome: outcome.value as EnsembleOutcome | null,
+    workflowHandoff: workflowHandoff.value as EnsembleWorkflowHandoff | null,
     unreadable,
   };
 }
@@ -529,6 +554,7 @@ function rowToRun(value: unknown): EnsembleRun {
     status: snapshot.status,
     activeStageId: row.active_stage_id,
     outcome: snapshot.outcome,
+    workflowHandoff: snapshot.workflowHandoff,
     unreadable: snapshot.unreadable,
     error: row.error,
     createdAt: row.created_at,
@@ -695,6 +721,26 @@ function rowToEvent(value: unknown): EnsembleEvent {
   };
 }
 
+/** An in-progress explicit deletion, kept only while its run still exists (FK cascade). */
+export interface EnsembleDeletionIntent {
+  runId: string;
+  status: EnsembleDeletionStatus | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+function rowToDeletionIntent(value: unknown): EnsembleDeletionIntent {
+  const row = parseShape("ensemble_deletion_intents", DeletionIntentRowSchema, value);
+  return {
+    runId: row.run_id,
+    status: readEnsembleEnum(ENSEMBLE_DELETION_STATUSES, row.status),
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function rowToDecision(value: unknown): EnsembleDecision {
   const row = parseShape("ensemble_decisions", DecisionRowSchema, value);
   return {
@@ -745,6 +791,10 @@ export interface EnsembleRunInsert {
   plan: CompiledEnsemblePlan;
   strategyConfig: EnsembleJson;
   status: EnsembleStatus;
+  /** The pinned post-selection Workflow handoff snapshot, or null when none was chosen. */
+  workflowHandoff: EnsembleWorkflowHandoff | null;
+  /** A stable fingerprint of the raw create request, for source-key replay-conflict detection. */
+  requestFingerprint: string;
   members: EnsembleMemberInsert[];
 }
 
@@ -952,8 +1002,9 @@ export class EnsembleStore {
           `INSERT INTO ensemble_runs (id, source_kind, source_key, source_id, strategy_id,
              strategy_version, strategy_key, strategy_label, title, intent, repo_root,
              base_branch, base_sha, compiled_plan_json, strategy_config_json, status,
-             active_stage_id, outcome_json, created_at, updated_at, completed_at, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL)`,
+             active_stage_id, outcome_json, workflow_handoff_json, request_fingerprint, created_at,
+             updated_at, completed_at, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL)`,
         )
         .run(
           id,
@@ -976,6 +1027,10 @@ export class EnsembleStore {
             "strategy config",
           ),
           input.status,
+          input.workflowHandoff === null
+            ? null
+            : serializedJson(input.workflowHandoff as unknown as EnsembleJson, ENSEMBLE_LIMITS.artifactMetadataJsonBytes, "workflow handoff"),
+          bounded(input.requestFingerprint, ENSEMBLE_LIMITS.sourceKey),
           now,
           now,
         );
@@ -1014,6 +1069,14 @@ export class EnsembleStore {
       .prepare(`SELECT * FROM ensemble_runs WHERE source_kind = ? AND source_key = ?`)
       .get(sourceKind, sourceKey) as unknown;
     return row ? rowToRun(row) : null;
+  }
+
+  /** The raw create-request fingerprint recorded for a run, or '' for a pre-feature row. */
+  requestFingerprint(runId: string): string {
+    const row = this.db
+      .prepare(`SELECT request_fingerprint AS fp FROM ensemble_runs WHERE id = ?`)
+      .get(runId) as { fp?: string } | undefined;
+    return row?.fp ?? "";
   }
 
   listRuns(): EnsembleRun[] {
@@ -1144,6 +1207,30 @@ export class EnsembleStore {
         .prepare(`SELECT * FROM ensemble_decisions WHERE run_id = ? ORDER BY version ASC`)
         .all(runId) as unknown[]
     ).map(rowToDecision);
+  }
+
+  /** The decision an operation key already recorded, for `decide` idempotency and conflict detection. */
+  decisionByOperationKey(operationKey: string): EnsembleDecision | null {
+    const row = this.db
+      .prepare(`SELECT * FROM ensemble_decisions WHERE operation_key = ?`)
+      .get(operationKey) as unknown;
+    return row ? rowToDecision(row) : null;
+  }
+
+  /**
+   * Every run parked in `finalizing`.
+   *
+   * The wake targets for a non-member Task change: a replacement winner Task is a normal Task, not
+   * an ensemble member, so its session coming up produces no member event - and a finalizing run
+   * waiting on that session would never resume. Bounded and transient: finalization is a brief,
+   * rare state, so waking these on a task change costs a durable-state recompute nobody notices.
+   */
+  listFinalizingRuns(): EnsembleRun[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM ensemble_runs WHERE status = 'finalizing' ORDER BY created_at ASC`)
+        .all() as unknown[]
+    ).map(rowToRun);
   }
 
   listEvents(runId: string): EnsembleEvent[] {
@@ -2347,6 +2434,126 @@ export class EnsembleStore {
         .get(Number(result.lastInsertRowid)) as unknown;
       return row ? rowToEvent(row) : null;
     });
+  }
+
+  /**
+   * Pin (or update) the run's Workflow handoff snapshot.
+   *
+   * Idempotent by construction: the handoff carries its own state machine, and a repeated write
+   * of the same state is harmless. Never touches status; the finalizer owns run status moves.
+   */
+  setWorkflowHandoff(
+    id: string,
+    handoff: EnsembleWorkflowHandoff | null,
+    now = Date.now(),
+  ): EnsembleTransition<EnsembleRun> {
+    return this.inTransaction(() => {
+      const current = this.getRun(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      const changed = this.db
+        .prepare(`UPDATE ensemble_runs SET workflow_handoff_json = ?, updated_at = ? WHERE id = ?`)
+        .run(
+          handoff === null
+            ? null
+            : serializedJson(handoff as unknown as EnsembleJson, ENSEMBLE_LIMITS.artifactMetadataJsonBytes, "workflow handoff"),
+          now,
+          id,
+        ).changes;
+      if (changed === 0) return { ok: false, reason: "not_found", current };
+      const updated = this.getRun(id);
+      return updated ? { ok: true, value: updated } : { ok: false, reason: "not_found", current: null };
+    });
+  }
+
+  /**
+   * Write per-step finalization progress onto a RUNNING finalize stage attempt.
+   *
+   * Progress is a receipt, not a status move: it records what already happened so a restart
+   * resumes rather than restarts, and it refuses a terminal attempt so a late writer cannot
+   * rewrite a stage that already succeeded or failed. `finishStageAttempt` still owns the
+   * terminal transition; this only ever moves the output of a row that is still `running`.
+   */
+  setFinalizationProgress(
+    stageAttemptId: string,
+    progress: EnsembleFinalizationProgress,
+    now = Date.now(),
+  ): EnsembleTransition<EnsembleStageAttempt> {
+    const output = serializedJson(
+      progress as unknown as EnsembleJson,
+      ENSEMBLE_LIMITS.stagePayloadJsonBytes,
+      "finalization progress",
+    );
+    return this.inTransaction(() => {
+      const before = this.db
+        .prepare(`SELECT * FROM ensemble_stage_attempts WHERE id = ?`)
+        .get(stageAttemptId) as unknown;
+      if (!before) return { ok: false, reason: "not_found", current: null };
+      const current = rowToStageAttempt(before);
+      const changed = this.db
+        .prepare(
+          `UPDATE ensemble_stage_attempts SET output_json = ?, updated_at = ?
+             WHERE id = ? AND status = 'running'`,
+        )
+        .run(output, now, stageAttemptId).changes;
+      if (changed === 0) return { ok: false, reason: "precondition_failed", current };
+      const row = this.db
+        .prepare(`SELECT * FROM ensemble_stage_attempts WHERE id = ?`)
+        .get(stageAttemptId) as unknown;
+      return row
+        ? { ok: true, value: rowToStageAttempt(row) }
+        : { ok: false, reason: "not_found", current: null };
+    });
+  }
+
+  // ---- deletion intents ----
+
+  /**
+   * Open (or return) the deletion intent for a run.
+   *
+   * Idempotent on `run_id`: a repeated Delete finds the intent it already opened and resumes it.
+   * Cascades with its run, so a crash after `deleteRun` leaves no orphan and recovery only ever
+   * finds intents whose run still exists - which is exactly "there are refs still to delete".
+   */
+  beginDeletionIntent(runId: string, now = Date.now()): EnsembleDeletionIntent {
+    return this.inTransaction(() => {
+      const existing = this.getDeletionIntent(runId);
+      if (existing) return existing;
+      this.db
+        .prepare(
+          `INSERT INTO ensemble_deletion_intents (run_id, status, error, created_at, updated_at)
+           VALUES (?, 'pending', NULL, ?, ?)`,
+        )
+        .run(runId, now, now);
+      const intent = this.getDeletionIntent(runId);
+      if (!intent) throw new EnsembleRowError("ensemble_deletion_intents", runId, "vanished inside its own transaction");
+      return intent;
+    });
+  }
+
+  getDeletionIntent(runId: string): EnsembleDeletionIntent | null {
+    const row = this.db
+      .prepare(`SELECT * FROM ensemble_deletion_intents WHERE run_id = ?`)
+      .get(runId) as unknown;
+    return row ? rowToDeletionIntent(row) : null;
+  }
+
+  listDeletionIntents(): EnsembleDeletionIntent[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM ensemble_deletion_intents ORDER BY created_at ASC`)
+        .all() as unknown[]
+    ).map(rowToDeletionIntent);
+  }
+
+  setDeletionStatus(
+    runId: string,
+    status: EnsembleDeletionStatus,
+    error: string | null,
+    now = Date.now(),
+  ): void {
+    this.db
+      .prepare(`UPDATE ensemble_deletion_intents SET status = ?, error = ?, updated_at = ? WHERE run_id = ?`)
+      .run(status, boundedOrNull(error, ENSEMBLE_LIMITS.errorText), now, runId);
   }
 
   /**

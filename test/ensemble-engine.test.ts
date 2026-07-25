@@ -294,26 +294,19 @@ test("a durable human decision lets a finalize stage park in finalizing", async 
   assert.equal(store.listStageAttempts(run.id).length, 0);
 });
 
-test("stage retry refuses drivers that are not executable in this phase", async () => {
+test("stage retry refuses member/decision stages and re-drives a review stage", async () => {
   const { store, engine } = harness();
   const plan = reviewPlan(2, 2);
+  const candidates = plan.stages[0]!;
   const review = plan.stages[1]!;
   store.createRun(runInsert(plan));
   const run = store.listNonTerminalRuns()[0]!;
-  store.startStageAttempt({
-    runId: run.id,
-    stageId: review.id,
-    driverKind: review.driverKind,
-    driverKey: review.driverKey,
-    attempt: 1,
-    commandKey: `failed:${run.id}`,
-    status: "running",
-    input: {},
-  });
-  const attempt = store.listStageAttempts(run.id)[0]!;
-  store.finishStageAttempt(attempt.id, ["running"], "failed", { error: "failed" });
-  assert.equal(await engine.retryStage(run.id, review.id), false);
-  assert.equal(store.listStageAttempts(run.id).length, 1);
+  // A member stage is retried per-member through `retryMember`, never as a whole - refused, so
+  // relaunching one member cannot collide with the attempt numbers of the rest.
+  assert.equal(await engine.retryStage(run.id, candidates.id), false);
+  // A review stage IS re-driven from durable state now that Phase 6 gives `retry_stage` a body:
+  // it re-advances the run, which is idempotent, so it never duplicates an effect.
+  assert.equal(await engine.retryStage(run.id, review.id), true);
 });
 
 test("a duplicate launch does not create a second wave (command-key idempotency)", async () => {

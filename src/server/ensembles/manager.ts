@@ -1,18 +1,22 @@
+import { createHash } from "node:crypto";
 import {
   ENSEMBLE_LIMITS,
-  ENSEMBLE_SOURCE_KINDS,
+  canonicalEnsembleJson,
+  ensembleIsTerminal,
   ensemblePayload,
   ensembleStrategyKey,
-  readEnsembleEnum,
   type CompiledEnsemblePlan,
+  type EnsembleAction,
   type EnsembleArtifact,
   type EnsembleCreateInput,
   type EnsembleDecision,
   type EnsembleJson,
+  type EnsembleLaunchEstimate,
   type EnsembleReviewPersona,
   type EnsembleRun,
   type EnsembleRunDetail,
   type EnsembleSummary,
+  type EnsembleWorkflowHandoff,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -30,12 +34,19 @@ import { missionMcpDescriptor } from "../mission-mcp.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import { run } from "../util/exec.ts";
 import {
+  ENSEMBLE_REF_PREFIX,
+  ensembleSnapshotRef,
+  resolveEnsembleRef,
+} from "../git/ensemble-snapshot.ts";
+import {
   EnsembleStore,
   type EnsembleDecisionInsert,
   type EnsembleMemberInsert,
 } from "./store.ts";
 import {
   EnsembleEngine,
+  type EnsembleDecideOutcome,
+  type EnsembleFinalizeDeps,
   type EnsembleReviewDeps,
   type EnsembleSubmitRefusal,
   type EnsembleTaskGateway,
@@ -57,9 +68,9 @@ import {
  * This is the daemon-facing boundary for ensembles. It compiles and persists immutable plans,
  * preflights and pins launch inputs, delegates ordinary Task lifecycle through the injected
  * gateway, captures submissions through artifact adapters, recovers non-terminal runs, and
- * publishes the compact summaries the browser's live state receives. Production deliberately
- * exposes no CREATE route yet: review, decision and finalization drivers park until their
- * implementations land, so a half-built Best-of-N orchestration cannot be reached by a user.
+ * publishes the compact summaries the browser's live state receives. The public create, preview,
+ * action and delete routes all enter through this boundary; production creation is enabled only
+ * because every driver in the compiled Best-of-N plan has an executable implementation.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog
@@ -73,6 +84,8 @@ export type EnsembleCreateRefusal =
   | "strategy_disabled"
   | "version_unavailable"
   | "invalid_config"
+  | "workflow_unavailable"
+  | "request_conflict"
   | "preflight_failed";
 
 export type EnsembleCreateOutcome =
@@ -137,15 +150,66 @@ export interface EnsembleManagerOptions {
    * running, which is exactly what the launch-only phases before this one did.
    */
   review?: EnsembleReviewDeps;
+  /**
+   * The finalization authorities - exact restore, replacement Task materialization, pane injection,
+   * and the Workflow handoff boundary. Present in the daemon; absent, a finalize stage parks at
+   * `finalizing`, which is exactly what the phases before this one reached. Passed straight to the
+   * engine, which owns the destructive step order and idempotency.
+   */
+  finalize?: EnsembleFinalizeDeps;
+  /**
+   * Resolve an operator-selected Workflow to its immutable published version and a support verdict.
+   *
+   * Injected rather than imported so the manager never depends on the Workflow store: it hands back
+   * the pinned display snapshot plus whether this build can EXECUTE the chosen mode as an
+   * after-selection handoff. On this baseline only Preview + manual is executable, so a Live/Foreman
+   * selection comes back `supported: false` with a reason, and creation refuses it - never a silent
+   * Preview downgrade.
+   */
+  resolveWorkflowVersion?: (workflowId: string, version: number) => ResolvedWorkflowVersion | null;
   agentBinPresent?: (agent: AgentType) => Promise<boolean>;
   missionMcpAvailable?: () => Promise<boolean>;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
 }
 
+/**
+ * A Workflow version resolved to an immutable snapshot at ensemble creation, plus whether this
+ * build can run its chosen mode. `supported` is the load-bearing field: an unsupported mode is a
+ * typed creation refusal here, so a run is never pinned to a handoff it cannot execute.
+ */
+export interface ResolvedWorkflowVersion {
+  workflowId: string;
+  workflowVersionId: string;
+  workflowVersion: number;
+  workflowName: string;
+  triggerMode: string;
+  deliveryMode: string;
+  maxRepairRounds: number;
+  completionPolicy: string;
+  supported: boolean;
+  /** One sentence when unsupported (Live/Foreman on this baseline), else null. */
+  unsupportedReason: string | null;
+}
+
+/** The result of one generic operator action, mapped to an HTTP status by the route. */
+export type EnsembleActionResult =
+  | { ok: true; summary: EnsembleSummary | null; decision?: EnsembleDecision; replayed?: boolean }
+  | { ok: false; reason: "not_found" | "conflict" | "invalid" | "unavailable"; detail: string };
+
+/** A side-effect-free create estimate the preview endpoint returns. */
+export interface EnsemblePreviewResult {
+  ok: boolean;
+  reason: EnsembleCreateRefusal | null;
+  issues: StrategyIssue[];
+  estimate: EnsembleLaunchEstimate | null;
+  workflow: ResolvedWorkflowVersion | null;
+}
+
 export class EnsembleManager {
   private readonly catalog: StrategyCatalog;
   private readonly resolvePersona: (personaId: string) => ResolvedReviewPersona | null;
+  private readonly resolveWorkflowVersion: ((workflowId: string, version: number) => ResolvedWorkflowVersion | null) | null;
   private readonly engine: EnsembleEngine | null;
   private readonly adapters: ArtifactAdapterRegistry;
   private readonly hasAgentBin: (agent: AgentType) => Promise<boolean>;
@@ -169,6 +233,7 @@ export class EnsembleManager {
   ) {
     this.catalog = options.catalog ?? ensembleStrategyCatalog;
     this.resolvePersona = options.resolvePersona ?? (() => null);
+    this.resolveWorkflowVersion = options.resolveWorkflowVersion ?? null;
     this.now = options.now ?? (() => Date.now());
     this.adapters = options.adapters ?? ARTIFACT_ADAPTERS;
     this.hasAgentBin = options.agentBinPresent ?? agentBinPresent;
@@ -182,6 +247,7 @@ export class EnsembleManager {
           publish: (runId) => this.publish(runId),
           adapters: options.adapters,
           review: options.review,
+          finalize: options.finalize,
           now: this.now,
           log: options.log,
         })
@@ -203,7 +269,15 @@ export class EnsembleManager {
         if (event.type !== "task_upsert" && event.type !== "task_remove") return;
         const taskId = event.type === "task_upsert" ? event.task.id : event.id;
         const member = this.store.memberForTask(taskId);
-        if (member) void this.engine!.wake(member.runId);
+        if (member) {
+          void this.engine!.wake(member.runId);
+          return;
+        }
+        // A non-member Task change may be a finalizing run's replacement winner coming up - that
+        // Task is a normal Task, so it fires no member event, and the handoff waiting on its
+        // session would otherwise never resume. Waking the (rare, transient) finalizing runs on
+        // such a change is the wake signal the member subscription cannot give.
+        for (const run of this.store.listFinalizingRuns()) void this.engine!.wake(run.id);
       });
     }
   }
@@ -271,7 +345,9 @@ export class EnsembleManager {
     if (existing) return existing;
     const compiled = this.compile(input, now);
     if (!compiled.ok) return compiled.outcome;
-    const write = this.persistRun(compiled.value, null, null, "planning", now);
+    const handoff = this.resolveHandoff(compiled.value.request.workflow);
+    if (!handoff.ok) return handoff.outcome;
+    const write = this.persistRun(compiled.value, null, null, "planning", now, undefined, handoff.value);
     return this.published(write);
   }
 
@@ -299,19 +375,20 @@ export class EnsembleManager {
       if (existing.ok) void this.engine.launch(existing.run.id);
       return existing;
     }
-    const compiled = this.compile(input, now);
-    if (!compiled.ok) return compiled.outcome;
-
-    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
-    if (!preflight.ok) return { ok: false, reason: "preflight_failed", issues: preflight.issues };
+    // The SAME validation projection preview runs, so a draft preview claims is launchable is one
+    // create actually launches - compile, resolve the Workflow handoff, and run the read-only
+    // preflight. Only after it passes is anything persisted or dispatched.
+    const validated = await this.validateDraft(input, now);
+    if (!validated.ok) return { ok: false, reason: validated.reason, issues: validated.issues };
 
     const write = this.persistRun(
-      compiled.value,
-      preflight.value.baseSha,
-      preflight.value.baseBranch,
+      validated.compiled,
+      validated.preflight.baseSha,
+      validated.preflight.baseBranch,
       "running",
       now,
-      preflight.value.repoRoot,
+      validated.preflight.repoRoot,
+      validated.handoff,
     );
     const outcome = this.published(write);
     if (write.created) await this.engine.launch(write.run.id);
@@ -319,17 +396,150 @@ export class EnsembleManager {
     return outcome;
   }
 
+  /**
+   * The ONE validation/preflight projection preview and create share, so their verdicts cannot drift.
+   *
+   * Compile the strategy, resolve an optional Workflow handoff to an immutable version (a Live/Foreman
+   * mode or an archived version is a refusal, never a silent downgrade), and run the read-only launch
+   * preflight (repository, one pinned base commit, agent binaries, effort support, Mission MCP).
+   * Everything here is side-effect-free: it pins no base into the store and dispatches nothing, so it
+   * is safe to call on every keystroke - and because create runs exactly this, a preview that says
+   * "launchable" cannot become a create that refuses.
+   */
+  private async validateDraft(
+    input: EnsembleCreateInput,
+    now: number,
+  ): Promise<
+    | {
+        ok: true;
+        compiled: { descriptor: StrategyDescriptor; plan: CompiledEnsemblePlan; config: EnsembleJson; request: ReturnType<typeof EnsembleCreateInputSchema.parse> };
+        estimate: EnsembleLaunchEstimate | null;
+        workflow: ResolvedWorkflowVersion | null;
+        handoff: EnsembleWorkflowHandoff | null;
+        preflight: PreflightResult;
+      }
+    | { ok: false; reason: EnsembleCreateRefusal; issues: StrategyIssue[]; estimate: EnsembleLaunchEstimate | null; workflow: ResolvedWorkflowVersion | null }
+  > {
+    const compiled = this.compile(input, now);
+    if (!compiled.ok) {
+      const outcome = compiled.outcome;
+      return {
+        ok: false,
+        reason: outcome.ok ? "invalid_config" : outcome.reason,
+        issues: outcome.ok ? [] : outcome.issues,
+        estimate: null,
+        workflow: null,
+      };
+    }
+    const estimate = compiled.value.descriptor.estimate(compiled.value.config);
+    const placement = compiled.value.request.workflow ?? null;
+    let workflow: ResolvedWorkflowVersion | null = null;
+    let handoff: EnsembleWorkflowHandoff | null = null;
+    if (placement !== null) {
+      workflow = this.resolveWorkflowVersion?.(placement.workflowId, placement.workflowVersion) ?? null;
+      const resolved = this.resolveHandoff(placement);
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          reason: resolved.outcome.ok ? "workflow_unavailable" : resolved.outcome.reason,
+          issues: resolved.outcome.ok ? [] : resolved.outcome.issues,
+          estimate,
+          workflow,
+        };
+      }
+      handoff = resolved.value;
+    }
+    const preflight = await this.preflight(compiled.value.plan, input.repoRoot);
+    if (!preflight.ok) {
+      return { ok: false, reason: "preflight_failed", issues: preflight.issues, estimate, workflow };
+    }
+    return { ok: true, compiled: compiled.value, estimate, workflow, handoff, preflight: preflight.value };
+  }
+
+  /**
+   * Turn an operator's Workflow placement into a pinned handoff snapshot, or a typed create refusal.
+   *
+   * The one place a Live/Foreman selection is refused rather than downgraded: `resolveWorkflowVersion`
+   * reports whether this build can execute the chosen mode, and an unsupported one comes back as a
+   * `workflow_unavailable` refusal with a sentence for the form. Absent placement is `{ ok, value: null }` -
+   * most runs choose no handoff.
+   */
+  private resolveHandoff(
+    placement: { workflowId: string; workflowVersion: number } | null,
+  ): { ok: true; value: EnsembleWorkflowHandoff | null } | { ok: false; outcome: EnsembleCreateOutcome } {
+    if (placement === null) return { ok: true, value: null };
+    if (!this.resolveWorkflowVersion) {
+      return {
+        ok: false,
+        outcome: { ok: false, reason: "workflow_unavailable", issues: [{ path: "workflow", message: "this build cannot resolve a workflow handoff" }] },
+      };
+    }
+    const resolved = this.resolveWorkflowVersion(placement.workflowId, placement.workflowVersion);
+    if (!resolved) {
+      return {
+        ok: false,
+        outcome: { ok: false, reason: "workflow_unavailable", issues: [{ path: "workflow", message: `no published workflow ${placement.workflowId} version ${placement.workflowVersion}` }] },
+      };
+    }
+    if (!resolved.supported) {
+      return {
+        ok: false,
+        outcome: { ok: false, reason: "workflow_unavailable", issues: [{ path: "workflow", message: resolved.unsupportedReason ?? "this workflow mode is not available on this build" }] },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        workflowId: resolved.workflowId,
+        workflowVersionId: resolved.workflowVersionId,
+        workflowVersion: resolved.workflowVersion,
+        workflowName: resolved.workflowName,
+        triggerMode: resolved.triggerMode,
+        deliveryMode: resolved.deliveryMode,
+        maxRepairRounds: resolved.maxRepairRounds,
+        completionPolicy: resolved.completionPolicy,
+        state: "pending",
+        sourceKey: null,
+        expectedHeadSha: null,
+        bindingId: null,
+        runId: null,
+        submissionId: null,
+        error: null,
+      },
+    };
+  }
+
   private existingRun(input: EnsembleCreateInput): EnsembleCreateOutcome | null {
-    const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, input.sourceKind);
-    const sourceKey =
-      typeof input.sourceKey === "string" &&
-      input.sourceKey.length > 0 &&
-      input.sourceKey.length <= ENSEMBLE_LIMITS.sourceKey
-        ? input.sourceKey
-        : null;
-    const existing =
-      sourceKind !== null && sourceKey !== null ? this.store.runBySource(sourceKind, sourceKey) : null;
+    const parsed = EnsembleCreateInputSchema.safeParse(input);
+    if (!parsed.success) return null;
+    const request = parsed.data;
+    const existing = this.store.runBySource(request.sourceKind, request.sourceKey);
     if (!existing) return null;
+    // A source key is a per-submission idempotency key: a retry that reuses it must be the SAME
+    // request. Any difference - a different repository, title, source id, strategy version, config,
+    // or workflow placement - is a conflict, never a silent adoption of the old run. The whole
+    // normalized request is compared through one durable fingerprint, so no field is left out (a
+    // field-by-field check missed repoRoot, whose stored value is canonicalized and cannot be
+    // compared to the raw request directly). An unreadable existing run cannot be proven equivalent.
+    const descriptor = descriptorFor(this.catalog, request.strategyId);
+    const parsedConfig = descriptor?.configSchema.safeParse(request.strategyConfig);
+    const fingerprint = parsedConfig?.success
+      ? createRequestFingerprint(request, parsedConfig.data as EnsembleJson)
+      : null;
+    const equivalent =
+      existing.unreadable === null && fingerprint !== null && fingerprint === this.store.requestFingerprint(existing.id);
+    if (!equivalent) {
+      return {
+        ok: false,
+        reason: "request_conflict",
+        issues: [
+          {
+            path: "sourceKey",
+            message: "this source key is already bound to a different ensemble request",
+          },
+        ],
+      };
+    }
     const summary = this.publish(existing.id);
     if (!summary) throw new Error(`ensemble ${existing.id} has no summary for its source claim`);
     return { ok: true, run: existing, summary, created: false };
@@ -408,6 +618,7 @@ export class EnsembleManager {
     status: "planning" | "running",
     now: number,
     repoRoot?: string,
+    workflowHandoff: EnsembleWorkflowHandoff | null = null,
   ) {
     const { descriptor, plan, config, request } = compiled;
     const members: EnsembleMemberInsert[] = plan.roles.map((role) => ({
@@ -433,6 +644,8 @@ export class EnsembleManager {
         plan,
         strategyConfig: config,
         status,
+        workflowHandoff,
+        requestFingerprint: createRequestFingerprint(request, config),
         members,
       },
       now,
@@ -573,7 +786,7 @@ export class EnsembleManager {
     return this.engine.submit({ runId, memberId, claims, source: "operator", requireWorktree: null });
   }
 
-  // ---- internal recovery actions (Phase 6 exposes the complete action API) ----
+  // ---- operator actions ----
 
   async cancelRun(runId: string, reason: string | null): Promise<boolean> {
     return this.engine ? this.engine.cancelRun(runId, reason) : false;
@@ -593,6 +806,233 @@ export class EnsembleManager {
 
   async restoreArtifact(runId: string, artifactId: string): Promise<{ ok: boolean; detail?: string }> {
     return this.engine ? this.engine.restoreArtifact(runId, artifactId) : { ok: false, detail: "no engine" };
+  }
+
+  /** Record a human decision and move the run into finalization. Delegates to the engine's one door. */
+  async decide(input: {
+    runId: string;
+    requestId: string;
+    expectedStatus: EnsembleRun["status"];
+    selection: EnsembleJson;
+    rationale: string;
+    actorId: string | null;
+  }): Promise<EnsembleDecideOutcome> {
+    if (!this.engine) return { ok: false, reason: "no_run", detail: "this build cannot finalize", status: null };
+    if (input.expectedStatus === null) {
+      return { ok: false, reason: "wrong_state", detail: "a decision must state the run state it expects", status: null };
+    }
+    return this.engine.decide({
+      runId: input.runId,
+      requestId: input.requestId,
+      expectedStatus: input.expectedStatus,
+      selection: input.selection,
+      rationale: input.rationale,
+      actorId: input.actorId,
+    });
+  }
+
+  async resolveFinalization(runId: string, skipWorkflowHandoff: boolean): Promise<{ ok: boolean; detail?: string }> {
+    return this.engine ? this.engine.resolveFinalization(runId, skipWorkflowHandoff) : { ok: false, detail: "no engine" };
+  }
+
+  /**
+   * The one generic action door the `/actions` route goes through.
+   *
+   * A discriminated dispatch over `EnsembleAction`, mapping each verb's engine result to a typed
+   * refusal the route turns into an HTTP status - never a second route family per verb. The summary
+   * is re-read after the act so the response and the SSE channel agree.
+   */
+  async applyAction(runId: string, action: EnsembleAction): Promise<EnsembleActionResult> {
+    if (!this.engine) return { ok: false, reason: "unavailable", detail: "this build cannot act on ensembles" };
+    switch (action.kind) {
+      case "retry_stage": {
+        const ok = await this.retryStage(runId, action.stageId);
+        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that stage cannot be retried right now" };
+      }
+      case "retry_member": {
+        const ok = await this.retryMember(runId, action.memberId);
+        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be retried right now" };
+      }
+      case "withdraw_member": {
+        const ok = await this.withdrawMember(runId, action.memberId, null);
+        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be withdrawn right now" };
+      }
+      case "decide": {
+        const decided = await this.decide({
+          runId,
+          requestId: action.requestId,
+          expectedStatus: action.expectedStatus,
+          selection: action.selection,
+          rationale: action.rationale,
+          actorId: null,
+        });
+        if (decided.ok) return { ok: true, summary: this.store.summary(runId), decision: decided.decision, replayed: decided.replayed };
+        const reason =
+          decided.reason === "no_run" ? "not_found" : decided.reason === "wrong_state" || decided.reason === "conflict" ? "conflict" : "invalid";
+        return { ok: false, reason, detail: decided.detail };
+      }
+      case "resolve_finalization": {
+        const result = await this.resolveFinalization(runId, action.skipWorkflowHandoff);
+        return result.ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "finalization could not be resumed" };
+      }
+      case "cancel": {
+        const ok = await this.cancelRun(runId, action.reason);
+        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that run cannot be cancelled right now" };
+      }
+      case "restore_artifact": {
+        const result = await this.restoreArtifact(runId, action.artifactId);
+        return result.ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "that artifact cannot be restored" };
+      }
+    }
+  }
+
+  /**
+   * Whether a live session may acquire a normal Workflow binding, backed by the ensemble store.
+   *
+   * The narrow guard the daemon injects into WorkflowManager: it answers with a REASON (ineligible)
+   * or null (eligible) and nothing else, so the Workflow module never imports the ensemble store. A
+   * session running an ACTIVE ensemble member is refused - binding it manually would race the
+   * finalization that reads it. A settled member no longer owns the session, which is exactly why the
+   * server-owned after-selection handoff marks the winner retained BEFORE it binds: by then this
+   * returns null and the ensemble's own external bind goes through the same boundary.
+   */
+  canBindSessionToWorkflow(sessionId: string): string | null {
+    const session = this.registry.getSession(sessionId);
+    if (!session) return null;
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task) return null;
+    const member = this.store.memberForTask(task.id);
+    if (!member) return null;
+    if (member.status === null) {
+      return "this session belongs to an ensemble member whose status this build cannot classify";
+    }
+    const active =
+      member.status === "pending" ||
+      member.status === "launching" ||
+      member.status === "active" ||
+      member.status === "submitted" ||
+      member.status === "reviewing";
+    return active
+      ? "this session is running an active ensemble member and cannot be bound to a workflow until the ensemble finalizes"
+      : null;
+  }
+
+  /**
+   * Side-effect-free validation and estimate for a draft, sharing create's exact projection.
+   *
+   * Preview and create resolve the same way - the strategy compiles, the Workflow placement resolves
+   * to the same support verdict - so a preview can never promise a launch create would refuse. It
+   * pins no base and touches no repository beyond what compilation needs, so it is safe to call on
+   * every keystroke.
+   */
+  async preview(input: EnsembleCreateInput, now = this.now()): Promise<EnsemblePreviewResult> {
+    // Exactly the projection create runs (compile + Workflow resolution + read-only preflight), so a
+    // draft can never preview as launchable and then be refused on create. It persists nothing.
+    const validated = await this.validateDraft(input, now);
+    if (!validated.ok) {
+      return { ok: false, reason: validated.reason, issues: validated.issues, estimate: validated.estimate, workflow: validated.workflow };
+    }
+    return { ok: true, reason: null, issues: [], estimate: validated.estimate, workflow: validated.workflow };
+  }
+
+  /**
+   * Explicitly delete one terminal run's history AND its generated private refs.
+   *
+   * The one destructive-to-evidence act, gated on the run being terminal and on the caller echoing
+   * its id. Deletion intent is persisted first, then every validated generated ref is deleted, then
+   * the rows - so a crash mid-deletion resumes the same remaining refs (the intent cascades with the
+   * run, so recovery only ever finds one whose run still exists). It never deletes a Task or any
+   * linked Workflow state: those have their own owners and retention.
+   */
+  async deleteRun(
+    id: string,
+    confirmId: string,
+  ): Promise<{ ok: boolean; reason?: "not_found" | "mismatch" | "not_terminal" | "incomplete"; detail?: string }> {
+    if (id !== confirmId) return { ok: false, reason: "mismatch", detail: "the confirmation id does not match the run id" };
+    const run = this.store.getRun(id);
+    if (!run) return { ok: false, reason: "not_found", detail: "no such ensemble" };
+    // Terminal-only: an in-flight run holds live Tasks a delete must never orphan. Cancel it first.
+    if (run.status === null || !ensembleIsTerminal(run.status)) {
+      return {
+        ok: false,
+        reason: "not_terminal",
+        detail: `run is ${run.status ?? "unreadable"}; cancel it before deleting its history`,
+      };
+    }
+    this.store.beginDeletionIntent(id, this.now());
+    const outcome = await this.executeDeletion(id);
+    return outcome.ok ? { ok: true } : { ok: false, reason: "incomplete", detail: outcome.detail };
+  }
+
+  /**
+   * Resume any deletion interrupted by a crash. Called at startup after run recovery.
+   *
+   * A deletion intent exists only while its run still exists (it cascades), so every intent found
+   * here is a deletion that did not reach `deleteRun`, and re-running it deletes the remaining refs
+   * and the rows. Deleting a ref twice is a no-op, so this is safe to repeat.
+   */
+  async recoverDeletions(): Promise<void> {
+    for (const intent of this.store.listDeletionIntents()) {
+      try {
+        await this.executeDeletion(intent.runId);
+      } catch (err) {
+        console.error(`[ensemble] deletion recovery failed for run ${intent.runId}:`, err);
+      }
+    }
+  }
+
+  /** Delete every generated private ref of a run, then its rows, then emit `ensemble_remove`. */
+  private async executeDeletion(id: string): Promise<{ ok: boolean; detail?: string }> {
+    const record = this.store.getRun(id);
+    if (!record) return { ok: true };
+    this.store.setDeletionStatus(id, "deleting_refs", null, this.now());
+    for (const ref of this.generatedRefsFor(id)) {
+      await run("git", ["-C", record.repoRoot, "update-ref", "-d", ref]).catch(() => undefined);
+      let still: string | null;
+      try {
+        still = await resolveEnsembleRef(record.repoRoot, ref);
+      } catch (err) {
+        const detail = `could not verify private ref ${ref}: ${err instanceof Error ? err.message : String(err)}`;
+        this.store.setDeletionStatus(id, "failed", detail, this.now());
+        return { ok: false, detail };
+      }
+      if (still !== null) {
+        const detail = `could not delete private ref ${ref}`;
+        this.store.setDeletionStatus(id, "failed", detail, this.now());
+        return { ok: false, detail };
+      }
+    }
+    const removed = this.store.deleteRun(id);
+    if (removed) {
+      this.refreshLinks();
+      this.registry.removeEnsemble(id);
+    }
+    return removed ? { ok: true } : { ok: false, detail: "the ensemble rows could not be deleted" };
+  }
+
+  /**
+   * The generated private refs a run owns, validated as the exact `refs/mission-control/ensembles/…`
+   * shape this build creates - never a ref name read off anywhere but the run's own artifacts.
+   */
+  private generatedRefsFor(id: string): string[] {
+    const prefix = `${ENSEMBLE_REF_PREFIX}/${id}/`;
+    const refs = new Set<string>();
+    for (const artifact of this.store.listArtifacts(id)) {
+      if (artifact.kind === "commit") {
+        try {
+          refs.add(ensembleSnapshotRef(id, artifact.id));
+        } catch (err) {
+          void err;
+        }
+      }
+      const locator = artifact.locator;
+      const ref =
+        locator && typeof locator === "object" && !Array.isArray(locator) && typeof locator.ref === "string"
+          ? locator.ref
+          : null;
+      if (ref !== null && ref.startsWith(prefix) && /^[\w./-]+$/.test(ref)) refs.add(ref);
+    }
+    return [...refs];
   }
 
   /**
@@ -699,6 +1139,36 @@ export class EnsembleManager {
     };
     return { ok: true, value: { repoRoot, persona, now } };
   }
+}
+
+/**
+ * A stable fingerprint of a create request, for source-key replay-conflict detection.
+ *
+ * Built from the RAW parsed request (a legitimate idempotent retry is byte-identical, so its
+ * fingerprint matches), and from the descriptor-parsed config rather than the raw config blob so
+ * that key ordering and defaults do not spuriously differ. `repoRoot` is the raw request value, not
+ * the canonicalized one stored on the row - a different repository yields a different fingerprint,
+ * while the same retry yields the same one. Any differing field makes the fingerprint differ, which
+ * is exactly the conflict this detects.
+ */
+function createRequestFingerprint(
+  request: ReturnType<typeof EnsembleCreateInputSchema.parse>,
+  config: EnsembleJson,
+): string {
+  const material: EnsembleJson = {
+    sourceKind: request.sourceKind,
+    sourceId: request.sourceId,
+    title: request.title.trim(),
+    intent: request.intent,
+    repoRoot: request.repoRoot,
+    strategyId: request.strategyId,
+    strategyVersion: request.strategyVersion ?? null,
+    config,
+    workflow: request.workflow
+      ? { workflowId: request.workflow.workflowId, workflowVersion: request.workflow.workflowVersion }
+      : null,
+  };
+  return createHash("sha256").update(canonicalEnsembleJson(material)).digest("hex");
 }
 
 function readPersonaId(evaluator: unknown): string | null {

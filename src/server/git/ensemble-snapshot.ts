@@ -186,7 +186,9 @@ export async function resolveEnsembleRef(repoPath: string, ref: string): Promise
   }
   const r = await git(repoPath, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
   const sha = r.stdout.trim();
-  return r.code === 0 && SHA.test(sha) ? sha : null;
+  if (r.code === 0 && SHA.test(sha)) return sha;
+  if (r.code === 1 && !r.outcomeUnknown && r.stderr.trim() === "") return null;
+  throw new Error(`git rev-parse failed: ${r.stderr.trim() || `exit ${r.code}`}`);
 }
 
 export interface SnapshotFileStat {

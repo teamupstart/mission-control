@@ -34,8 +34,8 @@ export const ENSEMBLE_STRATEGY_IDS = ["best_of_n"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
- * Who asked for an ensemble. Only `manual` exists: operator-originated creation, currently
- * reachable only through the in-process manager.
+ * Who asked for an ensemble. Only `manual` exists: operator-originated creation through the
+ * localhost API or the in-process manager.
  *
  * Workflow and Foreman are deliberately absent rather than reserved - a source id nothing
  * can produce is a value a reader has to handle and a test cannot reach. Append one when a
@@ -230,6 +230,47 @@ export const ENSEMBLE_OUTCOME_KINDS = [
   "no_consensus",
 ] as const;
 export type EnsembleOutcomeKind = (typeof ENSEMBLE_OUTCOME_KINDS)[number];
+
+/**
+ * Where an optional post-selection Workflow handoff got to.
+ *
+ * A handoff is pinned at ensemble CREATION (its immutable version, defaults and display
+ * snapshot) and driven at finalization. `pending` is the pinned-but-not-started state,
+ * `binding`/`submitted` its two durable milestones, `failed` a remediable error, `conflict`
+ * a note key already owned by a different active binding (offer retry or skip), and `skipped`
+ * the operator's explicit `skip_workflow_handoff`. Append-only, for the reason the file is:
+ * a persisted handoff state a newer build wrote must still read back on an older one.
+ */
+export const ENSEMBLE_WORKFLOW_HANDOFF_STATES = [
+  "pending",
+  "binding",
+  "submitted",
+  "failed",
+  "conflict",
+  "skipped",
+] as const;
+export type EnsembleWorkflowHandoffState = (typeof ENSEMBLE_WORKFLOW_HANDOFF_STATES)[number];
+
+/**
+ * Which finalization step a `finalizing` run has durably reached.
+ *
+ * Recovery reads THIS off the finalize stage attempt to resume rather than restart: a run
+ * interrupted after its winner was made exact but before its losers were reaped must not
+ * re-verify a decision or re-materialize a winner. Ordered by execution, so a later step
+ * proves every earlier one durable. Append-only.
+ */
+export const ENSEMBLE_FINALIZATION_STEPS = [
+  "verifying",
+  "materializing",
+  "reaping_losers",
+  "handoff",
+  "completed",
+] as const;
+export type EnsembleFinalizationStep = (typeof ENSEMBLE_FINALIZATION_STEPS)[number];
+
+/** Where an explicit history/ref deletion got to. Durable, so a crash resumes the same refs. */
+export const ENSEMBLE_DELETION_STATUSES = ["pending", "deleting_refs", "completed", "failed"] as const;
+export type EnsembleDeletionStatus = (typeof ENSEMBLE_DELETION_STATUSES)[number];
 
 // ---- bounds ----
 
@@ -573,20 +614,27 @@ export interface EnsembleLaunchEstimate {
 export interface EnsembleCreateInput {
   /**
    * Stable per-submission idempotency key the CALLER mints and reuses on retry. A response
-   * lost on the way back must not launch another N agents.
-   */
+  * lost on the way back must not launch another N agents.
+  */
   sourceKey: string;
-  sourceKind: EnsembleSourceKind;
+  /** Absent defaults to operator-originated `manual`. */
+  sourceKind?: EnsembleSourceKind;
   /** Display identity of the external record, or null when the source is the operator. */
-  sourceId: string | null;
+  sourceId?: string | null;
   title: string;
   intent: string;
   repoRoot: string;
   strategyId: EnsembleStrategyId;
   /** Optional pin; absent means "this build's current version for that strategy". */
   strategyVersion?: number;
-  /** Validated by the chosen strategy's own schema, never by the generic record. */
-  strategyConfig: unknown;
+  /** Validated by the chosen strategy's own schema, never by the generic record. Absent is `{}`. */
+  strategyConfig?: unknown;
+  /**
+   * Optional post-selection Workflow handoff. The daemon resolves the id + version to ONE immutable
+   * published version and refuses an unsupported mode; the caller never supplies the version id,
+   * binding defaults, or delivery mode.
+   */
+  workflow?: { workflowId: string; workflowVersion: number } | null;
 }
 
 // ---- durable records ----
@@ -611,11 +659,86 @@ export function ensemblePayload(body: EnsembleJson): EnsemblePayloadEnvelope {
   return { payloadVersion: ENSEMBLE_PAYLOAD_VERSION, body };
 }
 
+export function canonicalEnsembleJson(value: EnsembleJson): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalEnsembleJson).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalEnsembleJson(value[key] as EnsembleJson)}`).join(",")}}`;
+}
+
+export function ensembleJsonEqual(a: EnsembleJson, b: EnsembleJson): boolean {
+  return canonicalEnsembleJson(a) === canonicalEnsembleJson(b);
+}
+
 export type EnsembleOutcome =
   | { kind: "selected"; memberIds: string[]; artifactIds: string[]; materializedTaskId: string | null }
   | { kind: "synthesized"; memberId: string; artifactId: string; materializedTaskId: string | null }
   | { kind: "retained"; memberIds: string[]; artifactIds: string[] }
   | { kind: "no_consensus"; artifactIds: string[]; reason: string };
+
+/**
+ * An optional post-selection Workflow handoff, pinned at creation and driven at finalization.
+ *
+ * The immutable version, its binding defaults, its completion policy and a DISPLAY snapshot are
+ * resolved once at creation (`resolveWorkflowVersion`), so a Persona edit or an archive after
+ * creation cannot re-aim it - exactly as a published Workflow pins a `PersonaSnapshot`. The mode
+ * fields are plain strings on purpose: they are a display snapshot of what was chosen, and keeping
+ * them decoupled from the Workflow enums keeps this browser-safe record append-only without
+ * importing the Workflow vocabulary. Only Preview + manual is accepted on this baseline; a
+ * Live/Foreman selection is a typed refusal at creation, never a silent Preview downgrade.
+ *
+ * Everything below `state` is runtime identity filled in AS the handoff runs: the derived
+ * server-side `sourceKey`, the `expectedHeadSha` the submission was pinned to, and the returned
+ * binding/run/submission ids. Its lifecycle is entirely separate from the linked Workflow's own:
+ * a completed Ensemble whose Workflow later fails is still completed, and a Workflow Reset that
+ * removes the binding leaves this snapshot rendering the link as removed rather than recreating it.
+ */
+export interface EnsembleWorkflowHandoff {
+  workflowId: string;
+  workflowVersionId: string;
+  workflowVersion: number;
+  workflowName: string;
+  /** A display snapshot of the pinned binding defaults - not the live Workflow's current ones. */
+  triggerMode: string;
+  deliveryMode: string;
+  maxRepairRounds: number;
+  /** The pinned completion policy's discriminant, for display; the Workflow owns its execution. */
+  completionPolicy: string;
+  state: EnsembleWorkflowHandoffState;
+  /** The opaque server-derived idempotency key, once the handoff begins. Never parsed by a reader. */
+  sourceKey: string | null;
+  /** The snapshot SHA the submission was pinned to require. */
+  expectedHeadSha: string | null;
+  bindingId: string | null;
+  runId: string | null;
+  submissionId: string | null;
+  error: string | null;
+}
+
+/**
+ * The durable per-step receipt a `finalizing` run leaves, read by recovery to RESUME.
+ *
+ * Persisted on the finalize stage attempt's output. Every field is a receipt of an effect that
+ * already happened, so a repeated finalization pass reads them and skips forward rather than
+ * re-verifying a decision or re-materializing a winner. The two fields that MUST be durable
+ * (nothing else can re-derive them) are `continuationDeliveryKey`/`continuationDelivered` - a
+ * continuation sent twice is the failure this record exists to rule out.
+ */
+export interface EnsembleFinalizationProgress {
+  step: EnsembleFinalizationStep;
+  /** The snapshot SHA the selected artifact's private ref was re-verified to resolve to. */
+  verifiedSnapshotSha: string | null;
+  /** How the one exact winner was made available. */
+  winner: { mode: "restored" | "replacement"; ready: boolean } | null;
+  continuationInIntent: boolean;
+  /** True once every non-winner member is reconciled terminal through TaskManager. */
+  losersReaped: boolean;
+  /** Deterministic key for the one continuation message, so a restart cannot send it twice. */
+  continuationDeliveryKey: string | null;
+  continuationDelivered: boolean;
+  /** The last actionable error a step recorded, kept visible while the run stays `finalizing`. */
+  error: string | null;
+}
 
 export interface EnsembleRun {
   id: string;
@@ -644,6 +767,8 @@ export interface EnsembleRun {
   status: EnsembleStatus | null;
   activeStageId: string | null;
   outcome: EnsembleOutcome | null;
+  /** The optional post-selection Workflow handoff, pinned at creation, or null when none was chosen. */
+  workflowHandoff: EnsembleWorkflowHandoff | null;
   unreadable: EnsembleUnreadable | null;
   error: string | null;
   createdAt: number;
@@ -913,16 +1038,39 @@ export interface TaskEnsembleLink {
  * A discriminated union rather than one route family per verb, and generic rather than
  * strategy-shaped: a strategy composed only from existing primitives adds no member here.
  * A genuinely new operator authority does - and that is the signal that it introduced a new
- * primitive. No route consumes this yet; the shape is fixed now so later phases and the
- * dashboard cannot invent two spellings of the same act.
+ * primitive. The one `/api/ensembles/:id/actions` route consumes this shape, so later strategies
+ * and the dashboard cannot invent two spellings of the same act.
  */
 export type EnsembleAction =
   | { kind: "retry_stage"; stageId: string }
+  | { kind: "retry_member"; memberId: string }
   | { kind: "withdraw_member"; memberId: string }
-  | { kind: "decide"; selection: EnsembleJson; rationale: string }
-  | { kind: "resolve_finalization" }
+  | {
+      kind: "decide";
+      /** Client-stable idempotency key; a lost response returns the same recorded decision. */
+      requestId: string;
+      /** The run state the caller believes it is acting on; a mismatch is a `409`, never an act. */
+      expectedStatus: EnsembleStatus;
+      /** The outcome, in the compiled finalization policy's own vocabulary. */
+      selection: EnsembleJson;
+      rationale: string;
+      /** The literal `true`: destructive finalization is never reachable without saying so. */
+      confirmDestructive: true;
+    }
+  | { kind: "resolve_finalization"; skipWorkflowHandoff: boolean }
   | { kind: "cancel"; reason: string | null }
   | { kind: "restore_artifact"; artifactId: string };
+
+/**
+ * What a `select_one` decision chooses, once validated against the eligible artifact set.
+ *
+ * `selected` is the winner (an eligible ready artifact id); `no_consensus` is the declared
+ * escape when there is no defensible pick, retaining every artifact. Cancelling is a separate
+ * authority (`cancel`), not a decision - a decision that destroys is never an accident.
+ */
+export type EnsembleSelectOneSelection =
+  | { kind: "selected"; artifactId: string }
+  | { kind: "no_consensus"; reason: string };
 
 // ---- helpers ----
 

@@ -300,6 +300,7 @@ function run(over: Partial<EnsembleRun> = {}): EnsembleRun {
     status: "planning",
     activeStageId: null,
     outcome: null,
+    workflowHandoff: null,
     unreadable: null,
     error: null,
     createdAt: 1,
@@ -439,20 +440,18 @@ test("a create request without an idempotency key, a title or a known strategy i
   }
 });
 
-test("no production route can create an ensemble yet, though members submit and detail is read", () => {
-  // The merge criterion for this phase, and it needs a test because it is an ABSENCE. The runtime,
-  // submission and read surfaces exist now - a member can submit, an operator can read detail - but
-  // the CREATE path stays unreachable until Best-of-N's evaluator lands: a route that reached
-  // `createAndLaunch` (or a bare `POST /api/ensembles`) would launch a run that cannot finish.
-  // Grepping the two front doors is crude and exact, which is what this claim needs.
+test("the create route launches through the manager, and the MCP boundary stays submission-only", () => {
+  // Phase 6 opens the create path: finalization now makes a launched run safe to FINISH, so the
+  // route reaching `createAndLaunch` no longer strands a run it cannot complete. The MCP boundary
+  // is unchanged - a member SUBMITS through it, and it exposes nothing that creates or launches a
+  // run, so the launch authority stays with the operator's own localhost front door.
   const routes = readFileSync(fileURLToPath(new URL("../src/server/routes.ts", import.meta.url)), "utf8");
-  assert.doesNotMatch(routes, /createAndLaunch/, "routes.ts must not reach the ensemble launch path");
-  assert.doesNotMatch(
+  assert.match(routes, /createAndLaunch/, "routes.ts reaches the ensemble launch path");
+  assert.match(
     routes,
-    /app\.(post|put)\(\s*["'`]\/api\/ensembles["'`]/,
-    "routes.ts must expose no ensemble create route",
+    /app\.post\(\s*["'`]\/api\/ensembles["'`]/,
+    "routes.ts exposes the ensemble create route",
   );
-  // The MCP server exposes only the submission tool - never one that creates or launches a run.
   const mcp = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
   assert.doesNotMatch(
     mcp,
@@ -463,10 +462,42 @@ test("no production route can create an ensemble yet, though members submit and 
 
 test("the operator authorities are one closed union a new strategy must not need to widen", () => {
   assert.equal(EnsembleActionSchema.safeParse({ kind: "retry_stage", stageId: "stage-1" }).success, true);
+  assert.equal(EnsembleActionSchema.safeParse({ kind: "retry_member", memberId: "m" }).success, true);
   assert.equal(EnsembleActionSchema.safeParse({ kind: "cancel" }).success, true);
+  assert.equal(EnsembleActionSchema.safeParse({ kind: "resolve_finalization" }).success, true);
+  // A decision carries its idempotency key, the state it expects, its selection, and an explicit
+  // destructive confirmation - the last the literal `true`, so finalization is never reachable by
+  // omission the way a plain boolean default would allow.
   assert.equal(
-    EnsembleActionSchema.safeParse({ kind: "decide", selection: { memberId: "m" } }).success,
+    EnsembleActionSchema.safeParse({
+      kind: "decide",
+      requestId: "r1",
+      expectedStatus: "awaiting_decision",
+      selection: { kind: "selected", artifactId: "a" },
+      confirmDestructive: true,
+    }).success,
     true,
+  );
+  assert.equal(
+    EnsembleActionSchema.safeParse({
+      kind: "decide",
+      requestId: "r1",
+      expectedStatus: "awaiting_decision",
+      selection: { kind: "selected", artifactId: "a" },
+      confirmDestructive: false,
+    }).success,
+    false,
+    "confirmDestructive must be the literal true",
+  );
+  assert.equal(
+    EnsembleActionSchema.safeParse({
+      kind: "decide",
+      requestId: "r".repeat(901),
+      expectedStatus: "awaiting_decision",
+      selection: { kind: "selected", artifactId: "a" },
+      confirmDestructive: true,
+    }).success,
+    false,
   );
   assert.equal(EnsembleActionSchema.safeParse({ kind: "promote_everything" }).success, false);
 });

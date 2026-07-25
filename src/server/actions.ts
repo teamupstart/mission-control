@@ -41,6 +41,7 @@ import type {
 } from "./terminal/types.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
+import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -2370,6 +2371,63 @@ export async function resetToOrigin(
   const sent = await sendText(session, clearing.command, true, deps, undefined, lockOwner);
   const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
   return { ok: true, error: null, root, cleared, detached, clearIssuedAt };
+}
+
+/**
+ * Reset a checkout to one EXACT local commit, keeping its branch, then optionally clear context.
+ *
+ * The sibling of `resetToOrigin`, for the one caller that has a specific commit to restore rather
+ * than a remote default to fetch: Ensemble finalization restoring a selected winner to its
+ * immutable snapshot. The differences from `resetToOrigin` are all deliberate. It does NOT fetch -
+ * the target is a local commit an ensemble ref already holds, and a network round-trip would only
+ * add a failure mode. It does NOT detach - the winner keeps its branch pointing at the snapshot so
+ * it can go on to ship through the normal flow, where `resetToOrigin` detaches to free a branch for
+ * the next task. It reuses the SAME `/clear` tail, so a restore clears the agent's context exactly
+ * as a reset does and `resetSession` can rebind the work episode on the same `cleared` signal.
+ *
+ * `commit` must be a full 40-hex id, the same shape a pinned base requires: a ref name would mean
+ * something different an hour later, which is the drift a snapshot restore exists to remove.
+ */
+export async function resetToCommit(
+  session: Session,
+  commit: string,
+  clear: boolean,
+  deps: InjectDeps = defaultInjectDeps,
+  lockOwner?: PaneLockToken,
+): Promise<ResetResult> {
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    return { ok: false, error: "a snapshot restore needs a full commit id", root: null, cleared: false, detached: false };
+  }
+  if (!session.cwd) {
+    return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
+  }
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) {
+    return { ok: false, error: "not a git repository", root: null, cleared: false, detached: false };
+  }
+  const root = top.stdout.trim();
+
+  try {
+    await resetWorktreeToCommit(root, commit);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      root,
+      cleared: false,
+      detached: false,
+    };
+  }
+
+  // The same context-clear tail as `resetToOrigin`: `clearContext` is null for a harness with no
+  // such command and lands on the already-tested `cleared: false` degradation, not a new branch.
+  const clearing = clear ? harnessFor(session.agent).clearContext : null;
+  if (!clearing) return { ok: true, error: null, root, cleared: false, detached: false };
+  const before = await deps.capture(session);
+  const clearIssuedAt = Date.now();
+  const sent = await sendText(session, clearing.command, true, deps, undefined, lockOwner);
+  const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
+  return { ok: true, error: null, root, cleared, detached: false, clearIssuedAt };
 }
 
 /** How long to give the agent to act on a `/clear` before we stop claiming it did. */

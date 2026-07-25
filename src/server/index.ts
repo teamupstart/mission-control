@@ -45,6 +45,7 @@ import { PersonaManager } from "./workflows/personas.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
+import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
 
 openDb();
@@ -78,18 +79,25 @@ const personas = new PersonaManager(registry);
 // share it today. The Foreman is a separate process and unrelated background jobs keep
 // their own limits on purpose - see llm/review-scheduler.ts.
 const reviewScheduler = createReviewScheduler();
+// Assigned below. The Workflow binding guard reaches it through this reference, and the reference
+// is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
+// is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
+// and Ensemble asks Workflow to bind/submit the finalized winner, without either importing the
+// other's store. The guard hands back only a reason string or null.
+let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
+  canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
+  externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });
 workflows.start();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
-// engine that launches member waves, captures submissions and recovers, and - now that the review
-// executor is wired in - runs the Best-of-N comparison through to the human-decision boundary. No
-// CREATE route is enabled yet (the human-decision and finalization API lands in a later phase), so
-// on every existing machine these tables are empty and the product behaves exactly as before; the
-// runtime is proven by tests and the internal action surface.
+// engine that launches member waves, captures submissions and recovers, runs the Best-of-N
+// comparison through the human-decision boundary, and drives the confirmed finalization through
+// its injected Task/Workflow seams. Public creation is enabled now that every production driver
+// is executable; an existing installation still creates no rows until an operator calls that API.
 //
 // Its Persona resolver is the manager's own store, so a comparison configured against a Persona
 // snapshots that Persona's exact revision, name, guidance and overrides at creation instead of
@@ -97,7 +105,7 @@ workflows.start();
 // shares the daemon-wide `reviewScheduler`, so a comparison counts against the SAME ceiling as
 // Workflow review and compaction; it resolves runner/model per attempt through the persona ladder
 // or the `ensemble-comparison` job, and its provider call is tool-less by construction.
-const ensembles = new EnsembleManager(registry, undefined, {
+ensembles = new EnsembleManager(registry, undefined, {
   resolvePersona: (personaId) => {
     const persona = personas.store.getPersona(personaId);
     return persona
@@ -131,12 +139,23 @@ const ensembles = new EnsembleManager(registry, undefined, {
     },
     runModel: (runnerId, prompt, opts) => llmRunner(runnerId).run(prompt, { model: opts.modelId, timeoutMs: opts.timeoutMs }),
   },
+  // The finalization authorities: exact restore through `resetSession`, replacement Task
+  // materialization through TaskManager, guarded pane injection, and the Workflow external
+  // boundary. This is what lets a human-confirmed decision reap losers, preserve one exact winner,
+  // and optionally submit its clean snapshot into a published Workflow - all restart-safe.
+  finalize: createFinalizeDeps({ registry, tasks, workflows }),
+  // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
+  // selection is a typed refusal here, never a Preview downgrade.
+  resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
 });
 // Resume non-terminal ensembles once the first discovery sweep makes member Task/Session state
 // real - the same gate TaskManager and WorkflowManager recovery use, and registered after both so
 // their reconstruction runs first. Recovery is derived from SQLite plus current registry state,
-// never from missed events.
-registry.onSessionsObserved(() => void ensembles.recoverNonTerminalRuns());
+// never from missed events. A deletion interrupted mid-flight is resumed in the same pass.
+registry.onSessionsObserved(() => {
+  void ensembles.recoverNonTerminalRuns();
+  void ensembles.recoverDeletions();
+});
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);

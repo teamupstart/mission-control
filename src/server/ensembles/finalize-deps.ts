@@ -99,7 +99,15 @@ export function createFinalizeDeps(deps: {
         true,
         (s, clear, lockOwner) => resetToCommit(s, snapshotSha, clear, undefined, lockOwner),
       );
-      return result.ok ? { ok: true } : { ok: false, detail: result.error ?? "the winner reset failed" };
+      if (!result.ok) {
+        return { ok: false, detail: result.error ?? "the winner reset failed" };
+      }
+      return result.cleared && result.workIdentityReady
+        ? { ok: true }
+        : {
+            ok: false,
+            detail: "the winner context was not cleared/rebound yet; retry",
+          };
     },
 
     async worktreeHead({ worktreePath }) {
@@ -113,9 +121,21 @@ export function createFinalizeDeps(deps: {
 
     async deliverContinuation({ sessionId, text }) {
       const session = registry.getSession(sessionId);
-      if (!session) return { ok: false, detail: "the winner session is gone" };
+      if (!session) {
+        return {
+          ok: false,
+          retryable: true,
+          detail: "the winner session is gone",
+        };
+      }
       const r = await injectPrompt(session, text, undefined, () => registry.promptResourceBlockerForSession(session.id));
-      return r.ok ? { ok: true } : { ok: false, detail: r.error ?? "the continuation could not be delivered" };
+      return r.ok
+        ? { ok: true }
+        : {
+            ok: false,
+            retryable: r.pasted === false,
+            detail: r.error ?? "the continuation could not be delivered",
+          };
     },
 
     async materializeReplacement(request) {

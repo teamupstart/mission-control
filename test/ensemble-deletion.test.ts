@@ -20,7 +20,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
-const { resolveEnsembleRef } = await import("../src/server/git/ensemble-snapshot.ts");
+const { ensembleSnapshotRef, resolveEnsembleRef } = await import("../src/server/git/ensemble-snapshot.ts");
 const { gitRepo, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
 
 const db = openDb();
@@ -130,4 +130,38 @@ test("deletion keeps rows and intent when private-ref verification fails", async
   assert.notEqual(store.getRun(run.id), null);
   assert.equal(store.getDeletionIntent(run.id)?.status, "failed");
   assert.notEqual(await resolveEnsembleRef(path, ref), null);
+});
+
+test("deletion derives and removes a commit artifact ref with no persisted locator", async () => {
+  const registry = new Registry();
+  const store = new EnsembleStore(db);
+  const manager = new EnsembleManager(registry, store, {});
+  const { path, baseSha } = gitRepo();
+  const { run } = store.createRun(
+    runInsert(decidePlan(2, 2), {
+      repoRoot: path,
+      status: "completed",
+      sourceKey: "delete:missing-locator",
+    }),
+  );
+  const artifact = store.recordArtifact({
+    runId: run.id,
+    attemptId: null,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "failed",
+    locator: null,
+    digest: "",
+    metadata: {},
+    operationKey: `failed:${run.id}`,
+    readyAt: null,
+  });
+  const ref = ensembleSnapshotRef(run.id, artifact.id);
+  execFileSync("git", ["-C", path, "update-ref", ref, baseSha]);
+
+  const result = await manager.deleteRun(run.id, run.id);
+  assert.equal(result.ok, true);
+  assert.equal(await resolveEnsembleRef(path, ref), null);
+  assert.equal(store.getRun(run.id), null);
 });

@@ -67,6 +67,9 @@ export interface EnsembleReviewDeps {
 
 /** A finalization side effect either happened or is refused with a sentence the operator can act on. */
 export type FinalizeStepResult = { ok: true } | { ok: false; detail: string };
+export type ContinuationDeliveryResult =
+  | { ok: true }
+  | { ok: false; retryable: boolean; detail: string };
 
 /** Everything the daemon needs to materialize one replacement normal Task at a snapshot. */
 export interface ReplacementTaskRequest {
@@ -135,7 +138,7 @@ export interface EnsembleFinalizeDeps {
   /** HEAD sha and cleanliness of a worktree, for the pre-handoff exactness check. */
   worktreeHead(input: { worktreePath: string }): Promise<{ headSha: string | null; clean: boolean }>;
   /** Deliver one continuation prompt to a live session's pane through the guarded inject path. */
-  deliverContinuation(input: { sessionId: string; text: string }): Promise<FinalizeStepResult>;
+  deliverContinuation(input: { sessionId: string; text: string }): Promise<ContinuationDeliveryResult>;
   /** Create + dispatch one replacement normal Task at a snapshot; idempotent on its preallocated id. */
   materializeReplacement(request: ReplacementTaskRequest): Promise<FinalizeStepResult>;
   /** The current durable status, live session, and worktree of a materialized replacement Task. */
@@ -2264,13 +2267,36 @@ export class EnsembleEngine {
     // STEP verifying: the winner ref must still resolve to its snapshot. No cleanup happens if it
     // does not - a missing ref is a restore/ref remediation, and reaping losers around a winner
     // that is gone is exactly the loss the ordering rules out.
-    const verified = await deps.verifyArtifact({ locator: winnerArtifact.locator, repoPath: run.repoRoot });
-    if (verified === null || verified !== snapshotSha) {
+    let verified: string | null;
+    try {
+      verified = await deps.verifyArtifact({
+        locator: winnerArtifact.locator,
+        repoPath: run.repoRoot,
+      });
+    } catch (err) {
+      return this.parkFinalize(
+        run.id,
+        stageAttempt.id,
+        { ...progress, step: "verifying", verifiedSnapshotSha: null },
+        `the selected artifact could not be verified; retry after the repository is available: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    if (verified === null) {
       return this.parkFinalize(
         run.id,
         stageAttempt.id,
         { ...progress, step: "verifying", verifiedSnapshotSha: null },
         "the selected artifact's private ref no longer resolves to its snapshot; restore or retry before any cleanup",
+      );
+    }
+    if (verified !== snapshotSha) {
+      return this.parkFinalize(
+        run.id,
+        stageAttempt.id,
+        { ...progress, step: "verifying", verifiedSnapshotSha: null },
+        `the selected artifact's private ref resolves to ${verified}, not its recorded snapshot ${snapshotSha}`,
       );
     }
     progress = { ...progress, step: "materializing", verifiedSnapshotSha: snapshotSha, error: null };
@@ -2625,13 +2651,17 @@ export class EnsembleEngine {
       text: this.buildContinuation(state, winnerMember, winnerArtifact),
     });
     if (!delivered.ok) {
-      const retryable = { ...claimed, continuationDelivered: false };
-      this.store.setFinalizationProgress(stageAttemptId, retryable, this.now());
+      const failedProgress = delivered.retryable
+        ? { ...claimed, continuationDelivered: false }
+        : claimed;
+      if (delivered.retryable) {
+        this.store.setFinalizationProgress(stageAttemptId, failedProgress, this.now());
+      }
       return {
         ok: false,
         detail: `delivering the winner continuation failed: ${delivered.detail}`,
         deliveryKey,
-        progress: retryable,
+        progress: failedProgress,
       };
     }
     this.event(run.id, "winner_continuation_delivered", { memberId: winnerMember.id }, `winner_continuation:${deliveryKey}`);
@@ -2655,17 +2685,18 @@ export class EnsembleEngine {
         ? fresh.outcome
         : { kind: "selected", memberIds: [plan.winnerMemberId], artifactIds: [plan.winnerArtifactId], materializedTaskId: null };
     this.store.setFinalizationProgress(stageAttempt.id, { ...progress, step: "completed", error: null }, now);
-    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", { output: { ...progress, step: "completed" } as unknown as EnsembleJson }, now);
-    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
-    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
-    this.clearDeadline(run.id);
-    this.store.setRunStatus(
+    const completed = this.store.setRunStatus(
       run.id,
       ["finalizing"],
       "completed",
       { outcome, error: null, completedAt: now, activeStageId: null },
       now,
     );
+    if (!completed.ok) return "published";
+    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", { output: { ...progress, step: "completed" } as unknown as EnsembleJson }, now);
+    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
+    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
+    this.clearDeadline(run.id);
     this.event(run.id, "run_completed", { outcome: "selected", winner: plan.winnerMemberId }, `run_completed:${run.id}`);
     return "published";
   }
@@ -2685,11 +2716,7 @@ export class EnsembleEngine {
       }
     }
     this.store.setFinalizationProgress(stageAttempt.id, { ...this.readFinalizationProgress(stageAttempt), step: "completed", error: null }, now);
-    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", {}, now);
-    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
-    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
-    this.clearDeadline(run.id);
-    this.store.setRunStatus(
+    const completed = this.store.setRunStatus(
       run.id,
       ["finalizing"],
       "completed",
@@ -2701,6 +2728,11 @@ export class EnsembleEngine {
       },
       now,
     );
+    if (!completed.ok) return "published";
+    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", {}, now);
+    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
+    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
+    this.clearDeadline(run.id);
     this.event(run.id, "run_completed", { outcome: "no_consensus" }, `run_completed:${run.id}`);
     return "published";
   }

@@ -254,6 +254,7 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   restoreOk = true;
   headClean = true;
   deliverOk = true;
+  deliverRetryable = true;
   materializeOk = true;
   private lastRestoredSha: string | null = null;
   private readonly replacements = new Map<string, { status: TaskGatewayStatus | null; sessionId: string | null; worktreePath: string | null }>();
@@ -275,7 +276,13 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   }
   async deliverContinuation(input: { sessionId: string; text: string }) {
     this.continuations.push(input);
-    return this.deliverOk ? { ok: true as const } : { ok: false as const, detail: "the pane was busy" };
+    return this.deliverOk
+      ? { ok: true as const }
+      : {
+          ok: false as const,
+          retryable: this.deliverRetryable,
+          detail: "the pane was busy",
+        };
   }
   async materializeReplacement(request: ReplacementTaskRequest) {
     this.materialized.push(request);

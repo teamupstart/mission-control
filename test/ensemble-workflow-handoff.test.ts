@@ -245,8 +245,10 @@ test("an active ensemble member's session cannot be bound to a workflow; a settl
   );
   // A launching (active) member owns the session - refused, with a human sentence.
   assert.match(manager.canBindSessionToWorkflow("ens") ?? "", /active ensemble member/);
+  db.prepare(`UPDATE ensemble_members SET status = 'future_active' WHERE id = ?`).run(member.id);
+  assert.match(manager.canBindSessionToWorkflow("ens") ?? "", /cannot classify/);
   // The winner is bound only AFTER it is marked retained, and by then the session is eligible.
-  store.setMemberStatus(member.id, ["launching"], "retained", {});
+  db.prepare(`UPDATE ensemble_members SET status = 'retained' WHERE id = ?`).run(member.id);
   assert.equal(manager.canBindSessionToWorkflow("ens"), null);
   // A session running no ensemble member is always eligible.
   assert.equal(manager.canBindSessionToWorkflow("nobody"), null);

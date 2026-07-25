@@ -33,7 +33,11 @@ import { harnessFor } from "../harness/index.ts";
 import { missionMcpDescriptor } from "../mission-mcp.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import { run } from "../util/exec.ts";
-import { ENSEMBLE_REF_PREFIX, resolveEnsembleRef } from "../git/ensemble-snapshot.ts";
+import {
+  ENSEMBLE_REF_PREFIX,
+  ensembleSnapshotRef,
+  resolveEnsembleRef,
+} from "../git/ensemble-snapshot.ts";
 import {
   EnsembleStore,
   type EnsembleDecisionInsert,
@@ -819,7 +823,10 @@ export class EnsembleManager {
     const task = this.registry.taskForSession(session.id, session.cwd);
     if (!task) return null;
     const member = this.store.memberForTask(task.id);
-    if (!member || member.status === null) return null;
+    if (!member) return null;
+    if (member.status === null) {
+      return "this session belongs to an ensemble member whose status this build cannot classify";
+    }
     const active =
       member.status === "pending" ||
       member.status === "launching" ||
@@ -958,6 +965,13 @@ export class EnsembleManager {
     const prefix = `${ENSEMBLE_REF_PREFIX}/${id}/`;
     const refs = new Set<string>();
     for (const artifact of this.store.listArtifacts(id)) {
+      if (artifact.kind === "commit") {
+        try {
+          refs.add(ensembleSnapshotRef(id, artifact.id));
+        } catch (err) {
+          void err;
+        }
+      }
       const locator = artifact.locator;
       const ref =
         locator && typeof locator === "object" && !Array.isArray(locator) && typeof locator.ref === "string"

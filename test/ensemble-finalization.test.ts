@@ -172,6 +172,22 @@ test("a missing selected ref prevents ALL cleanup and stays finalizing", async (
   assert.equal(finalize.restored.length, 0);
 });
 
+test("a transient winner verification failure parks with an actionable error", async () => {
+  const finalize = new FakeFinalize();
+  finalize.verify = () => {
+    throw new Error("repository temporarily unavailable");
+  };
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const result = await decide(engine, runId, winner.artifactId);
+
+  assert.equal(result.ok, true);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.match(store.getRun(runId)!.error ?? "", /could not be verified.*repository temporarily unavailable/);
+  assert.equal(gateway.cancelled.length, 0);
+});
+
 test("the live winner is restored to its exact snapshot, losers reaped through TaskManager, run completed", async () => {
   const finalize = new FakeFinalize();
   const { store, gateway, engine } = harness(finalize);
@@ -278,6 +294,23 @@ test("a continuation claim survives an exit after the pane write", async () => {
   assert.equal(finalize.continuations.length, 1);
 });
 
+test("a partial continuation delivery stays claimed and is never pasted twice", async () => {
+  const finalize = new FakeFinalize();
+  finalize.deliverOk = false;
+  finalize.deliverRetryable = false;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await decide(engine, runId, winner.artifactId);
+
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.continuations.length, 1);
+  finalize.deliverOk = true;
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.continuations.length, 1);
+});
+
 test("a backlog replacement is redispatched while a terminal replacement blocks", async () => {
   const finalize = new FakeFinalize();
   finalize.safeIdle = false;
@@ -316,4 +349,53 @@ test("a no_consensus decision retains every member and reaps nothing", async () 
   // (a completed run leaves none running), but no artifact is invalidated and no member eliminated.
   for (const member of store.listMembers(runId)) assert.equal(member.status, "retained");
   assert.equal(store.listArtifacts(runId).filter((a) => a.status === "ready").length, readyBefore, "every artifact is retained");
+});
+
+test("selected completion commits the terminal run before finalize bookkeeping", async () => {
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const finish = store.finishStageAttempt.bind(store);
+  store.finishStageAttempt = ((...args: Parameters<typeof store.finishStageAttempt>) => {
+    const attempt = store.listStageAttempts(runId).find((candidate) => candidate.id === args[0]);
+    if (attempt?.driverKind === "finalize" && args[2] === "succeeded") {
+      throw new Error("exit before finalize bookkeeping");
+    }
+    return finish(...args);
+  }) as typeof store.finishStageAttempt;
+
+  await assert.rejects(decide(engine, runId, winner.artifactId), /exit before finalize bookkeeping/);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  await engine.recover(runId);
+  assert.equal(store.getRun(runId)!.status, "completed");
+});
+
+test("no-consensus completion commits the terminal run before finalize bookkeeping", async () => {
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const finish = store.finishStageAttempt.bind(store);
+  store.finishStageAttempt = ((...args: Parameters<typeof store.finishStageAttempt>) => {
+    const attempt = store.listStageAttempts(runId).find((candidate) => candidate.id === args[0]);
+    if (attempt?.driverKind === "finalize" && args[2] === "succeeded") {
+      throw new Error("exit before finalize bookkeeping");
+    }
+    return finish(...args);
+  }) as typeof store.finishStageAttempt;
+
+  await assert.rejects(
+    engine.decide({
+      runId,
+      requestId: "req-terminal-first",
+      expectedStatus: "awaiting_decision",
+      selection: { kind: "no_consensus", reason: "retain all" },
+      rationale: "none is best",
+      actorId: null,
+    }),
+    /exit before finalize bookkeeping/,
+  );
+  assert.equal(store.getRun(runId)!.status, "completed");
+  await engine.recover(runId);
+  assert.equal(store.getRun(runId)!.status, "completed");
 });

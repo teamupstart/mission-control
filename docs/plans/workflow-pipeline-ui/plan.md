@@ -122,7 +122,7 @@ names.
 
 ### Shared vocabulary
 
-`nodeLabel(node, personas)` in `src/shared/workflow-stages.ts` (persona name, "Session", stage or
+`nodeLabel(graph, node, personas)` in `src/shared/workflow-stages.ts` (persona name, "Session", stage or
 join label, End outcome) is adopted by: the pipeline editor, the runs monitor, the Graph view's
 connections list, edge and node aria labels, live announcements, and diagnostics rendering
 (message first, code as a hover/detail affordance). No surface prints a node or edge UUID.

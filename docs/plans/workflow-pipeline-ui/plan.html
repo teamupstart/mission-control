@@ -104,7 +104,7 @@ module <code>src/shared/workflow-stages.ts</code> owns:</p>
   <li><code>compileStages(pipeline, previousGraph)</code> - emits a graph, reusing node and edge ids
   wherever the same stage member survives so autosave diffs, undo history and version comparisons
   stay stable. Positions are generated deterministically.</li>
-  <li><code>stageExpressible(graph)</code> and <code>nodeLabel(node, personas)</code> - the shared
+  <li><code>stageExpressible(graph)</code> and <code>nodeLabel(graph, node, personas)</code> - the shared
   vocabulary helper adopted by every surface.</li>
 </ul>
 <p><strong>Stage-expressible</strong>: one Session; a linear chain of stages; a stage is one Persona

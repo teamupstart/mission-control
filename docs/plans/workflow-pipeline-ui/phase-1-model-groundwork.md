@@ -74,9 +74,13 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      per member, constants coherent with the existing auto-layout spacing).
    - `stageName(stage, index, personas): string` - derived naming: the persona's name for a
      single-member stage, `Stage N` for multi-member.
-   - `nodeLabel(node, personas): string` - "Session", persona name (or "Missing persona"),
-     `stageName`-consistent join label, End outcome. Published persona nodes read the snapshot
-     name; draft nodes resolve through the personas list.
+   - `nodeLabel(graph, node, personas): string` - "Session", persona name (or "Missing persona"),
+     End outcome. Published persona nodes read the snapshot name; draft nodes resolve through the
+     personas list. The graph parameter exists for `all_pass` joins, which carry no stage context
+     of their own: when `projectStages(graph)` succeeds, the join's label is the `stageName` of
+     its stage; otherwise the label is context-free and derived from the graph's edges -
+     "All-pass join · k predecessors" (distinct sources into its `result` port). Never an id in
+     either case.
 6. **`test/workflow-stages.test.ts`**, opening comment stating what is at stake (round-trip
    stability is what keeps autosave, undo and versions honest). Cases:
    - Round-trip: `projectStages(compileStages(p, g))` deep-equals `p` for representative pipelines
@@ -87,7 +91,9 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
    - Taxonomy: non-expressible graphs return blockers and null projection (two Ends; pass fan-out
      to a non-join persona chain; a fail routed only into the join with no join-fail return; a
      join whose predecessors sit in different stages; an isolated node).
-   - `nodeLabel` over draft and published node shapes.
+   - `nodeLabel` over draft and published node shapes, including a join in a stage-expressible
+     graph (stage-consistent label) and the same join in a non-expressible graph (predecessor-count
+     label); no case may return a node id.
 
 ## 6. Compatibility
 
@@ -120,3 +126,7 @@ unchanged. They must not change these without editing this phase's tests.
 
 - 2026-07-25: `stageBlockers` added to the phase-1 API (phase 2's Graph-view banner needs reasons,
   not a boolean); `projectStages` defined as consistent with it.
+- 2026-07-25 (Inspector round 1, PR #244): `nodeLabel` signature corrected from `(node, personas)`
+  to `(graph, node, personas)` - a bare `all_pass` node carries no stage context, so the promised
+  stage-consistent join label was underivable; the non-expressible fallback label is now defined
+  explicitly. Consumers in phases 2-3 pass the draft or published graph they already hold.

@@ -3193,7 +3193,7 @@ export const EnsembleActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("decide"),
     /** Client-stable idempotency key: a lost response returns the same recorded decision. */
-    requestId: z.string().min(1).max(ENSEMBLE_LIMITS.operationKey),
+    requestId: z.string().min(1).max(900),
     /** The state the caller believes it is deciding in. A mismatch is a `409`, never an act. */
     expectedStatus: EnsembleStatusSchema,
     /** The outcome, re-validated by the compiled decision driver against eligible artifacts. */

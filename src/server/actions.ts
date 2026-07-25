@@ -41,6 +41,7 @@ import type {
 } from "./terminal/types.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
+import { resetWorktreeToCommit } from "./git/ensemble-snapshot.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -2406,19 +2407,16 @@ export async function resetToCommit(
   }
   const root = top.stdout.trim();
 
-  const reset = await git(root, ["reset", "--hard", commit]);
-  if (reset.code !== 0) {
-    return { ok: false, error: reset.stderr.trim() || "git reset failed", root, cleared: false, detached: false };
-  }
-  // `-fd`, never `-fdx`: the missing `-x` preserves intentionally-ignored warm caches a pooled
-  // worktree exists to keep, exactly as `resetWorktreeToCommit` and pinned provisioning do.
-  const cleaned = await git(root, ["clean", "-fd"]);
-  if (cleaned.code !== 0) {
-    return { ok: false, error: cleaned.stderr.trim() || "git clean failed", root, cleared: false, detached: false };
-  }
-  const head = await git(root, ["rev-parse", "HEAD"]);
-  if (head.code !== 0 || head.stdout.trim() !== commit) {
-    return { ok: false, error: `HEAD is ${head.stdout.trim() || "unreadable"} after reset, not ${commit}`, root, cleared: false, detached: false };
+  try {
+    await resetWorktreeToCommit(root, commit);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      root,
+      cleared: false,
+      detached: false,
+    };
   }
 
   // The same context-clear tail as `resetToOrigin`: `clearContext` is null for a harness with no

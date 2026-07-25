@@ -718,6 +718,7 @@ export interface EnsembleFinalizationProgress {
   verifiedSnapshotSha: string | null;
   /** How the one exact winner was made available. */
   winner: { mode: "restored" | "replacement"; ready: boolean } | null;
+  continuationInIntent: boolean;
   /** True once every non-winner member is reconciled terminal through TaskManager. */
   losersReaped: boolean;
   /** Deterministic key for the one continuation message, so a restart cannot send it twice. */

@@ -1,5 +1,5 @@
 import type { ResetResult, Session } from "@shared/types.ts";
-import { resetToOrigin, withPaneLockWait } from "./actions.ts";
+import { resetToOrigin, withPaneLockWait, type PaneLockToken } from "./actions.ts";
 import { forgetFixLog } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import { noteKeyFor } from "./registry.ts";
@@ -24,7 +24,7 @@ export async function resetSession(
   registry: Registry,
   session: Session,
   clear: boolean,
-  reset?: (session: Session, clear: boolean) => Promise<ResetResult>,
+  reset?: (session: Session, clear: boolean, lockOwner?: PaneLockToken) => Promise<ResetResult>,
 ): Promise<ResetResult> {
   // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
   // or clear the run in that window.
@@ -34,7 +34,7 @@ export async function resetSession(
   try {
     return await withPaneLockWait(session, async (lockOwner) => {
       const r = reset
-        ? await reset(session, clear)
+        ? await reset(session, clear, lockOwner)
         : await resetToOrigin(session, clear, undefined, lockOwner);
 
       // Retired against the checkout it wiped (root + the branch that was standing in it),

@@ -734,6 +734,16 @@ export class EnsembleEngine {
         if (existing.runId !== input.runId || !ensembleJsonEqual(existing.selection.body, input.selection)) {
           return { ok: false, reason: "conflict", detail: "this decision request id already recorded a different selection", status: null };
         }
+        const state = this.load(input.runId);
+        if (state && existing.status !== "superseded") {
+          const stage = this.decisionStage(state);
+          const attempt = stage ? this.latestStageAttempt(state, stage.id) : null;
+          if (state.run.status === "awaiting_decision" || attempt?.status !== "succeeded") {
+            const applied = await this.applyDecisionTransition(state, existing);
+            if (!applied.ok) return applied;
+            this.publish(input.runId);
+          }
+        }
         return { ok: true, decision: existing, replayed: true };
       }
       const state = this.load(input.runId);
@@ -744,25 +754,8 @@ export class EnsembleEngine {
       if (input.expectedStatus !== state.run.status) {
         return { ok: false, reason: "wrong_state", detail: `expected ${input.expectedStatus} but run is ${state.run.status}`, status: state.run.status };
       }
-      const stage =
-        state.run.plan.stages.find((s) => s.driverKind === "decision" && s.id === state.run.activeStageId) ??
-        state.run.plan.stages.find((s) => s.driverKind === "decision");
-      if (!stage || stage.driverKind !== "decision") {
-        return { ok: false, reason: "not_decision_stage", detail: "this run has no active decision stage", status: state.run.status };
-      }
-      const driver = decisionDriverFor(stage.driverKey);
-      if (!driver) {
-        return { ok: false, reason: "no_driver", detail: `no decision driver for ${stage.driverKey}`, status: state.run.status };
-      }
-      const eligible = this.eligibleDecisionArtifacts(state, stage.decision);
-      const validated: DecisionResult = driver.validate(input.selection, {
-        policy: stage.decision,
-        eligibleArtifactIds: eligible.ids,
-        memberForArtifact: (artifactId) => eligible.memberByArtifact.get(artifactId) ?? null,
-      });
-      if (!validated.ok) {
-        return { ok: false, reason: validated.reason, detail: validated.detail, status: state.run.status };
-      }
+      const prepared = this.prepareDecision(state, input.selection);
+      if (!prepared.ok) return prepared;
 
       const now = this.now();
       const decision = this.store.recordDecision(
@@ -776,28 +769,83 @@ export class EnsembleEngine {
         },
         now,
       );
-      const decisionAttempt = this.latestStageAttempt(state, stage.id);
-      if (decisionAttempt) {
-        this.store.finishStageAttempt(
-          decisionAttempt.id,
-          ["waiting", "running", "queued"],
-          "succeeded",
-          { output: { decisionId: decision.id, selection: input.selection } as EnsembleJson },
-          now,
-        );
-      }
-      this.store.setRunStatus(
-        input.runId,
-        ["awaiting_decision"],
-        "finalizing",
-        { outcome: validated.outcome, activeStageId: null },
-        now,
-      );
-      this.event(input.runId, "decision_recorded", { decisionId: decision.id, kind: validated.selection.kind }, `decision_recorded:${decision.id}`);
-      await this.advanceLocked(input.runId);
+      const applied = await this.applyDecisionTransition(state, decision, prepared);
+      if (!applied.ok) return applied;
       this.publish(input.runId);
       return { ok: true, decision, replayed: false };
     });
+  }
+
+  private decisionStage(
+    state: RunState,
+  ): Extract<EnsembleStageSpec, { driverKind: "decision" }> | null {
+    const stage =
+      state.run.plan.stages.find((candidate) => candidate.driverKind === "decision" && candidate.id === state.run.activeStageId) ??
+      state.run.plan.stages.find((candidate) => candidate.driverKind === "decision");
+    return stage?.driverKind === "decision" ? stage : null;
+  }
+
+  private prepareDecision(
+    state: RunState,
+    selection: EnsembleJson,
+  ):
+    | {
+        ok: true;
+        stage: Extract<EnsembleStageSpec, { driverKind: "decision" }>;
+        validated: Extract<DecisionResult, { ok: true }>;
+      }
+    | Extract<EnsembleDecideOutcome, { ok: false }> {
+    const stage = this.decisionStage(state);
+    if (!stage) {
+      return { ok: false, reason: "not_decision_stage", detail: "this run has no active decision stage", status: state.run.status };
+    }
+    const driver = decisionDriverFor(stage.driverKey);
+    if (!driver) {
+      return { ok: false, reason: "no_driver", detail: `no decision driver for ${stage.driverKey}`, status: state.run.status };
+    }
+    const eligible = this.eligibleDecisionArtifacts(state, stage.decision);
+    const validated: DecisionResult = driver.validate(selection, {
+      policy: stage.decision,
+      eligibleArtifactIds: eligible.ids,
+      memberForArtifact: (artifactId) => eligible.memberByArtifact.get(artifactId) ?? null,
+    });
+    return validated.ok
+      ? { ok: true, stage, validated }
+      : { ok: false, reason: validated.reason, detail: validated.detail, status: state.run.status };
+  }
+
+  private async applyDecisionTransition(
+    state: RunState,
+    decision: EnsembleDecision,
+    prepared = this.prepareDecision(state, decision.selection.body),
+  ): Promise<{ ok: true } | Extract<EnsembleDecideOutcome, { ok: false }>> {
+    if (!prepared.ok) return prepared;
+    const now = this.now();
+    const decisionAttempt = this.latestStageAttempt(state, prepared.stage.id);
+    if (decisionAttempt?.status !== "succeeded" && decisionAttempt) {
+      this.store.finishStageAttempt(
+        decisionAttempt.id,
+        ["waiting", "running", "queued"],
+        "succeeded",
+        { output: { decisionId: decision.id, selection: decision.selection.body } as EnsembleJson },
+        now,
+      );
+    }
+    this.store.setRunStatus(
+      state.run.id,
+      ["awaiting_decision"],
+      "finalizing",
+      { outcome: prepared.validated.outcome, activeStageId: null },
+      now,
+    );
+    this.event(
+      state.run.id,
+      "decision_recorded",
+      { decisionId: decision.id, kind: prepared.validated.selection.kind },
+      `decision_recorded:${decision.id}`,
+    );
+    await this.advanceLocked(state.run.id);
+    return { ok: true };
   }
 
   /**
@@ -866,6 +914,19 @@ export class EnsembleEngine {
       const state = this.load(runId);
       if (!state) return;
       const now = this.now();
+      if (state.run.status === "awaiting_decision") {
+        const decision = this.store
+          .listDecisions(runId)
+          .find((candidate) => candidate.status === "recorded" || candidate.status === "applied");
+        if (decision) {
+          const applied = await this.applyDecisionTransition(state, decision);
+          if (applied.ok) {
+            this.event(runId, "run_recovered", {}, `run_recovered:${runId}:${now}`);
+            this.publish(runId);
+          }
+          return;
+        }
+      }
       for (const artifact of state.artifacts) {
         if (artifact.status !== "capturing" || artifact.kind !== "commit" || artifact.attemptId === null) continue;
         const attempt = state.attempts.find((candidate) => candidate.id === artifact.attemptId);
@@ -2216,9 +2277,34 @@ export class EnsembleEngine {
     this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
 
     // STEP materializing: make exactly one exact winner available.
-    const ready = await this.ensureWinnerReady(state, winnerMember, winnerArtifact, snapshotSha, ref, progress);
-    if (!ready.ok) return this.parkFinalize(run.id, stageAttempt.id, { ...progress, winner: ready.winner }, ready.detail);
-    progress = { ...progress, step: "reaping_losers", winner: ready.winner, error: null };
+    const ready = await this.ensureWinnerReady(
+      state,
+      winnerMember,
+      winnerArtifact,
+      snapshotSha,
+      ref,
+      progress,
+      stageAttempt.id,
+    );
+    if (!ready.ok) {
+      return this.parkFinalize(
+        run.id,
+        stageAttempt.id,
+        {
+          ...progress,
+          winner: ready.winner,
+          continuationInIntent: ready.continuationInIntent ?? progress.continuationInIntent,
+        },
+        ready.detail,
+      );
+    }
+    progress = {
+      ...progress,
+      step: "reaping_losers",
+      winner: ready.winner,
+      continuationInIntent: ready.continuationInIntent,
+      error: null,
+    };
     this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
 
     // STEP reaping losers: through TaskManager, then eliminate only once resources agree.
@@ -2234,9 +2320,21 @@ export class EnsembleEngine {
       const result = await this.runWorkflowHandoff(run, handoff!, ready.sessionId, snapshotSha, ref, plan.winnerArtifactId);
       if (!result.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, result.detail ?? "the workflow handoff is blocked");
     } else if (!handoffActive) {
-      const delivered = await this.deliverWinnerContinuation(state, winnerMember, winnerArtifact, ready, progress);
+      const delivered = await this.deliverWinnerContinuation(
+        state,
+        winnerMember,
+        winnerArtifact,
+        ready,
+        progress,
+        stageAttempt.id,
+      );
       if (!delivered.ok) {
-        return this.parkFinalize(run.id, stageAttempt.id, { ...progress, continuationDeliveryKey: delivered.deliveryKey }, delivered.detail ?? "the continuation could not be delivered");
+        return this.parkFinalize(
+          run.id,
+          stageAttempt.id,
+          delivered.progress,
+          delivered.detail ?? "the continuation could not be delivered",
+        );
       }
       progress = delivered.progress;
       this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
@@ -2259,9 +2357,22 @@ export class EnsembleEngine {
     snapshotSha: string,
     ref: string,
     progress: EnsembleFinalizationProgress,
+    stageAttemptId: string,
   ): Promise<
-    | { ok: true; winner: { mode: "restored" | "replacement"; ready: true }; sessionId: string | null; worktreePath: string | null; mode: "restored" | "replacement" }
-    | { ok: false; winner: { mode: "restored" | "replacement"; ready: false }; detail: string }
+    | {
+        ok: true;
+        winner: { mode: "restored" | "replacement"; ready: true };
+        sessionId: string | null;
+        worktreePath: string | null;
+        mode: "restored" | "replacement";
+        continuationInIntent: boolean;
+      }
+    | {
+        ok: false;
+        winner: { mode: "restored" | "replacement"; ready: false };
+        detail: string;
+        continuationInIntent?: boolean;
+      }
   > {
     const deps = this.finalize!;
     const run = state.run;
@@ -2291,7 +2402,14 @@ export class EnsembleEngine {
         }
         this.markWinnerRetained(winnerMember, now);
         this.event(run.id, "winner_restored", { memberId: winnerMember.id }, `winner_restored:${run.id}:${winnerMember.id}`);
-        return { ok: true, winner: { mode: "restored", ready: true }, sessionId, worktreePath: worktree, mode: "restored" };
+        return {
+          ok: true,
+          winner: { mode: "restored", ready: true },
+          sessionId,
+          worktreePath: worktree,
+          mode: "restored",
+          continuationInIntent: false,
+        };
       }
     }
 
@@ -2301,8 +2419,15 @@ export class EnsembleEngine {
     // A replacement already materialized (a resume) is REUSED, never re-created - the winner is one
     // exact result across a restart, not two. The fresh path persists the id before it dispatches.
     const already = deps.replacementStatus(replacementTaskId);
-    if (already.status !== null) {
-      return { ok: true, winner: { mode: "replacement", ready: true }, sessionId: already.sessionId, worktreePath: already.worktreePath, mode: "replacement" };
+    if (already.status === "running" || already.status === "dispatching") {
+      return {
+        ok: true,
+        winner: { mode: "replacement", ready: true },
+        sessionId: already.sessionId,
+        worktreePath: already.worktreePath,
+        mode: "replacement",
+        continuationInIntent: progress.continuationInIntent || run.workflowHandoff === null,
+      };
     }
     if (materializedTaskId === null && outcome && outcome.kind === "selected") {
       this.store.setRunStatus(run.id, ["finalizing"], "finalizing", { outcome: { ...outcome, materializedTaskId: replacementTaskId } }, now);
@@ -2312,6 +2437,16 @@ export class EnsembleEngine {
     const intent = handoffActive
       ? this.buildReplacementHandoffIntent(run, winnerArtifact)
       : this.buildContinuation(state, winnerMember, winnerArtifact);
+    const continuationInIntent = !handoffActive;
+    this.store.setFinalizationProgress(
+      stageAttemptId,
+      {
+        ...progress,
+        winner: { mode: "replacement", ready: false },
+        continuationInIntent,
+      },
+      now,
+    );
     const materialize = await deps.materializeReplacement({
       taskId: replacementTaskId,
       runId: run.id,
@@ -2324,11 +2459,31 @@ export class EnsembleEngine {
       snapshotSha,
     });
     if (!materialize.ok) {
-      return { ok: false, winner: { mode: "replacement", ready: false }, detail: `materializing the winner failed: ${materialize.detail}` };
+      return {
+        ok: false,
+        winner: { mode: "replacement", ready: false },
+        detail: `materializing the winner failed: ${materialize.detail}`,
+        continuationInIntent,
+      };
     }
     this.event(run.id, "winner_materialized", { taskId: replacementTaskId }, `winner_materialized:${run.id}:${replacementTaskId}`);
     const status = deps.replacementStatus(replacementTaskId);
-    return { ok: true, winner: { mode: "replacement", ready: true }, sessionId: status.sessionId, worktreePath: status.worktreePath, mode: "replacement" };
+    if (status.status !== "running" && status.status !== "dispatching") {
+      return {
+        ok: false,
+        winner: { mode: "replacement", ready: false },
+        detail: `the replacement winner is ${status.status ?? "missing"} after materialization`,
+        continuationInIntent,
+      };
+    }
+    return {
+      ok: true,
+      winner: { mode: "replacement", ready: true },
+      sessionId: status.sessionId,
+      worktreePath: status.worktreePath,
+      mode: "replacement",
+      continuationInIntent,
+    };
   }
 
   private markWinnerRetained(member: EnsembleMember, now: number): void {
@@ -2440,26 +2595,47 @@ export class EnsembleEngine {
     winnerArtifact: EnsembleArtifact,
     ready: { mode: "restored" | "replacement"; sessionId: string | null },
     progress: EnsembleFinalizationProgress,
+    stageAttemptId: string,
   ): Promise<{ ok: boolean; detail?: string; deliveryKey: string; progress: EnsembleFinalizationProgress }> {
     const run = state.run;
     const deliveryKey = progress.continuationDeliveryKey ?? `continuation:${run.id}:${winnerArtifact.id}`;
     if (progress.continuationDelivered) {
       return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey } };
     }
-    // A replacement carries its continuation in its launch intent - nothing to type, and typing it
-    // again would double it. A restored winner has a cleared context and is told exactly once.
-    if (ready.mode === "replacement") {
-      return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey, continuationDelivered: true } };
+    if (progress.continuationInIntent) {
+      const claimed = {
+        ...progress,
+        continuationDeliveryKey: deliveryKey,
+        continuationDelivered: true,
+      };
+      this.store.setFinalizationProgress(stageAttemptId, claimed, this.now());
+      return { ok: true, deliveryKey, progress: claimed };
     }
     if (ready.sessionId === null) {
       return { ok: false, detail: "the winner session is not available to receive its continuation", deliveryKey, progress };
     }
-    const delivered = await this.finalize!.deliverContinuation({ sessionId: ready.sessionId, text: this.buildContinuation(state, winnerMember, winnerArtifact) });
+    const claimed = {
+      ...progress,
+      continuationDeliveryKey: deliveryKey,
+      continuationDelivered: true,
+    };
+    this.store.setFinalizationProgress(stageAttemptId, claimed, this.now());
+    const delivered = await this.finalize!.deliverContinuation({
+      sessionId: ready.sessionId,
+      text: this.buildContinuation(state, winnerMember, winnerArtifact),
+    });
     if (!delivered.ok) {
-      return { ok: false, detail: `delivering the winner continuation failed: ${delivered.detail}`, deliveryKey, progress };
+      const retryable = { ...claimed, continuationDelivered: false };
+      this.store.setFinalizationProgress(stageAttemptId, retryable, this.now());
+      return {
+        ok: false,
+        detail: `delivering the winner continuation failed: ${delivered.detail}`,
+        deliveryKey,
+        progress: retryable,
+      };
     }
     this.event(run.id, "winner_continuation_delivered", { memberId: winnerMember.id }, `winner_continuation:${deliveryKey}`);
-    return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey, continuationDelivered: true } };
+    return { ok: true, deliveryKey, progress: claimed };
   }
 
   private completeSelectOne(
@@ -2483,7 +2659,13 @@ export class EnsembleEngine {
     const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
     if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
     this.clearDeadline(run.id);
-    this.store.setRunStatus(run.id, ["finalizing"], "completed", { outcome, completedAt: now, activeStageId: null }, now);
+    this.store.setRunStatus(
+      run.id,
+      ["finalizing"],
+      "completed",
+      { outcome, error: null, completedAt: now, activeStageId: null },
+      now,
+    );
     this.event(run.id, "run_completed", { outcome: "selected", winner: plan.winnerMemberId }, `run_completed:${run.id}`);
     return "published";
   }
@@ -2511,7 +2693,12 @@ export class EnsembleEngine {
       run.id,
       ["finalizing"],
       "completed",
-      { outcome: { kind: "no_consensus", artifactIds: plan.artifactIds, reason: plan.reason }, completedAt: now, activeStageId: null },
+      {
+        outcome: { kind: "no_consensus", artifactIds: plan.artifactIds, reason: plan.reason },
+        error: null,
+        completedAt: now,
+        activeStageId: null,
+      },
       now,
     );
     this.event(run.id, "run_completed", { outcome: "no_consensus" }, `run_completed:${run.id}`);
@@ -2760,6 +2947,7 @@ function freshFinalizationProgress(): EnsembleFinalizationProgress {
     step: "verifying",
     verifiedSnapshotSha: null,
     winner: null,
+    continuationInIntent: false,
     losersReaped: false,
     continuationDeliveryKey: null,
     continuationDelivered: false,
@@ -2783,6 +2971,7 @@ function parseFinalizationProgress(output: EnsembleJson): EnsembleFinalizationPr
     step: step as EnsembleFinalizationProgress["step"],
     verifiedSnapshotSha: typeof output.verifiedSnapshotSha === "string" ? output.verifiedSnapshotSha : null,
     winner: winnerShape,
+    continuationInIntent: output.continuationInIntent === true,
     losersReaped: output.losersReaped === true,
     continuationDeliveryKey: typeof output.continuationDeliveryKey === "string" ? output.continuationDeliveryKey : null,
     continuationDelivered: output.continuationDelivered === true,

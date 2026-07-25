@@ -280,8 +280,22 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   async materializeReplacement(request: ReplacementTaskRequest) {
     this.materialized.push(request);
     if (!this.materializeOk) return { ok: false as const, detail: "materialize failed" };
-    this.replacements.set(request.taskId, { status: "running", sessionId: `repl-${request.taskId}`, worktreePath: `/repl/${request.taskId}` });
+    const existing = this.replacements.get(request.taskId);
+    if (!existing || existing.status === "backlog") {
+      this.replacements.set(request.taskId, {
+        status: "running",
+        sessionId: `repl-${request.taskId}`,
+        worktreePath: `/repl/${request.taskId}`,
+      });
+    }
     return { ok: true as const };
+  }
+  seedReplacement(taskId: string, status: TaskGatewayStatus) {
+    this.replacements.set(taskId, {
+      status,
+      sessionId: status === "running" ? `repl-${taskId}` : null,
+      worktreePath: status === "running" ? `/repl/${taskId}` : null,
+    });
   }
   replacementStatus(taskId: string) {
     return this.replacements.get(taskId) ?? { status: null, sessionId: null, worktreePath: null };

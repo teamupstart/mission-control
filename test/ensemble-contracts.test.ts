@@ -489,5 +489,15 @@ test("the operator authorities are one closed union a new strategy must not need
     false,
     "confirmDestructive must be the literal true",
   );
+  assert.equal(
+    EnsembleActionSchema.safeParse({
+      kind: "decide",
+      requestId: "r".repeat(901),
+      expectedStatus: "awaiting_decision",
+      selection: { kind: "selected", artifactId: "a" },
+      confirmDestructive: true,
+    }).success,
+    false,
+  );
   assert.equal(EnsembleActionSchema.safeParse({ kind: "promote_everything" }).success, false);
 });

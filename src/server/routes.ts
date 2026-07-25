@@ -1318,7 +1318,14 @@ export function buildApp(
     // and this is the one place an ensemble's evidence is destroyed.
     const result = await manager.deleteRun(c.req.param("id"), parsed.data.confirmId);
     if (result.ok) return c.json({ deleted: true });
-    const status = result.reason === "not_found" ? 404 : result.reason === "not_terminal" ? 409 : 400;
+    const status =
+      result.reason === "not_found"
+        ? 404
+        : result.reason === "not_terminal"
+          ? 409
+          : result.reason === "incomplete"
+            ? 500
+            : 400;
     return c.json({ error: result.detail, code: `ensemble_delete_${result.reason}` }, status);
   });
 

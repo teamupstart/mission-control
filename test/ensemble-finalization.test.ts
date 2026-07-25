@@ -20,6 +20,7 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
+const { ensemblePayload } = await import("../src/shared/ensemble.ts");
 const { FakeGateway, FakeFinalize, stubAdapters, decidePlan, runInsert } = await import("./ensemble-fixture.ts");
 import type { EnsembleFinalizeDeps } from "../src/server/ensembles/engine.ts";
 
@@ -106,6 +107,42 @@ test("a decision request id is idempotent, and a conflicting replay is refused",
   if (!conflict.ok) assert.equal(conflict.reason, "conflict");
 });
 
+test("a recorded decision resumes its durable transition on replay and recovery", async () => {
+  for (const resume of ["replay", "recover"] as const) {
+    const finalize = new FakeFinalize();
+    const { store, gateway, engine } = harness(finalize);
+    const runId = await driveToDecision(store, gateway, engine);
+    const winner = winnerOf(store, runId, 1);
+    const selection = { kind: "selected", artifactId: winner.artifactId } as const;
+    store.recordDecision({
+      runId,
+      actor: "human",
+      actorId: null,
+      selection: ensemblePayload(selection),
+      rationale: "ship it",
+      operationKey: `decide:${runId}:crash-${resume}`,
+    });
+
+    if (resume === "replay") {
+      const result = await engine.decide({
+        runId,
+        requestId: `crash-${resume}`,
+        expectedStatus: "awaiting_decision",
+        selection,
+        rationale: "retry",
+        actorId: null,
+      });
+      assert.equal(result.ok, true);
+    } else {
+      await engine.recover(runId);
+    }
+
+    assert.equal(store.getRun(runId)!.status, "completed");
+    const decisionAttempt = store.listStageAttempts(runId).find((attempt) => attempt.driverKind === "decision");
+    assert.equal(decisionAttempt?.status, "succeeded");
+  }
+});
+
 test("deciding in the wrong state, on an ineligible artifact, is refused", async () => {
   const finalize = new FakeFinalize();
   const { store, gateway, engine } = harness(finalize);
@@ -182,6 +219,7 @@ test("a loser whose cancel fails leaves the run finalizing, and a retry complete
   const resumed = await engine.resolveFinalization(runId, false);
   assert.equal(resumed.ok, true);
   assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(store.getRun(runId)!.error, null);
   assert.equal(store.getMember(loser.id)!.status, "eliminated");
 });
 
@@ -215,6 +253,53 @@ test("the continuation is delivered exactly once even when finalization is re-dr
   // Re-drive (as a stray wake or a resolve would): the delivery receipt makes it a no-op.
   await engine.resolveFinalization(runId, false);
   assert.equal(finalize.continuations.length, 1, "the continuation was not delivered twice");
+});
+
+test("a continuation claim survives an exit after the pane write", async () => {
+  const finalize = new FakeFinalize();
+  const deliver = finalize.deliverContinuation.bind(finalize);
+  let exits = true;
+  finalize.deliverContinuation = async (input) => {
+    const result = await deliver(input);
+    if (exits) {
+      exits = false;
+      throw new Error("daemon exited after delivery");
+    }
+    return result;
+  };
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await assert.rejects(decide(engine, runId, winner.artifactId), /daemon exited/);
+  assert.equal(finalize.continuations.length, 1);
+
+  await engine.recover(runId);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.continuations.length, 1);
+});
+
+test("a backlog replacement is redispatched while a terminal replacement blocks", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false;
+  finalize.materializeOk = false;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await decide(engine, runId, winner.artifactId);
+  const outcome = store.getRun(runId)!.outcome;
+  assert.equal(outcome?.kind, "selected");
+  const replacementId = outcome?.kind === "selected" ? outcome.materializedTaskId : null;
+  assert.ok(replacementId);
+
+  finalize.seedReplacement(replacementId, "failed");
+  finalize.materializeOk = true;
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+
+  finalize.seedReplacement(replacementId, "backlog");
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.materialized.length, 3);
 });
 
 test("a no_consensus decision retains every member and reaps nothing", async () => {

@@ -97,6 +97,10 @@ test("deletion refuses a non-terminal run and a mismatched confirmation, and val
   const notTerminal = await manager.deleteRun(live.id, live.id);
   assert.equal(notTerminal.ok, false);
   if (!notTerminal.ok) assert.equal(notTerminal.reason, "not_terminal");
+  db.prepare(`UPDATE ensemble_runs SET status = 'future_status' WHERE id = ?`).run(live.id);
+  const unreadable = await manager.deleteRun(live.id, live.id);
+  assert.equal(unreadable.ok, false);
+  if (!unreadable.ok) assert.equal(unreadable.reason, "not_terminal");
 
   // A foreign ref an artifact might carry is NOT deleted: generatedRefsFor requires the exact
   // `refs/mission-control/ensembles/<runId>/…` prefix, so a run only ever deletes its own refs.
@@ -111,4 +115,19 @@ test("deletion refuses a non-terminal run and a mismatched confirmation, and val
   await manager.deleteRun(done.id, done.id);
   const survives = execFileSync("git", ["-C", path, "rev-parse", "--verify", "--quiet", foreign], { encoding: "utf8" }).trim();
   assert.equal(survives, head, "a foreign ref an artifact named is never deleted");
+});
+
+test("deletion keeps rows and intent when private-ref verification fails", async () => {
+  const registry = new Registry();
+  const store = new EnsembleStore(db);
+  const manager = new EnsembleManager(registry, store, {});
+  const { run, path, ref } = seedWithRef(store);
+  db.prepare(`UPDATE ensemble_runs SET repo_root = ? WHERE id = ?`).run(join(path, "missing"), run.id);
+
+  const result = await manager.deleteRun(run.id, run.id);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "incomplete");
+  assert.notEqual(store.getRun(run.id), null);
+  assert.equal(store.getDeletionIntent(run.id)?.status, "failed");
+  assert.notEqual(await resolveEnsembleRef(path, ref), null);
 });

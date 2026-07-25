@@ -442,6 +442,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
   plan: CompiledEnsemblePlan | null;
   strategyConfig: EnsembleJson;
   outcome: EnsembleOutcome | null;
+  workflowHandoff: EnsembleWorkflowHandoff | null;
   unreadable: EnsembleUnreadable | null;
 } {
   const sourceKind = readEnsembleEnum(ENSEMBLE_SOURCE_KINDS, row.source_kind);
@@ -453,6 +454,10 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
     row.outcome_json === null
       ? { value: null, detail: null }
       : readJsonColumn(row.outcome_json, EnsembleOutcomeSchema, "its outcome");
+  const workflowHandoff =
+    row.workflow_handoff_json === null
+      ? { value: null, detail: null }
+      : readJsonColumn(row.workflow_handoff_json, EnsembleWorkflowHandoffSchema, "its workflow handoff");
 
   const bad: RunRowIssue[] = [...rowIssues];
   const addBad = (field: string, detail: string): void => {
@@ -463,6 +468,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
   if (status === null) addBad("status", row.status);
   if (config.detail !== null) addBad("strategy_config_json", config.detail);
   if (outcome.detail !== null) addBad("outcome_json", outcome.detail);
+  if (workflowHandoff.detail !== null) addBad("workflow_handoff_json", workflowHandoff.detail);
 
   const storedStrategy = parseEnsembleStrategyKey(row.strategy_key);
   const storedStrategyId = storedStrategy ? knownStrategyId(storedStrategy.id) : null;
@@ -519,6 +525,7 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
     // `unreadable` above is what stops it being used for anything.
     strategyConfig: config.value ?? null,
     outcome: outcome.value as EnsembleOutcome | null,
+    workflowHandoff: workflowHandoff.value as EnsembleWorkflowHandoff | null,
     unreadable,
   };
 }
@@ -526,13 +533,6 @@ function readRunSnapshot(row: RunRow, rowIssues: RunRowIssue[]): {
 function rowToRun(value: unknown): EnsembleRun {
   const { row, issues } = readRunRow(value);
   const snapshot = readRunSnapshot(row, issues);
-  // The handoff is optional runtime/display state, not a precondition to running the plan, so an
-  // unreadable one (a newer build's shape) nulls rather than marking the whole run unreadable -
-  // the same "a link nobody can read is not a run nobody can run" stance the outcome takes.
-  const workflowHandoff =
-    row.workflow_handoff_json === null
-      ? null
-      : readJsonColumn(row.workflow_handoff_json, EnsembleWorkflowHandoffSchema, "its workflow handoff").value;
   return {
     id: row.id,
     sourceKind: snapshot.sourceKind,
@@ -552,7 +552,7 @@ function rowToRun(value: unknown): EnsembleRun {
     status: snapshot.status,
     activeStageId: row.active_stage_id,
     outcome: snapshot.outcome,
-    workflowHandoff,
+    workflowHandoff: snapshot.workflowHandoff,
     unreadable: snapshot.unreadable,
     error: row.error,
     createdAt: row.created_at,

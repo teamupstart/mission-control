@@ -149,6 +149,25 @@ test("a note conflict blocks visibly; the operator can skip and finish with the 
   assert.equal(finalize.continuations.length, 1, "the skipped handoff finishes with one continuation");
 });
 
+test("a replacement waiting on handoff receives continuation when handoff is skipped", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false;
+  const workflow = new FakeWorkflow();
+  workflow.bindResult = { ok: false, reason: "conflict", detail: "another active binding owns this note" };
+  finalize.workflow = workflow;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine, PINNED);
+  const artifact = winnerArtifact(store, runId);
+  await decide(engine, runId, artifact.id);
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.materialized.length, 1);
+  assert.equal(finalize.continuations.length, 0);
+
+  await engine.resolveFinalization(runId, true);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.continuations.length, 1);
+});
+
 test("a capture mismatch restores the winner and resumes the SAME submission - never a second binding", async () => {
   const finalize = new FakeFinalize();
   const workflow = new FakeWorkflow();

@@ -93,7 +93,12 @@ export function createFinalizeDeps(deps: {
       // Through `resetSession`, so every registered session-scoped family (queue, drafts, message
       // log, no-mistakes caches, observed effort, work episode) is cleared once, and through
       // `resetToCommit` for the git half so the branch is reset to the exact snapshot and kept.
-      const result = await resetSession(registry, session, true, (s, clear) => resetToCommit(s, snapshotSha, clear));
+      const result = await resetSession(
+        registry,
+        session,
+        true,
+        (s, clear, lockOwner) => resetToCommit(s, snapshotSha, clear, undefined, lockOwner),
+      );
       return result.ok ? { ok: true } : { ok: false, detail: result.error ?? "the winner reset failed" };
     },
 

@@ -884,17 +884,24 @@ export class EnsembleManager {
    * run, so recovery only ever finds one whose run still exists). It never deletes a Task or any
    * linked Workflow state: those have their own owners and retention.
    */
-  async deleteRun(id: string, confirmId: string): Promise<{ ok: boolean; reason?: "not_found" | "mismatch" | "not_terminal"; detail?: string }> {
+  async deleteRun(
+    id: string,
+    confirmId: string,
+  ): Promise<{ ok: boolean; reason?: "not_found" | "mismatch" | "not_terminal" | "incomplete"; detail?: string }> {
     if (id !== confirmId) return { ok: false, reason: "mismatch", detail: "the confirmation id does not match the run id" };
     const run = this.store.getRun(id);
     if (!run) return { ok: false, reason: "not_found", detail: "no such ensemble" };
     // Terminal-only: an in-flight run holds live Tasks a delete must never orphan. Cancel it first.
-    if (run.status !== null && !ensembleIsTerminal(run.status)) {
-      return { ok: false, reason: "not_terminal", detail: `run is ${run.status}; cancel it before deleting its history` };
+    if (run.status === null || !ensembleIsTerminal(run.status)) {
+      return {
+        ok: false,
+        reason: "not_terminal",
+        detail: `run is ${run.status ?? "unreadable"}; cancel it before deleting its history`,
+      };
     }
     this.store.beginDeletionIntent(id, this.now());
-    await this.executeDeletion(id);
-    return { ok: true };
+    const outcome = await this.executeDeletion(id);
+    return outcome.ok ? { ok: true } : { ok: false, reason: "incomplete", detail: outcome.detail };
   }
 
   /**
@@ -915,19 +922,24 @@ export class EnsembleManager {
   }
 
   /** Delete every generated private ref of a run, then its rows, then emit `ensemble_remove`. */
-  private async executeDeletion(id: string): Promise<void> {
+  private async executeDeletion(id: string): Promise<{ ok: boolean; detail?: string }> {
     const record = this.store.getRun(id);
-    if (!record) return; // already gone (a prior pass finished); nothing to republish.
+    if (!record) return { ok: true };
     this.store.setDeletionStatus(id, "deleting_refs", null, this.now());
     for (const ref of this.generatedRefsFor(id)) {
       await run("git", ["-C", record.repoRoot, "update-ref", "-d", ref]).catch(() => undefined);
-      // Deleting a missing ref is a no-op, so success is "the ref no longer resolves". A ref that
-      // still resolves is a real failure: record it and leave the intent for a later resume rather
-      // than delete the rows around a snapshot we could not remove.
-      const still = await resolveEnsembleRef(record.repoRoot, ref).catch(() => null);
+      let still: string | null;
+      try {
+        still = await resolveEnsembleRef(record.repoRoot, ref);
+      } catch (err) {
+        const detail = `could not verify private ref ${ref}: ${err instanceof Error ? err.message : String(err)}`;
+        this.store.setDeletionStatus(id, "failed", detail, this.now());
+        return { ok: false, detail };
+      }
       if (still !== null) {
-        this.store.setDeletionStatus(id, "failed", `could not delete private ref ${ref}`, this.now());
-        return;
+        const detail = `could not delete private ref ${ref}`;
+        this.store.setDeletionStatus(id, "failed", detail, this.now());
+        return { ok: false, detail };
       }
     }
     const removed = this.store.deleteRun(id);
@@ -935,6 +947,7 @@ export class EnsembleManager {
       this.refreshLinks();
       this.registry.removeEnsemble(id);
     }
+    return removed ? { ok: true } : { ok: false, detail: "the ensemble rows could not be deleted" };
   }
 
   /**

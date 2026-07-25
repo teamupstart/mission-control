@@ -1142,6 +1142,21 @@ test("a corrupt column on the RUN degrades it, because the daemon boots through 
   assert.equal(store.summary(healthy.id)?.unreadable, null);
 });
 
+test("an unreadable workflow handoff makes finalization fail closed", () => {
+  const store = new EnsembleStore(db);
+  const { run } = insert(store, "manual:broken-handoff");
+  db.prepare(`UPDATE ensemble_runs SET workflow_handoff_json = ? WHERE id = ?`).run(
+    JSON.stringify({ deliveryMode: "future" }),
+    run.id,
+  );
+
+  const loaded = store.getRun(run.id);
+  assert.ok(loaded);
+  assert.equal(loaded.workflowHandoff, null);
+  assert.ok(loaded.unreadable?.fields.includes("workflow_handoff_json"));
+  assert.equal(ensembleIsRunnable(loaded), false);
+});
+
 test("malformed scalar run fields degrade instead of escaping the boot summary read", () => {
   const store = new EnsembleStore(db);
   const broken = insert(store, "manual:broken-scalars").run;

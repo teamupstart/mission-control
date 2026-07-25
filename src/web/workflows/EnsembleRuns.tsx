@@ -1,0 +1,256 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { EnsembleActionBody } from "@shared/protocol.ts";
+import { ENSEMBLE_STATUSES, type EnsembleSummary } from "@shared/ensemble.ts";
+import { relativeTime } from "../lib/format.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
+import {
+  deleteEnsemble,
+  ensembleAction,
+  fetchEnsembleArtifactPatch,
+  fetchEnsembleDetail,
+} from "../lib/api.ts";
+import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "../ensembles/types.ts";
+import { EnsembleDetail } from "../ensembles/EnsembleDetail.tsx";
+import { ensembleStatusLabel, ensembleStatusTone, titleCaseEnum } from "../ensembles/format.ts";
+
+/**
+ * The Ensembles tab's list + detail controller, mirroring `WorkflowRuns` but simpler: the list
+ * is driven straight off the live `ensembleSummaries` SSE collection (which is already the full
+ * bounded set), so there is no second fetch loop for history. Only the SELECTED run's bounded
+ * detail is fetched over HTTP, aborted-by-generation on change and refetched when that run's SSE
+ * summary revises - never polled. Actions carry the state they expect and, on a 409, refetch and
+ * show the new state rather than replaying.
+ */
+export function EnsembleRuns({
+  summaries,
+  selectedId,
+  onSelect,
+  onOpenSession,
+  onOpenWorkflowRun,
+}: {
+  summaries: EnsembleSummary[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onOpenSession?: (id: string) => void;
+  onOpenWorkflowRun?: (runId: string) => void;
+}): React.JSX.Element {
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [strategyFilter, setStrategyFilter] = useState<string>("");
+  const [repoFilter, setRepoFilter] = useState<string>("");
+
+  const [detail, setDetail] = useState<EnsembleRunDetailResponse | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [actionPending, setActionPending] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
+
+  const strategies = useMemo(
+    () => [...new Set(summaries.map((s) => s.strategyLabel))].sort(),
+    [summaries],
+  );
+
+  const ordered = useMemo(() => {
+    const repo = repoFilter.trim().toLowerCase();
+    return summaries
+      .filter((s) => (!statusFilter || s.status === statusFilter))
+      .filter((s) => (!strategyFilter || s.strategyLabel === strategyFilter))
+      .filter((s) => (!repo || s.repoRoot.toLowerCase().includes(repo)))
+      .sort(
+        (a, b) =>
+          Number(b.attention) - Number(a.attention) || b.updatedAt - a.updatedAt,
+      );
+  }, [summaries, statusFilter, strategyFilter, repoFilter]);
+
+  const selected = selectedId ?? ordered[0]?.id ?? null;
+  const selectedSummary = summaries.find((s) => s.id === selected) ?? null;
+  const selectedRevision = selectedSummary?.updatedAt ?? null;
+
+  // When the selected run disappears (deleted, or filtered out), fall to the nearest survivor
+  // rather than showing a stale detail; an explicitly empty selection stays on the list.
+  useEffect(() => {
+    if (selectedId && !summaries.some((s) => s.id === selectedId)) {
+      onSelect(ordered[0]?.id ?? null);
+    }
+  }, [selectedId, summaries, ordered, onSelect]);
+
+  const load = (clear: boolean): void => {
+    const generation = ++loadGeneration.current;
+    if (clear) {
+      setDetail(null);
+      setDetailError(null);
+    }
+    if (!selected) {
+      setDetail(null);
+      return;
+    }
+    void fetchEnsembleDetail(selected).then((result) => {
+      if (loadGeneration.current !== generation) return;
+      if (result.ok) {
+        setDetail(result.data);
+        setDetailError(null);
+      } else {
+        setDetail(null);
+        setDetailError(
+          result.status === 404
+            ? "This ensemble is no longer retained. Choose another from the list."
+            : result.error,
+        );
+      }
+    });
+  };
+
+  // Refetch when the selection changes, or when THIS run's SSE summary revises (a new
+  // `updatedAt`). Aborted-by-generation, never polled.
+  useEffect(() => {
+    load(true);
+    return () => {
+      loadGeneration.current++;
+    };
+    // `selected` and `selectedRevision` are the only inputs that should re-fetch.
+  }, [selected, selectedRevision]);
+
+  const runAction = (body: EnsembleActionBody): void => {
+    if (!selected) return;
+    setActionPending(body.kind);
+    setActionError(null);
+    void ensembleAction(selected, body).then((result) => {
+      setActionPending(null);
+      if (result.ok) {
+        load(false);
+      } else {
+        // A 409 means the run moved on; show the fresh state, never replay automatically.
+        setActionError(result.error);
+        if (result.status === 409) load(false);
+      }
+    });
+  };
+
+  const runDelete = (confirmId: string): void => {
+    setActionPending("delete");
+    setActionError(null);
+    void deleteEnsemble(selected ?? "", confirmId).then((result) => {
+      setActionPending(null);
+      if (result.ok) {
+        onSelect(null);
+      } else {
+        setActionError(result.error);
+        if (result.status === 409) load(false);
+      }
+    });
+  };
+
+  const loadPatch = async (
+    artifactId: string,
+  ): Promise<EnsembleArtifactPatch | { error: string }> => {
+    if (!selected) return { error: "No run selected." };
+    const result = await fetchEnsembleArtifactPatch(selected, artifactId);
+    return result.ok ? result.data : { error: result.error };
+  };
+
+  return (
+    <div className="ensemble-runs">
+      <div className="ensemble-run-list">
+        <div className="ensemble-run-filters">
+          <Tooltip label="Filter runs by status">
+            <label>
+              <span>Status</span>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="">All</option>
+                {ENSEMBLE_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {titleCaseEnum(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </Tooltip>
+          {strategies.length > 1 && (
+            <Tooltip label="Filter runs by strategy">
+              <label>
+                <span>Strategy</span>
+                <select value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)}>
+                  <option value="">All</option>
+                  {strategies.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </Tooltip>
+          )}
+          <label>
+            <span>Repository</span>
+            <input
+              value={repoFilter}
+              placeholder="Filter by path"
+              onChange={(e) => setRepoFilter(e.target.value)}
+            />
+          </label>
+        </div>
+
+        {ordered.length === 0 ? (
+          <p className="ensemble-run-empty">
+            {summaries.length === 0
+              ? "No ensembles yet. Start one from Dispatch (switch to Ensemble mode)."
+              : "No ensembles match these filters."}
+          </p>
+        ) : (
+          <ul className="ensemble-run-buttons">
+            {ordered.map((summary) => (
+              <li key={summary.id}>
+                <Tooltip label={`Open ${summary.title}`}>
+                <button
+                  className={summary.id === selected ? "active" : ""}
+                  aria-current={summary.id === selected ? "true" : undefined}
+                  onClick={() => onSelect(summary.id)}
+                >
+                  <span className="ensemble-run-title">
+                    {summary.attention && (
+                      <span className="ensemble-attention-dot" aria-label="Needs attention">
+                        !
+                      </span>
+                    )}
+                    {summary.title}
+                  </span>
+                  <small>
+                    {summary.strategyLabel} ·{" "}
+                    <span className={`ensemble-tone-${ensembleStatusTone(summary.status, summary.unreadable)}`}>
+                      {ensembleStatusLabel(summary)}
+                    </span>{" "}
+                    · {relativeTime(summary.updatedAt)}
+                  </small>
+                </button>
+                </Tooltip>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="ensemble-run-reader">
+        {detailError && (
+          <p className="ensemble-error" role="alert">
+            {detailError}
+          </p>
+        )}
+        {!detailError && !detail && selected && <p className="ensemble-muted">Loading ensemble…</p>}
+        {!detailError && !selected && (
+          <p className="ensemble-muted">Select an ensemble to see its members, evidence, and decision.</p>
+        )}
+        {detail && (
+          <EnsembleDetail
+            detail={detail}
+            actionPending={actionPending}
+            actionError={actionError}
+            onAction={runAction}
+            onDelete={runDelete}
+            onLoadPatch={loadPatch}
+            onOpenSession={onOpenSession}
+            onOpenWorkflowRun={onOpenWorkflowRun}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

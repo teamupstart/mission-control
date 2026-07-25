@@ -7,6 +7,7 @@ import {
   InspectorRailMark,
   ScheduleOriginRailMark,
   WorkflowRailMark,
+  EnsembleRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { Tooltip } from "../Tooltip.tsx";
@@ -30,6 +31,7 @@ export function RailRow({
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
+  onOpenEnsemble,
 }: {
   session: Session;
   selected: boolean;
@@ -42,6 +44,7 @@ export function RailRow({
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the rail glyph's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
+  onOpenEnsemble?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
@@ -113,6 +116,14 @@ export function RailRow({
               task={session.task}
               scheduleNames={scheduleNameById}
               onOpen={onOpenSchedule}
+            />
+            <EnsembleRailMark
+              link={session.task?.ensemble ?? null}
+              onOpen={
+                session.task?.ensemble
+                  ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
+                  : undefined
+              }
             />
             <span className="rail-seen">
               {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}

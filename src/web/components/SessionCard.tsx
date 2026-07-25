@@ -29,6 +29,7 @@ import {
   SessionTitle,
   StateBadge,
   WorkflowChip,
+  EnsembleChip,
   subtitle,
 } from "./session-bits.tsx";
 
@@ -111,6 +112,7 @@ export function SessionCard({
   onBindWorkflow,
   onOpenSchedule,
   scheduleNameById,
+  onOpenEnsemble,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
@@ -164,6 +166,8 @@ export function SessionCard({
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's "Scheduled by <name>" copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
+  /** Open the Ensemble run this session's member belongs to (read off `session.task.ensemble`). */
+  onOpenEnsemble?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const attention = st.tone === "attention";
@@ -217,6 +221,14 @@ export function SessionCard({
         <PrChip session={session} />
         <InspectorChip session={session} />
         <WorkflowChip run={workflowRun} onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined} />
+        <EnsembleChip
+          link={session.task?.ensemble ?? null}
+          onOpen={
+            session.task?.ensemble
+              ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
+              : undefined
+          }
+        />
         {!workflowRun && onBindWorkflow && (
           <Tooltip label="Bind a published workflow version">
             <button

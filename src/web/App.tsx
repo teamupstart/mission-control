@@ -106,6 +106,7 @@ export function App(): React.JSX.Element {
     personas,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
+    ensembleSummaries,
     fleetCost,
     settingsStatus,
     schedules,
@@ -709,6 +710,7 @@ export function App(): React.JSX.Element {
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
     onOpenSchedule,
     scheduleNameById,
+    onOpenEnsemble: (runId) => navigate({ page: "workflows", tab: "ensembles", ensembleId: runId }),
   };
 
   /**
@@ -1394,6 +1396,12 @@ export function App(): React.JSX.Element {
                   ? route.filters
                   : undefined
               }
+              ensembleSummaries={ensembleSummaries}
+              selectedEnsembleId={
+                route.page === "workflows" && route.tab === "ensembles"
+                  ? route.ensembleId ?? null
+                  : null
+              }
               llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
@@ -1412,6 +1420,11 @@ export function App(): React.JSX.Element {
                   ? { runId: route.runId }
                   : {}),
                 filters,
+              })}
+              onEnsemble={(ensembleId) => navigate({
+                page: "workflows",
+                tab: "ensembles",
+                ...(ensembleId ? { ensembleId } : {}),
               })}
               onOpenSession={(sessionId) => {
                 navigate({ page: "fleet" });
@@ -1599,8 +1612,13 @@ export function App(): React.JSX.Element {
                 editTask={editingTask}
                 tasks={tasks}
                 sessions={sessions}
+                personas={personas}
+                workflowSummaries={workflowSummaries}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
+                onEnsembleLaunched={(runId) =>
+                  navigate({ page: "workflows", tab: "ensembles", ensembleId: runId })
+                }
               />
 
               {reportOpen && (

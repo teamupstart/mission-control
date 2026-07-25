@@ -10,6 +10,7 @@ import {
   RuntimeMetaRow,
   ScheduleOriginTileFlag,
   WorkflowTileFlag,
+  EnsembleTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -54,6 +55,7 @@ export function SessionTile({
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
+  onOpenEnsemble,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -72,6 +74,7 @@ export function SessionTile({
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the tile flag's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
+  onOpenEnsemble?: (runId: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   // A run always produces a gate line, and the line always carries the run's segments:
@@ -237,6 +240,14 @@ export function SessionTile({
           task={session.task}
           scheduleNames={scheduleNameById}
           onOpen={onOpenSchedule}
+        />
+        <EnsembleTileFlag
+          link={session.task?.ensemble ?? null}
+          onOpen={
+            session.task?.ensemble
+              ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)
+              : undefined
+          }
         />
       </span>
 

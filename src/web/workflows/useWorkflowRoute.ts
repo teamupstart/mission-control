@@ -11,7 +11,7 @@ import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.
 // `App.tsx` renders whichever one the hash names. A second router would be a second answer
 // to "which page is showing", and the dirty-draft gate below only guards one of them.
 
-export type WorkflowTab = "workflows" | "personas" | "runs";
+export type WorkflowTab = "workflows" | "personas" | "runs" | "ensembles";
 export interface WorkflowRunFilters {
   status?: WorkflowRunStatus;
   workflowId?: string;
@@ -19,7 +19,14 @@ export interface WorkflowRunFilters {
 }
 export type MissionRoute =
   | { page: "fleet" }
-  | { page: "workflows"; tab: WorkflowTab; runId?: string; filters?: WorkflowRunFilters }
+  | {
+      page: "workflows";
+      tab: WorkflowTab;
+      runId?: string;
+      /** The selected Ensemble run on the `ensembles` tab, mirroring `runId` for `runs`. */
+      ensembleId?: string;
+      filters?: WorkflowRunFilters;
+    }
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
@@ -98,6 +105,16 @@ export function parseMissionRoute(hash: string): MissionRoute {
         }
       : { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
   }
+  if (path === "/workflows/ensembles") return { page: "workflows", tab: "ensembles" };
+  const ensemble = /^\/workflows\/ensembles\/([^/]+)$/.exec(path);
+  if (ensemble) {
+    // Same rule as a run id: an undecodable or deleted-run id lands on the ensembles list
+    // rather than on a blank pane, for a link anyone can paste.
+    const ensembleId = segment(ensemble[1]!);
+    return ensembleId
+      ? { page: "workflows", tab: "ensembles", ensembleId }
+      : { page: "workflows", tab: "ensembles" };
+  }
   if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
@@ -129,6 +146,11 @@ export function missionRouteHash(route: MissionRoute): string {
     if (route.filters?.session) params.set("session", route.filters.session);
     const query = params.toString();
     return query ? `${path}?${query}` : path;
+  }
+  if (route.tab === "ensembles") {
+    return route.ensembleId
+      ? `#/workflows/ensembles/${encodeURIComponent(route.ensembleId)}`
+      : "#/workflows/ensembles";
   }
   return route.tab === "workflows" ? "#/workflows" : `#/workflows/${route.tab}`;
 }

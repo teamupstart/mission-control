@@ -51,6 +51,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 onOpenWorkflowRun={props.onOpenWorkflowRun}
                 onOpenSchedule={props.onOpenSchedule}
                 scheduleNameById={props.scheduleNameById}
+                onOpenEnsemble={props.onOpenEnsemble}
               />
             ))}
           </div>

@@ -2466,18 +2466,35 @@ export class EnsembleEngine {
     // Replacement path: exactly one normal Task at the snapshot, deterministic id, id persisted first.
     const replacementTaskId = materializedTaskId ?? deterministicUuid(`${run.id}:${winnerArtifact.id}`);
     this.markWinnerRetained(winnerMember, now);
+    const inIntent = progress.continuationInIntent || run.workflowHandoff === null;
     // A replacement already materialized (a resume) is REUSED, never re-created - the winner is one
-    // exact result across a restart, not two. The fresh path persists the id before it dispatches.
+    // exact result across a restart, not two. But it is only a READY winner once it is actually
+    // usable: `running`, with its provisioned session AND worktree. A `dispatching` replacement has
+    // dispatched but has no live session yet and can still fail; completing around it would leave a
+    // done run pointing at no usable winner. So park until the async dispatch produces a running
+    // session - the finalizing-run wake resumes this from that task's update.
     const already = deps.replacementStatus(replacementTaskId);
-    if (already.status === "running" || already.status === "dispatching") {
-      return {
-        ok: true,
-        winner: { mode: "replacement", ready: true },
-        sessionId: already.sessionId,
-        worktreePath: already.worktreePath,
-        mode: "replacement",
-        continuationInIntent: progress.continuationInIntent || run.workflowHandoff === null,
-      };
+    if (already.status !== null) {
+      if (replacementUsable(already)) {
+        return {
+          ok: true,
+          winner: { mode: "replacement", ready: true },
+          sessionId: already.sessionId,
+          worktreePath: already.worktreePath,
+          mode: "replacement",
+          continuationInIntent: inIntent,
+        };
+      }
+      if (already.status !== "backlog") {
+        // Dispatching (coming up) or terminal (a dispatch that failed): do not complete around it.
+        // A backlog replacement instead falls through to be (re-)dispatched below.
+        return {
+          ok: false,
+          winner: { mode: "replacement", ready: false },
+          detail: `the replacement winner is ${already.status} without a live session; finalization will resume when it is running`,
+          continuationInIntent: inIntent,
+        };
+      }
     }
     if (materializedTaskId === null && outcome && outcome.kind === "selected") {
       this.store.setRunStatus(run.id, ["finalizing"], "finalizing", { outcome: { ...outcome, materializedTaskId: replacementTaskId } }, now);
@@ -2517,12 +2534,16 @@ export class EnsembleEngine {
       };
     }
     this.event(run.id, "winner_materialized", { taskId: replacementTaskId }, `winner_materialized:${run.id}:${replacementTaskId}`);
+    // Dispatch is asynchronous: right after materialization the replacement is usually still
+    // `dispatching` (provisioning its worktree, no session yet). It is a ready winner only once it
+    // is `running` with a live session and worktree; until then park and resume from its task update
+    // - so a dispatch that later fails cannot leave the run completed around a winner that never came up.
     const status = deps.replacementStatus(replacementTaskId);
-    if (status.status !== "running" && status.status !== "dispatching") {
+    if (!replacementUsable(status)) {
       return {
         ok: false,
         winner: { mode: "replacement", ready: false },
-        detail: `the replacement winner is ${status.status ?? "missing"} after materialization`,
+        detail: `the replacement winner is ${status.status ?? "missing"} without a live session; finalization will resume when it is running`,
         continuationInIntent,
       };
     }
@@ -2997,6 +3018,18 @@ function deterministicUuid(seed: string): string {
   const hex = createHash("sha256").update(seed).digest("hex");
   const variant = ((parseInt(hex.charAt(16), 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Whether a materialized replacement winner is actually usable to finalize around.
+ *
+ * `running` alone is not enough: a dispatched Task is `dispatching` while it provisions and has no
+ * live session or worktree, and its dispatch can still fail. A ready winner needs a live session
+ * (for a continuation or a Workflow bind) and its worktree, so completing can never point a done
+ * run at a winner that never came up.
+ */
+function replacementUsable(status: { status: TaskGatewayStatus | null; sessionId: string | null; worktreePath: string | null }): boolean {
+  return status.status === "running" && status.sessionId !== null && status.worktreePath !== null;
 }
 
 function freshFinalizationProgress(): EnsembleFinalizationProgress {

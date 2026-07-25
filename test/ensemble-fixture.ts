@@ -256,6 +256,8 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
   deliverOk = true;
   deliverRetryable = true;
   materializeOk = true;
+  /** When true, a materialized replacement starts `dispatching` (no session) - the async-launch case. */
+  materializeAsDispatching = false;
   private lastRestoredSha: string | null = null;
   private readonly replacements = new Map<string, { status: TaskGatewayStatus | null; sessionId: string | null; worktreePath: string | null }>();
   workflow?: EnsembleWorkflowHandoffDeps;
@@ -289,11 +291,12 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
     if (!this.materializeOk) return { ok: false as const, detail: "materialize failed" };
     const existing = this.replacements.get(request.taskId);
     if (!existing || existing.status === "backlog") {
-      this.replacements.set(request.taskId, {
-        status: "running",
-        sessionId: `repl-${request.taskId}`,
-        worktreePath: `/repl/${request.taskId}`,
-      });
+      this.replacements.set(
+        request.taskId,
+        this.materializeAsDispatching
+          ? { status: "dispatching", sessionId: null, worktreePath: null }
+          : { status: "running", sessionId: `repl-${request.taskId}`, worktreePath: `/repl/${request.taskId}` },
+      );
     }
     return { ok: true as const };
   }
@@ -303,6 +306,10 @@ export class FakeFinalize implements EnsembleFinalizeDeps {
       sessionId: status === "running" ? `repl-${taskId}` : null,
       worktreePath: status === "running" ? `/repl/${taskId}` : null,
     });
+  }
+  /** The task update that brings a `dispatching` replacement up to a live `running` session. */
+  bringReplacementUp(taskId: string) {
+    this.replacements.set(taskId, { status: "running", sessionId: `repl-${taskId}`, worktreePath: `/repl/${taskId}` });
   }
   replacementStatus(taskId: string) {
     return this.replacements.get(taskId) ?? { status: null, sessionId: null, worktreePath: null };

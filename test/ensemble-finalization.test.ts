@@ -299,6 +299,31 @@ test("a winner whose session is not safe-idle gets exactly one replacement Task,
   assert.equal(finalize.continuations.length, 0, "a replacement carries its continuation in its intent, not a second delivery");
 });
 
+test("a replacement still dispatching does not complete the run; it resumes when the session is up", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false; // force the replacement path
+  finalize.materializeAsDispatching = true; // the async-launch case: no live session yet
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await decide(engine, runId, winner.artifactId);
+
+  // The replacement was dispatched but has no running session yet - the run must NOT complete around
+  // a winner that has not come up (a dispatch that later fails would strand a done run).
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.materialized.length, 1);
+  assert.equal(finalize.continuations.length, 0, "nothing delivered while the winner is still dispatching");
+  const outcome = store.getRun(runId)!.outcome;
+  const replacementId = outcome?.kind === "selected" ? outcome.materializedTaskId : null;
+  assert.ok(replacementId);
+
+  // The task update that brings the replacement up to a live running session resumes finalization.
+  finalize.bringReplacementUp(replacementId);
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(finalize.materialized.length, 1, "no second replacement was materialized");
+});
+
 test("the continuation is delivered exactly once even when finalization is re-driven", async () => {
   const finalize = new FakeFinalize();
   const { store, gateway, engine } = harness(finalize);
@@ -374,15 +399,19 @@ test("a backlog replacement is redispatched while a terminal replacement blocks"
   const replacementId = outcome?.kind === "selected" ? outcome.materializedTaskId : null;
   assert.ok(replacementId);
 
+  // A terminal (failed) replacement blocks and parks - it cannot be re-dispatched, so finalization
+  // does not complete and does not pointlessly re-materialize a task that is already terminal.
   finalize.seedReplacement(replacementId, "failed");
   finalize.materializeOk = true;
   await engine.resolveFinalization(runId, false);
   assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.equal(finalize.materialized.length, 1, "a terminal replacement is not re-materialized");
 
+  // A backlog replacement (created but never dispatched) IS re-dispatched, and finalization completes.
   finalize.seedReplacement(replacementId, "backlog");
   await engine.resolveFinalization(runId, false);
   assert.equal(store.getRun(runId)!.status, "completed");
-  assert.equal(finalize.materialized.length, 3);
+  assert.equal(finalize.materialized.length, 2);
 });
 
 test("a no_consensus decision retains every member and reaps nothing", async () => {

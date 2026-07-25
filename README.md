@@ -1014,6 +1014,24 @@ the name is already spoken for) the old name simply stands. It applies to [the b
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 
+### One agent, one task at a time - but not one task per agent
+
+**An agent runs tasks one after another, for as long as it's alive.** Finish one, take the
+next: that's what recycling an agent means, and it's why the drop resets the checkout first.
+What it never does is run two at once - the daemon refuses a drop onto an agent that already
+has a task executing, saying which one, and the
+[backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) won't offer such an agent
+work either. So an agent becomes available for its next task the moment its current one is
+recorded finished, which for shipped work is when [its pull request
+merges](#when-a-tasks-pull-request-merges) - not when you get round to clicking anything.
+Whether that agent is then *closed* is a separate preference (**Settings → Shipping**); by
+default it stays, ready for the next drop.
+
+**Each task keeps its own record.** The card shows the task the agent is executing right
+now, and the previous one keeps its own outcome, its own pull request and its own row -
+which is what makes a day's work on one agent readable afterwards rather than a single row
+overwritten four times.
+
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the

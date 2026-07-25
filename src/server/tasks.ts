@@ -404,9 +404,9 @@ export class TaskManager {
   private settleIfEpisodeFinished(s: Session): void {
     if (s.state !== "idle") return;
     if (s.queue && s.queue.openCount > 0) return;
-    const t = this.registry.listTasks().find(
-      (task) => task.sessionId === s.id && (task.status === "running" || task.status === "dispatching"),
-    );
+    // The one task this agent is executing, per the serial invariant - never "the task
+    // this session ever ran", which is what the bindings are for.
+    const t = this.executingTaskOn(s.id);
     if (!t) return;
     const binding = taskWorkEpisodeForTask(t.id);
     if (!binding?.mergedAt || !binding.prUrl) return;
@@ -446,6 +446,17 @@ export class TaskManager {
    * idleness, and nothing here may overwrite one. The set is in memory on purpose: after
    * a restart nothing is reopened, which is the conservative direction - a task that
    * stays `done` is the state the whole feature exists to reach.
+   *
+   * It has to be the agent working on THAT task, not merely the same agent - and it is,
+   * without a clause of its own. A session runs tasks serially, so once it has taken
+   * another task the agent typing again is typing at the NEW one; reopening the finished
+   * row there would double-book it. What rules that out is the exclusive pointer rather
+   * than a guard here: claiming the next task moves `sessionId` off the completed row
+   * (`upsertTask`), so the `find` below no longer matches it, and the `task_upsert`
+   * listener in the constructor drops it from `autoCompleted` on that same write. Two
+   * independent reasons, both structural. A guard was tried and removed as dead code -
+   * it could not be made to fire. Pinned by `task-multi-session.test.ts`, which is what
+   * would catch a future writer of the pointer that skipped `upsertTask`.
    */
   private reopenIfWorkResumed(s: Session): void {
     if (s.state !== "working") return;
@@ -661,6 +672,12 @@ export class TaskManager {
    * defend against exactly that (`inFlightTasks` re-reads the session list because such a
    * row "is a row nothing will ever move"), which treated the symptom at one reader while
    * every other reader - the board, the report, `agentIsFree` - still believed the row.
+   *
+   * EVERY row carrying the id, not the first one found: a terminal row may still name the
+   * session it ran on, and `agentWentAway` is a no-op on those, so the loop costs nothing
+   * and cannot miss the live one. It runs AFTER `reconcileMergedTasks` at both call sites,
+   * which is the ordering that matters - completion by merge outranks "ended with no
+   * outcome recorded", and `agentWentAway` keeps its own `mergedPrFor` check as the belt.
    */
   private reconcileTasksBoundTo(sessionId: string): void {
     for (const t of this.registry.listTasks()) {
@@ -1200,10 +1217,39 @@ export class TaskManager {
   }
 
   /**
+   * The task this session is executing right now, or undefined - the serial-execution
+   * invariant, asked as a question.
+   *
+   * A session runs tasks SERIALLY over its life: `Task.sessionId` is a "currently
+   * executing on" pointer that moves from one task to the next, and at most one
+   * NON-TERMINAL row may hold it at a time. Filtered on STATUS rather than on the
+   * pointer alone, because a `done` or `failed` row keeps naming its session until the
+   * agent takes its next task (see `Task.sessionId`) - reading those as "busy" would
+   * make an agent that finished permanently ineligible for more work, which is the
+   * whole problem the completion paths exist to remove.
+   */
+  private executingTaskOn(sessionId: string): Task | undefined {
+    return this.registry
+      .listTasks()
+      .find(
+        (t) =>
+          t.sessionId === sessionId &&
+          (t.status === "running" || t.status === "dispatching"),
+      );
+  }
+
+  /**
    * Hand a backlog task to an agent that is ALREADY running, instead of cutting a
    * fresh worktree and launching one. This is what the board's drag-onto-an-idle-
    * agent gesture calls: the operator has an agent sitting free in the right repo
    * and would rather feed it than pay for another checkout.
+   *
+   * An agent may take SEVERAL tasks over its life, one after another - that is the
+   * point of recycling it - but never two at once. This is one of the two enforcement
+   * points of that serial-execution invariant (`agentIsFree` is the other, for the
+   * autopilot's own selection): the refusal below is the server-side re-check, and it
+   * has to be here rather than only in the caller because a session can pick up a task
+   * between the moment something decided it was free and the POST that acts on it.
    *
    * The critical difference from `dispatch`: an assigned task owns no worktree. The
    * agent keeps its own checkout - very often the operator's real one - so
@@ -1257,6 +1303,20 @@ export class TaskManager {
     }
     if (this.assigningSessions.has(sessionId)) {
       return { ok: false, error: "that agent is already taking another task", scope: "session" };
+    }
+    // The serial-execution invariant, refused as early as it can be seen. Reaching the
+    // claim with a second non-terminal task bound would not merely double-book the agent:
+    // `upsertTask` keeps the session pointer exclusive, so the first task would be
+    // silently unbound and left `running` with nothing left that could ever settle it -
+    // `reconcileTasksBoundTo` and `reconcileTasksWithNoLiveSession` both find their rows
+    // through that pointer.
+    const executing = this.executingTaskOn(sessionId);
+    if (executing) {
+      return {
+        ok: false,
+        error: `that agent is already running ${executing.title} - it takes one task at a time`,
+        scope: "session",
+      };
     }
     this.assigningTasks.add(id);
     this.assigningSessions.add(sessionId);
@@ -1388,6 +1448,20 @@ export class TaskManager {
       gateParked(fresh, this.registry.snapshot().sessions)
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
+    }
+    // And the serial invariant again, in the same breath and for the same reason: the
+    // probes above spend up to 30s in a fetch, and a dispatch or a Foreman assignment
+    // could have bound this agent a task in that window. Asked HERE, in front of the
+    // reset, because everything below is destructive - past this line the checkout is
+    // detached and the context wiped, so a refusal costs the operator work rather than
+    // merely a retry.
+    const claimed = this.executingTaskOn(s.id);
+    if (claimed) {
+      return {
+        ok: false,
+        error: `that agent started running ${claimed.title} - it takes one task at a time`,
+        scope: "session",
+      };
     }
 
     const done = await reset(s);

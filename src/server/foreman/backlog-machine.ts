@@ -182,11 +182,17 @@ export function activeAgentCount(sessions: Session[], tasks: Task[]): number {
  *    out for review, and the reviewer pulls work nobody asked that PR for. Configurable
  *    (`backlogRespectOpenPrs`), on by default. A MERGED PR does not block: it lingers on
  *    the card so you can see the work landed, and landed work is finished work.
- *  - no non-terminal task bound to it: it is already executing something of ours.
+ *  - no non-terminal task bound to it: it is already executing something of ours. This
+ *    clause IS the serial-execution invariant on the selection side - an agent may take
+ *    several tasks over its life, one after another, but never two at once. It filters
+ *    on STATUS, not on the pointer: `Task.sessionId` is "currently executing on" and a
+ *    finished row keeps naming its session until the agent takes its next task, so
+ *    reading the bare pointer as "busy" would retire an agent the moment it shipped.
  *  - allowlisted: typing here is a live send, gated exactly like every other one.
  *
- * `TaskManager.assign` re-checks what it can server-side, because a session can go busy
- * between this decision and the POST that acts on it.
+ * `TaskManager.assign` re-checks what it can server-side - the same non-terminal clause,
+ * the other enforcement point of that invariant - because a session can go busy between
+ * this decision and the POST that acts on it.
  */
 export function agentIsFree(
   s: Session,

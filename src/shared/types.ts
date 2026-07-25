@@ -1279,7 +1279,31 @@ export interface Task {
   homeName: string | null;
   /** Stable backend resource identity used to retain cleanup ownership across renames. */
   terminalResourceId: string | null;
-  /** Bound live session's synthetic id, once discovered. */
+  /**
+   * The session this task is CURRENTLY EXECUTING ON, or null.
+   *
+   * A mutable pointer, not a biography. A session runs tasks SERIALLY over its life -
+   * finish one, take the next - so this field answers "who is running this right now",
+   * and it is the only question it answers. Provenance ("which agent produced this
+   * work", "which pull request did it open") lives in the work-episode bindings, which
+   * are per-task and durable; reading it off this field was the 1:1-for-the-session's-
+   * life assumption, and it goes wrong the moment an agent takes a second task.
+   *
+   * Three rules follow, and each is enforced somewhere rather than merely described:
+   *
+   *  - **The pointer is exclusive.** At most one task row carries a given session id at
+   *    a time: `upsertTask` (`db.ts`) nulls it on every other row in the same
+   *    transaction. So a terminal row KEEPS its session id - it is display convenience
+   *    while the card still shows that outcome - until the agent takes its next task,
+   *    at which point the pointer moves and the old row is unbound. Nothing is
+   *    destroyed by that: the bindings still hold what the row produced.
+   *  - **At most one NON-TERMINAL task per session**, which is the serial-execution
+   *    invariant. Enforced at `agentIsFree` (`foreman/backlog-machine.ts`) for the
+   *    autopilot and re-checked server-side in `TaskManager.assign` for everyone else.
+   *  - **A liveness-flavoured reader filters on STATUS, never on the pointer alone.**
+   *    "Is this agent busy" is `running`/`dispatching` rows bound here; a `done` row
+   *    still naming a session says only that the card has something to show.
+   */
   sessionId: string | null;
   /**
    * The recurring mission that filed this task, or null. See `MissionSchedule`

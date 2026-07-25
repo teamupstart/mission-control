@@ -4262,13 +4262,26 @@ export class Registry extends EventEmitter {
    *    stronger claim, being an explicit binding rather than a path coincidence.
    *  - DISPATCHED (the daemon cut a worktree and launched an agent in it), which
    *    correlates by that worktree path - see `activeTaskForCwd`.
+   *
+   * A session runs tasks SERIALLY over its life, so the row this finds CHANGES: it is
+   * whatever `Task.sessionId` currently points at, never "the task this session ran".
+   * Exactly one row can point here - `idx_tasks_session` is a partial UNIQUE index and
+   * `upsertTask` moves the pointer rather than duplicating it - so the loop's job is not
+   * to choose between rivals, it is to be independent of iteration order all the same:
+   * a non-terminal row wins outright, and among terminal rows the newest `updatedAt`.
+   * Stated here because the guarantee lives in a schema three thousand lines away in
+   * another file, and a reader whose correctness rests on that silently is one a second
+   * in-memory writer would break with nothing failing.
    */
   private activeTaskFor(sessionId: string, cwd: string | null): Task | undefined {
+    let bound: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.sessionId !== sessionId) continue;
       if (t.status === "backlog" || t.status === "cancelled") continue;
-      return t;
+      if (t.status === "running" || t.status === "dispatching") return t;
+      if (!bound || t.updatedAt > bound.updatedAt) bound = t;
     }
+    if (bound) return bound;
     const task = this.activeTaskForCwd(cwd);
     if (!task) return undefined;
     const episode = sessionWorkEpisodeFor(sessionId);

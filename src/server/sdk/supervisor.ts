@@ -44,6 +44,7 @@ export class SdkSupervisor {
    */
   private sends = new Map<string, Promise<unknown>>();
   private pumps = new Map<string, Promise<void>>();
+  private stopping = new Set<string>();
 
   constructor(private readonly registry: Registry) {}
 
@@ -155,6 +156,7 @@ export class SdkSupervisor {
   async stop(id: string): Promise<void> {
     const handle = this.handles.get(id);
     if (!handle) return;
+    this.stopping.add(id);
     await handle.stop();
   }
 
@@ -166,15 +168,15 @@ export class SdkSupervisor {
   private serialize(id: string, op: (handle: SdkSessionHandle) => Promise<void>): Promise<void> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
-    if (!handle) return Promise.reject(noLiveDriver());
+    if (!handle || this.stopping.has(id)) return Promise.reject(noLiveDriver());
     const prior = this.sends.get(id) ?? Promise.resolve();
     // `catch` on the chain, never on the returned promise: a failed delivery must not stop
     // the next one from being attempted, and must still reject for the caller that made it.
     const next = prior.then(() => {
-      // Exit deletes the ownership maps but cannot cancel a chain that is already built.
-      // The enqueue-time check alone would let a later turn reach a stopped handle after
-      // `session_remove`, bringing "delivered to nobody" back through the acknowledged path.
-      if (this.handles.get(id) !== handle) throw noLiveDriver();
+      // Exit deletes the ownership maps but cannot cancel a chain that is already built, and
+      // stop keeps the handle until the pump consumes `exited` or the stream ends. Identity
+      // alone would let a queued turn land on the half of a terminal handoff being torn down.
+      if (this.handles.get(id) !== handle || this.stopping.has(id)) throw noLiveDriver();
       return op(handle);
     });
     this.sends.set(
@@ -215,6 +217,7 @@ export class SdkSupervisor {
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
+      this.stopping.delete(id);
       try {
         setSdkSessionStatus(id, outcome);
       } catch (err) {

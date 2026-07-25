@@ -487,6 +487,65 @@ test("queued delivery is refused when its driver exits before it runs", async ()
   assert.deepEqual(driver.sent, ["first"]);
 });
 
+test("stopping refuses queued and new delivery before the driver exits", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  let releaseStop!: () => void;
+  let markStopStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const stopStarted = new Promise<void>((resolve) => {
+    markStopStarted = resolve;
+  });
+  const stopBlocked = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  driver.handle.send = async (turn) => {
+    driver.sent.push(turn.text);
+    if (turn.text === "first") {
+      markFirstStarted();
+      await firstBlocked;
+    }
+  };
+  driver.handle.stop = async () => {
+    markStopStarted();
+    await stopBlocked;
+    driver.end();
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null },
+  });
+
+  const first = sup.send(SDK_ID, { text: "first" });
+  await firstStarted;
+  const queuedRefused = assert.rejects(
+    sup.send(SDK_ID, { text: "queued before stop" }),
+    /no live driver/,
+  );
+  const stopping = sup.stop(SDK_ID);
+  await stopStarted;
+  assert.equal(sup.handleFor(SDK_ID), driver.handle);
+  await assert.rejects(sup.send(SDK_ID, { text: "sent after stop" }), /no live driver/);
+
+  releaseFirst();
+  await first;
+  await queuedRefused;
+  assert.deepEqual(driver.sent, ["first"]);
+
+  releaseStop();
+  await stopping;
+  await settle();
+});
+
 test("a driver event about a pane-backed session is refused", async () => {
   const r = new Registry();
   r.applyDiscovery([discovered("proc:ttys9:4242:0")]);

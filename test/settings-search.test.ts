@@ -7,6 +7,7 @@ import { SettingsSearch } from "../src/web/components/SettingsSearch.tsx";
 import {
   BINDABLE_CONTROL_IDS,
   SETTINGS_CONTROLS,
+  buildSettingsBindings,
   searchSettings,
   type SettingsBindings,
 } from "../src/web/lib/settings-search.ts";
@@ -178,6 +179,41 @@ test("searching a specific action's name lands on that action's binding", () => 
     hits.some((c) => c.anchor === "keyboard/dispatch"),
     `"${dispatch.label}" did not surface its own keyboard binding`,
   );
+});
+
+// A daemon-backed toggle must not be flippable from the palette before its config has
+// loaded: the panels disable the control until the first read, and a pre-poll flip would
+// write against an assumed default or no-op on a refused update. `buildSettingsBindings`
+// withholds the binding until the source is present, so the control degrades to a jump.
+test("daemon-backed toggles get no binding until their config has loaded", () => {
+  const noop = () => {};
+  const loading = buildSettingsBindings({
+    formatMessages: { value: true, set: noop },
+    autoMode: null,
+    skillsEnabled: null,
+    costTrack: null,
+  });
+  // The browser-local formatting toggle is always bindable (shipped defaults, no poll).
+  assert.ok(loading.has("format-messages"));
+  // The three daemon-backed toggles are withheld until loaded.
+  assert.ok(!loading.has("auto-mode"));
+  assert.ok(!loading.has("skills-enabled"));
+  assert.ok(!loading.has("cost-track"));
+
+  const loaded = buildSettingsBindings({
+    formatMessages: { value: true, set: noop },
+    autoMode: { value: false, set: noop },
+    skillsEnabled: { value: true, set: noop },
+    costTrack: { value: false, set: noop },
+  });
+  assert.ok(loaded.has("auto-mode"));
+  assert.ok(loaded.has("skills-enabled"));
+  assert.ok(loaded.has("cost-track"));
+  // The switch reads its source's live value, and never binds anything outside the
+  // non-risky toggle set.
+  assert.equal(loaded.get("auto-mode")!.get(), false);
+  assert.equal(loaded.get("skills-enabled")!.get(), true);
+  for (const id of loaded.keys()) assert.ok(BINDABLE_CONTROL_IDS.includes(id), `${id} is not bindable`);
 });
 
 // ---- the palette component -------------------------------------------------

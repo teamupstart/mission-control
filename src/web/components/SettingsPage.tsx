@@ -19,7 +19,7 @@ import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
 import { useRichText } from "../lib/rich-text.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import type { SettingsBindings, ToggleBinding } from "../lib/settings-search.ts";
+import { buildSettingsBindings } from "../lib/settings-search.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
@@ -206,36 +206,27 @@ export function SettingsPage({
   // Runtime get/set for the bindable boolean controls, wired from the hooks this page
   // already owns and handed to the palette so a matching result can flip in place. Exactly
   // the non-risky toggles in `SETTINGS_CONTROLS`: the risky set (YOLO, Inspector
-  // enable/mode) is deliberately absent, so it degrades to a jump and its consent copy is
-  // on screen when it changes. A control whose config has not polled yet reads its shipped
-  // default and its `set` is a no-op until the first read lands - the same guard the panels
-  // draw as a disabled switch, never a state that is not in force.
-  const toggleBindings = useMemo<SettingsBindings>(
+  // enable/mode) is never wired, so it degrades to a jump and its consent copy is on screen
+  // when it changes. The daemon-backed toggles pass `null` until their config has polled, so
+  // `buildSettingsBindings` withholds their binding and they too degrade to a jump - the
+  // same guard the panels draw as a disabled switch, never a state that is not in force.
+  const toggleBindings = useMemo(
     () =>
-      new Map<string, ToggleBinding>([
-        ["format-messages", { get: () => richText, set: (v) => setRichText(v) }],
-        [
-          "auto-mode",
-          {
-            get: () => harnesses.config?.autoModeOnDispatch ?? false,
-            set: (v) => void harnesses.update({ autoModeOnDispatch: v }),
-          },
-        ],
-        [
-          "skills-enabled",
-          {
-            get: () => skills.view?.enabled ?? false,
-            set: (v) => void skills.update({ enabled: v }),
-          },
-        ],
-        [
-          "cost-track",
-          {
-            get: () => cost.status?.config.enabled ?? false,
-            set: (v) => void cost.update({ enabled: v }),
-          },
-        ],
-      ]),
+      buildSettingsBindings({
+        formatMessages: { value: richText, set: setRichText },
+        autoMode: harnesses.config
+          ? {
+              value: harnesses.config.autoModeOnDispatch,
+              set: (v) => void harnesses.update({ autoModeOnDispatch: v }),
+            }
+          : null,
+        skillsEnabled: skills.view
+          ? { value: skills.view.enabled, set: (v) => void skills.update({ enabled: v }) }
+          : null,
+        costTrack: cost.status
+          ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
+          : null,
+      }),
     [richText, setRichText, harnesses.config, harnesses.update, skills.view, skills.update, cost.status, cost.update],
   );
 

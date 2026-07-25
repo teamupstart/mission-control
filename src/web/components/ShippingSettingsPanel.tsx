@@ -183,10 +183,11 @@ export function ShippingSettingsPanel({
 
       <div className="ship-soak" data-anchor="shipping/soak">
         <p className="settings-group-label">Soak time</p>
-        {/* Commits on blur, never per keystroke - see `NumberSetting`. It matters more
-            here than where it came from: clearing the field to retype reads as `0`, which
-            this schema ACCEPTS as "no soak at all", so a per-keystroke commit would
-            silently disarm the safety valve rather than be refused. */}
+        {/* Auto-saves only after a settled edit, and flushes on blur or unmount - see
+            `NumberSetting`. It matters more here than where it came from: clearing the
+            field to retype reads as `0`, which this schema ACCEPTS as "no soak at all",
+            so an immediate per-keystroke commit would silently disarm the safety valve
+            rather than be refused. */}
         <NumberSetting
           value={soakMinutes}
           min={0}

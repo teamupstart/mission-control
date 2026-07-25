@@ -44,6 +44,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onOpenFiles: () => {},
     onOpenFile: () => false,
     fileTabRequest: null,
+    conversationTabRequest: null,
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},

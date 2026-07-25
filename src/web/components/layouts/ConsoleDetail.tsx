@@ -123,6 +123,13 @@ export function ConsoleDetail({
     if (view.fileTabRequest?.sessionId === session.id) setTab("files");
   }, [view.fileTabRequest, session.id]);
 
+  // Same shape for the conversation. It is the tab this detail OPENS on, so most of the
+  // time the chord has nothing to switch - the nonce is what makes the press land
+  // anyway, after you have walked off to Files and want the transcript back.
+  useEffect(() => {
+    if (view.conversationTabRequest?.sessionId === session.id) setTab("conversation");
+  }, [view.conversationTabRequest, session.id]);
+
   useEffect(() => {
     const scroll = (direction: -1 | 1): void => {
       if (tab === "conversation") {
@@ -183,9 +190,14 @@ export function ConsoleDetail({
     () =>
       [
         // `action` is the shortcut that also reveals the tab, printed on its face when
-        // keybinding hints are on. Conversation and Gate have none - they are reached by
-        // Tab-walking the strip, which is not a rebindable action.
-        { id: "conversation" as const, label: "Conversation", pip: 0, action: null },
+        // keybinding hints are on. Gate has none - it is reached by Tab-walking the
+        // strip, which is not a rebindable action.
+        {
+          id: "conversation" as const,
+          label: "Conversation",
+          pip: 0,
+          action: "conversation" as const,
+        },
         { id: "queue" as const, label: "Work queue", pip: queueCount, action: "queue" as const },
         { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0, action: null },
         { id: "diff" as const, label: "Diff", pip: 0, action: "diff" as const },

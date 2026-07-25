@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import {
   ACTIONS,
   type ActionId,
+  bindingValidationError,
   chordFromEvent,
   findConflicts,
   formatChord,
-  isReservedChord,
   resetAll,
   resetBinding,
   setBinding,
@@ -26,7 +26,7 @@ function labelOf(id: ActionId): string {
 /**
  * The keyboard-shortcut editor, a settings category. Click an action's key, press the
  * new one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved navigation
- * keys are refused and duplicate bindings are flagged inline.
+ * keys and chords already assigned to another action are refused inline.
  *
  * This panel owns everything about recording a shortcut - the target being recorded, the
  * inline error, and the capture listener. The listener runs in the CAPTURE phase and
@@ -37,7 +37,7 @@ function labelOf(id: ActionId): string {
  * the same contract `Overlay.tsx` relies on.
  */
 export function KeyboardPanel(): React.JSX.Element {
-  const { bindings, hasCustom } = useKeybindings();
+  const { bindings, isCustom, hasCustom, previewReset } = useKeybindings();
   const [hints, setHints] = useKeybindingHints();
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,8 +58,9 @@ export function KeyboardPanel(): React.JSX.Element {
       }
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier - keep waiting
-      if (isReservedChord(chord)) {
-        setError(`${formatChord(chord)} is reserved for grid navigation.`);
+      const validationError = bindingValidationError(bindings, id, chord);
+      if (validationError) {
+        setError(validationError);
         return;
       }
       setBinding(id, chord);
@@ -68,7 +69,7 @@ export function KeyboardPanel(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording]);
+  }, [bindings, recording]);
 
   function startRecording(id: ActionId): void {
     setError(null);
@@ -109,9 +110,9 @@ export function KeyboardPanel(): React.JSX.Element {
         <span className="settings-toggle-text">
           <span className="settings-toggle-label">Show keybindings on buttons</span>
           <span className="settings-toggle-desc">
-            Buttons a shortcut also drives - Send, Focus, Queue, Diff, Files, Reset,
-            Complete, Kill, Dispatch, Workflows - carry its key on their face. Small icon
-            buttons and the command bar are unaffected.
+            Buttons a shortcut also drives - Send, Focus, Conversation, Queue, Diff,
+            Files, Reset, Complete, Kill, Dispatch, Workflows - carry its key on their
+            face. Small icon buttons and the command bar are unaffected.
           </span>
         </span>
       </label>
@@ -121,9 +122,25 @@ export function KeyboardPanel(): React.JSX.Element {
           <p className="settings-group-label">{group.label}</p>
           {ACTIONS.filter((a) => a.group === group.key).map((a) => {
             const chord = bindings[a.id];
-            const custom = chord !== a.defaultBinding;
+            const formattedChord = formatChord(chord);
+            const custom = isCustom(a.id);
             const conflict = conflicts.get(a.id);
             const isRec = recording === a.id;
+            const resetPreview = previewReset(a.id);
+            const resetChord = formatChord(resetPreview.binding);
+            const resetOwner = resetPreview.owner ? labelOf(resetPreview.owner) : null;
+            const resetTooltip =
+              custom && !resetChord && resetOwner
+                ? `Clear ${formattedChord || "custom binding"} - ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so this stays unset`
+                : custom
+                  ? `Reset ${a.label} to ${resetChord}`
+                  : formattedChord
+                    ? "Already the default"
+                    : "No custom binding";
+            const resetAriaLabel =
+              custom && !resetChord && resetOwner
+                ? `Clear ${a.label} ${formattedChord || "custom binding"}; ${formatChord(a.defaultBinding)} is taken by ${resetOwner}, so ${a.label} stays unset`
+                : `Reset ${a.label} to default`;
             return (
               <div
                 className={`kb-row${conflict ? " has-conflict" : ""}`}
@@ -149,20 +166,18 @@ export function KeyboardPanel(): React.JSX.Element {
                       aria-label={
                         isRec
                           ? `Recording new shortcut for ${a.label}`
-                          : `Change shortcut for ${a.label} (currently ${formatChord(chord)})`
+                          : `Change shortcut for ${a.label} (currently ${formattedChord || "unset"})`
                       }
                     >
-                      {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formatChord(chord)}</kbd>}
+                      {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formattedChord || "Unset"}</kbd>}
                     </button>
                   </Tooltip>
-                  <Tooltip
-                    label={custom ? `Reset ${a.label} to ${formatChord(a.defaultBinding)}` : "Already the default"}
-                  >
+                  <Tooltip label={resetTooltip}>
                     <button
                       className="kb-reset"
                       disabled={!custom}
                       onClick={() => resetBinding(a.id)}
-                      aria-label={`Reset ${a.label} to default`}
+                      aria-label={resetAriaLabel}
                     >
                       ↺
                     </button>

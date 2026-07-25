@@ -12,8 +12,8 @@ import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindi
  * silently opts out of the second - which is exactly what the console footer's five
  * buttons used to do.
  *
- * Renders NOTHING when hints are off - not an empty element - so a host laid out with
- * `gap` closes up rather than keeping a hole where the keycap was.
+ * Renders NOTHING when hints are off or the action is unset - not an empty element - so
+ * a host laid out with `gap` closes up rather than keeping a hole where the keycap was.
  *
  * Not every bound action gets one. Very small buttons (the settings gear, the sitrep
  * glyph, the expand chevron, the rename ✓/✕) carry their chord in the tooltip instead:
@@ -23,6 +23,7 @@ import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindi
 export function Keycap({ action }: { action: ActionId }): React.JSX.Element | null {
   const { bindings } = useKeybindings();
   const [show] = useKeybindingHints();
-  if (!show) return null;
-  return <kbd className="kb-hint">{formatChord(bindings[action])}</kbd>;
+  const chord = formatChord(bindings[action]);
+  if (!show || !chord) return null;
+  return <kbd className="kb-hint">{chord}</kbd>;
 }

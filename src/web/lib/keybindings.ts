@@ -24,6 +24,7 @@ export type ActionId =
   | "settingsSearch"
   | "workflows"
   | "expand"
+  | "conversation"
   | "diff"
   | "files"
   | "filePicker"
@@ -96,6 +97,17 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Expand / collapse",
     description: "Focus-expand the selected card in Cards, open or close the Board drill-in, or do nothing in Console where it is already expanded.",
     defaultBinding: "e",
+    group: "selection",
+  },
+  {
+    // First in the tab strip, so first of the three tab chords here - this list is the
+    // order the settings panel shows. `g` because the obvious letters were taken twice
+    // over: `c` completes a task, and `t` is not a key a strip walked by Tab should
+    // claim.
+    id: "conversation",
+    label: "Open conversation",
+    description: "Show the selected session's conversation.",
+    defaultBinding: "g",
     group: "selection",
   },
   {
@@ -349,10 +361,53 @@ function currentOverrides(): Overrides {
   return sanitize(uiConfig().keybindings);
 }
 
+/**
+ * Stored overrides claim chords before defaults so a newly shipped default never
+ * displaces an operator's existing choice. Within each pass registry order breaks
+ * malformed legacy/hand-edited ties; an action that cannot claim its stored chord or
+ * default stays unset.
+ */
 function computeResolved(overrides: Overrides): Record<ActionId, string> {
   const out = {} as Record<ActionId, string>;
-  for (const a of ACTIONS) out[a.id] = overrides[a.id] ?? a.defaultBinding;
+  const claimed = new Set<string>();
+  for (const a of ACTIONS) out[a.id] = "";
+  for (const a of ACTIONS) {
+    const chord = overrides[a.id];
+    if (!chord || claimed.has(chord)) continue;
+    out[a.id] = chord;
+    claimed.add(chord);
+  }
+  for (const a of ACTIONS) {
+    if (overrides[a.id] || claimed.has(a.defaultBinding)) continue;
+    out[a.id] = a.defaultBinding;
+    claimed.add(a.defaultBinding);
+  }
   return out;
+}
+
+export function resolveKeybindings(raw: Record<string, string>): Record<ActionId, string> {
+  return computeResolved(sanitize(raw));
+}
+
+export interface ResetBindingPreview {
+  binding: string;
+  owner: ActionId | null;
+}
+
+export function previewResetBinding(
+  raw: Record<string, string>,
+  id: ActionId,
+): ResetBindingPreview {
+  const next = sanitize(raw);
+  delete next[id];
+  const bindings = computeResolved(next);
+  const binding = bindings[id];
+  const defaultBinding = ACTION_BY_ID.get(id)?.defaultBinding;
+  const owner =
+    !binding && defaultBinding
+      ? (ACTIONS.find((action) => bindings[action.id] === defaultBinding)?.id ?? null)
+      : null;
+  return { binding, owner };
 }
 
 /**
@@ -364,17 +419,18 @@ function commit(next: Overrides): void {
   void updateUiConfig({ keybindings: next as Record<string, string> });
 }
 
-/** Rebind an action. Setting it back to its default clears the override. */
+/** Rebind an action to an unclaimed chord; an available own default clears the override. */
 export function setBinding(id: ActionId, chord: string): void {
   const def = ACTION_BY_ID.get(id);
-  if (!def || isReservedChord(chord)) return;
+  if (!def) return;
   const next: Overrides = { ...currentOverrides() };
+  if (bindingValidationError(computeResolved(next), id, chord)) return;
   if (chord === def.defaultBinding) delete next[id];
   else next[id] = chord;
   commit(next);
 }
 
-/** Drop the override for one action, restoring its default. */
+/** Drop one override; the action returns to its default when that chord is available. */
 export function resetBinding(id: ActionId): void {
   const overrides = currentOverrides();
   if (!(id in overrides)) return;
@@ -396,9 +452,11 @@ export function resetAll(): void {
 export function findConflicts(bindings: Record<ActionId, string>): Map<ActionId, ActionId[]> {
   const byChord = new Map<string, ActionId[]>();
   for (const a of ACTIONS) {
-    const arr = byChord.get(bindings[a.id]) ?? [];
+    const chord = bindings[a.id];
+    if (!chord) continue;
+    const arr = byChord.get(chord) ?? [];
     arr.push(a.id);
-    byChord.set(bindings[a.id], arr);
+    byChord.set(chord, arr);
   }
   const conflicts = new Map<ActionId, ActionId[]>();
   for (const ids of byChord.values()) {
@@ -408,13 +466,27 @@ export function findConflicts(bindings: Record<ActionId, string>): Map<ActionId,
   return conflicts;
 }
 
+export function bindingValidationError(
+  bindings: Record<ActionId, string>,
+  id: ActionId,
+  chord: string,
+): string | null {
+  if (isReservedChord(chord)) {
+    return `${formatChord(chord)} is reserved for grid navigation.`;
+  }
+  const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
+  if (!owner) return null;
+  return `${formatChord(chord)} is already bound to ${ACTION_BY_ID.get(owner)?.label ?? owner}.`;
+}
+
 export interface KeybindingsApi {
-  /** Resolved chord per action (override or default). */
+  /** Resolved chord per action, or empty when its stored chord/default cannot be claimed. */
   bindings: Record<ActionId, string>;
-  /** Whether an action currently differs from its default. */
+  /** Whether an action has a stored override. */
   isCustom: (id: ActionId) => boolean;
-  /** Whether any action differs from its default. */
+  /** Whether any action has a stored override. */
   hasCustom: boolean;
+  previewReset: (id: ActionId) => ResetBindingPreview;
 }
 
 // Stable references for useSyncExternalStore so it doesn't re-subscribe on every
@@ -427,13 +499,13 @@ const subscribe = subscribeUiConfig;
 // Identity is the right key because the config store never mutates in place - every
 // change commits a new object.
 let cachedSource: Record<string, string> | null = null;
-let cachedSnapshot: Record<ActionId, string> = computeResolved({});
+let cachedSnapshot: Record<ActionId, string> = resolveKeybindings({});
 
 function getSnapshot(): Record<ActionId, string> {
   const source = uiConfig().keybindings;
   if (source !== cachedSource) {
     cachedSource = source;
-    cachedSnapshot = computeResolved(sanitize(source));
+    cachedSnapshot = resolveKeybindings(source);
   }
   return cachedSnapshot;
 }
@@ -463,10 +535,16 @@ export function useKeybindingHints(): [boolean, (on: boolean) => void] {
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */
 export function useKeybindings(): KeybindingsApi {
   const bindings = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const source = uiConfig().keybindings;
+  const overrides = sanitize(source);
   const isCustom = useCallback(
-    (id: ActionId) => bindings[id] !== ACTION_BY_ID.get(id)?.defaultBinding,
-    [bindings],
+    (id: ActionId) => Object.hasOwn(overrides, id),
+    [overrides],
   );
-  const hasCustom = ACTIONS.some((a) => bindings[a.id] !== a.defaultBinding);
-  return { bindings, isCustom, hasCustom };
+  const hasCustom = Object.keys(overrides).length > 0;
+  const previewReset = useCallback(
+    (id: ActionId) => previewResetBinding(source, id),
+    [source],
+  );
+  return { bindings, isCustom, hasCustom, previewReset };
 }

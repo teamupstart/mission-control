@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 // What is at stake: a rebind has to actually leave the machine now.
 //
@@ -40,6 +42,7 @@ Object.defineProperty(globalThis, "fetch", {
 
 const {
   ACTIONS,
+  bindingValidationError,
   chordFromEvent,
   chordHasCommandModifier,
   findConflicts,
@@ -47,9 +50,11 @@ const {
   isReservedChord,
   resetAll,
   resetBinding,
+  resolveKeybindings,
   setBinding,
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
 const { workflowsToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
@@ -200,6 +205,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("/")),
     chordFromEvent(key("w")),
     chordFromEvent(key("e")),
+    chordFromEvent(key("g")),
     chordFromEvent(key("d")),
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("s")),
@@ -287,6 +293,83 @@ test("queue is a first-class action defaulting to q on the selected card", () =>
   assert.equal(queue.group, "selection");
   assert.equal(chordFromEvent(key("q")), "q");
   assert.equal(formatChord(queue.defaultBinding), "q");
+});
+
+test("conversation is a first-class action defaulting to g on the selected card", () => {
+  // The tab strip's first tab had no chord at all: Work queue, Diff and Files each print
+  // one on their face and Conversation printed nothing, so the only way back to the
+  // transcript was the mouse or Tab-walking the strip. It belongs in the registry rather
+  // than hard-coded in App for the reason every entry here does - that is what makes it
+  // rebindable in the settings editor and what puts the right keycap on the tab.
+  const conversation = ACTIONS.find((a) => a.id === "conversation");
+  assert.ok(conversation, "conversation missing from the customizable registry");
+  assert.equal(conversation.defaultBinding, "g");
+  assert.equal(conversation.group, "selection");
+  assert.equal(chordFromEvent(key("g")), "g");
+  assert.equal(formatChord(conversation.defaultBinding), "g");
+});
+
+test("every default binding is unique - a collision silently shadows one action", () => {
+  // Two actions on one chord is not a compile error and not a runtime error: App's
+  // handler simply matches the first branch and the second action becomes unreachable,
+  // which looks exactly like a broken feature. Guarding the whole table rather than the
+  // new entry, so the next one added is checked too.
+  const seen = new Map<string, string>();
+  for (const a of ACTIONS) {
+    const already = seen.get(a.defaultBinding);
+    assert.equal(
+      already,
+      undefined,
+      `${a.id} and ${already} both default to "${a.defaultBinding}"`,
+    );
+    seen.set(a.defaultBinding, a.id);
+  }
+});
+
+test("a stored override wins over a colliding new default", () => {
+  const resolved = resolveKeybindings({ diff: "g" });
+  assert.equal(resolved.diff, "g");
+  assert.equal(resolved.conversation, "");
+  assert.deepEqual([...findConflicts(resolved).keys()], []);
+  assert.equal(resolveKeybindings({}).conversation, "g");
+});
+
+test("the editor rejects another action's chord and keeps the prior binding", () => {
+  const bindings = { ...defaults(), conversation: "v", diff: "x" };
+  assert.equal(
+    bindingValidationError(bindings, "conversation", "x"),
+    "x is already bound to Open diff.",
+  );
+  assert.equal(bindingValidationError(bindings, "conversation", "v"), null);
+
+  resetAll();
+  setBinding("conversation", "v");
+  setBinding("diff", "x");
+  const before = puts.length;
+  setBinding("conversation", "x");
+  assert.equal(puts.length, before);
+  assert.equal(stored().conversation, "v");
+  assert.equal(stored().diff, "x");
+  resetAll();
+});
+
+test("reset copy reflects whether the default will be restored", async () => {
+  await updateUiConfig({ keybindings: { conversation: "v" } });
+  const freeDefault = renderToStaticMarkup(createElement(KeyboardPanel));
+  assert.match(freeDefault, /Reset Open conversation to g/);
+  assert.match(freeDefault, /aria-label="Reset Open conversation to default"/);
+
+  await updateUiConfig({ keybindings: { conversation: "v", diff: "g" } });
+  const claimedDefault = renderToStaticMarkup(createElement(KeyboardPanel));
+  assert.match(
+    claimedDefault,
+    /Clear v - g is taken by Open diff, so this stays unset/,
+  );
+  assert.match(
+    claimedDefault,
+    /aria-label="Clear Open conversation v; g is taken by Open diff, so Open conversation stays unset"/,
+  );
+  resetAll();
 });
 
 test("reset is a first-class action defaulting to Ctrl+R on the selected card", () => {

@@ -1664,7 +1664,10 @@ editing your copy changes what that role judges, not how it replies.
 Every workflow starts with one visible **Session** node and one disconnected **End**. Add
 Persona and **All-pass Join** nodes from the left palette, then connect the directional
 handles: Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may
-return to Session for changes. A Join needs both outcomes from at least two distinct
+return to Session for changes. Session needs at least one `submitted` route and may fan out to
+several, so a first wave of reviewers runs in parallel on one submission; a version published
+with that shape runs correctly on any build, but an older build refuses to re-publish it.
+A Join needs both outcomes from at least two distinct
 predecessors, waits for one result from each, and passes only when all passed. Cycles are
 legal only when they include Session. Persona-only cycles are rejected because they could
 spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not

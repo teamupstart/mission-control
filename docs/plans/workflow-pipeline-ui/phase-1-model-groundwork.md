@@ -70,10 +70,13 @@ stable UI/test contract); any persisted-model change (decision 3 adopted derived
      0-reviewer workflow that completes on submission) and the fresh-draft state (Session + End
      with no edges at all, invalid but draftable) project to - this is what lets a brand-new
      workflow open in Pipeline mode (phase 2) without editing the graph on open.
-   - `stageBlockers(graph): string[]` - human sentences naming what blocks projection ("Two End
-     nodes", "Security reviewer's fail route does not return to Session"), for the Graph-view
-     banner. `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and
-     `projectStages` returns non-null exactly then.
+   - `stageBlockers(graph, personas?): string[]` - human sentences naming what blocks projection
+     ("This graph has 2 End nodes; a pipeline has exactly one.", "Security reviewer's fail route
+     does not return to Session."), for the Graph-view banner. `personas` is optional and only
+     resolves draft reviewer names; omitting it cannot change how many blockers there are, so
+     `stageExpressible(graph)` is `stageBlockers(graph).length === 0`, and `projectStages` returns
+     non-null exactly then. A parallel stage is named in a blocker the way `stageName` names it
+     ("Stage 2's all-pass join ..."), never by a node id.
    - `compileStages(pipeline, previousGraph): WorkflowDraftGraph` - deterministic emission. Id
      reuse: session and end keep their ids; a member with a non-null `nodeId` keeps it; a stage
      with a non-null `joinId` keeps it; an edge with the same
@@ -155,6 +158,13 @@ unchanged. They must not change these without editing this phase's tests.
   expressibility rule. `stages: []` projects from both the fresh no-edge draft and the canonical
   `submitted -> terminal` form; compile canonicalizes on first edit only. Round-trip tests extended
   to cover it; phase 2's empty-state wording aligned in the same change.
+- 2026-07-25 (implementation): `stageBlockers` gained an OPTIONAL second `personas` argument. Its
+  own worked example ("Security reviewer's fail route ...") names a reviewer, and a draft Persona
+  node carries only a `personaId` - so with the one-argument signature every blocker about a draft
+  reviewer, which is the Graph-view banner's whole case, would have read "Missing persona". The
+  argument defaults to `[]`, so the frozen one-argument call still compiles and still answers
+  expressibility identically; `stageExpressible` passes nothing on purpose. Published graphs need
+  no list: `nodeLabel` and the projection read the immutable snapshot names off the nodes.
 - 2026-07-25 (Inspector round 3, PR #244): `Stage.members[].nodeId` became `string | null` - a
   reviewer being added has no graph node yet, and requiring an id would have forced the editor to
   mint one, breaking the compiler's id-ownership contract. Null identities are minted by

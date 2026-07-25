@@ -359,3 +359,60 @@ test("a pane-backed session has nothing to hand off", async () => {
   assert.equal(res.status, 409);
   assert.match(((await res.json()) as { error: string }).error, /already runs in a terminal/);
 });
+
+test("a turn reaches the driver through /send, and the Send button is not a lie", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:send");
+  const sent: { id: string; text: string }[] = [];
+  const supervisor = {
+    async send(id: string, turn: { text: string }) {
+      sent.push({ id, text: turn.text });
+    },
+  } as unknown as SdkSupervisor;
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:send/send", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ text: "carry on", submit: true }),
+  });
+  // The card enables Send on `canMessage`, which an embedded session answers yes to. Left
+  // on the pane path this route refuses with "no terminal pane to send to" - an enabled
+  // button that always fails, which is worse than no button.
+  assert.equal(res.status, 200);
+  assert.deepEqual(sent, [{ id: "sdk:send", text: "carry on" }]);
+});
+
+test("/inject reports a driver refusal as positive evidence that nothing landed", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:inject");
+  const supervisor = {
+    async send() {
+      throw new Error("no live driver for session sdk:inject");
+    },
+  } as unknown as SdkSupervisor;
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:inject/inject", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ text: "queued work", origin: "foreman" }),
+  });
+  const body = (await res.json()) as { ok: boolean; pasted: boolean; submitVerified: boolean };
+  assert.equal(body.ok, false);
+  // `pasted: false` is the ONLY state a caller may retry from, and an acked send makes it
+  // the truthful one: the call rejected, so nothing was appended to any composer. The pane
+  // path cannot promise that - its delivery is buffer, paste, Enter, and a failure lands
+  // anywhere in the middle.
+  assert.equal(body.pasted, false);
+  assert.equal(body.submitVerified, false);
+});
+
+test("a delivered turn is verified, because the harness said so", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:ok");
+  const supervisor = { async send() {} } as unknown as SdkSupervisor;
+  const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:ok/inject", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ text: "go", origin: "foreman" }),
+  });
+  const body = (await res.json()) as { ok: boolean; pasted: boolean; submitVerified: boolean };
+  assert.deepEqual(body, { ...body, ok: true, pasted: true, submitVerified: true });
+});

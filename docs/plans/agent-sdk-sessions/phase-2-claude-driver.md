@@ -196,6 +196,24 @@ to reach a handle, or add per-dispatch runtime selection (resolved decision).
     from a terminal would hand its own pane down - `findSessionByEnv` prefers a pane key over
     everything else, so every embedded session's hooks would key to one stranger's card.
     Phases 4 and 6 need the same subtraction if their transports inherit the daemon's env.
+  - **`/send` and `/inject` needed a driver arm and step 5 does not mention one.** Step 10
+    asserts the worker's send paths "go through routes that work"; they did not - both went
+    straight to `sendText` / `injectPrompt`, which refuse a session with no pane, so the
+    card's own Send button was enabled (`canMessage`) and failed. `sdk/deliver.ts` is that
+    arm, and it is where the acked send's consequence is stated once: both of
+    `InjectResult`'s ambiguous states (`pasted` on a failure, an unverifiable
+    `submitVerified`) are UNREACHABLE for an embedded session, which is what makes C9's
+    "no `mayHaveLanded` arm" true rather than merely unused.
+  - **Reset stays phase 3's, and the E2E line about it needs one more thing than that
+    phase's file says.** `resetToOrigin`'s `/clear` tail types at a pane, so for an embedded
+    session it degrades to the already-tested `cleared: false` - honest, and no worse than
+    a pane-less session has ever been. But routing it through `handle.clearContext()` is
+    only half: the work-episode rebind is gated on `clear_start`-shaped evidence that
+    `resetSession` pre-arms with `awaitingAgentRebind`, and `applyDriverBinding` reports
+    `driver_identity`, which `canResolvePending` does not accept. Phase 3 needs a
+    driver-sourced clear evidence kind, or the rotation drops task ownership - which is
+    what a bare `/clear` does on BOTH runtimes today (verified end to end), and why Reset
+    rather than a typed `/clear` is the supported path.
   - **Packaging needed no change.** The SDK bundles cleanly into `dist/server/index.mjs`
     (3.8MB, up from ~780KB) and its subprocess spawn was verified against the bundled copy,
     so it is not marked external and `electron-builder.yml` is untouched. Its optional

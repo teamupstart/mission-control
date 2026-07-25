@@ -87,7 +87,10 @@ export function SessionWhere({ session }: { session: Session }): React.JSX.Eleme
         <span className="runtime-glyph" aria-hidden>
           ◈
         </span>
-        {RUNTIME_LABEL}
+        {/* Its own element so the LABEL is what shrinks on a narrow card. Left as the
+            chip's bare text it is an atomic box: the pill would be clipped mid-word with
+            no ellipsis, because the ellipsis belongs to whatever is overflowing. */}
+        <span className="runtime-name">{RUNTIME_LABEL}</span>
       </span>
     </Tooltip>
   );

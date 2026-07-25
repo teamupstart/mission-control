@@ -122,6 +122,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
+import { deliverToDriver } from "./sdk/deliver.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
@@ -1465,6 +1466,13 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    // An embedded session has no composer to type into, and `submit` has no meaning for it:
+    // a turn is one acked call, not a paste followed by an Enter that may or may not land.
+    // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
+    if (session.runtime === "sdk") {
+      const sent = await deliverToDriver(sdkSessions, session, parsed.data.text);
+      return c.json({ ok: sent.ok, ...(sent.error ? { error: sent.error } : {}) }, sent.ok ? 200 : 500);
+    }
     const r = await sendText(
       session,
       parsed.data.text,
@@ -1606,12 +1614,18 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
-    const r = await injectPrompt(
-      session,
-      parsed.data.text,
-      undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
-    );
+    // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
+    // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
+    // here is positive evidence that nothing landed, which is the only state a caller may
+    // safely retry from.
+    const r = session.runtime === "sdk"
+      ? await deliverToDriver(sdkSessions, session, parsed.data.text)
+      : await injectPrompt(
+          session,
+          parsed.data.text,
+          undefined,
+          () => registry.promptResourceBlockerForSession(session.id),
+        );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);

@@ -178,6 +178,16 @@ export interface WorkflowManagerOptions {
    * dependency this boundary exists to prevent. Returns one sentence for a human, or null.
    */
   externalBindingEligibility?: ExternalBindingEligibility;
+  /**
+   * Whether a session may acquire a NORMAL (manual) Workflow binding right now.
+   *
+   * The same narrow guard as `externalBindingEligibility`, applied to the manual bind path: an
+   * active ensemble member session is refused here so an operator cannot bind it out from under the
+   * finalization that will read it. Backed by the ensemble manager and injected as a bare
+   * `(sessionId) => reason | null`, so this module never imports the ensemble store. Absent means
+   * "no orchestrator to consult" and every session is eligible, which is the pre-Phase-6 behaviour.
+   */
+  canBindSessionToWorkflow?: (sessionId: string) => string | null;
   retentionIntervalMs?: number;
   runRetention?: typeof runWorkflowRetention;
 }
@@ -559,6 +569,11 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
     }
+    // An active ensemble member owns its session until the ensemble finalizes; binding it manually
+    // would race that. The guard answers only with a reason or null and never names the ensemble
+    // store - the same one-way boundary the external path uses.
+    const ineligible = this.options.canBindSessionToWorkflow?.(session.id);
+    if (ineligible) return { ok: false, reason: "ineligible_session", message: ineligible };
     const prerequisite = this.bindingModeBlock(session, triggerMode, deliveryMode);
     if (prerequisite) return prerequisite;
     const noteKey = noteKeyFor(session);

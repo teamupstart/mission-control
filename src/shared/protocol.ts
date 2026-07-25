@@ -50,6 +50,7 @@ import {
   ENSEMBLE_STAGE_STATUSES,
   ENSEMBLE_STATUSES,
   ENSEMBLE_STRATEGY_IDS,
+  ENSEMBLE_WORKFLOW_HANDOFF_STATES,
 } from "./ensemble.ts";
 import type {
   EnsembleArtifact,
@@ -66,6 +67,7 @@ import type {
   EnsembleStageAttempt,
   EnsembleSummary,
   EnsembleUnreadable,
+  EnsembleWorkflowHandoff,
 } from "./ensemble.ts";
 import {
   SCHEDULE_CRON_FIELD_COUNT,
@@ -2901,6 +2903,32 @@ export const EnsembleUnreadableSchema: z.ZodType<EnsembleUnreadable> = z.object(
   fields: z.array(z.string()),
 });
 
+/**
+ * The pinned post-selection Workflow handoff snapshot, validated on read.
+ *
+ * Full commit ids only for `expectedHeadSha` (the same 40/64-hex shape Workflow capture
+ * expectations use) - a ref name would mean something different an hour later, which is the
+ * drift a pin exists to remove. The mode fields are bounded free strings because they are a
+ * display snapshot of the pinned defaults, not a live enum this build must be able to name.
+ */
+export const EnsembleWorkflowHandoffSchema: z.ZodType<EnsembleWorkflowHandoff> = z.object({
+  workflowId: z.string().min(1).max(200),
+  workflowVersionId: z.string().min(1).max(200),
+  workflowVersion: z.number().int(),
+  workflowName: z.string().max(ENSEMBLE_LIMITS.strategyLabel),
+  triggerMode: z.string().max(60),
+  deliveryMode: z.string().max(60),
+  maxRepairRounds: z.number().int(),
+  completionPolicy: z.string().max(60),
+  state: z.enum(ENSEMBLE_WORKFLOW_HANDOFF_STATES),
+  sourceKey: z.string().max(ENSEMBLE_LIMITS.sourceKey).nullable(),
+  expectedHeadSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/).nullable(),
+  bindingId: z.string().min(1).max(200).nullable(),
+  runId: z.string().min(1).max(200).nullable(),
+  submissionId: z.string().min(1).max(200).nullable(),
+  error: z.string().max(ENSEMBLE_LIMITS.errorText).nullable(),
+});
+
 export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   id: ensembleId,
   sourceKind: EnsembleSourceKindSchema.nullable(),
@@ -2920,6 +2948,7 @@ export const EnsembleRunSchema: z.ZodType<EnsembleRun> = z.object({
   status: EnsembleStatusSchema.nullable(),
   activeStageId: z.string().nullable(),
   outcome: EnsembleOutcomeSchema.nullable(),
+  workflowHandoff: EnsembleWorkflowHandoffSchema.nullable(),
   unreadable: EnsembleUnreadableSchema.nullable(),
   error: z.string().nullable(),
   createdAt: z.number().int(),
@@ -3102,6 +3131,21 @@ export const EnsembleRunDetailSchema: z.ZodType<EnsembleRunDetail> = z.object({
  * The daemon re-parses it through the descriptor at creation, which is the one place the
  * config's type is known - the same split `TaskSourceInstanceSchema` makes.
  */
+/**
+ * An operator's optional choice to review the finalized winner through a published Workflow.
+ *
+ * Both a workflow id AND a version number: the daemon resolves them to one immutable published
+ * version at creation and pins its display snapshot, so a later edit or archive cannot re-aim it.
+ * A caller never supplies the version id, binding defaults, or mode - those are read off the
+ * pinned version, and an unsupported mode (Live/Foreman) is a typed refusal, not a Preview
+ * downgrade.
+ */
+export const EnsembleWorkflowPlacementSchema = z.object({
+  workflowId: z.string().min(1).max(200),
+  workflowVersion: z.number().int().positive(),
+});
+export type EnsembleWorkflowPlacement = z.infer<typeof EnsembleWorkflowPlacementSchema>;
+
 export const EnsembleCreateInputSchema = z.object({
   sourceKey: z.string().min(1).max(ENSEMBLE_LIMITS.sourceKey),
   sourceKind: EnsembleSourceKindSchema.default("manual"),
@@ -3113,8 +3157,27 @@ export const EnsembleCreateInputSchema = z.object({
   /** Absent means "this build's current version for that strategy". */
   strategyVersion: z.number().int().positive().optional(),
   strategyConfig: z.unknown().default({}),
+  /** Optional post-selection Workflow handoff; the daemon resolves it to an immutable version. */
+  workflow: EnsembleWorkflowPlacementSchema.nullable().default(null),
 });
 export type EnsembleCreateBody = z.infer<typeof EnsembleCreateInputSchema>;
+
+/**
+ * A side-effect-free draft validation, sharing the create body's shape so an estimate the
+ * preview shows can never drift from what create would accept. `sourceKey` stays required so
+ * the two bodies are one shape; preview never persists it.
+ */
+export const EnsemblePreviewSchema = EnsembleCreateInputSchema;
+export type EnsemblePreviewBody = z.infer<typeof EnsemblePreviewSchema>;
+
+/**
+ * Explicit terminal-history/ref deletion, confirmed by echoing the run id.
+ *
+ * The id is in the URL AND the body, and they must match: deletion removes generated private
+ * refs, and a body-less DELETE is one accidental double-click from erasing a run's evidence.
+ */
+export const EnsembleDeleteSchema = z.object({ confirmId: ensembleId });
+export type EnsembleDeleteBody = z.infer<typeof EnsembleDeleteSchema>;
 
 /**
  * The generic operator authorities over one run.
@@ -3125,17 +3188,40 @@ export type EnsembleCreateBody = z.infer<typeof EnsembleCreateInputSchema>;
  */
 export const EnsembleActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("retry_stage"), stageId: ensembleStageId }),
+  z.object({ kind: z.literal("retry_member"), memberId: ensembleId }),
   z.object({ kind: z.literal("withdraw_member"), memberId: ensembleId }),
   z.object({
     kind: z.literal("decide"),
+    /** Client-stable idempotency key: a lost response returns the same recorded decision. */
+    requestId: z.string().min(1).max(ENSEMBLE_LIMITS.operationKey),
+    /** The state the caller believes it is deciding in. A mismatch is a `409`, never an act. */
+    expectedStatus: EnsembleStatusSchema,
+    /** The outcome, re-validated by the compiled decision driver against eligible artifacts. */
     selection: EnsembleJsonSchema,
     rationale: z.string().max(ENSEMBLE_LIMITS.rationale).default(""),
+    /** The literal `true`: destructive finalization is unreachable without explicit confirmation. */
+    confirmDestructive: z.literal(true),
   }),
-  z.object({ kind: z.literal("resolve_finalization") }),
+  z.object({
+    kind: z.literal("resolve_finalization"),
+    /** True abandons a blocked Workflow handoff and finishes with the normal continuation. */
+    skipWorkflowHandoff: z.boolean().default(false),
+  }),
   z.object({ kind: z.literal("cancel"), reason: z.string().max(ENSEMBLE_LIMITS.rationale).nullable().default(null) }),
   z.object({ kind: z.literal("restore_artifact"), artifactId: ensembleId }),
 ]);
 export type EnsembleActionBody = z.infer<typeof EnsembleActionSchema>;
+
+/**
+ * The `select_one` decision selection, mirrored here and in the server driver so both boundaries
+ * reject the same bodies. Cancelling is a separate authority; a decision that destroys is never
+ * accidental.
+ */
+export const EnsembleSelectOneSelectionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("selected"), artifactId: ensembleId }),
+  z.object({ kind: z.literal("no_consensus"), reason: z.string().max(ENSEMBLE_LIMITS.rationale) }),
+]);
+export type EnsembleSelectOneSelectionBody = z.infer<typeof EnsembleSelectOneSelectionSchema>;
 
 // ---- Recurring Missions (schedule catalog) ----
 

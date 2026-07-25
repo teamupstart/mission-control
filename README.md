@@ -1376,17 +1376,17 @@ Two more properties, both deliberate:
   dies mid-run either finds the task already filed (and just closes the ledger) or files it
   on the id it reserved. Neither path can produce a second task.
 
-## Multi-agent ensembles (runtime landed; creation still gated)
+## Multi-agent ensembles (backend complete; dashboard next)
 
 An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
 under one versioned *strategy*, plus the group-level facts a single task cannot express: one
 pinned base commit, member roles, immutable submitted artifacts, a comparison, a human
 decision, and a terminal outcome. The first strategy is **Best of N** - two to five agents
 implement the same task alone from the same commit, one tool-less comparison ranks what they
-submitted, and a later phase will let you confirm the winner.
+submitted, and you confirm the winner.
 
-**The engine works and the comparison runs; there is still no way to start a Best-of-N run.**
-What has landed is the strategy-neutral runtime and its first review driver. The runtime pins one
+**The backend is complete: a run can be created, compared, decided, finalized, and deleted
+through the API; only the dashboard UI is still to come.** The strategy-neutral runtime pins one
 base commit, launches bounded *waves* of ordinary member tasks (creating every task in a wave
 before dispatching the first, and never launching past the concurrency the plan authorizes),
 accepts an explicit submission from each member, captures its working tree as an immutable private
@@ -1410,13 +1410,44 @@ its runner and model per call (a judging Persona's own overrides, else the `ense
 job model), records every call on a durable ledger, and recovers a call interrupted by a restart by
 retrying it against the exact same evidence. It **recommends** a winner; it cannot promote one.
 
-What is deliberately still absent is the **create path and the promotion boundary**: a Best-of-N
-run still cannot be started from a route or UI, and a recommendation cannot yet be confirmed or
-acted on, because human-confirmed finalization - resetting the winner to its snapshot, reaping the
-losers, the optional Workflow handoff - and its safety boundary land in the next phase. Until then
-the runtime is proven by tests and by internal creation/recovery paths rather than by a public
-route or UI, and on every existing machine the tables stay empty and the product behaves exactly
-as before. The plan is
+**Finalization begins from a durable human decision and nothing else.** You confirm one eligible
+submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
+carries a stable request id, the run state it expects, and an explicit destructive confirmation, so
+a lost response returns the same decision and a wrong-state or ineligible pick is refused rather
+than acted on. Only then does anything destructive run, and it runs restart-safe in this order:
+re-verify the winner's private ref still resolves to its snapshot (a missing ref blocks *all*
+cleanup); make one exact winner available - either the original member's checkout reset to the
+snapshot through the same session-reset that clears its queue, drafts and context, or, if that
+session is gone or busy, exactly one replacement task launched at the snapshot (never two, across
+any restart); reap every loser through the normal task cancellation that reclaims its worktree;
+then either hand the winner to a workflow or type it one continuation - never both. A step that
+cannot finish leaves the run *finalizing* with an actionable error and is resumed by
+`resolve_finalization`; the run reaches *completed* only once the winner is exact, every loser is
+reconciled, and any workflow submission is captured. Every loser's private snapshot survives.
+
+**The optional Workflow handoff is the N-to-one boundary.** If a run pins a published
+[workflow](#workflows-and-personas) version at creation, finalization binds that exact version to
+the winning session and submits its clean snapshot through the same server-owned external boundary
+any other source uses - idempotent on a stable source key, so a restart returns the same binding
+and run. It requires the winner's HEAD to equal the chosen snapshot and its tree to be clean; a
+drift is healed by restoring the winner and resuming the *same* submission. A note-key conflict, an
+unavailable mode, or a Live/Foreman selection (only Preview is executable today) blocks visibly and
+is never downgraded or adopted - you retry after resolving it or explicitly skip the handoff and
+finish with the normal continuation. An active member's session cannot be bound to a workflow
+manually until the ensemble finalizes. Ensemble and Workflow lifecycles stay separate: a workflow
+reset removes its binding but never an ensemble ref, and a completed ensemble never recreates a
+reset run.
+
+The public API is one localhost surface: `GET /api/ensembles` (compact summaries),
+`POST /api/ensembles/preview` (a side-effect-free launch/budget/handoff estimate that shares
+create's exact validation), `POST /api/ensembles` (idempotent create and launch on a stable request
+id), `GET /api/ensembles/:id` (bounded detail), `POST /api/ensembles/:id/actions` (one discriminated
+action covering decide, resolve-finalization, retry, withdraw, cancel and restore), and
+`DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
+run id, which never deletes a task or linked workflow state and resumes the same remaining refs
+after a crash). **The dashboard that drives this is the one remaining piece**; until it lands the
+backend is exercised by the API and tests, and on every existing machine the tables stay empty and
+the product behaves exactly as before. The plan is
 [`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
 
 Four decisions are worth knowing now, because everything later is built on them:
@@ -1433,9 +1464,8 @@ Four decisions are worth knowing now, because everything later is built on them:
 - **A run executes the plan it was created with.** Its strategy, version and compiled plan
   are snapshotted at creation, so a strategy whose defaults change later cannot silently
   re-aim work that is already running. A run written by a *newer* build still loads and
-  remains covered by the generic cancel contract, though this phase exposes no action route.
-  It reports which piece this build does not have and refuses to run rather than substituting
-  something adjacent.
+  remains covered by the generic cancel and delete contracts. It reports which piece this
+  build does not have and refuses to run rather than substituting something adjacent.
 - **Members will not push or open pull requests.** Publishing happens after a winner is
   chosen, through the normal [shipping](#shipping-yolo-mode) flow, so an ensemble never
   leaves N branches and N pull requests behind. Note the isolation between members is

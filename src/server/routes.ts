@@ -198,7 +198,14 @@ import type { ScheduleService } from "./schedules/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
 import type { ScheduleValidationError } from "@shared/schedules.ts";
 import type { EnsembleManager, EnsembleSubmitResult } from "./ensembles/manager.ts";
-import { EnsembleMemberSubmitSchema, SubmitEnsembleResultSchema } from "@shared/protocol.ts";
+import {
+  EnsembleActionSchema,
+  EnsembleCreateInputSchema,
+  EnsembleDeleteSchema,
+  EnsembleMemberSubmitSchema,
+  EnsemblePreviewSchema,
+  SubmitEnsembleResultSchema,
+} from "@shared/protocol.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
 
@@ -1252,7 +1259,70 @@ export function buildApp(
     return c.json(response.body, response.status);
   });
 
-  // --- ensemble read + manual submission (localhost only; no create route in this phase) ---
+  // --- ensemble catalog: list, side-effect-free preview, idempotent create ---
+  app.get("/api/ensembles", (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    // Compact summaries only; full members/artifacts/evaluations stay on the detail route. An
+    // optional status filter and a bounded page keep the list bounded when a strategy launches many.
+    const statusFilter = c.req.query("status");
+    const limit = boundedLimit(c.req.query("limit"), ENSEMBLE_LIMITS.detailPageSize);
+    const all = manager.summaries();
+    const filtered = statusFilter ? all.filter((s) => s.status === statusFilter) : all;
+    return c.json({ ensembles: filtered.slice(0, limit), total: filtered.length });
+  });
+
+  app.post("/api/ensembles/preview", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, EnsemblePreviewSchema);
+    if (!parsed.ok) return parsed.res;
+    // Side-effect-free: nothing is pinned or launched, so a bad draft is a 200 carrying its own
+    // validation result, never a refusal status - the form shows the issues inline.
+    return c.json(manager.preview(parsed.data));
+  });
+
+  app.post("/api/ensembles", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, EnsembleCreateInputSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = await manager.createAndLaunch(parsed.data);
+    if (!outcome.ok) {
+      return c.json({ error: outcome.reason, code: `ensemble_create_${outcome.reason}`, issues: outcome.issues }, 400);
+    }
+    // `created: false` is the response-loss retry doing exactly what the source key exists for - one
+    // run, not a second fleet - so it is a 200, not a conflict.
+    return c.json({ run: outcome.run, summary: outcome.summary, created: outcome.created }, outcome.created ? 201 : 200);
+  });
+
+  app.post("/api/ensembles/:id/actions", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, EnsembleActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await manager.applyAction(c.req.param("id"), parsed.data);
+    if (result.ok) {
+      return c.json({ summary: result.summary, decision: result.decision ?? null, replayed: result.replayed ?? false });
+    }
+    const status = result.reason === "not_found" ? 404 : result.reason === "conflict" ? 409 : result.reason === "unavailable" ? 503 : 400;
+    return c.json({ error: result.detail, code: `ensemble_action_${result.reason}` }, status);
+  });
+
+  app.delete("/api/ensembles/:id", async (c) => {
+    const manager = ensembleManager();
+    if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);
+    const parsed = await parseBody(c, EnsembleDeleteSchema);
+    if (!parsed.ok) return parsed.res;
+    // Terminal-only, and the id must be echoed in the body: deletion removes generated private refs,
+    // and this is the one place an ensemble's evidence is destroyed.
+    const result = await manager.deleteRun(c.req.param("id"), parsed.data.confirmId);
+    if (result.ok) return c.json({ deleted: true });
+    const status = result.reason === "not_found" ? 404 : result.reason === "not_terminal" ? 409 : 400;
+    return c.json({ error: result.detail, code: `ensemble_delete_${result.reason}` }, status);
+  });
+
+  // --- ensemble read + manual submission (localhost only) ---
   app.get("/api/ensembles/:id", (c) => {
     const manager = ensembleManager();
     if (!manager) return c.json({ error: "Ensemble manager unavailable" }, 503);

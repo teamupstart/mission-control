@@ -11,11 +11,15 @@ import {
 } from "../src/shared/ensemble.ts";
 import type { EnsembleRunInsert } from "../src/server/ensembles/store.ts";
 import type {
+  EnsembleFinalizeDeps,
   EnsembleTaskGateway,
+  EnsembleWorkflowHandoffDeps,
   MemberDispatchRequest,
   MemberTaskRequest,
+  ReplacementTaskRequest,
   TaskGatewayStatus,
 } from "../src/server/ensembles/engine.ts";
+import type { EnsembleJson } from "../src/shared/ensemble.ts";
 import type {
   ArtifactAdapter,
   ArtifactAdapterRegistry,
@@ -206,6 +210,84 @@ export function failingAdapters(): ArtifactAdapterRegistry {
   };
 }
 
+/** The `snapshotSha` off a git_snapshot locator, so a fake verify can echo the real artifact. */
+export function locatorSnapshotSha(locator: EnsembleJson): string | null {
+  return locator && typeof locator === "object" && !Array.isArray(locator) && typeof locator.snapshotSha === "string"
+    ? locator.snapshotSha
+    : null;
+}
+
+/** A fake Workflow handoff boundary a test drives and inspects. Defaults make a handoff succeed. */
+export class FakeWorkflow implements EnsembleWorkflowHandoffDeps {
+  readonly bindings: Array<{ sessionId: string; workflowVersionId: string; sourceId: string; resultId: string }> = [];
+  readonly submits: Array<{ bindingId: string; expectedHeadSha: string }> = [];
+  bindResult: { ok: true; bindingId: string; created: boolean } | { ok: false; reason: "conflict" | "unavailable" | "ineligible" | "other"; detail: string } = {
+    ok: true,
+    bindingId: "binding-1",
+    created: true,
+  };
+  submitResult: { ok: true; runId: string; submissionId: string } | { ok: false; reason: "mismatch" | "conflict" | "unavailable" | "other"; detail: string } = {
+    ok: true,
+    runId: "wfrun-1",
+    submissionId: "wfsub-1",
+  };
+  ensureBinding(input: { sessionId: string; workflowVersionId: string; sourceId: string; resultId: string }) {
+    this.bindings.push(input);
+    return this.bindResult;
+  }
+  async submit(input: { bindingId: string; sourceId: string; resultId: string; expectedHeadSha: string }) {
+    this.submits.push({ bindingId: input.bindingId, expectedHeadSha: input.expectedHeadSha });
+    return this.submitResult;
+  }
+}
+
+/**
+ * A fake finalize-deps a test drives and inspects. Defaults make the restored-winner path succeed;
+ * set `safeIdle = false` for the replacement path, and attach a `FakeWorkflow` for the handoff.
+ */
+export class FakeFinalize implements EnsembleFinalizeDeps {
+  readonly restored: Array<{ sessionId: string; snapshotSha: string }> = [];
+  readonly continuations: Array<{ sessionId: string; text: string }> = [];
+  readonly materialized: ReplacementTaskRequest[] = [];
+  verify: (locator: EnsembleJson) => string | null = locatorSnapshotSha;
+  safeIdle = true;
+  restoreOk = true;
+  headClean = true;
+  deliverOk = true;
+  materializeOk = true;
+  private lastRestoredSha: string | null = null;
+  private readonly replacements = new Map<string, { status: TaskGatewayStatus | null; sessionId: string | null; worktreePath: string | null }>();
+  workflow?: EnsembleWorkflowHandoffDeps;
+
+  async verifyArtifact({ locator }: { locator: EnsembleJson; repoPath: string }) {
+    return this.verify(locator);
+  }
+  async sessionSafeToRebind() {
+    return this.safeIdle;
+  }
+  async restoreWinner(input: { sessionId: string; snapshotSha: string; ref: string }) {
+    this.restored.push({ sessionId: input.sessionId, snapshotSha: input.snapshotSha });
+    this.lastRestoredSha = input.snapshotSha;
+    return this.restoreOk ? { ok: true as const } : { ok: false as const, detail: "restore failed" };
+  }
+  async worktreeHead() {
+    return { headSha: this.lastRestoredSha, clean: this.headClean };
+  }
+  async deliverContinuation(input: { sessionId: string; text: string }) {
+    this.continuations.push(input);
+    return this.deliverOk ? { ok: true as const } : { ok: false as const, detail: "the pane was busy" };
+  }
+  async materializeReplacement(request: ReplacementTaskRequest) {
+    this.materialized.push(request);
+    if (!this.materializeOk) return { ok: false as const, detail: "materialize failed" };
+    this.replacements.set(request.taskId, { status: "running", sessionId: `repl-${request.taskId}`, worktreePath: `/repl/${request.taskId}` });
+    return { ok: true as const };
+  }
+  replacementStatus(taskId: string) {
+    return this.replacements.get(taskId) ?? { status: null, sessionId: null, worktreePath: null };
+  }
+}
+
 // ---- plan builders ----
 
 function role(over: Partial<EnsembleRoleSpec> & { key: string; ordinal: number }): EnsembleRoleSpec {
@@ -318,6 +400,49 @@ export function reviewPlan(count = 2, minEligible = 2): CompiledEnsemblePlan {
   };
 }
 
+/**
+ * A plan that reaches a human decision WITHOUT a review executor: member wave, then a decision
+ * stage gated straight on the members-settled barrier, then a select-one finalize gated on the
+ * human decision. It lets a finalization test drive `awaiting_decision` -> `decide` -> `finalizing`
+ * without standing up a comparative-review model call, which is exercised elsewhere.
+ */
+export function decidePlan(count = 2, minEligible = 2): CompiledEnsemblePlan {
+  const roles = Array.from({ length: count }, (_, i) => role({ key: `candidate-${i + 1}`, ordinal: i + 1 }));
+  const roleKeys = roles.map((r) => r.key);
+  return {
+    planVersion: ENSEMBLE_PLAN_VERSION,
+    strategyKey: "best_of_n@1",
+    budget: { maxMembers: count, maxConcurrentMembers: count, maxWaves: 1, maxStageAttempts: 2, deadlineMs: null },
+    information: { kind: "isolated" },
+    roles,
+    stages: [
+      memberStage({ id: "stage-1", ordinal: 1, roleKeys }),
+      {
+        id: "stage-decide",
+        ordinal: 2,
+        label: "Decision",
+        driverKind: "decision",
+        driverKey: "human_decision@1",
+        dependsOn: ["stage-1"],
+        barrier: { kind: "members_settled", roleKeys, minEligible, requiredArtifacts: ["commit"] },
+        maxAttempts: 1,
+        decision: { kind: "select_one", eligibleArtifactKind: "commit", minEligibleSubjects: minEligible },
+      },
+      {
+        id: "stage-finalize",
+        ordinal: 3,
+        label: "Promotion",
+        driverKind: "finalize",
+        driverKey: "select_one_finalize@1",
+        dependsOn: ["stage-decide"],
+        barrier: { kind: "human_decision" },
+        maxAttempts: 2,
+        finalization: { kind: "select_one", requiresHumanDecision: true, loserPolicy: "reap_worktrees" },
+      },
+    ],
+  };
+}
+
 /** An EnsembleRunInsert around a plan, ready to launch (a pinned base, status running). */
 export function runInsert(
   plan: CompiledEnsemblePlan,
@@ -339,6 +464,7 @@ export function runInsert(
     plan,
     strategyConfig: {},
     status: "running",
+    workflowHandoff: null,
     members: plan.roles.map((r) => ({ roleKey: r.key, roleLabel: r.label, ordinal: r.ordinal, wave: r.wave })),
     ...over,
   };

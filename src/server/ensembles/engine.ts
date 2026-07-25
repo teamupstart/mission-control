@@ -1,23 +1,30 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   ENSEMBLE_DRIVER_KEYS,
+  ENSEMBLE_LIMITS,
   ensembleIsRunnable,
   ensembleIsTerminal,
+  ensemblePayload,
   type CompiledEnsemblePlan,
   type EnsembleArtifact,
   type EnsembleAttempt,
   type EnsembleBarrierSpec,
+  type EnsembleDecision,
+  type EnsembleDecisionPolicy,
   type EnsembleEvaluatorGuidance,
   type EnsembleEvaluatorPolicy,
+  type EnsembleFinalizationProgress,
   type EnsembleJson,
   type EnsembleMember,
   type EnsembleMemberStatus,
+  type EnsembleOutcome,
   type EnsembleRoleSpec,
   type EnsembleStageAttempt,
   type EnsembleStageSpec,
   type EnsembleStatus,
   type EnsembleRun,
   type EnsembleStageDriverKind,
+  type EnsembleWorkflowHandoff,
   type RunnableEnsembleRun,
 } from "@shared/ensemble.ts";
 import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
@@ -26,6 +33,8 @@ import type { EnsembleSubmissionClaims } from "@shared/protocol.ts";
 import { EnsembleStore } from "./store.ts";
 import { artifactAdapterFor, type ArtifactAdapterRegistry } from "./artifacts/index.ts";
 import { buildMemberPrompt } from "./member-prompt.ts";
+import { decisionDriverFor, type DecisionResult } from "./decisions/index.ts";
+import { finalizerFor, type FinalizePlan } from "./finalizers/index.ts";
 import {
   reviewDriverFor,
   type ReviewDriver,
@@ -54,6 +63,89 @@ export interface EnsembleReviewDeps {
   runModel: (runnerId: LlmRunnerId, prompt: string, opts: { modelId: string; timeoutMs: number }) => Promise<string>;
   /** Per-attempt wall-clock budget; defaults to the Persona ceiling. */
   timeoutMs?: number;
+}
+
+/** A finalization side effect either happened or is refused with a sentence the operator can act on. */
+export type FinalizeStepResult = { ok: true } | { ok: false; detail: string };
+
+/** Everything the daemon needs to materialize one replacement normal Task at a snapshot. */
+export interface ReplacementTaskRequest {
+  taskId: string;
+  runId: string;
+  repoRoot: string;
+  title: string;
+  /** The full intent, already carrying the winner continuation - so it is typed once, at launch. */
+  intent: string;
+  agent: AgentType;
+  model: string | null;
+  effort: ThinkingLevel | null;
+  /** The commit the replacement worktree is provisioned at and verified against. */
+  snapshotSha: string;
+}
+
+/**
+ * The Workflow handoff boundary, injected so the engine never imports WorkflowManager.
+ *
+ * Both calls are idempotent on their server-derived source key - a restart returns the same
+ * binding and run rather than creating a second. `ensureBinding` refuses a note key already owned
+ * by a different active binding (a typed `conflict` the operator resolves or skips); `submit`
+ * refuses a winner whose HEAD is not the snapshot or whose tree is dirty (a `mismatch` the engine
+ * heals by restoring and resuming the SAME submission).
+ */
+export interface EnsembleWorkflowHandoffDeps {
+  ensureBinding(input: {
+    sessionId: string;
+    workflowVersionId: string;
+    sourceId: string;
+    resultId: string;
+  }):
+    | { ok: true; bindingId: string; created: boolean }
+    | { ok: false; reason: "conflict" | "unavailable" | "ineligible" | "other"; detail: string };
+  submit(input: {
+    bindingId: string;
+    sourceId: string;
+    resultId: string;
+    expectedHeadSha: string;
+  }): Promise<
+    | { ok: true; runId: string; submissionId: string }
+    | { ok: false; reason: "mismatch" | "conflict" | "unavailable" | "other"; detail: string }
+  >;
+}
+
+/**
+ * The finalization authorities, injected only in a build that can execute a select-one finalize.
+ *
+ * Absent, a finalize stage parks at `finalizing` exactly as it did before an executor existed,
+ * which keeps a launch/review-only build and the earlier phases' tests working unchanged. Every
+ * method here is an EFFECT the engine is not otherwise allowed to perform - a destructive session
+ * reset, a Task materialization, a pane write, a Workflow submission - kept off the narrow member
+ * gateway on purpose: the pure finalizer computes WHAT to do, and these perform it, one owner each.
+ */
+export interface EnsembleFinalizeDeps {
+  /** Re-verify a ready commit artifact's private ref still resolves to its snapshot SHA, or null. */
+  verifyArtifact(input: { locator: EnsembleJson; repoPath: string }): Promise<string | null>;
+  /** Whether a live session is safe to restore/rebind into right now - idle, instrumented, ungated. */
+  sessionSafeToRebind(sessionId: string): Promise<boolean>;
+  /** Restore a retained winner's checkout to its snapshot through `resetSession`, clearing state. */
+  restoreWinner(input: {
+    sessionId: string;
+    snapshotSha: string;
+    ref: string;
+  }): Promise<FinalizeStepResult>;
+  /** HEAD sha and cleanliness of a worktree, for the pre-handoff exactness check. */
+  worktreeHead(input: { worktreePath: string }): Promise<{ headSha: string | null; clean: boolean }>;
+  /** Deliver one continuation prompt to a live session's pane through the guarded inject path. */
+  deliverContinuation(input: { sessionId: string; text: string }): Promise<FinalizeStepResult>;
+  /** Create + dispatch one replacement normal Task at a snapshot; idempotent on its preallocated id. */
+  materializeReplacement(request: ReplacementTaskRequest): Promise<FinalizeStepResult>;
+  /** The current durable status, live session, and worktree of a materialized replacement Task. */
+  replacementStatus(taskId: string): {
+    status: TaskGatewayStatus | null;
+    sessionId: string | null;
+    worktreePath: string | null;
+  };
+  /** The Workflow handoff boundary, present only when the daemon wired a WorkflowManager in. */
+  workflow?: EnsembleWorkflowHandoffDeps;
 }
 
 /**
@@ -142,6 +234,8 @@ export interface EnsembleEngineDeps {
   adapters?: ArtifactAdapterRegistry;
   /** The comparison executor. Absent, a review stage parks rather than runs. */
   review?: EnsembleReviewDeps;
+  /** The finalization executor. Absent, a finalize stage parks at `finalizing` rather than runs. */
+  finalize?: EnsembleFinalizeDeps;
   now?: () => number;
   log?: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
   /**
@@ -176,6 +270,34 @@ export interface EnsembleSubmitInput {
   source: "mcp" | "operator";
   /** For the session path, the session cwd that must equal the member's live worktree. Null for manual. */
   requireWorktree: string | null;
+}
+
+// ---- decision ----
+
+export type EnsembleDecideReason =
+  | "no_run"
+  | "wrong_state"
+  | "conflict"
+  | "not_decision_stage"
+  | "no_driver"
+  | "invalid_selection"
+  | "ineligible_artifact"
+  | "insufficient_eligible"
+  | "unknown_member";
+
+export type EnsembleDecideOutcome =
+  | { ok: true; decision: EnsembleDecision; replayed: boolean }
+  | { ok: false; reason: EnsembleDecideReason; detail: string; status: EnsembleStatus | null };
+
+export interface EnsembleDecideInput {
+  runId: string;
+  /** Client-stable idempotency key; the same one returns the same recorded decision. */
+  requestId: string;
+  /** The run state the caller believed it was deciding in. A mismatch is refused, never acted on. */
+  expectedStatus: EnsembleStatus;
+  selection: EnsembleJson;
+  rationale: string;
+  actorId: string | null;
 }
 
 // ---- pure predicates over durable state ----
@@ -245,6 +367,7 @@ export class EnsembleEngine {
   private readonly tasks: EnsembleTaskGateway;
   private readonly adapters: ArtifactAdapterRegistry | null;
   private readonly review: EnsembleReviewDeps | null;
+  private readonly finalize: EnsembleFinalizeDeps | null;
   private readonly publish: (runId: string) => void;
   private readonly now: () => number;
   private readonly log: (level: "info" | "warn" | "error", fields: Record<string, unknown>) => void;
@@ -260,6 +383,7 @@ export class EnsembleEngine {
     this.tasks = deps.tasks;
     this.adapters = deps.adapters ?? null;
     this.review = deps.review ?? null;
+    this.finalize = deps.finalize ?? null;
     this.publish = deps.publish;
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
@@ -541,21 +665,24 @@ export class EnsembleEngine {
     });
   }
 
-  /** Append a bounded retry of a failed stage, if the compiled attempt cap leaves room. */
+  /** Re-drive a review or finalize stage from durable state, if the run is still non-terminal. */
   async retryStage(runId: string, stageId: string): Promise<boolean> {
     return this.withRunLock(runId, async () => {
       const state = this.load(runId);
       if (!state || ensembleIsTerminal(state.run.status)) return false;
       const stage = state.run.plan.stages.find((s) => s.id === stageId);
       if (!stage) return false;
-      // No stage is retryable as a WHOLE this phase, so this refuses rather than record a running
-      // stage attempt that `serviceMemberStage` would then mark succeeded without doing any work.
       // A failed MEMBER is retried per-member through `retryMember`, which appends a fresh attempt
-      // with a new number; reopening a member STAGE would have to do the same for every failed
-      // member, because relaunching one through the wave path collides with its existing attempt
-      // number. The review, decision and finalize drivers are recognized but not executable this
-      // phase, so their stages have nothing to re-run either. Phase 6 gives this a real body.
-      return false;
+      // with a new number; reopening a member STAGE would collide with those attempt numbers. A
+      // decision stage waits on a PERSON and has nothing to re-run. A review stage under its attempt
+      // cap and a parked finalize stage are both re-driven straight from their durable state: the
+      // review re-runs its next attempt, the finalization resumes its steps. Every step is
+      // idempotent, so re-driving can never duplicate an effect - the same property `recover` relies
+      // on.
+      if (stage.driverKind === "member" || stage.driverKind === "decision") return false;
+      await this.advanceLocked(runId);
+      this.publish(runId);
+      return true;
     });
   }
 
@@ -583,6 +710,139 @@ export class EnsembleEngine {
       this.event(runId, "artifact_restored", { artifactId }, `artifact_restored:${artifactId}:${this.now()}`);
       return { ok: true };
     });
+  }
+
+  // ---- human decision ----
+
+  /**
+   * Record a human decision and move the run into `finalizing`.
+   *
+   * This is the ONE door destructive finalization enters through, and every guard is here rather
+   * than at the caller: `awaiting_decision` + the caller's expected status, request-id idempotency,
+   * a compiled decision driver, and the selection validated against the eligible artifact set. No
+   * Git, Task, terminal, or Workflow effect happens before the decision, its succeeded decision
+   * stage attempt, and the `finalizing` status are all durable - a crash between them resumes,
+   * because the idempotent decision row is the fact that authorises everything downstream. A
+   * duplicate request returns the same decision; a conflicting one (same id, different pick) is
+   * refused, never adopted.
+   */
+  async decide(input: EnsembleDecideInput): Promise<EnsembleDecideOutcome> {
+    return this.withRunLock(input.runId, async () => {
+      const operationKey = `decide:${input.runId}:${input.requestId}`;
+      const existing = this.store.decisionByOperationKey(operationKey);
+      if (existing) {
+        if (existing.runId !== input.runId || !ensembleJsonEqual(existing.selection.body, input.selection)) {
+          return { ok: false, reason: "conflict", detail: "this decision request id already recorded a different selection", status: null };
+        }
+        return { ok: true, decision: existing, replayed: true };
+      }
+      const state = this.load(input.runId);
+      if (!state) return { ok: false, reason: "no_run", detail: "no such runnable ensemble", status: null };
+      if (state.run.status !== "awaiting_decision") {
+        return { ok: false, reason: "wrong_state", detail: `run is ${state.run.status}, not awaiting a decision`, status: state.run.status };
+      }
+      if (input.expectedStatus !== state.run.status) {
+        return { ok: false, reason: "wrong_state", detail: `expected ${input.expectedStatus} but run is ${state.run.status}`, status: state.run.status };
+      }
+      const stage =
+        state.run.plan.stages.find((s) => s.driverKind === "decision" && s.id === state.run.activeStageId) ??
+        state.run.plan.stages.find((s) => s.driverKind === "decision");
+      if (!stage || stage.driverKind !== "decision") {
+        return { ok: false, reason: "not_decision_stage", detail: "this run has no active decision stage", status: state.run.status };
+      }
+      const driver = decisionDriverFor(stage.driverKey);
+      if (!driver) {
+        return { ok: false, reason: "no_driver", detail: `no decision driver for ${stage.driverKey}`, status: state.run.status };
+      }
+      const eligible = this.eligibleDecisionArtifacts(state, stage.decision);
+      const validated: DecisionResult = driver.validate(input.selection, {
+        policy: stage.decision,
+        eligibleArtifactIds: eligible.ids,
+        memberForArtifact: (artifactId) => eligible.memberByArtifact.get(artifactId) ?? null,
+      });
+      if (!validated.ok) {
+        return { ok: false, reason: validated.reason, detail: validated.detail, status: state.run.status };
+      }
+
+      const now = this.now();
+      const decision = this.store.recordDecision(
+        {
+          runId: input.runId,
+          actor: "human",
+          actorId: input.actorId,
+          selection: ensemblePayload(input.selection),
+          rationale: input.rationale,
+          operationKey,
+        },
+        now,
+      );
+      const decisionAttempt = this.latestStageAttempt(state, stage.id);
+      if (decisionAttempt) {
+        this.store.finishStageAttempt(
+          decisionAttempt.id,
+          ["waiting", "running", "queued"],
+          "succeeded",
+          { output: { decisionId: decision.id, selection: input.selection } as EnsembleJson },
+          now,
+        );
+      }
+      this.store.setRunStatus(
+        input.runId,
+        ["awaiting_decision"],
+        "finalizing",
+        { outcome: validated.outcome, activeStageId: null },
+        now,
+      );
+      this.event(input.runId, "decision_recorded", { decisionId: decision.id, kind: validated.selection.kind }, `decision_recorded:${decision.id}`);
+      await this.advanceLocked(input.runId);
+      this.publish(input.runId);
+      return { ok: true, decision, replayed: false };
+    });
+  }
+
+  /**
+   * Resume a finalization parked on a remediable error - the `resolve_finalization` authority.
+   *
+   * A finalization that could not finish a destructive step (a missing ref, a busy winner session, a
+   * Workflow note conflict) stays `finalizing` with an error, and this re-drives it from its durable
+   * receipts. `skipWorkflowHandoff` abandons a blocked handoff and finishes with the normal
+   * continuation instead - the only way a pinned handoff is ever given up, and always an explicit
+   * operator act. Every step is idempotent, so re-driving cannot duplicate an effect.
+   */
+  async resolveFinalization(runId: string, skipWorkflowHandoff: boolean): Promise<{ ok: boolean; detail?: string }> {
+    return this.withRunLock(runId, async () => {
+      const state = this.load(runId);
+      if (!state) return { ok: false, detail: "no such runnable ensemble" };
+      if (state.run.status !== "finalizing") return { ok: false, detail: `run is ${state.run.status}, not finalizing` };
+      if (skipWorkflowHandoff && state.run.workflowHandoff && state.run.workflowHandoff.state !== "submitted") {
+        this.store.setWorkflowHandoff(
+          runId,
+          { ...state.run.workflowHandoff, state: "skipped", error: null },
+          this.now(),
+        );
+        this.event(runId, "workflow_handoff_skipped", {}, `workflow_handoff_skipped:${runId}:${this.now()}`);
+      }
+      await this.advanceLocked(runId);
+      this.publish(runId);
+      const after = this.store.getRun(runId);
+      return { ok: after?.status === "completed" || after?.status === "finalizing", detail: after?.error ?? undefined };
+    });
+  }
+
+  /** Ready artifacts of the decision's eligible kind, one per member, in stable ordinal order. */
+  private eligibleDecisionArtifacts(
+    state: RunState,
+    policy: EnsembleDecisionPolicy,
+  ): { ids: string[]; memberByArtifact: Map<string, string> } {
+    const ids: string[] = [];
+    const memberByArtifact = new Map<string, string>();
+    for (const member of [...state.members].sort((a, b) => a.ordinal - b.ordinal)) {
+      const artifact = this.readyArtifactOfKind(state, member, policy.eligibleArtifactKind);
+      if (!artifact) continue;
+      ids.push(artifact.id);
+      memberByArtifact.set(artifact.id, member.id);
+    }
+    return { ids, memberByArtifact };
   }
 
   /**
@@ -832,6 +1092,12 @@ export class EnsembleEngine {
         return "published";
       }
       if (status === "running") {
+        // A running finalize stage is resumed from its persisted receipts; a running (`waiting`)
+        // decision stage is parked on a person and makes no progress until `decide` finishes it.
+        if (stage.driverKind === "finalize") {
+          return await this.serviceFinalizeStage(state, stage as EnsembleStageSpec & { driverKind: "finalize" });
+        }
+        if (stage.driverKind === "decision") return "stopped";
         // A member stage mid-launch: launch more if a slot is free, or mark it done if its whole
         // wave has settled. Only the latter is progress that unblocks a later stage.
         return await this.serviceMemberStage(state, stage);
@@ -1058,12 +1324,31 @@ export class EnsembleEngine {
       this.setRunStatus(state.run.id, "evaluating", { activeStageId: stage.id });
       return "published";
     }
-    // decision / finalize: recognized, but their drivers are not executable in this phase. The engine
-    // parks the run in the matching status - `awaiting_decision` is the durable human boundary this
-    // phase reaches - and a later phase adds the executor that starts its stage attempt.
-    const parked: EnsembleStatus = stage.driverKind === "decision" ? "awaiting_decision" : "finalizing";
-    this.setRunStatus(state.run.id, parked, { activeStageId: stage.id });
-    return "published";
+    if (stage.driverKind === "decision") {
+      // Park on a PERSON, durably. A `waiting` stage attempt is created so the decision stage has
+      // a row `decide` can finish `succeeded` (which is what unblocks the finalize stage's
+      // dependency), and so a restart finds the run parked here rather than re-entering the review.
+      this.store.startStageAttempt(
+        {
+          runId: state.run.id,
+          stageId: stage.id,
+          driverKind: "decision",
+          driverKey: stage.driverKey,
+          attempt: 1,
+          commandKey: `decision:${state.run.id}:${stage.id}:1`,
+          status: "waiting",
+          input: { command: "await_human_decision" } as EnsembleJson,
+        },
+        this.now(),
+      );
+      this.setRunStatus(state.run.id, "awaiting_decision", { activeStageId: stage.id });
+      this.event(state.run.id, "awaiting_decision", { stageId: stage.id }, `awaiting_decision:${state.run.id}:${stage.id}`);
+      return "published";
+    }
+    // finalize: start (or resume) the destructive select-one finalization. `serviceFinalizeStage`
+    // is idempotent from its persisted receipts, so a crash mid-finalization resumes rather than
+    // repeats. A build with no finalize executor wired in parks at `finalizing` unchanged.
+    return await this.serviceFinalizeStage(state, stage as EnsembleStageSpec & { driverKind: "finalize" });
   }
 
   // ---- review execution (comparative_review@1) ----
@@ -1836,6 +2121,471 @@ export class EnsembleEngine {
     this.event(state.run.id, "run_completed", { outcome: "retained", members: memberIds.length }, `run_completed:${state.run.id}`);
   }
 
+  // ---- finalization (select_one_finalize@1) ----
+
+  /**
+   * Drive one finalize stage as far as it can go, idempotently, from its persisted receipts.
+   *
+   * The engine performs every destructive step itself, in the order the recovery contract requires:
+   * verify the winner ref, make one exact winner available, reap losers through TaskManager, then
+   * hand off to a Workflow or deliver a continuation, then complete. A step that cannot finish
+   * (a missing ref, a busy session, a Workflow conflict) leaves the run `finalizing` with an
+   * actionable error and returns; a later wake, `resolve_finalization`, or restart re-drives from
+   * the same receipts. Every step is safe to repeat, so re-driving never doubles an effect - which
+   * is what makes "interrupt at any point and resume" true rather than hoped for.
+   */
+  private async serviceFinalizeStage(
+    state: RunState,
+    stage: EnsembleStageSpec & { driverKind: "finalize" },
+  ): Promise<"published"> {
+    const run = state.run;
+    if (!this.finalize) {
+      // No executor wired in: park at `finalizing` exactly as the launch/review-only phases did.
+      this.setRunStatus(run.id, "finalizing", { activeStageId: stage.id });
+      return "published";
+    }
+    const now = this.now();
+    let stageAttempt = this.latestStageAttempt(state, stage.id);
+    if (!stageAttempt || stageAttempt.driverKind !== "finalize") {
+      stageAttempt = this.store.startStageAttempt(
+        {
+          runId: run.id,
+          stageId: stage.id,
+          driverKind: "finalize",
+          driverKey: stage.driverKey,
+          attempt: 1,
+          commandKey: `finalize:${run.id}:${stage.id}:1`,
+          status: "running",
+          input: { command: "finalize" } as EnsembleJson,
+        },
+        now,
+      );
+      this.event(run.id, "finalization_started", { stageId: stage.id }, `finalization_started:${stageAttempt.id}`);
+    }
+    if (stageAttempt.status === "succeeded") return "published";
+    this.setRunStatus(run.id, "finalizing", { activeStageId: stage.id });
+
+    const progress = this.readFinalizationProgress(stageAttempt);
+    const finalizer = finalizerFor(stage.driverKey);
+    if (!finalizer) return this.parkFinalize(run.id, stageAttempt.id, progress, `no finalizer for ${stage.driverKey}`);
+    if (run.outcome === null) return this.parkFinalize(run.id, stageAttempt.id, progress, "finalization has no decided outcome");
+    const planned = finalizer.plan({
+      outcome: run.outcome,
+      finalization: stage.finalization,
+      members: state.members,
+      artifacts: state.artifacts,
+      attempts: state.attempts,
+    });
+    if (!planned.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, planned.detail);
+    if (planned.plan.kind === "no_consensus") {
+      return this.completeNoConsensus(state, stageAttempt, planned.plan, now);
+    }
+    return this.finalizeSelectOne(state, stage, stageAttempt, planned.plan);
+  }
+
+  private async finalizeSelectOne(
+    state: RunState,
+    stage: EnsembleStageSpec & { driverKind: "finalize" },
+    stageAttempt: EnsembleStageAttempt,
+    plan: Extract<FinalizePlan, { kind: "select_one" }>,
+  ): Promise<"published"> {
+    const deps = this.finalize!;
+    const run = state.run;
+    let progress = this.readFinalizationProgress(stageAttempt);
+    const winnerMember = state.members.find((m) => m.id === plan.winnerMemberId);
+    const winnerArtifact = state.artifacts.find((a) => a.id === plan.winnerArtifactId);
+    const snapshotSha = winnerArtifact ? this.snapshotSha(winnerArtifact) : null;
+    const ref = winnerArtifact ? refFromLocator(winnerArtifact.locator) : null;
+    if (!winnerMember || !winnerArtifact || snapshotSha === null || ref === null) {
+      return this.parkFinalize(run.id, stageAttempt.id, progress, "the selected winner artifact is incomplete");
+    }
+
+    // STEP verifying: the winner ref must still resolve to its snapshot. No cleanup happens if it
+    // does not - a missing ref is a restore/ref remediation, and reaping losers around a winner
+    // that is gone is exactly the loss the ordering rules out.
+    const verified = await deps.verifyArtifact({ locator: winnerArtifact.locator, repoPath: run.repoRoot });
+    if (verified === null || verified !== snapshotSha) {
+      return this.parkFinalize(
+        run.id,
+        stageAttempt.id,
+        { ...progress, step: "verifying", verifiedSnapshotSha: null },
+        "the selected artifact's private ref no longer resolves to its snapshot; restore or retry before any cleanup",
+      );
+    }
+    progress = { ...progress, step: "materializing", verifiedSnapshotSha: snapshotSha, error: null };
+    this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
+
+    // STEP materializing: make exactly one exact winner available.
+    const ready = await this.ensureWinnerReady(state, winnerMember, winnerArtifact, snapshotSha, ref, progress);
+    if (!ready.ok) return this.parkFinalize(run.id, stageAttempt.id, { ...progress, winner: ready.winner }, ready.detail);
+    progress = { ...progress, step: "reaping_losers", winner: ready.winner, error: null };
+    this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
+
+    // STEP reaping losers: through TaskManager, then eliminate only once resources agree.
+    const reaped = await this.reapLosers(state, plan.loserMemberIds);
+    if (!reaped.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, reaped.detail ?? "a loser could not be reaped");
+    progress = { ...progress, losersReaped: true, step: "handoff", error: null };
+    this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
+
+    // STEP handoff / continuation: exactly one of the two, never both.
+    const handoff = run.workflowHandoff;
+    const handoffActive = handoff !== null && handoff.state !== "skipped";
+    if (handoffActive && handoff!.state !== "submitted") {
+      const result = await this.runWorkflowHandoff(run, handoff!, ready.sessionId, snapshotSha, ref, plan.winnerArtifactId);
+      if (!result.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, result.detail ?? "the workflow handoff is blocked");
+    } else if (!handoffActive) {
+      const delivered = await this.deliverWinnerContinuation(state, winnerMember, winnerArtifact, ready, progress);
+      if (!delivered.ok) {
+        return this.parkFinalize(run.id, stageAttempt.id, { ...progress, continuationDeliveryKey: delivered.deliveryKey }, delivered.detail ?? "the continuation could not be delivered");
+      }
+      progress = delivered.progress;
+      this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
+    }
+
+    return this.completeSelectOne(state, stageAttempt, plan, progress);
+  }
+
+  /**
+   * Make one exact winner available: prefer the original member session, else one replacement Task.
+   *
+   * A replacement is chosen ONCE and never unchosen - its id is durable in the outcome before it is
+   * dispatched, and any prior mode receipt keeps this on the same path, so a lost response or a
+   * restart reconciles to that Task rather than restoring the original or launching a second.
+   */
+  private async ensureWinnerReady(
+    state: RunState,
+    winnerMember: EnsembleMember,
+    winnerArtifact: EnsembleArtifact,
+    snapshotSha: string,
+    ref: string,
+    progress: EnsembleFinalizationProgress,
+  ): Promise<
+    | { ok: true; winner: { mode: "restored" | "replacement"; ready: true }; sessionId: string | null; worktreePath: string | null; mode: "restored" | "replacement" }
+    | { ok: false; winner: { mode: "restored" | "replacement"; ready: false }; detail: string }
+  > {
+    const deps = this.finalize!;
+    const run = state.run;
+    const now = this.now();
+    const winnerAttempt = winnerArtifact.attemptId
+      ? state.attempts.find((a) => a.id === winnerArtifact.attemptId) ?? null
+      : null;
+    const outcome = run.outcome;
+    const materializedTaskId = outcome && outcome.kind === "selected" ? outcome.materializedTaskId : null;
+    const onReplacementPath = materializedTaskId !== null || progress.winner?.mode === "replacement";
+
+    if (!onReplacementPath && winnerAttempt && winnerAttempt.taskId) {
+      const taskId = winnerAttempt.taskId;
+      const taskStatus = this.tasks.status(taskId);
+      const sessionId = this.tasks.sessionId(taskId);
+      const worktree = this.ownedWorktree(winnerAttempt);
+      const canRebind =
+        taskStatus === "running" && sessionId !== null && worktree !== null && (await deps.sessionSafeToRebind(sessionId));
+      if (canRebind) {
+        const restored = await deps.restoreWinner({ sessionId: sessionId!, snapshotSha, ref });
+        if (!restored.ok) {
+          return { ok: false, winner: { mode: "restored", ready: false }, detail: `restoring the winner failed: ${restored.detail}` };
+        }
+        const head = await deps.worktreeHead({ worktreePath: worktree! });
+        if (head.headSha !== snapshotSha || !head.clean) {
+          return { ok: false, winner: { mode: "restored", ready: false }, detail: "the winner's checkout did not settle exactly on its snapshot; retry" };
+        }
+        this.markWinnerRetained(winnerMember, now);
+        this.event(run.id, "winner_restored", { memberId: winnerMember.id }, `winner_restored:${run.id}:${winnerMember.id}`);
+        return { ok: true, winner: { mode: "restored", ready: true }, sessionId, worktreePath: worktree, mode: "restored" };
+      }
+    }
+
+    // Replacement path: exactly one normal Task at the snapshot, deterministic id, id persisted first.
+    const replacementTaskId = materializedTaskId ?? deterministicUuid(`${run.id}:${winnerArtifact.id}`);
+    this.markWinnerRetained(winnerMember, now);
+    // A replacement already materialized (a resume) is REUSED, never re-created - the winner is one
+    // exact result across a restart, not two. The fresh path persists the id before it dispatches.
+    const already = deps.replacementStatus(replacementTaskId);
+    if (already.status !== null) {
+      return { ok: true, winner: { mode: "replacement", ready: true }, sessionId: already.sessionId, worktreePath: already.worktreePath, mode: "replacement" };
+    }
+    if (materializedTaskId === null && outcome && outcome.kind === "selected") {
+      this.store.setRunStatus(run.id, ["finalizing"], "finalizing", { outcome: { ...outcome, materializedTaskId: replacementTaskId } }, now);
+    }
+    const role = run.plan.roles.find((r) => r.key === winnerMember.roleKey);
+    const handoffActive = run.workflowHandoff !== null && run.workflowHandoff.state !== "skipped";
+    const intent = handoffActive
+      ? this.buildReplacementHandoffIntent(run, winnerArtifact)
+      : this.buildContinuation(state, winnerMember, winnerArtifact);
+    const materialize = await deps.materializeReplacement({
+      taskId: replacementTaskId,
+      runId: run.id,
+      repoRoot: run.repoRoot,
+      title: `${run.title} - selected result`,
+      intent,
+      agent: winnerAttempt?.agent ?? role?.agent ?? AGENT_TYPES[0],
+      model: winnerAttempt?.requestedModel ?? role?.model ?? null,
+      effort: winnerAttempt?.requestedEffort ?? role?.effort ?? null,
+      snapshotSha,
+    });
+    if (!materialize.ok) {
+      return { ok: false, winner: { mode: "replacement", ready: false }, detail: `materializing the winner failed: ${materialize.detail}` };
+    }
+    this.event(run.id, "winner_materialized", { taskId: replacementTaskId }, `winner_materialized:${run.id}:${replacementTaskId}`);
+    const status = deps.replacementStatus(replacementTaskId);
+    return { ok: true, winner: { mode: "replacement", ready: true }, sessionId: status.sessionId, worktreePath: status.worktreePath, mode: "replacement" };
+  }
+
+  private markWinnerRetained(member: EnsembleMember, now: number): void {
+    this.store.setMemberStatus(
+      member.id,
+      ["submitted", "reviewing", "advanced", "retained"],
+      "retained",
+      { resultLabel: "selected" },
+      now,
+    );
+  }
+
+  /** Cancel every loser Task through TaskManager, eliminating each only once its resources agree. */
+  private async reapLosers(state: RunState, loserMemberIds: string[]): Promise<{ ok: boolean; detail?: string }> {
+    const now = this.now();
+    let allSettled = true;
+    for (const memberId of loserMemberIds) {
+      const member = state.members.find((m) => m.id === memberId);
+      if (!member) continue;
+      // A member that already failed/withdrew keeps its artifact and needs no cancel; an already
+      // eliminated one is done. Only a settled-but-not-terminal loser is cancelled and eliminated.
+      if (member.status === "eliminated" || member.status === "failed" || member.status === "withdrawn") continue;
+      const taskStatus = member.taskId ? this.tasks.status(member.taskId) : null;
+      if (member.taskId && taskStatus !== null && LIVE_TASK_STATUSES.includes(taskStatus)) {
+        try {
+          await this.tasks.cancel(member.taskId);
+        } catch (err) {
+          allSettled = false;
+          this.log("warn", { event: "ensemble_loser_cancel_failed", runId: member.runId, memberId, error: String(err) });
+          continue;
+        }
+      }
+      const after = member.taskId ? this.tasks.status(member.taskId) : null;
+      if (member.taskId && after !== null && LIVE_TASK_STATUSES.includes(after)) {
+        // The Task is still live after the cancel - do not eliminate yet, retry on the next pass.
+        allSettled = false;
+        continue;
+      }
+      this.store.setMemberStatus(memberId, ["submitted", "reviewing", "advanced", "launching", "active"], "eliminated", {}, now);
+      this.event(member.runId, "member_eliminated", { memberId }, `member_eliminated:${memberId}`);
+    }
+    return allSettled ? { ok: true } : { ok: false, detail: "a loser member's Task could not be reaped; retry finalization" };
+  }
+
+  /** Bind the winner session to the pinned Workflow version and submit its exact-clean snapshot once. */
+  private async runWorkflowHandoff(
+    run: RunnableEnsembleRun,
+    handoff: EnsembleWorkflowHandoff,
+    sessionId: string | null,
+    snapshotSha: string,
+    ref: string,
+    resultId: string,
+  ): Promise<{ ok: boolean; detail?: string }> {
+    const deps = this.finalize!;
+    const now = this.now();
+    if (!deps.workflow) {
+      this.store.setWorkflowHandoff(run.id, { ...handoff, state: "failed", error: "no workflow handoff boundary is available in this build" }, now);
+      return { ok: false, detail: "no workflow handoff boundary is available" };
+    }
+    if (sessionId === null) {
+      // The winner session is not live yet (a replacement still coming up). Stay finalizing; the
+      // finalizing-run wake resumes this once its session appears.
+      return { ok: false, detail: "waiting for the selected result's session before binding a workflow" };
+    }
+    const sourceKey = `ensemble:${run.id}:result:${resultId}:workflow:${handoff.workflowVersionId}`;
+    let bindingId = handoff.bindingId;
+    if (bindingId === null) {
+      this.store.setWorkflowHandoff(run.id, { ...handoff, state: "binding", sourceKey, expectedHeadSha: snapshotSha, error: null }, now);
+      const bound = deps.workflow.ensureBinding({ sessionId, workflowVersionId: handoff.workflowVersionId, sourceId: run.id, resultId });
+      if (!bound.ok) {
+        const state: EnsembleWorkflowHandoff["state"] = bound.reason === "conflict" ? "conflict" : "failed";
+        this.store.setWorkflowHandoff(run.id, { ...handoff, state, sourceKey, expectedHeadSha: snapshotSha, error: bound.detail }, this.now());
+        this.event(run.id, "workflow_handoff_blocked", { reason: bound.reason }, `workflow_handoff_blocked:${run.id}:${bound.reason}:${now}`);
+        return { ok: false, detail: bound.detail };
+      }
+      bindingId = bound.bindingId;
+      this.store.setWorkflowHandoff(run.id, { ...handoff, state: "binding", sourceKey, expectedHeadSha: snapshotSha, bindingId, error: null }, this.now());
+    }
+    const submitted = await deps.workflow.submit({ bindingId, sourceId: run.id, resultId, expectedHeadSha: snapshotSha });
+    if (!submitted.ok) {
+      if (submitted.reason === "mismatch") {
+        // HEAD drifted or the tree is dirty: restore the SAME winner exactly and resume the SAME
+        // submission next pass - never a second binding, run, or round.
+        await deps.restoreWinner({ sessionId, snapshotSha, ref }).catch(() => undefined);
+        this.store.setWorkflowHandoff(
+          run.id,
+          { ...handoff, state: "binding", sourceKey, expectedHeadSha: snapshotSha, bindingId, error: "the winner drifted from its snapshot; restored, will resubmit" },
+          this.now(),
+        );
+        return { ok: false, detail: "the winner drifted from its snapshot during capture; restored and will resubmit" };
+      }
+      const state: EnsembleWorkflowHandoff["state"] = submitted.reason === "conflict" ? "conflict" : "failed";
+      this.store.setWorkflowHandoff(run.id, { ...handoff, state, sourceKey, expectedHeadSha: snapshotSha, bindingId, error: submitted.detail }, this.now());
+      return { ok: false, detail: submitted.detail };
+    }
+    this.store.setWorkflowHandoff(
+      run.id,
+      { ...handoff, state: "submitted", sourceKey, expectedHeadSha: snapshotSha, bindingId, runId: submitted.runId, submissionId: submitted.submissionId, error: null },
+      this.now(),
+    );
+    this.event(run.id, "workflow_handoff_submitted", { workflowRunId: submitted.runId }, `workflow_handoff_submitted:${run.id}:${submitted.runId}`);
+    return { ok: true };
+  }
+
+  /** Deliver the winner continuation once, deduplicated by a deterministic delivery key. */
+  private async deliverWinnerContinuation(
+    state: RunState,
+    winnerMember: EnsembleMember,
+    winnerArtifact: EnsembleArtifact,
+    ready: { mode: "restored" | "replacement"; sessionId: string | null },
+    progress: EnsembleFinalizationProgress,
+  ): Promise<{ ok: boolean; detail?: string; deliveryKey: string; progress: EnsembleFinalizationProgress }> {
+    const run = state.run;
+    const deliveryKey = progress.continuationDeliveryKey ?? `continuation:${run.id}:${winnerArtifact.id}`;
+    if (progress.continuationDelivered) {
+      return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey } };
+    }
+    // A replacement carries its continuation in its launch intent - nothing to type, and typing it
+    // again would double it. A restored winner has a cleared context and is told exactly once.
+    if (ready.mode === "replacement") {
+      return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey, continuationDelivered: true } };
+    }
+    if (ready.sessionId === null) {
+      return { ok: false, detail: "the winner session is not available to receive its continuation", deliveryKey, progress };
+    }
+    const delivered = await this.finalize!.deliverContinuation({ sessionId: ready.sessionId, text: this.buildContinuation(state, winnerMember, winnerArtifact) });
+    if (!delivered.ok) {
+      return { ok: false, detail: `delivering the winner continuation failed: ${delivered.detail}`, deliveryKey, progress };
+    }
+    this.event(run.id, "winner_continuation_delivered", { memberId: winnerMember.id }, `winner_continuation:${deliveryKey}`);
+    return { ok: true, deliveryKey, progress: { ...progress, continuationDeliveryKey: deliveryKey, continuationDelivered: true } };
+  }
+
+  private completeSelectOne(
+    state: RunState,
+    stageAttempt: EnsembleStageAttempt,
+    plan: Extract<FinalizePlan, { kind: "select_one" }>,
+    progress: EnsembleFinalizationProgress,
+  ): "published" {
+    const run = state.run;
+    const now = this.now();
+    // Re-read the run's outcome rather than trusting the state snapshot: `ensureWinnerReady` may have
+    // persisted a `materializedTaskId` on it since this pass began, and completing with the stale
+    // snapshot would drop the id of the one replacement Task the winner now lives in.
+    const fresh = this.store.getRun(run.id);
+    const outcome: EnsembleOutcome =
+      fresh && fresh.outcome && fresh.outcome.kind === "selected"
+        ? fresh.outcome
+        : { kind: "selected", memberIds: [plan.winnerMemberId], artifactIds: [plan.winnerArtifactId], materializedTaskId: null };
+    this.store.setFinalizationProgress(stageAttempt.id, { ...progress, step: "completed", error: null }, now);
+    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", { output: { ...progress, step: "completed" } as unknown as EnsembleJson }, now);
+    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
+    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
+    this.clearDeadline(run.id);
+    this.store.setRunStatus(run.id, ["finalizing"], "completed", { outcome, completedAt: now, activeStageId: null }, now);
+    this.event(run.id, "run_completed", { outcome: "selected", winner: plan.winnerMemberId }, `run_completed:${run.id}`);
+    return "published";
+  }
+
+  private async completeNoConsensus(
+    state: RunState,
+    stageAttempt: EnsembleStageAttempt,
+    plan: Extract<FinalizePlan, { kind: "no_consensus" }>,
+    now: number,
+  ): Promise<"published"> {
+    const run = state.run;
+    // Non-destructive: retain every submitted member, reap nothing, keep every artifact.
+    for (const member of state.members) {
+      if (member.status === "submitted" || member.status === "reviewing") {
+        this.store.setMemberStatus(member.id, ["submitted", "reviewing"], "retained", {}, now);
+        await this.settleMemberTask(member, now);
+      }
+    }
+    this.store.setFinalizationProgress(stageAttempt.id, { ...this.readFinalizationProgress(stageAttempt), step: "completed", error: null }, now);
+    this.store.finishStageAttempt(stageAttempt.id, ["running"], "succeeded", {}, now);
+    const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
+    if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
+    this.clearDeadline(run.id);
+    this.store.setRunStatus(
+      run.id,
+      ["finalizing"],
+      "completed",
+      { outcome: { kind: "no_consensus", artifactIds: plan.artifactIds, reason: plan.reason }, completedAt: now, activeStageId: null },
+      now,
+    );
+    this.event(run.id, "run_completed", { outcome: "no_consensus" }, `run_completed:${run.id}`);
+    return "published";
+  }
+
+  /** Leave the run `finalizing` with an actionable error and a persisted receipt, to be resumed. */
+  private parkFinalize(
+    runId: string,
+    stageAttemptId: string,
+    progress: EnsembleFinalizationProgress,
+    detail: string,
+  ): "published" {
+    const now = this.now();
+    this.store.setFinalizationProgress(stageAttemptId, { ...progress, error: detail }, now);
+    this.store.setRunStatus(runId, ["finalizing"], "finalizing", { error: detail }, now);
+    this.event(runId, "finalization_blocked", { step: progress.step, detail }, `finalization_blocked:${stageAttemptId}:${progress.step}:${now}`);
+    return "published";
+  }
+
+  private readFinalizationProgress(stageAttempt: EnsembleStageAttempt): EnsembleFinalizationProgress {
+    return parseFinalizationProgress(stageAttempt.output) ?? freshFinalizationProgress();
+  }
+
+  /** The bounded winner continuation - original intent, the winner's own summary, the reviewer's take. */
+  private buildContinuation(state: RunState, winnerMember: EnsembleMember, winnerArtifact: EnsembleArtifact): string {
+    const run = state.run;
+    const summary = readReportedSummary(winnerArtifact.metadata);
+    const review = this.latestComparativeResult(run.id, winnerArtifact.id);
+    const lines: string[] = [
+      "You are the selected result of an ensemble comparison, restored to the exact snapshot that was compared.",
+      "",
+      "Original task:",
+      run.intent,
+    ];
+    if (summary) lines.push("", `Your submitted summary: ${summary}`);
+    if (review) {
+      if (review.comparison) lines.push("", `Reviewer comparison: ${review.comparison}`);
+      if (review.rationale) lines.push("", `Why this result was recommended: ${review.rationale}`);
+      if (review.caveats.length > 0) lines.push("", `Caveats to check: ${review.caveats.join("; ")}`);
+    }
+    lines.push(
+      "",
+      "Inspect the work, address any caveats, then ship it through the normal flow - run the checks, push, and open a pull request yourself. The comparison is advisory: nothing has been pushed, no PR has been opened, and no gate has run.",
+    );
+    return boundedText(lines.join("\n"), ENSEMBLE_LIMITS.intent);
+  }
+
+  /** A neutral intent for a replacement winner whose checkout a Workflow will review automatically. */
+  private buildReplacementHandoffIntent(run: RunnableEnsembleRun, winnerArtifact: EnsembleArtifact): string {
+    const summary = readReportedSummary(winnerArtifact.metadata);
+    const lines: string[] = [
+      "You are the selected result of an ensemble comparison, restored to the exact snapshot that was compared.",
+      "A workflow review runs against this checkout automatically. Do not push or open a pull request; wait for the review.",
+      "",
+      "Original task:",
+      run.intent,
+    ];
+    if (summary) lines.push("", `Submitted summary: ${summary}`);
+    return boundedText(lines.join("\n"), ENSEMBLE_LIMITS.intent);
+  }
+
+  /** The winner's slice of the latest succeeded comparative evaluation, for the continuation. */
+  private latestComparativeResult(
+    runId: string,
+    winnerArtifactId: string,
+  ): { comparison: string | null; rationale: string | null; caveats: string[] } | null {
+    let latest: EnsembleJson | null = null;
+    for (const evaluation of this.store.listEvaluations(runId)) {
+      if (evaluation.status === "succeeded" && evaluation.result) latest = evaluation.result.body;
+    }
+    return latest ? readComparisonForArtifact(latest, winnerArtifactId) : null;
+  }
+
   /**
    * Fail a run, tearing down every live member Task first.
    *
@@ -1977,6 +2727,108 @@ export class EnsembleEngine {
       this.log("warn", { event: "ensemble_event_failed", runId, kind, error: String(err) });
     }
   }
+}
+
+// ---- pure finalization helpers ----
+
+/** Truncate a string to at most `max` characters, so a continuation cannot burst the intent cap. */
+function boundedText(value: string, max: number): string {
+  return value.length <= max ? value : value.slice(0, max);
+}
+
+/** The `ref` off a git_snapshot locator, or null when the locator is not that shape. */
+function refFromLocator(locator: EnsembleJson): string | null {
+  if (locator && typeof locator === "object" && !Array.isArray(locator) && typeof locator.ref === "string") {
+    return locator.ref;
+  }
+  return null;
+}
+
+/**
+ * A deterministic UUID-shaped id from a seed, so a replacement Task keeps ONE id across a lost
+ * response or a restart. Not a real v5 UUID (no namespace), but a stable 8-4-4-4-12 hex string a
+ * Task id column accepts, with the version/variant nibbles pinned so it reads as a UUID.
+ */
+function deterministicUuid(seed: string): string {
+  const hex = createHash("sha256").update(seed).digest("hex");
+  const variant = ((parseInt(hex.charAt(16), 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function freshFinalizationProgress(): EnsembleFinalizationProgress {
+  return {
+    step: "verifying",
+    verifiedSnapshotSha: null,
+    winner: null,
+    losersReaped: false,
+    continuationDeliveryKey: null,
+    continuationDelivered: false,
+    error: null,
+  };
+}
+
+const FINALIZATION_STEPS = ["verifying", "materializing", "reaping_losers", "handoff", "completed"] as const;
+
+/** Read a persisted finalization progress receipt back defensively, or null when it is not one. */
+function parseFinalizationProgress(output: EnsembleJson): EnsembleFinalizationProgress | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const step = output.step;
+  if (typeof step !== "string" || !(FINALIZATION_STEPS as readonly string[]).includes(step)) return null;
+  const winner = output.winner;
+  const winnerShape =
+    winner && typeof winner === "object" && !Array.isArray(winner) && (winner.mode === "restored" || winner.mode === "replacement")
+      ? { mode: winner.mode as "restored" | "replacement", ready: winner.ready === true }
+      : null;
+  return {
+    step: step as EnsembleFinalizationProgress["step"],
+    verifiedSnapshotSha: typeof output.verifiedSnapshotSha === "string" ? output.verifiedSnapshotSha : null,
+    winner: winnerShape,
+    losersReaped: output.losersReaped === true,
+    continuationDeliveryKey: typeof output.continuationDeliveryKey === "string" ? output.continuationDeliveryKey : null,
+    continuationDelivered: output.continuationDelivered === true,
+    error: typeof output.error === "string" ? output.error : null,
+  };
+}
+
+/** A member's reported summary out of an artifact's metadata, for the continuation prompt. */
+function readReportedSummary(metadata: EnsembleJson): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const reported = metadata.reported;
+  if (reported && typeof reported === "object" && !Array.isArray(reported) && typeof reported.summary === "string") {
+    return reported.summary;
+  }
+  return null;
+}
+
+/** The winner's slice of a mapped comparative result envelope body, defensively. */
+function readComparisonForArtifact(
+  body: EnsembleJson,
+  artifactId: string,
+): { comparison: string | null; rationale: string | null; caveats: string[] } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const comparison = typeof body.comparison === "string" ? body.comparison : null;
+  const caveats = Array.isArray(body.caveats) ? body.caveats.filter((c): c is string => typeof c === "string") : [];
+  let rationale: string | null = null;
+  if (Array.isArray(body.subjects)) {
+    for (const subject of body.subjects) {
+      if (subject && typeof subject === "object" && !Array.isArray(subject) && subject.artifactId === artifactId && typeof subject.rationale === "string") {
+        rationale = subject.rationale;
+      }
+    }
+  }
+  return { comparison, rationale, caveats };
+}
+
+/** Whether two validated JSON values are equal, by canonical serialization. */
+function ensembleJsonEqual(a: EnsembleJson, b: EnsembleJson): boolean {
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+function canonicalJson(value: EnsembleJson): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k] as EnsembleJson)}`).join(",")}}`;
 }
 
 // ---- pure claim helpers ----

@@ -911,6 +911,10 @@ export function openDb(): DatabaseSync {
       status               TEXT NOT NULL,
       active_stage_id      TEXT,
       outcome_json         TEXT,
+      -- The optional post-selection Workflow handoff snapshot, pinned at creation and updated
+      -- as the handoff runs. Nullable: most runs choose no handoff, and the linkage lives here
+      -- rather than on workflow_bindings so Workflow retention never reaches an ensemble ref.
+      workflow_handoff_json TEXT,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER,
@@ -1140,6 +1144,19 @@ export function openDb(): DatabaseSync {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ensemble_decisions_operation
       ON ensemble_decisions(operation_key);
+
+    -- One in-progress explicit deletion per run. run_id is the PRIMARY KEY, so a repeated
+    -- Delete resumes the same intent rather than opening a second. It CASCADES with its run:
+    -- deletion's last durable step is deleteRun, and after it the intent is gone too, so
+    -- recovery only ever finds intents whose run still exists - "there are refs still to
+    -- delete". A pre-completion crash leaves this row; a post-completion one leaves nothing.
+    CREATE TABLE IF NOT EXISTS ensemble_deletion_intents (
+      run_id     TEXT NOT NULL PRIMARY KEY REFERENCES ensemble_runs(id) ON DELETE CASCADE,
+      status     TEXT NOT NULL,
+      error      TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -1181,6 +1198,12 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  // The optional post-selection Workflow handoff snapshot. Editing the CREATE TABLE block above
+  // is not enough - it is IF NOT EXISTS, so an operator upgrading from a Phase 3-5 build keeps
+  // the ensemble_runs they already have, and every run write would fail on a column that never
+  // appeared. Nullable with no default: a run created before handoffs existed genuinely pinned
+  // none, and NULL is exactly that.
+  addColumn(d, "ensemble_runs", "workflow_handoff_json", "TEXT");
 
   // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
   // "queue" now only ever means a session's work queue. Rows persisted before the

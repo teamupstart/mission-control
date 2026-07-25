@@ -218,6 +218,13 @@ test("every overlay renders inside a host", () => {
   }
 });
 
+test("the recurring missions overlay is registered", () => {
+  // The Scheduled Catalog is a screen-owning overlay, so it must be in OVERLAY_IDS or App's
+  // shortcuts stay live behind it. RecurringMissionsPanel routing through <Overlay> is
+  // covered by the generic scans above; this pins the id itself against a rename.
+  assert.equal(OVERLAY_IDS.recurringMissions, "recurring-missions");
+});
+
 test("every overlay id is declared once", () => {
   const ids = Object.values(OVERLAY_IDS);
   assert.equal(new Set(ids).size, ids.length, "two overlays share an id");

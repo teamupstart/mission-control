@@ -21,6 +21,7 @@ import {
   InspectorChip,
   PrChip,
   RuntimeMetaRow,
+  ScheduleOriginChip,
   SessionTitle,
   StateBadge,
   WorkflowChip,
@@ -266,6 +267,11 @@ export function ConsoleDetail({
               <span className="task-kind">{session.task.kind}</span>
             </Tooltip>
             <span className="task-title">{session.task.title}</span>
+            <ScheduleOriginChip
+              task={session.task}
+              scheduleNames={view.scheduleNameById}
+              onOpen={view.onOpenSchedule}
+            />
             {session.task.outcome &&
               (session.task.outcomeUrl ? (
                 <Tooltip label={`Outcome: ${session.task.outcome} - open on GitHub`}>

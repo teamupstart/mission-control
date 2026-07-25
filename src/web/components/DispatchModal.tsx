@@ -24,6 +24,7 @@ import {
   taskUpdatePatch,
   type DispatchDraft,
 } from "../lib/task-draft.ts";
+import { formatScheduledFor } from "../lib/schedules.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
   AttachmentStrip,
@@ -149,6 +150,7 @@ export function DispatchLayer({
   tasks = [],
   sessions = [],
   onClose,
+  onOpenSchedule,
 }: {
   open: boolean;
   /** The backlog task being edited, or null for a fresh dispatch. */
@@ -156,6 +158,8 @@ export function DispatchLayer({
   tasks?: Task[];
   sessions?: Session[];
   onClose: () => void;
+  /** Open the Scheduled Catalog from a generated task's read-only provenance in edit mode. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
 }): React.JSX.Element | null {
   const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
@@ -287,6 +291,7 @@ export function DispatchLayer({
         onRevert={onEditRevert}
         onClose={onClose}
         onSubmitted={onEditSubmitted}
+        onOpenSchedule={onOpenSchedule}
       />
     );
   }
@@ -330,6 +335,7 @@ function DispatchModal({
   onRevert,
   onClose,
   onSubmitted,
+  onOpenSchedule,
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -341,6 +347,8 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
+  /** Open the Scheduled Catalog from a scheduled task's read-only provenance. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   const [repos, setRepos] = useState<string[]>([]);
@@ -566,6 +574,29 @@ function DispatchModal({
       </header>
 
       <div className="dispatch-body">
+        {editing?.scheduleId && (
+          <div className="rm-provenance-note">
+            <span className="rm-provenance-text">
+              <span aria-hidden>◷</span> Scheduled by a recurring mission
+              {editing.scheduledFor != null
+                ? ` for ${formatScheduledFor(editing.scheduledFor)}`
+                : ""}
+              . This origin is immutable and is not changed by saving.
+              {editing.source && " This task also carries an external source (conflict)."}
+            </span>
+            <Tooltip label="Open this task's recurring mission and its run history">
+              <button
+                className="btn"
+                type="button"
+                onClick={() =>
+                  onOpenSchedule?.(editing.scheduleId!, editing.scheduleOccurrenceId ?? undefined)
+                }
+              >
+                Open schedule / history
+              </button>
+            </Tooltip>
+          </div>
+        )}
         <label className="field">
           <span className="field-label">
             Repo{" "}

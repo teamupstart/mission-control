@@ -24,6 +24,7 @@ import {
   InspectorChip,
   PrChip,
   RuntimeMetaRow,
+  ScheduleOriginChip,
   SessionTitle,
   StateBadge,
   WorkflowChip,
@@ -107,6 +108,8 @@ export function SessionCard({
   workflowRun = null,
   onOpenWorkflowRun,
   onBindWorkflow,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
@@ -156,6 +159,10 @@ export function SessionCard({
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;
+  /** Open the Scheduled Catalog from this card's generated-task provenance mark. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  /** Live schedule names by id, for the provenance mark's "Scheduled by <name>" copy. */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const attention = st.tone === "attention";
@@ -311,6 +318,11 @@ export function SessionCard({
           </Tooltip>
           {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
           {session.task.status === "failed" && <span className="task-status">failed</span>}
+          <ScheduleOriginChip
+            task={session.task}
+            scheduleNames={scheduleNameById}
+            onOpen={onOpenSchedule}
+          />
           {session.task.outcome &&
             (session.task.outcomeUrl ? (
               <Tooltip label={`Outcome: ${session.task.outcome} - open on GitHub`}>

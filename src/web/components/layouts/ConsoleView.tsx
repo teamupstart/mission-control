@@ -49,6 +49,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                 registerEl={props.registerEl}
                 workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
                 onOpenWorkflowRun={props.onOpenWorkflowRun}
+                onOpenSchedule={props.onOpenSchedule}
+                scheduleNameById={props.scheduleNameById}
               />
             ))}
           </div>

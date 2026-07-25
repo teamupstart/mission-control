@@ -1296,7 +1296,7 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
-## Recurring missions (control plane, no UI yet)
+## Recurring missions (Scheduled Catalog)
 
 A **recurring mission** is a durable template that files an ordinary backlog task on a
 cadence: "audit dependencies every Monday at 8am". It is deliberately not a
@@ -1304,10 +1304,44 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-**The engine and its control plane run; there is still no screen.** Under the scheduler -
-a self-rescheduling loop that accounts for every crossed instant exactly once, applies the
-missed-run and overlap policies, recovers both crash windows around task creation, and files
-backlog tasks and nothing else - sits a validated localhost HTTP surface:
+Open the **Scheduled Catalog** from the **Missions** button in the topbar, beside Dispatch
+and Sitrep. The button carries an attention badge when any enabled schedule needs you (a
+failed run, an invalid repo, an overdue instant, a stuck reservation - all derived on the
+daemon, never in the browser). The catalog is a wide operator overlay, not a settings
+category, and it owns Escape like every other overlay; there is **no keyboard shortcut** for
+it in V1.
+
+The overlay has four screens:
+
+- **Catalog + detail** - search and filter (All / Healthy / Paused / Attention) the live
+  list, and read one schedule's template, next occurrence, policies, guarantee, and recent
+  outcome. Its actions are Pause/Resume, **Run now** (files a backlog task immediately, paused
+  or not - it does *not* run an agent), Preview, History, and Archive.
+- **Create / edit** - a configuration form (not a compose surface) in five groups: the task
+  template, the cadence and time zone, laptop availability, overlap and missed-run
+  guardrails, and preview-and-enable. Readable presets (daily / weekdays / weekly / monthly)
+  and an Advanced cron mode both resolve to the same validated five-field expression. Two
+  explicit buttons: **Save paused** stores the configuration without starting the clock, and
+  **Save & enable** re-previews the exact definition before enabling it, so a stale preview
+  can never enable changed data.
+- **Preview & standby** - the next 10-50 occurrences with local time, UTC, and DST shifts,
+  plus a non-mutating standby simulation: give it a sleep window and it shows what the
+  missed-run policy would do with every instant that came due while the laptop was off. Every
+  instant and decision is the daemon's - the browser does no date math.
+- **Run history** - paginated, fetched on demand (never polled), with each occurrence's
+  scheduled time, trigger (scheduled or manual), outcome, delay, generated task, revision,
+  and an immutable audit. History survives archive.
+
+Generated tasks carry their origin everywhere they are shown: a **"Scheduled by &lt;name&gt;"**
+mark on the Board backlog card, the Sitrep backlog and recent outcomes, the Dispatch editor
+(read-only - the provenance is immutable and never part of a task update), and, once a task
+is bound to a session, on the card, the console detail, the board tile, and the rail. Every
+mark deep-links to that run's history.
+
+Under the screens sits the scheduler - a self-rescheduling loop that accounts for every
+crossed instant exactly once, applies the missed-run and overlap policies, recovers both
+crash windows around task creation, and files backlog tasks and nothing else - and a
+validated localhost HTTP surface:
 
 ```text
 GET  /api/schedules                        the live catalog
@@ -1326,9 +1360,10 @@ is **live over the existing SSE stream** - a top-level `schedules` collection in
 snapshot, plus `schedule_upsert` / `schedule_remove` events - so it never polls; occurrence
 history is the one page-oriented read, fetched on demand. Archiving emits a removal from the
 live catalog *after* the durable write, and the archived schedule stays reachable through its
-history route so a generated task can still deep-link to it. The Missions overlay and its
-screens arrive in the next phase; the plan is
-[`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md).
+history route so a generated task can still deep-link to it. The plan is
+[`docs/plans/recurring-missions/plan.md`](docs/plans/recurring-missions/plan.md); a
+sleep/wake dogfood checklist is in
+[`docs/runbooks/recurring-missions-standby.md`](docs/runbooks/recurring-missions-standby.md).
 
 Three decisions are worth knowing now, because everything later is built on them:
 

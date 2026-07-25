@@ -11,6 +11,7 @@ import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
 import { KillModal } from "./components/KillModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
@@ -100,6 +101,7 @@ export function App(): React.JSX.Element {
     workflowRunSummaries: workflowRuns,
     fleetCost,
     settingsStatus,
+    schedules,
     connected,
     hasSnapshot,
   } = useEventStream();
@@ -166,6 +168,14 @@ export function App(): React.JSX.Element {
   // this in one go. Reset whenever we leave settings (below), so returning via the gear
   // never reopens a palette the operator closed.
   const [searchOpen, setSearchOpen] = useState(false);
+  // The Scheduled Catalog overlay. `missionsTarget` carries an optional deep link from a
+  // generated task's provenance mark - a schedule, and the occurrence whose history to open
+  // - so opening Missions from a card lands on the right run rather than the catalog root.
+  const [missionsOpen, setMissionsOpen] = useState(false);
+  const [missionsTarget, setMissionsTarget] = useState<{
+    scheduleId: string;
+    occurrenceId: string | null;
+  } | null>(null);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
@@ -359,6 +369,33 @@ export function App(): React.JSX.Element {
     setEditingTaskId(null);
     setDispatchOpen(true);
   }, []);
+  const closeMissions = useCallback(() => {
+    setMissionsOpen(false);
+    setMissionsTarget(null);
+  }, []);
+  /**
+   * Open the Scheduled Catalog, optionally deep-linked to one schedule's run history.
+   *
+   * Stands the other operator overlays down first - opening Missions from a Sitrep row or
+   * a dispatch surface should not leave one hanging behind it - then opens with the deep
+   * link a generated task's provenance mark supplied. Nothing here reads a schedule table:
+   * the panel consumes the live SSE catalog and fetches history on demand.
+   */
+  const onOpenSchedule = useCallback(
+    (scheduleId: string, occurrenceId?: string) => {
+      setReportOpen(false);
+      closeDispatch();
+      setMissionsTarget({ scheduleId, occurrenceId: occurrenceId ?? null });
+      setMissionsOpen(true);
+    },
+    [closeDispatch],
+  );
+  const openMissions = useCallback(() => {
+    setReportOpen(false);
+    closeDispatch();
+    setMissionsTarget(null);
+    setMissionsOpen(true);
+  }, [closeDispatch]);
   const closeDiff = useCallback(() => {
     setDiffSessionId(null);
     setDiffCommit(null);
@@ -505,6 +542,21 @@ export function App(): React.JSX.Element {
 
   const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
+
+  // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
+  // <name>" without every renderer re-deriving it. Archived schedules leave the live
+  // catalog, so their tasks fall back to a generic label - the deep link still works.
+  const scheduleNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const schedule of schedules) map.set(schedule.id, schedule.name);
+    return map;
+  }, [schedules]);
+  // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
+  // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
+  const scheduleAttentionCount = useMemo(
+    () => schedules.filter((s) => s.health === "attention").length,
+    [schedules],
+  );
   // First pending `input` review per session, so Foreman's Approve resolves the
   // right one instead of typing a terminal reply the blocked agent won't see.
   const inputReviewBySession = useMemo(() => {
@@ -640,6 +692,8 @@ export function App(): React.JSX.Element {
     workflowRunBySession,
     onOpenWorkflowRun: (runId) => navigate({ page: "workflows", tab: "runs", runId }),
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
+    onOpenSchedule,
+    scheduleNameById,
   };
 
   /**
@@ -1216,6 +1270,22 @@ export function App(): React.JSX.Element {
                 <span aria-hidden>＋</span> Dispatch
               </button>
             </Tooltip>
+            <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
+              <button
+                className="ghost-btn missions-btn"
+                onClick={openMissions}
+                aria-label={
+                  scheduleAttentionCount > 0
+                    ? `Recurring missions - ${scheduleAttentionCount} need attention`
+                    : "Recurring missions"
+                }
+              >
+                <span aria-hidden>◷</span> Missions
+                {scheduleAttentionCount > 0 && (
+                  <span className="ghost-badge">{scheduleAttentionCount}</span>
+                )}
+              </button>
+            </Tooltip>
             <Tooltip
               label={`Sitrep - what every session is doing, and the backlog (${formatChord(bindings.roundup)})`}
             >
@@ -1505,6 +1575,7 @@ export function App(): React.JSX.Element {
                 tasks={tasks}
                 sessions={sessions}
                 onClose={closeDispatch}
+                onOpenSchedule={onOpenSchedule}
               />
 
               {reportOpen && (
@@ -1520,6 +1591,23 @@ export function App(): React.JSX.Element {
                   onEditTask={(id) => {
                     setReportOpen(false);
                     openTaskEditor(id);
+                  }}
+                  onOpenSchedule={onOpenSchedule}
+                  scheduleNameById={scheduleNameById}
+                />
+              )}
+
+              {missionsOpen && (
+                <RecurringMissionsPanel
+                  schedules={schedules}
+                  connected={connected}
+                  hasSnapshot={hasSnapshot}
+                  initialScheduleId={missionsTarget?.scheduleId ?? null}
+                  initialOccurrenceId={missionsTarget?.occurrenceId ?? null}
+                  onClose={closeMissions}
+                  onOpenTask={(taskId) => {
+                    closeMissions();
+                    openTaskEditor(taskId);
                   }}
                 />
               )}

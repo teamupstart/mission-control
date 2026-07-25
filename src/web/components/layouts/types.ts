@@ -107,6 +107,19 @@ export interface SessionViewProps {
   workflowRunBySession?: ReadonlyMap<string, WorkflowRunSummary>;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: (sessionId: string) => void;
+  /**
+   * Open the Scheduled Catalog at a schedule (optionally at one occurrence in its
+   * history), from a generated task's provenance mark. A deep link, not a session
+   * action: it changes no session state, focus, expansion, drag, or keyboard behavior.
+   */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  /**
+   * Live catalog names by schedule id, so a scheduled task's mark can read "Scheduled by
+   * <name>" without every renderer re-deriving it. A `ReadonlyMap` like
+   * `workflowRunBySession`; absent entries (an archived or purged schedule) fall back to a
+   * generic label, and the deep link still works because history carries the schedule.
+   */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -144,5 +157,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     workflowRun: p.workflowRunBySession?.get(s.id) ?? null,
     onOpenWorkflowRun: p.onOpenWorkflowRun,
     onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,
+    onOpenSchedule: p.onOpenSchedule,
+    scheduleNameById: p.scheduleNameById,
   };
 }

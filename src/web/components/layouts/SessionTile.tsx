@@ -8,6 +8,7 @@ import {
   InspectorTileFlag,
   PrTileFlag,
   RuntimeMetaRow,
+  ScheduleOriginTileFlag,
   WorkflowTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
@@ -51,6 +52,8 @@ export function SessionTile({
   onDropConfirm,
   workflowRun = null,
   onOpenWorkflowRun,
+  onOpenSchedule,
+  scheduleNameById,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -65,6 +68,10 @@ export function SessionTile({
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
+  /** Open the Scheduled Catalog from a scheduled task's tile flag. */
+  onOpenSchedule?: (scheduleId: string, occurrenceId?: string) => void;
+  /** Live schedule names by id, for the tile flag's hover copy. */
+  scheduleNameById?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   // A run always produces a gate line, and the line always carries the run's segments:
@@ -222,6 +229,14 @@ export function SessionTile({
         <WorkflowTileFlag
           run={workflowRun}
           onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
+        />
+        {/* A generated task's recurring-mission origin, in the tile's flag vocabulary.
+            The DECISION and the tooltip are shared (`ScheduleOriginTileFlag`) with the
+            card chip and rail glyph, so the four surfaces can't drift. */}
+        <ScheduleOriginTileFlag
+          task={session.task}
+          scheduleNames={scheduleNameById}
+          onOpen={onOpenSchedule}
         />
       </span>
 

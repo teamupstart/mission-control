@@ -762,8 +762,21 @@ own CLI, its own env flag and whether it even has a scope to register under - Co
 registration and no `-s user|project` to choose between. A harness with no MCP client at all
 would be reported as such rather than silently skipped.)
 
+> **Adding or changing a tool means rebuilding the bundle.** Both the registration above and
+> the dispatched-session `--mcp-config` launch the *built* `dist/mcp/server.mjs`, never
+> `src/mcp/server.ts` directly - so a new or edited tool in the source is invisible to every
+> session until `npm run build` (or just `npm run build:mcp`) refreshes that file, after which
+> you start a **new** session to pick it up. Re-running `claude mcp add` is not needed: the
+> registration records the *path*, and the rebuild replaces the file it points at (re-add only
+> when the server *name* changes). The dev stack is the same trap in disguise - `npm run dev` /
+> `make start` auto-reload the daemon from source, but the MCP bundle is not on that watch, so
+> an MCP tool change still needs a manual rebuild. The tell is a session whose `mission-control`
+> tool list is shorter than the set below (`create_task` missing, say): the bundle it launched
+> predates the tool.
+
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
-exposes six tools:
+exposes six review-channel tools (an ensemble member session also gets
+[`submit_ensemble_result`](#multi-agent-ensembles-runtime-landed-creation-still-gated)):
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable

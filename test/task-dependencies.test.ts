@@ -1350,6 +1350,13 @@ test("post-merge episode rollover preserves running task ownership", () => {
   });
   assert.equal(dependent.dependencies[0]?.type, "task");
   assert.equal(dependent.dependencies[0]?.satisfiedAt, null);
+  // This suite shares one on-disk DB across tests, and `Registry` rehydrates persisted
+  // tasks on construction. This task rolled over while still merged, so its old episode is
+  // now archived as a durable-completion binding (PR #84) that outlives the rollover -
+  // correct, but it would leak PR #84 into later tests' poll-target assertions if left
+  // behind. Clean up both rows, as the other rollover cases here do.
+  registry.removeTask(dependent.id);
+  registry.removeTask("owned-rollover-task");
 });
 
 test("persisted dependency PR polling is bounded and backs off per URL", async () => {

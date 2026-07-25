@@ -3042,9 +3042,14 @@ The merge is recorded when it happens, and the task is first concluded once its 
 **appears to have finished the episode**: idle, nothing queued, and not rolled onto new
 work. An agent that is mid-turn is left alone whatever its pull request did.
 
-An agent that was given **new work after its merge** and then vanished mid-flight still
-fails, rather than reporting the earlier merge as its outcome: that later work never
-landed, and saying otherwise would claim a success for it.
+Once the agent is **gone for good**, though, any pull request it merged is its outcome -
+including one on an episode it had already rolled past. The two cases differ because a
+present agent may still be mid-turn: while it is here, a rollover means it was handed more
+work, so the merge is not concluded yet (above). But a departed agent has no work in flight
+to strand, and reporting a pull request that actually shipped as `failed` would deadlock
+every task waiting on it behind a *stopped* blocker. The merge survives the rollover in the
+task's durable record, so a later prompt cannot outrun it; if several of the agent's
+episodes merged, the **most recent** merge is the one recorded.
 
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
 that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to

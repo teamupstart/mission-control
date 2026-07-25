@@ -388,7 +388,12 @@ export class TaskManager {
     if (!t) return;
     const binding = taskWorkEpisodeForTask(t.id);
     if (!binding?.mergedAt || !binding.prUrl) return;
-    // Rolled onto new work since the merge - not ours to conclude. See `mergedPrFor`.
+    // Rolled onto new work since the merge - not ours to conclude while the agent is still
+    // HERE. This is deliberately narrower than `mergedPrFor`, and the asymmetry is the point:
+    // a present agent that got a follow-up prompt may still be mid-turn, so an intermediate
+    // merge is not yet its outcome; a DEPARTED agent (which is what `mergedPrFor`/`agentWentAway`
+    // answer for) has no such turn left, so any merge it produced IS the outcome. So this
+    // path keeps the episode-currency gate and reads only the current binding.
     const current = this.registry.workEpisodeForSession(s.id);
     if (current && current.episodeId !== binding.episodeId) return;
     const completed = this.complete(t.id, `merged ${binding.prUrl}`, binding.prUrl);
@@ -441,24 +446,40 @@ export class TaskManager {
   }
 
   /**
-   * The pull request this task's work episode produced, if one was observed merged.
+   * The newest pull request any of this task's work episodes produced, if one was observed
+   * merged - or null.
    *
-   * Read from `task_work_episode_bindings`, which `markWorkEpisodeMerged` stamps at the
-   * moment the merge is seen. That is the durable acknowledgement the settle needs: it
-   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a
-   * timer it is a FACT rather than an inference.
+   * The durable-record contract: a merge on ANY of this task's episodes completes it, and
+   * the session's CURRENT episode is irrelevant here. Read from `task_work_episode_bindings`
+   * AND `historical_task_work_episode_bindings`, both stamped by `markWorkEpisodeMerged` at
+   * the moment the merge is seen. That is the durable acknowledgement the settle needs: it
+   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a timer
+   * it is a FACT rather than an inference.
    *
-   * The CURRENT binding only, deliberately, and the rejected alternative is the
-   * interesting half. Walking historical bindings too would let a task whose episode
-   * rolled over after its merge still report `done` - but a rollover means the agent was
-   * given more work, and an agent that then vanishes mid-flight left that work unlanded.
-   * Reporting the earlier merge would claim a success for it. So a task is `done` only
-   * when the work its agent was ACTUALLY on when it went away is the work that merged;
-   * anything else stays `failed`, which is the honest answer and the recoverable one.
+   * This reverses the earlier "current binding only" rule deliberately (adopted plan
+   * decision). That rule read only the current binding so that a task whose episode rolled
+   * over after its merge stayed `failed` - the reasoning being the agent was handed more
+   * work and then vanished mid-flight. But the only caller is `agentWentAway`: the session
+   * is GONE, so there is no "more work" in progress to strand, and a merged pull request IS
+   * the outcome the task was dispatched for. Reporting it as `failed` behind a `stopped`
+   * blocker strands every dependent for work that shipped. When several episodes merged
+   * (a fix-forward task can open more than one PR), the NEWEST `mergedAt` is the outcome to
+   * display.
    */
   private mergedPrFor(taskId: string): string | null {
-    const binding = taskWorkEpisodeForTask(taskId);
-    return binding?.mergedAt !== null && binding?.prUrl ? binding.prUrl : null;
+    const current = taskWorkEpisodeForTask(taskId);
+    const candidates = [
+      ...(current ? [current] : []),
+      ...historicalTaskWorkEpisodeBindingsForTask(taskId),
+    ];
+    let best: { mergedAt: number; prUrl: string } | null = null;
+    for (const binding of candidates) {
+      if (binding.mergedAt === null || !binding.prUrl) continue;
+      if (best === null || binding.mergedAt > best.mergedAt) {
+        best = { mergedAt: binding.mergedAt, prUrl: binding.prUrl };
+      }
+    }
+    return best?.prUrl ?? null;
   }
 
   /**

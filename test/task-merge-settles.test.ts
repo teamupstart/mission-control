@@ -258,12 +258,14 @@ test("an agent that went away with NO merge still fails, exactly as before", () 
   assert.match(t.error ?? "", /no outcome recorded/);
 });
 
-test("an agent that rolled onto new work and then vanished fails, not lands", () => {
-  // Deliberate, and the tempting alternative is wrong. A rollover means the agent was
-  // given MORE work; vanishing mid-flight leaves that work unlanded, so reporting the
-  // earlier merge as this task's outcome would claim a success for something that never
-  // finished. Only the episode the agent was actually on may conclude the task, which is
-  // why `mergedPrFor` reads the current binding and not the historical ones.
+test("an agent that rolled onto new work and then vanished LANDS on the earlier merge", () => {
+  // The durable-completion reversal (phase 1). This case used to assert `failed` on the
+  // reasoning that a rollover means unlanded follow-up work. But the only path here is
+  // `agentWentAway`: the session is GONE, so there is no follow-up in progress to strand,
+  // and a merged pull request IS an outcome the task produced. Reporting it as `failed`
+  // behind a `stopped` blocker strands every dependent for work that shipped. So the merge
+  // survives the rollover - archived to the historical binding - and `mergedPrFor` reads it
+  // across ALL of the task's episodes, not just the current one.
   setShippingConfig({ closeSessionAfterMerge: false });
   const f = fleet("s-rolled", true);
   const episode = f.registry.workEpisodeForSession(f.id)!;
@@ -290,7 +292,9 @@ test("an agent that rolled onto new work and then vanished fails, not lands", ()
   });
   assert.notEqual(f.registry.workEpisodeForSession(f.id)?.episodeId, episode.episodeId);
   agentGone(f);
-  assert.equal(f.registry.getTask(f.taskId)?.status, "failed");
+  const t = f.registry.getTask(f.taskId)!;
+  assert.equal(t.status, "done");
+  assert.equal(t.outcomeUrl, PR);
 });
 
 test("a task an operator already completed is not rewritten", () => {
@@ -640,7 +644,9 @@ test("a reopened task stays running when its next idle turn is on an unmerged ep
   hook("UserPromptSubmit");
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
   hook("Stop");
-  // Idle again on a rolled-over episode with no merge of its own: it stays running,
-  // which is `mergedPrFor`'s current-binding rule doing its job.
+  // Idle again on a rolled-over episode with no merge of its own: it stays running. This
+  // is a LIVE session, so `settleIfEpisodeFinished`'s episode-currency gate governs (the
+  // current episode never merged), NOT `agentWentAway`/`mergedPrFor` - the two paths differ
+  // precisely because a present agent may still be mid-turn while a departed one cannot.
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });

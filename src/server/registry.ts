@@ -1821,7 +1821,22 @@ export class Registry extends EventEmitter {
       }
     }
     for (const binding of historicalTaskWorkEpisodeBindings()) {
-      if (!legacyTaskIds.has(binding.taskId) || binding.prUrl === null) {
+      // A historical binding survives for two independent reasons, and the merge one is new
+      // (durable completion, phase 1): a recorded merge on a rolled-past episode is the
+      // completion evidence `mergedPrFor` reads, so it must outlive the rollover until the
+      // task it belongs to settles. Scope that to a still-ACTIVE task, because `agentWentAway`
+      // - the one `mergedPrFor` caller - only completes running/dispatching tasks; a merged
+      // binding for a terminal task is spent. (Phase 2 broadens this to keep failed/cancelled
+      // and open URLs for its by-URL harvest and terminal upgrades - not yet.) The dependency
+      // reason is unchanged: a legacy edge still pointing at the task keeps its PR-carrying
+      // binding. Strictly ADDITIVE - only a merged binding for an active task is newly kept;
+      // nothing the dependency feature used to prune survives longer.
+      const owner = this.tasks.get(binding.taskId);
+      const mergeEvidence =
+        binding.mergedAt !== null &&
+        (owner?.status === "running" || owner?.status === "dispatching");
+      const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
+      if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
         continue;
       }
@@ -2799,7 +2814,17 @@ export class Registry extends EventEmitter {
         target.taskIds,
       );
       for (const binding of target.historical) {
-        deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        // This cleanup ran unconditionally before durable completion. Now the same
+        // historical binding is also this task's merge evidence: `reconcileWorkEpisodeMerge`
+        // just stamped its `merged_at`, and `mergedPrFor` must still be able to read it to
+        // complete the task. So keep it while its task is still ACTIVE (the only state
+        // `agentWentAway` completes from); delete otherwise. This matches the rule
+        // `cleanupDependencyProvenance` below applies, which prunes it once the task settles.
+        const owner = this.tasks.get(binding.taskId);
+        const active = owner?.status === "running" || owner?.status === "dispatching";
+        if (!active) {
+          deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        }
       }
     }
     this.cleanupDependencyProvenance();

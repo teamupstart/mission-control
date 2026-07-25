@@ -127,27 +127,14 @@ export function zoneOffsetMinutes(at: number, timeZone: string): number {
  * span range") rather than returning nothing - measured, and the reason a bare `for` loop
  * here would turn an ordinary empty window into a 500.
  *
- * **The upper bound is enforced HERE, not by the parser's `endDate`, and that is the whole
- * reason this window is trustworthy.** `endDate` was measured against 5.6.2 and does not
- * mean "instants up to and including this one": it drops an instant that lands within a
- * second of the bound, and whether it does so depends on the EXPRESSION and on how far
- * back `currentDate` sits - `0 11 * * *` anchored a second before its own instant yields
- * nothing, while `0 * * * *` anchored identically yields it, and moving the anchor from
- * 1000ms to 1001ms flips the daily one back to nothing. Non-monotonic, so no amount of
- * padding the bound makes it safe.
+ * The upper bound is enforced here rather than with the parser's `endDate`. Measured
+ * against 5.6.2, `endDate` can omit an instant within a second of the bound, depending
+ * non-monotonically on both the expression and `currentDate`; padding it cannot make the
+ * `(after, through]` contract reliable. Comparing the returned millisecond timestamps
+ * makes the inclusive upper bound exact.
  *
- * What that cost, before it was found: the scheduler loop sleeps until the exact instant a
- * cursor is due, so `tickSchedule` asks for `(cursor - 1, now]` with `now` a millisecond or
- * two past `cursor` - squarely inside the band `endDate` drops. Every daily mission
- * enumerated NOTHING at its own due instant, was read as a stuck cursor, and had its cursor
- * quietly repaired to tomorrow. No occurrence, no task, no error: a recurring mission that
- * could never once run, showing a healthy next-run time for the following day. Only the
- * tests saved by ticking a comfortable five seconds late ever saw it work.
- *
- * Comparing the instants ourselves is exact at millisecond precision, needs no measurement
- * to stay true, and makes `(after, through]` a fact of this function. The `currentDate`
- * side needs no such care - it IS strictly exclusive to the millisecond, measured the same
- * way, and `nextAfter` has always depended on that.
+ * The lower bound remains the parser's `currentDate`, which is strictly exclusive to the
+ * millisecond and is also the behavior `nextAfter` depends on.
  *
  * `truncated` is honest rather than inferred from the length: one extra instant is
  * requested and dropped, so a window holding exactly `limit` instants does not claim to

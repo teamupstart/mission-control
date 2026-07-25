@@ -181,6 +181,44 @@ test("the detail prevents newer-build schedules from being edited", () => {
   assert.match(html, /<button class="btn" disabled=""[^>]*>Edit<\/button>/);
 });
 
+test("the detail disables Resume for a paused newer-build schedule, but not Pause", () => {
+  // Resuming an unreadable schedule would set its durable enabled flag on a config this
+  // build cannot run, and a later compatible build would then start it unbidden (Inspector
+  // round on #241). Pause must stay available so a running one can always be stopped.
+  const paused = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule({
+        enabled: false,
+        executionMode: null,
+        unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
+      }),
+      onEdit: () => {},
+      onPreview: () => {},
+      onHistory: () => {},
+      onArchived: () => {},
+    }),
+  );
+  assert.match(paused, /<button class="btn" disabled=""[^>]*>Resume<\/button>/);
+  assert.match(paused, /cannot be resumed until opened in a compatible build/);
+
+  const enabled = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule({
+        enabled: true,
+        executionMode: null,
+        unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
+      }),
+      onEdit: () => {},
+      onPreview: () => {},
+      onHistory: () => {},
+      onArchived: () => {},
+    }),
+  );
+  // Pause is not disabled by unreadability - only busy would disable it.
+  assert.match(enabled, /<button class="btn"[^>]*>Pause<\/button>/);
+  assert.doesNotMatch(enabled, /<button class="btn" disabled=""[^>]*>Pause<\/button>/);
+});
+
 test("the editor preserves a current timezone absent from the browser list", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleEditor, {

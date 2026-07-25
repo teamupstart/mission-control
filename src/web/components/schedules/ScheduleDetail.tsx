@@ -108,14 +108,24 @@ export function ScheduleDetail({
           </div>
         </div>
         <div className="rm-detail-actions">
+          {/* Pause stays available even for an unreadable schedule (an operator must always
+              be able to stop one), but Resume is disabled when !runnable: resuming would set
+              the durable enabled flag on a config this build cannot run, and a later
+              compatible build would then start it without anyone re-enabling it. */}
           <Tooltip
             label={
               schedule.enabled
                 ? "Pause this mission; future occurrences stop, history is kept"
-                : "Resume this mission from the next instant, not the one it was parked on"
+                : runnable
+                  ? "Resume this mission from the next instant, not the one it was parked on"
+                  : "This mission was written by a newer build and cannot be resumed until opened in a compatible build"
             }
           >
-            <button className="btn" onClick={toggleEnabled} disabled={busy !== null}>
+            <button
+              className="btn"
+              onClick={toggleEnabled}
+              disabled={busy !== null || (!schedule.enabled && !runnable)}
+            >
               {schedule.enabled ? "Pause" : "Resume"}
             </button>
           </Tooltip>

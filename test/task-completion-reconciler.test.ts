@@ -478,6 +478,77 @@ test("a done or backlog task's pull request is not polled", () => {
   assert.ok(!f.registry.taskPrPollTargets().includes(url));
 });
 
+/** Push `taskId` past the recent-terminal cap with newer, fully-cleaned terminal rows. */
+function buryPastTerminalCap(registry: InstanceType<typeof Registry>, tag: string): void {
+  for (let i = 0; i < 51; i += 1) {
+    registry.upsertTask(baseTask({
+      id: `${tag}-filler-${i}`,
+      title: `Filler ${i}`,
+      status: "done",
+      outcome: "done",
+      updatedAt: 9_000_000 + i,
+      completedAt: 9_000_000 + i,
+    }));
+  }
+}
+
+test("a reclaimed task still waiting on its pull request survives a restart past the cap", () => {
+  // The in-memory task map is bounded, and a `failed` row whose worktree the operator
+  // already cleaned up holds no resources to keep it loaded. Past the fifty most recent
+  // terminal tasks it would not be rebuilt at all - so nothing would poll the pull request
+  // it left open, the merge would never be observed, and it would stay a `stopped` blocker
+  // for ever. An unresolved OUTCOME keeps a row exactly as an unreclaimed RESOURCE does.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const url = "https://github.com/example/repo/pull/411";
+  const f = departed("restart-past-cap");
+  insertHistorical({
+    taskId: f.taskId,
+    episodeId: "buried-episode",
+    sessionId: f.id,
+    prUrl: url,
+    mergedAt: null,
+  });
+  const cur = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...cur,
+    status: "failed",
+    sessionId: null,
+    worktreePath: null,
+    homeName: null,
+    updatedAt: 1,
+  });
+  buryPastTerminalCap(f.registry, "restart");
+
+  // In memory: not evicted, because its pull request has not been resolved yet.
+  assert.ok(f.registry.getTask(f.taskId), "kept while its outcome is still open");
+  // And after a restart: rebuilt from the store rather than dropped with the old history.
+  const restarted = new Registry();
+  assert.ok(
+    restarted.listTasks().some((t) => t.id === f.taskId),
+    "loaded regardless of the recent-terminal cap",
+  );
+  assert.ok(restarted.taskPrPollTargets().includes(url), "and still polled");
+});
+
+test("a terminal task whose pull request is settled is evicted as before", () => {
+  // The other side of it: once the merge is recorded there is nothing left for that URL to
+  // decide, so the row goes back to being ordinary history and the cap governs it again.
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = departed("evictable-again");
+  const cur = f.registry.getTask(f.taskId)!;
+  f.registry.upsertTask({
+    ...cur,
+    status: "failed",
+    sessionId: null,
+    worktreePath: null,
+    homeName: null,
+    updatedAt: 1,
+  });
+  buryPastTerminalCap(f.registry, "evictable");
+
+  assert.equal(f.registry.getTask(f.taskId), undefined, "no pull request, no reason to keep it");
+});
+
 // ---- what the completion releases -------------------------------------------------------------
 
 test("a dependent unblocks, and the agent stops being refused its next task", async () => {

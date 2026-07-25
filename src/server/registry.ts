@@ -83,6 +83,7 @@ import {
   listQueueRows,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
+  loadPrPendingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionGoals,
@@ -122,6 +123,7 @@ import {
   sessionWorkEpisodeFor,
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
+  taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   upsertQueue,
   upsertQueueItem,
@@ -481,6 +483,10 @@ export class Registry extends EventEmitter {
     // Always load terminal tasks that still hold resources so they get reconciled, even if newer
     // terminal tasks would push them past the recent cap.
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
+    // And the same for terminal tasks whose OUTCOME is still open - a failed or cancelled row
+    // whose pull request has yet to be seen merged. Past the cap it would not be loaded, so
+    // nothing would poll that pull request and the merge would never be observed.
+    for (const t of loadPrPendingTerminalTasks()) this.tasks.set(t.id, t);
     for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
     // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
     // tick. Empty on every machine that has never saved a schedule.
@@ -3680,6 +3686,13 @@ export class Registry extends EventEmitter {
     evictable.sort((a, b) => b.updatedAt - a.updatedAt);
     let removed = false;
     for (const t of evictable.slice(RECENT_TERMINAL_TASKS)) {
+      // A loose OUTCOME keeps a row here just as a loose RESOURCE does above, and it is
+      // asked only of the handful actually being dropped. `taskPrPollTargets` reads this
+      // map, so evicting a task still waiting on its pull request would silently stop the
+      // polling that was going to settle it - and undo `loadPrPendingTerminalTasks` on the
+      // very next terminal task to arrive. A `done` row never qualifies, so this costs no
+      // query at all in the ordinary case.
+      if (completableByMerge(t.status) && taskHasPrCarryingBinding(t.id)) continue;
       this.tasks.delete(t.id);
       this.emitEvent({ type: "task_remove", id: t.id });
       removed = true;

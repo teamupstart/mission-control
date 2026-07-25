@@ -170,9 +170,18 @@ Later phases must not add a competing completion path or a second poller.
     after delayed merge rollover..." tail, where the reset-cancelled prerequisite is now
     upgraded from its OWN merge - the case still pins that the replacement episode's merge
     is not attributed to it.
-  - **A durable-candidate query remains a later-phase follow-up.** The Registry's bounded
-    task map includes every active task and every terminal task still holding resources,
-    but not a reclaimed `failed`/`cancelled` task once it has aged past
-    `RECENT_TERMINAL_TASKS`. After a restart, a pull request that merges for that residue
-    is not harvested until completion candidates are loaded independently of the recent
-    history cap.
+  - **An unresolved OUTCOME now keeps a terminal row loaded, exactly as an unreclaimed
+    RESOURCE already did.** Deferred at first, then closed after the Inspector raised it:
+    the harvest reads the Registry's bounded task map, which held every active task and
+    every terminal task still holding resources - but not a reclaimed `failed`/`cancelled`
+    task once it had aged past `RECENT_TERMINAL_TASKS`. Nothing then polled the pull
+    request it left open, so a later merge was never observed and the row stayed a
+    `stopped` blocker for ever. The fix follows the precedent
+    `loadResourceHoldingTerminalTasks` already set rather than moving the harvest onto
+    durable queries: `loadPrPendingTerminalTasks` rebuilds those rows regardless of the
+    cap, and `pruneTerminalTasks` refuses to evict one whose pull request is unresolved
+    (`taskHasPrCarryingBinding`, asked only of the rows actually being dropped, and never
+    of a `done` one). The cost is deliberate and bounded by the same argument the resource
+    case accepted: a task with an abandoned branch stays in memory and keeps costing one
+    `gh` call at its backoff ceiling until its pull request merges, is reopened and merges,
+    or the row is deleted.

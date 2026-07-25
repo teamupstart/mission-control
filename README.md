@@ -2241,9 +2241,20 @@ The nudge is typed into the session's pane, so it carries the usual gates and on
   Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
   recover, a later failure counts as new (so a red CI is never permanently silenced, and a
   CI that merely goes green does not re-nudge the comments already relayed);
-- it stands down while a **no-mistakes run is still in progress** (that pipeline already
-  follows the PR through CI and the merge), while the session **needs you**, and while it has a
-  live **work queue** (the drain trigger owns that checkout);
+- it stands down while a **no-mistakes run is still driving the branch**, while the session
+  **needs you**, and while it has a live **work queue** (the drain trigger owns that
+  checkout);
+- **once that run has opened the PR and only its `ci` step remains running**, with no
+  approval gate waiting for an answer, it is parked in the PR monitor and the nudge is
+  back on for review comments. A no-mistakes run reports `running` for as long as that
+  step watches the PR - until the PR merges, closes, or the monitor times out - and so
+  covers the whole window in which Inspector comments normally arrive. The monitor keeps
+  ownership of the **CI half** (it watches the checks, rebases a branch that falls behind,
+  and fails the run when they go red), but it has no answer for review comments and is
+  waiting on a merge those comments [block](#shipping-yolo-mode). So unresolved
+  **Inspector comments** are relayed while CI is not failing; a **failing CI**, including
+  one alongside comments, is left to the monitor, which reports it before a later pass
+  relays anything still open;
 - the review-comment half counts only Inspector findings **already posted on the PR**
   (dry-run drafts and findings still being posted do not count) - the failing-CI half works
   regardless.

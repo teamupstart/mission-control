@@ -1,4 +1,4 @@
-import type { Session } from "@shared/types.ts";
+import type { NmRunSummary, Session } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -110,6 +110,42 @@ function feedbackState(s: Session): Feedback {
   return { findings, ciFailing: s.prChecks === "failing" };
 }
 
+/** The one step a no-mistakes run keeps running after it has opened the PR. */
+const NM_MONITOR_STEP = "ci";
+
+/**
+ * Is this no-mistakes run parked in its post-PR monitor rather than driving the branch?
+ *
+ * The distinction gate 7 rests on, and it is not a nicety. A run does not end when it
+ * opens the PR: the `ci` step deliberately keeps watching until the PR merges, closes, or
+ * the monitor times out, and the run reports `running` for that whole stretch - the same
+ * word it uses for a step mid-work. `NmActiveStep` exists because the card had the same
+ * problem. Reading the word alone means a session is off limits for exactly the window in
+ * which Inspector findings arrive, which is a deadlock rather than a delay: the monitor is
+ * waiting for a merge, and `mergeVerdict` blocks that merge on the open findings nobody is
+ * being told to fix.
+ *
+ * Deliberately conservative - every clause is a way the run could still want the agent:
+ *
+ * - **No PR yet** means the pipeline has not reached the step this is about at all.
+ * - **A parked gate** (`gateStep` / `awaitingAgent`, or any step awaiting approval) is the
+ *   run asking the agent for a decision. Typing over that answers the wrong question.
+ * - **Anything else running** is a step doing real work, and `ci` running alongside it
+ *   would not make the run idle.
+ *
+ * What it deliberately does NOT read is `NmActiveStep.lastActivity` - "all CI checks
+ * passed - still monitoring until merged or closed" says exactly this in words, but it is
+ * no-mistakes' prose, surfaced verbatim for a human, and nothing here infers state from
+ * it. `Session.prChecks` is the structured answer to that question, and gate 7 uses it.
+ */
+export function parkedOnPrMonitor(nm: NmRunSummary): boolean {
+  if (!nm.prUrl) return false;
+  if (nm.gateStep !== null || nm.awaitingAgent !== null) return false;
+  if (nm.steps.some((st) => st.status === "awaiting_approval")) return false;
+  const running = nm.steps.filter((st) => st.status === "running");
+  return running.length > 0 && running.every((st) => st.step === NM_MONITOR_STEP);
+}
+
 /**
  * Is this session a candidate for a review follow-through nudge? Every branch is an early
  * return and the order is the policy.
@@ -151,15 +187,27 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     return skip("this checkout has a work queue - the drain trigger owns it");
   }
 
-  // 6. A no-mistakes run is still driving this branch (it opens the PR and then waits on
-  //    CI and the merge itself). Relaying feedback now would fight the pipeline that is
-  //    already handling it; wait for it to finish and park.
-  if (s.nomistakes?.status === "running") return skip("a no-mistakes run is in progress");
-
-  // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
+  // 6. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
   //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
+  //    Ahead of the no-mistakes gate because that gate now asks WHICH feedback this is.
   const fb = feedbackState(s);
   if (!fb.findings && !fb.ciFailing) return skip("no open review comments or failing CI");
+
+  // 7. A no-mistakes run that is still DRIVING this branch owns it - relaying feedback now
+  //    would fight the pipeline that is already handling it, so wait for it to park.
+  //
+  //    A run parked in its post-PR monitor is not driving (see `parkedOnPrMonitor`), and
+  //    the split below is what it still owns rather than a hedge. Its one remaining job is
+  //    the PR's CI, and it does that job properly - it watches the checks, rebases a branch
+  //    that falls behind, and fails the run when they go red, at which point the agent is
+  //    told. So a failing CI stays its business. Inspector findings are outside its remit
+  //    entirely: it has no branch for them, it waits for a merge they block, and nothing
+  //    else will relay them. That is the case this trigger exists for.
+  const nm = s.nomistakes;
+  if (nm?.status === "running") {
+    if (!parkedOnPrMonitor(nm)) return skip("a no-mistakes run is in progress");
+    if (fb.ciFailing) return skip("the no-mistakes CI monitor owns this failure");
+  }
 
   // 8. Only a settled-idle session, and only one with a pane. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge

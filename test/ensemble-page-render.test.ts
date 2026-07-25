@@ -255,6 +255,50 @@ test("the timeline renders durable finalization progress receipts", () => {
   assert.match(html, /workflow unavailable/);
 });
 
+test("the timeline exposes plan barriers, commands, bounded payload controls, and evaluation errors", () => {
+  const plannedRun: EnsembleRun = {
+    ...run,
+    plan: {
+      ...run.plan!,
+      stages: [
+        {
+          id: "finalize",
+          ordinal: 4,
+          label: "Finalize winner",
+          driverKey: "select_one_finalize@1",
+          dependsOn: ["compare"],
+          barrier: { kind: "human_decision" },
+          maxAttempts: 3,
+          driverKind: "finalize",
+          finalization: {
+            kind: "select_one",
+            requiresHumanDecision: true,
+            loserPolicy: "reap_worktrees",
+          },
+        },
+      ],
+    },
+  };
+  const html = renderDetail({
+    run: plannedRun,
+    stageAttempts: [
+      {
+        ...stage,
+        input: { artifacts: ["art-1", "art-2"] },
+        output: { recommendation: "art-1" },
+      },
+    ],
+    evaluations: [{ ...evaluation, status: "failed", error: "review provider unavailable" }],
+  });
+  assert.match(html, /Stage plan/);
+  assert.match(html, /Dependencies/);
+  assert.match(html, /compare/);
+  assert.match(html, /Human decision/);
+  assert.match(html, /command <code>cmd-1/);
+  assert.match(html, /Show input and output/);
+  assert.match(html, /review provider unavailable/);
+});
+
 test("Best-of-N scorecards render anonymously-ranked but de-anonymised to their member", () => {
   const html = renderDetail();
   assert.match(html, /Comparison/);
@@ -302,6 +346,61 @@ test("the actions surface offers Cancel while a run is live, but not once termin
   );
   assert.match(html, /Cancel run…/);
   assert.doesNotMatch(html, /Delete run/); // not terminal
+});
+
+test("stage retry uses only the latest supported non-member attempt", () => {
+  const failedReview: EnsembleStageAttempt = {
+    ...stage,
+    status: "failed",
+    error: "review failed",
+  };
+  const succeededRetry: EnsembleStageAttempt = {
+    ...stage,
+    id: "sa-2",
+    attempt: 2,
+    status: "succeeded",
+    error: null,
+    updatedAt: 1600,
+  };
+  const supersededHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [failedReview, succeededRetry] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(supersededHtml, /Retry stage/);
+
+  const failedMember: EnsembleStageAttempt = {
+    ...failedReview,
+    id: "sa-member",
+    stageId: "members",
+    driverKind: "member",
+    driverKey: "member_wave@1",
+  };
+  const memberHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [failedMember] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.doesNotMatch(memberHtml, /Retry stage/);
+
+  const failedHtml = renderToStaticMarkup(
+    createElement(EnsembleActions, {
+      detail: { ...detail, stageAttempts: [failedReview] },
+      pending: null,
+      error: null,
+      onAction: () => {},
+      onDelete: () => {},
+    }),
+  );
+  assert.match(failedHtml, /Retry stage/);
 });
 
 test("unreadable runs can still be cancelled and healthy handoffs cannot be skipped", () => {
@@ -421,9 +520,23 @@ test("the run controller refetches on a 409 and never replays automatically", ()
   const controller = readFileSync(new URL("../src/web/workflows/EnsembleRuns.tsx", import.meta.url), "utf8");
   assert.match(controller, /result\.status === 409/);
   assert.match(controller, /never replay/i);
+  assert.match(controller, /selectedRef\.current !== actedRunId/);
+  assert.match(controller, /load\(actedRunId, false\)/);
   // Detail is fetched per selection with a generation guard, not polled.
   assert.match(controller, /loadGeneration/);
   assert.doesNotMatch(controller, /setInterval/);
+});
+
+test("artifact restore accurately describes and confirms the destructive checkout reset", () => {
+  const html = renderDetail();
+  assert.match(html, /Reset checkout…/);
+  assert.doesNotMatch(html, /fresh task/i);
+  const source = readFileSync(
+    new URL("../src/web/ensembles/EnsembleArtifacts.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /Confirm checkout reset/);
+  assert.match(source, /Edits made[\s\S]*after submission will be discarded/);
 });
 
 function summary(over: Partial<EnsembleSummary> & { id: string }): EnsembleSummary {

@@ -70,6 +70,8 @@ export function EnsembleRuns({
   const selected = selectedId ?? ordered[0]?.id ?? null;
   const selectedSummary = summaries.find((s) => s.id === selected) ?? null;
   const selectedRevision = selectedSummary?.updatedAt ?? null;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   useEffect(() => {
     for (const summary of summaries) observedRunIds.current.add(summary.id);
@@ -86,18 +88,18 @@ export function EnsembleRuns({
     }
   }, [hasSnapshot, selectedId, summaries, ordered, onSelect]);
 
-  const load = (clear: boolean): void => {
+  const load = (runId: string | null, clear: boolean): void => {
     const generation = ++loadGeneration.current;
     if (clear) {
       setDetail(null);
       setDetailError(null);
     }
-    if (!selected) {
+    if (!runId) {
       setDetail(null);
       return;
     }
-    void fetchEnsembleDetail(selected).then((result) => {
-      if (loadGeneration.current !== generation) return;
+    void fetchEnsembleDetail(runId).then((result) => {
+      if (loadGeneration.current !== generation || selectedRef.current !== runId) return;
       if (result.ok) {
         setDetail(result.data);
         setDetailError(null);
@@ -115,7 +117,9 @@ export function EnsembleRuns({
   // Refetch when the selection changes, or when THIS run's SSE summary revises (a new
   // `updatedAt`). Aborted-by-generation, never polled.
   useEffect(() => {
-    load(true);
+    setActionPending(null);
+    setActionError(null);
+    load(selected, true);
     return () => {
       loadGeneration.current++;
     };
@@ -123,31 +127,36 @@ export function EnsembleRuns({
   }, [selected, selectedRevision]);
 
   const runAction = (body: EnsembleActionBody): void => {
-    if (!selected) return;
+    const actedRunId = selected;
+    if (!actedRunId) return;
     setActionPending(body.kind);
     setActionError(null);
-    void ensembleAction(selected, body).then((result) => {
+    void ensembleAction(actedRunId, body).then((result) => {
+      if (selectedRef.current !== actedRunId) return;
       setActionPending(null);
       if (result.ok) {
-        load(false);
+        load(actedRunId, false);
       } else {
         // A 409 means the run moved on; show the fresh state, never replay automatically.
         setActionError(result.error);
-        if (result.status === 409) load(false);
+        if (result.status === 409) load(actedRunId, false);
       }
     });
   };
 
   const runDelete = (confirmId: string): void => {
+    const actedRunId = selected;
+    if (!actedRunId) return;
     setActionPending("delete");
     setActionError(null);
-    void deleteEnsemble(selected ?? "", confirmId).then((result) => {
+    void deleteEnsemble(actedRunId, confirmId).then((result) => {
+      if (selectedRef.current !== actedRunId) return;
       setActionPending(null);
       if (result.ok) {
         onSelect(null);
       } else {
         setActionError(result.error);
-        if (result.status === 409) load(false);
+        if (result.status === 409) load(actedRunId, false);
       }
     });
   };
@@ -164,10 +173,12 @@ export function EnsembleRuns({
     memberId: string,
     result: { summary: string; checks?: string[]; testEvidence?: string | null },
   ): Promise<string | null> => {
-    if (!selected) return "No run selected.";
-    const response = await submitEnsembleMember(selected, memberId, result);
+    const actedRunId = selected;
+    if (!actedRunId) return "No run selected.";
+    const response = await submitEnsembleMember(actedRunId, memberId, result);
+    if (selectedRef.current !== actedRunId) return null;
     if (!response.ok) return response.error;
-    load(false);
+    load(actedRunId, false);
     return null;
   };
 

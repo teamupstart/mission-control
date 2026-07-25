@@ -39,8 +39,23 @@ export function EnsembleActions({
   const handoff = run.workflowHandoff;
   const handoffCanBeSkipped =
     handoff !== null && ["failed", "conflict"].includes(handoff.state);
-  const failedStage = [...detail.stageAttempts]
-    .filter((s) => s.status === "failed")
+  const latestStageAttempts = new Map<string, (typeof detail.stageAttempts)[number]>();
+  for (const attempt of detail.stageAttempts) {
+    const current = latestStageAttempts.get(attempt.stageId);
+    if (
+      !current ||
+      attempt.attempt > current.attempt ||
+      (attempt.attempt === current.attempt && attempt.updatedAt > current.updatedAt)
+    ) {
+      latestStageAttempts.set(attempt.stageId, attempt);
+    }
+  }
+  const failedStage = [...latestStageAttempts.values()]
+    .filter(
+      (attempt) =>
+        attempt.status === "failed" &&
+        (attempt.driverKind === "review" || attempt.driverKind === "finalize"),
+    )
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
   const [confirmCancel, setConfirmCancel] = useState(false);

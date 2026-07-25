@@ -67,6 +67,7 @@ function ArtifactRow({
   const [loading, setLoading] = useState(false);
   const [patch, setPatch] = useState<EnsembleArtifactPatch | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState(false);
   const ref = useRef<HTMLLIElement>(null);
   const ready = artifact.status === "ready" && artifact.kind !== null;
 
@@ -116,18 +117,51 @@ function ArtifactRow({
                 {open ? "Hide diff" : "Show diff"}
               </button>
             </Tooltip>
-            <Tooltip label="Create a fresh task from this snapshot">
-              <button
-                className="btn btn-ghost"
-                disabled={restorePending}
-                onClick={() => onRestore(artifact.id)}
-              >
-                {restorePending ? "Restoring…" : "Restore"}
-              </button>
-            </Tooltip>
+            {!confirmRestore && (
+              <Tooltip label="Hard-reset this member's existing checkout to the submitted snapshot">
+                <button
+                  className="btn btn-ghost"
+                  disabled={restorePending}
+                  onClick={() => setConfirmRestore(true)}
+                >
+                  {restorePending ? "Resetting…" : "Reset checkout…"}
+                </button>
+              </Tooltip>
+            )}
           </>
         )}
       </div>
+      {confirmRestore && (
+        <div className="ensemble-inline-confirm" role="group" aria-label="Confirm checkout reset">
+          <p>
+            Hard-reset this member&apos;s existing checkout to its submitted snapshot. Edits made
+            in that checkout after submission will be discarded.
+          </p>
+          <div className="ensemble-action-row">
+            <Tooltip label="Confirm: discard later edits and reset the existing checkout">
+              <button
+                className="btn btn-primary danger"
+                disabled={restorePending}
+                onClick={() => {
+                  setConfirmRestore(false);
+                  onRestore(artifact.id);
+                }}
+              >
+                {restorePending ? "Resetting…" : "Reset checkout"}
+              </button>
+            </Tooltip>
+            <Tooltip label="Keep the member's existing checkout unchanged">
+              <button
+                className="btn btn-ghost"
+                disabled={restorePending}
+                onClick={() => setConfirmRestore(false)}
+              >
+                Keep checkout
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
       <dl className="ensemble-artifact-facts">
         <div>
           <dt>Fingerprint</dt>

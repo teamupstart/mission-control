@@ -5965,6 +5965,7 @@ select:not([multiple]) option {
 }
 
 .ensemble-stage-list,
+.ensemble-stage-plan,
 .ensemble-event-log,
 .ensemble-decision-log {
   list-style: none;
@@ -5972,6 +5973,44 @@ select:not([multiple]) option {
   padding: 0;
   display: grid;
   gap: 4px;
+}
+
+.ensemble-stage-plan {
+  gap: 8px;
+}
+
+.ensemble-stage-plan-item {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.ensemble-stage-plan-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ensemble-stage-plan-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.ensemble-stage-plan-facts dt {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.ensemble-stage-plan-facts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .ensemble-stage {
@@ -5984,6 +6023,41 @@ select:not([multiple]) option {
 
 .ensemble-stage-error {
   color: var(--danger);
+}
+
+.ensemble-stage-command {
+  color: var(--muted);
+}
+
+.ensemble-stage-payloads {
+  flex: 1 0 100%;
+}
+
+.ensemble-stage-payload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ensemble-stage-payload {
+  min-width: 0;
+}
+
+.ensemble-stage-payload h6 {
+  margin: 0 0 4px;
+}
+
+.ensemble-stage-payload pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 9px;
+  font-size: 11px;
+  white-space: pre;
 }
 
 .ensemble-finalization-progress {
@@ -6227,6 +6301,12 @@ select:not([multiple]) option {
   margin-top: 10px;
   border-left: 3px solid var(--working);
   padding-left: 10px;
+}
+
+@media (max-width: 760px) {
+  .ensemble-stage-payload-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Dispatch: Single/Ensemble toggle + strategy config */

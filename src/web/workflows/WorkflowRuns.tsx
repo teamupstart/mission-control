@@ -2,56 +2,104 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   EvidenceRef,
   PersonaVerdict,
-  WorkflowContextSnapshot,
   WorkflowExternalSource,
+  WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowRunPage,
+  WorkflowRunStatus,
   WorkflowRunSummary,
   WorkflowEventPage,
   WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
-import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
+import { nodeLabel } from "@shared/workflow-stages.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { RunPipeline } from "./RunPipeline.tsx";
+import {
+  WorkflowConfirmModal,
+  type WorkflowConfirmRequest,
+} from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { workflowRunTone } from "../components/session-bits.tsx";
+import { relativeTime } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
+import {
+  attemptStateLabel,
+  endStatus,
+  errorView,
+  eventLine,
+  eventsByRound,
+  deliveryStateView,
+  gateSummaryStatus,
+  gateWaitSentence,
+  latestAttemptsFor,
+  nodeStatusesForSubmission,
+  readCapturedContext,
+  runRounds,
+  runStatusLabel,
+  selectedSubmission,
+  shortSha,
+  submissionStatus,
+  verdictMeta,
+  verdictOf,
+  workflowCallCost,
+  workflowRunLoadError,
+} from "./run-model.ts";
+
+/**
+ * Watching a run.
+ *
+ * The rebuild's one idea: a run is read on the pipeline it was authored on. The strip is
+ * drawn from the same `pipeline-bits.tsx` leaves the editor uses, fed the immutable
+ * published graph and the runtime statuses this file already computed; the round scrubber
+ * says which submission every scoped section is about; and every durable enum reaches the
+ * screen as a sentence, with its machine code demoted to a detail affordance.
+ *
+ * Two rules the sections below keep, and they pull in opposite directions on purpose:
+ *
+ *  - The strip, the verdicts, the join packets and the timeline are SCOPED to the viewed
+ *    round. An attempt from round 1 says nothing about round 3, and a reader that merged
+ *    them showed a reviewer as passed while it was being re-run.
+ *  - The Inspector gate, the completion claims, the deliveries and every recovery control
+ *    reflect the LIVE run whatever round is being viewed, because they are the run's
+ *    current state and acting on a stale copy of them is how a packet gets sent twice. A
+ *    note says so whenever an older round is selected.
+ *
+ * Decision rules live in `run-model.ts` so they can be checked without rendering; this file
+ * is the arrangement, the actions, and their enabling conditions.
+ */
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
-export function workflowRunLoadError(caught: unknown): string {
-  if (
-    caught instanceof WorkflowApiError
-    && caught.body?.code === "workflow_run_corrupt"
-  ) {
-    return "This workflow run has malformed durable data. Check daemon logs or restore it from backup.";
-  }
-  if (caught instanceof WorkflowApiError && caught.status === 404) {
-    return "This workflow run is no longer retained. Select another run from history.";
-  }
-  return caught instanceof Error ? caught.message : "Could not load workflow run";
-}
-
-export function workflowCallCost(
-  calls: NonNullable<WorkflowRunDetail["llmCalls"]>,
-  totalCount: number,
-  nextAfter: string | null | undefined,
-): number | null {
-  if (
-    calls.length === 0
-    || calls.length !== totalCount
-    || nextAfter != null
-    || calls.some((call) => call.costUsd === null)
-  ) {
-    return null;
-  }
-  return calls.reduce((total, call) => total + (call.costUsd ?? 0), 0);
-}
-
 const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
   ensemble: "Ensemble",
 };
+
+/**
+ * The rail's quick filters, mapped onto the ONE status the run list query accepts.
+ *
+ * Each chip is exactly one durable status rather than a client-side union: history is
+ * cursor-paginated by the daemon, so a filter the browser applied after the fact would
+ * silently drop rows out of a page and report the wrong count. The full `State` select
+ * below the chips still reaches every status, so nothing is unreachable - the chips are the
+ * four an operator asks for all day.
+ */
+const RUN_FILTER_CHIPS: {
+  label: string;
+  status: WorkflowRunStatus | undefined;
+  hint: string;
+}[] = [
+  { label: "All", status: undefined, hint: "Every run in history" },
+  { label: "Running", status: "running", hint: "Runs whose reviewers are working right now" },
+  {
+    label: "Needs you",
+    status: "waiting_for_session",
+    hint: "Runs waiting for you to repair the work and resubmit",
+  },
+  { label: "Done", status: "completed", hint: "Runs that completed" },
+];
 
 /**
  * Where a run came from, when something other than an operator started it.
@@ -71,7 +119,7 @@ function ExternalProvenance({
       ? `#/workflows/ensembles/${encodeURIComponent(source.sourceId)}`
       : null;
   return (
-    <p className="workflow-run-provenance">
+    <p className="wf-run-provenance">
       Started by {EXTERNAL_SOURCE_LABELS[source.kind]}{" "}
       {href ? (
         <Tooltip label="Open the ensemble run that started this workflow">
@@ -87,10 +135,28 @@ function ExternalProvenance({
   );
 }
 
+/** A durable error as a sentence, with its machine code kept beside it, never instead of it. */
+function ErrorLine({
+  raw,
+  alert = false,
+}: {
+  raw: string | null | undefined;
+  alert?: boolean;
+}): React.JSX.Element | null {
+  const view = errorView(raw);
+  if (!view) return null;
+  return (
+    <p className="wf-run-error" {...(alert ? { role: "alert" } : {})}>
+      {view.sentence}
+      {view.code && <code className="wf-run-code">{view.code}</code>}
+    </p>
+  );
+}
+
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Element | null {
   if (evidence.length === 0) return null;
   return (
-    <ul className="workflow-verdict-evidence">
+    <ul className="wf-run-evidence">
       {evidence.map((item, index) => (
         <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
           <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
@@ -102,29 +168,41 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
 }
 
 function VerdictCard({
-  persona,
+  attempt,
   verdict,
+  meta,
 }: {
-  persona: string;
+  attempt: WorkflowNodeAttempt;
   verdict: PersonaVerdict;
+  meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
+  const parts = [
+    meta.runner && meta.model ? `${meta.runner} · ${meta.model}` : null,
+    meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
+    meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
+    `attempt ${attempt.attempt}`,
+    attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
+  ].filter((part): part is string => part !== null);
   return (
-    <article className={`workflow-verdict workflow-verdict-${verdict.verdict}`}>
-      <header>
-        <strong>{persona}</strong>
-        <span>{verdict.verdict} · {Math.round(verdict.confidence * 100)}%</span>
+    <article className={`wf-run-card wf-run-verdict is-${verdict.verdict}`}>
+      <header className="wf-run-card-head">
+        <span className={`workflow-chip workflow-${verdict.verdict === "pass" ? "passed" : "failed"}`}>
+          {verdict.verdict === "pass" ? "Passed" : "Changes requested"}
+        </span>
+        <strong>{attempt.persona?.name ?? "Missing persona"}</strong>
+        <span className="wf-run-confidence">{Math.round(verdict.confidence * 100)}% confident</span>
       </header>
-      <p>{verdict.summary}</p>
+      <p className="wf-run-summary">{verdict.summary}</p>
       {verdict.verdict === "pass" ? (
-        <div>
+        <div className="wf-run-card-body">
           <h5>Approval rationale</h5>
           <p>{verdict.approvalDetails.reason}</p>
           <EvidenceList evidence={verdict.approvalDetails.evidence} />
         </div>
       ) : (
-        <div>
+        <div className="wf-run-card-body">
           <h5>Requested changes</h5>
-          <ol>
+          <ol className="wf-run-changes">
             {verdict.requestedChanges.map((change, index) => (
               <li key={`${change.title}:${index}`}>
                 <strong>{change.title}</strong>
@@ -136,39 +214,19 @@ function VerdictCard({
           </ol>
         </div>
       )}
+      <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
   );
 }
 
-export function workflowNodeStatuses(detail: WorkflowRunDetail): Record<string, string> {
-  const statuses: Record<string, string> = {};
-  const latestSubmission = detail.submissions.reduce<WorkflowRunDetail["submissions"][number] | null>(
-    (latest, submission) => {
-      if (submission.mode !== "full_workflow") return latest;
-      return latest === null || submission.round > latest.round ? submission : latest;
-    },
-    null,
-  );
-  if (!latestSubmission) return statuses;
-  const latestAttempts = new Map<string, WorkflowRunDetail["attempts"][number]>();
-  for (const attempt of detail.attempts) {
-    if (attempt.submissionId !== latestSubmission.id) continue;
-    const previous = latestAttempts.get(attempt.nodeId);
-    if (previous && previous.attempt > attempt.attempt) continue;
-    latestAttempts.set(attempt.nodeId, attempt);
-  }
-  for (const attempt of latestAttempts.values()) {
-    const verdict = attempt.verdict as unknown as PersonaVerdict | null;
-    statuses[attempt.nodeId] = verdict?.verdict ?? attempt.state;
-  }
-  return statuses;
-}
-
 export function WorkflowRunView({
   detail,
+  roundId = null,
+  onRound = () => {},
   onResubmit,
   onRetry,
   onCancel,
+  onConfirm = () => {},
   onCopyFeedback = async () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
@@ -181,9 +239,14 @@ export function WorkflowRunView({
   onLoadCalls = async () => {},
 }: {
   detail: WorkflowRunDetail;
+  /** The submission being read. `null` means the newest one. */
+  roundId?: string | null;
+  onRound?: (submissionId: string) => void;
   onResubmit: (unchanged: boolean) => Promise<void>;
   onRetry: (attemptId?: string) => Promise<void>;
   onCancel: () => Promise<void>;
+  /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
+  onConfirm?: (request: WorkflowConfirmRequest) => void;
   onCopyFeedback?: () => Promise<void>;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
@@ -199,23 +262,48 @@ export function WorkflowRunView({
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
 }): React.JSX.Element {
-  const latest = detail.submissions.at(-1) ?? null;
-  const latestFull = [...detail.submissions].reverse().find((submission) =>
-    submission.mode === "full_workflow") ?? null;
-  const context = detail.contextState === "captured"
-    ? latestFull?.context as unknown as WorkflowContextSnapshot | null
-    : null;
-  const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const version = detail.version;
-  const inspectorGate = detail.inspectorGate;
-  const inspectorOnly = latest?.mode === "inspector_only";
+  const rounds = runRounds(detail);
+  const viewed = selectedSubmission(detail, roundId);
+  const latest = rounds.at(-1) ?? null;
+  const isLatest = viewed === null || viewed.id === latest?.submissionId;
+  /**
+   * Two different questions, and they were one variable until the Inspector caught it.
+   *
+   * `inspectorOnly` describes the round BEING READ - it is what the bypass notice and the
+   * "ran no Personas" line are about, and scrubbing is exactly how an operator reaches them.
+   * `liveInspectorRepair` describes the run RIGHT NOW, and it is what may enable a recovery
+   * action: with the live submission Inspector-only and the run waiting on Inspector rather
+   * than on a new head, reading round 1 made Restart full workflow disappear - a live control
+   * withdrawn by a view choice, which is the one thing the scrubber must never do.
+   */
+  const inspectorOnly = viewed?.mode === "inspector_only";
+  const liveInspectorRepair = detail.submissions.some((submission) =>
+    submission.id === latest?.submissionId && submission.mode === "inspector_only");
   const bypassSourceHead = inspectorOnly
-    && latest.context !== null
-    && typeof latest.context === "object"
-    && !Array.isArray(latest.context)
-    && typeof latest.context.failedHeadSha === "string"
-    ? latest.context.failedHeadSha
+    && viewed.context !== null
+    && typeof viewed.context === "object"
+    && !Array.isArray(viewed.context)
+    && typeof viewed.context.failedHeadSha === "string"
+    ? viewed.context.failedHeadSha
     : null;
+  // Scoped to the VIEWED round, and validated rather than cast: `contextState` answers for
+  // the run (the newest full submission's kind, or corrupt if any is), so it cannot say
+  // whether the round a scrubber selected is readable. When it is not, the round says so
+  // instead of rendering nothing.
+  const contextRound = viewed?.mode === "full_workflow" ? viewed : null;
+  const context = contextRound && detail.contextState === "captured"
+    ? readCapturedContext(contextRound.context)
+    : null;
+  const contextUnreadable = contextRound !== null
+    && detail.contextState === "captured"
+    && context === null;
+  const inspectorGate = detail.inspectorGate;
+  const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
+  const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
+  const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
+  const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
+  const calls = detail.llmCalls ?? [];
   const completionClaims = detail.events.flatMap((event) => {
     if (
       event.kind !== "workflow_completion_claimed"
@@ -232,7 +320,6 @@ export function WorkflowRunView({
     ) return [];
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
-  const calls = detail.llmCalls ?? [];
   const feedbackAvailable = detail.deliveries.some((delivery) => delivery.payload.length > 0)
     || detail.attempts.some((attempt) => attempt.verdict);
   const totalCost = workflowCallCost(
@@ -240,11 +327,14 @@ export function WorkflowRunView({
     detail.llmCallCount ?? calls.length,
     detail.nextLlmCallAfter,
   );
-  const roundBySubmission = new Map(detail.submissions.map((submission) => [
-    submission.id,
-    submission.round,
-  ]));
-  const timelineByRound = new Map<number, typeof detail.events>();
+  const timeline = eventsByRound(detail);
+  const nodeById = new Map((version?.graph.nodes ?? []).map((node) => [node.id, node]));
+  const nameOfNode = (nodeId: string): string | null => {
+    const node = nodeById.get(nodeId);
+    return node && version ? nodeLabel(version.graph, node, []) : null;
+  };
+  const roundOfSubmission = (submissionId: string): number | null =>
+    detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
   const uncertainDeliveries = detail.deliveries.filter((delivery) => delivery.state === "uncertain");
   const uncertainIds = uncertainDeliveries.map((delivery) => delivery.id).sort().join(",");
   const previousUncertainIds = useRef("");
@@ -257,214 +347,353 @@ export function WorkflowRunView({
     }
     previousUncertainIds.current = uncertainIds;
   }, [uncertainDeliveries.length, uncertainIds]);
-  let timelineRound = 0;
-  for (const event of [...detail.events].sort((a, b) => a.id - b.id)) {
-    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
-      ? event.payload
-      : null;
-    const submissionId = payload && typeof payload.submissionId === "string"
-      ? payload.submissionId
-      : null;
-    const payloadRound = payload && typeof payload.round === "number" ? payload.round : null;
-    timelineRound = payloadRound
-      ?? (submissionId ? roundBySubmission.get(submissionId) ?? timelineRound : timelineRound);
-    const group = timelineByRound.get(timelineRound) ?? [];
-    group.push(event);
-    timelineByRound.set(timelineRound, group);
-  }
+
+  const preview = detail.binding.deliveryMode !== "live";
+  /**
+   * Whether the binding still names a live conversation.
+   *
+   * ONE field answers it for every control that needs a session - the header's link and the
+   * two send-side delivery recoveries. `summary.sessionId` reads the same column today, but
+   * a second source for one fact is how a link stays enabled onto a session that is gone.
+   */
+  const sessionBound = detail.binding.sessionId !== null;
   return (
-    <section className="workflow-run-detail">
+    <section className="wf-run-detail">
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
-      <header className="workflow-run-detail-head">
-        <div>
+      <header className="wf-run-head">
+        <div className="wf-run-identity">
           <p className="workflow-eyebrow">
-            {detail.binding.deliveryMode === "live" ? "Live" : "Preview"} · version {detail.summary.workflowVersion}
+            {preview ? "Preview" : "Live"} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}
           </p>
           <h3>{detail.summary.workflowName}</h3>
-          <p>{detail.binding.sessionName} · round {detail.summary.round} of {detail.summary.maxRepairRounds + 1}</p>
-          {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
-          <small>Started {when(detail.run.startedAt)} · updated {when(detail.run.updatedAt)}</small>
-        </div>
-        <span className={`workflow-run-state wrs-${detail.run.status}`}>{detail.run.status.replaceAll("_", " ")}</span>
-        <Tooltip label={detail.summary.sessionId
-          ? "Jump to the session this run is reviewing"
-          : "The bound session is no longer available"}>
-          <button
-            className="btn btn-ghost"
-            disabled={!detail.summary.sessionId}
-            onClick={onOpenSession}
-          >
-            Open session
-          </button>
-        </Tooltip>
-        <Tooltip label="Copy this durable workflow run id">
-          <button
-            className="btn btn-ghost"
-            onClick={() => void navigator.clipboard.writeText(detail.run.id)}
-          >
-            Copy run id
-          </button>
-        </Tooltip>
-        <Tooltip label="Download this run's complete retained audit history as JSON">
-          <a
-            className="btn btn-ghost"
-            href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
-            download={`workflow-run-${detail.run.id}.json`}
-          >
-            Export run
-          </a>
-        </Tooltip>
-        <Tooltip label={version
-          ? `Open immutable workflow version ${version.version}`
-          : "The immutable published version is missing or corrupt"}>
-          <button
-            className="btn btn-ghost"
-            disabled={!version}
-            onClick={() => {
-              if (!version) return;
-              requestWorkflowVersionOpen(version.workflowId, version.version);
-              window.location.hash = "#/workflows";
-            }}
-          >
-            Open version
-          </button>
-        </Tooltip>
-        {version ? (
-          <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
-            <a
-              className="btn btn-ghost"
-              href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
-              download={`workflow-version-${version.version}.json`}
-            >
-              Export version
-            </a>
-          </Tooltip>
-        ) : (
-          <Tooltip label="The immutable published version is missing or corrupt">
-            <button
-              className="btn btn-ghost"
-              disabled
-            >
-              Export version
-            </button>
-          </Tooltip>
-        )}
-        {inspectorGate?.state.prUrl ? (
-          <Tooltip label="Open this run's adopted pull request in a new tab">
-            <a
-              className="btn btn-ghost"
-              href={inspectorGate.state.prUrl}
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              Open PR
-            </a>
-          </Tooltip>
-        ) : (
-          <Tooltip label="This run has no adopted pull request">
-            <button className="btn btn-ghost" disabled>Open PR</button>
-          </Tooltip>
-        )}
-        <Tooltip label={feedbackAvailable
-          ? "Copy every reviewer verdict to the clipboard"
-          : detail.deliveries.some((delivery) => delivery.payloadPrunedAt != null)
-            ? "Raw delivery feedback was pruned and no Persona verdict remains"
-            : "No workflow feedback has been recorded yet"}>
-          <button
-            className="btn btn-ghost"
-            disabled={!feedbackAvailable}
-            onClick={() => void onCopyFeedback()}
-          >
-            Copy feedback
-          </button>
-        </Tooltip>
-        {detail.run.status === "waiting_for_session" && (
-          <>
-            <Tooltip label="Re-read the session's current diff and run the review again">
-              <button className="btn" onClick={() => void onResubmit(false)}>
-                {detail.binding.deliveryMode === "live" ? "Submit fresh evidence" : "Preview fresh evidence"}
-              </button>
-            </Tooltip>
-            <Tooltip label="Run the review again against the evidence snapshot already taken">
+          <p className="wf-run-facts">
+            <span className="wf-run-version">v{detail.summary.workflowVersion}</span>
+            <span className={`workflow-chip workflow-${workflowRunTone(detail.summary)}`}>
+              {runStatusLabel(detail.run.status)}
+            </span>
+            <Tooltip label={sessionBound
+              ? "Jump to the session this run is reviewing"
+              : "The bound session is no longer available"}>
               <button
-                className="btn btn-ghost"
-                onClick={() => {
-                  if (window.confirm(
-                    detail.binding.deliveryMode === "live"
-                      ? "Run another review against the unchanged evidence snapshot?"
-                      : "Run another Preview against the unchanged evidence snapshot?",
-                  )) {
-                    void onResubmit(true);
-                  }
-                }}
+                className="wf-run-session"
+                disabled={!sessionBound}
+                onClick={onOpenSession}
               >
-                {detail.binding.deliveryMode === "live" ? "Submit unchanged" : "Preview unchanged"}
+                {detail.binding.sessionName}
               </button>
             </Tooltip>
-          </>
-        )}
-        {inspectorGate && inspectorGate.state.waitReason !== null && (
-          <Tooltip label="Evaluate the gate again from Inspector's current durable ledger">
-            <button className="btn btn-ghost" onClick={() => void onRecheckInspector()}>
-              Recheck Inspector
-            </button>
-          </Tooltip>
-        )}
-        {inspectorGate && detail.run.status === "waiting_for_pr"
-          && ["missing_pr", "unadopted_pr"].includes(inspectorGate.state.waitReason ?? "")
-          && version?.completionPolicy.kind === "inspector"
-          && version.completionPolicy.missingPrAction === "offer_prepare_pr" && (
-          <Tooltip label="Send the session an explicit commit, push, and PR handoff packet">
-            <button className="btn" onClick={() => void onPreparePr()}>Prepare PR in session</button>
-          </Tooltip>
-        )}
-        {inspectorGate && (inspectorOnly || detail.run.status === "waiting_for_new_head") && (
-          <Tooltip label="Abandon this repair path and rerun every Persona from fresh evidence">
+          </p>
+          {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
+          <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
+        </div>
+
+        <div className="wf-run-actions">
+          {detail.run.status === "waiting_for_session" && (
+            <>
+              <Tooltip label="Re-read the session's current diff and run the review again">
+                <button className="btn" onClick={() => void onResubmit(false)}>
+                  {preview ? "Preview fresh evidence" : "Submit fresh evidence"}
+                </button>
+              </Tooltip>
+              <Tooltip label="Run the review again against the evidence snapshot already taken">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => onConfirm({
+                    title: preview ? "Preview unchanged evidence" : "Submit unchanged evidence",
+                    body: "This runs every reviewer again against the snapshot already taken, so"
+                      + " nothing about the work under review has changed since the last round.",
+                    confirmLabel: preview ? "Preview unchanged" : "Submit unchanged",
+                    confirmHint: "Starts a new round against the existing evidence snapshot",
+                    onConfirm: () => void onResubmit(true),
+                  })}
+                >
+                  {preview ? "Preview unchanged" : "Submit unchanged"}
+                </button>
+              </Tooltip>
+            </>
+          )}
+          {inspectorGate && detail.run.status === "waiting_for_pr"
+            && ["missing_pr", "unadopted_pr"].includes(inspectorGate.state.waitReason ?? "")
+            && version?.completionPolicy.kind === "inspector"
+            && version.completionPolicy.missingPrAction === "offer_prepare_pr" && (
+            <Tooltip label="Send the session an explicit commit, push, and PR handoff packet">
+              <button className="btn" onClick={() => void onPreparePr()}>Prepare PR in session</button>
+            </Tooltip>
+          )}
+          {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
+            <Tooltip label="The provider call failed rather than the review - try it again">
+              <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
+            </Tooltip>
+          )}
+          {inspectorGate && inspectorGate.state.waitReason !== null && (
+            <Tooltip label="Evaluate the gate again from Inspector's current durable ledger">
+              <button className="btn btn-ghost" onClick={() => void onRecheckInspector()}>
+                Recheck Inspector
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip label={feedbackAvailable
+            ? "Copy every reviewer verdict to the clipboard"
+            : detail.deliveries.some((delivery) => delivery.payloadPrunedAt != null)
+              ? "Raw delivery feedback was pruned and no Persona verdict remains"
+              : "No workflow feedback has been recorded yet"}>
             <button
               className="btn btn-ghost"
+              disabled={!feedbackAvailable}
+              onClick={() => void onCopyFeedback()}
+            >
+              Copy feedback
+            </button>
+          </Tooltip>
+          {inspectorGate?.state.prUrl ? (
+            <Tooltip label="Open this run's adopted pull request in a new tab">
+              <a
+                className="btn btn-ghost"
+                href={inspectorGate.state.prUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Open PR
+              </a>
+            </Tooltip>
+          ) : (
+            <Tooltip label="This run has no adopted pull request">
+              <button className="btn btn-ghost" disabled>Open PR</button>
+            </Tooltip>
+          )}
+          <Tooltip label={version
+            ? `Open immutable workflow version ${version.version}`
+            : "The immutable published version is missing or corrupt"}>
+            <button
+              className="btn btn-ghost"
+              disabled={!version}
               onClick={() => {
-                const confirmation = window.prompt(
-                  "Type RESTART FULL WORKFLOW to abandon the Inspector-only repair.",
-                );
-                if (confirmation !== null) void onRestartFull(confirmation);
+                if (!version) return;
+                requestWorkflowVersionOpen(version.workflowId, version.version);
+                window.location.hash = "#/workflows";
               }}
             >
-              Restart full workflow
+              Open version
             </button>
           </Tooltip>
-        )}
-        {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
-          <Tooltip label="The provider call failed rather than the review - try it again">
-            <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
+          <Tooltip label="Download this run's complete retained audit history as JSON">
+            <a
+              className="btn btn-ghost"
+              href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
+              download={`workflow-run-${detail.run.id}.json`}
+            >
+              Export run
+            </a>
           </Tooltip>
-        )}
-        {!["completed", "cancelled", "failed"].includes(detail.run.status) && (
-          <Tooltip label="Stop this run - it will not resume">
-            <button className="btn btn-danger" onClick={() => void onCancel()}>Cancel</button>
+          {version ? (
+            <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
+              <a
+                className="btn btn-ghost"
+                href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
+                download={`workflow-version-${version.version}.json`}
+              >
+                Export version
+              </a>
+            </Tooltip>
+          ) : (
+            <Tooltip label="The immutable published version is missing or corrupt">
+              <button className="btn btn-ghost" disabled>Export version</button>
+            </Tooltip>
+          )}
+          <Tooltip label="Copy this durable workflow run id">
+            <button
+              className="btn btn-ghost"
+              onClick={() => void navigator.clipboard.writeText(detail.run.id)}
+            >
+              Copy run id
+            </button>
           </Tooltip>
-        )}
+        </div>
+
+        {/* The two that cannot be undone, kept apart from the rest and never filled red:
+            they sit beside actions an operator clicks all day. */}
+        <div className="wf-run-actions wf-run-actions-danger">
+          {inspectorGate && (liveInspectorRepair || detail.run.status === "waiting_for_new_head") && (
+            <Tooltip label="Abandon this repair path and rerun every Persona from fresh evidence">
+              <button
+                className="btn btn-danger-ghost"
+                onClick={() => onConfirm({
+                  title: "Restart the full workflow",
+                  body: "This abandons the Inspector-only repair and reruns every Persona against"
+                    + " freshly captured evidence. The audited repair submissions stay in history.",
+                  confirmLabel: "Restart full workflow",
+                  confirmHint: "Abandons the Inspector-only repair and reruns every Persona",
+                  danger: true,
+                  requirePhrase: "RESTART FULL WORKFLOW",
+                  onConfirm: () => void onRestartFull("RESTART FULL WORKFLOW"),
+                })}
+              >
+                Restart full workflow
+              </button>
+            </Tooltip>
+          )}
+          {!["completed", "cancelled", "failed"].includes(detail.run.status) && (
+            <Tooltip label="Stop this run - it will not resume">
+              <button
+                className="btn btn-danger-ghost"
+                onClick={() => onConfirm({
+                  title: "Cancel this run",
+                  body: `Stop ${detail.summary.workflowName} v${detail.summary.workflowVersion} on`
+                    + ` ${detail.binding.sessionName}? It will not resume, and its evidence and`
+                    + " verdicts stay in history.",
+                  confirmLabel: "Cancel run",
+                  confirmHint: "Stops the run for good",
+                  danger: true,
+                  onConfirm: () => void onCancel(),
+                })}
+              >
+                Cancel run
+              </button>
+            </Tooltip>
+          )}
+        </div>
       </header>
 
-      {inspectorOnly && (
-        <p className="workflow-inspector-bypass" role="status">
-          <strong>Persona review bypassed for Inspector repair</strong>
-          {" "}The audited repair submission moved from {bypassSourceHead?.slice(0, 12) ?? "an earlier head"} to{" "}
-          {latest.prHeadSha?.slice(0, 12) ?? "a newly observed head"} without Persona attempts.
+      {rounds.length > 0 && (
+        <section className="wf-run-rounds" aria-label="Rounds">
+          <div className="wf-run-scrubber" role="group" aria-label="Select a round">
+            {rounds.map((round) => (
+              <Tooltip
+                key={round.submissionId}
+                label={`${round.label}: ${round.status.label}`}
+              >
+                <button
+                  className={`wf-run-round workflow-${round.status.tone}${
+                    round.submissionId === viewed?.id ? " active" : ""}`}
+                  aria-pressed={round.submissionId === viewed?.id}
+                  onClick={() => onRound(round.submissionId)}
+                >
+                  <span className="wf-run-round-name">{round.label}</span>
+                  <span className="wf-run-round-state">{round.status.label}</span>
+                </button>
+              </Tooltip>
+            ))}
+          </div>
+          {!isLatest && (
+            <p className="wf-run-stale" role="status">
+              Viewing an earlier round. The pipeline, verdicts and timeline below are that
+              round's; the Inspector gate, deliveries and every recovery action are always the
+              live run's.
+            </p>
+          )}
+        </section>
+      )}
+
+      {version ? (
+        <RunPipeline
+          version={version}
+          statuses={statuses}
+          session={viewed
+            ? submissionStatus(viewed, roundAttempts.some((attempt) => verdictOf(attempt)?.verdict === "fail"))
+            : { tone: "waiting", label: "No submission yet" }}
+          end={endStatus(detail, viewed, isLatest)}
+          metaFor={(nodeId) => {
+            // The NEWEST attempt, the same one the chip above it reads: a retry resolves the
+            // provider again, so the first attempt's runner and model describe a call that is
+            // over.
+            const attempt = latestAttemptByNode.get(nodeId);
+            return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
+          }}
+          repair={detail.summary.maxRepairRounds > 0
+            ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
+            : null}
+        />
+      ) : (
+        <p className="wf-run-error" role="alert">
+          The immutable workflow version is missing or corrupt. This run cannot be resumed.
         </p>
       )}
 
+      {inspectorOnly && (
+        <p className="wf-run-notice" role="status">
+          <strong>Persona review bypassed for Inspector repair.</strong>
+          {" "}The audited repair submission moved from {shortSha(bypassSourceHead) ?? "an earlier head"} to{" "}
+          {shortSha(viewed.prHeadSha) ?? "a newly observed head"} without Persona attempts.
+        </p>
+      )}
+
+      <section className="wf-run-section">
+        <h4>Reviewer verdicts</h4>
+        {roundAttempts.length === 0 ? (
+          <p className="wf-run-empty">
+            {inspectorOnly
+              ? "This Inspector repair round ran no Personas."
+              : "No reviewer has been activated in this round yet."}
+          </p>
+        ) : (
+          <div className="wf-run-cards">
+            {roundAttempts.flatMap((attempt) => {
+              const verdict = verdictOf(attempt);
+              return verdict
+                ? [(
+                    <VerdictCard
+                      key={attempt.id}
+                      attempt={attempt}
+                      verdict={verdict}
+                      meta={verdictMeta(attempt, calls)}
+                    />
+                  )]
+                : [];
+            })}
+            {roundAttempts.filter((attempt) => !verdictOf(attempt)).map((attempt) => (
+              <article className="wf-run-card wf-run-attempt" key={`attempt:${attempt.id}`}>
+                <header className="wf-run-card-head">
+                  <strong>{attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer"}</strong>
+                  <span>{attemptStateLabel(attempt.state)} · attempt {attempt.attempt}</span>
+                </header>
+                <p className="wf-run-meta">
+                  {[
+                    attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
+                    attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
+                  ].filter(Boolean).join(" · ")}
+                </p>
+                <ErrorLine raw={attempt.error} />
+              </article>
+            ))}
+          </div>
+        )}
+        {version?.graph.nodes.filter((node) => node.kind === "all_pass").map((join) => {
+          const incoming = version.graph.edges.filter((edge) => edge.target === join.id);
+          const received = detail.receipts.filter((receipt) =>
+            receipt.submissionId === viewed?.id
+            && incoming.some((edge) => edge.id === receipt.edgeId));
+          return (
+            <details className="wf-run-packet" key={join.id}>
+              <Tooltip label="Show the payloads each reviewer in this stage handed its join">
+                <summary>
+                  {nodeLabel(version.graph, join, [])} · {received.length} of{" "}
+                  {new Set(incoming.map((edge) => edge.source)).size} reviewers reported
+                </summary>
+              </Tooltip>
+              <pre>{JSON.stringify(received.map((receipt) => receipt.payload), null, 2)}</pre>
+            </details>
+          );
+        }) ?? null}
+        {detail.run.gateState && (
+          <details className="wf-run-packet">
+            <Tooltip label="Show the raw join and final-gate state for this run">
+              <summary>Join and gate packet</summary>
+            </Tooltip>
+            <pre>{JSON.stringify(detail.run.gateState, null, 2)}</pre>
+          </details>
+        )}
+      </section>
+
       {inspectorGate && (
-        <section className={`workflow-inspector-gate workflow-gate-${detail.summary.gate}`}>
-          <header>
-            <div>
-              <p className="workflow-eyebrow">Final gate</p>
-              <h4>Inspector · {inspectorGate.state.waitReason?.replaceAll("_", " ") ?? "complete"}</h4>
-            </div>
-            <span className={`workflow-run-state wrs-${detail.run.status}`}>
-              {detail.summary.gate.replaceAll("_", " ")}
+        <section className={`wf-run-section wf-run-gate is-${detail.summary.gate}`}>
+          <header className="wf-run-section-head">
+            <h4>Inspector final gate</h4>
+            <span className={`workflow-chip workflow-${gateSummaryStatus(detail.summary.gate).tone}`}>
+              {gateSummaryStatus(detail.summary.gate).label}
             </span>
           </header>
-          <dl>
+          <p className="wf-run-sentence">{gateWaitSentence(inspectorGate.state.waitReason)}</p>
+          <dl className="wf-run-facts-list">
             <div>
               <dt>Pull request</dt>
               <dd>
@@ -480,16 +709,14 @@ export function WorkflowRunView({
             <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source ?? "not adopted"}</dd></div>
             <div><dt>Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
             <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
-            <div><dt>Target head</dt><dd><code>{inspectorGate.state.targetHeadSha ?? "not pinned"}</code></dd></div>
-            <div><dt>Observed head</dt><dd><code>{inspectorGate.state.observedHeadSha ?? "not observed"}</code></dd></div>
-            <div><dt>Reviewed head</dt><dd><code>{inspectorGate.inspection?.headSha ?? "not reviewed"}</code></dd></div>
+            <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
+            <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
+            <div><dt>Reviewed head</dt><dd><code>{shortSha(inspectorGate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
             <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
             <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
           </dl>
-          {inspectorGate.inspection?.lastError && (
-            <p className="persona-error" role="alert">{inspectorGate.inspection.lastError}</p>
-          )}
-          <p>
+          <ErrorLine raw={inspectorGate.inspection?.lastError} alert />
+          <p className="wf-run-meta">
             Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
               ? version.completionPolicy.onFindings.replaceAll("_", " ")
               : "none"}</strong>
@@ -500,18 +727,17 @@ export function WorkflowRunView({
           <Tooltip label="Open Inspector settings to review its enablement, mode, and allowlist">
             <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open Inspector settings</button>
           </Tooltip>
-          <div className="workflow-inspector-findings">
+          <div className="wf-run-findings">
             {inspectorGate.findings.length === 0 ? (
-              <p>No findings are recorded for this adopted pull request.</p>
+              <p className="wf-run-empty">No findings are recorded for this adopted pull request.</p>
             ) : inspectorGate.findings.map((finding) => (
-              <article key={finding.id} className={`workflow-inspector-finding finding-${finding.severity}`}>
-                <header>
+              <article key={finding.id} className={`wf-run-card wf-run-finding is-${finding.severity}`}>
+                <header className="wf-run-card-head">
                   <strong>{finding.severity} · {finding.title}</strong>
                   <span>{finding.status}</span>
                 </header>
                 <code>{finding.path ?? "general"}{finding.line ? `:${finding.line}` : ""}</code>
                 <p>{finding.body ?? "Legacy finding: detail was not persisted by the Inspector version that created this row."}</p>
-                <small>{finding.fingerprint}</small>
               </article>
             ))}
           </div>
@@ -519,120 +745,158 @@ export function WorkflowRunView({
       )}
 
       {completionClaims.length > 0 && (
-        <section className="workflow-completion-claims">
+        <section className="wf-run-section">
           <h4>Foreman completion claim</h4>
-          {completionClaims.map((claim) => (
-            <article key={claim.id}>
-              <strong>{claim.completionKind} · {claim.state.replaceAll("_", " ")}</strong>
-              <code>{claim.marker.slice(0, 12)}</code>
-              <p>{claim.summary}</p>
-            </article>
-          ))}
+          <div className="wf-run-cards">
+            {completionClaims.map((claim) => (
+              <article className="wf-run-card" key={claim.id}>
+                <header className="wf-run-card-head">
+                  <strong>{claim.completionKind} completion</strong>
+                  <span>{claim.state.replaceAll("_", " ")}</span>
+                </header>
+                <p>{claim.summary}</p>
+                <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
+              </article>
+            ))}
+          </div>
         </section>
       )}
 
       {detail.deliveries.length > 0 && (
-        <section className="workflow-deliveries">
+        <section className="wf-run-section">
           <h4>Repair delivery</h4>
-          {detail.deliveries.map((delivery) => (
-            <article key={delivery.id} className={`workflow-delivery workflow-delivery-${delivery.state}`}>
-              <header>
-                <strong>{delivery.state.replaceAll("_", " ")}</strong>
-                <code>{delivery.payloadSha256}</code>
-              </header>
-              <dl>
-                <div><dt>Target session</dt><dd>{delivery.sessionId}</dd></div>
-                <div><dt>Conversation</dt><dd>{delivery.noteKey}</dd></div>
-                <div><dt>Prepared</dt><dd>{when(delivery.createdAt)}</dd></div>
-                <div><dt>Last transition</dt><dd>{when(delivery.updatedAt)}</dd></div>
-                <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
-              </dl>
-              {delivery.error && <p className="persona-error">{delivery.error.replaceAll("_", " ")}</p>}
-              {delivery.payloadPrunedAt ? (
-                <p className="workflow-pruned-badge">
-                  Payload pruned {when(delivery.payloadPrunedAt)}. SHA-256 and transition
-                  metadata remain available.
-                </p>
-              ) : <pre>{delivery.payload}</pre>}
-              {delivery.state === "refused" && (
-                <Tooltip label="Retry this packet after a positive delivery refusal">
-                  <button className="btn" onClick={() => void onRetryDelivery(delivery.id)}>
-                    Retry refused delivery
-                  </button>
-                </Tooltip>
-              )}
-              {delivery.state === "uncertain" && (
-                <div className="workflow-delivery-recovery">
-                  <Tooltip label="Confirm the exact packet already reached the inspected pane">
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        if (window.confirm("Confirm that you inspected the pane and the repair prompt landed?")) {
-                          void onResolveDelivery(delivery.id, "mark_delivered");
-                        }
-                      }}
-                    >
-                      Mark delivered
-                    </button>
-                  </Tooltip>
-                  <Tooltip label="Discard this ambiguous packet and create a replacement repair round">
-                    <button
-                      className="btn btn-danger"
-                      onClick={() => {
-                        const confirmation = window.prompt(
-                          "Type DISCARD AND SEND A NEW REPAIR ROUND to discard this ambiguous packet.",
-                        );
-                        if (confirmation !== null) {
-                          void onResolveDelivery(delivery.id, "discard_and_new_round", confirmation);
-                        }
-                      }}
-                    >
-                      Discard and send new round
-                    </button>
-                  </Tooltip>
-                </div>
-              )}
-            </article>
-          ))}
+          <div className="wf-run-cards">
+            {detail.deliveries.map((delivery) => {
+              const view = deliveryStateView(delivery.state);
+              return (
+                <article className={`wf-run-card wf-run-delivery is-${delivery.state}`} key={delivery.id}>
+                  <header className="wf-run-card-head">
+                    <span className={`workflow-chip workflow-${
+                      delivery.state === "delivered" ? "passed"
+                        : delivery.state === "uncertain" || delivery.state === "refused" ? "failed"
+                          : "waiting"}`}>
+                      {view.label}
+                    </span>
+                    <strong>Round {roundOfSubmission(delivery.submissionId) ?? "?"}</strong>
+                    <span>{delivery.kind.replaceAll("_", " ")}</span>
+                  </header>
+                  <p className="wf-run-sentence">{view.sentence}</p>
+                  <ErrorLine raw={delivery.error} />
+                  <dl className="wf-run-facts-list">
+                    <div><dt>Conversation</dt><dd>{delivery.noteKey}</dd></div>
+                    <div><dt>Payload hash</dt><dd><code>{delivery.payloadSha256.slice(0, 16)}</code></dd></div>
+                    <div><dt>Prepared</dt><dd>{when(delivery.createdAt)}</dd></div>
+                    <div><dt>Last transition</dt><dd>{when(delivery.updatedAt)}</dd></div>
+                    <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
+                  </dl>
+                  {delivery.payloadPrunedAt ? (
+                    <p className="wf-run-pruned">
+                      Payload pruned {when(delivery.payloadPrunedAt)}. SHA-256 and transition
+                      metadata remain available.
+                    </p>
+                  ) : <pre>{delivery.payload}</pre>}
+                  {delivery.state === "refused" && (
+                    <Tooltip label={sessionBound
+                      ? "Retry this packet after a positive delivery refusal"
+                      : "The bound session is gone, so there is nowhere to send this packet"}>
+                      <button
+                        className="btn"
+                        disabled={!sessionBound}
+                        onClick={() => void onRetryDelivery(delivery.id)}
+                      >
+                        Retry refused delivery
+                      </button>
+                    </Tooltip>
+                  )}
+                  {delivery.state === "uncertain" && (
+                    <div className="wf-run-recovery">
+                      <Tooltip label="Confirm the exact packet already reached the inspected pane">
+                        <button
+                          className="btn"
+                          onClick={() => onConfirm({
+                            title: "Mark this packet delivered",
+                            body: "Confirm you inspected the session's pane and this exact repair"
+                              + " prompt is in it. Marking it delivered ends the recovery.",
+                            confirmLabel: "Mark delivered",
+                            confirmHint: "Records the packet as delivered without sending it again",
+                            onConfirm: () => void onResolveDelivery(delivery.id, "mark_delivered"),
+                          })}
+                        >
+                          Mark delivered
+                        </button>
+                      </Tooltip>
+                      {/* Both session-bound recoveries state the SAME condition the daemon
+                          enforces: a discard prepares a replacement round for a live
+                          conversation, and it needs that conversation's identity to prove
+                          it is still the one that was reviewed. Sent without it the route
+                          refuses every time, which is what this used to do - silently for
+                          the retry, and with a raw schema dump for the discard. Marking a
+                          packet delivered needs no session and stays available. */}
+                      <Tooltip label={sessionBound
+                        ? "Discard this ambiguous packet and create a replacement repair round"
+                        : "The bound session is gone, so no replacement round can be prepared"}>
+                        <button
+                          className="btn btn-danger-ghost"
+                          disabled={!sessionBound}
+                          onClick={() => onConfirm({
+                            title: "Discard and send a new repair round",
+                            body: "The pane may already hold this packet. Discarding it prepares a"
+                              + " fresh repair round, which the session could receive twice.",
+                            confirmLabel: "Discard and send new round",
+                            confirmHint: "Discards the ambiguous packet and prepares a new repair round",
+                            danger: true,
+                            requirePhrase: "DISCARD AND SEND A NEW REPAIR ROUND",
+                            onConfirm: () => void onResolveDelivery(
+                              delivery.id,
+                              "discard_and_new_round",
+                              "DISCARD AND SEND A NEW REPAIR ROUND",
+                            ),
+                          })}
+                        >
+                          Discard and send new round
+                        </button>
+                      </Tooltip>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
         </section>
-      )}
-
-      {version ? (
-        <WorkflowCanvas
-          graph={version.graph}
-          personas={[]}
-          readOnly
-          nodeStatuses={workflowNodeStatuses(detail)}
-        />
-      ) : (
-        <p className="persona-error" role="alert">
-          The immutable workflow version is missing or corrupt. This run cannot be resumed.
-        </p>
       )}
 
       {detail.contextState === "not_captured" && (
-        <section className="workflow-run-context">
+        <section className="wf-run-section">
           <h4>Intent and evidence not captured</h4>
-          <p>This submission stopped before its immutable context snapshot was recorded.</p>
+          <p className="wf-run-empty">This submission stopped before its immutable context snapshot was recorded.</p>
         </section>
       )}
       {detail.contextState === "corrupt" && (
-        <section className="workflow-run-context">
+        <section className="wf-run-section">
           <h4>Captured intent and evidence are corrupt</h4>
-          <p className="persona-error" role="alert">
+          <p className="wf-run-error" role="alert">
             The durable context does not match its submission mode. Check daemon logs or restore it from backup.
           </p>
         </section>
       )}
+      {contextUnreadable && (
+        <section className="wf-run-section">
+          <h4>Captured intent and evidence</h4>
+          <p className="wf-run-error" role="alert">
+            This round's captured context is not readable by this build, though the run's
+            newest one is. Check daemon logs or restore it from backup.
+          </p>
+        </section>
+      )}
       {context && (
-        <section className="workflow-run-context">
-          <header>
+        <section className="wf-run-section wf-run-context">
+          <header className="wf-run-section-head">
             <h4>Captured intent and evidence</h4>
-            <span className={`workflow-compaction-${context.compaction.status}`}>
+            <span className="wf-run-meta">
               {context.compaction.status === "model" ? "Context compacted" : "Deterministic fallback"}
             </span>
             {context.evidence.retention?.state === "pruned" && (
-              <span className="workflow-pruned-badge">
+              <span className="wf-run-pruned">
                 Raw evidence pruned {when(context.evidence.retention.prunedAt)}
               </span>
             )}
@@ -641,8 +905,8 @@ export function WorkflowRunView({
           <pre>{context.primaryGoal.rawPrompt || "(No captured goal)"}</pre>
           {context.primaryGoal.refined && <p><strong>Refined:</strong> {context.primaryGoal.refined}</p>}
           <h5>Human decisions and rationale</h5>
-          {context.humanDecisions.length === 0 ? <p>None captured.</p> : (
-            <ul>
+          {context.humanDecisions.length === 0 ? <p className="wf-run-empty">None captured.</p> : (
+            <ul className="wf-run-decisions">
               {context.humanDecisions.map((decision) => (
                 <li key={`${decision.source.kind}:${decision.source.id}`}>
                   <p>{decision.decision}</p>
@@ -659,14 +923,14 @@ export function WorkflowRunView({
             <><h5>Acceptance criteria</h5><ul>{context.acceptanceCriteria.map((item) => <li key={item}>{item}</li>)}</ul></>
           )}
           {context.compaction.status === "fallback" && context.compaction.error && (
-            <p className="workflow-context-warning">Compaction fallback: {context.compaction.error}</p>
+            <p className="wf-run-meta">Compaction fallback: {context.compaction.error}</p>
           )}
           <details>
             <Tooltip label="Show the exact repository state this review was given">
               <summary>Evidence snapshot</summary>
             </Tooltip>
-            <dl>
-              <div><dt>HEAD</dt><dd>{context.evidence.headSha ?? "unavailable"}</dd></div>
+            <dl className="wf-run-facts-list">
+              <div><dt>HEAD</dt><dd>{shortSha(context.evidence.headSha) ?? "unavailable"}</dd></div>
               <div>
                 <dt>Working tree</dt>
                 <dd>
@@ -674,7 +938,7 @@ export function WorkflowRunView({
                   {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
                 </dd>
               </div>
-              <div><dt>Fingerprint</dt><dd><code>{latestFull?.evidenceFingerprint}</code></dd></div>
+              <div><dt>Fingerprint</dt><dd><code>{viewed?.evidenceFingerprint}</code></dd></div>
               <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
               <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
@@ -695,8 +959,8 @@ export function WorkflowRunView({
         </section>
       )}
 
-      <section className="workflow-model-calls">
-        <header>
+      <section className="wf-run-section">
+        <header className="wf-run-section-head">
           <h4>Workflow-owned model calls</h4>
           <strong>
             {totalCost === null
@@ -705,38 +969,40 @@ export function WorkflowRunView({
           </strong>
         </header>
         {calls.length === 0 ? (
-          <p>No workflow-owned model calls are recorded for this run.</p>
+          <p className="wf-run-empty">No workflow-owned model calls are recorded for this run.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Purpose</th>
-                <th>Runner / model</th>
-                <th>Attempt</th>
-                <th>State</th>
-                <th>Failure class</th>
-                <th>Duration</th>
-                <th>Input</th>
-                <th>Output</th>
-                <th>Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calls.map((call) => (
-                <tr key={call.id}>
-                  <td>{call.purpose.replaceAll("_", " ")}</td>
-                  <td>{call.runner} / {call.model}</td>
-                  <td>{call.attempt}</td>
-                  <td>{call.state}</td>
-                  <td>{call.errorCode ?? "none"}</td>
-                  <td>{call.durationMs === null ? "unavailable" : `${call.durationMs} ms`}</td>
-                  <td>{call.inputBytes} B</td>
-                  <td>{call.outputBytes} B</td>
-                  <td>{call.costUsd === null ? "unavailable" : `$${call.costUsd.toFixed(4)}`}</td>
+          <div className="wf-run-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Purpose</th>
+                  <th>Runner / model</th>
+                  <th>Attempt</th>
+                  <th>State</th>
+                  <th>Failure class</th>
+                  <th>Duration</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                  <th>Cost</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {calls.map((call) => (
+                  <tr key={call.id}>
+                    <td>{call.purpose.replaceAll("_", " ")}</td>
+                    <td>{call.runner} / {call.model}</td>
+                    <td>{call.attempt}</td>
+                    <td>{call.state}</td>
+                    <td>{call.errorCode ?? "none"}</td>
+                    <td>{call.durationMs === null ? "unavailable" : `${call.durationMs} ms`}</td>
+                    <td>{call.inputBytes} B</td>
+                    <td>{call.outputBytes} B</td>
+                    <td>{call.costUsd === null ? "unavailable" : `$${call.costUsd.toFixed(4)}`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         {detail.nextLlmCallAfter && (
           <Tooltip label="Load the next page of durable model-call accounting">
@@ -747,62 +1013,29 @@ export function WorkflowRunView({
         )}
       </section>
 
-      <section className="workflow-verdicts">
-        <h4>Persona verdicts</h4>
-        {detail.attempts.flatMap((attempt) => {
-          const verdict = attempt.verdict as unknown as PersonaVerdict | null;
-          return verdict && attempt.persona
-            ? [<VerdictCard key={attempt.id} persona={attempt.persona.name} verdict={verdict} />]
-            : [];
-        })}
-        <div className="workflow-attempt-list">
-          {detail.attempts.filter((attempt) => attempt.persona).map((attempt) => (
-            <p key={`attempt:${attempt.id}`}>
-              <strong>{attempt.persona?.name}</strong>
-              {" "}revision {attempt.persona?.sourceRevision} · attempt {attempt.attempt} · {attempt.state}
-              {attempt.runner && attempt.model ? ` · ${attempt.runner}/${attempt.model}` : ""}
-              {attempt.error ? ` · ${attempt.error}` : ""}
-            </p>
-          ))}
-        </div>
-        {version?.graph.nodes.filter((node) => node.kind === "all_pass").map((join) => {
-          const incoming = version.graph.edges.filter((edge) => edge.target === join.id);
-          const received = detail.receipts.filter((receipt) =>
-            incoming.some((edge) => edge.id === receipt.edgeId));
-          return (
-            <details className="workflow-join-packet" key={join.id}>
-              <Tooltip label="Show the payloads each predecessor branch handed this join">
-                <summary>All-pass Join · {received.length}/{new Set(incoming.map((edge) => edge.source)).size} predecessors</summary>
-              </Tooltip>
-              <pre>{JSON.stringify(received.map((receipt) => receipt.payload), null, 2)}</pre>
-            </details>
-          );
-        }) ?? null}
-        {detail.run.gateState && (
-          <details className="workflow-join-packet">
-            <Tooltip label="Show the raw join and final-gate state for this run">
-              <summary>Join and gate packet</summary>
-            </Tooltip>
-            <pre>{JSON.stringify(detail.run.gateState, null, 2)}</pre>
-          </details>
-        )}
-      </section>
-
-      <section className="workflow-run-timeline">
+      <section className="wf-run-section wf-run-timeline">
         <h4>Timeline</h4>
-        {[...timelineByRound.entries()]
-          .sort(([roundA], [roundB]) => roundA - roundB)
+        {[...timeline.entries()]
+          .filter(([round]) => round === 0 || round === viewed?.round)
+          .sort(([a], [b]) => a - b)
           .map(([round, events]) => (
-            <section key={round} className="workflow-timeline-round">
-              <h5>{round === 0 ? "Run-level events" : `Repair round ${round}`}</h5>
+            <section key={round} className="wf-run-timeline-round">
+              <h5>{round === 0 ? "Run-level events" : `Round ${round}`}</h5>
               <ol>
-                {[...events].sort((a, b) => a.id - b.id).map((event) => (
-                  <li key={event.id}>
-                    <time>{when(event.timestamp)}</time>
-                    <strong>{event.kind.replaceAll("_", " ")}</strong>
-                    <code>{JSON.stringify(event.payload)}</code>
-                  </li>
-                ))}
+                {[...events].sort((a, b) => a.id - b.id).map((event) => {
+                  const line = eventLine(
+                    event,
+                    { node: nameOfNode, round: roundOfSubmission },
+                    round,
+                  );
+                  return (
+                    <li key={event.id}>
+                      <time>{when(event.timestamp)}</time>
+                      <strong>{line.title}</strong>
+                      {line.detail && <span>{line.detail}</span>}
+                    </li>
+                  );
+                })}
               </ol>
             </section>
           ))}
@@ -818,6 +1051,33 @@ export function WorkflowRunView({
   );
 }
 
+/**
+ * Nothing has run yet.
+ *
+ * Its own component because the sentence it replaced ("Bind an immutable published version
+ * to a session, then submit a manual Preview.") was an instruction with nothing to click:
+ * the binding dialog App already owns is two surfaces away, and an operator who has just
+ * published their first workflow is exactly the person reading this.
+ */
+export function WorkflowRunsEmpty({
+  onBindWorkflow,
+}: {
+  onBindWorkflow?: () => void;
+}): React.JSX.Element {
+  return (
+    <section className="workflow-empty">
+      <span className="workflow-empty-mark" aria-hidden>↻</span>
+      <h3>No workflow runs yet</h3>
+      <p>Bind a published version to a session, then submit a Preview to watch it here.</p>
+      {onBindWorkflow && (
+        <Tooltip label="Pick a session and a published version to run a workflow against">
+          <button className="btn" onClick={onBindWorkflow}>Bind to a session…</button>
+        </Tooltip>
+      )}
+    </section>
+  );
+}
+
 export function WorkflowRuns({
   runs,
   selectedRunId,
@@ -826,6 +1086,7 @@ export function WorkflowRuns({
   onFilters = () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
+  onBindWorkflow,
 }: {
   runs: WorkflowRunSummary[];
   selectedRunId: string | null;
@@ -834,6 +1095,8 @@ export function WorkflowRuns({
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
+  /** Opens the binding dialog with nothing pinned - the empty state's only affordance. */
+  onBindWorkflow?: () => void;
 }): React.JSX.Element {
   const [history, setHistory] = useState<WorkflowRunSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -841,6 +1104,11 @@ export function WorkflowRuns({
   const [detail, setDetail] = useState<WorkflowRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
+  // Which round the reader is scoped to. Owned here rather than inside the view so that
+  // selecting another run resets it in the same commit the detail is cleared - a submission
+  // id from the previous run would otherwise survive one render into the next one.
+  const [roundId, setRoundId] = useState<string | null>(null);
   const filterKey = JSON.stringify(filters ?? {});
   const ordered = useMemo(
     () => [...history].sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)),
@@ -918,14 +1186,23 @@ export function WorkflowRuns({
     ) return;
     onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
   }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
-  const load = (clear = false): void => {
+  /**
+   * `keepError` is what makes a refused action VISIBLE.
+   *
+   * Every mutation reloads the run afterwards, including the failing ones - the daemon may
+   * have moved the run before refusing. But this reload cleared the message the failure had
+   * just set, in the same React batch, so the operator saw a button do nothing at all: no
+   * error, no state change, no clue that the daemon said no. The failing path keeps its
+   * sentence until the next successful action clears it.
+   */
+  const load = (clear = false, keepError = false): void => {
     const generation = ++loadGeneration.current;
     if (clear) setDetail(null);
     if (!selected) {
       setDetail(null);
       return;
     }
-    setError(null);
+    if (!keepError) setError(null);
     void workflowRequest<WorkflowRunDetail>(
       `/api/workflow-runs/${encodeURIComponent(selected)}`,
     )
@@ -939,6 +1216,8 @@ export function WorkflowRuns({
       });
   };
   useEffect(() => {
+    setRoundId(null);
+    setConfirm(null);
     load(true);
     return () => { loadGeneration.current++; };
   }, [selected, selectedSummary]);
@@ -951,7 +1230,7 @@ export function WorkflowRuns({
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Workflow action failed");
-      load();
+      load(false, true);
       return false;
     }
   };
@@ -978,7 +1257,7 @@ export function WorkflowRuns({
         unchangedRequest.current = { runId: detail.run.id, requestId };
       }
       setError(caught instanceof Error ? caught.message : "Workflow resubmission failed");
-      load();
+      load(false, true);
     }
   };
 
@@ -1048,21 +1327,31 @@ export function WorkflowRuns({
   }
 
   if (ordered.length === 0 && !filters && !selectedRunId && !listError) {
-    return (
-      <section className="workflow-empty">
-        <span className="workflow-empty-mark" aria-hidden>↻</span>
-        <h3>No workflow runs yet</h3>
-        <p>Bind an immutable published version to a session, then submit a manual Preview.</p>
-      </section>
-    );
+    return <WorkflowRunsEmpty onBindWorkflow={onBindWorkflow} />;
   }
 
   return (
     <section className="workflow-runs">
-      <aside className="workflow-run-list">
-        {listError && <p className="persona-error" role="alert">{listError}</p>}
+      <aside className="wf-run-rail">
+        {listError && <p className="wf-run-error" role="alert">{listError}</p>}
+        <div className="wf-run-chips" role="group" aria-label="Filter runs by state">
+          {RUN_FILTER_CHIPS.map((chip) => (
+            <Tooltip key={chip.label} label={chip.hint}>
+              <button
+                className={`wf-run-chip${filters?.status === chip.status ? " active" : ""}`}
+                aria-pressed={filters?.status === chip.status}
+                onClick={() => {
+                  const next = { ...filters, status: chip.status };
+                  onFilters(Object.values(next).some(Boolean) ? next : undefined);
+                }}
+              >
+                {chip.label}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
         <form
-          className="workflow-run-filters"
+          className="wf-run-filters"
           onSubmit={(event) => event.preventDefault()}
           aria-label="Filter workflow runs"
         >
@@ -1083,7 +1372,11 @@ export function WorkflowRuns({
                   "capturing", "running", "waiting_for_session", "waiting_for_pr",
                   "waiting_for_inspector", "waiting_for_new_head", "blocked",
                   "completed", "cancelled", "failed",
-                ].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
+                ].map((status) => (
+                  <option key={status} value={status}>
+                    {runStatusLabel(status as WorkflowRunStatus)}
+                  </option>
+                ))}
               </select>
             </Tooltip>
           </label>
@@ -1118,34 +1411,40 @@ export function WorkflowRuns({
           )}
         </form>
         {ordered.length === 0 && (
-          <div className="workflow-run-empty-filter">
+          <div className="wf-run-empty-filter">
             <strong>No runs match these filters.</strong>
             <p>Clear a filter or wait for a matching run.</p>
           </div>
         )}
         {ordered.map((run) => (
-          <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${run.status.replaceAll("_", " ")}`}>
+          <Tooltip key={run.id} label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
             <button
-              className={selected === run.id ? "active" : ""}
+              className={`wf-run-row${selected === run.id ? " active" : ""}`}
               onClick={() => onSelectRun(run.id)}
             >
-              <strong>{run.workflowName} · v{run.workflowVersion}</strong>
-              <span>{run.noteKey} · {run.status.replaceAll("_", " ")}</span>
+              <span className="wf-run-row-head">
+                <strong>{run.workflowName}</strong>
+                <span className="wf-run-version">v{run.workflowVersion}</span>
+              </span>
+              <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
+                {runStatusLabel(run.status)}
+              </span>
+              <span className="wf-run-row-session">{run.noteKey}</span>
               {run.gate !== "none" && (
-                <span>
+                <span className="wf-run-row-gate">
                   Inspector: {run.gate.replaceAll("_", " ")}
                   {run.gatePrNumber ? ` · #${run.gatePrNumber}` : ""}
                   {run.gateHeadShort ? ` · ${run.gateHeadShort}` : ""}
                 </span>
               )}
-              <small>{when(run.updatedAt)}</small>
+              <small>{relativeTime(run.updatedAt)}</small>
             </button>
           </Tooltip>
         ))}
         {nextCursor && (
           <Tooltip label="Load the next page of Workflow run history">
             <button
-              className="btn btn-ghost workflow-run-load-more"
+              className="btn btn-ghost wf-run-more"
               disabled={listLoading}
               onClick={() => void listPage(nextCursor, true)}
             >
@@ -1154,8 +1453,8 @@ export function WorkflowRuns({
           </Tooltip>
         )}
       </aside>
-      <div className="workflow-run-reader">
-        {error && <p className="persona-error" role="alert">{error}</p>}
+      <div className="wf-run-reader">
+        {error && <p className="wf-run-error" role="alert">{error}</p>}
         {!detail && !error && selected
           ? <p>Loading run…</p>
           : !detail && !error
@@ -1164,6 +1463,9 @@ export function WorkflowRuns({
         {detail && (
           <WorkflowRunView
             detail={detail}
+            roundId={roundId}
+            onRound={setRoundId}
+            onConfirm={setConfirm}
             onResubmit={resubmit}
             onRetry={async (nodeAttemptId) => {
               await mutate(`/api/workflow-runs/${detail.run.id}/retry`, {
@@ -1218,11 +1520,18 @@ export function WorkflowRuns({
               });
             }}
             onOpenSession={() => {
-              if (detail.summary.sessionId) onOpenSession(detail.summary.sessionId);
+              // The BINDING's session, which is the one that goes null when a session
+              // disappears. The summary carries the same column today, but it is also the
+              // shape SSE caches per run, and offering to open a session that has gone is
+              // the failure that costs an operator a click and a wrong selection.
+              if (detail.binding.sessionId) onOpenSession(detail.binding.sessionId);
             }}
           />
         )}
       </div>
+      {confirm && (
+        <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
+      )}
     </section>
   );
 }

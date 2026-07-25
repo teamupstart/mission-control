@@ -62,7 +62,11 @@ export function WorkflowPage({
   onEnsemble?: (id: string | null) => void;
   onOpenTask?: (id: string) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
-  /** Opens the binding dialog with no session pinned, for the builder's bind call to action. */
+  /**
+   * Opens the binding dialog with no session pinned. Both the builder's right rail and the
+   * Runs empty state reach it, so "there is nothing here yet" carries the action that fixes
+   * that rather than a sentence describing it.
+   */
   onBindWorkflow?: () => void;
   onOpenSession?: (id: string) => void;
   onOpenInspectorSettings?: () => void;
@@ -152,6 +156,7 @@ export function WorkflowPage({
             onFilters={onRunFilters}
             onOpenSession={onOpenSession}
             onOpenInspectorSettings={onOpenInspectorSettings}
+            onBindWorkflow={onBindWorkflow}
           />
         </section>
       )}

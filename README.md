@@ -780,7 +780,7 @@ would be reported as such rather than silently skipped.)
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
 exposes six review-channel tools (an ensemble member session also gets
-[`submit_ensemble_result`](#multi-agent-ensembles-runtime-landed-creation-still-gated)):
+[`submit_ensemble_result`](#multi-agent-ensembles-backend-complete-dashboard-next)):
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1414,7 +1414,8 @@ retrying it against the exact same evidence. It **recommends** a winner; it cann
 submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
 carries a stable request id, the run state it expects, and an explicit destructive confirmation, so
 a lost response returns the same decision and a wrong-state or ineligible pick is refused rather
-than acted on. Only then does anything destructive run, and it runs restart-safe in this order:
+than acted on. For a selected result, only then does anything destructive run, and it runs
+restart-safe in this order:
 re-verify the winner's private ref still resolves to its snapshot (a missing ref blocks *all*
 cleanup); make one exact winner available - either the original member's checkout reset to the
 snapshot through the same session-reset that clears its queue, drafts and context, or, if that
@@ -1433,16 +1434,17 @@ and run. It requires the winner's HEAD to equal the chosen snapshot and its tree
 drift is healed by restoring the winner and resuming the *same* submission. A note-key conflict, an
 unavailable mode, or a Live/Foreman selection (only Preview is executable today) blocks visibly and
 is never downgraded or adopted - you retry after resolving it or explicitly skip the handoff and
-finish with the normal continuation. An active member's session cannot be bound to a workflow
-manually until the ensemble finalizes. Ensemble and Workflow lifecycles stay separate: a workflow
-reset removes its binding but never an ensemble ref, and a completed ensemble never recreates a
-reset run.
+finish with the normal continuation. A session cannot be bound to a workflow manually while its
+ensemble member is active; finalization marks the selected member retained before it uses the same
+binding boundary for the handoff. Ensemble and Workflow lifecycles stay separate: a workflow reset
+removes its binding but never an ensemble ref, and a completed ensemble never recreates a reset run.
 
 The public API is one localhost surface: `GET /api/ensembles` (compact summaries),
 `POST /api/ensembles/preview` (a side-effect-free launch/budget/handoff estimate that shares
 create's exact validation), `POST /api/ensembles` (idempotent create and launch on a stable request
 id), `GET /api/ensembles/:id` (bounded detail), `POST /api/ensembles/:id/actions` (one discriminated
-action covering decide, resolve-finalization, retry, withdraw, cancel and restore), and
+action covering decide, resolve-finalization, retry, withdraw, cancel and restore), the bounded
+artifact evidence/patch and manual-member-submission routes under that run, and
 `DELETE /api/ensembles/:id` (explicit terminal-history-and-ref deletion, confirmed by echoing the
 run id, which never deletes a task or linked workflow state and resumes the same remaining refs
 after a crash). **The dashboard that drives this is the one remaining piece**; until it lands the
@@ -3273,7 +3275,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles-runtime-landed-creation-still-gated): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
+| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles-backend-complete-dashboard-next): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |

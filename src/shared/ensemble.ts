@@ -34,8 +34,8 @@ export const ENSEMBLE_STRATEGY_IDS = ["best_of_n"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
- * Who asked for an ensemble. Only `manual` exists: operator-originated creation, currently
- * reachable only through the in-process manager.
+ * Who asked for an ensemble. Only `manual` exists: operator-originated creation through the
+ * localhost API or the in-process manager.
  *
  * Workflow and Foreman are deliberately absent rather than reserved - a source id nothing
  * can produce is a value a reader has to handle and a test cannot reach. Append one when a
@@ -614,12 +614,13 @@ export interface EnsembleLaunchEstimate {
 export interface EnsembleCreateInput {
   /**
    * Stable per-submission idempotency key the CALLER mints and reuses on retry. A response
-   * lost on the way back must not launch another N agents.
-   */
+  * lost on the way back must not launch another N agents.
+  */
   sourceKey: string;
-  sourceKind: EnsembleSourceKind;
+  /** Absent defaults to operator-originated `manual`. */
+  sourceKind?: EnsembleSourceKind;
   /** Display identity of the external record, or null when the source is the operator. */
-  sourceId: string | null;
+  sourceId?: string | null;
   title: string;
   intent: string;
   repoRoot: string;
@@ -1037,8 +1038,8 @@ export interface TaskEnsembleLink {
  * A discriminated union rather than one route family per verb, and generic rather than
  * strategy-shaped: a strategy composed only from existing primitives adds no member here.
  * A genuinely new operator authority does - and that is the signal that it introduced a new
- * primitive. No route consumes this yet; the shape is fixed now so later phases and the
- * dashboard cannot invent two spellings of the same act.
+ * primitive. The one `/api/ensembles/:id/actions` route consumes this shape, so later strategies
+ * and the dashboard cannot invent two spellings of the same act.
  */
 export type EnsembleAction =
   | { kind: "retry_stage"; stageId: string }

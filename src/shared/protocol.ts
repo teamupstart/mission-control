@@ -3182,7 +3182,7 @@ export type EnsembleDeleteBody = z.infer<typeof EnsembleDeleteSchema>;
 /**
  * The generic operator authorities over one run.
  *
- * One discriminated union behind one future route rather than a route family per verb: a
+ * One discriminated union behind the actions route rather than a route family per verb: a
  * strategy composed only from existing primitives must add nothing here, so a proposal that
  * needs a new member is evidence of a new primitive rather than a new strategy.
  */

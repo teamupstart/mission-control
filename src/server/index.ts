@@ -94,11 +94,10 @@ const workflows = new WorkflowManager(registry, personas.store, {
 workflows.start();
 // The ensemble manager: it populates the registry's ensemble collection so a reconnect snapshot
 // is truthful, registers the task projection so a member's session card names its group, owns the
-// engine that launches member waves, captures submissions and recovers, and - now that the review
-// executor is wired in - runs the Best-of-N comparison through to the human-decision boundary. No
-// CREATE route is enabled yet (the human-decision and finalization API lands in a later phase), so
-// on every existing machine these tables are empty and the product behaves exactly as before; the
-// runtime is proven by tests and the internal action surface.
+// engine that launches member waves, captures submissions and recovers, runs the Best-of-N
+// comparison through the human-decision boundary, and drives the confirmed finalization through
+// its injected Task/Workflow seams. Public creation is enabled now that every production driver
+// is executable; an existing installation still creates no rows until an operator calls that API.
 //
 // Its Persona resolver is the manager's own store, so a comparison configured against a Persona
 // snapshots that Persona's exact revision, name, guidance and overrides at creation instead of

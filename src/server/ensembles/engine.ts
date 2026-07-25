@@ -473,7 +473,7 @@ export class EnsembleEngine {
     return this.withRunLock(input.runId, () => this.submitLocked(input));
   }
 
-  // ---- internal recovery actions (kept internal this phase; Phase 6 exposes the action API) ----
+  // ---- recovery actions (also reached through the manager's public action API) ----
 
   /**
    * Cancel a whole run: tear down every live member Task through its owner, mark those members
@@ -2422,7 +2422,7 @@ export class EnsembleEngine {
       ) {
         return {
           ok: true,
-          winner: progress.winner,
+          winner: { mode: "restored", ready: true },
           sessionId,
           worktreePath,
           mode: "restored",
@@ -2937,8 +2937,9 @@ export class EnsembleEngine {
    *
    * Used at a terminal transition: a submitted member's agent must not outlive the run, but its
    * captured snapshot is preserved by its private ref, so tearing the Task down (which reaps the
-   * worktree) loses no work - the ref IS the retained artifact, and a later phase restores a winner
-   * from it. Best-effort, because a terminal run cannot be held open on a cleanup hiccup.
+   * worktree) loses no work - the ref IS the retained artifact and the restore action can
+   * materialize it as a normal Task. Best-effort, because a terminal run cannot be held open on a
+   * cleanup hiccup.
    */
   private async settleMemberTask(member: EnsembleMember, now: number): Promise<void> {
     if (!member.taskId) return;

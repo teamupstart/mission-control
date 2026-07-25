@@ -67,9 +67,9 @@ import {
  * This is the daemon-facing boundary for ensembles. It compiles and persists immutable plans,
  * preflights and pins launch inputs, delegates ordinary Task lifecycle through the injected
  * gateway, captures submissions through artifact adapters, recovers non-terminal runs, and
- * publishes the compact summaries the browser's live state receives. Production deliberately
- * exposes no CREATE route yet: review, decision and finalization drivers park until their
- * implementations land, so a half-built Best-of-N orchestration cannot be reached by a user.
+ * publishes the compact summaries the browser's live state receives. The public create, preview,
+ * action and delete routes all enter through this boundary; production creation is enabled only
+ * because every driver in the compiled Best-of-N plan has an executable implementation.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog

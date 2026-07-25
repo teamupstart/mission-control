@@ -52,7 +52,7 @@ Out of scope:
 
 1. Define generic human-decision and finalization contracts.
    - Add versioned decision/outcome schemas to `src/shared/ensemble.ts`.
-   - A decision carries a client-stable `requestId`, expected run revision/state, one compiled-policy-compatible outcome, rationale, and explicit destructive confirmation.
+   - A decision carries a client-stable `requestId`, expected run state, one compiled-policy-compatible outcome, rationale, and explicit destructive confirmation.
    - Generic outcomes include `selected`, `synthesized`, `retained`, and `no_consensus`; `best_of_n@1` accepts only one eligible selected artifact/member or an explicit cancel/no-consensus path declared by its plan.
    - Define durable per-step finalization progress so recovery can distinguish verification, materialization, loser cleanup, continuation/Workflow handoff, and completion.
 
@@ -60,11 +60,11 @@ Out of scope:
    - Add `src/server/ensembles/decisions/` and `src/server/ensembles/finalizers/`.
    - Resolve implementations by versioned driver id from the immutable compiled plan.
    - A decision driver validates proposed human outcomes against stage inputs and eligible artifacts.
-   - A finalizer returns bounded generic effects which the manager validates and performs; it does not receive raw database/Task/Workflow authority.
+   - A finalizer returns a bounded generic plan which the engine validates and performs through injected effect dependencies; it does not receive raw database/Task/Workflow authority.
    - Register select-one without adding a Best-of-N id check to `EnsembleEngine`.
 
 3. Persist the authority boundary before acting.
-   - In one transaction, verify `awaiting_decision`, expected revision, request-id idempotency, eligible artifact, and compiled finalization policy.
+   - In one transaction, verify `awaiting_decision`, expected status, request-id idempotency, eligible artifact, and compiled finalization policy.
    - Insert the immutable decision and selected outcome intent, initialize finalization progress, and move the run to `finalizing`.
    - A duplicate equivalent decision returns the same record. A conflicting replay is `409`.
    - No Git, Task, terminal, or Workflow effect occurs before this commit.
@@ -98,7 +98,7 @@ Out of scope:
 
 8. Resolve an optional Workflow handoff at creation.
    - Extend `POST /api/ensembles` preflight to resolve an operator-selected immutable Workflow version through WorkflowManager.
-   - Persist its id, version number/name, binding defaults, completion policy, mode, and source display snapshot in the compiled run.
+   - Persist its id, version number/name, binding defaults, completion policy, mode, and source display snapshot on the run.
    - Accept only modes/capabilities the installed Workflow engine actually implements. On baseline `57ea5bc`, this means Preview; a Live/Foreman selection is a typed refusal, never a Preview downgrade.
    - Recheck repo-specific Live consent at finalization if a later Workflow phase makes that mode available.
    - Best-of-N v1 implements `after_selection` only; reject `before_comparison`.
@@ -122,13 +122,13 @@ Out of scope:
     - If a linked Workflow is later reset/deleted, Ensemble history remains complete and renders the link as removed; it does not recreate it.
 
 11. Wire the active-member binding guard.
-    - From daemon construction, inject a narrow `canBindSessionToWorkflow` guard backed by EnsembleManager into WorkflowManager.
-    - Refuse normal manual binding while a Session owns an active member unless its immutable member Workflow policy permits it.
-    - The Workflow module receives only an eligibility answer/reason and never imports the Ensemble store.
-    - The server-owned after-selection handoff uses the external boundary rather than bypassing the guard.
+   - From daemon construction, inject a narrow `canBindSessionToWorkflow` guard backed by EnsembleManager into WorkflowManager.
+   - Refuse normal manual binding while a Session owns an active member. Mark the selected member retained before the server-owned handoff uses that same boundary.
+   - The Workflow module receives only an eligibility answer/reason and never imports the Ensemble store.
+   - The server-owned after-selection handoff uses the external boundary rather than bypassing the guard.
 
 12. Expose the complete backend API.
-    - `GET /api/ensembles`: paginated/filterable compact summaries.
+   - `GET /api/ensembles`: bounded/filterable compact summaries.
     - `POST /api/ensembles/preview`: side-effect-free server validation and exact launch/budget/
       handoff estimate for the current draft.
     - `POST /api/ensembles`: idempotent validated create and launch.

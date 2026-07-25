@@ -127,7 +127,7 @@ Out of scope:
 10. Add state-aware generic actions.
     - Focus Session/Task; manual Submit fallback; retry member/stage; withdraw; cancel; restore artifact; retry/skip Workflow handoff; retry finalization; and explicit terminal delete.
     - Render actions from current generic capabilities/state supplied by detail, not from Best-of-N status checks scattered through components.
-    - Carry expected revision and request id; on `409`, refetch detail and show the new state without replaying automatically.
+    - Carry expected status and request id; on `409`, refetch detail and show the new state without replaying automatically.
     - Keep dangerous confirmations inline in the detail. Do not create an unregistered overlay.
     - Delete requires the exact run id and explains that Tasks/linked Workflow remain while private Ensemble refs/history are removed.
 

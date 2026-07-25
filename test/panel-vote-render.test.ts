@@ -251,6 +251,7 @@ test("a dead tie is declared rather than presented as a preference", () => {
   ]);
   assert.match(html, /could not be separated by the panel/);
   assert.match(html, /deterministic tie-break, not a preference/);
+  assert.doesNotMatch(html, /ensemble-recommended-tag|\(recommended\)|checked=""/);
 });
 
 test("the ballots themselves are available, each attributed to its judge and model", () => {

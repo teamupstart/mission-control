@@ -224,7 +224,7 @@ export const PanelVoteConfigSchema = z
       .min(PANEL_VOTE_MIN_JUDGES)
       .max(PANEL_VOTE_MAX_JUDGES)
       .default(DEFAULT_JUDGES),
-    /** Hide agent, model and ordinal from every judge. On by default; bias is the default risk. */
+    /** The panel always anonymizes, so this durable parity field is not offered as a form control. */
     anonymizeSubjects: z.boolean().default(true),
     maxAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts).default(2),
     materialBudgetBytes: z
@@ -328,14 +328,6 @@ export const PANEL_VOTE_FORM: StrategyFormSpec = {
       min: 1,
       max: ENSEMBLE_HARD_LIMITS.maxConcurrentMembers,
       step: 1,
-    },
-    {
-      kind: "toggle",
-      key: "anonymizeSubjects",
-      label: "Judge blind",
-      help:
-        "Hide which agent and model produced each candidate from every judge. On by default: " +
-        "those attributes invite brand and order bias.",
     },
     {
       kind: "int",
@@ -514,7 +506,7 @@ export interface PanelAggregate {
   disagreement: number;
   /** True when every judge returned exactly the same ordering. */
   unanimous: boolean;
-  /** True when the top two entries could not be separated on points or mean score. */
+  /** True when the top two entries could not be separated on points or mean rank. */
   tied: boolean;
   /** True when any ballot reported truncated evidence. */
   evidenceTruncated: boolean;
@@ -529,11 +521,11 @@ export interface PanelAggregate {
  * the two must not be able to reach different conclusions from the same rows - which is the whole
  * reason it lives in shared code rather than being computed on either side.
  *
- * Ordering is Borda points descending, then mean rank ascending, then mean score descending, then
- * artifact id - a total order, so the aggregate rank is contiguous and the same ballots always
- * produce the same recommendation. A subject a judge did not rank simply does not contribute that
- * judge's points; it is not scored zero, because a missing ballot entry is an absence of judgement
- * and treating it as the worst possible verdict would let one failed judge decide the panel.
+ * Ordering is Borda points descending, then mean rank ascending, then artifact id - a total order,
+ * so the aggregate rank is contiguous and the same ballots always produce the same recommendation.
+ * A subject a judge did not rank simply does not contribute that judge's points; it is not scored
+ * zero, because a missing ballot entry is an absence of judgement and treating it as the worst
+ * possible verdict would let one failed judge decide the panel.
  */
 export function aggregatePanelVotes(verdicts: readonly PanelVerdict[]): PanelAggregate {
   const artifactIds: string[] = [];
@@ -582,7 +574,6 @@ export function aggregatePanelVotes(verdicts: readonly PanelVerdict[]): PanelAgg
     (a, b) =>
       b.points - a.points ||
       a.meanRank - b.meanRank ||
-      b.meanScore - a.meanScore ||
       (a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0),
   );
   const ranked: PanelAggregateEntry[] = entries.map((entry, index) => ({ ...entry, rank: index + 1 }));
@@ -599,7 +590,7 @@ export function aggregatePanelVotes(verdicts: readonly PanelVerdict[]): PanelAgg
       top !== null &&
       runnerUp !== null &&
       top.points === runnerUp.points &&
-      top.meanScore === runnerUp.meanScore,
+      top.meanRank === runnerUp.meanRank,
     evidenceTruncated: verdicts.some((verdict) => verdict.evidenceTruncated),
   };
 }

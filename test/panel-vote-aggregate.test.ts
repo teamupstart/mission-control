@@ -115,6 +115,17 @@ test("a dead tie is declared rather than silently resolved, and still orders det
   assert.deepEqual(aggregate.entries.map((e) => e.rank), [1, 2], "ranks stay contiguous through a tie");
 });
 
+test("a Borda tie stays tied when the judges' private score scales differ", () => {
+  const aggregate = aggregatePanelVotes([
+    verdict("j1", ["a", "b"], { a: 60, b: 99 }),
+    verdict("j2", ["b", "a"], { b: 99, a: 60 }),
+  ]);
+  const b = aggregate.entries.find((entry) => entry.artifactId === "b")!;
+  assert.equal(aggregate.tied, true);
+  assert.deepEqual(aggregate.entries.map((entry) => entry.artifactId), ["a", "b"]);
+  assert.ok(b.meanScore > aggregate.entries[0]!.meanScore, "the higher private score does not break the tie");
+});
+
 // ---- partial quorum and partial ballots ----
 
 test("one ballot aggregates, but is never presented as agreement", () => {

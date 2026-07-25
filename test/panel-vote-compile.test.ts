@@ -6,6 +6,7 @@ import {
   PANEL_VOTE_MAX_JUDGES,
   PANEL_VOTE_MIN_JUDGES,
   PANEL_VOTE_MIN_QUORUM,
+  PANEL_VOTE_FORM,
   PanelVoteConfigSchema,
 } from "../src/shared/ensemble-strategies/panel-vote.ts";
 import { CompiledEnsemblePlanSchema } from "../src/shared/protocol.ts";
@@ -102,6 +103,10 @@ test("the default panel is three distinct lenses over three candidates", () => {
     ],
   );
   assert.equal(evaluator.anonymizeSubjects, true, "the panel judges blind by default");
+});
+
+test("anonymization is fixed panel behavior, not a no-op operator control", () => {
+  assert.equal(PANEL_VOTE_FORM.fields.some((field) => field.key === "anonymizeSubjects"), false);
 });
 
 test("the quorum is compiled into the plan rather than left to the executing build", () => {

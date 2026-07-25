@@ -58,19 +58,23 @@ function labelSlug(label: string): string {
  *
  * Operator-authored Markdown is always fenced, whichever driver is asking, so an instruction
  * embedded in a Persona cannot override the contract. The name is stripped of control characters
- * and backticks before it is interpolated into a sentence for the same reason - it is operator
- * text arriving inside our own framing.
+ * and framing delimiters before it is interpolated into a sentence for the same reason - it is
+ * operator text arriving inside our own framing.
  */
+export function sanitizePromptLabel(label: string): string {
+  return label
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/[`"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
 export function fenceGuidance(guidance: {
   name: string;
   guidanceMarkdown: string;
 }): { label: string; text: string; fenced: true } {
-  const name = guidance.name
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-    .replace(/`/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+  const name = sanitizePromptLabel(guidance.name);
   return { label: `the "${name}" Persona`, text: guidance.guidanceMarkdown, fenced: true };
 }
 
@@ -223,6 +227,7 @@ function ballotContract(labels: string[]): string {
  */
 export function buildPanelBallotPrompt(input: PanelPromptInput): string {
   const lines: string[] = [];
+  const judgeLabel = sanitizePromptLabel(input.judgeLabel);
   lines.push(
     reviewContract({
       subject: "the submitted implementations below and rank them from best to worst on ONE stated dimension",
@@ -235,7 +240,7 @@ export function buildPanelBallotPrompt(input: PanelPromptInput): string {
     "Each submission below is one agent's independent attempt at the SAME task, captured as an immutable snapshot. You are comparing them, not fixing them. The labels are anonymous on purpose: which agent or model produced each one is withheld so it cannot bias the ranking.",
   );
   lines.push(
-    `You are one of ${input.judgeCount} independent judges on a panel, and your lens is "${input.judgeLabel}". The others are applying different lenses to the same submissions, and a person will see where you disagreed. Judge YOUR dimension honestly rather than trying to produce the ranking you think the panel will settle on.`,
+    `You are one of ${input.judgeCount} independent judges on a panel, and your lens is "${judgeLabel}". The others are applying different lenses to the same submissions, and a person will see where you disagreed. Judge YOUR dimension honestly rather than trying to produce the ranking you think the panel will settle on.`,
   );
   lines.push("");
 

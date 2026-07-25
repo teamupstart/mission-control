@@ -104,7 +104,7 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
 
       <ol className="ensemble-scorecards">
         {aggregate.entries.map((entry) => {
-          const recommended = entry.artifactId === aggregate.recommendedArtifactId;
+          const recommended = !aggregate.tied && entry.artifactId === aggregate.recommendedArtifactId;
           return (
             <li
               key={entry.artifactId}
@@ -211,7 +211,9 @@ function PanelDecisionPanel({
   decision: NonNullable<EnsembleResultContext["decision"]>;
 }): React.JSX.Element {
   const [mode, setMode] = useState<"select" | "no_consensus">("select");
-  const [artifactId, setArtifactId] = useState<string>(aggregate.recommendedArtifactId ?? "");
+  const [artifactId, setArtifactId] = useState<string>(
+    aggregate.tied ? "" : (aggregate.recommendedArtifactId ?? ""),
+  );
   const [reason, setReason] = useState("");
   const [rationale, setRationale] = useState("");
   const [confirmed, setConfirmed] = useState(false);
@@ -225,7 +227,11 @@ function PanelDecisionPanel({
     !decision.busy &&
     rationale.trim().length > 0 &&
     (mode === "select" ? Boolean(artifactId) : reason.trim().length > 0);
-  const nonRecommended = mode === "select" && artifactId !== aggregate.recommendedArtifactId;
+  const nonRecommended =
+    !aggregate.tied &&
+    mode === "select" &&
+    Boolean(artifactId) &&
+    artifactId !== aggregate.recommendedArtifactId;
 
   return (
     <form
@@ -259,7 +265,7 @@ function PanelDecisionPanel({
               />
               <span>
                 #{entry.rank} {subjectLabel(entry.artifactId)}
-                {entry.artifactId === aggregate.recommendedArtifactId && " (recommended)"}
+                {!aggregate.tied && entry.artifactId === aggregate.recommendedArtifactId && " (recommended)"}
                 {entry.contested && " - contested"}
               </span>
             </label>

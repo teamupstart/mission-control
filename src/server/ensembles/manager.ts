@@ -1090,7 +1090,11 @@ export class EnsembleManager {
     // spells it once per judge, and a manager that hard-coded the first spelling would silently
     // resolve nothing for the second. Every refusal lands BEFORE any member Task exists.
     const personas = new Map<string, EnsembleReviewPersona>();
-    for (const ref of descriptor.personaRefs(config)) {
+    const personaRefs = descriptor.personaRefs(config);
+    const guidanceBytesPerReference = Math.floor(
+      ENSEMBLE_LIMITS.reviewGuidanceBytes / Math.max(1, personaRefs.length),
+    );
+    for (const ref of personaRefs) {
       const path = `strategyConfig.${ref.path}`;
       // The same Persona named twice is ONE lookup, and deliberately so: a second read could only
       // return the same bytes or - if the operator edited it between the two - a different
@@ -1114,9 +1118,10 @@ export class EnsembleManager {
           id: resolved.id,
           revision: resolved.revision,
           name: resolved.name,
-          // Truncated to the plan's byte budget HERE, once, so the plan cannot burst its cap and
-          // so the truncation is disclosed at the boundary that made it rather than at persistence.
-          guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, ENSEMBLE_LIMITS.reviewGuidanceBytes),
+          // Truncated to the plan's shared guidance budget HERE, once, so the plan cannot burst its
+          // cap and so the truncation is disclosed at the boundary that made it rather than at
+          // persistence.
+          guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, guidanceBytesPerReference),
           runner: resolved.runner,
           model: resolved.model,
         });

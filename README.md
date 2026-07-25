@@ -1540,15 +1540,16 @@ Two more properties, both deliberate:
 
 An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
 under one versioned *strategy*, plus the group-level facts a single task cannot express: one
-pinned base commit, member roles, immutable submitted artifacts, a comparison, a human
+pinned base commit, member roles, immutable submitted artifacts, an evaluation, a human
 decision, and a terminal outcome. The first strategy is **Best of N** - two to five agents
 implement the same task alone from the same commit, one tool-less comparison ranks what they
-submitted, and you confirm the winner.
+submitted, and you confirm the winner. **Consensus** is the second, and it ends in questions
+rather than a winner - see [Additional strategies](#additional-strategies) below.
 
 **Start one from Dispatch, watch it under Workflows.** Open the dispatch modal and flip the
 launch mode from **Single agent** to **Ensemble**. The same title/repo/intent/attachment
-compose area serves both; below it, descriptor-driven strategy cards (Best of N is the only one
-enabled today) render the strategy's own form - a roster of two to five candidate rows, each
+compose area serves both; below it, descriptor-driven strategy cards render the chosen
+strategy's own form - for Best of N, a roster of two to five candidate rows, each
 choosing its own agent, model, effort and optional approach hint, plus the judge-blind toggle,
 the optional evaluator Persona, and an optional [workflow](#workflows-and-personas) to hand the
 winner to. **Review launch** posts a side-effect-free preview (member count, concurrency, waves,
@@ -1560,7 +1561,8 @@ second fleet. Every candidate is grouped in Cards, Console and Board by a distin
 Personas and Runs is the monitoring, evidence, decision, recovery and history surface: it lists
 runs attention-first from the one live SSE stream and fetches a selected run's bounded detail -
 members, immutable artifacts and their on-demand diffs, the stage/evaluation timeline, the
-Best-of-N scorecards, and the select-one decision - over HTTP, refetching when that run's summary
+strategy's own result view (Best-of-N's scorecards, Consensus's agreements and divergence cards),
+and the decision that strategy asks for - over HTTP, refetching when that run's summary
 revises rather than polling. The strategy-neutral runtime pins one
 base commit, launches bounded *waves* of ordinary member tasks (creating every task in a wave
 before dispatching the first, and never launching past the concurrency the plan authorizes),
@@ -1613,6 +1615,35 @@ finish with the normal continuation. A session cannot be bound to a workflow man
 ensemble member is active; finalization marks the selected member retained before it uses the same
 binding boundary for the handoff. Ensemble and Workflow lifecycles stay separate: a workflow reset
 removes its binding but never an ensemble ref, and a completed ensemble never recreates a reset run.
+
+### Additional strategies
+
+Every strategy runs on the unchanged engine above - the same pinned base, the same member waves,
+the same immutable artifacts, the same durable human-decision boundary. What a strategy chooses is
+which question its evaluation asks, what the person is asked to decide, and what the terminal
+outcome does.
+
+**Consensus** turns three to five independent attempts into *questions instead of a winner*. The
+members work exactly as Best-of-N's do; the difference is what happens next. One tool-less,
+anonymous, provider-neutral pass compares what the submissions **decided** rather than how good
+they are: what all of them did the same way is filed as an **agreement**, and each thing they did
+differently becomes an open **question** with one option per position actually taken, attributed to
+the attempts that took it. The pass may not rank, score or recommend, and the reply is validated as
+strictly as a comparison is - a pass that reported nothing at all, named a submission the packet
+never contained, put one submission on two sides of the same question, or silently ignored one of
+the attempts is a *failed attempt*, never a question set. Question and option ids are assigned by
+the daemon after validation, so your recorded answer names an id no candidate's diff could have
+influenced.
+
+You then answer the questions: pick the position you want, or write your own. Nothing is promoted
+and **nothing is reaped** - every attempt's snapshot is kept and restorable, the run terminates
+*retained*, and the answers are recorded with the decision. The questions you are asked are
+persisted when the decision stage opens and your answers are validated against exactly those, so a
+re-run evaluation can never turn a recorded answer into an answer to a question you never saw. Use
+it when the disagreement is the point - an unfamiliar area, a design with real forks in it, a task
+where you want to know what the choices are before you pick one. Its evaluation shares the one
+daemon review-call ceiling and the same **Settings → Models → Ensemble evaluation** job as the
+Best-of-N comparison.
 
 The public API is one localhost surface: `GET /api/ensembles` (compact summaries),
 `POST /api/ensembles/preview` (a side-effect-free launch/budget/handoff estimate that shares
@@ -2097,7 +2128,7 @@ drawers.
 
 Mission Control does a little model work of its own - naming an untitled
 [dispatch](#dispatch-an-agent), rewriting a prompt into the [Goal](#goal) on a card, narrating the
-[away digest](#away-mode), compacting Workflow evidence, and comparing Ensemble submissions. None
+[away digest](#away-mode), compacting Workflow evidence, and evaluating Ensemble submissions. None
 of it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
 say which provider does that work and which model each job uses.
 
@@ -2118,7 +2149,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
-| Ensemble comparison | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model wins over this |
+| Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, and mines a Consensus run's divergences, in one tool-less call. A judging Persona's own model wins over this |
 
 Each resolves the same way [Foreman's four](#which-model-foreman-runs-as) and the
 [Inspector's one](#the-review-model) do: **your setting, then the environment variable, then the
@@ -2131,8 +2162,8 @@ list, with suggestions offered for whichever provider is in force.
 
 The title, goal, digest, and Workflow-context jobs are best-effort calls with a deterministic
 fallback, so a missing or logged-out provider degrades their output rather than failing a
-dispatch. An Ensemble comparison is different: a provider failure or invalid reply fails its
-durable, bounded attempt, and the engine never invents a recommendation.
+dispatch. An Ensemble evaluation is different: a provider failure or invalid reply fails its
+durable, bounded attempt, and the engine never invents a recommendation or a question set.
 
 **Foreman's four models and the Inspector's review model are not here.** They live with the
 subsystem that spends them - **Settings → Foreman** and **Settings → Inspector** - because each
@@ -3638,7 +3669,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles): the model that ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble comparison**, then this variable, then the provider's cheap default |
+| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison and the Consensus divergence pass alike. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |

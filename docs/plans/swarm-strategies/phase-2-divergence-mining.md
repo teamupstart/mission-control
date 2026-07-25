@@ -95,3 +95,17 @@ plan artifacts). They must not repurpose the divergence schema for pass/fail ver
 
 - 2026-07-23: created; independent of Phases 1, 3, 4. Phase 3 noted as a potential future
   consumer of the decision-options pattern; no dependency taken.
+- 2026-07-25: implemented against the merged kernel. Names as built, for the phases that may
+  reuse them: strategy id `consensus`; driver keys `consensus_review@1`,
+  `divergence_decision@1`, `retain_all_finalize@1`; evaluator kind `consensus_llm` (a new
+  append-only `ENSEMBLE_EVALUATOR_KINDS` tuple, since the plan's evaluator policy previously
+  had only one); llm purpose `consensus_review`; decision policy `answer_divergences`;
+  finalization policy `retain_all`. The **evaluator-derived decision options** primitive landed
+  as two additions to `DecisionDriver` - `openStage(DecisionOpenContext)`, which composes the
+  stage attempt's persisted input from the newest succeeded evaluation, and `stageInput` on
+  `DecisionContext`, which is what an answer is validated against. Both are strategy-neutral and
+  available to Phase 3. Two things were done that the phase document did not name, both to avoid
+  a second copy of a rule: the comparative reviewer's packet assembly, fencing, byte allocation,
+  ledger and failure classification moved into `reviews/packet.ts` and are now shared by both
+  evaluators, and the `ensemble-comparison` LLM job (id unchanged - it is a persisted key) was
+  reworded to cover every ensemble evaluation rather than gaining a second job id.

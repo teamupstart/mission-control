@@ -1,5 +1,6 @@
 import { ENSEMBLE_DRIVER_KEYS, knownDriverKey, type EnsembleDriverKey } from "@shared/ensemble.ts";
 import { comparativeReviewDriver } from "./comparative.ts";
+import { consensusReviewDriver } from "./consensus.ts";
 import type { ReviewDriver } from "./types.ts";
 
 export type {
@@ -33,6 +34,9 @@ export const REVIEW_DRIVERS: Record<EnsembleDriverKey, ReviewDriver | null> = {
   "comparative_review@1": comparativeReviewDriver,
   "human_decision@1": null,
   "select_one_finalize@1": null,
+  "consensus_review@1": consensusReviewDriver,
+  "divergence_decision@1": null,
+  "retain_all_finalize@1": null,
 };
 
 /** The review driver for a persisted driver key, or null when this build cannot run it as a review. */

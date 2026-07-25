@@ -13,6 +13,8 @@ import {
   type EnsembleDecision,
   type EnsembleDecisionPolicy,
   type EnsembleEvaluatorGuidance,
+  type EnsembleEvaluatorKind,
+  type EnsembleLlmPurpose,
   type EnsembleEvaluatorPolicy,
   type EnsembleFinalizationProgress,
   type EnsembleJson,
@@ -334,9 +336,9 @@ const SUBMITTABLE_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching
 const LIVE_TASK_STATUSES: readonly TaskGatewayStatus[] = ["backlog", "dispatching", "running"];
 const DRIVER_KEYS_BY_KIND = {
   member: ["member_wave@1"],
-  review: ["artifact_barrier@1", "comparative_review@1"],
-  decision: ["human_decision@1"],
-  finalize: ["select_one_finalize@1"],
+  review: ["artifact_barrier@1", "comparative_review@1", "consensus_review@1"],
+  decision: ["human_decision@1", "divergence_decision@1"],
+  finalize: ["select_one_finalize@1", "retain_all_finalize@1"],
 } as const satisfies Record<EnsembleStageDriverKind, readonly (typeof ENSEMBLE_DRIVER_KEYS)[number][]>;
 
 function isSettled(status: EnsembleMemberStatus | null): boolean {
@@ -821,6 +823,11 @@ export class EnsembleEngine {
       policy: stage.decision,
       eligibleArtifactIds: eligible.ids,
       memberForArtifact: (artifactId) => eligible.memberByArtifact.get(artifactId) ?? null,
+      // The persisted question, not a re-derived one. A driver whose options came from an
+      // evaluator validates the answer against what the operator was actually shown, so a review
+      // retried since the run parked cannot turn a recorded answer into an answer to a question
+      // nobody saw.
+      stageInput: this.latestStageAttempt(state, stage.id)?.input ?? null,
     });
     return validated.ok
       ? { ok: true, stage, validated }
@@ -854,7 +861,7 @@ export class EnsembleEngine {
     this.event(
       state.run.id,
       "decision_recorded",
-      { decisionId: decision.id, kind: prepared.validated.selection.kind },
+      { decisionId: decision.id, kind: prepared.validated.selectionKind },
       `decision_recorded:${decision.id}`,
     );
     await this.advanceLocked(state.run.id);
@@ -888,6 +895,23 @@ export class EnsembleEngine {
       const after = this.store.getRun(runId);
       return { ok: after?.status === "completed" || after?.status === "finalizing", detail: after?.error ?? undefined };
     });
+  }
+
+  /**
+   * The newest succeeded evaluation on a run, or null.
+   *
+   * Read once, when a decision stage opens, so a driver whose question IS the evaluation's result
+   * can compose it. Newest rather than first because a retried review supersedes its predecessor,
+   * and the operator must be asked about the evidence that actually settled the stage.
+   */
+  private latestSucceededEvaluation(runId: string): { id: string; body: EnsembleJson } | null {
+    let latest: { id: string; body: EnsembleJson } | null = null;
+    for (const evaluation of this.store.listEvaluations(runId)) {
+      if (evaluation.status === "succeeded" && evaluation.result) {
+        latest = { id: evaluation.id, body: evaluation.result.body };
+      }
+    }
+    return latest;
   }
 
   /** Ready artifacts of the decision's eligible kind, one per member, in stable ordinal order. */
@@ -1402,6 +1426,21 @@ export class EnsembleEngine {
       // Park on a PERSON, durably. A `waiting` stage attempt is created so the decision stage has
       // a row `decide` can finish `succeeded` (which is what unblocks the finalize stage's
       // dependency), and so a restart finds the run parked here rather than re-entering the review.
+      //
+      // The INPUT is composed by the compiled decision driver rather than written here, which is
+      // what lets a decision stage ask a question an evaluator derived (a consensus run's
+      // divergences) instead of a strategy-static one - with no engine branch on either. It is
+      // written once: `startStageAttempt` is idempotent on its command key and returns the existing
+      // row, so a re-entry after a restart re-renders nothing and the operator keeps being asked
+      // exactly what was persisted the first time.
+      const driver = decisionDriverFor(stage.driverKey);
+      const input = driver
+        ? driver.openStage({
+            policy: stage.decision,
+            eligibleArtifactIds: this.eligibleDecisionArtifacts(state, stage.decision).ids,
+            evaluation: this.latestSucceededEvaluation(state.run.id),
+          })
+        : ({ command: "await_human_decision" } as EnsembleJson);
       this.store.startStageAttempt(
         {
           runId: state.run.id,
@@ -1411,7 +1450,7 @@ export class EnsembleEngine {
           attempt: 1,
           commandKey: `decision:${state.run.id}:${stage.id}:1`,
           status: "waiting",
-          input: { command: "await_human_decision" } as EnsembleJson,
+          input,
         },
         this.now(),
       );
@@ -1456,7 +1495,10 @@ export class EnsembleEngine {
         attempt: attemptNumber,
         commandKey: `review:${state.run.id}:${stage.id}:${attemptNumber}`,
         status: "running",
-        input: { command: "comparative_review", attempt: attemptNumber } as EnsembleJson,
+        // The compiled driver key, not a literal naming one evaluator: this row is the receipt of
+        // which review a restart finds running, and a consensus pass recorded as a comparison
+        // would be a receipt for something that never happened.
+        input: { command: "review", driverKey: stage.driverKey, attempt: attemptNumber } as EnsembleJson,
       },
       now,
     );
@@ -1506,7 +1548,7 @@ export class EnsembleEngine {
       policy: prepared.policy,
       subjects: prepared.subjects,
       runtime: this.reviewRuntime(),
-      persist: this.reviewPersist(runId, stageAttemptId),
+      persist: this.reviewPersist(runId, stageAttemptId, prepared.policy.kind, driver.llmPurpose),
       signal,
       stillActive: () => this.reviewStillActive(runId, stageAttemptId),
     };
@@ -1612,8 +1654,20 @@ export class EnsembleEngine {
     };
   }
 
-  /** The durable ledger the driver writes through, bound to this run and stage attempt. */
-  private reviewPersist(runId: string, stageAttemptId: string): ReviewPersist {
+  /**
+   * The durable ledger the driver writes through, bound to this run and stage attempt.
+   *
+   * `method` is the compiled PLAN's evaluator kind - what this run was created to do - while
+   * `purpose` is the DRIVER's, because a cost row is about the call this build actually made. Both
+   * are passed in rather than named here: an engine holding its own table of which evaluator uses
+   * which method is the table that files a new evaluator's calls under the old one's name.
+   */
+  private reviewPersist(
+    runId: string,
+    stageAttemptId: string,
+    method: EnsembleEvaluatorKind,
+    purpose: EnsembleLlmPurpose,
+  ): ReviewPersist {
     return {
       beginEvaluation: (input) =>
         this.store.recordEvaluation(
@@ -1621,7 +1675,7 @@ export class EnsembleEngine {
             runId,
             stageAttemptId,
             attempt: 1,
-            method: "comparative_llm",
+            method,
             runnerId: input.runnerId,
             modelId: input.modelId,
             inputFingerprint: input.inputFingerprint,
@@ -1635,7 +1689,7 @@ export class EnsembleEngine {
           runId,
           stageAttemptId,
           evaluationId: input.evaluationId,
-          purpose: "comparative_review",
+          purpose,
           runnerId: input.runnerId,
           modelId: input.modelId,
           attempt: input.attempt,
@@ -2256,7 +2310,20 @@ export class EnsembleEngine {
     });
     if (!planned.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, planned.detail);
     if (planned.plan.kind === "no_consensus") {
-      return this.completeNoConsensus(state, stageAttempt, planned.plan, now);
+      return this.completeRetainingAll(
+        state,
+        stageAttempt,
+        { kind: "no_consensus", artifactIds: planned.plan.artifactIds, reason: planned.plan.reason },
+        now,
+      );
+    }
+    if (planned.plan.kind === "retained") {
+      return this.completeRetainingAll(
+        state,
+        stageAttempt,
+        { kind: "retained", memberIds: planned.plan.memberIds, artifactIds: planned.plan.artifactIds },
+        now,
+      );
     }
     return this.finalizeSelectOne(state, stage, stageAttempt, planned.plan);
   }
@@ -2784,14 +2851,22 @@ export class EnsembleEngine {
     return "published";
   }
 
-  private async completeNoConsensus(
+  /**
+   * The ONE non-destructive terminal, shared by `no_consensus` and `retained`.
+   *
+   * Every submitted member becomes `retained`, its agent is settled through the ordinary Task
+   * cancellation, and nothing else happens: no ref is verified, no checkout reset, no worktree
+   * reaped, no continuation typed, no Workflow bound. Both outcomes are the same act - keep it all
+   * - reached by two different human decisions, and a second copy of this body is how one of them
+   * would eventually start reaping something.
+   */
+  private async completeRetainingAll(
     state: RunState,
     stageAttempt: EnsembleStageAttempt,
-    plan: Extract<FinalizePlan, { kind: "no_consensus" }>,
+    outcome: Extract<EnsembleOutcome, { kind: "no_consensus" | "retained" }>,
     now: number,
   ): Promise<"published"> {
     const run = state.run;
-    // Non-destructive: retain every submitted member, reap nothing, keep every artifact.
     for (const member of state.members) {
       if (member.status === "submitted" || member.status === "reviewing") {
         this.store.setMemberStatus(member.id, ["submitted", "reviewing"], "retained", {}, now);
@@ -2803,12 +2878,7 @@ export class EnsembleEngine {
       run.id,
       ["finalizing"],
       "completed",
-      {
-        outcome: { kind: "no_consensus", artifactIds: plan.artifactIds, reason: plan.reason },
-        error: null,
-        completedAt: now,
-        activeStageId: null,
-      },
+      { outcome, error: null, completedAt: now, activeStageId: null },
       now,
     );
     if (!completed.ok) return "published";
@@ -2816,7 +2886,7 @@ export class EnsembleEngine {
     const decision = this.store.listDecisions(run.id).find((d) => d.status === "recorded" || d.status === "applied");
     if (decision) this.store.applyDecision(decision.id, stageAttempt.id, now);
     this.clearDeadline(run.id);
-    this.event(run.id, "run_completed", { outcome: "no_consensus" }, `run_completed:${run.id}`);
+    this.event(run.id, "run_completed", { outcome: outcome.kind }, `run_completed:${run.id}`);
     return "published";
   }
 

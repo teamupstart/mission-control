@@ -6561,6 +6561,86 @@ select:not([multiple]) option {
   padding-left: 18px;
 }
 
+/* Consensus agreements + divergence cards */
+.ensemble-agreements {
+  margin-top: 10px;
+}
+
+.ensemble-agreements h5 {
+  margin: 0 0 4px;
+  color: var(--muted);
+}
+
+.ensemble-agreements ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.ensemble-divergences {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.ensemble-divergence {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.ensemble-divergence-q {
+  margin: 0 0 8px;
+}
+
+.ensemble-divergence-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.ensemble-divergence-option {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.ensemble-divergence-option.chosen {
+  border-left-color: var(--idle);
+}
+
+.ensemble-divergence-option > header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ensemble-option-label {
+  font-weight: 600;
+}
+
+.ensemble-option-votes {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ensemble-option-subjects {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.ensemble-your-answer {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
 /* Decision panel */
 .ensemble-decision {
   margin-top: 16px;
@@ -6581,6 +6661,13 @@ select:not([multiple]) option {
   padding: 10px;
   display: grid;
   gap: 6px;
+}
+
+/* A consensus question is a whole sentence, so its legend wraps rather than clipping. */
+.ensemble-decision-choices > legend {
+  max-width: 100%;
+  padding: 0 4px;
+  font-weight: 600;
 }
 
 .ensemble-decision-choice {

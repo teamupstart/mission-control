@@ -5,6 +5,12 @@ import {
   BestOfNConfigSchema,
   bestOfNEstimate,
 } from "./ensemble-strategies/best-of-n.ts";
+import {
+  CONSENSUS_CAPABILITIES,
+  CONSENSUS_FORM,
+  ConsensusConfigSchema,
+  consensusEstimate,
+} from "./ensemble-strategies/consensus.ts";
 import type { EnsembleStrategyInfo } from "./ensemble-strategies/types.ts";
 
 export type {
@@ -45,6 +51,24 @@ export const ENSEMBLE_STRATEGY_INFO: Record<EnsembleStrategyId, EnsembleStrategy
     configSchema: BestOfNConfigSchema,
     form: BEST_OF_N_FORM,
     estimate: bestOfNEstimate,
+    enabled: true,
+  },
+  consensus: {
+    id: "consensus",
+    currentVersion: 1,
+    label: "Consensus",
+    blurb: "Three to five agents attempt the task alone, then one pass mines what they disagreed about.",
+    explanation:
+      "Every attempt starts from one pinned commit in its own worktree and works without seeing " +
+      "the others. None may push or open a pull request. When they have all finished, one " +
+      "tool-less pass compares what they DECIDED: what all of them did the same way is filed as " +
+      "agreement, and each thing they did differently becomes a question with the positions the " +
+      "attempts actually took. You answer the questions. Nothing is promoted and nothing is " +
+      "reaped - every snapshot is kept, and the run's product is your recorded answers.",
+    capabilities: CONSENSUS_CAPABILITIES,
+    configSchema: ConsensusConfigSchema,
+    form: CONSENSUS_FORM,
+    estimate: consensusEstimate,
     enabled: true,
   },
 };

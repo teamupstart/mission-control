@@ -99,16 +99,23 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
   },
   // The one job that is a REVIEW rather than housekeeping, and it sits here for the reason
   // the header gives: it resolves through the same config -> env -> shipped-default ladder so
-  // an operator's Settings edit lands on the next comparison, not the next restart. The
-  // shipped tier is deliberately the cheap one every other job uses - a comparison the
+  // an operator's Settings edit lands on the next evaluation, not the next restart. The
+  // shipped tier is deliberately the cheap one every other job uses - an evaluation the
   // operator has not tuned should not silently spend the priciest tier - and it is exactly
   // what a judging Persona's own model override, or a Settings value, replaces.
+  //
+  // It covers EVERY ensemble evaluator, not only Best-of-N's ranking: the consensus strategy's
+  // divergence pass is the same cost class over the same evidence, and a second job id would be
+  // a second Settings row an operator has to keep in step with the first for no gain. The id
+  // itself is append-only - it is a persisted key in the `models` map - so the wording moves and
+  // the spelling does not.
   "ensemble-comparison": {
     envKey: "ENSEMBLE_COMPARISON_MODEL",
     envVar: "MISSION_ENSEMBLE_COMPARISON_MODEL",
     fallback: "claude-haiku-4-5",
-    label: "Ensemble comparison",
-    blurb: "Ranks the submitted Best-of-N candidates in one tool-less comparison. A judging Persona's own model wins.",
+    label: "Ensemble evaluation",
+    blurb:
+      "Ranks Best-of-N candidates, and mines a Consensus run's divergences, in one tool-less call. A judging Persona's own model wins.",
   },
 };
 

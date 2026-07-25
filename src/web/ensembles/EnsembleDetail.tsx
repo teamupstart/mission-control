@@ -3,8 +3,8 @@ import type { EnsembleActionBody } from "@shared/protocol.ts";
 import type {
   EnsembleArtifact,
   EnsembleAttempt,
+  EnsembleJson,
   EnsembleMember,
-  EnsembleSelectOneSelection,
 } from "@shared/ensemble.ts";
 import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
 import { fmtUsd } from "../lib/format.ts";
@@ -90,7 +90,11 @@ export function EnsembleDetail({
         const facts = [attempt?.agent, attempt?.observedModel ?? attempt?.requestedModel]
           .filter(Boolean)
           .join(" · ");
-        return `Candidate ${member.ordinal}${facts ? ` (${facts})` : ""}`;
+        // The compiled role's own label, not a literal "Candidate": a strategy names its members
+        // (Best-of-N's candidates, Consensus's attempts) and the Members list below already prints
+        // that name, so a hard-coded word here makes one page call the same member two things.
+        const name = member.roleLabel.trim() || `Member ${member.ordinal}`;
+        return `${name}${facts ? ` (${facts})` : ""}`;
       }
       return `Artifact ${shortSha(artifact?.digest) || artifactId.slice(0, 8)}`;
     };
@@ -117,7 +121,7 @@ export function EnsembleDetail({
           busy: actionBusy,
           pending: decisionPending,
           error: actionErrorKind === "decide" ? actionError : null,
-          onDecide: (selection: EnsembleSelectOneSelection, rationale: string) =>
+          onDecide: (selection: EnsembleJson, rationale: string) =>
             onAction({
               kind: "decide",
               // A fresh key each attempt is safe: `expectedStatus` refuses a second decide once

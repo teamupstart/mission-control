@@ -6,6 +6,7 @@ import type {
   EnsembleEvaluatorPolicy,
   EnsembleJson,
   EnsembleLlmCallState,
+  EnsembleLlmPurpose,
   EnsemblePayloadEnvelope,
 } from "@shared/ensemble.ts";
 import type { ReviewScheduler } from "../../llm/review-scheduler.ts";
@@ -164,6 +165,16 @@ export type ReviewOutcome =
 /** A versioned review driver, registered by the exact `driverKey` a compiled plan may name. */
 export interface ReviewDriver {
   driverKey: EnsembleDriverKey;
+  /**
+   * How this driver's provider calls appear on the durable cost ledger.
+   *
+   * Declared by the driver rather than hard-coded by the engine, because the engine dispatches on
+   * the compiled plan's driver key and must not hold a second table mapping keys to purposes -
+   * that second table is where a new evaluator's calls end up filed under the old one's name. The
+   * evaluation row's `method` is a different fact and comes from the PLAN (`evaluator.kind`),
+   * which is what the run was compiled to do rather than what this build happens to run it with.
+   */
+  llmPurpose: EnsembleLlmPurpose;
   resultLabel(input: {
     result: EnsemblePayloadEnvelope;
     subjectArtifactIds: string[];

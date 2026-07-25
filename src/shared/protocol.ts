@@ -37,6 +37,7 @@ import {
   ENSEMBLE_DECISION_STATUSES,
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_EVALUATION_STATUSES,
+  ENSEMBLE_EVALUATOR_KINDS,
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
   ENSEMBLE_LLM_CALL_STATES,
@@ -2676,7 +2677,7 @@ export const EnsembleEvaluatorGuidanceSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const EnsembleEvaluatorPolicySchema = z.object({
-  kind: z.literal("comparative_llm"),
+  kind: z.enum(ENSEMBLE_EVALUATOR_KINDS),
   guidance: EnsembleEvaluatorGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable(),
   model: ModelIdSchema.nullable(),
@@ -2691,22 +2692,43 @@ export const EnsembleSubjectPolicySchema = z.object({
   maxSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
 });
 
-export const EnsembleDecisionPolicySchema = z.object({
-  kind: z.literal("select_one"),
-  eligibleArtifactKind: EnsembleArtifactKindSchema,
-  minEligibleSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
-});
+/**
+ * Both members carry the same two eligibility fields because the generic engine reads them
+ * WITHOUT narrowing on the kind - see `EnsembleDecisionPolicy`. `answer_divergences` renders its
+ * options from the decision stage's persisted input rather than from a static scorecard.
+ */
+export const EnsembleDecisionPolicySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("select_one"),
+    eligibleArtifactKind: EnsembleArtifactKindSchema,
+    minEligibleSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+  z.object({
+    kind: z.literal("answer_divergences"),
+    eligibleArtifactKind: EnsembleArtifactKindSchema,
+    minEligibleSubjects: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxMembers),
+  }),
+]);
 
 /**
- * `requiresHumanDecision` is `z.literal(true)`, matching the wire type and
- * `WorkflowCaptureExpectationSchema.requireCleanWorktree`: this finalization resets a branch
- * and reaps worktrees, so there is no valid plan that turns the confirmation off.
+ * `requiresHumanDecision` is `z.literal(true)` on every member, matching the wire type and
+ * `WorkflowCaptureExpectationSchema.requireCleanWorktree`. `select_one` finalization resets a
+ * branch and reaps worktrees, so there is no valid plan that turns the confirmation off;
+ * `retain_all` destroys nothing but its terminal outcome IS the human's answer, so a plan that
+ * could reach it unattended would file a question set as settled.
  */
-export const EnsembleFinalizationPolicySchema = z.object({
-  kind: z.literal("select_one"),
-  requiresHumanDecision: z.literal(true),
-  loserPolicy: z.literal("reap_worktrees"),
-});
+export const EnsembleFinalizationPolicySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("select_one"),
+    requiresHumanDecision: z.literal(true),
+    loserPolicy: z.literal("reap_worktrees"),
+  }),
+  z.object({
+    kind: z.literal("retain_all"),
+    requiresHumanDecision: z.literal(true),
+    loserPolicy: z.literal("retain"),
+  }),
+]);
 
 const ensembleStageBase = {
   id: ensembleStageId,
@@ -3307,6 +3329,17 @@ export const EnsembleSelectOneSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("no_consensus"), reason: z.string().max(ENSEMBLE_LIMITS.rationale) }),
 ]);
 export type EnsembleSelectOneSelectionBody = z.infer<typeof EnsembleSelectOneSelectionSchema>;
+
+/**
+ * The `answer_divergences` selection is NOT mirrored here.
+ *
+ * `ConsensusAnswersSelectionSchema` (`./ensemble-strategies/consensus.ts`) is the one spelling,
+ * imported directly by the divergence decision driver the way the comparative reviewer imports
+ * its own result schema. Restating it here would put a second copy on the wire boundary, and
+ * re-exporting it would close an import cycle - that module imports `ModelIdSchema` from this
+ * one, and a cycle between two files full of module-level zod schemas is an initialization order
+ * bug waiting for the first importer that resolves them the other way round.
+ */
 
 // ---- Recurring Missions (schedule catalog) ----
 

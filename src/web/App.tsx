@@ -240,6 +240,12 @@ export function App(): React.JSX.Element {
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
   const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
+  // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
+  // ConsoleDetail owns that state, so it registers a stepper here that App's global key
+  // handler drives. "edge" means there is no further tab that way - forward it clamps, back
+  // it hands the keyboard to the rail. Shared by the console and the board drill-in, which
+  // mount the same ConsoleDetail.
+  const readerTabbers = useRef<Map<string, (dir: -1 | 1) => "moved" | "edge">>(new Map());
   // Set to the id a keyboard expand should drop the cursor into once its send box
   // mounts (see the `expand` chord and the effect that consumes it). A ref, not
   // state: it arms a one-shot side effect, and must not itself cause a render.
@@ -259,15 +265,25 @@ export function App(): React.JSX.Element {
     else cardEls.current.delete(id);
   }, []);
 
-  const focusConsoleRail = useCallback((id: string) => {
+  // The rail row is a RailRow in BOTH the console rail and the board drill-in column, so
+  // this focuses the left-bar selection in either layout. `.cdetail` is ConsoleDetail's
+  // root, shared by both details - the guard keeps an arrow walk from yanking the cursor
+  // out of an editor that is NOT the reader (the topbar filter).
+  const focusReaderRail = useCallback((id: string) => {
     const active = document.activeElement as HTMLElement | null;
     const activeEditor = active?.closest("input, textarea, select, [contenteditable='true']");
-    if (activeEditor && !active?.closest(".console-detail")) return;
+    if (activeEditor && !active?.closest(".cdetail")) return;
     cardEls.current.get(id)?.focus({ preventScroll: true });
   }, []);
 
-  const focusConsoleDetail = useCallback(() => {
-    document.querySelector<HTMLElement>(".console-detail")?.focus({ preventScroll: true });
+  const focusReaderBody = useCallback(() => {
+    // Land on the reader body - the conversation pane the vertical arrows scroll - not the
+    // whole detail section. That is what "Tab selects the conversation window" means: the
+    // ring frames what is being read, and a later native Tab steps into the transcript and
+    // reply box rather than the session title up in the header chrome. Only one detail is
+    // open at a time (console beside the rail, or the board drill-in), so a bare query finds
+    // the right one in either layout.
+    document.querySelector<HTMLElement>(".detail-body")?.focus({ preventScroll: true });
   }, []);
 
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
@@ -279,6 +295,14 @@ export function App(): React.JSX.Element {
     if (scroll) detailScrollers.current.set(id, scroll);
     else detailScrollers.current.delete(id);
   }, []);
+
+  const registerReaderTab = useCallback(
+    (id: string, nav: ((dir: -1 | 1) => "moved" | "edge") | null) => {
+      if (nav) readerTabbers.current.set(id, nav);
+      else readerTabbers.current.delete(id);
+    },
+    [],
+  );
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedId((cur) => (cur === id ? null : id));
@@ -599,6 +623,7 @@ export function App(): React.JSX.Element {
     registerEl,
     registerActions,
     registerDetailScroll,
+    registerReaderTab,
     renamingId,
     onRenameStart: setRenamingId,
     onRenameClose: () => setRenamingId(null),
@@ -758,27 +783,43 @@ export function App(): React.JSX.Element {
       // edited), so grid shortcuts don't drive a background card behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
 
-      // Console focus zones. Tab hands the keyboard from the rail selector to the open
-      // conversation so the vertical arrows scroll it; Shift+Tab (and Escape) hand it back.
-      // The gate is the logical zone, NOT where DOM focus happens to sit: once a session is
-      // open the operator's one Tab has to reach the reader whether the last click left
-      // focus on a rail row, on the body, or nowhere. Gating instead on the focused
-      // element's rail/detail ancestry was the regression that made a bare Tab fall through
-      // to native browser tabbing unless focus already sat on a rail button, walking the
-      // buttons rather than the conversation. `!typing` keeps native Tab in the topbar filter
-      // and the reply composer; Shift+Tab from the rail zone falls through to the `mode`
-      // binding below, so that shortcut still works in Console like every other layout.
-      if (layout === "console" && selected && !typing) {
-        if (chord === "Tab" && consoleZone === "rail") {
+      // Reader navigation - identical in the console and the board drill-in, because both
+      // mount the same ConsoleDetail. A session's detail is open (the console always shows
+      // one beside the rail; the board shows one while drilled in), and Tab walks the
+      // keyboard rightward through it: from the rail INTO the reader - landing on the
+      // conversation pane the arrows scroll - then across the tab strip Conversation -> Work
+      // queue -> Gate -> Diff -> Files, clamping at the last rather than tabbing away.
+      // Shift+Tab walks left, and from the first tab hands the keyboard back to the rail.
+      //
+      // The gate is where DOM focus ACTUALLY is (`.cdetail` ancestry), never the
+      // `consoleZone` React state, which lags and once desynced let a bare Tab fall through
+      // to native browser tabbing (it walked to the next rail row). Reading focus is self-
+      // correcting: outside the reader Tab always enters, inside it Shift+Tab always steps.
+      // `consoleZone` is still set so the console's rail dimming follows, but it no longer
+      // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
+      // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
+      const readerSession =
+        layout === "console" ? selected : layout === "board" && boardOpen ? selected : null;
+      if (readerSession && !typing) {
+        const inReader = Boolean(target?.closest(".cdetail"));
+        if (chord === "Tab") {
           e.preventDefault();
-          setConsoleZone("detail");
-          focusConsoleDetail();
+          if (!inReader) {
+            setConsoleZone("detail");
+            focusReaderBody();
+          } else {
+            readerTabbers.current.get(readerSession.id)?.(1);
+          }
           return;
         }
-        if (chord === "shift+Tab" && consoleZone === "detail") {
+        if (chord === "shift+Tab" && inReader) {
           e.preventDefault();
-          setConsoleZone("rail");
-          focusConsoleRail(selected.id);
+          // Step one tab left; running off the front ("edge", or no stepper) is the signal
+          // to leave the reader and hand the keyboard back to the rail selection.
+          if (readerTabbers.current.get(readerSession.id)?.(-1) !== "moved") {
+            setConsoleZone("rail");
+            focusReaderRail(readerSession.id);
+          }
           return;
         }
       }
@@ -816,18 +857,18 @@ export function App(): React.JSX.Element {
             setExpandedId(null);
             return;
           }
+          // The reader (console detail or board drill-in) sits above the selection the way
+          // grid focus does: if the keyboard is inside it, one Escape hands it back to the
+          // rail, and only the NEXT closes the board drill-in or drops the selection.
+          if (readerSession && target?.closest(".cdetail")) {
+            e.preventDefault();
+            setConsoleZone("rail");
+            focusReaderRail(readerSession.id);
+            return;
+          }
           if (layout === "board" && boardOpen) {
             e.preventDefault();
             setBoardOpen(false);
-            return;
-          }
-          // Console's reader zone sits above its selection the way grid focus and the
-          // board drill-in do: hand the keyboard back to the rail first, and only drop
-          // the selection on the next press.
-          if (layout === "console" && selected && consoleZone === "detail") {
-            e.preventDefault();
-            setConsoleZone("rail");
-            focusConsoleRail(selected.id);
             return;
           }
           if (!selectedId) return;
@@ -840,18 +881,19 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          // In Console the vertical arrows do one of two things by focus zone. Once the
-          // operator has Tabbed into the detail it is a reader, so they scroll its active
-          // content; the detail owns the actual scroll node because Conversation and Files
-          // use different nested containers. In the rail zone (the default) they fall
-          // through to `moveSelection`, which walks the rail a row at a time.
-          if (layout === "console" && selected && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-            if (consoleZone === "detail") {
-              const detailScroll = detailScrollers.current.get(selected.id);
-              if (detailScroll) {
-                detailScroll(e.key === "ArrowUp" ? -1 : 1);
-                return;
-              }
+          // With the keyboard in the reader (console detail or board drill-in), the vertical
+          // arrows scroll the active tab's content - the detail owns the scroll node because
+          // Conversation and Files use different nested containers. On the rail they fall
+          // through to `moveSelection`, which walks the selection a row at a time.
+          if (
+            readerSession &&
+            (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+            target?.closest(".cdetail")
+          ) {
+            const detailScroll = detailScrollers.current.get(readerSession.id);
+            if (detailScroll) {
+              detailScroll(e.key === "ArrowUp" ? -1 : 1);
+              return;
             }
           }
           const nextId = moveSelection({
@@ -864,7 +906,9 @@ export function App(): React.JSX.Element {
           });
           if (nextId) {
             setSelectedId(nextId);
-            if (layout === "console" && consoleZone === "rail") focusConsoleRail(nextId);
+            // Walking the console rail: focus follows to the new row (we only reach here
+            // when the keyboard was NOT in the reader - that path returned above).
+            if (layout === "console") focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
@@ -975,7 +1019,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, focusConsoleRail, focusConsoleDetail]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, focusReaderRail, focusReaderBody]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

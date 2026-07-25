@@ -57,7 +57,6 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
 
       <section
         className="console-detail"
-        tabIndex={active ? -1 : undefined}
         onFocusCapture={() => props.onConsoleZoneChange("detail")}
       >
         {active ? (

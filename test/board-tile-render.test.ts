@@ -45,6 +45,7 @@ function props(sessions: Session[]): SessionViewProps {
     registerEl: () => {},
     registerActions: () => {},
     registerDetailScroll: () => {},
+    registerReaderTab: () => {},
     renamingId: null,
     onRenameStart: () => {},
     onRenameClose: () => {},

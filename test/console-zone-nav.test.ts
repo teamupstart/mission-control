@@ -49,6 +49,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     registerEl: () => {},
     registerActions: () => {},
     registerDetailScroll: () => {},
+    registerReaderTab: () => {},
     renamingId: null,
     onRenameStart: () => {},
     onRenameClose: () => {},
@@ -83,7 +84,9 @@ test("the rail hands its focus zone to the console via a data attribute", () => 
     createElement(ConsoleView, props({ sessions: [session], selectedId: session.id, consoleZone: "detail" })),
   );
   assert.match(detailFocused, /class="console" data-zone="detail"/);
-  assert.match(detailFocused, /class="console-detail" tabindex="-1"/);
+  // The reader body is the focusable target - Tab lands on the conversation pane, not the
+  // whole section, so its ring frames what is read and a stray Tab does not hit the header.
+  assert.match(detailFocused, /class="detail-body" tabindex="-1"/);
 });
 
 test("with nothing open the zone is the rail, whatever App last held", () => {
@@ -95,31 +98,39 @@ test("with nothing open the zone is the rail, whatever App last held", () => {
   assert.match(html, /data-zone="rail"/);
 });
 
-test("App wires Tab and Shift+Tab to the console focus zones", () => {
+test("one reader-nav branch drives Tab and Shift+Tab in both console and board", () => {
   const app = source("App.tsx");
-  // The `!typing` in the guard is load-bearing: it is what keeps native Tab in the topbar
-  // filter and the reply composer instead of hijacking it into a zone switch.
-  const start = app.indexOf('if (layout === "console" && selected && !typing)');
-  assert.ok(start >= 0, "no typing-guarded Console zone branch in the key handler");
+  // readerSession is the open detail's session: the console shows one beside the rail, the
+  // board shows one while drilled in. Both mount the same ConsoleDetail, so one branch.
+  const rs = app.indexOf("const readerSession =");
+  assert.ok(rs >= 0, "no readerSession in the key handler");
+  assert.match(
+    app.slice(rs, rs + 160),
+    /layout === "console" \? selected : layout === "board" && boardOpen \? selected : null/,
+  );
+  const start = app.indexOf("if (readerSession && !typing)");
+  assert.ok(start >= 0, "no typing-guarded reader branch");
   const body = app.slice(start, app.indexOf("if (typing) return;", start));
-  // The handoff is gated on the logical zone, not on which element holds DOM focus, so one
-  // Tab enters the reader whatever the last click left focused.
-  assert.match(body, /chord === "Tab" && consoleZone === "rail"/);
-  assert.match(body, /chord === "shift\+Tab" && consoleZone === "detail"/);
-  assert.match(body, /setConsoleZone\("detail"\)/);
-  assert.match(body, /setConsoleZone\("rail"\)/);
+  // Gated on real DOM focus (`.cdetail`, ConsoleDetail's shared root), not the layout or the
+  // lagging zone state. Tab enters the reader from outside, else steps the tab strip forward.
+  assert.match(body, /const inReader = Boolean\(target\?\.closest\("\.cdetail"\)\)/);
+  assert.match(body, /if \(chord === "Tab"\)[\s\S]*!inReader[\s\S]*focusReaderBody\(\)[\s\S]*readerTabbers\.current\.get\(readerSession\.id\)\?\.\(1\)/);
+  // Shift+Tab steps back; running off the front hands focus to the rail.
+  assert.match(body, /chord === "shift\+Tab" && inReader/);
+  assert.match(body, /readerTabbers\.current\.get\(readerSession\.id\)\?\.\(-1\) !== "moved"[\s\S]*focusReaderRail\(readerSession\.id\)/);
 });
 
-test("Escape peels the reader zone back to the rail before dropping the selection", () => {
+test("Escape peels the reader back to the rail before closing or dropping selection", () => {
   const app = source("App.tsx");
   const escape = app.indexOf('case "Escape":');
   const drop = app.indexOf("setSelectedId(null)", escape);
   const branch = app.slice(escape, drop);
-  // The zone step-back sits above the selection-clearing return, so one Escape returns to
-  // the rail and only a second clears the selection - the layered peel the grid and board
-  // already do.
-  assert.match(branch, /selected && consoleZone === "detail"[\s\S]*setConsoleZone\("rail"\)/);
-  assert.doesNotMatch(branch, /selected && inConsoleDetail/);
+  // In-reader Escape (focus in `.cdetail`) hands the keyboard to the rail, and it sits ABOVE
+  // the board-close and the selection-drop - so one Escape peels and the next closes.
+  assert.match(branch, /readerSession && target\?\.closest\("\.cdetail"\)[\s\S]*setConsoleZone\("rail"\)[\s\S]*focusReaderRail/);
+  const peel = branch.indexOf('readerSession && target?.closest(".cdetail")');
+  const boardClose = branch.indexOf('layout === "board" && boardOpen');
+  assert.ok(peel >= 0 && boardClose > peel, "the reader peel must precede the board drill-in close");
 });
 
 test("zone transitions move DOM focus and hidden selections reset to the rail", () => {
@@ -127,25 +138,28 @@ test("zone transitions move DOM focus and hidden selections reset to the rail", 
   const consoleView = source("components/layouts/ConsoleView.tsx");
   const railRow = source("components/layouts/RailRow.tsx");
   assert.match(app, /setConsoleZone\("rail"\);[\s\S]*\[visibleSelectedId, layout\]/);
-  assert.match(app, /querySelector<HTMLElement>\("\.console-detail"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  // Tab lands focus on the reader body (the conversation pane), not the section shell.
+  assert.match(app, /querySelector<HTMLElement>\("\.detail-body"\)[\s\S]*\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(app, /cardEls\.current\.get\(id\)\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("rail"\)\}/);
   assert.match(consoleView, /onFocusCapture=\{\(\) => props\.onConsoleZoneChange\("detail"\)\}/);
   assert.doesNotMatch(railRow, /focusSelected/);
 });
 
-test("Tab enters the reader from the rail zone whatever element holds focus", () => {
-  // The regression this pins: gating the handoff on DOM focus (`inConsoleRail`) meant a bare
-  // Tab did nothing but native browser tabbing unless focus already sat on a rail row - so
-  // opening a session and pressing Tab walked the buttons instead of the conversation. The
-  // gate must be the logical zone, and no focus-scoped early return may let Tab escape to
+test("Tab enters the reader from anywhere outside it, whatever the zone state says", () => {
+  // Two regressions this pins at once. First: gating on `inConsoleRail` (#221) meant Tab did
+  // nothing but native browser tabbing unless focus already sat ON a rail row. Then gating on
+  // `consoleZone === "rail"` (the state) desynced the other way - a stale "detail" zone with
+  // focus still on the rail let Tab walk to the next rail row. The gate that survives both is
+  // actual DOM focus: outside the reader Tab always enters, so it can never fall through to
   // the browser while a session is open.
   const app = source("App.tsx");
-  assert.match(app, /chord === "Tab" && consoleZone === "rail"/);
-  assert.match(app, /chord === "shift\+Tab" && consoleZone === "detail"/);
+  assert.match(app, /const inReader = Boolean\(target\?\.closest\("\.cdetail"\)\)/);
+  assert.match(app, /chord === "shift\+Tab" && inReader/);
+  assert.doesNotMatch(app, /chord === "Tab" && consoleZone/);
   assert.doesNotMatch(app, /inConsoleRail/);
   assert.doesNotMatch(app, /inConsoleDetail/);
-  // focusConsoleRail still refuses to steal focus from an editor outside the detail (the
+  // focusReaderRail still refuses to steal focus from an editor outside the reader (the
   // topbar filter), so arrow-walking the rail never yanks the cursor out of the filter box.
-  assert.match(app, /activeEditor && !active\?\.closest\("\.console-detail"\)/);
+  assert.match(app, /activeEditor && !active\?\.closest\("\.cdetail"\)/);
 });

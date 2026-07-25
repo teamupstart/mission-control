@@ -8735,15 +8735,21 @@ kbd {
   outline-offset: -2px;
 }
 /* Focus handed to the reader with Tab: the selection stays marked so you don't lose your
-   place in the rail, but it steps back to a quiet outline while the conversation pane
-   takes the bright ring - so it is always clear which surface the vertical arrows move. */
+   place in the rail, but it steps back to a quiet outline while the reader body takes the
+   ring - so it is always clear which surface the vertical arrows move. */
 .console[data-zone="detail"] .rail-row.selected {
   background: var(--panel);
   outline-color: color-mix(in oklab, var(--select) 40%, transparent);
 }
-.console[data-zone="detail"] .console-detail {
-  outline: 2px solid color-mix(in oklab, var(--select) 45%, transparent);
-  outline-offset: -2px;
+/* The reader body wears the ring whenever it actually holds focus - keyed on `:focus`, not
+   a layout attribute, so it lights up identically in the console and the board drill-in
+   (both mount `.detail-body`) and follows real focus rather than a state that can lag. A
+   soft, part-opacity green: present enough to say "the arrows scroll here" without the hard
+   selector frame the rail row wears. */
+.detail-body:focus {
+  outline: 1.5px solid color-mix(in oklab, var(--select) 38%, transparent);
+  outline-offset: -3px;
+  border-radius: 5px;
 }
 .rail-row.tone-attention::before {
   box-shadow: 0 0 12px var(--attention);

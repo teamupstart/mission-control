@@ -225,6 +225,15 @@ export interface EnsembleTaskGateway {
   sessionId(taskId: string): string | null;
   /** The model the member's harness actually reported it is running, if known. */
   observedModel(taskId: string): string | null;
+  /**
+   * The member session's authoritative agent cost so far, in USD, or null when unknown.
+   *
+   * Null is the honest answer for a runner that reports no cost, or a session already gone -
+   * never zero, because "we have not been told" and "it was free" are different claims. Read at
+   * submission, the one durable observation boundary, and frozen into the immutable artifact so
+   * the figure survives the member's session exiting.
+   */
+  sessionCostUsd(taskId: string): number | null;
 }
 
 /** The subset of `TaskStatus` the engine reacts to, named so the engine needs no task types. */
@@ -2130,6 +2139,10 @@ export class EnsembleEngine {
           claimsDigest: digest,
           source: input.source,
           capturedAt: readyAt,
+          // The member agent's cost, summed from its session telemetry at THIS instant and
+          // frozen into the immutable artifact - not re-read later, when the session may be gone.
+          // Null when the runner reported none; the reader below preserves that as unknown.
+          agentCostUsd: attempt.taskId ? this.tasks.sessionCostUsd(attempt.taskId) : null,
         } as EnsembleJson,
         readyAt,
       },

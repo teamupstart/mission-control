@@ -14,7 +14,12 @@ function canNotify(): boolean {
   return typeof Notification !== "undefined" && Notification.permission === "granted";
 }
 
-function notify(title: string, body: string, tag: string, workflowRunId?: string | null): void {
+function notify(
+  title: string,
+  body: string,
+  tag: string,
+  deepLink?: { workflowRunId?: string | null; ensembleId?: string | null },
+): void {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
@@ -22,8 +27,12 @@ function notify(title: string, body: string, tag: string, workflowRunId?: string
     const n = new Notification(title, { body, tag });
     n.onclick = () => {
       window.focus();
-      if (workflowRunId) {
-        window.location.hash = `#/workflows/runs/${encodeURIComponent(workflowRunId)}`;
+      // One deep link per toast, the same hash routes the dashboard already owns: a
+      // workflow toast opens its Run, an ensemble toast its run detail beside it.
+      if (deepLink?.workflowRunId) {
+        window.location.hash = `#/workflows/runs/${encodeURIComponent(deepLink.workflowRunId)}`;
+      } else if (deepLink?.ensembleId) {
+        window.location.hash = `#/workflows/ensembles/${encodeURIComponent(deepLink.ensembleId)}`;
       }
       n.close();
     };
@@ -107,7 +116,9 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
     if (alerts.length === 0) return;
     if (settings.notifications && canNotify()) {
-      for (const a of alerts) notify(a.title, a.body, a.id, a.workflowRunId);
+      for (const a of alerts) {
+        notify(a.title, a.body, a.id, { workflowRunId: a.workflowRunId, ensembleId: a.ensembleId });
+      }
     }
     // One chime per batch at the most urgent severity, so a same-tick "info" alert
     // can't swallow the "attention" tone via the chime's rate limit.

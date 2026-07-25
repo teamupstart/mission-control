@@ -1145,3 +1145,79 @@ export function ensembleNeedsAttention(input: {
   if (input.status === null) return true;
   return input.status === "failed" || input.status === "awaiting_decision" || input.status === "cancelling";
 }
+
+// ---- agent cost ----
+
+/**
+ * The member agent cost frozen into an artifact's metadata at submission, or null when unknown.
+ *
+ * Null is a first-class answer, not a missing zero: a runner that reports no cost, and a member
+ * whose session had already exited when it submitted, both land here as `null`, and a reader that
+ * coalesced either to zero would print a $0.00 that reads as "this candidate was free". The figure
+ * is captured once, at the submission observation boundary, so it survives the member's session
+ * exiting - the aggregate below sums exactly these.
+ */
+export function readArtifactAgentCost(metadata: EnsembleJson): number | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const raw = metadata.agentCostUsd;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+/** An aggregate that keeps "some members reported no cost" distinct from "the total is zero". */
+export interface EnsembleAgentCost {
+  /** Sum over the members whose cost is known, or null when NONE reported one. */
+  totalUsd: number | null;
+  /** How many contributing members reported an authoritative cost, and how many did not. */
+  known: number;
+  unknown: number;
+}
+
+/**
+ * Sum per-member agent costs while preserving what is unknown.
+ *
+ * `totalUsd` stays null until at least one member reports a cost, so a run whose runners report
+ * nothing shows "unknown" rather than "$0.00"; once any member reports, the total is the sum of the
+ * KNOWN members and `unknown` says how many were left out, which is what lets a surface print
+ * "$1.20 (2 of 3 reported)" instead of a total that silently under-counts.
+ */
+export function sumAgentCost(costs: readonly (number | null)[]): EnsembleAgentCost {
+  let total: number | null = null;
+  let known = 0;
+  let unknown = 0;
+  for (const c of costs) {
+    if (c === null) {
+      unknown++;
+      continue;
+    }
+    known++;
+    total = (total ?? 0) + c;
+  }
+  return { totalUsd: total, known, unknown };
+}
+
+/**
+ * The aggregate member agent cost for one run, counted once per SUBMITTED member.
+ *
+ * Attribution runs through the immutable artifacts, not the live sessions: each member's cost was
+ * frozen into its ready commit artifact at submission, so a member whose session has since exited
+ * still contributes. Only members that produced a ready commit are counted - one that never
+ * submitted has no cost to attribute rather than a zero - and a resubmission's later attempt
+ * replaces the earlier one so a retry is never double-counted. The evaluator's own model cost is
+ * NOT folded in here: it is a separate figure on a separate ledger.
+ */
+export function aggregateEnsembleAgentCost(
+  attempts: readonly Pick<EnsembleAttempt, "id" | "memberId">[],
+  artifacts: readonly Pick<EnsembleArtifact, "attemptId" | "kind" | "status" | "attempt" | "metadata">[],
+): EnsembleAgentCost {
+  const memberOf = new Map(attempts.map((a) => [a.id, a.memberId]));
+  const best = new Map<string, { attempt: number; cost: number | null }>();
+  for (const artifact of artifacts) {
+    if (artifact.status !== "ready" || artifact.kind !== "commit" || artifact.attemptId === null) continue;
+    const memberId = memberOf.get(artifact.attemptId);
+    if (memberId === undefined) continue;
+    const prior = best.get(memberId);
+    if (prior && prior.attempt >= artifact.attempt) continue;
+    best.set(memberId, { attempt: artifact.attempt, cost: readArtifactAgentCost(artifact.metadata) });
+  }
+  return sumAgentCost([...best.values()].map((b) => b.cost));
+}

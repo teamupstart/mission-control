@@ -77,4 +77,13 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     // requested model in the meantime, and null here is honestly "not yet observed", never zero.
     return null;
   }
+
+  sessionCostUsd(taskId: string): number | null {
+    // The member session's authoritative agent cost, read off the same session telemetry the
+    // dashboard shows. Null when the task has no live session yet, or the runner reports no cost -
+    // the artifact reader preserves that as unknown, never coalescing it to zero.
+    const sessionId = this.registry.getTask(taskId)?.sessionId ?? null;
+    if (sessionId === null) return null;
+    return this.registry.getSession(sessionId)?.cost?.costUsd ?? null;
+  }
 }

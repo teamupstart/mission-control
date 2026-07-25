@@ -2286,6 +2286,16 @@ export function upsertTask(t: Task): string[] {
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
+    // `session_id` is "currently executing on" (see `Task.sessionId`), and this is where
+    // that is made EXCLUSIVE: writing the pointer onto one task takes it off every other
+    // row in the same transaction, so a session names at most one task at a time and the
+    // pointer simply MOVES when an agent takes its next task. It is a pointer and not a
+    // record: what the displaced task produced is its own row's outcome and its own work
+    // episodes, neither of which this touches. `idx_tasks_session` (a partial UNIQUE index)
+    // is the same rule stated where it cannot be skipped; this statement is what keeps the
+    // write from hitting it. The ids are returned so the caller can unbind those rows in
+    // memory too - a Registry that kept a stale pointer would draw a card for a task the
+    // database says is no longer running there.
     const displaced = t.sessionId
       ? (d
           .prepare(`SELECT id FROM tasks WHERE session_id = ? AND id <> ?`)
@@ -2535,6 +2545,18 @@ function invalidateTaskOwnershipInTransaction(
        UNION SELECT id AS task_id FROM tasks WHERE session_id = ?`,
     )
     .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
+  // KNOWN GAP, deliberately left: this is the ONE binding-deleting path that does not
+  // archive first. `bindTaskWorkEpisode` archives on both of its keys precisely so a
+  // task's merge evidence outlives a rebind, and the same argument reads as if it applied
+  // here - a task whose pull request merges after its session's work identity rotated has
+  // no current binding and no historical one, so `mergedPrFor` reads null, the row this
+  // statement just cancelled can never be upgraded, and `taskPrPollTargets` does not even
+  // watch the url. Archiving here was tried and reverted: it makes exactly that upgrade
+  // happen, and `complete(..., satisfyDependents)` then releases EVERY dependent of the
+  // upgraded task - including edges the selection-time boundary in
+  // `reconcileWorkEpisodeMerge` deliberately refuses, which is a different rule about who
+  // a merge speaks for. Reconciling those two is a decision in its own right and not one
+  // to make as a side effect. See `task-dependencies.test.ts`, which pins the boundary.
   d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
   d.prepare(
     `UPDATE tasks SET

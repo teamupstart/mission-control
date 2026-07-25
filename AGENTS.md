@@ -182,6 +182,24 @@ belongs behind a human click here, the same rule `complete` states ("Mark done m
 work"). Test: `task-session-orphan.test.ts`, `task-merge-settles.test.ts`,
 `task-durable-merge.test.ts`.
 
+**`Task.sessionId` is "currently executing on", and it MOVES.** A session runs tasks
+SERIALLY over its life, so the field is a pointer, never a biography - which agent produced
+a piece of work is a question for that task's work-episode bindings, and a completion is
+decided from them (`mergedPrFor`). The pointer is EXCLUSIVE: `idx_tasks_session` is a partial
+UNIQUE index and `upsertTask` (`db.ts`) unbinds every other row in the same transaction, so a
+terminal row keeps naming its session only until the agent takes its next task. Two
+consequences to write code by. A liveness reader filters on STATUS (`running` /
+`dispatching`), not on the bare pointer - `agentIsFree` and `TaskManager.assign` are the two
+enforcement points of "at most one non-terminal task per session", and a third caller that
+binds the pointer needs the same check or it silently strands the row it displaces. And
+`Registry.activeTaskFor` states its own order (executing row first, then newest terminal)
+rather than resting on the index, because `publishEpisodeTaskChanges` writes the task map
+directly. Test: `task-multi-session.test.ts`.
+
+**KNOWN GAP beside it**: `invalidateTaskOwnershipInTransaction` (`db.ts`) is the one
+binding-deleting path that does not archive first. Its local comment owns the unresolved
+tension between durable merge evidence and dependency-release boundaries.
+
 ## Overlays
 
 Register in `OVERLAY_IDS` and the host (`src/web/components/Overlay.tsx` - `OverlayHost`,

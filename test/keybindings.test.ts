@@ -41,6 +41,7 @@ Object.defineProperty(globalThis, "fetch", {
 const {
   ACTIONS,
   chordFromEvent,
+  chordHasCommandModifier,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -161,6 +162,19 @@ test("every default binding is bindable and round-trips through its chord form",
     assert.equal(isReservedChord(a.defaultBinding), false, `${a.id} defaults to a reserved key`);
     assert.notEqual(formatChord(a.defaultBinding), "", `${a.id} has no readable keycap`);
   }
+});
+
+test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is safe", () => {
+  // The gate on the global search shortcut's typing-guard bypass: ⌘K / ⌃K may fire from
+  // inside an input, but a bare key or a Shift/Alt combo (which just types a character)
+  // must not. Getting this wrong is a rebound key opening the palette mid-word.
+  assert.equal(chordHasCommandModifier("cmd+k"), true);
+  assert.equal(chordHasCommandModifier("ctrl+r"), true);
+  assert.equal(chordHasCommandModifier("cmd+shift+k"), true);
+  assert.equal(chordHasCommandModifier("k"), false);
+  assert.equal(chordHasCommandModifier("shift+o"), false);
+  assert.equal(chordHasCommandModifier("alt+e"), false);
+  assert.equal(chordHasCommandModifier("+"), false);
 });
 
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {

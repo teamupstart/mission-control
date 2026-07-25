@@ -287,6 +287,20 @@ export function isReservedChord(chord: string): boolean {
   return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
 }
 
+/**
+ * True when a chord carries a Command or Control modifier (⌘/⌃).
+ *
+ * Those are the chords a global shortcut may fire from inside a text field without eating
+ * the operator's typing: ⌘K is unambiguous mid-sentence, but a bare `k` - or even a
+ * Shift/Alt combo, which just types a character - is not. A handler that bypasses the
+ * usual "don't act while typing" guard should gate that bypass on this, so a rebinding to
+ * a plain key stays behind the guard.
+ */
+export function chordHasCommandModifier(chord: string): boolean {
+  const { mods } = parseChord(chord);
+  return mods.includes("cmd") || mods.includes("ctrl");
+}
+
 // ---- store ----------------------------------------------------------------
 
 type Overrides = Partial<Record<ActionId, string>>;

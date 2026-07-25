@@ -16,6 +16,7 @@ import {
   SETTINGS_CATEGORIES,
   type SettingsCategoryId,
 } from "./settings-registry.ts";
+import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 
@@ -62,6 +63,25 @@ const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
 }));
 
 /**
+ * One entry per keyboard shortcut, derived from the `ACTIONS` registry rather than
+ * collapsed into a single "Keyboard" row. Each shortcut is an independently rebindable
+ * control with its own `keyboard/<id>` anchor, so searching "dispatch" or "kill" has to
+ * land on that action's binding, not merely the top of the panel. Deriving from `ACTIONS`
+ * (the same way the harness cards derive from `AGENT_TYPES`) keeps a newly added shortcut
+ * searchable with nothing to remember here. The shared keywords let a generic "shortcut"
+ * query surface the whole set; a specific query matches the action's own label.
+ */
+const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
+  id: `keyboard-${a.id}`,
+  label: a.label,
+  description: a.description,
+  category: "keyboard",
+  anchor: `keyboard/${a.id}`,
+  keywords: ["shortcut", "keybinding", "chord", "hotkey", "rebind", "key"],
+  kind: "jump",
+}));
+
+/**
  * Every settings control worth searching for, in a stable order (the empty-query preview
  * shows the first few). One entry per control except where a dynamic set collapses to one:
  * the Skills catalog is a single entry (its per-skill rows are runtime data, not indexed),
@@ -87,15 +107,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["rich text", "markdown", "appearance", "code blocks", "syntax"],
     kind: "toggle",
   },
-  {
-    id: "keyboard",
-    label: "Keyboard shortcuts",
-    description: "Rebind any action's chord.",
-    category: "keyboard",
-    anchor: "keyboard/roundup",
-    keywords: ["keys", "chord", "binding", "hotkey", "shortcut", "rebind"],
-    kind: "jump",
-  },
+  ...KEYBOARD_CONTROLS,
   {
     id: "auto-mode",
     label: "Auto mode on dispatch",

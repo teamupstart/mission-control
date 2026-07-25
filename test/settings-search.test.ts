@@ -14,6 +14,7 @@ import {
   SETTINGS_CATEGORIES,
   type SettingsCategoryId,
 } from "../src/web/lib/settings-registry.ts";
+import { ACTIONS } from "../src/web/lib/keybindings.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { CostState } from "../src/web/useCost.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
@@ -153,8 +154,30 @@ test("an empty query previews a handful of controls and no category jumps", () =
 });
 
 test("a category-name match is offered as a Jump-to hit via its registry keywords", () => {
-  // "hotkey" is a Keyboard keyword, not a control label, so it should surface the category.
+  // "hotkey" is a Keyboard keyword, so it should surface the category as a jump.
   assert.ok(searchSettings("hotkey").categories.includes("keyboard"));
+});
+
+// The Keyboard panel exposes many independently rebindable controls, each with its own
+// `keyboard/<id>` anchor, so collapsing them to one index entry would leave a search for a
+// specific action (dispatch, kill) landing on the wrong row - or the top of the panel.
+// Every shortcut in the ACTIONS registry must have its own index entry on its own anchor.
+test("every keyboard shortcut is indexed on its own binding, not collapsed into one", () => {
+  for (const a of ACTIONS) {
+    const entry = SETTINGS_CONTROLS.find((c) => c.anchor === `keyboard/${a.id}`);
+    assert.ok(entry, `no index entry lands on keyboard/${a.id} (${a.label})`);
+    assert.equal(entry.category, "keyboard");
+  }
+});
+
+test("searching a specific action's name lands on that action's binding", () => {
+  // The regression the Inspector caught: a query for the action has to reach its own row.
+  const dispatch = ACTIONS.find((a) => a.id === "dispatch")!;
+  const hits = searchSettings(dispatch.label).controls;
+  assert.ok(
+    hits.some((c) => c.anchor === "keyboard/dispatch"),
+    `"${dispatch.label}" did not surface its own keyboard binding`,
+  );
 });
 
 // ---- the palette component -------------------------------------------------

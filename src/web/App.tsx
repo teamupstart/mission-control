@@ -38,7 +38,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
-import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
+import { useKeybindings, chordFromEvent, chordHasCommandModifier, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
@@ -772,13 +772,19 @@ export function App(): React.JSX.Element {
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
-      // Search settings (⌘K by default) works from ANY page and even from a text field,
-      // which is why it sits above the non-fleet return, the typing guard, and the overlay
-      // stand-down below. From the fleet it navigates to the page and opens the palette in
-      // one step; on the page it toggles. It is a plain bubble-phase handler, so the
-      // Keyboard panel's capture-phase chord recorder still swallows ⌘K while recording -
-      // "recording wins", the same contract the palette itself keeps.
-      if (chord === bindings.settingsSearch) {
+      // Search settings (⌘K by default) works from ANY page, which is why it sits above the
+      // non-fleet return and the overlay stand-down below. From the fleet it navigates to the
+      // page and opens the palette in one step; on the page it toggles. It is a plain
+      // bubble-phase handler, so the Keyboard panel's capture-phase chord recorder still
+      // swallows ⌘K while recording - "recording wins", the same contract the palette keeps.
+      //
+      // The text-field bypass is gated on a ⌘/⌃ modifier: ⌘K is unambiguous mid-sentence, but
+      // if the operator rebinds this to a bare key it must stay behind the typing guard, or
+      // that character would open the palette (and navigate away) from inside any input.
+      if (
+        chord === bindings.settingsSearch &&
+        (!typing || chordHasCommandModifier(bindings.settingsSearch))
+      ) {
         e.preventDefault();
         if (route.page === "settings") {
           setSearchOpen((v) => !v);

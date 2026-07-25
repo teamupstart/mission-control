@@ -169,7 +169,7 @@ export function planLeavesAMark(plan: VerdictPlan): boolean {
 /**
  * Pick the reply channel from *reality*, not the model's hint: an unblocking
  * `input` review answer wins (it releases the blocked agent cleanly), else a
- * terminal send when the session has a pane, else null (nothing can be delivered).
+ * session send when its runtime has a delivery channel, else null.
  */
 function pickChannel(ctx: ReviewContext): { channel: "send" | "review"; reviewId?: string } | null {
   if (ctx.inputReviewId) return { channel: "review", reviewId: ctx.inputReviewId };

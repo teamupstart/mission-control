@@ -96,7 +96,7 @@ export type DeliveryTarget =
   | { kind: "send" }
   /** The review this text was written to answer has already been resolved. */
   | { kind: "stale" }
-  /** A terminal draft with no pane to type into - Foreman had no channel either. */
+  /** A session draft with no delivery channel - Foreman could not send it either. */
   | { kind: "no-channel" };
 
 /**
@@ -126,7 +126,7 @@ export function deliveryTarget(o: {
   handledMarker: string | null;
   inputReviewId: string | null;
   pendingReviewIds: ReadonlySet<string> | undefined;
-  /** Whether the session has a pane to type into. Absent reads as "yes", see below. */
+  /** Whether the session has a delivery channel. Absent reads as "yes", see below. */
   canSend?: boolean;
 }): DeliveryTarget {
   const marker = o.handledMarker;

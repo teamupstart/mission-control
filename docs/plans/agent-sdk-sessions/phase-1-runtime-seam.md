@@ -25,11 +25,11 @@ an operator or by Foreman.
 
 ## Repository findings and inherited contracts
 
-- `Session` (`src/shared/types.ts:234-457`); id today is always
+- At phase entry, `Session` (`src/shared/types.ts:234-457`) ids were always
   `proc:<tty>:<pid>:<startMs>` minted in `discovery/correlate.ts`.
 - `SESSION_FIELD_COMPARATORS` at `src/server/registry.ts:4798`; a new `Session` field
   fails typecheck until it has a comparator (AGENTS.md contract).
-- `applyDiscovery` (`registry.ts:770-830`) is the registry's only session source;
+- At phase entry, `applyDiscovery` (`registry.ts:770-830`) was the registry's only session source;
   eviction at `:803-812` marks anything a completed sweep did not see as `exited`, then
   `remove(id)` (`:3257-3273`) emits `session_remove`. Two subscribers (WorkflowManager,
   TaskManager) depend on that exact sequence - reuse it, never a parallel teardown.
@@ -84,10 +84,11 @@ an operator or by Foreman.
    `runtimes.includes("sdk") === (HARNESSES[a].sdk !== null)` for every agent.
 7. **`src/server/registry.ts`**:
    - `SESSION_FIELD_COMPARATORS.runtime = byValue`.
-   - `registerSdkSession(input: { id: "sdk:"-prefixed; agent; name; cwd; taskId?; ... })`
+   - `registerSdkSession(input: { id: "sdk:"-prefixed; agent; name; cwd; ... })`
      creating a full `Session` (runtime `"sdk"`, `tty: null`, `terminals: []`,
      `nameSource: "sdk"`, `pid` of the subprocess once known, state `"starting"`) and
-     emitting the normal session-new event.
+     emitting the normal session-new event. Task state is resolved through the Registry's
+     existing session helper; the durable SDK row owns the task id used for resume.
    - `applyDriverEvent(id, evt: SdkEvent)`: `bound` fills `agentSessionId` /
      `transcriptPath` and sets `instrumented` / `stateConfirmed` / `hooksSeen` true
      (C5 - this is what keeps the read path and instrumentation gates working);
@@ -105,8 +106,9 @@ an operator or by Foreman.
    index outside the block, no REFERENCES, no backticks in the SQL block.
 9. **`src/server/sdk/supervisor.ts`** (skeleton): the class, its persistence
    (read/write `sdk_sessions`), a `restore()` that loads rows and - with no drivers
-   declared yet - marks any row `status = "running"` as `failed` (defensive; none can
-   exist), and the event-pump plumbing typed against `SdkSessionHandle`. Construct it in
+   declared yet - marks any row with a live status (`starting` or `running`) as `failed`
+   (defensive; this build cannot create one), and the event-pump plumbing typed against
+   `SdkSessionHandle`. Construct it in
    `src/server/index.ts` and `await supervisor.restore()` BEFORE `startPoller(registry)`
    (`:140`), with a comment stating the C5 ordering contract next to the existing `:135`
    comment.

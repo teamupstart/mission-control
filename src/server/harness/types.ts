@@ -609,10 +609,10 @@ export interface SessionRequestFormAnswer {
 /**
  * How a pending request is answered.
  *
- * Labels rather than row numbers, everywhere: a number is a position on a list that may
- * have been re-read since, and the label check (`optionRowMiss`) is what has always caught
- * a miscounting caller. `option` carries both because that is what `/select-option` sends
- * on either runtime (C3) - the number identifies, the label verifies.
+ * A row number alone is never authoritative: it is a position on a list that may have
+ * been re-read since, and the label check (`optionRowMiss`) is what has always caught a
+ * miscounting caller. `option` carries both because that is what `/select-option` sends on
+ * either runtime (C3) - the number identifies, the label verifies.
  */
 export type SessionRequestAnswer =
   | { kind: "option"; number: number; label: string }
@@ -638,8 +638,8 @@ export interface SdkUsage {
  * The counterpart of a hook ingest, with one difference that removes a whole class of
  * guard: the supervisor OWNS the binding it reports here, so there is no attribution
  * question to answer. `applyHook`'s `discoveredIdentity` check exists because a hook is a
- * claim about a process we read separately; a driver event is a claim about a subprocess we
- * started.
+ * claim about a process we read separately; a driver event comes from the handle the
+ * supervisor owns, whether or not that handle has a separate subprocess.
  */
 export type SdkEvent =
   | {

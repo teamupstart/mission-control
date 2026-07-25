@@ -43,9 +43,9 @@ export type AgentType = (typeof AGENT_TYPES)[number];
  *
  * Passive discovery can only establish `working` (alive, has a foreground agent
  * process) vs `exited`. The precise `idle` / `awaiting_input` / `awaiting_review`
- * states come from active reporting (Claude hooks) and the harness's own review
- * queue. `starting` is the brief window after a SessionStart hook before the
- * first prompt.
+ * states come from active reporting (hooks or an SDK driver) and the harness's own
+ * review queue. `starting` is the brief window after a terminal SessionStart hook or
+ * SDK registration, before the first prompt or driver binding.
  */
 export type SessionState =
   | "starting"
@@ -249,10 +249,10 @@ export interface FleetCost {
 
 export interface Session {
   /**
-   * Stable identity for the life of the process: the synthetic discovery id
-   * `proc:<tty>:<pid>:<startMs>` (minted in `discovery/correlate.ts`), which is also
-   * the registry's map key. Distinct from `agentSessionId`, which the agent mints and
-   * rotates on `/clear`; this one never changes under a given entry.
+   * Stable identity and Registry map key for the life of this entry. Discovery mints
+   * `proc:<tty>:<pid>:<startMs>` for terminal sessions; the SDK supervisor mints
+   * `sdk:<uuid>` for sessions it drives. Distinct from `agentSessionId`, which the
+   * harness mints and may rotate on a context clear.
    */
   id: string;
   agent: AgentType;
@@ -268,9 +268,10 @@ export interface Session {
    */
   runtime: SessionRuntime;
   /**
-   * Display name, offered by the highest-priority terminal backend holding a pane on this
-   * session's tty - a multiplexer's session name, else an emulator's tab title, else (with
-   * no pane at all) a `<agent> <pid>` process fallback. `nameSource` says which answered.
+   * Display name. A terminal session takes it from the highest-priority backend holding
+   * its pane - a multiplexer's session name, else an emulator's tab title, else an
+   * `<agent> <pid>` process fallback. The SDK supervisor names a driver-run session.
+   * `nameSource` says which answered.
    *
    * The priority is the registries' declared order (`MULTIPLEXER_IDS` then `EMULATOR_IDS`,
    * `@shared/terminal.ts`), not a tmux-then-wezterm branch: a multiplexer pane lives inside
@@ -300,19 +301,20 @@ export interface Session {
   repoRoot: string | null;
   /** True when this session's repo is gated by no-mistakes. */
   nomistakesGated: boolean;
-  /** The leaf agent process pid (what we act on / kill). */
+  /** Leaf agent process pid; 0 for an SDK driver with no reported subprocess. */
   pid: number;
-  /** Controlling tty, normalized without the /dev/ prefix (e.g. "ttys012"). */
+  /** Controlling tty without `/dev/` (e.g. `ttys012`); null for an SDK runtime. */
   tty: string | null;
   /**
-   * The harness's live permission posture. Claude is observed from hooks and its pane
-   * footer; Codex is observed from rollout turn_context records. Null until one of that
-   * harness's authoritative sources reports a known built-in mode.
+   * The harness's live permission posture. Terminal Claude is observed from hooks and its
+   * pane footer; Codex from rollout turn_context records. An SDK registration carries the
+   * launch posture until its driver can change it. Null until an authoritative source
+   * reports a known built-in mode.
    */
   permissionMode: PermissionMode | null;
   /**
    * Every terminal pane this session is reachable through, in naming-priority order and at
-   * most one per backend. Empty for an agent in a terminal we do not integrate with.
+   * most one per backend. Empty for an unintegrated terminal or an SDK runtime.
    *
    * A LIST, replacing the `wezterm` / `tmux` pair of named nullable siblings that made "how
    * many backends are there" a fact of this type. Read it through the shared helpers rather
@@ -323,49 +325,52 @@ export interface Session {
    * wants is a rule (writes go innermost, focus walks outward), and it has one statement.
    */
   terminals: TerminalHandle[];
-  /** Claude Code session id, present once the session is hook-instrumented. */
+  /** Harness-native session/thread id, present once a hook, passive read, or driver binds it. */
   agentSessionId: string | null;
   /**
-   * Absolute path to the agent's transcript file, as reported by its hook. The
-   * authoritative locator - Claude hands us the exact path, so we never derive it
-   * from the cwd. Null until a hook reports it (or for agents without hooks).
+   * Absolute path to the agent's transcript file, as reported by its authoritative
+   * identity source (hook, passive read, or driver). Null until that source binds it,
+   * and for harnesses whose session format has no path.
    */
   transcriptPath: string | null;
   /**
-   * True while this session's hook overlay is FRESH - i.e. a hook has reported
-   * within the overlay TTL (30 min). This is a liveness window, NOT a fact about
-   * whether the integrations are installed: a healthy instrumented session that
-   * simply goes quiet flips this back to false, because nothing but a hook event
-   * refreshes the overlay. Read it as "we have current hook-sourced state for this
-   * session"; for "does this session have hooks at all", read `hooksSeen`.
+   * True while this session has a current push channel. For a terminal session that
+   * means its hook overlay is fresh (within the 30-minute TTL); a quiet session therefore
+   * flips false. For an SDK session the live driver handle is the channel, so it remains
+   * true for the rest of the entry after `bound` (including its short exit linger).
+   *
+   * Read it as current push-sourced state, not as an installation fact. For whether that
+   * channel has ever been established, read `hooksSeen` (the historical field name).
    */
   instrumented: boolean;
   /**
    * True while `state` is backed by a fresh lifecycle reading. Hooks are one source;
-   * a harness transcript that records explicit start/complete markers is another.
+   * a harness transcript that records explicit start/complete markers and an SDK driver
+   * event stream are the others.
    *
-   * Keep this separate from `instrumented`: prompt-delivery and queue safeguards need
-   * to know that hooks specifically are live, while the dashboard only needs to know
-   * whether `idle` / `working` was observed rather than guessed from process existence.
+   * Keep this separate from `instrumented`: the dashboard only needs to know whether
+   * `idle` / `working` was observed rather than guessed from process existence, while
+   * delivery safeguards may require a current push channel.
    */
   stateConfirmed: boolean;
   /**
-   * True once a hook has EVER been seen from this session - the installation fact,
-   * with no freshness window on it.
+   * True once a push channel has EVER been established for this session, with no
+   * freshness window: a hook event for a terminal runtime, or `bound` for an SDK runtime.
+   * The name predates the runtime axis.
    *
    * The distinction is load-bearing. Conflating the two reads a 30-minute silence
    * as "the integrations aren't installed", which is precisely what an agent parked
-   * waiting on a human looks like - so anything that punishes a hookless session
+   * waiting on a human looks like - so anything that punishes an unobserved session
    * (see the work queue's step 3) must gate on THIS, not on `instrumented`.
    */
   hooksSeen: boolean;
-  /** Free-form one-liner from the last hook/report (e.g. current tool, last prompt). */
+  /** Free-form one-liner from the last hook, passive report, or driver state event. */
   activity: string | null;
-  /** When the agent process actually started (epoch ms), for a real uptime. */
+  /** Process start for terminal sessions; SDK registration time for driver-run sessions. */
   startedAt: number | null;
   firstSeen: number; // epoch ms
-  lastSeen: number; // epoch ms (last poll that observed the process)
-  lastActivity: number | null; // epoch ms of last hook/report event
+  lastSeen: number; // epoch ms (last discovery observation; registration time for SDK)
+  lastActivity: number | null; // epoch ms of last hook/report/driver event
   /** Count of pending review items for this session (denormalized for the card). */
   pendingReviews: number;
   /** Live no-mistakes run status for this repo, when gated and a run exists. */
@@ -387,7 +392,7 @@ export interface Session {
   /**
    * The GitHub PR whose head branch is this session's *current* git branch, else
    * null. Live decoration, never persisted: set optimistically when the agent
-   * runs `gh pr create` (via the hook) and reconciled by the PR poller, which
+   * runs `gh pr create` (proven by a hook or driver event) and reconciled by the PR poller, which
    * shells out to `gh` to keep it honest. An open PR shows here, and a *merged*
    * one lingers so you can see the session's work landed - both are retracted
    * only when the session moves to a branch that no longer matches the PR's head
@@ -2139,7 +2144,7 @@ export interface ResetPreview {
   aheadSubjects: string[];
   /** True when the worktree is already clean and at `target` (nothing to lose). */
   clean: boolean;
-  /** Whether the agent's context can be cleared (session has a pane to send `/clear`). */
+  /** Whether the agent's context can be cleared through its pane or live driver. */
   canClear: boolean;
 }
 

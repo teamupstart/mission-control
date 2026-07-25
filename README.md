@@ -197,10 +197,10 @@ declares what it genuinely cannot do rather than stubbing it.
 
 A session therefore carries a **list** of the panes it is reachable through, one per
 backend, rather than a field per vendor - so a backend the dashboard has never heard of
-is drawn, typed into and torn down like any other. "Is there a composer to type into?"
-is one predicate over that list, asked identically by the Send box, the mode picker,
-Rename, the work queue and Foreman, instead of twenty booleans each naming the two
-terminals they happened to be written beside.
+is drawn, typed into and torn down like any other. Pane mechanics such as Rename ask one
+predicate over that list instead of naming particular terminals. Delivery features such as
+the Send box, mode picker, work queue and Foreman ask the runtime-aware predicate described
+below; for today's terminal sessions the two answers are identical.
 
 The same declaration decides how a session is **typed into and read**. A reply, a queued
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to

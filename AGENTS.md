@@ -33,8 +33,9 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
   state has to survive a restart. Do not move it.
 - The **SdkSupervisor is in the daemon too, for the Inspector's two reasons**: Electron never
   starts the Foreman worker, so a packaged build would silently not have the feature, and
-  every piece of its state has to survive a restart. It is the second and only other writer
-  into the Registry's session map, and it has three invariants. `restore()` completes BEFORE
+  every piece of its state has to survive a restart. It is the second and only other producer
+  of Registry sessions (the Registry remains the map's owner), and it has three invariants.
+  `restore()` completes BEFORE
   `startPoller(registry)` (`src/server/index.ts`), because every restart twin hangs off
   `onSessionsObserved` and a session registered after the first completed sweep is invisible
   to the reconciliation that would settle its task. `applyDiscovery`'s unseen-means-exited

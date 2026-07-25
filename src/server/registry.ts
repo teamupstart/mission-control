@@ -365,10 +365,10 @@ interface PassiveState {
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
  *
- * Sessions are keyed by their synthetic discovery id (tty+pid+start). Hook
- * events can't see that id, so they bind to a session by its terminal pane
- * (tmux `%id` or wezterm pane id) via a "hook overlay" that also survives the
- * next discovery sweep, keeping hook-driven state from being clobbered.
+ * Terminal sessions are keyed by their synthetic discovery id (tty+pid+start). Hook
+ * events cannot see that id, so they bind through a terminal-pane overlay that survives
+ * the next discovery sweep. SDK sessions use the supervisor's durable `sdk:<uuid>` and
+ * report directly through the handle that owns that entry.
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
@@ -5173,10 +5173,10 @@ const alwaysEqual = (): boolean => true;
  * follows `Session`'s own field order, so the two can be diffed by eye.
  */
 export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
-  // Invariant for the life of a map entry, not state: sessions are keyed by
-  // `proc:<tty>:<pid>:<startMs>` (see `discovery/correlate.ts`) and both call sites compare a
-  // session against its own prior value under that key. These cannot differ, so
-  // comparing them would only cost work.
+  // Invariant for the life of a map entry, not state: terminal sessions use one
+  // `proc:<tty>:<pid>:<startMs>` identity and SDK sessions one `sdk:<uuid>` registration;
+  // both call sites compare a session against its prior value under that same key. These
+  // fields cannot differ without creating a new entry, so comparing them would only cost work.
   id: alwaysEqual,
   agent: alwaysEqual,
   tty: alwaysEqual,

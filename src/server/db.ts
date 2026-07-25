@@ -684,7 +684,7 @@ export function openDb(): DatabaseSync {
     --
     -- Ordinary table with no REFERENCES clause (the ensemble family stays the only one
     -- declaring foreign keys) and no index: the only reads are by primary key and the
-    -- whole-table restore sweep, on a table with one row per live embedded session.
+    -- whole-table restore sweep, which runs once at startup over the embedded-session ledger.
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
       agent             TEXT NOT NULL,

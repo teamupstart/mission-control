@@ -538,6 +538,12 @@ export type EnsembleEvaluatorPolicy = {
   /**
    * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
    * are useful to the operator and invite brand and order bias in a judge.
+   *
+   * Every plan this build compiles pins it `true`, and the evidence packet does NOT consult it -
+   * anonymization is unconditional (`reviews/packet.ts`), so this records what a run does rather
+   * than selecting it, and no form offers it as a control. It stays a `boolean` rather than a
+   * literal because plans written by other builds are read back through this type: a stored
+   * `false` must still LOAD, and it is the packet, not this field, that decides what a model sees.
    */
   anonymizeSubjects: boolean;
   /** Total artifact material one attempt may consume, allocated evenly across subjects. */

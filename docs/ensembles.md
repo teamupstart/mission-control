@@ -15,7 +15,7 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 
 1. From **Dispatch**, switch the launch mode from *Single agent* to *Ensemble* and pick the Best of
    N card. Configure two to five candidate rows (agent, model, effort, optional approach hint;
-   repeats are allowed), the judge-blind toggle, an optional evaluator Persona, and an optional
+   repeats are allowed), an optional evaluator Persona, and an optional
    [workflow](../README.md#workflows-and-personas) to hand the winner to.
 2. **Review launch** posts a side-effect-free preview (member count, concurrency, waves, comparison
    calls, and whether the chosen workflow mode is executable). Any later edit invalidates it, so
@@ -172,6 +172,12 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
   terminate - its recorded answers ARE the outcome.
 - Refs and branches are generated from UUIDs; every Git/process call uses argument arrays, never a
   shell.
+- **Evaluator anonymity is not configurable.** Every evaluator packet relabels its subjects
+  `Submission A`, `Submission B`, … and strips the ref, snapshot/tree/head shas and worktree paths,
+  on every strategy and every path. Compiled plans record `anonymizeSubjects: true` to state that;
+  no form offers a control for it, because a de-anonymised packet is a different safety story - one
+  where a candidate's own diff can impersonate a sibling's identity label - and would need its own
+  design rather than a boolean.
 - Sibling isolation is **behavioural, not a sandbox**: the worktrees share one Git repository and a
   local agent can find its siblings if it goes looking. The UI never claims otherwise.
 

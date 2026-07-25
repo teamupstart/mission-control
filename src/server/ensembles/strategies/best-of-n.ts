@@ -173,7 +173,9 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
             },
       runner: config.evaluator.runner,
       model: config.evaluator.model,
-      anonymizeSubjects: config.evaluator.anonymizeSubjects,
+      // Always true: the packet is unconditionally anonymous, so the plan says so rather than
+      // carrying a preference nothing reads.
+      anonymizeSubjects: true,
       materialBudgetBytes: config.evaluator.materialBudgetBytes,
     },
     subjects: {

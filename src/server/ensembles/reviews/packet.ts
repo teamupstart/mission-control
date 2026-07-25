@@ -160,6 +160,16 @@ export interface EvidencePacket {
  * The order is deterministic - sorted by the artifact's own uuid, which carries no ordinal -
  * because a retry must rebuild the exact same packet, and therefore the same input fingerprint,
  * from the same immutable set.
+ *
+ * **Anonymity is unconditional, and `policy.anonymizeSubjects` is deliberately not consulted.**
+ * Every subject becomes an opaque `Submission X` here, and `observedForPrompt` strips the ref,
+ * shas and paths, so no agent, model, ordinal or identity-bearing string reaches a model on any
+ * path. The policy field is persisted (it is inside compiled plans an operator already has) and
+ * every shipped compiler pins it to `true`, so the plan states what actually happens. It is not
+ * an operator control: a de-anonymised packet is a different safety story - one where a
+ * candidate's own diff can impersonate a sibling's identity label - and it needs its own design,
+ * not a boolean read here. Neither strategy's form offers a toggle for it, and
+ * `ensemble-anonymity.test.ts` fails if one reappears.
  */
 export async function assembleEvidencePacket(
   context: ReviewDriverContext,

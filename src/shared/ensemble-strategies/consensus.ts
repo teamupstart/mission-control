@@ -86,11 +86,18 @@ export const ConsensusEvaluatorSchema = z.object({
   runner: z.enum(LLM_RUNNER_IDS).nullable().default(null),
   model: ModelIdSchema.nullable().default(null),
   /**
-   * Hide agent, model and ordinal from the evaluator. On by default for the reason it is in a
-   * comparison: an evaluator told which agent wrote which submission attributes the divergence
-   * to the brand rather than to the position.
+   * Persisted, always `true`, and NOT an operator control.
+   *
+   * The evaluator packet is unconditionally anonymous (`reviews/packet.ts`), so this field states
+   * what happens rather than choosing it. It stays in the schema because compiled plans an
+   * operator already holds carry it, and it normalizes to `true` so a stored `false` from any
+   * source cannot describe a run as de-anonymised when it was not. Offering it as a toggle was
+   * the defect: the form promised evaluator behaviour nothing implemented.
    */
-  anonymizeSubjects: z.boolean().default(true),
+  anonymizeSubjects: z
+    .boolean()
+    .default(true)
+    .transform(() => true as const),
   maxAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts).default(2),
   materialBudgetBytes: z
     .number()
@@ -172,14 +179,6 @@ export const CONSENSUS_FORM: StrategyFormSpec = {
       min: 1,
       max: ENSEMBLE_HARD_LIMITS.maxConcurrentMembers,
       step: 1,
-    },
-    {
-      kind: "toggle",
-      key: "evaluator.anonymizeSubjects",
-      label: "Mine blind",
-      help:
-        "Hide which agent and model produced each attempt from the evaluator. On by default: " +
-        "otherwise a divergence gets attributed to the brand rather than to the position.",
     },
     {
       kind: "int",

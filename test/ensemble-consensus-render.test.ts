@@ -240,6 +240,42 @@ test("recorded answers are shown against the questions once the decision exists"
   assert.ok(!html.includes("<img src=x"));
 });
 
+test("after a re-run, the header describes the pass that ASKED the questions, not the newest one", () => {
+  // The questions on screen come from the decision stage's persisted input. If a later pass runs,
+  // its runner/model/attempt and truncation state describe evidence those questions were never
+  // mined from, and labelling one pass's questions with another's metadata is a false claim about
+  // provenance. The stage input records which evaluation it came from, and that one wins.
+  const rerun: EnsembleEvaluation = {
+    ...evaluation,
+    id: "eval-2",
+    attempt: 2,
+    modelId: "claude-opus",
+    updatedAt: 9999,
+    result: {
+      payloadVersion: 1,
+      body: {
+        version: 1,
+        agreements: [],
+        divergences: QUESTIONS,
+        subjectArtifactIds: ["art-1"],
+        evidenceTruncated: false,
+      } as unknown as EnsembleJson,
+    },
+  };
+  const html = render({ evaluations: [evaluation, rerun] });
+  assert.ok(html.includes("claude-haiku"), "the pass that asked the questions names its own model");
+  assert.ok(!html.includes("claude-opus"), "the newer pass's model is not attached to older questions");
+  assert.ok(html.includes("attempt 1"), "and its own attempt number");
+  assert.ok(html.includes("truncated"), "its truncation disclosure travels with it, not the re-run's");
+
+  // And when the evaluation it named is not in this response at all, no metadata is shown rather
+  // than metadata borrowed from whichever pass happens to be present.
+  const orphaned = render({ evaluations: [rerun] });
+  assert.ok(orphaned.includes("Where should the retry live?"), "the persisted questions still render");
+  assert.ok(!orphaned.includes("claude-opus"), "no unrelated pass is credited with them");
+  assert.ok(!orphaned.includes("truncated"), "and no unrelated truncation state is claimed");
+});
+
 test("a run whose pass has not happened yet says so instead of rendering an empty question set", () => {
   const html = render({ stageAttempts: [], evaluations: [] });
   assert.ok(html.includes("No divergence pass has been recorded yet"));

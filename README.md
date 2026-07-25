@@ -1550,8 +1550,8 @@ rather than a winner - see [Additional strategies](#additional-strategies) below
 launch mode from **Single agent** to **Ensemble**. The same title/repo/intent/attachment
 compose area serves both; below it, descriptor-driven strategy cards render the chosen
 strategy's own form - for Best of N, a roster of two to five candidate rows, each
-choosing its own agent, model, effort and optional approach hint, plus the judge-blind toggle,
-the optional evaluator Persona, and an optional [workflow](#workflows-and-personas) to hand the
+choosing its own agent, model, effort and optional approach hint, plus the optional evaluator
+Persona, and an optional [workflow](#workflows-and-personas) to hand the
 winner to. **Review launch** posts a side-effect-free preview (member count, concurrency, waves,
 comparison calls, and whether the chosen workflow mode is executable) and any edit after that
 invalidates it, so **Launch N agents** always confirms exactly what you reviewed. The launch is

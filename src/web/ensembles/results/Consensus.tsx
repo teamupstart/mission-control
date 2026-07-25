@@ -28,30 +28,44 @@ import type { EnsembleResultContext } from "./index.ts";
  *    instead would let a screen and a server-side check disagree about the question set.
  */
 
-/** The newest succeeded consensus evaluation, parsed into renderable findings. */
-function latestFindings(
+/**
+ * The evaluation whose findings are on screen, with its parsed body.
+ *
+ * `preferId` is the evaluation the decision stage recorded as the source of its question set. It
+ * WINS over recency, and when it names an evaluation this response does not carry, the answer is
+ * null rather than the newest one: a pass re-run after the stage opened has different runner,
+ * model, attempt and truncation facts, and labelling one pass's questions with another pass's
+ * evidence metadata is a claim about provenance that is simply false. No metadata is better than
+ * wrong metadata, so the header and the truncation warning disappear together.
+ */
+function findingsEvaluation(
   evaluations: EnsembleEvaluation[],
+  preferId: string | null,
 ): { evaluation: EnsembleEvaluation; findings: ConsensusFindings } | null {
   const succeeded = evaluations
     .filter((e) => e.status === "succeeded" && e.result)
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  for (const evaluation of succeeded) {
-    const findings = parseConsensusFindings(evaluation.result?.body ?? null);
-    if (findings) return { evaluation, findings };
+  const readable = succeeded
+    .map((evaluation) => ({ evaluation, findings: parseConsensusFindings(evaluation.result?.body ?? null) }))
+    .filter((entry): entry is { evaluation: EnsembleEvaluation; findings: ConsensusFindings } => entry.findings !== null);
+  if (preferId !== null) {
+    return readable.find((entry) => entry.evaluation.id === preferId) ?? null;
   }
-  return null;
+  return readable[0] ?? null;
 }
 
 /** The decision stage attempt holding the exact question set the operator was asked. */
 function askedQuestions(
   stageAttempts: EnsembleStageAttempt[],
-): { agreements: string[]; questions: ConsensusDivergence[] } | null {
+): { agreements: string[]; questions: ConsensusDivergence[]; evaluationId: string | null } | null {
   const decisions = stageAttempts
     .filter((attempt) => attempt.driverKind === "decision")
     .sort((a, b) => b.createdAt - a.createdAt);
   for (const attempt of decisions) {
     const asked = parseConsensusDecisionInput(attempt.input);
-    if (asked) return { agreements: asked.agreements, questions: asked.questions };
+    if (asked) {
+      return { agreements: asked.agreements, questions: asked.questions, evaluationId: asked.evaluationId };
+    }
   }
   return null;
 }
@@ -82,8 +96,14 @@ function recordedAnswers(
 }
 
 export function ConsensusResultView(ctx: EnsembleResultContext): React.JSX.Element | null {
-  const found = useMemo(() => latestFindings(ctx.detail.evaluations), [ctx.detail.evaluations]);
   const asked = useMemo(() => askedQuestions(ctx.detail.stageAttempts), [ctx.detail.stageAttempts]);
+  // Once the decision stage has opened, its recorded evaluation id decides which pass's metadata is
+  // shown - never whichever pass is newest. Before it opens there is no question set to be wrong
+  // about, so the newest readable findings are the right thing to render.
+  const found = useMemo(
+    () => findingsEvaluation(ctx.detail.evaluations, asked?.evaluationId ?? null),
+    [ctx.detail.evaluations, asked],
+  );
   const answers = useMemo(() => recordedAnswers(ctx.detail), [ctx.detail]);
 
   if (!found && !asked) {

@@ -2406,6 +2406,17 @@ export class EnsembleEngine {
     const winnerAttempt = winnerArtifact.attemptId
       ? state.attempts.find((a) => a.id === winnerArtifact.attemptId) ?? null
       : null;
+    if (progress.winner?.mode === "restored") {
+      const taskId = winnerAttempt?.taskId ?? null;
+      return {
+        ok: true,
+        winner: { mode: "restored", ready: true },
+        sessionId: taskId ? this.tasks.sessionId(taskId) : null,
+        worktreePath: winnerAttempt ? this.ownedWorktree(winnerAttempt) : null,
+        mode: "restored",
+        continuationInIntent: false,
+      };
+    }
     const outcome = run.outcome;
     const materializedTaskId = outcome && outcome.kind === "selected" ? outcome.materializedTaskId : null;
     const onReplacementPath = materializedTaskId !== null || progress.winner?.mode === "replacement";

@@ -288,10 +288,14 @@ test("a continuation claim survives an exit after the pane write", async () => {
   const winner = winnerOf(store, runId, 1);
   await assert.rejects(decide(engine, runId, winner.artifactId), /daemon exited/);
   assert.equal(finalize.continuations.length, 1);
+  assert.equal(finalize.restored.length, 1);
 
+  finalize.safeIdle = false;
   await engine.recover(runId);
   assert.equal(store.getRun(runId)!.status, "completed");
   assert.equal(finalize.continuations.length, 1);
+  assert.equal(finalize.restored.length, 1);
+  assert.equal(finalize.materialized.length, 0);
 });
 
 test("a partial continuation delivery stays claimed and is never pasted twice", async () => {
@@ -305,10 +309,14 @@ test("a partial continuation delivery stays claimed and is never pasted twice", 
 
   assert.equal(store.getRun(runId)!.status, "finalizing");
   assert.equal(finalize.continuations.length, 1);
+  assert.equal(finalize.restored.length, 1);
   finalize.deliverOk = true;
+  finalize.safeIdle = false;
   await engine.resolveFinalization(runId, false);
   assert.equal(store.getRun(runId)!.status, "completed");
   assert.equal(finalize.continuations.length, 1);
+  assert.equal(finalize.restored.length, 1);
+  assert.equal(finalize.materialized.length, 0);
 });
 
 test("a backlog replacement is redispatched while a terminal replacement blocks", async () => {

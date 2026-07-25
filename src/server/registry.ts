@@ -1821,7 +1821,19 @@ export class Registry extends EventEmitter {
       }
     }
     for (const binding of historicalTaskWorkEpisodeBindings()) {
-      if (!legacyTaskIds.has(binding.taskId) || binding.prUrl === null) {
+      // A historical binding survives for two independent reasons, and the merge one is new
+      // (durable completion, phase 1): a recorded merge on a rolled-past episode is the
+      // completion evidence `mergedPrFor` reads, so it must outlive rollover. A `done` task
+      // may be an idle auto-completion that the same prompt will reopen only after rollover
+      // cleanup returns; a genuinely done task never reaches `agentWentAway`, and keeping its
+      // row until task eviction or removal is harmless. Failed and cancelled tasks remain
+      // outside phase 1. The dependency reason is unchanged: a legacy edge still pointing at
+      // the task keeps its PR-carrying binding.
+      const owner = this.tasks.get(binding.taskId);
+      const mergeEvidence =
+        binding.mergedAt !== null && preservesHistoricalMergeEvidence(owner);
+      const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
+      if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
         continue;
       }
@@ -2799,7 +2811,16 @@ export class Registry extends EventEmitter {
         target.taskIds,
       );
       for (const binding of target.historical) {
-        deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        // This cleanup ran unconditionally before durable completion. Now the same
+        // historical binding is also this task's merge evidence: `reconcileWorkEpisodeMerge`
+        // just stamped its `merged_at`, and `mergedPrFor` must still be able to read it to
+        // complete the task. Preserve `done` for the transient auto-completed rollover window
+        // as well as running and dispatching; genuinely done evidence is inert and is pruned
+        // with the task. Failed and cancelled evidence remains outside phase 1.
+        const owner = this.tasks.get(binding.taskId);
+        if (!preservesHistoricalMergeEvidence(owner)) {
+          deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
+        }
       }
     }
     this.cleanupDependencyProvenance();
@@ -4601,6 +4622,14 @@ function evictOldest(m: Pick<Map<string, unknown>, "size" | "keys" | "delete">, 
 /** A task in a terminal state has no further lifecycle - safe to evict from memory. */
 function isTerminalTask(status: Task["status"]): boolean {
   return status === "done" || status === "failed" || status === "cancelled";
+}
+
+function preservesHistoricalMergeEvidence(task: Task | undefined): boolean {
+  return (
+    task?.status === "running" ||
+    task?.status === "dispatching" ||
+    task?.status === "done"
+  );
 }
 
 /**

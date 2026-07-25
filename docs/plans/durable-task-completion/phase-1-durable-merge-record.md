@@ -20,8 +20,14 @@ reconciler (Phase 2) and the multi-task formalization (Phase 3) read from.
 
 ## Scope
 
-1. **`markWorkEpisodeMerged` (`src/server/db.ts`) also stamps the historical binding.**
-   Today it updates `session_work_episodes` and `task_work_episode_bindings` by
+1. **`bindTaskWorkEpisode` (`src/server/db.ts`) archives the outgoing PR binding.**
+   Before rollover overwrites a task's current binding, copy a PR-carrying outgoing
+   binding to `historical_task_work_episode_bindings` in the same transaction. Preserve
+   an existing historical `mergedAt` if the same episode is archived again. Without this
+   writer, the historical lookup below has no durable record to read.
+2. **`markWorkEpisodeMerged` (`src/server/db.ts`) also stamps the historical binding.**
+   Before this phase it updated `session_work_episodes` and
+   `task_work_episode_bindings` by
    `(session_id, episode_id, pr_url)`. Add the same `COALESCE(merged_at, ?)` UPDATE over
    `historical_task_work_episode_bindings`, in the same transaction. A binding that rolled
    to historical before the merge was observed currently loses the fact forever.
@@ -30,13 +36,13 @@ reconciler (Phase 2) and the multi-task formalization (Phase 3) read from.
      (NEVER in the CREATE block - see the `idx_tasks_schedule` precedent in CLAUDE.md), and
      remember the existing `addColumn(d, "task_work_episode_bindings", "merged_at", ...)`
      at `db.ts:1231` as the worked example.
-2. **`mergedPrFor(taskId)` (`src/server/tasks.ts`) reads current + historical.**
-   Current shape: reads only `taskWorkEpisodeForTask(taskId)`. New shape: gather the
+3. **`mergedPrFor(taskId)` (`src/server/tasks.ts`) reads current + historical.**
+   Pre-phase shape: read only `taskWorkEpisodeForTask(taskId)`. New shape: gather the
    current binding plus `historicalTaskWorkEpisodeBindingsForTask(taskId)`
    (`db.ts:2700`); return the `prUrl` of any row with `mergedAt !== null && prUrl`,
    preferring the **newest `mergedAt`** when several merged (a fix-forward task can produce
    more than one PR; the latest merge is the outcome to display).
-3. **Recording reaches rolled episodes on the live-poller path.** In
+4. **Recording reaches rolled episodes on the live-poller path.** In
    `reconcileWorkEpisodeMerge` (`src/server/registry.ts`), `markWorkEpisodeMerged` is
    already called unconditionally with the target episode tuple - keep that. The gap is
    upstream: the live poller (registry ~2568) only calls it when `acceptPrForEpisode`
@@ -61,21 +67,24 @@ reconciler (Phase 2) and the multi-task formalization (Phase 3) read from.
 
 - `TaskWorkEpisodeBinding` already carries `prUrl`, `prHeadSha`, `mergedAt` (db.ts:2321).
 - `historicalTaskWorkEpisodeBindingsForTask` exists (db.ts:2700) - the read this needs.
+  The historical table previously had readers but no rollover writer, so this phase must
+  populate it before relying on it for completion.
 - `agentWentAway` (tasks.ts:549) already calls `mergedPrFor` and completes on a hit; it
   needs no change beyond what `mergedPrFor` now returns.
 - `deleteHistoricalTaskWorkEpisodeBinding` is called from `reconcileDependencyPrMerges`
   after a historical binding satisfies a dependency (registry.ts:2748). **Audit that
   deletion**: after this phase a historical binding is also completion evidence, so
-  deleting it must not erase an unread merge. The safe rule: only delete once the task is
-  terminal-`done` OR keep the deletion but stamp `merged_at` first (the same transaction
-  ordering `markWorkEpisodeMerged` uses). Record the choice in the code comment.
+  deleting it must not erase an unread merge. Preserve merged bindings while their task is
+  `running`, `dispatching`, or provisionally `done`; failed/cancelled bindings and open
+  historical PRs remain outside this phase.
 
 ## Implementation steps
 
-1. `src/server/db.ts`: extend `markWorkEpisodeMerged` with the historical-table UPDATE;
-   add the migration `addColumn` if the column is absent; keep the single-transaction
-   shape and the `changes > 0` return covering all three tables.
-2. `src/server/tasks.ts`: rewrite `mergedPrFor` per scope item 2, with a doc comment
+1. `src/server/db.ts`: archive the outgoing PR-carrying binding during rollover, then
+   extend `markWorkEpisodeMerged` with the historical-table UPDATE; add the migration
+   `addColumn` if the column is absent; keep each write's single-transaction shape and the
+   merge stamp's `changes > 0` return covering all three tables.
+2. `src/server/tasks.ts`: rewrite `mergedPrFor` per scope item 3, with a doc comment
    stating the durable-record contract ("a merge on ANY of this task's episodes completes
    it - the session's current episode is irrelevant here").
 3. `src/server/registry.ts`: audit the `deleteHistoricalTaskWorkEpisodeBinding` call per
@@ -106,6 +115,7 @@ npm run typecheck && npm test && npm run build
 
 - All listed tests green on CI (Node 24 + 26).
 - `mergedPrFor` provably reads historical bindings (test pins it).
+- Rollover provably writes the outgoing PR-carrying binding to history (test pins it).
 - No behavior change for a task whose episode never rolled (the ordinary case).
 
 ## Downstream handoff

@@ -169,8 +169,10 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       </Tooltip>
 
       {/* Cascade from the master switch, ForemanBar's pattern: off means nothing is
-          symlinked whatever the rows say, so the rows must not look clickable. */}
-      <fieldset className="skills-list" disabled={!view?.enabled}>
+          symlinked whatever the rows say, so the rows must not look clickable. The
+          `skills/catalog` anchor is the settings-search jump target for the catalog as a
+          whole - the per-skill rows are dynamic and are not indexed individually. */}
+      <fieldset className="skills-list" data-anchor="skills/catalog" disabled={!view?.enabled}>
         {view?.skills.map((row) => (
           <SkillRowView
             key={row.id}

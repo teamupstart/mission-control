@@ -21,6 +21,7 @@ export type ActionId =
   | "roundup"
   | "dispatch"
   | "filter"
+  | "settingsSearch"
   | "expand"
   | "diff"
   | "files"
@@ -67,6 +68,18 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus filter",
     description: "Jump to the filter box to narrow the grid.",
     defaultBinding: "/",
+    group: "global",
+  },
+  {
+    // The ⌘K settings search palette. `defaultBinding` is "cmd+k", not "meta+k": this
+    // codebase's chord grammar spells the Command/Meta modifier `cmd` (see
+    // `chordFromEvent`, which emits it from `e.metaKey`), so "meta+k" would never match a
+    // keypress. Global, because it opens the palette from the fleet or any page - App's
+    // dispatch navigates to settings first when it has to.
+    id: "settingsSearch",
+    label: "Search settings",
+    description: "Open the settings search palette from anywhere.",
+    defaultBinding: "cmd+k",
     group: "global",
   },
   {
@@ -272,6 +285,20 @@ export function formatChord(chord: string): string {
 /** True when a chord targets a reserved navigation key and so can't be bound. */
 export function isReservedChord(chord: string): boolean {
   return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
+}
+
+/**
+ * True when a chord carries a Command or Control modifier (⌘/⌃).
+ *
+ * Those are the chords a global shortcut may fire from inside a text field without eating
+ * the operator's typing: ⌘K is unambiguous mid-sentence, but a bare `k` - or even a
+ * Shift/Alt combo, which just types a character - is not. A handler that bypasses the
+ * usual "don't act while typing" guard should gate that bypass on this, so a rebinding to
+ * a plain key stays behind the guard.
+ */
+export function chordHasCommandModifier(chord: string): boolean {
+  const { mods } = parseChord(chord);
+  return mods.includes("cmd") || mods.includes("ctrl");
 }
 
 // ---- store ----------------------------------------------------------------

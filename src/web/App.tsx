@@ -38,7 +38,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
-import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
+import { useKeybindings, chordFromEvent, chordHasCommandModifier, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
@@ -162,6 +162,11 @@ export function App(): React.JSX.Element {
   // by a copy taken at open time.
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  // Whether the ⌘K settings search palette is open. Owned here, not in SettingsPage, so
+  // the shortcut can open it from the fleet: App navigates to the settings page and sets
+  // this in one go. Reset whenever we leave settings (below), so returning via the gear
+  // never reopens a palette the operator closed.
+  const [searchOpen, setSearchOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filesSessionId, setFilesSessionId] = useState<string | null>(null);
   const [filePickerSessionId, setFilePickerSessionId] = useState<string | null>(null);
@@ -741,6 +746,14 @@ export function App(): React.JSX.Element {
     cardEls.current.get(expandedId)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, [expandedId]);
 
+  // The search palette is a settings-page surface (its veil is fixed and would otherwise
+  // hover over the fleet), so it cannot outlive the page: leaving settings closes it. This
+  // also means arriving via the gear always starts closed, and only an explicit ⌘K or rail
+  // click reopens it.
+  useEffect(() => {
+    if (route.page !== "settings") setSearchOpen(false);
+  }, [route.page]);
+
   // Global keyboard driving. Every action's key comes from the editable bindings
   // (see useKeybindings): a keydown is normalized to a canonical chord and matched
   // against them. Esc and the arrow keys stay fixed as structural navigation.
@@ -758,6 +771,33 @@ export function App(): React.JSX.Element {
       // Preserve the native activation of a focused link or button - including the
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
+
+      // Search settings (⌘K by default) works from ANY page, which is why it sits above the
+      // non-fleet return below. From the fleet it navigates to the page and opens the palette
+      // in one step; on the page it toggles. It is a plain bubble-phase handler, so the
+      // Keyboard panel's capture-phase chord recorder still swallows ⌘K while recording -
+      // "recording wins", the same contract the palette keeps.
+      //
+      // `onlyOpen` is the sitrep chord's pattern: fire when nothing is open, OR when the only
+      // thing open is this palette (so ⌘K toggles it shut), but STAND DOWN for anyone else's
+      // overlay - a dispatch dialog or Files must not be left mounted behind a palette after
+      // an unexpected jump to Settings. The text-field bypass is gated on a ⌘/⌃ modifier: ⌘K
+      // is unambiguous mid-sentence, but a bare-key rebinding must stay behind the typing
+      // guard, or that character would open the palette from inside any input.
+      if (
+        chord === bindings.settingsSearch &&
+        (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
+        overlaysRef.current.onlyOpen(OVERLAY_IDS.settingsSearch)
+      ) {
+        e.preventDefault();
+        if (route.page === "settings") {
+          setSearchOpen((v) => !v);
+        } else {
+          navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY });
+          setSearchOpen(true);
+        }
+        return;
+      }
 
       // Every page that is not the fleet owns its own keys - the Workflows editor, the
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
@@ -1019,7 +1059,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, focusReaderRail, focusReaderBody]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1266,6 +1306,8 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              searchOpen={searchOpen}
+              onSearchOpenChange={setSearchOpen}
             />
           )}
           fleet={(

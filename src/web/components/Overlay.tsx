@@ -51,6 +51,7 @@ export const OVERLAY_IDS = {
   files: "files",
   filePicker: "file-picker",
   workflowBinding: "workflow-binding",
+  settingsSearch: "settings-search",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

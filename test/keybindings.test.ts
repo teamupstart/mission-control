@@ -41,6 +41,7 @@ Object.defineProperty(globalThis, "fetch", {
 const {
   ACTIONS,
   chordFromEvent,
+  chordHasCommandModifier,
   findConflicts,
   formatChord,
   isReservedChord,
@@ -163,6 +164,19 @@ test("every default binding is bindable and round-trips through its chord form",
   }
 });
 
+test("chordHasCommandModifier flags only cmd/ctrl, so a text-field bypass is safe", () => {
+  // The gate on the global search shortcut's typing-guard bypass: ⌘K / ⌃K may fire from
+  // inside an input, but a bare key or a Shift/Alt combo (which just types a character)
+  // must not. Getting this wrong is a rebound key opening the palette mid-word.
+  assert.equal(chordHasCommandModifier("cmd+k"), true);
+  assert.equal(chordHasCommandModifier("ctrl+r"), true);
+  assert.equal(chordHasCommandModifier("cmd+shift+k"), true);
+  assert.equal(chordHasCommandModifier("k"), false);
+  assert.equal(chordHasCommandModifier("shift+o"), false);
+  assert.equal(chordHasCommandModifier("alt+e"), false);
+  assert.equal(chordHasCommandModifier("+"), false);
+});
+
 test("bare Tab is reserved while modified Tab chords remain bindable", () => {
   assert.equal(isReservedChord("Tab"), true);
   assert.equal(isReservedChord("shift+Tab"), false);
@@ -194,6 +208,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),
     chordFromEvent(key("k")),
+    chordFromEvent(key("k", { meta: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });
@@ -237,6 +252,25 @@ test("complete is a first-class action defaulting to c, and sits just before kil
     ACTIONS.findIndex((a) => a.id === "complete") + 1,
     ACTIONS.findIndex((a) => a.id === "kill"),
   );
+});
+
+test("settings search is a global action defaulting to ⌘K, and it rebinds and resets", () => {
+  const search = ACTIONS.find((a) => a.id === "settingsSearch");
+  assert.ok(search, "settingsSearch missing from the customizable registry");
+  assert.equal(search.group, "global");
+  // "cmd+k", not "meta+k": the chord grammar spells the Meta modifier `cmd`, so a real ⌘K
+  // keydown produces this and the handler matches it. "meta+k" would be a dead shortcut.
+  assert.equal(search.defaultBinding, "cmd+k");
+  assert.equal(chordFromEvent(key("k", { meta: true })), "cmd+k");
+  assert.equal(formatChord(search.defaultBinding), "⌘K");
+
+  // Rebind to another chord and back to default, the way the Keyboard panel drives it.
+  setBinding("settingsSearch", "cmd+shift+k");
+  assert.equal(stored().settingsSearch, "cmd+shift+k");
+  assert.equal(sent().settingsSearch, "cmd+shift+k");
+  resetBinding("settingsSearch");
+  assert.equal(stored().settingsSearch, undefined);
+  assert.equal(sent().settingsSearch, undefined);
 });
 
 // ---- the override store ----

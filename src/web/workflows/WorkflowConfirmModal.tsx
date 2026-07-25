@@ -42,6 +42,25 @@ export interface WorkflowConfirmRequest {
   onConfirm: () => void;
 }
 
+/**
+ * Whether what was typed satisfies the request, compared LITERALLY.
+ *
+ * Trimming here was a real weakening rather than a kindness: the dialog says "type this
+ * exact phrase", the button then enabled on ` RESTART FULL WORKFLOW `, and what it sent was
+ * the canonical string - so the UI accepted something it told the operator it would not, and
+ * the daemon never saw the difference. The gate's whole value is that the operator produced
+ * the phrase deliberately, which is a claim about what they typed, not about what it
+ * resembles.
+ *
+ * Exported because it cannot be reached by rendering: `renderToStaticMarkup` types nothing.
+ */
+export function confirmPhraseSatisfied(
+  request: Pick<WorkflowConfirmRequest, "requirePhrase">,
+  typed: string,
+): boolean {
+  return !request.requirePhrase || typed === request.requirePhrase;
+}
+
 export function WorkflowConfirmModal({
   request,
   onClose,
@@ -50,7 +69,7 @@ export function WorkflowConfirmModal({
   onClose: () => void;
 }): React.JSX.Element {
   const [typed, setTyped] = useState("");
-  const satisfied = !request.requirePhrase || typed.trim() === request.requirePhrase;
+  const satisfied = confirmPhraseSatisfied(request, typed);
   return (
     <Overlay
       id={OVERLAY_IDS.workflowConfirm}

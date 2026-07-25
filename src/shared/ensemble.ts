@@ -30,7 +30,7 @@ import type { LlmRunnerId } from "./llm.ts";
  * `EnsembleStrategyKey`, so a run written by a newer build still parses and reports itself
  * unreadable rather than being recompiled with today's defaults. See `EnsembleUnreadable`.
  */
-export const ENSEMBLE_STRATEGY_IDS = ["best_of_n"] as const;
+export const ENSEMBLE_STRATEGY_IDS = ["best_of_n", "consensus"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
@@ -71,6 +71,9 @@ export const ENSEMBLE_DRIVER_KEYS = [
   "comparative_review@1",
   "human_decision@1",
   "select_one_finalize@1",
+  "consensus_review@1",
+  "divergence_decision@1",
+  "retain_all_finalize@1",
 ] as const;
 export type EnsembleDriverKey = (typeof ENSEMBLE_DRIVER_KEYS)[number];
 
@@ -215,8 +218,21 @@ export type EnsembleDecisionActor = (typeof ENSEMBLE_DECISION_ACTORS)[number];
 export const ENSEMBLE_FINALIZATION_STATUSES = ["pending", "running", "completed", "failed"] as const;
 export type EnsembleFinalizationStatus = (typeof ENSEMBLE_FINALIZATION_STATUSES)[number];
 
-export const ENSEMBLE_LLM_PURPOSES = ["comparative_review"] as const;
+export const ENSEMBLE_LLM_PURPOSES = ["comparative_review", "consensus_review"] as const;
 export type EnsembleLlmPurpose = (typeof ENSEMBLE_LLM_PURPOSES)[number];
+
+/**
+ * What KIND of judgement a review stage's evaluator makes, persisted inside the compiled plan
+ * and mirrored onto the evaluation row's `method`.
+ *
+ * Append-only, and deliberately NOT derivable from the driver key: the key names an exact
+ * implementation (`consensus_review@1`) while this names the question being asked, which is what
+ * a reader deciding how to render an evaluation result actually needs. `comparative_llm` ranks
+ * and recommends one subject; `consensus_llm` compares the subjects' DECISIONS and returns
+ * agreements plus open questions, recommending nothing.
+ */
+export const ENSEMBLE_EVALUATOR_KINDS = ["comparative_llm", "consensus_llm"] as const;
+export type EnsembleEvaluatorKind = (typeof ENSEMBLE_EVALUATOR_KINDS)[number];
 
 export const ENSEMBLE_LLM_CALL_STATES = ["running", "succeeded", "failed", "interrupted"] as const;
 export type EnsembleLlmCallState = (typeof ENSEMBLE_LLM_CALL_STATES)[number];
@@ -508,11 +524,13 @@ export interface EnsembleReviewPersona {
 }
 
 /**
- * How a review stage judges. A union so a deterministic gate, a pairwise scheduler or a
- * Persona panel can be appended without touching the evaluation table.
+ * How a review stage judges. `kind` is the union point so a deterministic gate, a pairwise
+ * scheduler or a Persona panel can be appended without touching the evaluation table; every
+ * field below it is what ANY tool-less evaluator over immutable artifacts needs, which is why
+ * the two shipped kinds share them rather than each carrying its own copy.
  */
 export type EnsembleEvaluatorPolicy = {
-  kind: "comparative_llm";
+  kind: EnsembleEvaluatorKind;
   guidance: EnsembleEvaluatorGuidance;
   /** Null resolves through the daemon's own ladder at attempt time. */
   runner: LlmRunnerId | null;
@@ -520,32 +538,71 @@ export type EnsembleEvaluatorPolicy = {
   /**
    * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
    * are useful to the operator and invite brand and order bias in a judge.
+   *
+   * Every plan this build compiles pins it `true`, and the evidence packet does NOT consult it -
+   * anonymization is unconditional (`reviews/packet.ts`), so this records what a run does rather
+   * than selecting it, and no form offers it as a control. It stays a `boolean` rather than a
+   * literal because plans written by other builds are read back through this type: a stored
+   * `false` must still LOAD, and it is the packet, not this field, that decides what a model sees.
    */
   anonymizeSubjects: boolean;
   /** Total artifact material one attempt may consume, allocated evenly across subjects. */
   materialBudgetBytes: number;
 };
 
-/** What a human is being asked to decide. */
-export type EnsembleDecisionPolicy = {
-  kind: "select_one";
-  eligibleArtifactKind: EnsembleArtifactKind;
-  minEligibleSubjects: number;
-};
+/**
+ * What a human is being asked to decide.
+ *
+ * A union, and both members carry `eligibleArtifactKind` / `minEligibleSubjects` because those
+ * are the two facts the GENERIC engine reads to build the eligible artifact set before it hands
+ * a selection to a driver - a member that omitted them would make that read conditional on the
+ * policy kind, which is exactly the strategy branch the engine must not contain.
+ *
+ * `select_one` asks which single artifact wins. `answer_divergences` asks a question set the
+ * EVALUATOR derived from the artifacts, and its options are rendered from the decision stage's
+ * persisted input rather than from a strategy-static scorecard - the one new primitive the
+ * consensus strategy needed. It promotes nothing, so its finalization is `retain_all`.
+ */
+export type EnsembleDecisionPolicy =
+  | {
+      kind: "select_one";
+      eligibleArtifactKind: EnsembleArtifactKind;
+      minEligibleSubjects: number;
+    }
+  | {
+      kind: "answer_divergences";
+      eligibleArtifactKind: EnsembleArtifactKind;
+      minEligibleSubjects: number;
+    };
 
 /**
  * What the terminal outcome does.
  *
- * `requiresHumanDecision` is the literal `true` rather than a boolean, the same device
- * `WorkflowCaptureExpectation.requireCleanWorktree` uses: finalization here resets a
- * branch and reaps worktrees, so the type itself must refuse a policy that opts out.
+ * `requiresHumanDecision` is the literal `true` on EVERY member rather than a boolean, the same
+ * device `WorkflowCaptureExpectation.requireCleanWorktree` uses. For `select_one` the reason is
+ * that finalization resets a branch and reaps worktrees, so the type itself must refuse a policy
+ * that opts out. For `retain_all` nothing destructive happens at all, and the literal stays
+ * because the run's PRODUCT is the recorded human answer: a terminal outcome nobody confirmed
+ * would be a question set filed as if it had been settled.
  */
-export type EnsembleFinalizationPolicy = {
-  kind: "select_one";
-  requiresHumanDecision: true;
-  /** Losers give back their worktrees; their immutable artifacts are always retained. */
-  loserPolicy: "reap_worktrees";
-};
+export type EnsembleFinalizationPolicy =
+  | {
+      kind: "select_one";
+      requiresHumanDecision: true;
+      /** Losers give back their worktrees; their immutable artifacts are always retained. */
+      loserPolicy: "reap_worktrees";
+    }
+  | {
+      kind: "retain_all";
+      requiresHumanDecision: true;
+      /**
+       * Every member is retained and no worktree is reaped by finalization itself. The members'
+       * agents are still settled through the ordinary Task cancellation a completed run performs,
+       * which is what a `no_consensus` outcome already does - "non-destructive" means no artifact,
+       * ref or branch is discarded, not that agents keep running after the run ends.
+       */
+      loserPolicy: "retain";
+    };
 
 interface EnsembleStageBase {
   /** Deterministic logical id, stable for the life of the run. */
@@ -1071,6 +1128,33 @@ export type EnsembleAction =
 export type EnsembleSelectOneSelection =
   | { kind: "selected"; artifactId: string }
   | { kind: "no_consensus"; reason: string };
+
+/**
+ * One answer to one evaluator-derived divergence question.
+ *
+ * `optionId` names an option of THAT question - the position some subset of the fleet actually
+ * took - or is null, in which case `note` carries the operator's own answer. Null with an empty
+ * note is refused rather than read as "no opinion": the run's whole product is the answers, and
+ * a blank one recorded as an answer is indistinguishable from a settled question.
+ */
+export type EnsembleDivergenceAnswer = {
+  questionId: string;
+  optionId: string | null;
+  /** Free text. Required when `optionId` is null; an optional aside otherwise. */
+  note: string;
+};
+
+/**
+ * What an `answer_divergences` decision records: one answer per question the evaluator asked.
+ *
+ * Validated against the question set persisted on the decision stage attempt's INPUT, never
+ * against a re-read evaluation - a review retried since would ask different questions, and
+ * answers checked against those would be answers to something the operator never saw.
+ */
+export type EnsembleDivergenceSelection = {
+  kind: "answers";
+  answers: EnsembleDivergenceAnswer[];
+};
 
 // ---- helpers ----
 

@@ -1,5 +1,6 @@
 import { ENSEMBLE_STRATEGY_IDS, type EnsembleStrategyId } from "@shared/ensemble.ts";
 import { bestOfNStrategy } from "./best-of-n.ts";
+import { consensusStrategy } from "./consensus.ts";
 import { descriptorFor, type StrategyCatalog, type StrategyDescriptor } from "./types.ts";
 
 export type {
@@ -43,6 +44,7 @@ export { defineStrategy, descriptorFor } from "./types.ts";
  */
 export const ENSEMBLE_STRATEGIES: Record<EnsembleStrategyId, StrategyDescriptor> = {
   best_of_n: bestOfNStrategy,
+  consensus: consensusStrategy,
 };
 
 /** The one production catalog, as the generic `StrategyCatalog` a reader should take. */

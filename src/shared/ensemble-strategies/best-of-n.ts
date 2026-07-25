@@ -97,8 +97,16 @@ export const BestOfNEvaluatorSchema = z.object({
   personaRevision: z.number().int().positive().nullable().default(null),
   runner: z.enum(LLM_RUNNER_IDS).nullable().default(null),
   model: ModelIdSchema.nullable().default(null),
-  /** Hide agent, model and ordinal from the judge. On by default; bias is the default risk. */
-  anonymizeSubjects: z.boolean().default(true),
+  /**
+   * Persisted, always `true`, and NOT an operator control - see the consensus strategy's copy of
+   * this field for the argument. The comparative packet is unconditionally anonymous, so this
+   * states what happens rather than choosing it, and it normalizes so a stored `false` cannot
+   * describe a comparison as de-anonymised when it was not.
+   */
+  anonymizeSubjects: z
+    .boolean()
+    .default(true)
+    .transform(() => true as const),
   maxAttempts: z
     .number()
     .int()
@@ -185,14 +193,6 @@ export const BEST_OF_N_FORM: StrategyFormSpec = {
       min: 1,
       max: ENSEMBLE_HARD_LIMITS.maxConcurrentMembers,
       step: 1,
-    },
-    {
-      kind: "toggle",
-      key: "evaluator.anonymizeSubjects",
-      label: "Judge blind",
-      help:
-        "Hide which agent and model produced each candidate from the comparison. On by " +
-        "default: those attributes invite brand and order bias.",
     },
     {
       kind: "int",

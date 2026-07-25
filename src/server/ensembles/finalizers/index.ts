@@ -32,7 +32,17 @@ export type FinalizePlan =
       /** Every non-winner member - the engine decides per-member how to reap by current status. */
       loserMemberIds: string[];
     }
-  | { kind: "no_consensus"; artifactIds: string[]; reason: string };
+  | { kind: "no_consensus"; artifactIds: string[]; reason: string }
+  | {
+      /**
+       * Terminate keeping everything: no winner, no loser, nothing reaped and no ref touched. The
+       * engine settles each member's agent through the ordinary Task cancellation a completed run
+       * performs - "non-destructive" is a claim about work, not about leaving processes running.
+       */
+      kind: "retained";
+      memberIds: string[];
+      artifactIds: string[];
+    };
 
 export interface FinalizeContext {
   /** The APPLIED decision outcome the manager persisted before finalization began. */
@@ -93,6 +103,32 @@ export const selectOneFinalizer: Finalizer = {
 };
 
 /**
+ * `retain_all_finalize@1`: terminate with every artifact kept and nothing promoted.
+ *
+ * The whole finalizer, because there is nothing to plan: no ref is verified, no checkout is reset,
+ * no worktree is reaped. It refuses any outcome but `retained` rather than treating an unexpected
+ * one as "keep everything anyway" - a `selected` outcome arriving here would mean a plan whose
+ * decision and finalization disagree about what the run was for, and silently retaining a winner
+ * the operator confirmed would leave them with a promotion that never happened.
+ */
+export const retainAllFinalizer: Finalizer = {
+  driverKey: "retain_all_finalize@1",
+  plan(context) {
+    if (context.outcome.kind !== "retained") {
+      return { ok: false, detail: `retain_all finalization cannot execute a ${context.outcome.kind} outcome` };
+    }
+    return {
+      ok: true,
+      plan: {
+        kind: "retained",
+        memberIds: [...context.outcome.memberIds],
+        artifactIds: [...context.outcome.artifactIds],
+      },
+    };
+  },
+};
+
+/**
  * Every finalizer this build can execute, keyed by the exact `driverKey` a compiled plan names.
  * `Record<EnsembleDriverKey, …>` is the enforcement: a new driver key does not compile until it
  * says whether a finalizer exists or `null`. Non-finalize keys are `null`.
@@ -103,6 +139,9 @@ export const FINALIZERS: Record<EnsembleDriverKey, Finalizer | null> = {
   "comparative_review@1": null,
   "human_decision@1": null,
   "select_one_finalize@1": selectOneFinalizer,
+  "consensus_review@1": null,
+  "divergence_decision@1": null,
+  "retain_all_finalize@1": retainAllFinalizer,
 };
 
 /** The finalizer for a persisted driver key, or null when this build cannot run it. */

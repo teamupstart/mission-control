@@ -134,6 +134,10 @@ test("a decision naming an ineligible or unknown artifact is refused, never a ne
     policy: { kind: "select_one" as const, eligibleArtifactKind: "commit" as const, minEligibleSubjects: 2 },
     eligibleArtifactIds: ["art-a", "art-b"],
     memberForArtifact: (id: string) => (id === "art-a" ? "m-a" : id === "art-b" ? "m-b" : null),
+    // What the decision stage persisted when it opened. `select_one` ignores it - its question is
+    // fully described by the compiled policy - but the field is on every `DecisionContext` because
+    // a driver whose options came from an evaluator validates the answer against exactly this.
+    stageInput: { command: "await_human_decision" },
   };
   const guessed = selectOneDecisionDriver.validate({ kind: "selected", artifactId: "art-guessed" }, context);
   assert.equal(guessed.ok, false);

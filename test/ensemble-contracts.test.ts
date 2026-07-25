@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import {
   ENSEMBLE_ARTIFACT_KINDS,
   ENSEMBLE_DRIVER_KEYS,
+  ENSEMBLE_EVALUATOR_KINDS,
   ENSEMBLE_HARD_LIMITS,
+  ENSEMBLE_LLM_PURPOSES,
   ENSEMBLE_MEMBER_STATUSES,
   ENSEMBLE_PAYLOAD_VERSION,
   ENSEMBLE_PLAN_VERSION,
@@ -53,7 +55,7 @@ import {
 test("the persisted id tuples are exactly what has shipped", () => {
   // Not a tautology: this is the list a future change has to consciously edit, and appending
   // is the only edit that keeps an operator's existing rows readable.
-  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n"]);
+  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n", "consensus"]);
   assert.deepEqual([...ENSEMBLE_SOURCE_KINDS], ["manual"]);
   assert.deepEqual(
     [...ENSEMBLE_ARTIFACT_KINDS],
@@ -67,8 +69,13 @@ test("the persisted id tuples are exactly what has shipped", () => {
       "comparative_review@1",
       "human_decision@1",
       "select_one_finalize@1",
+      "consensus_review@1",
+      "divergence_decision@1",
+      "retain_all_finalize@1",
     ],
   );
+  assert.deepEqual([...ENSEMBLE_EVALUATOR_KINDS], ["comparative_llm", "consensus_llm"]);
+  assert.deepEqual([...ENSEMBLE_LLM_PURPOSES], ["comparative_review", "consensus_review"]);
 });
 
 test("every driver key is versioned, so a new behaviour is a new key rather than a redefinition", () => {

@@ -29,6 +29,10 @@ import type { Task, TaskDependency } from "../src/shared/types.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
+const component = readFileSync(
+  fileURLToPath(new URL("../src/web/components/layouts/BacklogColumn.tsx", import.meta.url)),
+  "utf8",
+);
 /** Prose explains the arithmetic; only the declarations are the contract. */
 const rules = css.replace(/\/\*[\s\S]*?\*\//g, " ");
 
@@ -104,6 +108,10 @@ test("only waiting earns the opt-out - an ordinary disabled button keeps the gen
   const plain = column([mkTask({ id: "t1" })]);
   assert.ok(!plain.includes("is-waiting"), "an unblocked card marks nothing");
   assert.match(plain, /<button class="bl-launch"/, "and keeps the bare class");
+  assert.ok(
+    component.includes('className={`bl-launch${declaredBlocked && !busy ? " is-waiting" : ""}`}'),
+    "a busy blocked card must keep the generic disabled treatment",
+  );
 
   // Parked is not waiting: the hold is on the machine, so the operator's own button
   // stays live and unmarked.

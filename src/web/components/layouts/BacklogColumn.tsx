@@ -372,7 +372,7 @@ function BacklogCard({
           explanation rather than a verb you cannot press, so it opts out of the generic
           disabled dimming instead of stacking it on the card's own. See `.bl-launch`. */}
       <button
-        className={`bl-launch${declaredBlocked ? " is-waiting" : ""}`}
+        className={`bl-launch${declaredBlocked && !busy ? " is-waiting" : ""}`}
         onClick={(e) => {
           // Launching is not opening: without this the card's own handler would fire
           // too and drop the modal over a task that is already on its way out.

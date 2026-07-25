@@ -28,9 +28,11 @@ Use a disposable or low-risk repo, and a **scout** schedule (investigate/report,
 late run costs nothing if it fires.
 
 1. **Create, Save paused.** Open **Missions** → **Create mission**. Fill in a name, the test
-   repo, a task title and intent, agent, and a cadence a few minutes out (e.g. every hour, or
-   Advanced `*/... ` within the one-hour minimum - or just pick "Daily" at a time soon).
-   Click **Save paused**. Confirm it appears in the catalog as **paused** with no next run.
+   repo, a task title and intent, agent, and a cadence a few minutes out. For an hourly
+   schedule, use Advanced `<next-minute> * * * *` (for example, `17 * * * *`); alternatively,
+   pick Daily at a time soon. Set overlap to **allow**, so a task from one observation cannot
+   make the next occurrence skip. Click **Save paused**. Confirm it appears in the catalog as
+   **paused** with no next run.
 
 2. **Preview the expected instants.** Select it → **Preview**. Confirm the next occurrences
    list local time, UTC, and any DST shift, and that they match what you intended. Optionally
@@ -42,7 +44,7 @@ late run costs nothing if it fires.
    next run appears.
 
 4. **Verify a normal occurrence.** Wait for one due instant while the machine is awake.
-   Confirm exactly one backlog task is filed with a **Scheduled by &lt;name&gt;** mark, and that
+   Confirm exactly one backlog task is filed with its schedule provenance mark, and that
    History shows one `created` occurrence with an on-time (≤1m) delay.
 
 5. **Restart the daemon across a due instant.** Stop Mission Control (`make stop-all`) a
@@ -52,7 +54,7 @@ late run costs nothing if it fires.
 
 6. **Sleep the laptop across a due instant.** Close the lid (or `pmset sleepnow`) before a due
    instant and wake it after. On resume, confirm one catch-up task is filed and History shows
-   the occurrence with the actual `resumedAt - scheduledFor` delay (e.g. `+2h 14m late`).
+   the occurrence with the actual `claimedAt - scheduledFor` delay (e.g. `2h 14m late`).
    Record the delay you observed here: `__________`.
 
 7. **Confirm one task / one occurrence.** For each of steps 4-6, confirm there is exactly one

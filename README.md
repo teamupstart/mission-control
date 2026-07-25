@@ -1315,8 +1315,9 @@ The overlay has four screens:
 
 - **Catalog + detail** - search and filter (All / Healthy / Paused / Attention) the live
   list, and read one schedule's template, next occurrence, policies, guarantee, and recent
-  outcome. Its actions are Pause/Resume, **Run now** (files a backlog task immediately, paused
-  or not - it does *not* run an agent), Preview, History, and Archive.
+  outcome. Its actions are Pause/Resume, **Run now** (requests a manual occurrence, paused or
+  not; it files a backlog task only when the schedule's policies and safety checks allow, and
+  it never runs an agent), Preview, History, and Archive.
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
   template, the cadence and time zone, laptop availability, overlap and missed-run
   guardrails, and preview-and-enable. Readable presets (daily / weekdays / weekly / monthly)
@@ -1332,11 +1333,12 @@ The overlay has four screens:
   scheduled time, trigger (scheduled or manual), outcome, delay, generated task, revision,
   and an immutable audit. History survives archive.
 
-Generated tasks carry their origin everywhere they are shown: a **"Scheduled by &lt;name&gt;"**
-mark on the Board backlog card, the Sitrep backlog and recent outcomes, the Dispatch editor
-(read-only - the provenance is immutable and never part of a task update), and, once a task
-is bound to a session, on the card, the console detail, the board tile, and the rail. Every
-mark deep-links to that run's history.
+Generated tasks carry their origin across the operator task surfaces: a provenance chip or
+compact glyph on the Board backlog card, the Sitrep backlog and recent outcomes, the Dispatch
+editor (read-only - the provenance is immutable and never part of a task update), and, once a
+task is bound to a session, on the card, the console detail, the board tile, and the rail. The
+mark or its tooltip identifies the schedule (by name while it remains in the live catalog,
+otherwise by ID) and scheduled time, and every mark deep-links to that run's history.
 
 Under the screens sits the scheduler - a self-rescheduling loop that accounts for every
 crossed instant exactly once, applies the missed-run and overlap policies, recovers both
@@ -1349,7 +1351,7 @@ POST /api/schedules/preview                enumerate a cadence, writing nothing
 POST /api/schedules                        create (save paused or enabled)
 POST /api/schedules/:id/update             apply an edit as a new revision
 POST /api/schedules/:id/set-enabled        pause or resume
-POST /api/schedules/:id/run-now            file this mission's work now, paused or not
+POST /api/schedules/:id/run-now            request a manual occurrence, paused or not
 POST /api/schedules/:id/archive            retire it, keeping its history
 GET  /api/schedules/:id/occurrences        paginated run history (includes archived schedules)
 ```

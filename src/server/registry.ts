@@ -593,16 +593,17 @@ export class Registry extends EventEmitter {
    * Fired when the pull request a TASK's work episode produced was observed merged.
    *
    * Emitted from `reconcileWorkEpisodeMerge`, which is the one place both merge
-   * observers converge: the per-session PR poller and the dependency-PR poller. That
+   * observers converge: the per-session branch queries and the shared by-URL queries. That
    * matters more than it looks. Hanging this off YOLO mode's `maybeMerge` instead would
    * cover only the merges Mission Control performs, leaving a PR the OPERATOR merged to
    * strand its task exactly as before - and YOLO is off by default, so the fix would
    * ship dark. Hanging it off `Session.prState` would not work at all: this function
    * clears the match on merge, so the session never durably reads `merged`.
    *
-   * NOT "the task is over". The merge is one half of that answer and the agent having
-   * finished its episode is the other, which only `TaskManager` can weigh - see
-   * `settleMergedTask`. What is announced here is the merge, once.
+   * NOT "the task is over". For a live task on the current binding, the merge is one half
+   * of that answer and the agent having finished its episode is the other, which only
+   * `TaskManager` can weigh - see `settleMergedTask`. What is announced here is the merge
+   * of a current task binding, once.
    *
    * Listeners must not throw; this runs inside the PR poller's reconciliation.
    */
@@ -616,9 +617,9 @@ export class Registry extends EventEmitter {
    *
    * The periodic backstop behind session-independent completion, and deliberately not a
    * second timer: the PR poller's own tick is the clock. `task_pr_merged` above cannot
-   * serve this - it announces the merge of the binding a LIVE session currently holds, so
-   * it is silent for exactly the rows this exists for (a killed agent's task, a cancelled
-   * one whose pull request landed anyway). This says only "the durable record moved",
+   * serve this - it announces only a current task binding, and its consumer handles only
+   * live `running`/`dispatching` tasks. Historical bindings and already-terminal rows are
+   * exactly what this signal must also wake. This says only "the durable record moved",
    * leaving `TaskManager.reconcileMergedTasks` to decide what that completes: the Registry
    * stores, the TaskManager decides, the same split `session_remove` makes.
    *

@@ -310,7 +310,7 @@ export async function pollAndReconcilePrs(
 /**
  * Drive PR reconciliation on an interval. Ticks never overlap; a slow sweep just
  * delays the next. A no-op (no subprocesses) whenever no session sits on a
- * feature branch.
+ * feature branch and no dependency or task binding contributes a URL.
  */
 export function startPrPoller(registry: Registry): () => void {
   let stopped = false;

@@ -471,22 +471,25 @@ export class TaskManager {
    * The newest pull request any of this task's work episodes produced, if one was observed
    * merged - or null.
    *
-   * The durable-record contract: a merge on ANY of this task's episodes completes it, and
-   * the session's CURRENT episode is irrelevant here. Read from `task_work_episode_bindings`
-   * AND `historical_task_work_episode_bindings`, both stamped by `markWorkEpisodeMerged` at
-   * the moment the merge is seen. That is the durable acknowledgement the settle needs: it
-   * survives a restart, it cannot be outrun by a prompt arriving later, and unlike a timer
-   * it is a FACT rather than an inference.
+   * The durable-record contract: a merge on ANY of this task's episodes is durable
+   * completion evidence, and the session's CURRENT episode is irrelevant to the
+   * session-independent consumers. They wait for a live `running`/`dispatching` turn to
+   * disappear, while already-concluded `failed`/`cancelled` rows need no liveness gate.
+   * Read from `task_work_episode_bindings` AND `historical_task_work_episode_bindings`, both
+   * stamped by `markWorkEpisodeMerged` at the moment the merge is seen. That is the durable
+   * acknowledgement the settle needs: it survives a restart, it cannot be outrun by a
+   * prompt arriving later, and unlike a timer it is a FACT rather than an inference.
    *
    * This reverses the earlier "current binding only" rule deliberately (adopted plan
    * decision). That rule read only the current binding so that a task whose episode rolled
    * over after its merge stayed `failed` - the reasoning being the agent was handed more
-   * work and then vanished mid-flight. But the only caller is `agentWentAway`: the session
-   * is GONE, so there is no "more work" in progress to strand, and a merged pull request IS
-   * the outcome the task was dispatched for. Reporting it as `failed` behind a `stopped`
-   * blocker strands every dependent for work that shipped. When several episodes merged
-   * (a fix-forward task can open more than one PR), the NEWEST `mergedAt` is the outcome to
-   * display.
+   * work and then vanished mid-flight. Its consumers, `agentWentAway` and
+   * `reconcileMergedTasks`, only use this to conclude a `running`/`dispatching` task once
+   * the session is GONE, so there is no "more work" in progress to strand; the reconciler
+   * also upgrades already-concluded `failed`/`cancelled` rows. Reporting any of those as a
+   * stopped blocker strands every dependent for work that shipped. When several episodes
+   * merged (a fix-forward task can open more than one PR), the NEWEST `mergedAt` is the
+   * outcome to display.
    */
   private mergedPrFor(taskId: string): string | null {
     const current = taskWorkEpisodeForTask(taskId);

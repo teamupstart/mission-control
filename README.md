@@ -3121,10 +3121,11 @@ down is never seen being evicted, and a pull request you merge days later belong
 session that no longer exists - so the merge had no observer at all, and the task sat
 `running` or `failed` for as long as you left it there.
 
-So a task's own pull requests are **polled by URL** for as long as its completion is still
-in question, alongside the ones a declared dependency is waiting on and at the same rate.
-No session needs to exist. When one of them merges, the task is completed from the durable
-record - and that includes rows that had already been written off:
+So while its row is still present in Mission Control, a task's own pull requests are
+**polled by URL** for as long as its completion is still in question, alongside the ones a
+declared dependency is waiting on and at the same rate. No session needs to exist. When one
+of them merges, the task is completed from the durable record - and that includes rows that
+had already been written off:
 
 | Status when the merge is observed | What happens |
 |---|---|

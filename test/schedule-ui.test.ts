@@ -151,6 +151,23 @@ test("the catalog marks an unreadable execution mode", () => {
   assert.match(html, /unreadable/);
 });
 
+test("the detail prevents newer-build schedules from being edited", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule({
+        executionMode: null,
+        unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
+      }),
+      onEdit: () => {},
+      onPreview: () => {},
+      onHistory: () => {},
+      onArchived: () => {},
+    }),
+  );
+  assert.match(html, /cannot be edited safely/);
+  assert.match(html, /<button class="btn" disabled=""[^>]*>Edit<\/button>/);
+});
+
 test("the editor preserves a current timezone absent from the browser list", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleEditor, {
@@ -279,4 +296,26 @@ test("history errors preserve provenance and clear after pagination recovers", (
   );
   assert.match(history, /Schedule \{scheduleId\}/);
   assert.match(history, /occurrence \$\{initialOccurrenceId\}/);
+});
+
+test("history deep links, row activation, and timestamps preserve the audit", () => {
+  const history = readFileSync(
+    path.join(WEB, "components/schedules/ScheduleHistory.tsx"),
+    "utf8",
+  );
+  assert.match(history, /const DEEP_LINK_PAGE_LIMIT = 40/);
+  assert.match(history, /page\.nextCursor === null/);
+  assert.match(history, /event\.key === "Enter" \|\| event\.key === " "/);
+  assert.match(history, /tabIndex=\{0\}/);
+  assert.match(history, /aria-label=\{`\$\{formatInstantUtc\(occ\.scheduledFor\)\} UTC/);
+  assert.match(history, /Current zone \(\{timezone\}\):/);
+  assert.match(history, /<h3>\{formatInstantUtc\(occurrence\.scheduledFor\)\} UTC<\/h3>/);
+});
+
+test("generated-task links route without abandoning retained audits", () => {
+  const app = readFileSync(path.join(WEB, "App.tsx"), "utf8");
+  assert.match(app, /if \(task\.status === "backlog"\)/);
+  assert.match(app, /if \(task\.sessionId\)[\s\S]*?setSelectedId\(task\.sessionId\)/);
+  assert.match(app, /if \(layout === "board"\) setBoardOpen\(true\)/);
+  assert.match(app, /window\.open\(task\.outcomeUrl, "_blank", "noopener"\)/);
 });

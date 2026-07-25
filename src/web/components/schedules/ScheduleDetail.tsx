@@ -119,8 +119,14 @@ export function ScheduleDetail({
               {schedule.enabled ? "Pause" : "Resume"}
             </button>
           </Tooltip>
-          <Tooltip label="Edit this mission; saving creates a new immutable revision">
-            <button className="btn" onClick={onEdit} disabled={busy !== null}>
+          <Tooltip
+            label={
+              runnable
+                ? "Edit this mission; saving creates a new immutable revision"
+                : "This mission was written by a newer build and cannot be edited safely"
+            }
+          >
+            <button className="btn" onClick={onEdit} disabled={busy !== null || !runnable}>
               Edit
             </button>
           </Tooltip>

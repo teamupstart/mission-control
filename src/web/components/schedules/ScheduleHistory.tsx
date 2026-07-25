@@ -16,7 +16,7 @@ import {
 } from "../../lib/schedules.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
-const DEEP_LINK_PAGE_LIMIT = 5;
+const DEEP_LINK_PAGE_LIMIT = 40;
 
 /**
  * A schedule's occurrence history, paged on demand and never polled.
@@ -114,6 +114,7 @@ export function ScheduleHistory({
       }
 
       setLoading(false);
+      setError("Could not load the requested occurrence.");
     })();
     // initialOccurrenceId only seeds the selection; it must not re-fetch the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,12 +195,23 @@ export function ScheduleHistory({
                       key={occ.id}
                       className={occ.id === selectedId ? "is-selected" : ""}
                       onClick={() => setSelectedId(occ.id)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.currentTarget === event.target &&
+                          (event.key === "Enter" || event.key === " ")
+                        ) {
+                          event.preventDefault();
+                          setSelectedId(occ.id);
+                        }
+                      }}
+                      tabIndex={0}
+                      aria-label={`${formatInstantUtc(occ.scheduledFor)} UTC, ${status.label}`}
                     >
                       <td className="rm-mono">
-                        <div>{formatInstant(occ.scheduledFor, schedule?.timezone ?? null)}</div>
-                        <div className="rm-dim rm-tiny">
-                          {formatInstantUtc(occ.scheduledFor)} UTC
-                        </div>
+                        <HistoryInstant
+                          at={occ.scheduledFor}
+                          timezone={schedule?.timezone ?? null}
+                        />
                       </td>
                       <td>{triggerKindLabel(occ.triggerKind)}</td>
                       <td>
@@ -251,12 +263,35 @@ export function ScheduleHistory({
 
       <aside className="rm-history-detail">
         {selected ? (
-          <OccurrenceDetail occurrence={selected} timezone={schedule?.timezone ?? null} onOpenTask={onOpenTask} />
+          <OccurrenceDetail
+            occurrence={selected}
+            timezone={schedule?.timezone ?? null}
+            onOpenTask={onOpenTask}
+          />
         ) : (
           <p className="rm-empty">Select an occurrence to see its audit.</p>
         )}
       </aside>
     </div>
+  );
+}
+
+function HistoryInstant({
+  at,
+  timezone,
+}: {
+  at: number;
+  timezone: string | null;
+}): React.JSX.Element {
+  return (
+    <>
+      <div>{formatInstantUtc(at)} UTC</div>
+      {timezone && (
+        <div className="rm-dim rm-tiny">
+          Current zone ({timezone}): {formatInstant(at, timezone)}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -274,20 +309,22 @@ function OccurrenceDetail({
     <div className="rm-occurrence-detail">
       <div className="rm-panel-head">
         <div>
-          <h3>{formatInstant(occurrence.scheduledFor, timezone)}</h3>
+          <h3>{formatInstantUtc(occurrence.scheduledFor)} UTC</h3>
           <span className="rm-tiny rm-dim rm-mono">{occurrence.id} · immutable</span>
         </div>
         <span className={`rm-badge-inline rm-badge-${status.tone}`}>{status.label}</span>
       </div>
       <dl className="rm-kv">
         <dt>Scheduled for</dt>
-        <dd>{formatInstant(occurrence.scheduledFor, timezone)}</dd>
-        <dt>Scheduled (UTC)</dt>
-        <dd className="rm-mono">{formatInstantUtc(occurrence.scheduledFor)} UTC</dd>
+        <dd className="rm-mono">
+          <HistoryInstant at={occurrence.scheduledFor} timezone={timezone} />
+        </dd>
         <dt>Trigger</dt>
         <dd>{triggerKindLabel(occurrence.triggerKind)}</dd>
         <dt>Claimed at</dt>
-        <dd>{formatInstant(occurrence.claimedAt, timezone)}</dd>
+        <dd className="rm-mono">
+          <HistoryInstant at={occurrence.claimedAt} timezone={timezone} />
+        </dd>
         <dt>Delay</dt>
         <dd className={delayIsLate(occurrence.delayMs) ? "rm-late" : ""}>
           {formatDelay(occurrence.delayMs)}
@@ -295,7 +332,9 @@ function OccurrenceDetail({
         {occurrence.finishedAt != null && (
           <>
             <dt>Finished at</dt>
-            <dd>{formatInstant(occurrence.finishedAt, timezone)}</dd>
+            <dd className="rm-mono">
+              <HistoryInstant at={occurrence.finishedAt} timezone={timezone} />
+            </dd>
           </>
         )}
         <dt>Revision</dt>

@@ -1607,9 +1607,21 @@ export function App(): React.JSX.Element {
                   onClose={closeMissions}
                   onOpenTask={(taskId) => {
                     const task = tasks.find((candidate) => candidate.id === taskId);
-                    if (!task || task.status !== "backlog") return;
-                    closeMissions();
-                    openTaskEditor(taskId);
+                    if (!task) return;
+                    if (task.status === "backlog") {
+                      closeMissions();
+                      openTaskEditor(taskId);
+                      return;
+                    }
+                    if (task.sessionId) {
+                      closeMissions();
+                      setSelectedId(task.sessionId);
+                      if (layout === "board") setBoardOpen(true);
+                      return;
+                    }
+                    if (task.outcomeUrl) {
+                      window.open(task.outcomeUrl, "_blank", "noopener");
+                    }
                   }}
                 />
               )}

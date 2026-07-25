@@ -238,6 +238,28 @@ test("a dead restored session with a durable binding is never replaced", async (
   assert.equal(finalize.materialized.length, 0);
 });
 
+test("skipping a durable handoff replaces a dead restored session", async () => {
+  const finalize = new FakeFinalize();
+  const workflow = new FakeWorkflow();
+  workflow.submitResult = { ok: false, reason: "other", detail: "submission unavailable" };
+  finalize.workflow = workflow;
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine, PINNED);
+  const artifact = winnerArtifact(store, runId);
+  const winnerTask = store.listAttempts(runId).find((attempt) => attempt.id === artifact.attemptId)!.taskId!;
+  await decide(engine, runId, artifact.id);
+
+  gateway.vanish(winnerTask);
+  const resolved = await engine.resolveFinalization(runId, true);
+  const run = store.getRun(runId)!;
+  assert.equal(resolved.ok, true);
+  assert.equal(run.status, "completed");
+  assert.equal(run.workflowHandoff!.state, "skipped");
+  assert.equal(run.workflowHandoff!.bindingId, "binding-1");
+  assert.equal(finalize.materialized.length, 1);
+  assert.equal(finalize.continuations.length, 0);
+});
+
 // ---- the manual-binding guard ----
 
 test("an active ensemble member's session cannot be bound to a workflow; a settled one can", () => {

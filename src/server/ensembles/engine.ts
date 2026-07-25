@@ -2411,7 +2411,10 @@ export class EnsembleEngine {
       const taskId = winnerAttempt?.taskId ?? null;
       const sessionId = taskId ? this.tasks.sessionId(taskId) : null;
       const worktreePath = winnerAttempt ? this.ownedWorktree(winnerAttempt) : null;
-      const handoffBound = run.workflowHandoff !== null && run.workflowHandoff.bindingId !== null;
+      const handoffBound =
+        run.workflowHandoff !== null &&
+        run.workflowHandoff.bindingId !== null &&
+        run.workflowHandoff.state !== "skipped";
       if (
         (sessionId !== null && worktreePath !== null) ||
         progress.continuationDelivered ||

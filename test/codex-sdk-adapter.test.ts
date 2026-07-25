@@ -7,6 +7,7 @@ import {
   turnInput,
   userInputQuestions,
 } from "../src/server/harness/codex/sdk.ts";
+import { spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
@@ -438,6 +439,14 @@ test("request_user_input becomes a form and answers by the ids Codex asked under
           isSecret: false,
           options: [{ label: "Yes", description: "" }, { label: "No", description: "" }],
         },
+        {
+          id: "q-notes",
+          header: "Notes",
+          question: "Any notes for the release?",
+          isOther: true,
+          isSecret: false,
+          options: null,
+        },
       ],
     },
   });
@@ -445,7 +454,7 @@ test("request_user_input becomes a form and answers by the ids Codex asked under
   const request = events.find((e) => e.kind === "request");
   assert.ok(request && request.kind === "request");
   assert.equal(request.request.kind, "question");
-  assert.equal(request.request.questions?.length, 2);
+  assert.equal(request.request.questions?.length, 3);
   // Several questions is a FORM: its rows live on the questions, and flattening them would
   // offer one numbered list whose numbers mean nothing to the driver.
   assert.deepEqual(request.request.options, []);
@@ -456,12 +465,19 @@ test("request_user_input becomes a form and answers by the ids Codex asked under
     answers: [
       { question: "Which branch should this land on?", labels: ["release"] },
       { question: "Run the full suite?", labels: ["Yes"] },
+      { question: "Any notes for the release?", labels: [], text: "Ship it" },
     ],
   });
   assert.deepEqual(server.responseTo(1), {
     jsonrpc: "2.0",
     id: 1,
-    result: { answers: { "q-branch": { answers: ["release"] }, "q-tests": { answers: ["Yes"] } } },
+    result: {
+      answers: {
+        "q-branch": { answers: ["release"] },
+        "q-tests": { answers: ["Yes"] },
+        "q-notes": { answers: ["Ship it"] },
+      },
+    },
   });
   await handle.stop();
   await drained;
@@ -516,6 +532,23 @@ test("clearContext starts a new thread on the same connection and re-binds the c
   const { handle, events, drained } = await launch(server);
   await settle();
   assert.ok(handle.clearContext, "Codex declares a clearContext capability");
+  server.push({
+    method: "item/commandExecution/requestApproval",
+    id: 9,
+    params: {
+      threadId: THREAD.id,
+      turnId: "turn-1",
+      itemId: "old-request",
+      startedAtMs: 0,
+      environmentId: null,
+      command: "echo old",
+      cwd: "/work/repo",
+      commandActions: [],
+    },
+  });
+  await settle();
+  const oldRequest = events.findLast((event) => event.kind === "request");
+  assert.ok(oldRequest && oldRequest.kind === "request");
   await handle.clearContext();
   await settle();
 
@@ -528,19 +561,80 @@ test("clearContext starts a new thread on the same connection and re-binds the c
     (server.calls("thread/start")[1]?.params as Record<string, unknown>).sessionStartSource,
     "clear",
   );
+  assert.deepEqual(server.responseTo(9), {
+    jsonrpc: "2.0",
+    id: 9,
+    result: { decision: "cancel" },
+  });
+  assert.ok(
+    events.some(
+      (event) =>
+        event.kind === "request_resolved" && event.requestId === oldRequest.request.id,
+    ),
+  );
+
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "late-old-turn" } });
+  server.notify("thread/tokenUsage/updated", {
+    threadId: THREAD.id,
+    turnId: "late-old-turn",
+    tokenUsage: {
+      total: { totalTokens: 10, inputTokens: 8, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+      last: { totalTokens: 10, inputTokens: 8, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+      modelContextWindow: 258400,
+    },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  await settle();
+  await handle.send({ text: "new thread work" });
+  assert.equal(server.calls("turn/steer").length, 0);
+  assert.equal(
+    (server.calls("turn/start").at(-1)?.params as { threadId: string }).threadId,
+    SECOND_THREAD.id,
+  );
+  server.notify("turn/completed", { threadId: SECOND_THREAD.id, turn: { id: "turn-2" } });
+  await settle();
+  const done = events.filter((event) => event.kind === "turn_done").at(-1);
+  assert.ok(done && done.kind === "turn_done");
+  assert.equal(done.usage, null);
   await handle.stop();
   await drained;
 });
 
 test("a resume continues the thread it names and never re-sends the intent", async () => {
   const server = new FakeServer(defaultReplies());
-  const { handle, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
+  const { handle, events, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
   await settle();
   assert.equal(server.calls("thread/start").length, 0);
   assert.equal((server.calls("thread/resume")[0]?.params as { threadId: string }).threadId, THREAD.id);
   // Re-sending the original intent would make the agent start the task over on top of
   // whatever it had already done.
   assert.equal(server.calls("turn/start").length, 0);
+  assert.ok(events.some((event) => event.kind === "state" && event.state === "idle"));
+  await handle.stop();
+  await drained;
+});
+
+test("a resume restores an active turn and steers the next send", async () => {
+  const idle = threadResponse(THREAD);
+  const resumed = {
+    ...idle,
+    thread: {
+      ...idle.thread,
+      status: { type: "active", activeFlags: [] },
+      turns: [{ id: "turn-live", status: "inProgress" }],
+    },
+  };
+  const server = new FakeServer(defaultReplies({ "thread/resume": resumed }));
+  const { handle, events, drained } = await launch(server, { resume: THREAD.id, prompt: "" });
+  await settle();
+  assert.ok(events.some((event) => event.kind === "state" && event.state === "working"));
+  await handle.send({ text: "continue here" });
+  assert.equal(server.calls("turn/start").length, 0);
+  assert.deepEqual(server.calls("turn/steer")[0]?.params, {
+    threadId: THREAD.id,
+    input: [{ type: "text", text: "continue here", text_elements: [] }],
+    expectedTurnId: "turn-live",
+  });
   await handle.stop();
   await drained;
 });
@@ -568,7 +662,7 @@ test("a mode change is refused when it would need a different sandbox", async ()
   await drained;
 });
 
-test("effort and model changes ride the next turn, and max is refused", async () => {
+test("effort and model changes ride the next turn, including model-supported max", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, drained } = await launch(server);
   await settle();
@@ -580,9 +674,12 @@ test("effort and model changes ride the next turn, and max is refused", async ()
   const second = server.calls("turn/start")[1]?.params as Record<string, unknown>;
   assert.equal(second.effort, "xhigh");
   assert.equal(second.model, "gpt-5.6-codex");
-  // Codex offers four levels; rounding `max` down would bill a turn the operator did not ask
-  // for. `CODEX_EFFORT_LEVELS` is the shared statement of which four.
-  await assert.rejects(() => handle.setEffort!("max"), /no reasoning effort called "max"/);
+  await handle.setEffort!("max");
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  await settle();
+  await handle.send({ text: "use the maximum" });
+  const third = server.calls("turn/start")[2]?.params as Record<string, unknown>;
+  assert.equal(third.effort, "max");
   await handle.stop();
   await drained;
 });
@@ -854,7 +951,7 @@ test("an approval prompt leads with the reason and shows what is being run", () 
   );
 });
 
-test("a question with no options is dropped rather than drawn as an empty form", () => {
+test("a question with no options remains available for a custom answer", () => {
   const questions = userInputQuestions({
     threadId: "t", turnId: "u", itemId: "i", autoResolutionMs: null,
     questions: [
@@ -862,12 +959,78 @@ test("a question with no options is dropped rather than drawn as an empty form",
       { id: "b", header: "", question: "Free text", isOther: true, isSecret: false, options: null },
     ],
   });
-  assert.equal(questions.length, 1);
-  assert.deepEqual(questions[0], {
-    question: "Pick one",
-    header: "H",
-    options: [{ number: 1, label: "x", detail: "why x" }],
+  assert.deepEqual(questions, [
+    {
+      question: "Pick one",
+      header: "H",
+      options: [{ number: 1, label: "x", detail: "why x" }],
+    },
+    {
+      question: "Free text",
+      options: [],
+    },
+  ]);
+});
+
+test("a secret question is refused explicitly instead of rendered as ordinary text", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.push({
+    method: "item/tool/requestUserInput",
+    id: 12,
+    params: {
+      threadId: THREAD.id,
+      turnId: "turn-1",
+      itemId: "secret",
+      autoResolutionMs: null,
+      questions: [
+        {
+          id: "password",
+          header: "Credential",
+          question: "Enter the deployment password",
+          isOther: true,
+          isSecret: true,
+          options: null,
+        },
+      ],
+    },
   });
+  await settle();
+  assert.equal(events.some((event) => event.kind === "request"), false);
+  const response = server.responseTo(12);
+  assert.equal((response?.error as { code: number }).code, -32602);
+  assert.match(
+    (response?.error as { message: string }).message,
+    /secret question "Enter the deployment password" cannot be shown safely/,
+  );
+  await handle.stop();
+  await drained;
+});
+
+test("a subprocess spawn error rejects launch with its diagnostic", async () => {
+  const missing = `${process.cwd()}/missing-codex-app-server-binary`;
+  const spec = codexSdkSpec({
+    connect: async (args, cwd) => spawnAppServer(missing, args, cwd, process.env),
+  });
+  await assert.rejects(
+    () =>
+      spec.launch({
+        cwd: process.cwd(),
+        prompt: "do the thing",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        mcp: null,
+        resume: null,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /ENOENT/);
+      assert.match(err.message, /missing-codex-app-server-binary/);
+      return true;
+    },
+  );
 });
 
 test("the activity line says what the session is doing, on one line", () => {

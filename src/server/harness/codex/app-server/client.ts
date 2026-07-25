@@ -134,16 +134,22 @@ export class AppServerClient {
    * a launch that never settles is a dispatch that never fails either.
    */
   async pump(): Promise<void> {
+    let failure: Error | null = null;
     try {
       for await (const frame of this.transport.frames) {
         this.consume(frame);
       }
+    } catch (err) {
+      failure = err instanceof Error ? err : new Error(String(err));
+      throw failure;
     } finally {
       this.closed = true;
       const waiters = [...this.waiting.entries()];
       this.waiting.clear();
       for (const [, waiter] of waiters) {
-        waiter.reject(new Error(`the app-server connection ended during ${waiter.method}`));
+        waiter.reject(
+          failure ?? new Error(`the app-server connection ended during ${waiter.method}`),
+        );
       }
     }
   }

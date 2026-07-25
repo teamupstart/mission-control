@@ -38,6 +38,7 @@ import type {
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
+  ThreadStatus,
   ThreadStatusChangedNotification,
   ThreadTokenUsageUpdatedNotification,
   ToolRequestUserInputParams,
@@ -175,15 +176,12 @@ export function sandboxModeOf(policy: SandboxPolicy | null | undefined): Sandbox
 /**
  * Our `ThinkingLevel` as Codex's `model_reasoning_effort` token.
  *
- * Identity for the four Codex offers (`CODEX_EFFORT_LEVELS` in
- * `@shared/harness-capabilities.ts` is the shared statement of which those are); `max` is
- * refused rather than rounded down, because an effort the operator did not pick is a turn
- * billed differently from the one they asked for. The route already gates on the same
- * capability - this is the driver refusing independently, the way `answer` re-checks a row.
+ * Identity for every level the selected model offers. `levelsFor` in
+ * `@shared/harness-capabilities.ts` is the single capability gate; this conversion does not
+ * invent a second list that can disagree with it.
  */
 export function codexEffort(effort: ThinkingLevel | null): string | null {
-  if (!effort) return null;
-  return effort === "max" ? null : effort;
+  return effort;
 }
 
 /** The client we identify as on the wire. Codex records it as the rollout's `originator`. */
@@ -337,6 +335,7 @@ class CodexSdkSession implements SdkSessionHandle {
     const started = await this.client.request<TurnStartResponse>("turn/start", params);
     // Recorded from the RESPONSE as well as from `turn/started`, so a second `send` racing
     // the notification cannot see an idle thread and start a turn that never runs.
+    this.lastUsage = null;
     this.activeTurnId = started.turn.id;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }
@@ -359,10 +358,9 @@ class CodexSdkSession implements SdkSessionHandle {
    * Two measured limits, and the refusal below is the second of them.
    *
    * The approval policy and the reviewer are per-TURN overrides, so a change lands on the
-   * next `turn/start` rather than instantly. That is safe to have because the card's chip
-   * does not read this value back: it is rendered from the rollout's `turn_context`, which
-   * the next turn writes. The card goes on showing the posture the agent is really running
-   * under, never a promise.
+   * next `turn/start` rather than instantly. The rollout's next `turn_context` is the
+   * observation that publishes the change to the card; accepting it here only schedules
+   * the override and persists what a restart must re-assert.
    *
    * The SANDBOX is fixed for the life of a thread. `thread/resume` looks like the way to
    * change it and is not: against codex-cli 0.145.0, resuming a thread this connection is
@@ -390,7 +388,6 @@ class CodexSdkSession implements SdkSessionHandle {
   };
 
   setEffort = async (effort: ThinkingLevel): Promise<void> => {
-    if (!codexEffort(effort)) throw new Error(`Codex has no reasoning effort called "${effort}"`);
     this.requireLive();
     this.config = { ...this.config, effort };
   };
@@ -438,11 +435,7 @@ class CodexSdkSession implements SdkSessionHandle {
     // Whatever is still parked is abandoned CLOSED - a cancel, which is the decision that
     // cannot be mistaken for approval. Without it the server shuts down holding a request
     // it will never get an answer to.
-    for (const [key, held] of this.pending) {
-      this.client.respond(held.id, cancelResponse(held.kind));
-      this.out.emit({ kind: "request_resolved", requestId: key });
-    }
-    this.pending.clear();
+    this.cancelPending();
     await this.client.close();
   }
 
@@ -555,7 +548,16 @@ class CodexSdkSession implements SdkSessionHandle {
 
   /** Record the thread we are driving and tell the daemon who it is. */
   bind(thread: ThreadStartResponse | ThreadResumeResponse): void {
+    if (this.threadId && this.threadId !== thread.thread.id) this.cancelPending();
+    const activeTurn = [...thread.thread.turns]
+      .reverse()
+      .find((turn) => turn.status === "inProgress");
+    if (thread.thread.status.type === "active" && !activeTurn) {
+      throw new Error(`Codex reported active thread ${thread.thread.id} without an active turn`);
+    }
     this.threadId = thread.thread.id;
+    this.activeTurnId = activeTurn?.id ?? null;
+    this.lastUsage = null;
     this.modelId = thread.model || null;
     this.appliedSandbox = sandboxModeOf(thread.sandbox);
     this.out.emit({
@@ -567,6 +569,7 @@ class CodexSdkSession implements SdkSessionHandle {
       transcriptPath: thread.thread.path,
       pid: this.client.pid,
     });
+    this.publishThreadStatus(thread.thread.status);
   }
 
   /** Turn one, queued as a real turn so `activeTurnId` is set before anything else runs. */
@@ -583,12 +586,28 @@ class CodexSdkSession implements SdkSessionHandle {
    * unexpected payload, on a protocol whose own docs call several of these params unstable.
    */
   onRequest = (method: string, id: RequestId, params: unknown): void => {
+    const threadScoped =
+      method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval" ||
+      method === "item/tool/requestUserInput";
+    const declaredThread =
+      params && typeof params === "object"
+        ? (params as { threadId?: unknown }).threadId
+        : undefined;
+    if (threadScoped && typeof declaredThread === "string" && !this.isCurrentThread(params)) {
+      this.client.respondError(id, -32602, `Mission Control cannot answer ${method} for another thread`);
+      return;
+    }
     let projected: Pending | null = null;
     try {
       projected = this.project(method, id, params);
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.client.respondError(id, -32602, `Mission Control could not read ${method}: ${why}`);
+      return;
+    }
+    if (projected && threadScoped && !this.isCurrentThread(params)) {
+      this.client.respondError(id, -32602, `Mission Control cannot answer ${method} without its thread`);
       return;
     }
     if (!projected) {
@@ -671,23 +690,33 @@ class CodexSdkSession implements SdkSessionHandle {
 
   private consume(method: string, params: unknown): void {
     switch (method) {
-      case "turn/started":
-        this.activeTurnId = (params as TurnStartedNotification).turn.id;
+      case "turn/started": {
+        if (!this.isCurrentThread(params)) return;
+        const turnId = (params as TurnStartedNotification).turn.id;
+        if (this.activeTurnId !== turnId) this.lastUsage = null;
+        this.activeTurnId = turnId;
         this.out.emit({ kind: "state", state: "working", activity: null });
         return;
+      }
       case "turn/completed":
+        if (!this.isCurrentThread(params)) return;
         this.finishTurn((params as TurnCompletedNotification).turn.id);
         return;
       case "thread/status/changed": {
+        if (!this.isCurrentThread(params)) return;
         const status = (params as ThreadStatusChangedNotification).status;
         // The backstop for an idle we would otherwise learn only from `turn/completed`.
         // Both fire today, in this order, and `finishTurn` is idempotent - but a card stuck
         // reading "working" for ever is the failure mode worth being redundant about.
         if (status.type === "idle") this.finishTurn(this.activeTurnId);
+        else if (status.type === "active") {
+          this.out.emit({ kind: "state", state: "working", activity: null });
+        }
         return;
       }
       case "item/started":
       case "item/completed": {
+        if (!this.isCurrentThread(params)) return;
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
@@ -695,6 +724,7 @@ class CodexSdkSession implements SdkSessionHandle {
         return;
       }
       case "thread/tokenUsage/updated": {
+        if (!this.isCurrentThread(params)) return;
         const usage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage.last;
         this.lastUsage = {
           input: usage.inputTokens,
@@ -711,6 +741,7 @@ class CodexSdkSession implements SdkSessionHandle {
         return;
       }
       case "serverRequest/resolved": {
+        if (!this.isCurrentThread(params)) return;
         // The server settled a request without us - an auto-review approved it, or the turn
         // that raised it was interrupted. The card has to lose the ask either way.
         const resolved = params as { requestId?: RequestId };
@@ -722,6 +753,7 @@ class CodexSdkSession implements SdkSessionHandle {
         return;
       }
       case "error": {
+        if (!this.isCurrentThread(params)) return;
         const err = params as ErrorNotification;
         const message = err.error?.message?.trim();
         if (message) {
@@ -732,6 +764,27 @@ class CodexSdkSession implements SdkSessionHandle {
       default:
         return;
     }
+  }
+
+  private isCurrentThread(params: unknown): boolean {
+    if (!params || typeof params !== "object") return false;
+    return (params as { threadId?: unknown }).threadId === this.threadId;
+  }
+
+  private publishThreadStatus(status: ThreadStatus): void {
+    this.out.emit({
+      kind: "state",
+      state: status.type === "active" ? "working" : "idle",
+      activity: null,
+    });
+  }
+
+  private cancelPending(): void {
+    for (const [key, held] of this.pending) {
+      this.client.respond(held.id, cancelResponse(held.kind));
+      this.out.emit({ kind: "request_resolved", requestId: key });
+    }
+    this.pending.clear();
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
@@ -840,6 +893,9 @@ export function userInputQuestions(p: ToolRequestUserInputParams): SessionReques
   for (const q of Array.isArray(p.questions) ? p.questions : []) {
     const question = typeof q.question === "string" ? q.question.trim() : "";
     if (!question) continue;
+    // The shared form has no secret-input field. Refuse explicitly instead of rendering a
+    // secret question as ordinary dashboard text.
+    if (q.isSecret) throw new Error(`secret question "${question}" cannot be shown safely`);
     const options: PaneOption[] = [];
     for (const o of q.options ?? []) {
       const label = typeof o.label === "string" ? o.label.trim() : "";
@@ -847,10 +903,6 @@ export function userInputQuestions(p: ToolRequestUserInputParams): SessionReques
       const detail = typeof o.description === "string" ? o.description.trim() : "";
       options.push({ number: options.length + 1, label, ...(detail ? { detail } : {}) });
     }
-    // A question with no options is free text, which this card cannot draw as rows and the
-    // pane path never had at all. Dropped rather than shown empty: an unanswerable form is
-    // worse than a request we decline outright, which is what an empty result produces.
-    if (options.length === 0) continue;
     out.push({
       question,
       ...(q.header ? { header: q.header } : {}),

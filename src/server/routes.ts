@@ -1745,7 +1745,10 @@ export function buildApp(
     // observation even on failure. A menu failure observed no new mode: recording its
     // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
     const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
-    if (r.ok || (session.runtime === "terminal" && liveControl?.kind === "cycle")) {
+    if (
+      (session.runtime === "terminal" || session.agent !== "codex") &&
+      (r.ok || liveControl?.kind === "cycle")
+    ) {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);
@@ -1806,7 +1809,11 @@ export function buildApp(
               current.transcriptPath === session.transcriptPath;
           },
         });
-    if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
+    if (
+      r.ok &&
+      (session.runtime === "terminal" || session.agent !== "codex") &&
+      !registry.recordObservedSessionEffort(session.id, r.effort, session)
+    ) {
       return c.json({
         ok: false,
         error: "the live effort changed, but the session identity changed before it could be published",

@@ -61,7 +61,14 @@ export function spawnAppServer(
     env,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const frames = readFrames(child);
+  const failure: { error: Error | null } = { error: null };
+  const fail = (err: Error): void => {
+    failure.error ??= err;
+    child.stdout?.destroy(failure.error);
+  };
+  child.on("error", fail);
+  child.stdin?.on("error", fail);
+  const frames = readFrames(child, failure);
   // Read and discard: the server logs to stderr, and a pipe nobody drains fills its buffer
   // and blocks the process that is writing to it. Kept out of the daemon's own log because
   // it is per-turn tracing, not a fault report - a fault arrives as an `error` notification.
@@ -104,7 +111,8 @@ export function spawnAppServer(
  */
 async function* readFrames(child: {
   stdout: NodeJS.ReadableStream | null;
-}): AsyncGenerator<unknown> {
+}, failure: { error: Error | null }): AsyncGenerator<unknown> {
+  if (failure.error) throw failure.error;
   const stdout = child.stdout;
   if (!stdout) return;
   let buf = "";
@@ -122,6 +130,7 @@ async function* readFrames(child: {
       }
     }
   }
+  if (failure.error) throw failure.error;
 }
 
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */

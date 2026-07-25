@@ -395,10 +395,9 @@ export interface EffortResult extends ActionResult {
  * does not walk.
  *
  * What survives is the only thing that is still true with no pane in the picture: the level
- * has to be one this harness offers for the model this session is on. A driver refuses the
- * rest itself (`SdkSessionHandle.setEffort` is nullable and Codex's rejects `max`), which is
- * the `answer` arrangement again - the route checks against the card, the adapter checks
- * against the handle it holds.
+ * has to be one this harness offers for the model this session is on. The capability list
+ * is the single level gate; `SdkSessionHandle.setEffort` remains nullable for drivers that
+ * cannot change effort at all.
  */
 export function driverEffortTargetResult(
   session: Session,

@@ -716,14 +716,43 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   answer in the browser, and `ENSEMBLE_STRATEGIES`
   (`src/server/ensembles/strategies/index.ts`) adds the pure compiler that turns config into
   a durable plan. Both are exhaustive `Record<EnsembleStrategyId, …>` registries, so a new id
-  cannot compile until both halves exist. Review execution has its own exhaustive
-  `REVIEW_DRIVERS` registry (`src/server/ensembles/reviews/index.ts`), keyed by the compiled
-  plan's driver key rather than strategy id. The authoritative extension contracts live
+  cannot compile until both halves exist. Execution is split across three more exhaustive
+  `Record<EnsembleDriverKey, … | null>` registries keyed by the compiled plan's DRIVER KEY,
+  never the strategy id - `REVIEW_DRIVERS` (`ensembles/reviews/index.ts`), `DECISION_DRIVERS`
+  (`ensembles/decisions/index.ts`) and `FINALIZERS` (`ensembles/finalizers/index.ts`), each
+  key claimed by at most one - plus `ARTIFACT_ADAPTERS` (`Record<EnsembleArtifactKind, …>`)
+  and the web-only `ENSEMBLE_RESULT_RENDERERS` (`src/web/ensembles/results/index.ts`), the
+  ONE strategy-keyed surface, presentation only. The authoritative extension contracts live
   beside those registries; read the applicable one before changing strategy ids, driver
-  keys, compilation, persistence, or execution rather than duplicating them here. Test:
+  keys, compilation, persistence, or execution rather than duplicating them here.
+  **The surfaces that move together for a genuinely new strategy** are: the two strategy
+  halves; the versioned driver/adapter/renderer keys (append-only `id@version`); the compact
+  `EnsembleSummary` SSE event pair (`ensemble_upsert` / `ensemble_remove` in
+  `useEventStream.ts`) and the bounded HTTP detail; the nested `TaskSummary.ensemble`
+  projection (NOT a top-level `Session` field, so no `SESSION_FIELD_COMPARATORS` entry) and
+  the four session renderers' `E` mark; the double-validated MCP submit contract
+  (`submit_ensemble_result`, mirrored in `src/mcp/server.ts` and `@shared/protocol.ts`);
+  Reset, which removes a workflow binding but never an ensemble ref; append-only private-ref
+  retention (`refs/mission-control/ensembles/<uuid>/<uuid>`, deleted only by an explicit
+  confirmed action); and the Workflow ownership boundary. A strategy composed only from
+  existing primitives needs NONE of these - it is a descriptor plus a compiler, and if it
+  seems to need a column, route, event, Session field, layout mark or action, that is the
+  signal it introduced a new PRIMITIVE, which belongs in its owning registry, not a
+  strategy branch. **Two invariants are merge-blocking**
+  (`ensemble-extension-contract.test.ts`): `EnsembleEngine` contains **no branch on a
+  strategy id** - it dispatches on driver keys and executes the stored plan, never a fresh
+  compilation - and the **Workflow graph contains no Ensemble node** (they compose only at
+  promotion, across the external-binding boundary). Ensemble transitions extend the shared
+  alert engine (`@shared/alerts.ts` `AlertKind`/`AlertScope`, threaded through App's scope and
+  the daemon Away watcher), not a second notifier; member agent cost is captured at submission
+  into the artifact metadata and read back with unknown preserved as unknown
+  (`aggregateEnsembleAgentCost`, `@shared/ensemble.ts`). Test:
   `ensemble-strategy-catalog.test.ts`, `ensemble-best-of-n.test.ts`,
   `ensemble-contracts.test.ts`, `ensemble-store.test.ts`, `ensemble-db.test.ts`,
-  `ensemble-sse.test.ts`, `ensemble-comparative-review.test.ts`.
+  `ensemble-sse.test.ts`, `ensemble-comparative-review.test.ts`, `ensemble-extension.test.ts`,
+  `ensemble-extension-contract.test.ts`, `ensemble-fault-matrix.test.ts`,
+  `ensemble-mixed-harness.test.ts`, `ensemble-adversarial.test.ts`, `ensemble-cost.test.ts`,
+  `ensemble-alerts.test.ts`. Operator and extension reference: `docs/ensembles.md`.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

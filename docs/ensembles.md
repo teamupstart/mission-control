@@ -1,0 +1,213 @@
+# Multi-agent ensembles: operator and extension guide
+
+An **ensemble** runs a group of ordinary dispatched tasks under one versioned *strategy* and owns
+the group-level facts a single task cannot: one pinned base commit, member roles, immutable
+submitted artifacts, comparisons, a human decision, and a terminal outcome. The first and only
+enabled strategy is **Best of N**. This document is the operator's reference for what an ensemble
+does, how to recover one, what it keeps and what it costs, and the contract a future strategy
+extends.
+
+The product overview lives in the [README](../README.md#multi-agent-ensembles); the design
+rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-swarm-dispatch/plan.md).
+
+## What Best of N does
+
+1. From **Dispatch**, switch the launch mode from *Single agent* to *Ensemble* and pick the Best of
+   N card. Configure two to five candidate rows (agent, model, effort, optional approach hint;
+   repeats are allowed), the judge-blind toggle, an optional evaluator Persona, and an optional
+   [workflow](../README.md#workflows-and-personas) to hand the winner to.
+2. **Review launch** posts a side-effect-free preview (member count, concurrency, waves, comparison
+   calls, and whether the chosen workflow mode is executable). Any later edit invalidates it, so
+   **Launch N agents** confirms exactly what you reviewed. The launch is idempotent on a stable
+   request id: a lost response and a retry return the same run, never a second fleet.
+3. The daemon pins **one full base commit** and launches 2-5 ordinary member tasks from it - every
+   candidate starts byte-identical. Each is a normal session in Cards, Console and Board, marked
+   with an **E** chip that opens the run.
+4. Each candidate implements and tests alone. Its prompt forbids pushing, opening a PR, or running
+   the shipping gate, and tells it to **submit** when ready.
+5. A member submits through the launch-scoped `submit_ensemble_result` MCP tool (or the manual
+   Submit action in the run detail). The daemon attributes the submission from the calling
+   session -> its task -> its active member; a member never names itself, so a guessed id reaches
+   nothing. Submission captures the working tree as an **immutable private Git commit** (see refs
+   below) and records reported checks, observed diff statistics, and the member's agent cost.
+6. When every live member has submitted or terminated and **at least two** produced a snapshot, one
+   tool-less comparison ranks the immutable submissions and parks the run at a durable human
+   decision boundary. The comparison is anonymous (agent, model, ordinal, ref and worktree stripped)
+   and **recommends** a winner - it never promotes one.
+7. You confirm one eligible submission (or declare **no consensus**). Only then does anything
+   destructive run.
+
+## States
+
+`planning -> running -> waiting -> evaluating -> awaiting_decision -> finalizing -> completed`, plus
+`cancelling`, `cancelled` and `failed`. A run parks at `awaiting_decision` until a person acts, and
+at `finalizing` if a destructive step needs retrying. Terminal states are `completed`, `cancelled`
+and `failed`. A run written by a **newer build** loads but reports itself *unreadable* and refuses
+to run rather than being executed as something adjacent.
+
+## Artifacts and private refs
+
+Each submission is captured through a **temporary Git index**, never the member's real index, so its
+staged/unstaged split, HEAD, branch and working tree are left byte-identical. The immutable commit is
+stored under a generated private ref:
+
+```
+refs/mission-control/ensembles/<ensemble-id>/<artifact-id>
+```
+
+Both id components are validated as generated UUIDs before they reach a ref name. These refs are the
+recoverable evidence for every candidate, winner and loser alike, and they survive task
+cancellation and worktree teardown.
+
+## Retention and deletion
+
+Finalization reaps loser **worktrees** but never loser **refs** - every candidate's snapshot is
+kept after completion or cancellation, and a **Restore** action can create a fresh task from any of
+them. There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit
+**Delete ensemble** action (confirmed by echoing the run id), which removes the run's private refs
+and history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting
+an ensemble never touches a task or any linked workflow state, and it resumes the same remaining
+refs after a crash.
+
+## Costs
+
+- **Candidate (agent) cost** is summed from each member's session telemetry **at submission** and
+  frozen into its immutable artifact, so it survives the session exiting. The run detail shows the
+  aggregate, attributed per member. A runner that reports no cost is shown as **unreported**, never
+  `$0.00`; a run where some members reported and others did not shows the partial total and how many
+  reported.
+- **Evaluator (comparison) cost** is a separate figure on its own ledger. Call count, provider,
+  model, duration and byte counts are always shown; the **monetary** cost appears only when the
+  runner reports it authoritatively, and stays *Not reported* otherwise.
+- **Linked workflow review cost** is owned by the workflow subsystem and shown separately, labelled
+  *Workflow-owned*. It is never folded into the ensemble's evaluation cost.
+
+The member agents' own token use is not estimated before launch: it is unbounded work, and inventing
+a number for it would be the dishonest half of an honest estimate.
+
+## Alerts
+
+Ensemble transitions feed the same shared alert engine every other "needs you" flows through - there
+is no separate ensemble notifier or preferences panel. A transition into `awaiting_decision`, a run
+turning **unreadable**, or a `finalizing` run holding an error each raise an **attention** alert
+(delivered even in Away mode); completion, cancellation and failure are **informational** and land in
+the Away digest. Each is edge-triggered by stable run identity, so a reconnect or a recovery never
+re-announces a decision you already saw. An ensemble toast deep-links to
+`#/workflows/ensembles/<id>`.
+
+## Restart and recovery
+
+Every effect is persist-before-act, so a daemon restart resumes rather than restarts:
+
+- A wave is durable before its first dispatch; recovery reconciles surviving agents without
+  recreating their tasks and never launches a second fleet.
+- An interrupted comparison becomes `interrupted` (not `failed`) and retries against the **exact same
+  immutable subjects** and evaluator snapshot; a completed comparison is left untouched.
+- A `finalizing` run resumes from its persisted per-step receipt - it does not re-verify a decision,
+  re-materialize a winner, or send a continuation twice.
+- A pairwise or multi-wave run resumes only its missing work; completed evaluations and launched
+  waves are never duplicated.
+
+## Cancellation, failure and restoration
+
+- **Cancel ensemble** cancels every launching or active member task through TaskManager; submitted
+  refs survive.
+- **Cancel/withdraw member** marks that member withdrawn after its task is cleaned up.
+- If work settles with **fewer than two** eligible artifacts, the run fails with an explanation and
+  offers **Retry member**, **Restore result**, or **Cancel** - a competition is never manufactured
+  from one artifact.
+- A cleanup step that cannot finish leaves the run `finalizing` with an actionable error, resumed by
+  **resolve finalization**.
+
+## The Workflow handoff (Preview-only baseline)
+
+If a run pins a published workflow version at creation, finalization binds that exact version to the
+winning session and submits its clean snapshot through the same server-owned external boundary any
+other source uses - idempotent on a stable source key, so a restart returns the same binding and
+run. It requires the winner's HEAD to equal the chosen snapshot and its tree to be clean; a drift is
+healed by restoring the winner and resuming the *same* submission. Only **Preview + manual** is
+executable today; a note-key conflict, an unavailable mode, or a Live/Foreman selection blocks
+visibly and is never silently downgraded - you retry after resolving it or skip the handoff. An
+ensemble reaching `completed` does **not** mean the work is approved or shipped; the workflow owns
+post-selection review, and neither ensemble completion nor a rank-1 recommendation means approved.
+
+## Security and resource limits
+
+- Creating an ensemble authorises launching an exact count or bounded range of **local** agents; the
+  preview shows initial, maximum, concurrency, waves and comparison calls before you confirm.
+- Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
+  **8** waves, **5** stage attempts. Best of N's own bounds sit below these: **2-5** candidates
+  (default 3), **3** concurrent by default, and ~**400 KiB** of comparison material split evenly
+  across subjects with truncation disclosed.
+- Refs and branches are generated from UUIDs; every Git/process call uses argument arrays, never a
+  shell.
+- A model's ranking is advisory and tool-less: it cannot launch, promote, publish, cancel, reap or
+  delete. Every destructive finalization requires an explicit human confirmation.
+- Sibling isolation is **behavioural, not a sandbox**: the worktrees share one Git repository and a
+  local agent can find its siblings if it goes looking. The UI never claims otherwise.
+
+## v1 limits, surfaced before launch
+
+Best of N is the only enabled production strategy. Preview shows exact member count, max concurrency,
+waves, artifact type, comparison stages, finalization and the hard budgets before you confirm; the
+information-sharing rule (isolated) and the no-push/no-PR publishing rule are shown alongside.
+
+---
+
+## Extending the kernel: what a new strategy costs
+
+A strategy is a browser-safe descriptor plus one pure compiler that turns a validated config into an
+immutable **plan** of generic stages. The engine executes stage kinds and driver keys and **never**
+asks what strategy a run is, so a materially different pattern is a new plan - not a new table, route,
+event, Session field, layout, or engine branch. Compose along these independent axes:
+
+| Axis | Existing options | Adds a new primitive only when |
+|---|---|---|
+| Roster / launch count | fixed roster, matrix, waves, adaptive range | you need runtime spawn-more decisions (a bounded driver) |
+| Information flow | isolated; shared parent artifacts | you need directed critique/debate visibility |
+| Artifact adapter | `commit` (git snapshot) | members submit something other than a Git tree |
+| Evaluation schedule | one comparative call; several (pairwise / panel) | a genuinely new evaluator (tests gate, aggregation) needs a driver |
+| Advancement / barrier | members-settled, stages-succeeded, human-decision | a new dependency shape is required |
+| Decision authority | human select-one / no-consensus | a new operator authority extends the action schema |
+| Finalization outcome | select one, retain all / no consensus | top-K or a synthesized outcome needs a finalizer |
+| Workflow placement | optional after-selection handoff | before-comparison per-member review is wanted |
+
+### When a change is descriptor-only, and when it is not
+
+- **Descriptor/config only** (no engine, store, route, event, or layout change): a new roster shape,
+  a different number or arrangement of review/decision/finalize stages, matrix or multi-wave launch,
+  parent-artifact inputs, a different information policy value, or a new preset. Six such shapes -
+  fixed matrix, successive halving, pairwise, panel, synthesis, retain/no-consensus - are exercised
+  end to end in `test/ensemble-extension.test.ts` using only the existing primitives.
+- **A new bounded driver, artifact adapter, or result renderer** is warranted only for genuinely new
+  *behaviour* or *presentation*: an adaptive spawn-more decision, a non-Git artifact, a tests/gate
+  evaluator, or a strategy-specific result view. Drivers and adapters are versioned append-only keys
+  (`id@version`) in exhaustive `Record` registries; a review/decision/finalize driver key is claimed
+  by exactly one registry. The result renderer registry (`ENSEMBLE_RESULT_RENDERERS`) is the one
+  strategy-keyed surface and is presentation-only - it imports no server code.
+- **A new operator authority** (something beyond retry / withdraw / decide / resolve-finalization /
+  cancel / restore) extends the single `EnsembleAction` union and the one `/actions` route. Needing
+  one is the signal a proposal is a new primitive, not merely a new strategy.
+
+### What a new strategy must do
+
+Add or extend a browser-safe descriptor and a pure compiler; reuse existing stage/driver/adapter
+primitives wherever possible; add a bounded driver or result renderer only for genuinely new
+behaviour or presentation; declare its exact launch range, budgets, information flow, artifacts,
+evaluation, decision, finalization and workflow compatibility; add registry and extension-contract
+tests; and require a **separate product decision** before it becomes enabled. It must **not** add a
+parallel multi-agent manager, database family, route family, EventSource, Session field,
+layout-specific state machine, or a node in the Workflow graph.
+
+### The two load-bearing invariants
+
+- **No strategy branch in `EnsembleEngine`.** The engine dispatches on a compiled stage's
+  `driverKind`/`driverKey`, never on a strategy id. Persisted append-only ids, versioned compiled
+  plans, and exhaustive driver registries are what keep this true; recovery executes the stored plan,
+  never a fresh compilation with today's defaults.
+- **No Ensemble node in the Workflow graph.** A workflow reviews exactly one session; an ensemble is
+  the selection stage over several. They compose only at promotion, across the server-owned external
+  binding boundary - an Ensemble graph node would force multi-subject bindings and a second
+  orchestration engine hidden inside the review engine.
+
+Both invariants are enforced by `test/ensemble-extension-contract.test.ts`.

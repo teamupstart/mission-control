@@ -8,6 +8,7 @@ import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
 import type { SessionViewProps } from "./types.ts";
+import { ColumnWidthToggle } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
@@ -67,6 +68,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // targets, so it has to be state - a tile decides whether it may accept during a
   // render, and nothing about a native drag re-renders the board on its own.
   const [draggingRepo, setDraggingRepo] = useState<string | null>(null);
+  // The column the operator widened to read, by id ("backlog" or a tone). ONE at a
+  // time: widening is "let me look at that properly", and a board with three wide
+  // columns is not a wider column, it is a board you have to scroll to use. Local and
+  // un-persisted for the same reason `revealed` above is - it is a gesture, not a
+  // setting, and it should not still be in force tomorrow morning.
+  const [wideCol, setWideCol] = useState<string | null>(null);
+  const toggleWide = (id: string): void => setWideCol((prev) => (prev === id ? null : id));
 
   const groups = groupByTone(props.sessions, props.gateAlerts);
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
@@ -98,6 +106,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
       <BacklogColumn
+        wide={wideCol === "backlog"}
+        onToggleWide={() => toggleWide("backlog")}
         tasks={props.backlog}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),
@@ -117,13 +127,28 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         .map((g) => {
           const isRail = focusedTone === g.tone;
           const calm = modes.get(g.tone) === "calm";
+          const wide = wideCol === g.tone;
           return (
             <section
               key={g.tone}
-              className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}${calm ? " is-calm" : ""}`}
+              className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}${calm ? " is-calm" : ""}${
+                wide ? " is-wide" : ""
+              }`}
               inert={focusedTone != null && !isRail}
             >
-              <header className="board-col-head">
+              {/* Double-click the head to widen, the gesture asked for. On the HEAD
+                  rather than on the title alone: the head is the column's handle, the
+                  title is a word inside it, and a 40px target is not one. It sits
+                  beside the toggle rather than instead of it - the same reveal the
+                  `×` restash uses, so neither gesture is the only way in.
+
+                  Not while this column IS the drill-in rail: the rail is a fixed-width
+                  console fixture, so the gesture would record a width nothing draws and
+                  then surprise you with it on the way back to the board. */}
+              <header
+                className="board-col-head"
+                onDoubleClick={isRail ? undefined : () => toggleWide(g.tone)}
+              >
                 {isRail && (
                   <Tooltip label="Back to the board (Esc)">
                     <button
@@ -137,6 +162,21 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{g.label}</h2>
+                {/* BEFORE the count, not after it. The count carries `margin-left: auto`
+                    and sat flush against the head's right edge; a control placed after it
+                    reserves its 22px even while transparent, so every column's count
+                    quietly moved inboard to hold a gap for a button nobody had hovered.
+                    Here it lands in the dead space the head already had.
+
+                    Not while drilled in: the rail is a fixed-width console fixture, and
+                    a widen control there would offer to move something that cannot. */}
+                {!isRail && (
+                  <ColumnWidthToggle
+                    wide={wide}
+                    label={g.label}
+                    onToggle={() => toggleWide(g.tone)}
+                  />
+                )}
                 <span className="board-col-n">{g.sessions.length}</span>
                 {/* A revealed column can be put back where it came from. Only offered
                     on empty ones - a column with sessions in it is not stashable. */}

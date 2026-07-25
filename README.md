@@ -2786,6 +2786,17 @@ earns two surfaces a card has nowhere to put:
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few
   seconds before it's evicted, and there's nothing left to read in it.
+- **Double-click a column head to widen that column.** A board column is sized for a
+  glance, and sometimes a glance is not enough: titles wrap to three lines, goals clamp at
+  two, and a blocked chip ellipses after four words. Double-clicking the head - or pressing
+  the **‹›** toggle that appears in it on hover - gives that one column roughly twice a
+  normal column's share of the board, and its cards **reflow** rather than stretch: the
+  title takes the full width on its own line and every mark below it joins one line, so a
+  card gets *shorter* as it gets wider and more of them fit on screen. Double-click again,
+  or press **›‹**, to put it back. One column at a time, and the neighbours keep their own
+  minimum width, so widening the Backlog never squeezes the column holding the live agents
+  down to nothing. It's a gesture rather than a setting: it isn't persisted, and opening a
+  session drills in exactly as it did before.
 - **The filter box (<kbd>/</kbd>) narrows the whole board, backlog included.** A query is a
   case-insensitive substring match against a session's title, status and agent - and, on the
   board, against a backlog task's title, status, agent and labels. So `ghostty` finds the

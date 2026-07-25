@@ -557,6 +557,21 @@ export function App(): React.JSX.Element {
 
   const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
+  // What the topbar chip counts, and it is deliberately NARROWER than `pendingReviews`.
+  //
+  // The modal is keyed on a session (`modalSession`), so a review whose session is not in
+  // the list cannot be opened by anything - `openReviews` would set `reviewSessionId` to an
+  // id `sessions.find` never matches and the click would silently do nothing. The daemon
+  // settles those now (`ReviewManager`'s two eviction halves), which is the real fix; this
+  // is what keeps the count and the click answering the same question by construction,
+  // including in the seconds after a restart before the first discovery sweep has said
+  // which agents are still out there. `pendingReviews` itself stays whole: Foreman's
+  // draft-staleness check asks whether a review was RESOLVED, which is a different question
+  // from whether its agent is still around to hear the answer.
+  const answerableReviews = useMemo(() => {
+    const live = new Set(sessions.map((s) => s.id));
+    return pendingReviews.filter((r) => live.has(r.sessionId));
+  }, [pendingReviews, sessions]);
 
   // Live schedule names by id, so a generated task's provenance mark reads "Scheduled by
   // <name>" without every renderer re-deriving it. Archived schedules leave the live
@@ -650,7 +665,7 @@ export function App(): React.JSX.Element {
     : null;
 
   function openReviews(): void {
-    const first = pendingReviews[0];
+    const first = answerableReviews[0];
     if (first) setReviewSessionId(first.sessionId);
   }
 
@@ -1238,12 +1253,12 @@ export function App(): React.JSX.Element {
             <Stat n={sessions.length} label="sessions" />
             {counts.attention > 0 && <Stat n={counts.attention} label="need you" tone="attention" />}
             {counts.working > 0 && <Stat n={counts.working} label="working" tone="working" />}
-            {pendingReviews.length > 0 && (
+            {answerableReviews.length > 0 && (
               <Tooltip
-                label={`${pendingReviews.length} agent${pendingReviews.length === 1 ? "" : "s"} waiting on your review - open the queue`}
+                label={`${answerableReviews.length} agent${answerableReviews.length === 1 ? "" : "s"} waiting on your review - open the queue`}
               >
                 <button className="stat-btn" onClick={openReviews}>
-                  <Stat n={pendingReviews.length} label="reviews" tone="attention" />
+                  <Stat n={answerableReviews.length} label="reviews" tone="attention" />
                 </button>
               </Tooltip>
             )}

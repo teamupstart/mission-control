@@ -1651,7 +1651,23 @@ export interface NmFixDetail {
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
-export type ReviewStatus = "pending" | "approved" | "rejected" | "answered" | "dismissed";
+/**
+ * Persisted as text in `reviews.status`, so these spellings are append-only.
+ *
+ * `orphaned` is the only one the DAEMON writes; the other four terminal statuses are a
+ * human's answer arriving through `/api/reviews/:id/resolve`. It means the session that
+ * asked went away before anyone answered, which is why it is not `dismissed` - the
+ * operator declining to choose and the agent no longer being there to hear a choice are
+ * different facts, and only the first is evidence of intent (see
+ * `loadResolvedWorkflowReviews`, which reads none of it).
+ */
+export type ReviewStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "answered"
+  | "dismissed"
+  | "orphaned";
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {

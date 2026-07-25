@@ -19,7 +19,28 @@ export class ReviewResolutionError extends Error {}
 export class ReviewManager {
   private waiters = new Map<string, Set<Waiter>>();
 
-  constructor(private registry: Registry) {}
+  constructor(private registry: Registry) {
+    // A review is durable state BOUND TO A SESSION, so it needs the same two halves every
+    // other such subscriber has (see `Registry.beginEviction`). Without them a pending row
+    // outlived its agent for ever: `remove` clears seven session-scoped maps and never
+    // touched this one, and `loadPendingReviews()` restores every pending row at boot
+    // whether or not the process that asked still exists. That is a topbar counting eight
+    // agents "waiting on your review" when all of them exited days ago - and counting them
+    // is the lesser half of it, because the chip opens the modal keyed on the review's
+    // session, which is no longer in the session list, so the click does nothing at all.
+    //
+    // While the daemon is UP: `session_remove`, which the Registry emits only from its
+    // eviction timer. Keying on `state === "exited"` instead would settle a live agent's
+    // question on one hiccuping sweep, and there is no way back from a terminal status.
+    this.registry.subscribe((e) => {
+      if (e.type === "session_remove") this.orphanReviewsFor(e.id);
+    });
+    // And one whose session went away while the daemon was DOWN is in no map at all until
+    // discovery rebuilds it, so the same reconciliation waits for the first COMPLETED
+    // sweep. Running it any earlier would orphan the questions of every agent that
+    // outlived the restart, which are exactly the ones still worth answering.
+    this.registry.onSessionsObserved(() => this.orphanReviewsWithNoLiveSession());
+  }
 
   create(
     sessionId: string,
@@ -96,15 +117,49 @@ export class ReviewManager {
             ? "dismissed"
             : "answered";
     const storedResponse = action === "dismiss" ? null : response;
+    return this.settle(cur, status, storedResponse);
+  }
+
+  /**
+   * The session that asked has gone. Settle everything it was blocked on.
+   *
+   * `orphaned` rather than `dismissed`: the operator declining to choose and the agent no
+   * longer being there to hear a choice are different facts, and only the first is
+   * evidence of intent. The row keeps its question and its body - this is a settle, not a
+   * delete, so the record of what was asked survives for anything reading history.
+   */
+  private orphanReviewsFor(sessionId: string): void {
+    for (const r of this.registry.pendingReviews(sessionId)) this.settle(r, "orphaned", null);
+  }
+
+  /** The restart half: pending reviews bound to a session the first sweep never found. */
+  private orphanReviewsWithNoLiveSession(): void {
+    for (const r of this.registry.pendingReviews()) {
+      if (this.registry.getSession(r.sessionId)) continue;
+      this.settle(r, "orphaned", null);
+    }
+  }
+
+  /**
+   * The one writer of a terminal status, human-driven or not.
+   *
+   * Persist, publish, then release the waiters - in that order, and never one without the
+   * others. The write is what survives a restart (`loadPendingReviews` is a SQL filter on
+   * status, so an in-memory-only settle comes straight back at the next boot), the upsert
+   * is what reaches the dashboards (the live channel is SSE only; nothing polls this), and
+   * waking the waiters is what unblocks an agent long-polling on an answer instead of
+   * leaving it to discover the timeout.
+   */
+  private settle(cur: ReviewItem, status: ReviewStatus, response: string | null): ReviewItem {
     const resolvedAt = Date.now();
-    updateReviewStatus(id, status, storedResponse, resolvedAt);
-    const updated: ReviewItem = { ...cur, status, response: storedResponse, resolvedAt };
+    updateReviewStatus(cur.id, status, response, resolvedAt);
+    const updated: ReviewItem = { ...cur, status, response, resolvedAt };
     this.registry.upsertReview(updated);
 
-    const set = this.waiters.get(id);
+    const set = this.waiters.get(cur.id);
     if (set) {
       for (const w of [...set]) w(updated);
-      this.waiters.delete(id);
+      this.waiters.delete(cur.id);
     }
     return updated;
   }

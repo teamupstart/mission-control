@@ -828,6 +828,14 @@ only that review, persists without a fabricated answer, and releases its blocked
 These reviews keep the session under **Needs you** while any set remains pending; submitting
 or dismissing the final set clears that review-based signal.
 
+A review is bound to the session that asked it, so **the agent going away settles it too**.
+When a session is evicted - killed, its terminal closed, or simply gone by the time the
+daemon comes back up - anything it was blocked on is recorded as `orphaned` rather than left
+pending. It keeps its question and body in the history; it stops being counted as somebody
+waiting on you. That is deliberately not the same status as a dismiss: you declining to
+choose and the agent no longer being there to hear a choice are different facts, and only
+the first is evidence of your intent.
+
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
 

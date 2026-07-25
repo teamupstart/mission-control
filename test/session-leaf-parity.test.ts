@@ -639,6 +639,7 @@ function scheduledView(session: Session): SessionViewProps {
     registerEl: () => {},
     registerActions: () => {},
     registerDetailScroll: () => {},
+    registerReaderTab: () => {},
     renamingId: null,
     onRenameStart: () => {},
     onRenameClose: () => {},
@@ -725,7 +726,7 @@ test("all four scheduled-origin surfaces share one Tooltip copy, live name and a
   assert.equal((tile?.props as { label: string }).label, label);
   assert.equal((rail?.props as { label: string }).label, label);
   const railMark = (rail?.props as { children: ReactElement }).children;
-  assert.equal(railMark.props.role, undefined);
+  assert.equal((railMark.props as { role?: string }).role, undefined);
 });
 
 test("a task with no schedule provenance draws no origin mark on any surface", () => {

@@ -44,6 +44,9 @@ const { askChannelArgs, ASK_TOOL } = await import("../src/server/ask-channel.ts"
 const { prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { CODEX_HOOK_EVENTS } = await import("../src/server/harness/codex/hooks.ts");
 
+/** The requirable tool union, derived from the runtime list so the scrape can be cast to it. */
+type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
+
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** The value passed to a flag, so assertions read as pairs rather than by index. */
@@ -110,6 +113,42 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!);
   assert.ok(registered.length > 0, "the scrape found nothing - has registerTool been renamed?");
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
+});
+
+test("every tool the server registers is reachable by a launch that requires it", async () => {
+  // Companion to the vocabulary test above, and the gap that let create_task read as
+  // present-but-uncallable. That test pins WHAT a launch may require - the list and the
+  // server's registrations name the same tools. This one pins the STEP AFTER: that
+  // requiring a tool actually delivers it, pre-approved on the argv the child receives, so
+  // a dispatched session can call it without stopping on a permission prompt (auto mode does
+  // NOT blanket-approve MCP tools). Neither `--allowed-tools` nor this list can put a tool
+  // into a session's `tools/list` - only the running bundle does that, which is why the
+  // observed miss was a stale `dist/mcp/server.mjs` and not a drift this suite could see -
+  // but once the tool IS published, this is what proves a caller can actually reach it.
+  //
+  // Anchored on the server's OWN registrations, so a tool that exists yet no launch can
+  // pre-approve fails here rather than passing a check written against a list that forgot it.
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!);
+  assert.ok(registered.length > 0, "the scrape found nothing - has registerTool been renamed?");
+
+  // One launch that requires the whole published set. Every tool must come back pre-approved,
+  // each namespaced under the server it is registered on, and there must still be exactly one
+  // registration - widening the allowlist never adds a second `--mcp-config`.
+  const args = await askChannelArgs("claude", { tools: registered as MissionMcpTool[] });
+  assert.equal(args.filter((a) => a === "--mcp-config").length, 1, "one registration, always");
+  const allowed = new Set(flag(args, "--allowed-tools")?.split(",") ?? []);
+  for (const tool of registered) {
+    assert.ok(
+      ([...MISSION_MCP_TOOLS] as string[]).includes(tool),
+      `the server registers "${tool}" but no caller can require it - add it to MISSION_MCP_TOOLS`,
+    );
+    assert.ok(
+      allowed.has(missionMcpToolName(tool as MissionMcpTool)),
+      `the server registers "${tool}" but a launch requiring it never pre-approves ` +
+        `mcp__${MISSION_MCP_SERVER_NAME}__${tool} - it would stop on a permission prompt`,
+    );
+  }
 });
 
 test("a tool name is namespaced by the server name it is registered under", () => {

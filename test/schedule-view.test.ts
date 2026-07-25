@@ -60,6 +60,14 @@ test("presets and expressions round-trip so the editor reopens on the right cont
     "*/10 * * * *",
   );
   assert.equal(expressionToForm("*/10 * * * *").preset, "advanced");
+  assert.equal(
+    presetToExpression({ preset: "daily", weekday: 1, monthday: 1, time: "", expression: "" }),
+    "",
+  );
+  assert.equal(
+    presetToExpression({ preset: "daily", weekday: 1, monthday: 1, time: "25:00", expression: "" }),
+    "",
+  );
 });
 
 test("a delay under a minute reads as on time; anything more is spelled and flagged", () => {
@@ -144,6 +152,35 @@ test("the definition fingerprint changes when the saved definition changes", () 
   // A real cadence change is a different fingerprint - the Save & enable gate depends on it.
   assert.notEqual(a, scheduleDefinitionFingerprint({ ...base, expression: "0 9 * * 1" }));
   assert.notEqual(a, scheduleDefinitionFingerprint({ ...base, timezone: "America/New_York" }));
+  assert.notEqual(a, scheduleDefinitionFingerprint({ ...base, name: "renamed" }));
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({
+      ...base,
+      template: { ...base.template, priority: "high" },
+    }),
+  );
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({
+      ...base,
+      template: { ...base.template, labels: ["scheduled"] },
+    }),
+  );
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({
+      ...base,
+      template: { ...base.template, model: "claude-sonnet" },
+    }),
+  );
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({
+      ...base,
+      template: { ...base.template, effort: "high" },
+    }),
+  );
 });
 
 test("the schedule view module never fetches the catalog - it is SSE-owned", () => {

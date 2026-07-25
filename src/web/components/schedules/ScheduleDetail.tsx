@@ -166,10 +166,22 @@ export function ScheduleDetail({
           )}
           <dt>Cadence</dt>
           <dd>{cadenceLabel(schedule.expression)}</dd>
+          <dt>Exact cron</dt>
+          <dd className="rm-mono">{schedule.expression}</dd>
           <dt>Time zone</dt>
           <dd>{schedule.timezone} · DST aware</dd>
+          <dt>Next (UTC)</dt>
+          <dd className="rm-mono">
+            {schedule.nextRunAt != null ? new Date(schedule.nextRunAt).toISOString() : "-"}
+          </dd>
+          <dt>Execution mode</dt>
+          <dd>{schedule.executionMode ?? "Unreadable by this build"}</dd>
           {template && (
             <>
+              <dt>Task intent</dt>
+              <dd>{template.intent}</dd>
+              <dt>Repository</dt>
+              <dd className="rm-mono">{template.repoRoot}</dd>
               <dt>Task defaults</dt>
               <dd>
                 {template.agent} · {template.kind}

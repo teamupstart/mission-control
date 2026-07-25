@@ -15,6 +15,8 @@ import {
 } from "../../lib/schedules.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
+const DEEP_LINK_PAGE_LIMIT = 5;
+
 /**
  * A schedule's occurrence history, paged on demand and never polled.
  *
@@ -66,18 +68,51 @@ export function ScheduleHistory({
     setLoading(true);
     setError(null);
     setSelectedId(initialOccurrenceId ?? null);
-    void fetchScheduleHistory(scheduleId, { limit: SCHEDULE_HISTORY_DEFAULT_LIMIT }).then((page) => {
-      if (stamp !== requestRef.current) return;
-      setLoading(false);
-      if (!page) {
-        setError("History is unavailable for this schedule.");
-        return;
+    void (async () => {
+      let before: number | null = null;
+      let accumulated: ScheduleOccurrence[] = [];
+      const pageLimit = initialOccurrenceId ? DEEP_LINK_PAGE_LIMIT : 1;
+
+      for (let pageIndex = 0; pageIndex < pageLimit; pageIndex += 1) {
+        const page = await fetchScheduleHistory(scheduleId, {
+          before,
+          limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
+        });
+        if (stamp !== requestRef.current) return;
+        if (!page) {
+          setLoading(false);
+          setError(
+            pageIndex === 0
+              ? "History is unavailable for this schedule."
+              : "Could not load the requested occurrence.",
+          );
+          return;
+        }
+
+        const seen = new Set(accumulated.map((occurrence) => occurrence.id));
+        accumulated = [
+          ...accumulated,
+          ...page.occurrences.filter((occurrence) => !seen.has(occurrence.id)),
+        ];
+        setSchedule(page.schedule);
+        setRows(accumulated);
+        setCursor(page.nextCursor);
+        setDone(page.nextCursor === null);
+
+        if (
+          !initialOccurrenceId ||
+          accumulated.some((occurrence) => occurrence.id === initialOccurrenceId) ||
+          page.nextCursor === null
+        ) {
+          if (initialOccurrenceId) setSelectedId(initialOccurrenceId);
+          setLoading(false);
+          return;
+        }
+        before = page.nextCursor;
       }
-      setSchedule(page.schedule);
-      setRows(page.occurrences);
-      setCursor(page.nextCursor);
-      setDone(page.nextCursor === null);
-    });
+
+      setLoading(false);
+    })();
     // initialOccurrenceId only seeds the selection; it must not re-fetch the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleId]);

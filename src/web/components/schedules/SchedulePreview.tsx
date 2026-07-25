@@ -296,7 +296,20 @@ function StandbyResult({
   timezone: string;
 }): React.JSX.Element {
   const plan = simulation.plan;
-  const createdCount = plan?.filter((d) => d.decisionKind === "create_task").length ?? 0;
+  if (!plan) {
+    return (
+      <div className="rm-standby-result">
+        <div className="rm-standby-summary">
+          <span>The window exceeded the preview cap.</span>
+          <span>
+            The daemon still accounts for every crossed instant on resume under {missedPolicy}.
+          </span>
+          <span className="rm-badge-inline rm-badge-attention">capped</span>
+        </div>
+      </div>
+    );
+  }
+  const createdCount = plan.filter((d) => d.decisionKind === "create_task").length;
   return (
     <div className="rm-standby-result">
       <div className="rm-standby-summary">
@@ -311,7 +324,7 @@ function StandbyResult({
         {simulation.truncated && <span className="rm-badge-inline rm-badge-attention">capped</span>}
       </div>
       <ol className="rm-standby-rows">
-        {plan?.map((decision) => (
+        {plan.map((decision) => (
           <li className="rm-standby-row" key={decision.at}>
             <span className="rm-mono">{formatInstant(decision.at, timezone)}</span>
             <span className={`rm-badge-inline rm-badge-${decisionTone(decision.decisionKind)}`}>

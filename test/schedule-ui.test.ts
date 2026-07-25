@@ -82,9 +82,10 @@ test("the catalog shows a disconnected banner instead of fetching, and an empty 
 });
 
 test("the detail is honest about local catch-up: never on-time, never asleep execution", () => {
+  const schedule = mkSchedule();
   const html = renderToStaticMarkup(
     createElement(ScheduleDetail, {
-      schedule: mkSchedule(),
+      schedule,
       onEdit: () => {},
       onPreview: () => {},
       onHistory: () => {},
@@ -97,6 +98,11 @@ test("the detail is honest about local catch-up: never on-time, never asleep exe
   // Run now and the pause control are both present.
   assert.match(html, /Run now/);
   assert.match(html, /Pause/);
+  assert.match(html, /0 8 \* \* 1/);
+  assert.match(html, /Audit dependencies and open a PR if anything changed/);
+  assert.match(html, /\/Users\/dev\/workspace\/mission-control/);
+  assert.match(html, /local-catchup/);
+  assert.ok(html.includes(new Date(schedule.nextRunAt!).toISOString()));
 });
 
 test("the detail's Run now explains it files a backlog task, not that it runs an agent", () => {

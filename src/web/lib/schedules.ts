@@ -170,8 +170,8 @@ export function formatScheduledFor(at: number): string {
  * How late a run was, in the catalog's own words.
  *
  * The delay is server-computed (`claimedAt - scheduledFor`); this only spells it. The
- * grace band below which a run reads as "on time" mirrors the server's overdue grace so
- * the two surfaces never disagree about what "late" means.
+ * one-minute display band only keeps near-immediate claims from reading as late in history.
+ * It is not the daemon's five-minute overdue health grace and does not decide health.
  */
 export function formatDelay(delayMs: number): string {
   if (delayMs <= 60_000) return "on time";
@@ -186,7 +186,7 @@ export function formatDelay(delayMs: number): string {
   return `${parts.join(" ") || "1m"} late`;
 }
 
-/** True when a run was late enough to warrant the attention tone. */
+/** True when history should apply its display-only late tone. */
 export function delayIsLate(delayMs: number): boolean {
   return delayMs > 60_000;
 }
@@ -335,14 +335,13 @@ export interface CadenceForm {
   expression: string;
 }
 
-function splitTime(time: string): { hour: number; minute: number } {
-  const [h = "", m = ""] = time.split(":");
-  const hour = Number(h);
-  const minute = Number(m);
-  return {
-    hour: Number.isInteger(hour) ? hour : 0,
-    minute: Number.isInteger(minute) ? minute : 0,
-  };
+function splitTime(time: string): { hour: number; minute: number } | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
 }
 
 /**
@@ -354,7 +353,9 @@ function splitTime(time: string): { hour: number; minute: number } {
  */
 export function presetToExpression(form: CadenceForm): string {
   if (form.preset === "advanced") return normalizeCronExpression(form.expression);
-  const { hour, minute } = splitTime(form.time);
+  const time = splitTime(form.time);
+  if (!time) return "";
+  const { hour, minute } = time;
   switch (form.preset) {
     case "daily":
       return `${minute} ${hour} * * *`;
@@ -474,6 +475,7 @@ export function scheduleDefinitionFingerprint(def: {
   };
 }): string {
   return JSON.stringify([
+    def.name,
     normalizeCronExpression(def.expression),
     def.timezone,
     def.overlapPolicy,
@@ -483,6 +485,10 @@ export function scheduleDefinitionFingerprint(def: {
     def.template.intent.trim(),
     def.template.kind,
     def.template.agent,
+    def.template.priority,
+    def.template.labels.join("\u0000"),
+    def.template.model,
+    def.template.effort,
   ]);
 }
 

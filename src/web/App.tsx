@@ -1606,6 +1606,8 @@ export function App(): React.JSX.Element {
                   initialOccurrenceId={missionsTarget?.occurrenceId ?? null}
                   onClose={closeMissions}
                   onOpenTask={(taskId) => {
+                    const task = tasks.find((candidate) => candidate.id === taskId);
+                    if (!task || task.status !== "backlog") return;
                     closeMissions();
                     openTaskEditor(taskId);
                   }}

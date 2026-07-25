@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -76,6 +76,7 @@ export function RecurringMissionsPanel({
     initialScheduleId ?? sorted[0]?.id ?? null,
   );
   const [editorDirty, setEditorDirty] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   // Where a confirmed discard should land: closing the overlay (Escape/✕) or returning to
   // the catalog (the Back/Cancel routes). Null when no confirmation is pending.
   const [confirmDiscard, setConfirmDiscard] = useState<null | "close" | "catalog">(null);
@@ -88,10 +89,20 @@ export function RecurringMissionsPanel({
     setSelectedId(sorted[0]?.id ?? null);
   }, [schedules, sorted, selectedId, screen.kind]);
 
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
   const selectedSchedule = useMemo(
     () => schedules.find((s) => s.id === selectedId) ?? null,
     [schedules, selectedId],
   );
+  const routedSchedule = useMemo(() => {
+    if (screen.kind === "catalog" || (screen.kind === "editor" && screen.scheduleId === null)) {
+      return null;
+    }
+    return schedules.find((schedule) => schedule.id === screen.scheduleId) ?? null;
+  }, [schedules, screen]);
 
   function handleClose(): void {
     if (screen.kind === "editor" && editorDirty) {
@@ -138,7 +149,9 @@ export function RecurringMissionsPanel({
       <header className="rm-topline">
         <div className="rm-topline-titles">
           <span className="rm-eyebrow">Recurring Missions</span>
-          <h2>{title}</h2>
+          <h2 ref={headingRef} tabIndex={-1}>
+            {title}
+          </h2>
         </div>
         <div className="rm-topline-actions">
           {screen.kind === "catalog" ? (
@@ -180,6 +193,7 @@ export function RecurringMissionsPanel({
             />
             {selectedSchedule ? (
               <ScheduleDetail
+                key={selectedSchedule.id}
                 schedule={selectedSchedule}
                 onEdit={() => setScreen({ kind: "editor", scheduleId: selectedSchedule.id })}
                 onPreview={() => setScreen({ kind: "preview", scheduleId: selectedSchedule.id })}
@@ -200,21 +214,31 @@ export function RecurringMissionsPanel({
           </div>
         )}
 
-        {screen.kind === "editor" && (
-          <ScheduleEditor
-            schedule={screen.scheduleId ? (selectedSchedule ?? null) : null}
-            onDirtyChange={setEditorDirty}
-            onSaved={(saved) => toCatalog(saved.id)}
-            onCancel={handleBack}
-          />
-        )}
+        {screen.kind === "editor" &&
+          (screen.scheduleId !== null && !routedSchedule ? (
+            <div className="rm-detail rm-detail-empty">
+              <p className="rm-empty">This schedule is no longer available.</p>
+              <Tooltip label="Return to the scheduled catalog">
+                <button className="btn" onClick={() => toCatalog()}>
+                  Back to catalog
+                </button>
+              </Tooltip>
+            </div>
+          ) : (
+            <ScheduleEditor
+              schedule={routedSchedule}
+              onDirtyChange={setEditorDirty}
+              onSaved={(saved) => toCatalog(saved.id)}
+              onCancel={handleBack}
+            />
+          ))}
 
-        {screen.kind === "preview" && <PreviewScreen schedule={selectedSchedule} />}
+        {screen.kind === "preview" && <PreviewScreen schedule={routedSchedule} />}
 
         {screen.kind === "history" && (
           <ScheduleHistory
             scheduleId={screen.scheduleId}
-            fallbackName={selectedSchedule?.name ?? null}
+            fallbackName={routedSchedule?.name ?? null}
             initialOccurrenceId={screen.occurrenceId}
             onOpenTask={onOpenTask}
           />

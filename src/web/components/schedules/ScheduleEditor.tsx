@@ -217,20 +217,27 @@ export function ScheduleEditor({
       setPreviewedOk(fingerprint);
     }
 
+    if (schedule && !enable && schedule.enabled) {
+      const paused = await setScheduleEnabled(schedule.id, false);
+      if (!paused.ok) {
+        setBusy(false);
+        setFormError(paused.error ?? "Could not pause the schedule.");
+        return;
+      }
+    }
+
     const result = schedule
       ? await updateSchedule(schedule.id, definition)
       : await createSchedule({ ...definition, enabled: enable });
-    // An update leaves the enabled flag alone; flip it separately so Save & enable/paused
-    // mean the same thing whether creating or editing.
-    if (result.ok && schedule && result.schedule && result.schedule.enabled !== enable) {
-      const toggled = await setScheduleEnabled(schedule.id, enable);
+    if (result.ok && schedule && enable && result.schedule && !result.schedule.enabled) {
+      const toggled = await setScheduleEnabled(schedule.id, true);
       setBusy(false);
       if (toggled.ok && toggled.schedule) {
         onSaved(toggled.schedule);
         return;
       }
       if (!toggled.ok) {
-        setFormError(toggled.error ?? "Could not change the enabled state.");
+        setFormError(toggled.error ?? "Could not enable the schedule.");
         return;
       }
     }

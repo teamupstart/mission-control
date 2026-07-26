@@ -1,7 +1,9 @@
 import { statSync } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
+  TranscriptInitialRead,
   TranscriptMessages,
+  TranscriptPage,
   TranscriptSince,
   TranscriptStreamRead,
   TranscriptWindow,
@@ -25,8 +27,12 @@ import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 const NL = 0x0a; // "\n"
 /** Starting byte guess for a live stream's initial history. */
 const INIT_TAIL_BYTES = 512 * 1024;
-/** Cap on how many turns a live stream sends on connect. */
+/** Turns a live stream aims to send on connect. */
 const INIT_LIMIT = 80;
+/** Starting byte guess for one page of older history. */
+const PAGE_TAIL_BYTES = 512 * 1024;
+/** Turns one backward page aims to carry. */
+const PAGE_LIMIT = 80;
 /** Starting byte guess for the opening turns (the session's original goal). */
 const WINDOW_HEAD_BYTES = 128 * 1024;
 /** Starting byte guess for the recent context (the pending question). */
@@ -277,35 +283,101 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
   };
 
   /**
-   * Read the tail for a stream's initial view, and report where to resume from.
+   * Read the tail for a stream's initial view, and report both ends of what it read.
    *
-   * This is THE history the dashboard shows: a card open (and every EventSource
-   * reconnect, so every daemon restart) replaces the panel's turns with this read. It
-   * grows to `INIT_LIMIT` turns for that reason - a fixed byte tail meant a long Codex
-   * session's card came back holding six turns of a conversation the file still had all
-   * of, which reads as history the session lost rather than history we declined to read.
+   * This is the history the dashboard OPENS on: a card open, and every EventSource
+   * reconnect, so every daemon restart. It grows to `INIT_LIMIT` turns rather than
+   * budgeting bytes - a fixed byte tail meant a long Codex session's card came back
+   * holding six turns of a conversation the file still had all of.
+   *
+   * It is no longer the ONLY history the dashboard can show, which is what `start` is
+   * for: `before(path, start)` reads the page above this one, so a turn outside this
+   * window is now merely off-screen rather than unreachable. That was the second half of
+   * one complaint - the first was that the window read too few turns, this was that
+   * nothing could ask for the rest.
+   *
+   * The result is deliberately NOT trimmed to `INIT_LIMIT`. `grow` stops at the first
+   * read that reaches the target, so overshoot is one read's worth and bounded by
+   * `INIT_TAIL_BYTES`; trimming would leave `start` pointing at turns that were cut, and
+   * the next page back would re-read every one of them. An honest anchor is worth more
+   * than an exact turn count - and in the shape that overshoots most, a small file read
+   * whole, the overshoot IS the rest of the conversation.
    */
-  const initial = (path: string): TranscriptStreamRead => {
+  const initial = (path: string): TranscriptInitialRead => {
     const size = statSync(path).size;
     let pos = size;
+    let begin = 0;
     const read = (bytes: number): TranscriptMessage[] => {
-      const start = Math.max(0, size - bytes);
-      const buf = readRange(path, start, size);
+      const anchor = Math.max(0, size - bytes);
+      const buf = readRange(path, anchor, size);
       // If we began mid-file, drop the partial first line.
       let from = 0;
-      if (start > 0) {
+      if (anchor > 0) {
         const nl = buf.indexOf(NL);
         from = nl >= 0 ? nl + 1 : buf.length;
       }
       // Only parse up to the last newline; a trailing partial line stays for next read.
       const lastNl = buf.lastIndexOf(NL);
       const end = lastNl >= 0 ? lastNl + 1 : from;
-      pos = start + end;
+      begin = anchor + from;
+      pos = anchor + end;
       const text = buf.subarray(from, end).toString("utf8");
       return parseMany(text ? text.split("\n") : []);
     };
     const { messages } = grow(size, INIT_LIMIT, INIT_TAIL_BYTES, read);
-    return { messages: messages.slice(-INIT_LIMIT), pos };
+    return { messages, pos, start: begin, atStart: begin <= 0 };
+  };
+
+  /**
+   * Read the page of turns immediately BEFORE a byte offset.
+   *
+   * The mirror of `initial`: same growth, same turn budget, anchored at the top of a
+   * window the caller already holds instead of at EOF. Chaining it - each page's `start`
+   * becoming the next call's `before` - walks a session back to its first turn.
+   *
+   * The returned range abuts the requested one EXACTLY, which is a correctness property
+   * rather than tidiness. `start` sits just after the newline preceding the first whole
+   * record, so a page can neither skip a turn (a gap nobody would know was there) nor
+   * repeat one. Repeats are the sharper edge: most rollout records carry no id of their
+   * own, so theirs is synthesized per parse batch and two overlapping reads de-dupe
+   * against nothing - the same reason `window` reads head and tail as ranges that cannot
+   * overlap.
+   */
+  const before = (path: string, offset: number, wantTurns = PAGE_LIMIT): TranscriptPage => {
+    let size: number;
+    try {
+      size = statSync(path).size;
+    } catch {
+      return { messages: [], start: 0, end: 0, atStart: true };
+    }
+    // An offset past EOF means the file was rotated or cleared under us, so the anchor
+    // names a byte that no longer exists. Clamp rather than throw: the stream's own
+    // truncation check re-seeds the panel a tick later, and until then an empty page ends
+    // the scroll-back cleanly instead of surfacing an error the operator cannot act on.
+    const end = Math.max(0, Math.min(offset, size));
+    if (end === 0) return { messages: [], start: 0, end: 0, atStart: true };
+    let begin = end;
+    const read = (bytes: number): TranscriptMessage[] => {
+      const anchor = Math.max(0, end - bytes);
+      const buf = readRange(path, anchor, end);
+      // Drop the partial first line only when this read began mid-file. The far end needs
+      // no such care: `end` came from an earlier read's line boundary, so the range
+      // already finishes on a whole record.
+      let from = 0;
+      if (anchor > 0) {
+        const nl = buf.indexOf(NL);
+        from = nl >= 0 ? nl + 1 : buf.length;
+      }
+      begin = anchor + from;
+      const text = buf.subarray(from).toString("utf8");
+      return parseMany(text ? text.split("\n") : []);
+    };
+    const { messages } = grow(end, wantTurns, PAGE_TAIL_BYTES, read);
+    // A page that renders nothing is not the end of the history: a stretch of pure tool
+    // output can fill a window with no turn in it, and `begin` still moved, so the caller
+    // pages on. `atStart` is reserved for the two cases where it genuinely cannot - the
+    // top of the file, and a record too large for the scan ceiling to step over.
+    return { messages, start: begin, end, atStart: begin <= 0 || begin >= end };
   };
 
   /** Read whatever complete lines were appended since `pos`. */
@@ -319,5 +391,5 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
-  return { window, since, size: transcriptSize, initial, appended, narration };
+  return { window, since, size: transcriptSize, initial, before, appended, narration };
 }

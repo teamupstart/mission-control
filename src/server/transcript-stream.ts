@@ -69,7 +69,12 @@ export function transcriptStreamHandler(registry: Registry) {
       try {
         const init = read.initial(path);
         pos = init.pos;
-        await send({ type: "init", messages: attribute(id, init.messages) });
+        await send({
+          type: "init",
+          messages: attribute(id, init.messages),
+          start: init.start,
+          atStart: init.atStart,
+        });
       } catch {
         await send({ type: "unavailable", reason: "Could not read the transcript file." });
         return;

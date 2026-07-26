@@ -17,6 +17,7 @@ import type {
   SessionQueue,
   SkillsView,
   TaskPriority,
+  TranscriptMessage,
 } from "@shared/types.ts";
 import type {
   AwayConfig,
@@ -539,6 +540,52 @@ export async function fetchQueue(
     return { ok: true, queue: (await res.json()) as SessionQueue | null };
   } catch {
     return { ok: false };
+  }
+}
+
+/**
+ * The page of turns immediately before a byte offset - the conversation panel's
+ * scroll-back.
+ *
+ * The live stream deliberately opens on a bounded tail, so this is the only way to reach
+ * a turn older than it. Anchored in bytes because that is the one currency an
+ * append-only file indexes for free, and each page reports the `start` that anchors the
+ * next call - see `transcript-history.ts` for why the ranges must abut exactly.
+ */
+export async function fetchTranscriptBefore(
+  id: string,
+  before: number,
+  signal?: AbortSignal,
+): Promise<
+  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(id)}/transcript?before=${encodeURIComponent(String(before))}`,
+      { signal },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      messages?: TranscriptMessage[];
+      start?: number;
+      end?: number;
+      atStart?: boolean;
+      error?: string;
+    };
+    if (!res.ok || !data.messages || typeof data.start !== "number" || typeof data.end !== "number") {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      messages: data.messages,
+      start: data.start,
+      end: data.end,
+      // A response that omits the flag is treated as "nothing older", which stops the
+      // scroll-back rather than looping on an anchor the server never moved.
+      atStart: data.atStart ?? true,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

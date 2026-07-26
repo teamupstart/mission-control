@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type {
   ForemanEpisode,
   ToolCall,
@@ -9,8 +9,16 @@ import type {
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import { api } from "../lib/api.ts";
+import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import {
+  appendLive,
+  backAnchor,
+  flattenHistory,
+  prependPage,
+  readHistory,
+  seedTail,
+} from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
@@ -119,7 +127,15 @@ export function TranscriptPanel({
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
   const agent = session.agent;
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  // Hydrated from the history map rather than starting empty, so re-opening a session
+  // you had scrolled back through shows that scroll-back immediately instead of blanking
+  // to the stream's tail and making you find your place again.
+  const [messages, setMessages] = useState<TranscriptMessage[]>(() =>
+    flattenHistory(readHistory(sessionId)),
+  );
+  const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
@@ -128,6 +144,12 @@ export function TranscriptPanel({
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
+  /**
+   * Scroll height captured just before a page of older turns is spliced in above the
+   * reader, so the layout effect below can put back what prepending pushed down.
+   * Null when no restore is pending.
+   */
+  const pendingRestore = useRef<number | null>(null);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
 
   // The reply box is deliberately NOT conditioned on the transcript. Replying needs a
@@ -204,7 +226,11 @@ export function TranscriptPanel({
   }, [resetNonce]);
 
   useEffect(() => {
-    setMessages([]);
+    // Show whatever this session already has while the stream connects, instead of
+    // clearing to "Loading…" and throwing away scroll-back the map still holds.
+    setMessages(flattenHistory(readHistory(sessionId)));
+    setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    setOlderError(null);
     setStatus("connecting");
     setNote("");
     const es = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`);
@@ -216,10 +242,18 @@ export function TranscriptPanel({
         return;
       }
       if (msg.type === "init") {
-        setMessages(msg.messages);
+        // `init` arrives on every reconnect, so this is the moment a long session used to
+        // lose its history: the stream re-states its bounded tail, and taking it as the
+        // whole conversation discarded everything above. `seedTail` keeps the pages that
+        // still abut it and reports what survived.
+        const next = seedTail(sessionId, msg);
+        setMessages(flattenHistory(next));
+        setCanLoadOlder(backAnchor(next) !== null);
         setStatus("live");
       } else if (msg.type === "append") {
-        setMessages((prev) => mergeById(prev, msg.messages));
+        const next = appendLive(sessionId, msg.messages);
+        if (next) setMessages(flattenHistory(next));
+        else setMessages((prev) => mergeById(prev, msg.messages));
       } else if (msg.type === "unavailable") {
         setStatus("unavailable");
         setNote(msg.reason);
@@ -229,10 +263,65 @@ export function TranscriptPanel({
     return () => es.close();
   }, [sessionId]);
 
-  // Follow the tail only when the reader is already at the bottom.
-  useEffect(() => {
+  /**
+   * Fetch the page above what we hold and splice it in.
+   *
+   * Guarded on `loadingOlder` because the scroll handler fires continuously while the
+   * reader sits at the top: without it one flick would launch a dozen overlapping
+   * requests for the same anchor, and the winners would each try to prepend the same
+   * range.
+   */
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder) return;
+    const anchor = backAnchor(readHistory(sessionId));
+    if (anchor === null) {
+      setCanLoadOlder(false);
+      return;
+    }
+    setLoadingOlder(true);
+    setOlderError(null);
+    const res = await fetchTranscriptBefore(sessionId, anchor);
+    if (!res.ok) {
+      setOlderError(res.error);
+      setLoadingOlder(false);
+      return;
+    }
+    // Measured before the state change so the layout effect can hold the reader's place;
+    // React commits the taller list before paint, so reading it here is the last chance.
+    pendingRestore.current = logRef.current?.scrollHeight ?? null;
+    const next = prependPage(sessionId, res);
+    if (next) {
+      setMessages(flattenHistory(next));
+      setCanLoadOlder(backAnchor(next) !== null);
+    } else {
+      // The page did not abut what we hold - the file moved under the request. Nothing is
+      // spliced, so nothing needs restoring.
+      pendingRestore.current = null;
+      setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    }
+    setLoadingOlder(false);
+  }, [loadingOlder, sessionId]);
+
+  /**
+   * Keep the reader's place across both kinds of list growth.
+   *
+   * Prepending older turns pushes everything down by exactly the height that arrived, so
+   * the scroll offset has to gain the same amount or the content the reader was looking
+   * at slides off the bottom of the viewport. That correction must happen before paint -
+   * in a passive effect it renders as a visible jump - which is what makes this the one
+   * layout effect in the panel. Appends are the ordinary case and only follow the tail
+   * when the reader was already there.
+   */
+  useLayoutEffect(() => {
     const el = logRef.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const before = pendingRestore.current;
+    if (before !== null) {
+      pendingRestore.current = null;
+      el.scrollTop += el.scrollHeight - before;
+      return;
+    }
+    if (atBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
@@ -242,7 +331,12 @@ export function TranscriptPanel({
   // the (prominent, full-width) reply box drops in when it's time to respond.
   function onScroll(): void {
     const el = logRef.current;
-    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (!el) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    // Reaching for the top is the request to see what came before. Fired a little short
+    // of the edge so the page is already arriving by the time the reader gets there, and
+    // never while one is in flight or the file has nothing older.
+    if (canLoadOlder && !loadingOlder && el.scrollTop < 120) void loadOlder();
   }
 
   /**
@@ -303,6 +397,30 @@ export function TranscriptPanel({
         ) : (
           <>
             {status === "unavailable" && <p className="transcript-empty">{note}</p>}
+            {/* The top of the log says what is above it. Scrolling here loads the next
+                page automatically; the button is for the reader who wants it now, and
+                for the one whose pointer cannot generate a scroll event. Rendering
+                nothing when the history is complete is the point - "no older messages"
+                on a six-turn session is noise. */}
+            {(canLoadOlder || loadingOlder || olderError) && (
+              <div className="transcript-older">
+                {olderError ? (
+                  <Tooltip label={olderError}>
+                    <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                      Couldn't load older messages - retry
+                    </button>
+                  </Tooltip>
+                ) : loadingOlder ? (
+                  <span className="transcript-older-note">Loading older messages…</span>
+                ) : (
+                  <Tooltip label="Read further back in this session's transcript">
+                    <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                      Load older messages
+                    </button>
+                  </Tooltip>
+                )}
+              </div>
+            )}
             {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
               row.kind === "episode" ? (
                 <div

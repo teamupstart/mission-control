@@ -2131,9 +2131,22 @@ export type TurnOrigin = "foreman" | "harness" | "workflow";
  * Messages on the per-session transcript SSE stream
  * (`GET /api/sessions/:id/transcript/stream`). `init` carries the recent
  * history on connect; `append` streams new turns as the agent writes them.
+ *
+ * `init` also carries the BYTE RANGE it was read from, and both ends earn their place.
+ * `start` is what `GET /api/sessions/:id/transcript?before=` pages back from, so older
+ * history is reachable instead of merely absent; `atStart` is how the panel knows to stop
+ * offering. Without them the panel could not tell a session that said eighty things from
+ * one that said eight hundred, and silently drew the second as the first.
  */
 export type TranscriptStreamMsg =
-  | { type: "init"; messages: TranscriptMessage[] }
+  | {
+      type: "init";
+      messages: TranscriptMessage[];
+      /** Byte offset of the first turn in `messages` - the back-paging anchor. */
+      start: number;
+      /** True when `start` is the top of the file, so nothing older exists. */
+      atStart: boolean;
+    }
   | { type: "append"; messages: TranscriptMessage[] }
   | { type: "unavailable"; reason: string };
 

@@ -4447,6 +4447,35 @@ kbd {
   font-size: 13px;
   padding: 8px 2px;
 }
+/* The scroll-back control, pinned at the top of the log. `flex-shrink: 0` because the
+   log is a flex column and a short row like this is the first thing it would squash. */
+.transcript-older {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px 0 6px;
+}
+.transcript-older-btn,
+.transcript-older-note {
+  font-size: 12px;
+  color: var(--dim);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+.transcript-older-btn {
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.transcript-older-btn:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+.transcript-older-note {
+  border-color: transparent;
+}
 .turn {
   display: flex;
   flex-direction: column;

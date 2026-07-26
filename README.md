@@ -785,6 +785,28 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Reading a session's whole conversation
+
+The Conversation tab opens on the session's **recent** turns, and scrolls back through the
+rest on demand. A card open reads a bounded tail rather than the file - a long session's
+transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
+open whatever the session has been doing.
+
+Scroll to the top of the log and the page above loads automatically, then the page above
+that, back to the session's first turn. **Load older messages** does the same on click,
+for when you would rather not scroll. Nothing appears once you reach the beginning: a
+short session shows no control at all.
+
+What you have scrolled back to is kept, so switching to the Diff tab and back, collapsing
+a card, or moving between sessions returns you to the history you had - not to the tail
+again. It survives a dropped connection and a daemon restart too, unless the agent wrote
+more while the dashboard was away than the reconnect's window covers; then the panel
+starts from the recent turns again and scrolling up re-reads the rest. History is held per
+session for the browser tab, and released when a session goes away.
+
+Turns are anchored by byte offset in the session file, which is what makes each page abut
+the last exactly - no turn is skipped between pages, and none is shown twice.
+
 ### Shadow reading: Claude's own session state
 
 Claude Code ships `claude agents --json`, which lists every live session - background and

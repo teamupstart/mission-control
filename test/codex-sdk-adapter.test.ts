@@ -987,6 +987,45 @@ test("clearContext stops whatever the old thread was still running", async () =>
   await drained;
 });
 
+test("a rejected clear keeps the old thread bound and usable", async () => {
+  let started = 0;
+  const server = new FakeServer({
+    ...defaultReplies(),
+    "thread/start": () => {
+      started += 1;
+      if (started === 1) return threadResponse(THREAD);
+      throw new Error("replacement refused");
+    },
+  });
+  const { handle, events, drained } = await launch(server);
+  await settle();
+
+  await assert.rejects(() => handle.clearContext!(), /replacement refused/);
+  assert.deepEqual(
+    events.filter((event) => event.kind === "bound"),
+    [{
+      kind: "bound",
+      agentSessionId: THREAD.id,
+      transcriptPath: THREAD.path,
+      pid: 4242,
+    }],
+  );
+
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  assert.ok(events.some((event) => event.kind === "turn_done"));
+
+  await handle.send({ text: "continue on the old thread" });
+  assert.equal(server.calls("turn/steer").length, 0);
+  assert.equal(server.calls("turn/start").length, 2);
+  assert.equal(
+    (server.calls("turn/start")[1]?.params as Record<string, unknown>).threadId,
+    THREAD.id,
+  );
+  await handle.stop();
+  await drained;
+});
+
 test("a frame this build cannot read costs an activity line, never the session", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);

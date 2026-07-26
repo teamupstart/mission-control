@@ -417,23 +417,17 @@ class CodexSdkSession implements SdkSessionHandle {
   clearContext = async (): Promise<void> => {
     this.requireLive();
     const retiring = this.requireThread();
-    this.retireThread(retiring);
     // The old thread is ABANDONED, not archived - so anything still running on it has to be
     // stopped first, or a turn nobody can see any more goes on spending tokens against a
     // conversation the operator just cleared. `/clear` on a pane costs the current turn too.
-    let started: ThreadStartResponse;
-    try {
-      await this.interrupt();
-      started = await this.client.request<ThreadStartResponse>("thread/start", {
-        ...threadStartParams(this.config),
-        // Codex's own word for this case, so its analytics record a cleared context rather
-        // than a second unexplained startup on one connection.
-        sessionStartSource: "clear",
-      } satisfies ThreadStartParams);
-    } catch (err) {
-      this.retiredThreads.delete(retiring);
-      throw err;
-    }
+    await this.interrupt();
+    const started = await this.client.request<ThreadStartResponse>("thread/start", {
+      ...threadStartParams(this.config),
+      // Codex's own word for this case, so its analytics record a cleared context rather
+      // than a second unexplained startup on one connection.
+      sessionStartSource: "clear",
+    } satisfies ThreadStartParams);
+    this.retireThread(retiring);
     this.activeTurnId = null;
     this.lastUsage = null;
     this.bind(started);

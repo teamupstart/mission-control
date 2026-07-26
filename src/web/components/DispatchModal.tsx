@@ -464,19 +464,24 @@ function DispatchModal({
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
   const labels = parseLabelInput(draft.labels);
+  const draftHasBacklogDetails = Boolean(
+    draft.priority ||
+      draft.labels.trim() ||
+      draft.title.trim() ||
+      draft.dependencies.length > 0,
+  );
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
   // when there is something inside to see - an edit, or a draft that already carries one of
   // them - and closed on a fresh dispatch, where the summary line names what is unset.
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
-    () =>
-      editing !== null ||
-      Boolean(
-        draft.priority ||
-          draft.labels.trim() ||
-          draft.title.trim() ||
-          draft.dependencies.length > 0,
-      ),
+    () => editing !== null || draftHasBacklogDetails,
   );
+  const previousEnsembleMode = useRef(ensembleMode);
+  useEffect(() => {
+    const returnedToSingle = previousEnsembleMode.current && !ensembleMode;
+    previousEnsembleMode.current = ensembleMode;
+    if (returnedToSingle && draftHasBacklogDetails) setDetailsOpen(true);
+  }, [draftHasBacklogDetails, ensembleMode]);
   // The Ensemble preview/launch state machine, called unconditionally (it is a hook) and
   // inert outside Ensemble mode. The form body and the footer both read this one object,
   // so the plan strip and the Launch button cannot disagree about what is reviewed.
@@ -538,20 +543,22 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
-  const selectedDependenciesUnmet = draft.dependencies.some((dependency) => {
-    const stored = editing?.dependencies.find((candidate) =>
-      dependencyKey(
-        candidate.type === "task"
-          ? { type: "task", taskId: candidate.taskId }
-          : { type: "session", sessionId: candidate.sessionId },
-      ) === dependencyKey(dependency),
+  const unmetDependencyCount = draft.dependencies.filter((dependency) => {
+    const stored = editing?.dependencies.find(
+      (candidate) =>
+        dependencyKey(
+          candidate.type === "task"
+            ? { type: "task", taskId: candidate.taskId }
+            : { type: "session", sessionId: candidate.sessionId },
+        ) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
     return sessions.find((session) => session.task?.id === dependency.taskId)?.prState !== "merged";
-  });
+  }).length;
+  const selectedDependenciesUnmet = unmetDependencyCount > 0;
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -1121,8 +1128,8 @@ function DispatchModal({
                   </span>
                   {selectedDependenciesUnmet && (
                     <span className="dispatch-wait-note">
-                      <span aria-hidden>◷</span> Waits for {dependencyCount}{" "}
-                      {dependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
+                      <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
+                      {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
                       {editing ? "stays in" : "lands in"} the backlog and dispatches when their
                       PRs merge.
                     </span>

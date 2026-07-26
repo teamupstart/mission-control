@@ -167,7 +167,7 @@ export function EnsembleLaunchControls({
 }: {
   launch: EnsembleLaunchState;
 }): React.JSX.Element {
-  if (!launch.reviewed) {
+  if (!launch.reviewed || launch.preview?.ok !== true) {
     return (
       <Tooltip label="Preview the exact launch plan, budget, and workflow before committing">
         <button
@@ -183,9 +183,7 @@ export function EnsembleLaunchControls({
   }
   return (
     <>
-      {launch.preview?.ok === true && (
-        <span className="ensemble-reviewed-chip">Reviewed ✓</span>
-      )}
+      <span className="ensemble-reviewed-chip">Reviewed ✓</span>
       <Tooltip label="Launch the reviewed plan (idempotent on this request)">
         <button
           type="button"

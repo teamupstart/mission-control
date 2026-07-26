@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
@@ -34,6 +35,15 @@ test("the launch-mode toggle lives in the modal header", () => {
   const header = html.slice(html.indexOf('class="modal-head"'), html.indexOf("dispatch-body"));
   assert.match(header, /Single agent/);
   assert.match(header, /Ensemble/);
+});
+
+test("returning from Ensemble opens populated backlog details", () => {
+  const source = readFileSync(
+    new URL("../src/web/components/DispatchModal.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const previousEnsembleMode = useRef\(ensembleMode\)/);
+  assert.match(source, /returnedToSingle && draftHasBacklogDetails/);
 });
 
 test("an editor opens with the fold open and the summary withheld", () => {
@@ -67,6 +77,18 @@ test("an unmet dependency speaks in the attention tone at the point of commit", 
         selectedAt: null,
         satisfiedAt: null,
       },
+      {
+        type: "task",
+        taskId: "done",
+        title: "Already merged",
+        sessionId: null,
+        episodeId: null,
+        agentSessionId: null,
+        branch: null,
+        prUrl: null,
+        selectedAt: null,
+        satisfiedAt: 1,
+      },
     ],
   });
   const html = renderToStaticMarkup(
@@ -75,5 +97,6 @@ test("an unmet dependency speaks in the attention tone at the point of commit", 
   // The chip names the dependency; the note says what waiting means; the primary says it too.
   assert.match(html, /Merge this first/);
   assert.match(html, /Waits for 1 dependency/);
+  assert.doesNotMatch(html, /Waits for 2 dependencies/);
   assert.match(html, /Waiting for dependencies/);
 });

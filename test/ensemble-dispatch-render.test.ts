@@ -142,6 +142,39 @@ test("a reviewed plan puts Launch in the primary slot with a Reviewed chip besid
   assert.doesNotMatch(html, /Review launch/);
 });
 
+test("an unsuccessful or unrestored preview keeps Review in the primary slot", () => {
+  const refused = renderToStaticMarkup(
+    createElement(EnsembleLaunchControls, {
+      launch: reviewedLaunch({
+        canLaunch: false,
+        preview: {
+          ok: false,
+          reason: "invalid plan",
+          issues: [],
+          estimate: {
+            initialMembers: 3,
+            maxMembers: 3,
+            maxConcurrentMembers: 3,
+            maxWaves: 1,
+            evaluationCalls: 1,
+          },
+          workflow: null,
+        },
+      }),
+    }),
+  );
+  const reopened = renderToStaticMarkup(
+    createElement(EnsembleLaunchControls, {
+      launch: reviewedLaunch({ canLaunch: false, preview: null }),
+    }),
+  );
+  for (const html of [refused, reopened]) {
+    assert.match(html, /Review launch/);
+    assert.doesNotMatch(html, /Reviewed ✓/);
+    assert.doesNotMatch(html, /Launch 3 agents/);
+  }
+});
+
 test("workflow placement leaves unselected versions lazy", () => {
   const workflow: WorkflowSummary = {
     id: "workflow-1",

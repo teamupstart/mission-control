@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ensemble UX: journey, gaps, and three directions</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2128; --muted: #59636e; --line: #d7dde3;
+    --accent: #316dca; --attn: #c93c37; --attn-soft: #fbe9e8; --work: #2da44e; --work-soft: #e6f4ea;
+    --idle: #8b949e; --idle-soft: #eef1f4; --wait: #b58a1e; --wait-soft: #faf3dd;
+    --code-bg: #eef1f4; --mock-bg: #10141a; --mock-panel: #171d26; --mock-panel2: #1d2532;
+    --mock-ink: #dce3ec; --mock-muted: #8a96a6; --mock-line: #2b3545;
+    --mock-attn: #e5534b; --mock-work: #3fb950; --mock-wait: #d29922; --mock-idle: #6e7a8a;
+    --mock-accent: #539bf5; --mock-violet: #b083f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #151b23; --ink: #dce3ec; --muted: #8a96a6; --line: #2b3545;
+      --accent: #539bf5; --attn: #e5534b; --attn-soft: #3a1f1e; --work: #3fb950; --work-soft: #17301d;
+      --idle: #6e7a8a; --idle-soft: #1c232e; --wait: #d29922; --wait-soft: #33290f;
+      --code-bg: #1c232e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 20px; margin: 48px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  h4 { font-size: 13.5px; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  p, li { max-width: 76ch; }
+  .meta { color: var(--muted); font-size: 13.5px; margin-bottom: 26px; }
+  code { background: var(--code-bg); border-radius: 4px; padding: .1em .35em; font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  a { color: var(--accent); }
+  table.doc { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.doc th, table.doc td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  table.doc th { background: var(--code-bg); }
+  .scroll { overflow-x: auto; }
+  .gap { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--attn);
+    border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+  .gap b.gid { color: var(--attn); margin-right: 6px; }
+  .gap .where { display: block; margin-top: 6px; font-size: 13px; color: var(--muted); }
+  .note { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
+  .verdict { font-size: 13.5px; color: var(--muted); margin: 8px 0 0; }
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; vertical-align: 1px; }
+  .pill.attn { background: var(--attn-soft); color: var(--attn); }
+  .pill.work { background: var(--work-soft); color: var(--work); }
+  .pill.wait { background: var(--wait-soft); color: var(--wait); }
+  .pill.idle { background: var(--idle-soft); color: var(--idle); }
+
+  /* ---------- mockup frames (always dark, matching the dashboard) ---------- */
+  .mock { background: var(--mock-bg); color: var(--mock-ink); border: 1px solid var(--mock-line);
+    border-radius: 10px; margin: 16px 0 6px; overflow: hidden;
+    font: 12.5px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .mock-cap { font-size: 13px; color: var(--muted); margin: 4px 2px 22px; }
+  .mock-bar { display: flex; align-items: center; gap: 8px; background: var(--mock-panel);
+    border-bottom: 1px solid var(--mock-line); padding: 7px 12px; font-size: 12px; color: var(--mock-muted); }
+  .mock-bar .dot3 { display: flex; gap: 5px; }
+  .mock-bar .dot3 i { width: 9px; height: 9px; border-radius: 50%; background: var(--mock-line); display: block; }
+  .mock-body { padding: 14px; }
+  .m-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--mock-line);
+    border-radius: 999px; padding: 1px 9px; font-size: 11px; color: var(--mock-muted); background: var(--mock-panel); }
+  .m-chip.attn { color: #ffb4ae; border-color: #6b312e; background: #2a1615; }
+  .m-chip.work { color: #7ee2a8; border-color: #2b5a3a; background: #14241a; }
+  .m-chip.wait { color: #ecd08a; border-color: #5f4c17; background: #272013; }
+  .m-chip.acc  { color: #a5cdfa; border-color: #2c4a75; background: #14202f; }
+  .m-btn { display: inline-block; border: 1px solid var(--mock-line); background: var(--mock-panel2);
+    color: var(--mock-ink); border-radius: 6px; padding: 3px 10px; font-size: 11.5px; }
+  .m-btn.primary { background: #2c4a75; border-color: #2c4a75; color: #d9e8fb; }
+  .m-btn.danger { border-color: #6b312e; color: #ffb4ae; }
+  .m-muted { color: var(--mock-muted); }
+  .m-sm { font-size: 11px; }
+  .m-card { background: var(--mock-panel); border: 1px solid var(--mock-line); border-radius: 8px; padding: 10px 12px; }
+  .m-card .ttl { font-weight: 600; font-size: 12.5px; margin-bottom: 2px; }
+  .m-agent { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .a-claude { background: #d97757; } .a-codex { background: #6ec2b3; } .a-pi { background: var(--mock-violet); }
+  .t-attn { color: var(--mock-attn); } .t-work { color: var(--mock-work); }
+  .t-wait { color: var(--mock-wait); } .t-idle { color: var(--mock-idle); }
+  .m-dots { display: inline-flex; gap: 4px; vertical-align: -1px; }
+  .m-dots i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; background: var(--mock-idle); }
+  .m-dots i.done { background: var(--mock-work); }
+  .m-dots i.run  { background: var(--mock-accent); }
+  .m-dots i.blk  { background: var(--mock-attn); }
+  .m-dots i.fail { background: #57606a; outline: 1px solid var(--mock-attn); outline-offset: -1px; }
+  .m-grid { display: grid; gap: 10px; }
+  pre.m-diff { background: #0b0f14; border: 1px solid var(--mock-line); border-radius: 6px;
+    padding: 8px 10px; margin: 6px 0 0; overflow-x: auto;
+    font: 11px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--mock-muted); }
+  pre.m-diff .add { color: #7ee2a8; } pre.m-diff .del { color: #ffb4ae; } pre.m-diff .hunk { color: var(--mock-accent); }
+  table.m-tbl { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+  table.m-tbl th, table.m-tbl td { border: 1px solid var(--mock-line); padding: 4px 8px; text-align: left; }
+  table.m-tbl th { background: var(--mock-panel2); color: var(--mock-muted); font-weight: 600; }
+  .svgwrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 16px 0; overflow-x: auto; }
+  .svgwrap svg { display: block; min-width: 860px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Ensemble UX: the operator journey, its gaps, and three directions</h1>
+<p class="meta">Status: <b>direction approved 2026-07-26 - phased composition</b> (Section 8) · Source of truth: <code>docs/plans/ensemble-ux-gaps/plan.md</code><br>
+Basis: full read of <code>src/web/ensembles/*</code>, the Workflows-page ensemble surfaces, <code>src/server/ensembles/*</code>, <code>docs/ensembles.md</code>, and the 31 <code>test/ensemble-*.test.ts</code> files.</p>
+
+<!-- ================================================================ -->
+<h2>1. The journey today, start to finish</h2>
+
+<h3>1.1 Launching a run</h3>
+<p>The entry point is the Dispatch modal. A <b>Single | Ensemble</b> switch (new dispatches only - an existing backlog Task cannot be converted) swaps the form for the ensemble dispatch: strategy segments (Best of N, Consensus, Panel vote), a roster of 2-5 candidate lanes (agent, model, effort, approach nudge), an optional evaluator Persona, judges for panel vote, an optional Workflow for the winner. A "Launch plan" strip previews the shape. Launch is two-step and idempotent: <b>Review launch</b> posts a side-effect-free preview whose fingerprint any edit invalidates; <b>Launch N agents</b> creates the run and navigates to the run detail. <span class="pill work">solid</span></p>
+
+<h3>1.2 Tracking progress</h3>
+<p>Two loosely stitched places. The <b>run detail</b> (Workflows page → Ensembles tab → run) shows a status pill, a facts list (Members <code>N / M max</code>, <b>Active stage as the raw <code>activeStageId</code> string</b>, base sha, elapsed, concurrency, review cost, candidate cost), member cards grouped by wave with attempt/artifact histories and a "Reported by member" vs "Observed" split, and a timeline of stage attempts, evaluations, decisions and raw events. The <b>fleet</b> shows each member as an ordinary session with a small ensemble mark ("⧉ Best of N · working" chip, <code>E 2 · working</code> tile flag, a bare <code>E</code> in the rail). Nothing groups siblings; the run list row is just <i>strategy · status word · time</i>. <span class="pill wait">thin</span></p>
+
+<h3>1.3 When a member needs the operator</h3>
+<p>A member's blocking question travels the ordinary session channels (<code>request_input</code> → ReviewModal; TUI/SDK dialog → pane prompt on the card). The session tone flips to attention. <b>Nothing on the ensemble side changes</b>: no member status for it, the run summary's attention ignores it, the run detail keeps saying "Active", the chip keeps saying "working". The two views disagree about the same agent. <span class="pill attn">broken</span></p>
+
+<h3>1.4 The decision</h3>
+<p>At ≥ 2 ready snapshots the anonymous comparison runs and the run parks at <code>awaiting_decision</code> with one toast. The strategy result renderers are genuinely strong: ranked scorecards with score, confidence, strengths, risks and rationale (Best of N); aggregate ranking, Contested marks, a disagreement figure and full per-judge ballots (Panel vote); agreements and divergence questions (Consensus); each with a guarded decision form. What is missing is the material to check the judges against in one place: diffs are one-at-a-time in Artifacts, claims are in Members, scores are in Result - three sections correlated by hand. <span class="pill wait">good bones, scattered</span></p>
+
+<h3>1.5 After</h3>
+<p>Finalization verifies the winner ref, restores or materializes the winner, reaps loser worktrees (never refs), runs the handoff, completes. Artifacts stay inspectable (Show diff) and restorable (Reset checkout). A decision is one-shot by design; Delete is typed-id-confirmed and irreversible. <span class="pill work">solid</span></p>
+
+<!-- ================================================================ -->
+<h2>2. Gap catalog</h2>
+
+<h4>Group 1 - "Where is my ensemble?" (fleet visibility and orientation)</h4>
+<div class="gap"><b class="gid">G1</b><b>Member sessions are never grouped.</b> Five siblings scatter through the grid, rail and Board tone columns like unrelated work; the only tie is a small chip, and on the Board they can land in three different columns. There is no way to see "the ensemble" as a unit in the fleet.
+<span class="where">GridView / BoardView / ConsoleView have no ensemble input; <code>groupByTone</code> knows nothing of runs.</span></div>
+<div class="gap"><b class="gid">G2</b><b>The live summary is broadcast but unused.</b> <code>EnsembleSummary</code> carries <code>readyArtifacts</code>, <code>launchedMembers</code>, <code>memberCount</code>, <code>outcomeKind</code> on every upsert and no web surface renders any of them. "3/5 submitted" exists on the wire and nowhere on screen (except one tooltip).
+<span class="where"><code>useEventStream.ts</code>, <code>EnsembleRuns.tsx</code> list rows.</span></div>
+<div class="gap"><b class="gid">G3</b><b>The marks are state-poor.</b> Rail: a bare <code>E</code>. Tile: <code>E 2 · working</code>. Chip: "⧉ Best of N · working" - even while that member's card is red with a waiting question. No run status, no progress, no blocked signal.
+<span class="where"><code>session-bits.tsx:238-380</code>, <code>ensembleMemberStateLabel</code>.</span></div>
+<div class="gap"><b class="gid">G4</b><b>No persistent "a run needs you" indicator.</b> <code>awaiting_decision</code> fires one toast; the Ensembles tab has no badge; the topbar has no ensemble chip. Miss the toast and the decision sits silently. A <code>failed</code> run is info-severity (deliberate) which compounds into "failed overnight, discovered by accident".
+<span class="where"><code>useNotifier.ts</code>, <code>shared/alerts.ts:428-495</code>, WorkflowPage tab.</span></div>
+<div class="gap"><b class="gid">G5</b><b>The feature's home is another feature's page.</b> Ensembles are a tab on the Workflows page; launch is discoverable only via the Dispatch mode switch (the list's empty-state sentence is the sole cross-reference). "Workflows → Ensembles" invites conflating two engines the architecture keeps deliberately separate.
+<span class="where"><code>WorkflowPage.tsx</code>, <code>useWorkflowRoute.ts</code>.</span></div>
+
+<h4>Group 2 - "What is it doing right now?" (progress comprehension)</h4>
+<div class="gap"><b class="gid">G6</b><b>Stage progress is spelled in internals.</b> The header prints <code>stage-2-review</code> in a <code>&lt;code&gt;</code>; the timeline names driverKeys (<code>comparative_review@1</code>) and commandKeys. No humanized pipeline, though the compiled plan's <code>driverKind</code> sequence expresses launch → work → review → decide → promote strategy-agnostically.
+<span class="where"><code>EnsembleDetail.tsx</code> facts, <code>EnsembleTimeline.tsx</code>.</span></div>
+<div class="gap"><b class="gid">G7</b><b><code>waiting</code> is never explained.</b> Barriers (<code>members_settled{minEligible:2}</code>, <code>stages_succeeded</code>, <code>human_decision</code>) are not translated into "waiting for 2 more submissions" or "waiting on you".
+<span class="where"><code>engine.ts</code> barrier evaluation; nothing projects it.</span></div>
+<div class="gap"><b class="gid">G8</b><b>Member cards are records, not live views.</b> No current-activity line, no goal line, no per-member elapsed, no live cost. Seeing what a member is doing means Open session and losing the run context.
+<span class="where"><code>EnsembleMembers.tsx</code>; <code>report_status</code> reaches only the session card.</span></div>
+<div class="gap"><b class="gid">G9</b><b>A stalled-but-live member is invisible.</b> <code>deadlineMs</code> is null in every shipped strategy; there is no member-level idle/stall signal. A wedged agent shows "Active" forever; the levers are withdraw or wait.
+<span class="where"><code>engine.ts</code> <code>enforceDeadline</code> is the sole timer.</span></div>
+<div class="gap"><b class="gid">G10</b><b>Observed model never lands.</b> <code>observedModel()</code> returns null unconditionally ("a later phase"), so member cards show only the configured model.
+<span class="where"><code>member-launch.ts:75</code>.</span></div>
+
+<h4>Group 3 - "Someone needs me" (blocking questions)</h4>
+<div class="gap"><b class="gid">G11</b><b>A blocked member does not exist in the ensemble vocabulary.</b> No member status, no summary field, no run attention, no event. <code>ensembleNeedsAttention</code> reads only <code>{status, unreadable}</code>. A member's pending review does not revise the run row, so the detail does not even refetch - an operator watching the run will never learn a question exists.
+<span class="where"><code>shared/ensemble.ts:1260</code>; member statuses tuple.</span></div>
+<div class="gap"><b class="gid">G12</b><b>Answering requires leaving.</b> The question is answerable only on the member's session surface, found via the needs-you column or the topbar reviews chip. The run detail offers no path to it and no inline answer surface.
+<span class="where"><code>ReviewModal.tsx</code>, <code>PaneDialogPrompt</code>; zero ensemble references in either.</span></div>
+<div class="gap"><b class="gid">G13</b><b>The answer surface hides the ensemble context.</b> The reviews chip and modal never say "this session is candidate 3 of 5 in run X". The operator cannot tell they are steering one competitor of a comparison - relevant for fairness and for deciding whether to answer or withdraw.
+<span class="where"><code>App.tsx</code> topbar chip, <code>ReviewModal.tsx</code>.</span></div>
+
+<h4>Group 4 - "Which one is better, and why?" (comparison and judge reasoning)</h4>
+<div class="gap"><b class="gid">G14</b><b>No side-by-side anything.</b> Diffs are one-at-a-time expandable rows stacked vertically; no two-pane diff, no file-touch matrix, no diff-of-diffs.
+<span class="where"><code>EnsembleArtifacts.tsx</code>.</span></div>
+<div class="gap"><b class="gid">G15</b><b>Evidence is anchored to whole artifacts.</b> A scorecard's Evidence button scrolls to the artifact row; "B missed the migration" cannot be checked against the file it names without hand-searching the patch.
+<span class="where"><code>BestOfN.tsx</code> / <code>PanelVote.tsx</code> Evidence → <code>openArtifactId</code>.</span></div>
+<div class="gap"><b class="gid">G16</b><b>The comparative material is scattered across three sections.</b> Claims + observed stats (Members), scores + rationale (Result), diffs (Artifacts) - nothing composes one row per candidate: summary, diffstat, checks, cost, score, rank, confidence.
+<span class="where"><code>EnsembleDetail.tsx</code> section stack.</span></div>
+<div class="gap"><b class="gid">G17</b><b>The decision is one-shot and the record is passive.</b> Scorecards and ballots persist, but there is no post-hoc comparison workspace, and the fact that loser <i>refs</i> survive (restorable work) is discoverable only by knowing what Reset checkout does.
+<span class="where"><code>decide()</code> <code>expectedStatus</code>; <code>EnsembleOutcome</code>.</span></div>
+<div class="gap"><b class="gid">G18</b><b>Judge disagreement is listed, not shown.</b> Panel vote has the pieces (disagreement figure, Contested tags, rank strips, full ballots) but no at-a-glance judges × candidates matrix and no surfaced dissent. Understanding why the panel split means opening every ballot.
+<span class="where"><code>PanelVote.tsx</code> ballots section.</span></div>
+
+<h4>Group 5 - lifecycle edges that surface as UX confusion</h4>
+<div class="gap"><b class="gid">G19</b><b>No path from an existing Task to an ensemble.</b> The mode switch renders only for new dispatches; a backlog task must be retyped to fan out.
+<span class="where"><code>DispatchModal.tsx</code> (<code>!editing</code> guard).</span></div>
+<div class="gap"><b class="gid">G20</b><b><code>manual</code> is the only source kind.</b> No agent-initiated or scheduled ensembles; bounds the stories the UI can serve.
+<span class="where"><code>ENSEMBLE_SOURCE_KINDS</code>.</span></div>
+
+<!-- ================================================================ -->
+<h2>3. One prerequisite shared by every direction</h2>
+<p>Whichever direction is chosen, the blocked-member signal must reach the wire. The fix is a <b>derivation, not a new persisted status</b> (the member status tuple stays append-only): where session state and the task link meet - the <code>EnsembleManager</code>, which holds both the store and the registry (verification showed the store is DB-only and the registry deliberately store-independent, so neither can host the join; see <code>phase-1-blocked-member-wire.md</code>) - fold "this member's session needs input" into the published projections:</p>
+<ul>
+  <li><code>EnsembleSummary</code> gains <code>membersNeedingInput: number</code> (and <code>attention</code> ORs it in),</li>
+  <li><code>TaskEnsembleLink</code> gains <code>needsInput: boolean</code> so every chip/flag/mark can say it,</li>
+  <li>the detail already refetches on summary revisions, so publishing on the review/dialog edge updates it for free.</li>
+</ul>
+
+<div class="svgwrap">
+<svg viewBox="0 0 900 330" width="900" height="330" role="img" aria-label="Before and after: how a blocked member's question reaches the ensemble surfaces">
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: none; stroke: currentColor; stroke-width: 1.2; rx: 6; }
+    .lbl { font: 12px -apple-system, "Segoe UI", sans-serif; fill: currentColor; }
+    .ttl { font: 600 13px -apple-system, "Segoe UI", sans-serif; fill: currentColor; }
+    .edge { stroke: currentColor; stroke-width: 1.2; fill: none; marker-end: url(#arr); }
+    .bad { color: #c93c37; } .new { color: #2da44e; }
+  </style>
+  <g color="currentColor">
+    <text class="ttl" x="10" y="22">Before</text>
+    <rect class="box" x="10" y="40" width="200" height="44" rx="6"/>
+    <text class="lbl" x="20" y="58">Member session:</text><text class="lbl" x="20" y="74">pending review / dialog</text>
+    <rect class="box" x="270" y="40" width="180" height="44" rx="6"/>
+    <text class="lbl" x="280" y="58">Session tone: attention</text><text class="lbl" x="280" y="74">(needs-you column, chip)</text>
+    <path class="edge" d="M210 62 H268"/>
+    <rect class="box" x="10" y="110" width="200" height="44" rx="6"/>
+    <text class="lbl" x="20" y="128">Ensemble store:</text><text class="lbl" x="20" y="144">run + member rows only</text>
+    <rect class="box" x="270" y="110" width="180" height="44" rx="6"/>
+    <text class="lbl" x="280" y="128">EnsembleSummary SSE</text><text class="lbl" x="280" y="144">attention = status only</text>
+    <path class="edge" d="M210 132 H268"/>
+    <g class="bad" color="#c93c37">
+      <rect class="box" x="510" y="110" width="230" height="44" rx="6"/>
+      <text class="lbl" x="520" y="128">Run detail / list / chips:</text>
+      <text class="lbl" x="520" y="144">member still reads "Active"</text>
+      <path class="edge" d="M450 132 H508"/>
+    </g>
+    <text class="ttl" x="10" y="205">After</text>
+    <rect class="box" x="10" y="220" width="200" height="44" rx="6"/>
+    <text class="lbl" x="20" y="238">Member session:</text><text class="lbl" x="20" y="254">pending review / dialog</text>
+    <rect class="box" x="10" y="280" width="200" height="36" rx="6"/>
+    <text class="lbl" x="20" y="302">Ensemble store: run rows</text>
+    <g class="new" color="#2da44e">
+      <rect class="box" x="290" y="248" width="200" height="46" rx="6"/>
+      <text class="lbl" x="300" y="266">Manager join:</text>
+      <text class="lbl" x="300" y="282">session × taskLink</text>
+      <path class="edge" d="M210 240 C 250 240, 260 260, 288 264"/>
+      <path class="edge" d="M210 298 C 250 298, 260 284, 288 280"/>
+      <rect class="box" x="540" y="248" width="180" height="46" rx="6"/>
+      <text class="lbl" x="550" y="266">EnsembleSummary SSE</text>
+      <text class="lbl" x="550" y="282">+ membersNeedingInput</text>
+      <path class="edge" d="M490 271 H538"/>
+      <rect class="box" x="760" y="240" width="130" height="62" rx="6"/>
+      <text class="lbl" x="768" y="258">Run detail, list,</text>
+      <text class="lbl" x="768" y="274">chips: "candidate 3</text>
+      <text class="lbl" x="768" y="290">needs an answer"</text>
+      <path class="edge" d="M720 271 H758"/>
+    </g>
+  </g>
+</svg>
+</div>
+<p class="verdict">One derived field in two shared shapes plus a publish edge. No new event type, table, or Session field; the extension contract (no strategy branch, no new route family) is untouched.</p>
+
+<!-- ================================================================ -->
+<h2>4. Solution A - "Fleet Lens"</h2>
+<p><b>Thesis:</b> the operator already lives in the fleet. Make the ensemble legible where they already look, and keep the run detail as the deep-dive it is.</p>
+<ol>
+  <li><b>Ensemble clusters</b>: member cards render as a visible group with a slim header (title, strategy, humanized stage word, progress dots, cost, attention rollup) that deep-links to the run. <i>(Superseded detail - <code>phase-3-fleet-lens.md</code> is authoritative: grid arrow-nav is geometric, so the grid gets adjacency sorting only and no frame; Board clusters never cross tone boundaries - a blocked member sits in the attention column with the header repeated.)</i> The console rail gets a section header per run.</li>
+  <li><b>State-rich marks</b>: the chip becomes stage- and state-aware ("⧉ Best of N · reviewing · 3/5 in", or an attention-toned "⧉ needs an answer"); the rail's bare <code>E</code> gains tone; tiles carry <code>E 3/5</code>.</li>
+  <li><b>Progress where the summary already is</b>: an attention badge on the Ensembles tab, progress dots + counts on run list rows, a topbar ensembles chip when any run needs attention.</li>
+  <li><b>Humanized stage vocabulary</b>: one shared function maps <code>driverKind</code> to operator words (launching, working, reviewing, waiting on you, promoting, done), used by clusters, chips, rows, and the detail header.</li>
+</ol>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dot3"><i></i><i></i><i></i></span> Board · needs you / working columns
+    <span style="margin-left:auto" class="m-chip attn">⧉ 1 ensemble needs you</span>
+    <span class="m-chip">2 reviews</span></div>
+  <div class="mock-body">
+    <div style="border:1px solid var(--mock-line); border-radius:10px; overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; background:var(--mock-panel2); border-bottom:1px solid var(--mock-line);">
+        <span style="font-weight:600;">⧉ Fix flaky scheduler tests</span>
+        <span class="m-chip acc">Best of N</span>
+        <span class="m-sm t-work">working</span>
+        <span class="m-dots"><i class="done"></i><i class="done"></i><i class="run"></i><i class="blk"></i><i class="run"></i></span>
+        <span class="m-sm m-muted">3/5 submitted · 1 needs you · ≈$4.10</span>
+        <span class="m-btn" style="margin-left:auto;">Open run →</span>
+      </div>
+      <div class="m-grid" style="grid-template-columns:repeat(3,1fr); padding:10px; background:var(--mock-bg);">
+        <div class="m-card"><div class="ttl"><span class="m-agent a-claude"></span>candidate 1 <span class="m-sm t-work">· submitted</span></div>
+          <div class="m-sm m-muted">opus · high · ≈$1.20</div>
+          <div style="margin-top:6px;"><span class="m-chip work">⧉ submitted · 3/5 in</span></div></div>
+        <div class="m-card" style="border-color:#6b312e;"><div class="ttl"><span class="m-agent a-codex"></span>candidate 4 <span class="m-sm t-attn">· needs an answer</span></div>
+          <div class="m-sm m-muted">gpt-5.2-codex · medium</div>
+          <div style="margin-top:6px;"><span class="m-chip attn">⧉ needs an answer</span></div></div>
+        <div class="m-card"><div class="ttl"><span class="m-agent a-claude"></span>candidate 5 <span class="m-sm t-work">· working</span></div>
+          <div class="m-sm m-muted">sonnet · high · 12m</div>
+          <div style="margin-top:6px;"><span class="m-chip acc">⧉ working · 3/5 in</span></div></div>
+      </div>
+    </div>
+    <div class="m-sm m-muted" style="margin-top:10px;">Run list row (Ensembles tab, badge on the tab itself):</div>
+    <div style="display:flex; align-items:center; gap:10px; border:1px solid var(--mock-line); border-radius:8px; padding:7px 12px; margin-top:6px; background:var(--mock-panel);">
+      <span class="t-attn">●</span><span style="font-weight:600;">Fix flaky scheduler tests</span>
+      <span class="m-sm m-muted">Best of N ·</span><span class="m-sm t-wait">reviewing</span>
+      <span class="m-dots"><i class="done"></i><i class="done"></i><i class="done"></i><i class="blk"></i><i class="fail"></i></span>
+      <span class="m-sm m-muted">3 ready · 4/5 launched · 2m ago</span>
+    </div>
+  </div>
+</div>
+<p class="mock-cap">Mockup A: an ensemble cluster on the Board with a live header row, state-rich chips on member cards, and a run list row that finally renders the counts the SSE summary already carries.</p>
+
+<p class="verdict"><b>Addresses:</b> G1-G7 fully, G11 (visibility), G13 (context). <b>Leaves open:</b> inline answering (G12), the comparison workspace (G14-G18), live member lanes (G8-G10). <b>Effort:</b> low-medium. <b>Risk:</b> Board clustering must be a rendering group, not a new tone, or arrow-nav order breaks.</p>
+
+<!-- ================================================================ -->
+<h2>5. Solution B - "Run Console"</h2>
+<p><b>Thesis:</b> the run detail becomes a command center the operator can stay in: humanized pipeline, live member lanes, questions answered inline, and a real comparison workspace. The fleet changes minimally.</p>
+<ol>
+  <li><b>Stage pipeline header</b> derived from the compiled plan, each step with state and counts; <code>waiting</code> names its barrier.</li>
+  <li><b>Live member lanes</b>: session tone, the <code>report_status</code> activity line, goal, elapsed, live cost - and a blocked member's question rendered inline in its lane (reusing ReviewCard / DecisionForm / PaneDialogPrompt and the existing resolve routes), labelled "candidate 3 asks:".</li>
+  <li><b>Compare workspace</b>: pick 2-3 ready artifacts → side-by-side columns over a shared file-touch matrix, synchronized per-file diff panes, and a claims strip per column (summary, checks, cost, then score/rank/confidence once the review lands). Rationale text that names a path links into the matrix row.</li>
+  <li><b>Judge reasoning panel</b>: a judges × candidates rank matrix with contested cells and surfaced dissent above the full ballots.</li>
+</ol>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dot3"><i></i><i></i><i></i></span> Ensemble run · Fix flaky scheduler tests</div>
+  <div class="mock-body">
+    <div style="display:flex; gap:6px; align-items:stretch; margin-bottom:12px;">
+      <div class="m-card" style="flex:1; border-color:#2b5a3a;"><div class="ttl t-work">1 · Launch</div><div class="m-sm m-muted">5/5 dispatched · base 57ea5bc</div></div>
+      <div class="m-card" style="flex:1; border-color:#2c4a75;"><div class="ttl" style="color:#a5cdfa;">2 · Work</div><div class="m-sm m-muted">3/5 submitted · <span class="t-attn">1 blocked</span> · 1 working</div></div>
+      <div class="m-card" style="flex:1;"><div class="ttl m-muted">3 · Review</div><div class="m-sm m-muted">waiting for 2 more submissions</div></div>
+      <div class="m-card" style="flex:1;"><div class="ttl m-muted">4 · Decide</div><div class="m-sm m-muted">your call, after review</div></div>
+      <div class="m-card" style="flex:1;"><div class="ttl m-muted">5 · Promote</div><div class="m-sm m-muted">reaps losers · keeps refs</div></div>
+    </div>
+    <div class="m-card" style="border-color:#6b312e; margin-bottom:10px;">
+      <div class="ttl"><span class="m-agent a-codex"></span>candidate 4 · gpt-5.2-codex · 22m · ≈$0.90 <span class="m-chip attn" style="margin-left:8px;">asks</span></div>
+      <div class="m-sm" style="margin:6px 0;">"The flake reproduces only under 2-core CI. Should I pin the scheduler tick in the test harness, or rewrite the test to await the settle event?"</div>
+      <div style="display:flex; gap:6px;">
+        <span class="m-btn primary">Pin the tick</span><span class="m-btn">Await the settle event</span>
+        <span class="m-btn">Write my own answer…</span><span class="m-btn danger" style="margin-left:auto;">Withdraw member</span>
+      </div>
+    </div>
+    <div class="m-sm m-muted" style="margin:12px 0 6px;">Compare · candidate 1 vs candidate 3 <span class="m-chip acc" style="margin-left:6px;">file matrix</span></div>
+    <div class="scroll"><table class="m-tbl">
+      <tr><th>file</th><th>#1 <span class="m-muted">(claude · opus)</span></th><th>#3 <span class="m-muted">(claude · sonnet)</span></th></tr>
+      <tr><td><code>src/server/schedules/manager.ts</code></td><td><span class="t-work">+41</span> <span class="t-attn">−12</span></td><td><span class="t-work">+9</span> <span class="t-attn">−3</span></td></tr>
+      <tr><td><code>test/schedule-manager.test.ts</code></td><td><span class="t-work">+66</span> <span class="t-attn">−8</span></td><td><span class="t-work">+21</span> <span class="t-attn">−21</span></td></tr>
+      <tr><td><code>src/server/schedules/recurrence.ts</code></td><td class="m-muted">-</td><td><span class="t-work">+14</span> <span class="t-attn">−2</span> <span class="m-chip wait m-sm">only #3</span></td></tr>
+    </table></div>
+    <div class="m-grid" style="grid-template-columns:1fr 1fr; margin-top:8px;">
+      <div><div class="m-sm"><b>#1</b> · score 86 · rank 1 · conf 0.8 <span class="m-chip work m-sm">Recommended</span></div>
+<pre class="m-diff"><span class="hunk">@@ manager.ts</span>
+<span class="del">- setTimeout(poll, tickMs)</span>
+<span class="add">+ clock.after(tickMs, poll)</span>
+<span class="add">+ // injectable clock: test drives it</span></pre></div>
+      <div><div class="m-sm"><b>#3</b> · score 71 · rank 2 · conf 0.7</div>
+<pre class="m-diff"><span class="hunk">@@ manager.ts</span>
+<span class="del">- setTimeout(poll, tickMs)</span>
+<span class="add">+ setTimeout(poll, tickMs * 4)</span>
+<span class="add">+ // slower tick avoids the race</span></pre></div>
+    </div>
+  </div>
+</div>
+<p class="mock-cap">Mockup B: the pipeline header names each stage in operator words with live counts; a blocked member's question is answerable inline in its lane; the compare workspace pairs a file-touch matrix with synchronized diff panes and the judge's claims.</p>
+
+<p class="verdict"><b>Addresses:</b> G6-G18 head-on; G11-G13 fully (with the Section 3 prerequisite). <b>Leaves open:</b> fleet orientation (G1-G5) beyond an enriched chip and tab badge. <b>Effort:</b> high. <b>Risk:</b> the page must read the sessions/reviews maps from existing SSE state (no new wire), and the compare view needs a per-file cut of the patch route (still byte-bounded).</p>
+
+<!-- ================================================================ -->
+<h2>6. Solution C - "Attention Inbox + Decision Dossier"</h2>
+<p><b>Thesis:</b> the operator's obligations are exactly two - answer a member's question, and make the final call. Build the best surface for each; keep ambient monitoring light.</p>
+<ol>
+  <li><b>Attention inbox</b>: the topbar reviews chip generalizes into one queue - member questions labelled with run context, decision requests, parked finalizations, gate decisions - answerable inline or by deep link. Nothing depends on catching a toast.</li>
+  <li><b>Decision dossier</b>: at <code>awaiting_decision</code> the run leads with an "At stake" header (intent, base, elapsed, spend), one column per candidate (summary, diffstat, checks, cost, score, rank, strengths/risks, expandable diff), a judge-reasoning band (rank matrix, consensus statement, dissent quotes), and the decision form last. After the decision it persists read-only as the "why we picked B" record, with Restore beside each losing column.</li>
+  <li><b>Run strip on member cards</b>: one line under the title - "⧉ Best of N · candidate 3/5 · run: reviewing · 1 sibling blocked" - orientation without touching Board layout.</li>
+</ol>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dot3"><i></i><i></i><i></i></span> Attention inbox
+    <span style="margin-left:auto" class="m-chip attn">3 need you</span></div>
+  <div class="mock-body">
+    <div class="m-card" style="border-color:#6b312e; margin-bottom:8px;">
+      <div class="m-sm m-muted">⧉ Best of N · Fix flaky scheduler tests · candidate 4 asks</div>
+      <div class="m-sm" style="margin:4px 0;">"Pin the scheduler tick, or rewrite the test to await the settle event?"</div>
+      <div style="display:flex; gap:6px;"><span class="m-btn primary">Answer…</span><span class="m-btn">Open session</span><span class="m-btn">Open run</span></div>
+    </div>
+    <div class="m-card" style="border-color:#5f4c17; margin-bottom:8px;">
+      <div class="m-sm m-muted">⧉ Panel vote · Redesign settings search</div>
+      <div class="m-sm" style="margin:4px 0;"><b>Needs your decision</b> - 4 candidates ranked, 1 contested, disagreement 0.31</div>
+      <div style="display:flex; gap:6px;"><span class="m-btn primary">Open dossier</span></div>
+    </div>
+    <div class="m-card">
+      <div class="m-sm m-muted">Session · mancej/fix-hooks</div>
+      <div class="m-sm" style="margin:4px 0;">no-mistakes gate parked - needs decision</div>
+      <div style="display:flex; gap:6px;"><span class="m-btn">Open</span></div>
+    </div>
+  </div>
+</div>
+<p class="mock-cap">Mockup C1: one queue for everything that needs the operator, each ensemble item carrying its run context.</p>
+
+<div class="mock">
+  <div class="mock-bar"><span class="dot3"><i></i><i></i><i></i></span> Decision dossier · Redesign settings search <span style="margin-left:auto" class="m-chip wait">awaiting your decision</span></div>
+  <div class="mock-body">
+    <div class="m-sm m-muted" style="margin-bottom:8px;"><b style="color:var(--mock-ink);">At stake:</b> "Make settings search find every control by synonym" · base 57ea5bc · 1h 42m · spend ≈$6.30 (1 unreported)</div>
+    <div class="m-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="m-card" style="border-color:#2b5a3a;">
+        <div class="ttl">#2 · claude · opus <span class="m-chip work m-sm">Recommended</span></div>
+        <div class="m-sm m-muted">score 88 · rank 1 · conf 0.85</div>
+        <div class="m-sm" style="margin:4px 0;">Synonym map in the registry; 14 files · <span class="t-work">+310</span> <span class="t-attn">−54</span> · checks 4/4 · ≈$2.10</div>
+        <div class="m-sm t-work">+ anchors stay one source of truth</div>
+        <div class="m-sm t-attn">− largest diff of the three</div>
+        <div style="margin-top:6px;"><span class="m-btn">View diff</span></div>
+      </div>
+      <div class="m-card">
+        <div class="ttl">#1 · codex · gpt-5.2</div>
+        <div class="m-sm m-muted">score 74 · rank 2 · conf 0.7</div>
+        <div class="m-sm" style="margin:4px 0;">Fuzzy match layer; 6 files · <span class="t-work">+120</span> <span class="t-attn">−9</span> · checks 3/4 · ≈$1.40</div>
+        <div class="m-sm t-work">+ smallest change</div>
+        <div class="m-sm t-attn">− misses the anchor-uniqueness test</div>
+        <div style="margin-top:6px;"><span class="m-btn">View diff</span> <span class="m-btn">Restore</span></div>
+      </div>
+      <div class="m-card">
+        <div class="ttl">#3 · claude · sonnet</div>
+        <div class="m-sm m-muted">score 61 · rank 3 · conf 0.75</div>
+        <div class="m-sm" style="margin:4px 0;">Search index rebuild; 9 files · <span class="t-work">+240</span> <span class="t-attn">−200</span> · checks 4/4 · cost unreported</div>
+        <div class="m-sm t-attn">− rewrites settings-search.ts wholesale</div>
+        <div style="margin-top:6px;"><span class="m-btn">View diff</span> <span class="m-btn">Restore</span></div>
+      </div>
+    </div>
+    <div class="m-sm m-muted" style="margin:12px 0 6px;">Judges · disagreement 0.31 · quorum 4/4</div>
+    <div class="scroll"><table class="m-tbl">
+      <tr><th>judge</th><th>#2</th><th>#1</th><th>#3</th></tr>
+      <tr><td>Correctness</td><td class="t-work">1</td><td>2</td><td>3</td></tr>
+      <tr><td>Maintainability</td><td class="t-work">1</td><td>3</td><td>2</td></tr>
+      <tr><td>Risk</td><td>3 <span class="m-chip attn m-sm">dissent</span></td><td class="t-work">1</td><td>2</td></tr>
+      <tr><td>Evidence</td><td class="t-work">1</td><td>2</td><td>3</td></tr>
+    </table></div>
+    <div class="m-sm" style="margin:6px 0 12px;"><span class="t-attn">Risk judge ranked #2 last:</span> "the synonym map touches every settings panel; a regression there hides controls fleet-wide."</div>
+    <div class="m-card" style="border-color:#2c4a75;">
+      <div class="m-sm" style="margin-bottom:6px;"><b>Your decision</b> · required rationale · losers' worktrees are reaped, refs kept</div>
+      <div style="display:flex; gap:6px;"><span class="m-btn primary">Confirm #2 (recommended)</span><span class="m-btn">Pick another…</span><span class="m-btn">No consensus</span></div>
+    </div>
+  </div>
+</div>
+<p class="mock-cap">Mockup C2: the dossier answers "what was at stake, what did each candidate do, why did the judges land where they did, and what did the dissenter see" on one screen, with the decision form last and the ref-retention fact stated where it matters.</p>
+
+<p class="verdict"><b>Addresses:</b> G4, G11-G18 strongly, G6 partially. <b>Leaves open:</b> true fleet grouping (G1), live lanes and stall visibility (G8, G9), mid-run waiting explanations (G7). <b>Effort:</b> medium-high. <b>Risk:</b> the inbox must stay a rendering of existing ReviewItems + summaries - never a second notifier.</p>
+
+<!-- ================================================================ -->
+<h2>7. Comparing the three</h2>
+<div class="scroll">
+<table class="doc">
+  <tr><th></th><th>A: Fleet Lens</th><th>B: Run Console</th><th>C: Inbox + Dossier</th></tr>
+  <tr><td>Core bet</td><td>You watch the fleet</td><td>You watch the run</td><td>You answer prompts</td></tr>
+  <tr><td>Grouping (G1-G5)</td><td>Full</td><td>Chip + badge only</td><td>Run strip only</td></tr>
+  <tr><td>Progress (G6-G10)</td><td>Vocabulary + counts</td><td>Full (live lanes, barriers)</td><td>End-of-run only</td></tr>
+  <tr><td>Blocking questions (G11-G13)</td><td>Visible, answered on card</td><td>Visible + answered in run</td><td>Visible + answered in inbox</td></tr>
+  <tr><td>Comparison (G14-G18)</td><td>Unchanged</td><td>Full workspace</td><td>Dossier (decision-time)</td></tr>
+  <tr><td>Effort</td><td>Low-medium</td><td>High</td><td>Medium-high</td></tr>
+  <tr><td>Main risk</td><td>Board nav complexity</td><td>Detail-page scope</td><td>Second-notifier temptation</td></tr>
+</table>
+</div>
+<p>They are separable but not exclusive: A's shared stage vocabulary and the Section 3 wire prerequisite are foundations B or C would also want. The phased composition below is the adopted road.</p>
+
+<!-- ================================================================ -->
+<h2>8. Adopted decisions (2026-07-26)</h2>
+<div class="note"><b>Where this section and a phase file disagree, the phase file wins.</b> The phase documents beside this plan (<code>phase-1-*.md</code> ... <code>phase-6-*.md</code>, indexed by <code>phased-plan.md</code>) were written after repository verification and record explicit reconciliations against this design record: the blocked-member join lives in <code>EnsembleManager</code> (not the registry or store), the grid gets adjacency sorting (never a frame), Board clusters never cross tone boundaries, and Phase 3 builds no topbar chip (the topbar surface belongs to Phase 4's inbox). Each reconciliation is logged in the owning phase's cross-phase audit record.</div>
+<ol>
+  <li><b>Direction: phased composition.</b> Build in this order, each phase shippable on its own:
+    <ul>
+      <li><b>Phase 0 - wire prerequisite</b> (Section 3): derive <code>membersNeedingInput</code> into <code>EnsembleSummary</code> and <code>needsInput</code> into <code>TaskEnsembleLink</code> at the registry join; run <code>attention</code> ORs it in.</li>
+      <li><b>Phase 1 - Fleet Lens</b> (Section 4): ensemble clusters, state-rich marks, tab badge + topbar chip, shared humanized stage vocabulary.</li>
+      <li><b>Phase 2 - Attention Inbox + Decision Dossier</b> (Section 6): the unified attention queue and the decision-time dossier with rank matrix and surfaced dissent.</li>
+      <li><b>Phase 3 - Run Console</b> (Section 5): live member lanes with inline question answering, the stage pipeline header with barrier explanations, and the compare workspace.</li>
+    </ul></li>
+  <li><b>The wire prerequisite ships first, regardless</b> - it is Phase 0, so chips and list rows can use it immediately.</li>
+  <li><b>Compare surface v1 is the full build</b>: file-touch matrix plus synchronized side-by-side diff panes, requiring a per-file cut (<code>?path=</code>) of the byte-bounded patch route.</li>
+  <li><b>Follow-up</b>: a phased implementation plan with merge-aware phase docs and dependency-linked tasks.</li>
+</ol>
+
+</div>
+</body>
+</html>

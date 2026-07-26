@@ -320,6 +320,22 @@ test("the aggregate the daemon labelled the stage with is the one the ballots pr
   assert.ok(label.includes(`Submission ${letter}`));
 });
 
+test("a tied panel receipt names no leader", async () => {
+  let call = 0;
+  const { store, gateway, engine } = harness((prompt) => {
+    call += 1;
+    return call === 1 ? ballot(prompt) : ballot(prompt, (labels) => [labels[1]!, labels[0]!]);
+  });
+  const run = makeRun(store, panelPlan(2, 2));
+  assert.equal(await runToPanel(engine, gateway, store, run.id), "awaiting_decision");
+
+  assert.equal(aggregatePanelVotes(verdictsOf(store, run.id)).tied, true);
+  const stage = store.listStageAttempts(run.id).find((attempt) => attempt.driverKind === "review")!;
+  const label = (stage.output as { resultLabel: string }).resultLabel;
+  assert.equal(label, "2 judges split; no clear leader");
+  assert.doesNotMatch(label, /Submission [A-Z]/);
+});
+
 // ---- one judge fails alone ----
 
 test("a malformed ballot fails that judge's row only; the panel still recommends on quorum", async () => {

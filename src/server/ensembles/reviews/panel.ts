@@ -75,11 +75,11 @@ function resolveGuidance(
 /** The panel's compact label, derived from the same aggregation the dashboard draws. */
 function labelFor(verdicts: readonly PanelVerdict[], subjectArtifactIds: readonly string[]): string {
   const aggregate = aggregatePanelVotes(verdicts);
+  const judges = `${aggregate.judgeCount} judge${aggregate.judgeCount === 1 ? "" : "s"}`;
+  if (aggregate.tied) return `${judges} split; no clear leader`;
   if (aggregate.recommendedArtifactId === null) return "no usable ballot";
   const index = subjectArtifactIds.indexOf(aggregate.recommendedArtifactId);
   const name = `Submission ${SUBJECT_LETTERS[index] ?? String(index + 1)}`;
-  const judges = `${aggregate.judgeCount} judge${aggregate.judgeCount === 1 ? "" : "s"}`;
-  if (aggregate.tied) return `${judges} split; ${name} leads on a tie`;
   if (aggregate.unanimous) return `${judges} agree on ${name}`;
   return `${judges} rank ${name} first`;
 }

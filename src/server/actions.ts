@@ -956,7 +956,7 @@ async function awaitPasteSubmitted(
  * capability rather than blaming the pane.
  */
 const NO_KEYSTROKE_DELIVERY =
-  "this agent does not take prompts by keystroke, and no other delivery is implemented yet";
+  "this session does not take prompts by keystroke; use its runtime delivery path";
 
 const PASTE_NOT_SUBMITTED =
   "the prompt was pasted but the agent never took the Enter - it is sitting in the composer unsubmitted";
@@ -1042,9 +1042,9 @@ async function injectPromptLocked(
   // How this agent takes a turn. Read once, up front, rather than branched on per step:
   // the delivery below is generic over harnesses and must never name one.
   const control = controlFor(session);
-  // The only delivery implemented today. A `stream-json` harness does not go through a
-  // pane at all, so it cannot fall through to the pane path below and quietly type at
-  // nothing - it is refused here, by declaration, until that path exists.
+  // `stream-json` delivery goes through the supervisor before this pane-only action is
+  // consulted. Keep the refusal as a backstop: an SDK session sent here by a future caller
+  // must not fall through and quietly type at nothing.
   if (control.kind !== "keystroke") {
     return undelivered({ ok: false, error: NO_KEYSTROKE_DELIVERY });
   }

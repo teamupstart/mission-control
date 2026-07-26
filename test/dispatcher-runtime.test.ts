@@ -23,6 +23,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-dispatch-runtime-"));
 process.env.HARNESS_HOME = home;
 // A binary that exists, so bin resolution can never be what fails here.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
+process.env.MISSION_CODEX_BIN = "/bin/echo";
 // No MCP bundle, which is what lets the terminal case below refuse a dispatch that
 // REQUIRES our tools - and refuse it while assembling the argv, before it would open a
 // terminal home. That matters more than it looks: a test that let the terminal path reach
@@ -36,6 +37,8 @@ const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { setHarnessesConfig, resolveDispatchRuntime } = await import("../src/server/harnesses.ts");
+const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
+const { AGENT_TYPES } = await import("../src/shared/types.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
@@ -43,6 +46,7 @@ type Session = import("../src/shared/types.ts").Session;
 after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
+  delete process.env.MISSION_CODEX_BIN;
   delete process.env.MISSION_MCP_SERVER;
 });
 
@@ -112,20 +116,32 @@ test("the resolver reads the stored choice, and falls back rather than guessing"
   assert.equal(resolveDispatchRuntime("pi"), "terminal");
 });
 
-test("with the toggle on, dispatch hands the task to the supervisor and spawns no home", async () => {
-  const repo = seedRepo("sdk-repo");
-  setHarnessesConfig({ sessionRuntime: { claude: "sdk" } });
+test("a fresh config pins every harness to terminal until the operator opts in", () => {
+  const config = HarnessesConfigSchema.parse({});
+  for (const agent of AGENT_TYPES) {
+    assert.equal(config.sessionRuntime[agent], "terminal", `${agent} default changed`);
+  }
+});
+
+test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", async () => {
+  const repos = {
+    claude: seedRepo("sdk-claude-repo"),
+    codex: seedRepo("sdk-codex-repo"),
+  };
+  setHarnessesConfig({ sessionRuntime: { claude: "sdk", codex: "sdk" } });
   const registry = new Registry();
-  registry.upsertTask(
-    mkTask({
-      id: "task-sdk",
-      status: "dispatching",
-      repoRoot: repo,
-      title: "Add a dark mode toggle",
-      intent: "add a dark mode toggle",
-      agent: "claude",
-    }),
-  );
+  for (const agent of ["claude", "codex"] as const) {
+    registry.upsertTask(
+      mkTask({
+        id: `task-sdk-${agent}`,
+        status: "dispatching",
+        repoRoot: repos[agent],
+        title: `Exercise ${agent} SDK dispatch`,
+        intent: `run ${agent} through the embedded runtime`,
+        agent,
+      }),
+    );
+  }
   const supervisor = fakeSupervisor(registry);
   const dispatcher = new Dispatcher(registry, async () => {}, {
     supervisor,
@@ -139,35 +155,42 @@ test("with the toggle on, dispatch hands the task to the supervisor and spawns n
     },
   });
 
-  await dispatcher.dispatch("task-sdk");
+  await dispatcher.dispatch("task-sdk-claude");
+  await dispatcher.dispatch("task-sdk-codex");
 
-  assert.equal(supervisor.starts.length, 1);
-  const start = supervisor.starts[0]!;
-  assert.equal(start.agent, "claude");
-  // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
-  // grammar, and there is no terminal here to satisfy.
-  assert.equal(start.name, "Add a dark mode toggle");
-  // The intent IS turn one. There is no separate delivery step to verify or retry.
-  assert.equal(start.prompt, "add a dark mode toggle");
-  assert.equal(start.taskId, "task-sdk");
-  assert.ok(start.cwd.length > 0);
+  assert.deepEqual(supervisor.starts.map((start) => start.agent), ["claude", "codex"]);
+  for (const agent of ["claude", "codex"] as const) {
+    const start = supervisor.starts.find((candidate) => candidate.agent === agent)!;
+    // The task's own title, unsanitized: `sessionLabel` cuts a name to a terminal backend's
+    // grammar, and there is no terminal here to satisfy.
+    assert.equal(start.name, `Exercise ${agent} SDK dispatch`);
+    // The intent IS turn one. There is no separate delivery step to verify or retry.
+    assert.equal(start.prompt, `run ${agent} through the embedded runtime`);
+    assert.equal(start.taskId, `task-sdk-${agent}`);
+    assert.ok(start.cwd.length > 0);
 
-  const task = registry.getTask("task-sdk")!;
-  assert.equal(task.status, "running");
-  assert.equal(task.sessionId, "sdk:1");
-  // No terminal home was spawned, so there is no name to record - and teardown must not
-  // later go looking for one.
-  assert.equal(task.homeName, null);
-  assert.equal(task.terminalResourceId, null);
-  assert.ok(task.worktreePath, "provisioning is identical on both paths");
+    const task = registry.getTask(`task-sdk-${agent}`)!;
+    assert.equal(task.status, "running");
+    assert.match(task.sessionId ?? "", /^sdk:/);
+    // No terminal home was spawned, so there is no name or pane resource to record.
+    assert.equal(task.homeName, null);
+    assert.equal(task.terminalResourceId, null);
+    assert.ok(task.worktreePath, "provisioning is identical on both paths");
+  }
 });
 
-test("with the toggle off, the supervisor is never asked", async () => {
-  const repo = seedRepo("terminal-repo");
+test("with both toggles off, Claude and Codex stay on the terminal branch", async () => {
   const registry = new Registry();
-  registry.upsertTask(
-    mkTask({ id: "task-term", status: "dispatching", repoRoot: repo, agent: "claude" }),
-  );
+  for (const agent of ["claude", "codex"] as const) {
+    registry.upsertTask(
+      mkTask({
+        id: `task-term-${agent}`,
+        status: "dispatching",
+        repoRoot: seedRepo(`terminal-${agent}-repo`),
+        agent,
+      }),
+    );
+  }
   const supervisor = fakeSupervisor(registry);
   const dispatcher = new Dispatcher(registry, async () => {}, { supervisor });
 
@@ -177,10 +200,16 @@ test("with the toggle off, the supervisor is never asked", async () => {
   // create a real tmux session on the developer's machine, and `heldHomeNames` would then
   // be answering about sibling worktrees' live agents. What this asserts is which path was
   // taken, not that it completed.
-  await dispatcher.dispatch("task-term", { missionMcp: { tools: ["report_status"] } });
+  await dispatcher.dispatch("task-term-claude", { missionMcp: { tools: ["report_status"] } });
+  await dispatcher.dispatch("task-term-codex", { missionMcp: { tools: ["report_status"] } });
   assert.equal(supervisor.starts.length, 0);
-  assert.equal(registry.getTask("task-term")?.status, "failed");
-  assert.match(registry.getTask("task-term")?.error ?? "", /required Mission MCP tools/);
+  for (const agent of ["claude", "codex"] as const) {
+    assert.equal(registry.getTask(`task-term-${agent}`)?.status, "failed");
+    assert.match(
+      registry.getTask(`task-term-${agent}`)?.error ?? "",
+      /required Mission MCP tools/,
+    );
+  }
 });
 
 test("an embedded launch is handed the same MCP descriptor the terminal argv renders", async () => {

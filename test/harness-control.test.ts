@@ -145,9 +145,18 @@ test("the interface admits a harness driven without a terminal", () => {
   assert.equal("settleMs" in headless, false);
 });
 
-test("controlFor answers for a session without naming a vendor", () => {
+test("controlFor keeps terminal sessions on their harness control without naming a vendor", () => {
   for (const id of AGENT_TYPES) {
-    assert.equal(controlFor(session({ agent: id })), HARNESSES[id].control);
+    assert.equal(controlFor(session({ agent: id, runtime: "terminal" })), HARNESSES[id].control);
+  }
+});
+
+test("controlFor reports the driver transport for SDK sessions", () => {
+  for (const id of AGENT_TYPES) {
+    const control = controlFor(
+      session({ agent: id, runtime: "sdk", terminals: [], nameSource: "sdk" }),
+    );
+    assert.deepEqual(control, { kind: "stream-json" });
   }
 });
 

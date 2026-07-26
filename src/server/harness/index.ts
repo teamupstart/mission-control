@@ -207,6 +207,8 @@ export function sdkFor(agent: AgentType): SdkSpec | null {
   return HARNESSES[agent].sdk;
 }
 
+const STREAM_JSON_CONTROL: ControlSpec = { kind: "stream-json" };
+
 /**
  * Whether Foreman may automate this session.
  *
@@ -241,14 +243,16 @@ export function foremanAutomationAuthorized(session: Session): boolean {
 }
 
 /**
- * How a turn reaches this session's agent. Never null - every harness declares a delivery.
+ * How a turn reaches this session's agent. Never null.
  *
- * A function rather than a field read at each call site so that the delivery path asks the
- * SESSION how to talk to it, not the other way around: `injectPrompt` is generic over
- * harnesses and must not grow a branch naming one.
+ * A function rather than a harness field read at each call site so the answer can include
+ * the SESSION's runtime. Pane-backed sessions use their harness's keystroke declaration;
+ * SDK sessions use the driver and therefore report `stream-json`. Normal SDK delivery
+ * reaches `SdkSupervisor` before pane actions ask this question, while the projection keeps
+ * those actions safe if a future caller sends an SDK session to them by mistake.
  */
 export function controlFor(session: Session): ControlSpec {
-  return HARNESSES[session.agent].control;
+  return session.runtime === "sdk" ? STREAM_JSON_CONTROL : HARNESSES[session.agent].control;
 }
 
 /**

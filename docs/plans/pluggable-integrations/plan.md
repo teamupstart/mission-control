@@ -1155,9 +1155,11 @@ as the one way the delivery path asks. Two deltas from the sketch:
   forgot it, and this is precisely the decision that was being defaulted - a verified Claude
   submit and an unverified Codex one used to be byte-identical at the call site.
 
-`stream-json` is declared and deliberately unimplemented: `injectPrompt` and
-`paneAcceptsPrompt` refuse a non-keystroke harness by name rather than falling through to
-the pane paths and typing at nothing.
+`stream-json` is the SDK-runtime projection: `controlFor(session)` returns it when
+`session.runtime === "sdk"`, while terminal sessions keep their harness's keystroke
+declaration. SDK delivery itself is owned by `Harness.sdk` and `SdkSupervisor`; the
+`injectPrompt` and `paneAcceptsPrompt` refusals remain pane-only backstops rather than
+falling through and typing at nothing.
 
 **The later this seam was held open for is `docs/plans/agent-sdk-sessions/plan.md`**, and it
 took a slightly different shape than this section guessed. Programmatic delivery turned out
@@ -1166,7 +1168,10 @@ keystrokes or by a driver is a fact about THAT SESSION (an operator's own `claud
 is pane-driven whatever the harness can do), so it lands as `Session.runtime` plus a separate
 `Harness.sdk` slot, and `controlFor(session)` taking a `Session` rather than an `AgentType` is
 what made that possible without touching a call site. `{ kind: "stream-json" }` therefore
-stays declared and unimplemented, and its two refusal sites stay exactly as they are. Tests: `harness-control.test.ts` (every harness
+now records that runtime truth without replacing `Harness.sdk`, and its two refusal sites
+stay as backstops. The final reconciliation and deprecation boundary are recorded in
+[`../agent-sdk-sessions/phase-5-keystroke-deprecation.md`](../agent-sdk-sessions/phase-5-keystroke-deprecation.md).
+Tests: `harness-control.test.ts` (every harness
 declares a delivery; a null placeholder is a capability absence and not "the composer is
 clear"; ok-without-evidence is reported as unverified), `inject-prompt-submit.test.ts`,
 which now takes Claude's placeholder from its harness rather than restating the regex.

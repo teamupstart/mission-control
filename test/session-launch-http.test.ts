@@ -5,7 +5,7 @@ import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
-import { mkSession, mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkSession, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
 // question is what a request is allowed to influence. The answer has to be "which of two
@@ -34,6 +34,11 @@ const EMBEDDED = mkSession({
 const NO_ID = mkSession({ id: "noid", runtime: "sdk", terminals: [], agentSessionId: null });
 const NO_CWD = mkSession({ id: "nocwd", runtime: "sdk", terminals: [], cwd: null });
 const EXITED = mkSession({ id: "exited", state: "exited" });
+const EXITED_UNCERTAIN = mkSession({
+  id: "exited-uncertain",
+  name: "Uncertain resume",
+  state: "exited",
+});
 
 const SESSIONS = new Map([
   [PANED.id, PANED],
@@ -41,18 +46,29 @@ const SESSIONS = new Map([
   [NO_ID.id, NO_ID],
   [NO_CWD.id, NO_CWD],
   [EXITED.id, EXITED],
+  [EXITED_UNCERTAIN.id, EXITED_UNCERTAIN],
 ]);
+const UNCERTAIN_TASK = mkTask({
+  id: "task-uncertain",
+  status: "running",
+  sessionId: EXITED_UNCERTAIN.id,
+});
+const TASKS = new Map([[UNCERTAIN_TASK.id, UNCERTAIN_TASK]]);
 
 const registry = {
   getSession: (id: string) => SESSIONS.get(id),
-  listTasks: () => [],
+  listTasks: () => [...TASKS.values()],
+  getTask: (id: string) => TASKS.get(id),
+  upsertTask: (task: typeof UNCERTAIN_TASK) => TASKS.set(task.id, task),
 } as unknown as Registry;
 
 const launched: Array<{ backend: string; argv: readonly string[] }> = [];
 const app = buildApp(
   registry,
   {} as unknown as ReviewManager,
-  {} as unknown as TaskManager,
+  {
+    settleAfterFailedHandoff: () => assert.fail("an uncertain launch may have succeeded"),
+  } as unknown as TaskManager,
   {} as unknown as QueueManager,
   undefined,
   undefined,
@@ -63,6 +79,15 @@ const app = buildApp(
   undefined,
   async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
+    if (spec.name === EXITED_UNCERTAIN.name) {
+      return {
+        ok: false,
+        label: backend,
+        homeName: "Uncertain resume-abc123",
+        error: `${backend} did not report back - the window may still be opening`,
+        status: 504,
+      };
+    }
     return { ok: true, label: backend, homeName: "resumed", status: 200 };
   },
 );
@@ -143,6 +168,14 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(repeated.status, 409);
   assert.match(((await repeated.json()) as { error: string }).error, /already being resumed/);
   assert.equal(launched.length, 1, "a lingering card must not reopen one conversation twice");
+});
+
+test("an uncertain exited-session resume keeps the terminal resource name", async () => {
+  const res = await launch("exited-uncertain", { backend: "tmux", payload: "agent" });
+
+  assert.equal(res.status, 504);
+  assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.sessionId, null);
+  assert.equal(TASKS.get(UNCERTAIN_TASK.id)?.homeName, "Uncertain resume-abc123");
 });
 
 // The shell arm's asymmetry - a shell is not the agent's conversation, so having a pane

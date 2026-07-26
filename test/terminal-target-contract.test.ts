@@ -335,6 +335,7 @@ test("an uncertain raise leaves the detached session alone", async () => {
 
   assert.equal(outcome.ok, false);
   assert.equal(outcome.status, 504);
+  assert.equal(outcome.homeName, "api-abc123");
   assert.equal(outcome.error, "tmux did not report back - the window may still be opening");
   assert.deepEqual(mux.killed, []);
 });

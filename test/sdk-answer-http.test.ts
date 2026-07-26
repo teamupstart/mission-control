@@ -415,6 +415,50 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
 });
 
+test("an uncertain embedded-agent launch keeps the terminal resource name", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:uncertain");
+  registry.upsertTask(
+    mkTask({
+      id: "task-uncertain",
+      status: "running",
+      sessionId: "sdk:uncertain",
+      repoRoot: "/repo",
+      title: "Add a toggle",
+    }),
+  );
+  const supervisor = fakeSupervisor();
+  const app = mkApp(
+    registry,
+    supervisor,
+    {
+      spawn: async () => assert.fail("the selected backend must own the launch"),
+      waitForSessionAtCwd: async () => null,
+      settleTask: () => assert.fail("an uncertain launch may have succeeded"),
+    },
+    async () => ({
+      ok: false,
+      label: "tmux",
+      homeName: "Add a toggle-abc123",
+      error: "tmux did not report back - the window may still be opening",
+      status: 504,
+    }),
+  );
+
+  const res = await app.request("/api/sessions/sdk:uncertain/launch", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ backend: "tmux", payload: "agent" }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(
+    ((await res.json()) as { homeName: string }).homeName,
+    "Add a toggle-abc123",
+  );
+  assert.equal(registry.getTask("task-uncertain")?.homeName, "Add a toggle-abc123");
+});
+
 test("a late terminal successor rebinds an unbound running task by its worktree", () => {
   const registry = new Registry();
   registry.upsertTask(

@@ -267,6 +267,7 @@ export async function launchTerminal(
           return {
             ok: false,
             label: view.label,
+            homeName: name,
             error: `${view.label} did not report back - the window may still be opening`,
             status: 504,
           };

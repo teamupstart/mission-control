@@ -43,6 +43,11 @@ interface Rule {
   body: string;
 }
 
+interface LogFlexProblems {
+  collapsed: string[];
+  openWithoutFloor: string[];
+}
+
 function subjectHasClass(selector: string, cls: string): boolean {
   const subject = selector.split(/\s*[>+~]\s*|\s+/).filter(Boolean).pop() ?? "";
   return subject.split(/(?=\.)|:/).some((token) => token === `.${cls}`);
@@ -77,11 +82,6 @@ function decl(body: string, prop: string): string | null {
   let m: RegExpExecArray | null;
   while ((m = re.exec(body))) value = (m[1] ?? "").trim();
   return value;
-}
-
-/** Rules whose SUBJECT - the compound after the last combinator - carries `cls`. */
-function subjectRules(cls: string): Rule[] {
-  return ALL.filter((rule) => rule.selectors.some((selector) => subjectHasClass(selector, cls)));
 }
 
 function numericValue(value: string): number | null {
@@ -142,14 +142,36 @@ function guaranteesPositiveLength(value: string): boolean {
   return args.length === 3 && guaranteesPositiveLength(args[0] ?? "");
 }
 
-function selectorMinHeight(selector: string): string | null {
+function selectorMinHeight(parsedRules: Rule[], selector: string): string | null {
   let value: string | null = null;
-  for (const rule of ALL) {
+  for (const rule of parsedRules) {
     if (!rule.selectors.includes(selector)) continue;
     const candidate = decl(rule.body, "min-height");
     if (candidate !== null) value = candidate;
   }
   return value;
+}
+
+function logFlexProblems(parsedRules: Rule[]): LogFlexProblems {
+  const shrinkable = parsedRules.flatMap((rule) => {
+    const shrink = effectiveShrink(rule.body);
+    if (shrink === undefined || shrink === 0) return [];
+    return rule.selectors.filter(
+      (selector) =>
+        subjectHasClass(selector, "nm-log") || subjectHasClass(selector, "nm-log-open"),
+    );
+  });
+
+  return {
+    collapsed: shrinkable.filter(
+      (selector) => !subjectHasClass(selector, "nm-log-open"),
+    ),
+    openWithoutFloor: shrinkable.filter(
+      (selector) =>
+        subjectHasClass(selector, "nm-log-open") &&
+        !guaranteesPositiveLength(selectorMinHeight(parsedRules, selector) ?? ""),
+    ),
+  };
 }
 
 test("a collapsed fix log cannot be crushed: if .nm-log clips, it also refuses to shrink", () => {
@@ -179,35 +201,49 @@ test("no rule hands a COLLAPSED fix log its flexibility back", () => {
   // floor to land on. A collapsed one has no floor, so any non-zero shrink is the
   // original overflow/min-height:auto defect, whether declared by shorthand or
   // longhand.
-  const shrinkable = subjectRules("nm-log").flatMap((rule) => {
-    const shrink = effectiveShrink(rule.body);
-    if (shrink === undefined || shrink === 0) return [];
-    return rule.selectors.filter((selector) => subjectHasClass(selector, "nm-log"));
-  });
-  const collapsed = shrinkable.filter((selector) => !subjectHasClass(selector, "nm-log-open"));
-  const openWithoutFloor = shrinkable.filter(
-    (selector) =>
-      subjectHasClass(selector, "nm-log-open") &&
-      !guaranteesPositiveLength(selectorMinHeight(selector) ?? ""),
-  );
+  const problems = logFlexProblems(ALL);
 
   assert.deepEqual(
-    collapsed,
+    problems.collapsed,
     [],
     "these selectors let a collapsed .nm-log shrink; overflow:hidden zeroes its " +
       "min-height:auto, so non-zero flex shrink crushes the only control that opens it",
   );
   assert.deepEqual(
-    openWithoutFloor,
+    problems.openWithoutFloor,
     [],
     "these open-log selectors can shrink without a positive min-height floor; " +
       "overflow:hidden removes the automatic floor, so their content can be clipped away",
   );
 });
 
-test("the guard reads flex shorthand and flex-shrink with CSS declaration order", () => {
+test("the flex guard proves it rejects every floorless shrink path", () => {
+  assert.deepEqual(logFlexProblems(rules(".nm-log { flex-shrink: 1; }")), {
+    collapsed: [".nm-log"],
+    openWithoutFloor: [],
+  });
+  assert.deepEqual(logFlexProblems(rules(".nm-log { flex: 1 1 auto; }")), {
+    collapsed: [".nm-log"],
+    openWithoutFloor: [],
+  });
+  assert.deepEqual(logFlexProblems(rules(".nm-log-open { flex: 0 1 auto; }")), {
+    collapsed: [],
+    openWithoutFloor: [".nm-log-open"],
+  });
+  assert.deepEqual(
+    logFlexProblems(
+      rules(`
+        .nm-log { flex: none; }
+        .detail-conv > .nm-log-open { flex: 0 1 auto; }
+        .detail-conv > .nm-log-open { min-height: min(260px, 34dvh); }
+      `),
+    ),
+    { collapsed: [], openWithoutFloor: [] },
+  );
+});
+
+test("the guard reads flex shorthand and longhand with CSS declaration order", () => {
   assert.equal(effectiveShrink("flex: none"), 0);
-  assert.equal(effectiveShrink("flex: 1 1 auto"), 1);
   assert.equal(effectiveShrink("flex: 1"), 1);
   assert.equal(effectiveShrink("flex: none; flex-shrink: 1"), 1);
   assert.equal(effectiveShrink("flex-shrink: 1; flex: none"), 0);

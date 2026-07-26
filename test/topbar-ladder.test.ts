@@ -212,9 +212,20 @@ test("filter compaction keeps the review control visible", () => {
   assert.equal(buttonSelectors.length, 2, "the review control must survive both filter states");
   for (const { body } of buttonSelectors) {
     assert.match(body, /padding:\s*0 9px/);
+    assert.match(body, /border-left:\s*none/);
     assert.match(body, /border-radius:\s*999px/);
     assert.doesNotMatch(body, /display:\s*none/);
   }
+
+  const emptyPulseSelectors = rules.filter(({ selector }) =>
+    /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector),
+  );
+  assert.equal(
+    emptyPulseSelectors.length,
+    2,
+    "an empty pulse wrapper must be removed for focus and a held term",
+  );
+  for (const { body } of emptyPulseSelectors) assert.match(body, /display:\s*none/);
 });
 
 test("Dispatch never degrades, and the labels that do are marked", () => {

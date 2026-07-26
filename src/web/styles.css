@@ -1410,7 +1410,11 @@ body {
      four count readouts step aside while the field has focus or holds a term, but the
      reviews control does not - an active filter must not make the bar's only route to
      reviews unreachable. The surviving control sheds its redundant tone dot and becomes a
-     complete pill, preserving the one-row budget without hiding an interactive element.
+     complete pill, including cancelling the divider it still inherits from preceding
+     siblings even when they are hidden. When no reviews control exists, the now-empty
+     wrapper is neutralized; the guard ensures a wrapper containing a control is never
+     hidden. Together these preserve the one-row budget without hiding an interactive
+     element.
 
      Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the
      search boxes on the settings and workflow pages. */
@@ -1425,7 +1429,12 @@ body {
   .topbar:has(.filter-box:focus-within) .pulse-btn,
   .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
     padding: 0 9px;
+    border-left: none;
     border-radius: 999px;
+  }
+  .topbar:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)),
+  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) {
+    display: none;
   }
 }
 @container topbar (max-width: 1115px) {

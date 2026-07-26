@@ -261,3 +261,19 @@ export function setSdkSessionEffort(
     .prepare(`UPDATE sdk_sessions SET effort = ?, updated_at = ? WHERE id = ?`)
     .run(effort, now, id);
 }
+
+/**
+ * The third of the three, and the one that was missing.
+ *
+ * `SdkSessionHandle.setModel` has existed since the driver interface did, and `resume`
+ * has always relaunched from `row.model` - but nothing wrote that column after the
+ * launch, so a model change would have been the one control of the three that did not
+ * survive a restart. It had no caller, which is why nothing had lost anything through it
+ * yet; an interface slot whose persistence is missing is a trap for whoever adds the
+ * first one, so the three are made consistent here rather than left to be remembered.
+ */
+export function setSdkSessionModel(id: string, model: string, now = Date.now()): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET model = ?, updated_at = ? WHERE id = ?`)
+    .run(model, now, id);
+}

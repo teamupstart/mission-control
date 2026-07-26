@@ -2,10 +2,11 @@
 
 An **ensemble** runs a group of ordinary dispatched tasks under one versioned *strategy* and owns
 the group-level facts a single task cannot: one pinned base commit, member roles, immutable
-submitted artifacts, evaluations, a human decision, and a terminal outcome. Two strategies are
-enabled: **Best of N**, which ranks and promotes one, and **Consensus**, which mines what the
-attempts disagreed about and promotes nothing. This document is the operator's reference for what
-an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
+submitted artifacts, evaluations, a human decision, and a terminal outcome. Three strategies are
+enabled: **Best of N**, which ranks and promotes one; **Consensus**, which mines what the attempts
+disagreed about and promotes nothing; and **Panel vote**, which ranks through independent
+single-lens ballots and surfaces their disagreement. This document is the operator's reference for
+what an ensemble does, how to recover one, what it keeps and what it costs, and the contract a future
 strategy extends.
 
 The product overview lives in the [README](../README.md#multi-agent-ensembles); the design
@@ -62,6 +63,48 @@ submitting the same immutable Git snapshots. The run diverges at step 6:
 Use it when the disagreement is the point. Its evaluation shares the same review-call ceiling and
 the same **Settings -> Models -> Ensemble evaluation** job as the Best-of-N comparison.
 
+## What Panel vote does
+
+Steps 1-5 are Best of N's, unchanged: the same 2-5 candidate roster, the same pinned base commit,
+the same isolated members and the same submission path. The difference is step 6.
+
+6. When every live member has submitted or terminated and **at least two** produced a snapshot, the
+   daemon convenes a **panel**: two to five judges, each scoring *every* submission from one lens
+   alone. A lens is a built-in rubric (Correctness, Maintainability, Risk, Evidence, Scope) or an
+   operator-authored Persona pinned to an exact revision at creation. All the judges are asked in
+   **parallel** against ONE shared anonymous evidence packet built once, so a judge that disagrees
+   is disagreeing about the submissions rather than about what it happened to be shown. Two judges
+   may not share a built-in lens - a panel that agrees by construction is not a panel. Repeating an
+   operator-authored Persona is allowed when the operator deliberately wants multiple samples of
+   the same guidance.
+7. Each judge that reaches a provider call gets its own `ensemble_evaluations` row: its lens
+   snapshot, the runner and model actually resolved, its bounded input fingerprint, and its typed
+   per-artifact scores. A malformed reply or provider failure fails **that row only**. A lens this
+   build cannot resolve fails its judge before a row or call is opened. Either way the panel
+   continues, and nothing malformed becomes a score.
+8. The stage succeeds when at least **two** judges returned a usable ballot (the *quorum*, compiled
+   into the plan). Below quorum it fails and is retried whole against the same immutable
+   submissions up to the attempt cap; a panel that never reaches quorum fails the run. One
+   surviving ballot is never the answer - its disagreement measure is vacuously zero, which reads
+   as unanimity.
+9. The ranking is a pure aggregation over the ballots - Borda points over each judge's RANKS, never
+   over the 0-100 scores, since a score is a private scale and a rank is a comparison between the
+   same subjects. It is computed, never stored, by one shared function the daemon and the dashboard
+   both call, so the stage label and the result view cannot disagree. A submission missing from a
+   judge's readable ballot contributes nothing from that judge; absence is not converted into a
+   worst-place score.
+10. The run detail shows the aggregate ranking, a **disagreement figure** (the share of submission
+    pairs two judges ordered differently, averaged over every pair of judges), a **Contested** mark
+    and per-judge ranks on any submission the judges placed differently, an explicit notice when
+    the top two could not be separated, and each judge's full ballot. A tie is declared, not
+    resolved.
+
+Step 7 of Best of N (the human-confirmed select-one finalization) is then identical. The panel
+**recommends and cannot promote**, exactly as the comparison cannot.
+
+Costs: one model call per judge rather than one per run, which the preview states before launch.
+Every other limit, ref, retention, alert and recovery behaviour in this document applies unchanged.
+
 ## States
 
 `planning -> running -> waiting -> evaluating -> awaiting_decision -> finalizing -> completed`, plus
@@ -101,9 +144,10 @@ refs after a crash.
   aggregate, attributed per member. A runner that reports no cost is shown as **unreported**, never
   `$0.00`; a run where some members reported and others did not shows the partial total and how many
   reported.
-- **Evaluator (comparison) cost** is a separate figure on its own ledger. Call count, provider,
-  model, duration and byte counts are always shown; the **monetary** cost appears only when the
-  runner reports it authoritatively, and stays *Not reported* otherwise.
+- **Evaluator cost** is a separate figure on its own ledger. Best of N records one comparison
+  evaluation; Panel vote records one evaluation per judge. Call count, provider, model, duration and
+  byte counts are always shown; the **monetary** cost appears only when the runner reports it
+  authoritatively, and stays *Not reported* otherwise.
 - **Linked workflow review cost** is owned by the workflow subsystem and shown separately, labelled
   *Workflow-owned*. It is never folded into the ensemble's evaluation cost.
 
@@ -126,8 +170,11 @@ Every effect is persist-before-act, so a daemon restart resumes rather than rest
 
 - A wave is durable before its first dispatch; recovery reconciles surviving agents without
   recreating their tasks and never launches a second fleet.
-- An interrupted comparison becomes `interrupted` (not `failed`) and retries against the **exact same
-  immutable subjects** and evaluator snapshot; a completed comparison is left untouched.
+- An interrupted review becomes `interrupted` (not `failed`) and retries against the **exact same
+  immutable subjects** and evaluator snapshot. Best of N leaves a completed comparison untouched.
+  Panel vote retries the whole panel when a crash leaves its rows unsettled, but if the rows were
+  settled and reached quorum before the stage receipt was written, recovery completes the stage
+  from those durable ballots instead of paying for the calls again.
 - A `finalizing` run resumes from its persisted per-step receipt - it does not re-verify a decision,
   re-materialize a winner, or send a continuation twice.
 - A pairwise or multi-wave run resumes only its missing work; completed evaluations and launched
@@ -159,19 +206,15 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
 ## Security and resource limits
 
 - Creating an ensemble authorises launching an exact count or bounded range of **local** agents; the
-  preview shows initial, maximum, concurrency, waves and comparison calls before you confirm.
+  preview shows initial, maximum, concurrency, waves and evaluation calls before you confirm.
 - Hard ceilings no strategy config or driver output may exceed: **16** members, **8** concurrent,
-  **8** waves, **5** stage attempts. Each strategy's own bounds sit below these. Best of N: **2-5**
-  candidates (default 3), **3** concurrent by default, and ~**400 KiB** of comparison material split
-  evenly across subjects with truncation disclosed. Consensus: **3-5** attempts (default 3, the same
-  concurrency and material budget), and its result is capped too - at most **12** agreements and
-  **8** questions, each with at most one option per attempt.
-- A model's ranking is advisory and tool-less: it cannot launch, promote, publish, cancel, reap or
-  delete. Every destructive finalization requires an explicit human confirmation. A Consensus run
-  performs no destructive finalization at all, and still requires the human answer before it can
-  terminate - its recorded answers ARE the outcome.
-- Refs and branches are generated from UUIDs; every Git/process call uses argument arrays, never a
-  shell.
+  **8** waves, **5** stage attempts. Strategy-specific candidate, judge, result, and material bounds
+  are listed below.
+- Every evaluator result is advisory and tool-less: it cannot launch, promote, publish, cancel, reap
+  or delete. Every destructive finalization requires an explicit human confirmation. A Consensus
+  run performs no destructive finalization at all, and still requires the human answer before it
+  can terminate - its recorded answers ARE the outcome.
+- Refs and branches are generated from UUIDs; every Git/process call uses argument arrays, never a shell.
 - **Evaluator anonymity is not configurable.** Every evaluator packet relabels its subjects
   `Submission A`, `Submission B`, … and strips the ref, snapshot/tree/head shas and worktree paths,
   on every strategy and every path. Compiled plans record `anonymizeSubjects: true` to state that;
@@ -181,11 +224,15 @@ post-selection review, and neither ensemble completion nor a rank-1 recommendati
 - Sibling isolation is **behavioural, not a sandbox**: the worktrees share one Git repository and a
   local agent can find its siblings if it goes looking. The UI never claims otherwise.
 
-## v1 limits, surfaced before launch
+## Current strategy limits, surfaced before launch
 
-Best of N is the only enabled production strategy. Preview shows exact member count, max concurrency,
-waves, artifact type, comparison stages, finalization and the hard budgets before you confirm; the
-information-sharing rule (isolated) and the no-push/no-PR publishing rule are shown alongside.
+Best of N and Panel vote accept 2-5 candidates (default 3), default to at most 3 candidates building
+concurrently, and use about 400 KiB of evaluation material. Panel vote additionally accepts 2-5
+judges (default 3). Consensus accepts 3-5 attempts (default 3, with the same concurrency and material
+budget), and caps its result at 12 agreements and 8 questions, each with at most one option per
+attempt. Preview shows exact member count, max concurrency, waves, artifact type, evaluation calls,
+finalization and the hard budgets before you confirm; the information-sharing rule (isolated) and
+the no-push/no-PR publishing rule are shown alongside.
 
 ---
 
@@ -201,7 +248,7 @@ event, Session field, layout, or engine branch. Compose along these independent 
 | Roster / launch count | fixed roster, matrix, waves, adaptive range | you need runtime spawn-more decisions (a bounded driver) |
 | Information flow | isolated; shared parent artifacts | you need directed critique/debate visibility |
 | Artifact adapter | `commit` (git snapshot) | members submit something other than a Git tree |
-| Evaluation schedule | one comparative call; several (pairwise / panel) | a genuinely new evaluator (tests gate, aggregation) needs a driver |
+| Evaluation schedule | one comparative call; one panel stage with parallel judge calls; several sequential stages | a genuinely new evaluator (tests gate, aggregation) needs a driver |
 | Advancement / barrier | members-settled, stages-succeeded, human-decision | a new dependency shape is required |
 | Decision authority | human select-one / no-consensus; answer-divergences | a new operator authority extends the action schema |
 | Finalization outcome | select one (`select_one_finalize@1`); retain all (`retain_all_finalize@1`) | top-K or a synthesized outcome needs a finalizer |

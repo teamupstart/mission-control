@@ -13,11 +13,9 @@ import {
   type EnsembleDecision,
   type EnsembleDecisionPolicy,
   type EnsembleEvaluatorGuidance,
-  type EnsembleEvaluatorKind,
   type EnsembleEvaluatorPolicy,
   type EnsembleFinalizationProgress,
   type EnsembleJson,
-  type EnsembleLlmPurpose,
   type EnsembleMember,
   type EnsembleMemberStatus,
   type EnsembleOutcome,
@@ -42,6 +40,7 @@ import {
   reviewDriverFor,
   type ReviewDriver,
   type ReviewExecution,
+  type ReviewExecutionPins,
   type ReviewOutcome,
   type ReviewPersist,
   type ReviewRuntime,
@@ -49,7 +48,7 @@ import {
 } from "./reviews/index.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 
-/** The wall-clock budget for one comparison provider call. Matches the Workflow Persona ceiling. */
+/** The wall-clock budget for one review provider call. Matches the Workflow Persona ceiling. */
 const DEFAULT_REVIEW_TIMEOUT_MS = 120_000;
 
 /**
@@ -60,8 +59,8 @@ const DEFAULT_REVIEW_TIMEOUT_MS = 120_000;
 export interface EnsembleReviewDeps {
   /** The daemon-owned ceiling shared with Workflow review and compaction. */
   scheduler: ReviewScheduler;
-  /** Resolve runner+model at attempt time from the guidance overrides / app+job ladder. */
-  resolveExecution: (guidance: EnsembleEvaluatorGuidance, policy: EnsembleEvaluatorPolicy) => ReviewExecution;
+  /** Resolve runner+model at attempt time from the explicit pins / guidance overrides / app ladder. */
+  resolveExecution: (guidance: EnsembleEvaluatorGuidance, pins: ReviewExecutionPins) => ReviewExecution;
   /** The bound, tool-less provider call. Tests inject a fake instead of a real model. */
   runModel: (runnerId: LlmRunnerId, prompt: string, opts: { modelId: string; timeoutMs: number }) => Promise<string>;
   /** Per-attempt wall-clock budget; defaults to the Persona ceiling. */
@@ -247,7 +246,7 @@ export interface EnsembleEngineDeps {
   /** Re-read one run and push its compact summary + task projection onto the live channel. */
   publish: (runId: string) => void;
   adapters?: ArtifactAdapterRegistry;
-  /** The comparison executor. Absent, a review stage parks rather than runs. */
+  /** The review executor. Absent, a review stage parks rather than runs. */
   review?: EnsembleReviewDeps;
   /** The finalization executor. Absent, a finalize stage parks at `finalizing` rather than runs. */
   finalize?: EnsembleFinalizeDeps;
@@ -336,7 +335,7 @@ const SUBMITTABLE_MEMBER_STATUSES: readonly EnsembleMemberStatus[] = ["launching
 const LIVE_TASK_STATUSES: readonly TaskGatewayStatus[] = ["backlog", "dispatching", "running"];
 const DRIVER_KEYS_BY_KIND = {
   member: ["member_wave@1"],
-  review: ["artifact_barrier@1", "comparative_review@1", "consensus_review@1"],
+  review: ["artifact_barrier@1", "comparative_review@1", "consensus_review@1", "panel_review@1"],
   decision: ["human_decision@1", "divergence_decision@1"],
   finalize: ["select_one_finalize@1", "retain_all_finalize@1"],
 } as const satisfies Record<EnsembleStageDriverKind, readonly (typeof ENSEMBLE_DRIVER_KEYS)[number][]>;
@@ -522,7 +521,7 @@ export class EnsembleEngine {
   }
 
   private async cancelLocked(state: RawRunState, reason: string | null): Promise<boolean> {
-    // Stop an in-flight comparison from starting its next parse attempt; its own `stillActive`
+    // Stop an in-flight review from starting its next parse attempt; its own `stillActive`
     // check would catch the cancel too, but aborting makes it prompt.
     this.reviewAborts.get(state.run.id)?.abort();
     const now = this.now();
@@ -1051,29 +1050,27 @@ export class EnsembleEngine {
         }
       }
 
+      // Whether the evaluations a crash left on a running review stage attempt already ARE a
+      // completed review is the DRIVER's question, not one asked here: only it knows how many rows
+      // its attempt was supposed to produce and how many of them had to succeed. Asked of every
+      // running review attempt; a null answer leaves it to the interrupt-and-retry pass below.
       const evaluations = this.store.listEvaluations(runId);
       for (const stageAttempt of reconciledState.stageAttempts) {
         if (stageAttempt.driverKind !== "review" || stageAttempt.status !== "running") continue;
-        const succeeded = evaluations.find(
-          (evaluation) =>
-            evaluation.stageAttemptId === stageAttempt.id &&
-            evaluation.status === "succeeded",
-        );
-        if (!succeeded) continue;
+        const stage = reconciledState.run.plan.stages.find((s) => s.id === stageAttempt.stageId);
+        if (!stage || stage.driverKind !== "review") continue;
         const driver = stageAttempt.driverKey ? reviewDriverFor(stageAttempt.driverKey) : null;
-        const resultLabel =
-          driver && succeeded.result
-            ? driver.resultLabel({
-                result: succeeded.result,
-                subjectArtifactIds: succeeded.subjectArtifactIds,
-              })
-            : null;
+        const recovered = driver?.recover({
+          policy: stage.evaluator,
+          evaluations: evaluations.filter((evaluation) => evaluation.stageAttemptId === stageAttempt.id),
+        });
+        if (!recovered) continue;
         this.completeReviewStage(
           runId,
           stageAttempt.stageId,
           stageAttempt.id,
-          succeeded.id,
-          resultLabel,
+          recovered.evaluationIds,
+          recovered.resultLabel,
           now,
         );
       }
@@ -1464,16 +1461,16 @@ export class EnsembleEngine {
     return await this.serviceFinalizeStage(state, stage as EnsembleStageSpec & { driverKind: "finalize" });
   }
 
-  // ---- review execution (comparative_review@1) ----
+  // ---- review execution ----
 
   /**
    * Start one review stage attempt and kick its async execution.
    *
    * The stage attempt and the `evaluating` status are persisted synchronously under the run lock,
-   * so a restart mid-review finds the running row rather than launching a second comparison. The
-   * comparison itself runs OUTSIDE the lock (a 120s model call must not hold a run's other actions),
-   * re-acquiring it only to persist the result. A fresh attempt number is used on every retry, so a
-   * failed comparison re-runs against the same immutable evidence rather than rewriting a plan.
+   * so a restart mid-review finds the running row rather than launching a second review. The
+   * driver runs OUTSIDE the lock (model calls must not hold a run's other actions), re-acquiring it
+   * only to persist the result. A fresh attempt number is used on every retry, so a failed review
+   * re-runs against the same immutable evidence rather than rewriting a plan.
    */
   private startReviewStage(
     state: RunState,
@@ -1496,7 +1493,7 @@ export class EnsembleEngine {
         commandKey: `review:${state.run.id}:${stage.id}:${attemptNumber}`,
         status: "running",
         // The compiled driver key, not a literal naming one evaluator: this row is the receipt of
-        // which review a restart finds running, and a consensus pass recorded as a comparison
+        // which review a restart finds running, and a panel or consensus pass recorded as a comparison
         // would be a receipt for something that never happened.
         input: { command: "review", driverKey: stage.driverKey, attempt: attemptNumber } as EnsembleJson,
       },
@@ -1544,11 +1541,10 @@ export class EnsembleEngine {
       intent: prepared.intent,
       baseSha: prepared.baseSha,
       repoRoot: prepared.repoRoot,
-      guidance: prepared.guidance,
       policy: prepared.policy,
       subjects: prepared.subjects,
       runtime: this.reviewRuntime(),
-      persist: this.reviewPersist(runId, stageAttemptId, prepared.policy.kind, driver.llmPurpose),
+      persist: this.reviewPersist(runId, stageAttemptId),
       signal,
       stillActive: () => this.reviewStillActive(runId, stageAttemptId),
     };
@@ -1560,8 +1556,7 @@ export class EnsembleEngine {
         ok: false,
         kind: "infrastructure",
         detail: err instanceof Error ? err.message : String(err),
-        evaluationId: null,
-        execution: null,
+        evaluations: [],
       };
     }
     // The provider ledger is written outside the run lock through single-row transactions. Only
@@ -1581,7 +1576,6 @@ export class EnsembleEngine {
         intent: string;
         baseSha: string;
         repoRoot: string;
-        guidance: EnsembleEvaluatorGuidance;
         policy: EnsembleEvaluatorPolicy;
         subjects: ReviewSubject[];
       }
@@ -1602,7 +1596,6 @@ export class EnsembleEngine {
       intent: state.run.intent,
       baseSha: state.run.baseSha,
       repoRoot: state.run.repoRoot,
-      guidance: stage.evaluator.guidance,
       policy: stage.evaluator,
       subjects,
     };
@@ -1654,28 +1647,19 @@ export class EnsembleEngine {
     };
   }
 
-  /**
-   * The durable ledger the driver writes through, bound to this run and stage attempt.
-   *
-   * `method` is the compiled PLAN's evaluator kind - what this run was created to do - while
-   * `purpose` is the DRIVER's, because a cost row is about the call this build actually made. Both
-   * are passed in rather than named here: an engine holding its own table of which evaluator uses
-   * which method is the table that files a new evaluator's calls under the old one's name.
-   */
-  private reviewPersist(
-    runId: string,
-    stageAttemptId: string,
-    method: EnsembleEvaluatorKind,
-    purpose: EnsembleLlmPurpose,
-  ): ReviewPersist {
+  /** The durable ledger the driver writes through, bound to this run and stage attempt. */
+  private reviewPersist(runId: string, stageAttemptId: string): ReviewPersist {
     return {
+      // `ordinal` is the evaluation's identity WITHIN this stage attempt, and the store keys on
+      // exactly that pair - so a comparison at ordinal 1 and a panel's judge N are the same
+      // idempotent write, and neither the engine nor the store has to know which is asking.
       beginEvaluation: (input) =>
         this.store.recordEvaluation(
           {
             runId,
             stageAttemptId,
-            attempt: 1,
-            method,
+            attempt: input.ordinal,
+            method: input.method,
             runnerId: input.runnerId,
             modelId: input.modelId,
             inputFingerprint: input.inputFingerprint,
@@ -1689,7 +1673,7 @@ export class EnsembleEngine {
           runId,
           stageAttemptId,
           evaluationId: input.evaluationId,
-          purpose,
+          purpose: input.purpose,
           runnerId: input.runnerId,
           modelId: input.modelId,
           attempt: input.attempt,
@@ -1734,9 +1718,11 @@ export class EnsembleEngine {
       stageAttempt.stageId !== stageId ||
       stageAttempt.driverKind !== "review"
     ) {
-      if (outcome.evaluationId) {
+      // A late outcome settles EVERY row it opened as interrupted, not just the first: a panel
+      // cancelled mid-flight must not leave some judges succeeded on a run nobody is watching.
+      for (const record of outcome.evaluations) {
         this.store.finishEvaluation(
-          outcome.evaluationId,
+          record.evaluationId,
           ["running"],
           "interrupted",
           { error: "the review outcome arrived after its run or stage attempt stopped" },
@@ -1745,30 +1731,39 @@ export class EnsembleEngine {
       }
       return;
     }
-    if (outcome.ok) {
-      if (outcome.evaluationId) {
-        this.store.finishEvaluation(
-          outcome.evaluationId,
-          ["running"],
-          "succeeded",
-          { runnerId: outcome.execution.runnerId, modelId: outcome.execution.modelId, result: outcome.result },
-          now,
-        );
-      }
-      if (outcome.execution.unknownRunner) {
-        // The unknown-runner fallback is made visible rather than swallowed, consistent with LLM status.
+    // Every evaluation the attempt opened is settled here, in one pass under the lock, with the
+    // status the driver decided for it. A panel legitimately settles some `succeeded` and some
+    // `failed` in the same attempt, which is why the status rides on the record rather than being
+    // derived from whether the stage as a whole worked.
+    for (const record of outcome.evaluations) {
+      this.store.finishEvaluation(
+        record.evaluationId,
+        ["running"],
+        record.status,
+        {
+          ...(record.execution ? { runnerId: record.execution.runnerId, modelId: record.execution.modelId } : {}),
+          ...(record.result ? { result: record.result } : {}),
+          ...(record.error !== null ? { error: record.error } : {}),
+        },
+        now,
+      );
+      // The unknown-runner fallback is made visible rather than swallowed, consistent with LLM
+      // status - once per evaluation, since a panel may mix providers and drop more than one.
+      if (record.execution?.unknownRunner) {
         this.event(
           runId,
           "review_runner_unknown",
-          { dropped: outcome.execution.unknownRunner, using: outcome.execution.runnerId },
-          `review_runner_unknown:${stageAttemptId}`,
+          { dropped: record.execution.unknownRunner, using: record.execution.runnerId },
+          `review_runner_unknown:${stageAttemptId}:${record.evaluationId}`,
         );
       }
+    }
+    if (outcome.ok) {
       this.completeReviewStage(
         runId,
         stageId,
         stageAttemptId,
-        outcome.evaluationId,
+        outcome.evaluations.filter((record) => record.status === "succeeded").map((record) => record.evaluationId),
         outcome.resultLabel,
         now,
       );
@@ -1779,19 +1774,6 @@ export class EnsembleEngine {
     // A failure. `interrupted` is retryable against the same immutable evidence; a malformed or
     // infrastructure failure is too, bounded by the compiled attempt cap, and neither ever becomes
     // a recommendation. The generic retry logic runs from the failed stage attempt.
-    const evalState = outcome.kind === "interrupted" ? "interrupted" : "failed";
-    if (outcome.evaluationId) {
-      this.store.finishEvaluation(
-        outcome.evaluationId,
-        ["running"],
-        evalState,
-        {
-          ...(outcome.execution ? { runnerId: outcome.execution.runnerId, modelId: outcome.execution.modelId } : {}),
-          error: outcome.detail,
-        },
-        now,
-      );
-    }
     this.store.finishStageAttempt(stageAttemptId, ["running"], "failed", { error: `${outcome.kind}: ${outcome.detail}` }, now);
     this.event(runId, "review_failed", { stageId, kind: outcome.kind, detail: outcome.detail }, `review_failed:${stageAttemptId}`);
     await this.advanceLocked(runId);
@@ -2995,11 +2977,18 @@ export class EnsembleEngine {
     this.event(runId, "run_failed", { reason }, `run_failed:${runId}:${now}`);
   }
 
+  /**
+   * The stage receipt names every evaluation the attempt produced, as a LIST.
+   *
+   * One review stage is not one model call: a comparison writes one row and a panel writes one per
+   * judge, and a receipt with room for only the first would describe the panel as if a single
+   * ballot had settled it.
+   */
   private completeReviewStage(
     runId: string,
     stageId: string,
     stageAttemptId: string,
-    evaluationId: string,
+    evaluationIds: string[],
     resultLabel: string | null,
     now: number,
   ): boolean {
@@ -3007,14 +2996,14 @@ export class EnsembleEngine {
       stageAttemptId,
       ["running"],
       "succeeded",
-      { output: { evaluationId, resultLabel } as EnsembleJson },
+      { output: { evaluationIds, resultLabel } as EnsembleJson },
       now,
     );
     if (!finished.ok) return false;
     this.event(
       runId,
       "review_succeeded",
-      { stageId, evaluationId, resultLabel },
+      { stageId, evaluationIds, resultLabel },
       `review_succeeded:${stageAttemptId}`,
     );
     return true;

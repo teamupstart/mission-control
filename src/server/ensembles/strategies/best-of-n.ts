@@ -21,6 +21,7 @@ import {
   defineStrategy,
   type StrategyCompileContext,
   type StrategyCompileResult,
+  type StrategyPersonaRef,
 } from "./types.ts";
 
 /**
@@ -94,7 +95,9 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
   // that named a Persona and a context that could not resolve it is a REFUSAL - falling back
   // to the built-in rubric would run the comparison the operator did not ask for, and the
   // only sign would be a rubric id nobody reads.
-  if (config.evaluator.personaId !== null && context.persona === null) {
+  const persona =
+    config.evaluator.personaId === null ? null : context.personas.get(config.evaluator.personaId) ?? null;
+  if (config.evaluator.personaId !== null && persona === null) {
     return {
       ok: false,
       issues: [
@@ -105,7 +108,7 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
       ],
     };
   }
-  if (context.persona !== null && config.evaluator.personaId === null) {
+  if (context.personas.size > 0 && config.evaluator.personaId === null) {
     return {
       ok: false,
       issues: [
@@ -160,16 +163,16 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
       // THIS plan and must never reload the live Persona. The resolver has already truncated
       // the guidance text to fit the plan's byte cap.
       guidance:
-        context.persona === null
+        persona === null
           ? { kind: "builtin", rubricId: BEST_OF_N_BUILTIN_RUBRIC }
           : {
               kind: "persona",
-              personaId: context.persona.id,
-              revision: context.persona.revision,
-              name: context.persona.name,
-              guidanceMarkdown: context.persona.guidanceMarkdown,
-              runner: context.persona.runner,
-              model: context.persona.model,
+              personaId: persona.id,
+              revision: persona.revision,
+              name: persona.name,
+              guidanceMarkdown: persona.guidanceMarkdown,
+              runner: persona.runner,
+              model: persona.model,
             },
       runner: config.evaluator.runner,
       model: config.evaluator.model,
@@ -253,6 +256,35 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
   return { ok: true, plan: checked.data as CompiledEnsemblePlan, config: config as EnsembleJson };
 }
 
+/**
+ * The one Persona this config can name, read off the RAW blob.
+ *
+ * Deliberately defensive: it runs before validation, so anything it cannot make sense of is "no
+ * Persona named" and the schema states the real refusal with a path on it.
+ */
+function personaRefs(raw: unknown): StrategyPersonaRef[] {
+  const evaluator = readObject(raw)?.evaluator;
+  const record = readObject(evaluator);
+  if (!record) return [];
+  const personaId = typeof record.personaId === "string" && record.personaId !== "" ? record.personaId : null;
+  if (personaId === null) return [];
+  const revision = record.personaRevision;
+  return [
+    {
+      path: "evaluator.personaId",
+      personaId,
+      revision:
+        typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null,
+    },
+  ];
+}
+
+function readObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 export const bestOfNStrategy = defineStrategy<BestOfNConfig>({
   ...ENSEMBLE_STRATEGY_INFO.best_of_n,
   // Re-stated from the shared half only where the type demands the narrower `C`; everything
@@ -264,4 +296,5 @@ export const bestOfNStrategy = defineStrategy<BestOfNConfig>({
   estimate: bestOfNEstimate,
   compilesVersion: STRATEGY_VERSION,
   compile,
+  personaRefs,
 });

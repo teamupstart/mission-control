@@ -220,7 +220,7 @@ test("erasure parses through the descriptor's own schema and reports the failing
     estimate: () => null,
     compile: () => ({ ok: false, issues: [] }),
   });
-  const result = fake.compile({ size: 1 }, { repoRoot: "/repo", persona: null, now: 0 });
+  const result = fake.compile({ size: 1 }, { repoRoot: "/repo", personas: new Map(), now: 0 });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.issues[0]?.path, "size");

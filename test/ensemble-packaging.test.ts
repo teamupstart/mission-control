@@ -31,8 +31,8 @@ test("only production strategy ids are on the runtime path - no test fixture is 
   // The enabled production strategies, and nothing a Phase 8 fixture invented. If a test id ever
   // leaked into the shared tuple, a packaged build would offer an unrunnable strategy - which is
   // why this list is edited deliberately when a real strategy ships, not widened to a count.
-  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n", "consensus"]);
-  assert.deepEqual(Object.keys(ENSEMBLE_STRATEGIES).sort(), ["best_of_n", "consensus"]);
+  assert.deepEqual([...ENSEMBLE_STRATEGY_IDS], ["best_of_n", "consensus", "panel_vote"]);
+  assert.deepEqual(Object.keys(ENSEMBLE_STRATEGIES).sort(), ["best_of_n", "consensus", "panel_vote"]);
   for (const id of ["fixed_matrix", "successive_halving", "pairwise", "panel", "synthesis"]) {
     assert.equal(
       (ENSEMBLE_STRATEGY_IDS as readonly string[]).includes(id),

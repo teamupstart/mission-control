@@ -276,6 +276,7 @@ export const DECISION_DRIVERS: Record<EnsembleDriverKey, DecisionDriver | null> 
   "consensus_review@1": null,
   "divergence_decision@1": divergenceDecisionDriver,
   "retain_all_finalize@1": null,
+  "panel_review@1": null,
 };
 
 /** The decision driver for a persisted driver key, or null when this build cannot run it. */

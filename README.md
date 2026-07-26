@@ -1558,52 +1558,56 @@ Two more properties, both deliberate:
 
 An **ensemble** is a group of ordinary [dispatched tasks](#dispatch-an-agent) run together
 under one versioned *strategy*, plus the group-level facts a single task cannot express: one
-pinned base commit, member roles, immutable submitted artifacts, an evaluation, a human
-decision, and a terminal outcome. The first strategy is **Best of N** - two to five agents
+pinned base commit, member roles, immutable submitted artifacts, evaluations, a human
+decision, and a terminal outcome. Three strategies ship: **Best of N** - two to five agents
 implement the same task alone from the same commit, one tool-less comparison ranks what they
-submitted, and you confirm the winner. **Consensus** is the second, and it ends in questions
-rather than a winner - see [Additional strategies](#additional-strategies) below.
+submitted, and you confirm the winner; **Consensus**, which ends in questions rather than a
+winner; and **Panel vote**, the Best-of-N roster judged by independent single-lens judges whose
+disagreement is shown rather than averaged away. See [Additional strategies](#additional-strategies)
+below and the [operator guide](docs/ensembles.md) for the full strategy, judging, and quorum
+semantics.
 
 **Start one from Dispatch, watch it under Workflows.** Open the dispatch modal and flip the
 launch mode from **Single agent** to **Ensemble**. The same title/repo/intent/attachment
 compose area serves both; below it, descriptor-driven strategy cards render the chosen
-strategy's own form - for Best of N, a roster of two to five candidate rows, each
-choosing its own agent, model, effort and optional approach hint, plus the optional evaluator
-Persona, and an optional [workflow](#workflows-and-personas) to hand the
-winner to. **Review launch** posts a side-effect-free preview (member count, concurrency, waves,
-comparison calls, and whether the chosen workflow mode is executable) and any edit after that
-invalidates it, so **Launch N agents** always confirms exactly what you reviewed. The launch is
-idempotent on a stable request id: a lost response and a retry return the same run, never a
-second fleet. Every candidate is grouped in Cards, Console and Board by a distinct **E** mark
-(separate from a workflow's **W**) that opens the run. The **Ensembles** tab beside Workflows,
-Personas and Runs is the monitoring, evidence, decision, recovery and history surface: it lists
-runs attention-first from the one live SSE stream and fetches a selected run's bounded detail -
-members, immutable artifacts and their on-demand diffs, the stage/evaluation timeline, the
-strategy's own result view (Best-of-N's scorecards, Consensus's agreements and divergence cards),
-and the decision that strategy asks for - over HTTP, refetching when that run's summary
-revises rather than polling. The strategy-neutral runtime pins one
-base commit, launches bounded *waves* of ordinary member tasks (creating every task in a wave
-before dispatching the first, and never launching past the concurrency the plan authorizes),
-accepts an explicit submission from each member, captures its working tree as an immutable private
-Git commit, advances barriers off ready artifacts rather than off a task going idle, and resumes
-safely after a daemon restart. A member submits through a dedicated `submit_ensemble_result` MCP
-tool (with a manual operator fallback), and the daemon decides *which* member from the calling
-session, its task and its worktree - a member never names itself, so a guessed id reaches nothing.
+strategy's own form - a roster of candidate rows choosing their own agent, model, effort and
+optional approach hint, plus the strategy's judging Persona or panel, and an optional
+[workflow](#workflows-and-personas) where the strategy supports one. **Review launch** posts a
+side-effect-free preview (member count, concurrency, waves, evaluation calls, and whether the
+chosen workflow mode is executable) and any edit after that invalidates it, so **Launch N agents**
+always confirms exactly what you reviewed. The launch is idempotent on a stable request id: a lost
+response and a retry return the same run, never a second fleet. Every candidate is grouped in
+Cards, Console and Board by a distinct **E** mark (separate from a workflow's **W**) that opens the
+run. The **Ensembles** tab beside Workflows, Personas and Runs is the monitoring, evidence,
+decision, recovery and history surface: it lists runs attention-first from the one live SSE stream
+and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
+diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's scorecards,
+Consensus's agreements and divergence cards, Panel vote's aggregate and ballots), and the decision
+that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
+The strategy-neutral runtime pins one base commit, launches
+bounded *waves* of ordinary member tasks (creating every task in a wave before dispatching the
+first, and never launching past the concurrency the plan authorizes), accepts an explicit
+submission from each member, captures its working tree as an immutable private Git commit, advances
+barriers off ready artifacts rather than off a task going idle, and resumes safely after a daemon
+restart. A member submits through a dedicated `submit_ensemble_result` MCP tool (with a manual
+operator fallback), and the daemon decides *which* member from the calling session, its task and its
+worktree - a member never names itself, so a guessed id reaches nothing.
 
-When every live member has submitted or terminated and at least two produced a snapshot, the
-daemon runs one tool-less, provider-neutral **comparison** of the immutable submissions and parks
-the run at a durable human-decision boundary. The judge is deliberately blind: it is handed the
-task, bounded base-to-snapshot diffs, per-file statistics and each member's own reported claims
-(labelled as claims), but every agent name, model, member ordinal, ref name, snapshot commit id and
-worktree path is stripped and each submission is relabelled anonymously, so brand and order cannot
-bias the ranking. Truncated diff evidence is disclosed in the result. Every candidate-authored
-section is fenced as untrusted data. The reply is validated strictly - exactly the eligible
-submissions once each, integer scores, contiguous ranks, a recommendation that holds rank 1 - and a
-malformed, incomplete, or injected reply is a *failed attempt*, never a low score or a fallback
-winner. The comparison shares the one daemon review-call ceiling with Workflow review, resolves
-its runner and model per call (a judging Persona's own overrides, else the `ensemble-comparison`
-job model), records every call on a durable ledger, and recovers a call interrupted by a restart by
-retrying it against the exact same evidence. It **recommends** a winner; it cannot promote one.
+**Best of N evaluation.** When every live member has submitted or terminated and at least two
+produced a snapshot, the daemon runs one tool-less, provider-neutral **comparison** of the immutable
+submissions and parks the run at a durable human-decision boundary. The judge is deliberately
+blind: it is handed the task, bounded base-to-snapshot diffs, per-file statistics and each member's
+own reported claims (labelled as claims), but every agent name, model, member ordinal, ref name,
+snapshot commit id and worktree path is stripped and each submission is relabelled anonymously, so
+brand and order cannot bias the ranking. Truncated diff evidence is disclosed in the result. Every
+candidate-authored section is fenced as untrusted data. The reply is validated strictly - exactly
+the eligible submissions once each, integer scores, contiguous ranks, a recommendation that holds
+rank 1 - and a malformed, incomplete, or injected reply is a *failed attempt*, never a low score or
+a fallback winner. The comparison shares the one daemon review-call ceiling with Workflow review,
+resolves its runner and model per call (a judging Persona's own overrides, else the
+`ensemble-comparison` job model), records every call on a durable ledger, and recovers a call
+interrupted by a restart by retrying it against the exact same evidence. It **recommends** a winner;
+it cannot promote one.
 
 **Finalization begins from a durable human decision and nothing else.** You confirm one eligible
 submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
@@ -1678,16 +1682,33 @@ retention and deletion, costs, restart, recovery, security limits, and how a new
 the design plan is
 [`docs/plans/best-of-n-swarm-dispatch/plan.md`](docs/plans/best-of-n-swarm-dispatch/plan.md).
 
+<a id="ensemble-strategies"></a>
+### Strategies
+
+A strategy is a versioned recipe, not a fork of the runtime: it validates a configuration,
+compiles it once into a plan of generic stages, and contributes a result view. Everything below
+runs on the same engine, tables, routes and layout marks described above.
+
+**Best of N** (`best_of_n`) - two to five candidates, one comparison, one winner. Described in
+full above; it is the default the dispatch modal opens on.
+
+**Panel vote** (`panel_vote`) - the same two-to-five roster, judged by a **panel** of two to five
+independent single-lens judges instead of one comparison. The dashboard shows their aggregate,
+their individual ballots, and how far their rankings disagreed; at least two usable ballots are
+required, and the human still confirms the outcome. The
+[ensemble operator guide](docs/ensembles.md#what-panel-vote-does) owns the detailed lens,
+aggregation, failure, quorum and recovery contracts.
+
 **Attention and cost are honest.** Ensemble transitions feed the same
 [alert engine](#alerts--away-mode) every other "needs you" flows through - a run reaching its
 decision, turning unreadable, or stuck finalizing interrupts you; completion, cancellation and
 failure land in the Away digest - with no separate notifier. Each candidate's agent cost is summed
 from its session telemetry at submission and frozen into its immutable artifact, so the run detail
 shows an aggregate attributed per member; a runner that reports no cost is shown as *unreported*,
-never `$0.00`, and the comparison's own model cost and any linked workflow review cost are reported
+never `$0.00`, and the evaluator's own model cost and any linked workflow review cost are reported
 separately rather than folded in. Hard ceilings no strategy can exceed - 16 members, 8 concurrent, 8
-waves, 5 stage attempts - sit above Best of N's own 2-5 candidates, and the preview shows the exact
-figures before you launch.
+waves, 5 stage attempts - sit above each strategy's own 2-5 candidates, and the preview shows the
+exact figures before you launch.
 
 Four decisions are worth knowing now, because everything later is built on them:
 
@@ -1696,7 +1717,7 @@ Four decisions are worth knowing now, because everything later is built on them:
   The member link nests inside the task summary a session already carries instead of adding
   another field to the session itself, which is what the **E** mark on every layout reads to
   say which candidate a card is and how the group ranked it.
-- **A model recommends; it never promotes.** The comparison is advisory and runs without
+- **Evaluators recommend; they never promote.** Every evaluation is advisory and runs without
   tools. Anything destructive - resetting a branch to a chosen snapshot, reaping the losing
   worktrees - waits for an explicit human confirmation, and the compiled plan carries that
   requirement as a type the schema will not let a strategy opt out of.
@@ -2167,7 +2188,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
-| Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, and mines a Consensus run's divergences, in one tool-less call. A judging Persona's own model wins over this |
+| Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
 
 Each resolves the same way [Foreman's four](#which-model-foreman-runs-as) and the
 [Inspector's one](#the-review-model) do: **your setting, then the environment variable, then the
@@ -3696,7 +3717,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
-| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison and the Consensus divergence pass alike. A judging Persona's own model override wins; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
+| `MISSION_ENSEMBLE_COMPARISON_MODEL` | provider's cheap model | [Ensembles](#multi-agent-ensembles): the model behind every ensemble evaluation - the Best-of-N comparison, the Consensus divergence pass, and each Panel-vote judge's ballot. An explicit evaluator or judge model wins, then a judging Persona's model override; otherwise **Settings → Models → Ensemble evaluation**, then this variable, then the provider's cheap default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |

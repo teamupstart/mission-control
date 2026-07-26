@@ -6640,6 +6640,98 @@ select:not([multiple]) option {
   color: var(--muted);
 }
 
+/* Panel vote: the aggregate, the per-judge ranks that produced it, and the ballots behind them.
+   Disagreement is the product here, so it is styled as a headline figure rather than a footnote,
+   and a contested row is marked on the card itself. */
+.ensemble-panel-disagreement {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--attention);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ensemble-panel-disagreement.unanimous {
+  border-left-color: var(--idle);
+}
+
+.ensemble-panel-disagreement-figure {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.ensemble-scorecard.contested {
+  border-style: dashed;
+}
+
+.ensemble-contested-tag {
+  color: var(--attention);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.ensemble-judge-ranks {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+}
+
+.ensemble-judge-ranks li {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.ensemble-judge-name {
+  color: var(--muted);
+}
+
+.ensemble-judge-rank {
+  font-weight: 700;
+}
+
+.ensemble-ballots {
+  margin-top: 14px;
+}
+
+.ensemble-ballots h5 {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+
+.ensemble-ballot {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+
+.ensemble-ballot > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ensemble-ballot-cards {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.ensemble-judge-blurb {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 1;
+}
+
 /* Decision panel */
 .ensemble-decision {
   margin-top: 16px;

@@ -11,6 +11,13 @@ import {
   ConsensusConfigSchema,
   consensusEstimate,
 } from "./ensemble-strategies/consensus.ts";
+import {
+  PANEL_VOTE_CAPABILITIES,
+  PANEL_VOTE_FORM,
+  PANEL_VOTE_MIN_QUORUM,
+  PanelVoteConfigSchema,
+  panelVoteEstimate,
+} from "./ensemble-strategies/panel-vote.ts";
 import type { EnsembleStrategyInfo } from "./ensemble-strategies/types.ts";
 
 export type {
@@ -71,6 +78,28 @@ export const ENSEMBLE_STRATEGY_INFO: Record<EnsembleStrategyId, EnsembleStrategy
     estimate: consensusEstimate,
     enabled: true,
   },
+  panel_vote: {
+    id: "panel_vote",
+    currentVersion: 1,
+    label: "Panel vote",
+    blurb:
+      "Two to five agents implement the same task alone, then a panel of single-lens judges " +
+      "scores them all in parallel.",
+    explanation:
+      "Every candidate starts from one pinned commit in its own worktree and works without " +
+      "seeing the others, exactly as Best of N. When they have all finished, each judge on the " +
+      "panel scores every submission from ONE lens alone - correctness, maintainability, risk - " +
+      "in its own tool-less call, over the same anonymous evidence. Their ballots are combined " +
+      "into one ranking, and where they disagreed is shown beside it rather than averaged away. " +
+      `The panel recommends; it cannot promote. At least ${PANEL_VOTE_MIN_QUORUM} judges must ` +
+      "return a usable ballot or the panel is retried. You confirm the winner; the losers give " +
+      "back their worktrees and their snapshots are kept.",
+    capabilities: PANEL_VOTE_CAPABILITIES,
+    configSchema: PanelVoteConfigSchema,
+    form: PANEL_VOTE_FORM,
+    estimate: panelVoteEstimate,
+    enabled: true,
+  },
 };
 
 /** The strategies this build can compile for in-process creation, in declaration order. */
@@ -83,10 +112,9 @@ export function creatableStrategies(): EnsembleStrategyInfo[] {
 /**
  * The display label for a persisted strategy key, whoever wrote it.
  *
- * Falls back to the raw key rather than to a known strategy's label: a run written by a
- * newer build has to be nameable on screen so it can be cancelled, and labelling it
- * "Best of N" because that is the only strategy this build has would be a lie about what
- * an operator is looking at.
+ * Falls back to the raw key rather than to any known strategy's label: a run written by a
+ * newer build has to be nameable on screen so it can be cancelled, and substituting a
+ * familiar label would be a lie about what an operator is looking at.
  */
 export function strategyLabelFor(id: string, fallback: string): string {
   return (ENSEMBLE_STRATEGY_IDS as readonly string[]).includes(id)

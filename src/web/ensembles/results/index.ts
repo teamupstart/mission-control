@@ -2,11 +2,12 @@ import type { EnsembleStrategyId, EnsembleJson } from "@shared/ensemble.ts";
 import type { EnsembleRunDetailResponse } from "../types.ts";
 import { BestOfNResult } from "./BestOfN.tsx";
 import { ConsensusResultView } from "./Consensus.tsx";
+import { PanelVoteResult } from "./PanelVote.tsx";
 
 /**
  * The strategy result-renderer registry. Generic run detail shows stages, members, artifacts
  * and evaluations the same way for every strategy; the strategy-specific PRESENTATION of the
- * result - Best-of-N's scorecards, a future panel's agreement view, a tournament's bracket -
+ * result - Best-of-N's scorecards, Panel vote's disagreement view, a future tournament's bracket -
  * lives behind this seam, keyed by the run's strategy id. A new strategy that reuses the
  * existing tables and routes adds a renderer here and nothing else, which is the Phase 8
  * extension contract: no new page, no new session field, no new engine branch.
@@ -46,4 +47,5 @@ export type EnsembleResultRenderer = (ctx: EnsembleResultContext) => React.JSX.E
 export const ENSEMBLE_RESULT_RENDERERS: Partial<Record<EnsembleStrategyId, EnsembleResultRenderer>> = {
   best_of_n: BestOfNResult,
   consensus: ConsensusResultView,
+  panel_vote: PanelVoteResult,
 };

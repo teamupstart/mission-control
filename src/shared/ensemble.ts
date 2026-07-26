@@ -6,10 +6,9 @@ import type { LlmRunnerId } from "./llm.ts";
  *
  * An **ensemble** is a group of ordinary Tasks run under one versioned strategy, plus the
  * group-level facts a Task cannot express - a compiled plan, member roles, immutable
- * artifacts, comparative evaluations, a human decision, and a terminal outcome. Best-of-N
- * is the first STRATEGY, not the name of the engine: nothing in this file says candidate,
- * judge, diff or winner, because a tournament, a critique round and a synthesis all have to
- * persist through these same nouns.
+ * artifacts, evaluations, a human decision, and a terminal outcome. Best-of-N is the first
+ * STRATEGY, not the name of the engine: strategy-specific compiled policies can describe
+ * candidates or judges, but every strategy persists through these same durable nouns.
  *
  * No `node:` imports reach this file and none may: the dashboard consumes these contracts,
  * so one `node:` import in the module graph takes the web bundle down. Compilation,
@@ -30,7 +29,7 @@ import type { LlmRunnerId } from "./llm.ts";
  * `EnsembleStrategyKey`, so a run written by a newer build still parses and reports itself
  * unreadable rather than being recompiled with today's defaults. See `EnsembleUnreadable`.
  */
-export const ENSEMBLE_STRATEGY_IDS = ["best_of_n", "consensus"] as const;
+export const ENSEMBLE_STRATEGY_IDS = ["best_of_n", "consensus", "panel_vote"] as const;
 export type EnsembleStrategyId = (typeof ENSEMBLE_STRATEGY_IDS)[number];
 
 /**
@@ -59,7 +58,7 @@ export type EnsembleStageDriverKind = (typeof ENSEMBLE_STAGE_DRIVER_KINDS)[numbe
  *
  * A plan PERSISTS this key rather than relying on whatever the current build considers the
  * default for its stage kind. That is the whole reason it exists: an in-flight run whose
- * comparative reviewer changed shape must go on executing the reviewer it was compiled
+ * review driver changed shape must go on executing the driver it was compiled
  * against, and a driver version that has been removed while a non-terminal run still names
  * it is a startup health error - never permission to invoke the latest one.
  *
@@ -74,6 +73,7 @@ export const ENSEMBLE_DRIVER_KEYS = [
   "consensus_review@1",
   "divergence_decision@1",
   "retain_all_finalize@1",
+  "panel_review@1",
 ] as const;
 export type EnsembleDriverKey = (typeof ENSEMBLE_DRIVER_KEYS)[number];
 
@@ -81,9 +81,9 @@ export type EnsembleDriverKey = (typeof ENSEMBLE_DRIVER_KEYS)[number];
  * What a member can submit, and what an evaluation can consume.
  *
  * Append-only: an artifact row's `kind` is how a later build knows which adapter validates
- * its locator. `commit` is the one Best-of-N v1 will produce (an immutable private Git
- * commit created through a temporary index); the rest are named now so that appending an
- * adapter later never has to widen the member or stage tables.
+ * its locator. `commit` is the one both enabled strategies produce (an immutable private
+ * Git commit created through a temporary index); the rest are named now so that appending
+ * an adapter later never has to widen the member or stage tables.
  */
 export const ENSEMBLE_ARTIFACT_KINDS = [
   "patch",
@@ -218,7 +218,7 @@ export type EnsembleDecisionActor = (typeof ENSEMBLE_DECISION_ACTORS)[number];
 export const ENSEMBLE_FINALIZATION_STATUSES = ["pending", "running", "completed", "failed"] as const;
 export type EnsembleFinalizationStatus = (typeof ENSEMBLE_FINALIZATION_STATUSES)[number];
 
-export const ENSEMBLE_LLM_PURPOSES = ["comparative_review", "consensus_review"] as const;
+export const ENSEMBLE_LLM_PURPOSES = ["comparative_review", "consensus_review", "panel_review"] as const;
 export type EnsembleLlmPurpose = (typeof ENSEMBLE_LLM_PURPOSES)[number];
 
 /**
@@ -231,7 +231,7 @@ export type EnsembleLlmPurpose = (typeof ENSEMBLE_LLM_PURPOSES)[number];
  * and recommends one subject; `consensus_llm` compares the subjects' DECISIONS and returns
  * agreements plus open questions, recommending nothing.
  */
-export const ENSEMBLE_EVALUATOR_KINDS = ["comparative_llm", "consensus_llm"] as const;
+export const ENSEMBLE_EVALUATOR_KINDS = ["comparative_llm", "consensus_llm", "panel_llm"] as const;
 export type EnsembleEvaluatorKind = (typeof ENSEMBLE_EVALUATOR_KINDS)[number];
 
 export const ENSEMBLE_LLM_CALL_STATES = ["running", "succeeded", "failed", "interrupted"] as const;
@@ -323,13 +323,13 @@ export const ENSEMBLE_LIMITS = {
   errorText: 4_000,
   resultLabel: 60,
   /**
-   * The comparative reviewer's guidance text, as SNAPSHOTTED into the compiled plan.
+   * Review guidance text, as SNAPSHOTTED into the compiled plan.
    *
    * Smaller than a Workflow Persona's own `personaGuidanceBytes` (100 KiB) on purpose: this
-   * text lives INSIDE the compiled plan, which has its own `compiledPlanJsonBytes` ceiling,
-   * so a Persona snapshotted here is truncated to this many UTF-8 bytes before persistence
-   * rather than being allowed to burst the plan. The truncation is disclosed where it
-   * happens; it is not a silent clip.
+   * text lives INSIDE the compiled plan, which has its own `compiledPlanJsonBytes` ceiling.
+   * The manager divides this shared budget across the Persona references named by a strategy
+   * and truncates each snapshot before persistence rather than allowing the plan to burst.
+   * The truncation is disclosed where it happens; it is not a silent clip.
    */
   reviewGuidanceBytes: 80_000,
   /** Page size reserved for the later HTTP detail surface. */
@@ -480,7 +480,7 @@ export interface EnsembleSubjectPolicy {
 }
 
 /**
- * Where the comparative reviewer's guidance comes from, snapshotted at creation.
+ * Where a reviewer's guidance comes from, snapshotted at creation.
  *
  * The persona case carries the FULL guidance text, not just an id and a revision, and that
  * is load-bearing: it is embedded in the compiled plan, and recovery executes the compiled
@@ -488,7 +488,7 @@ export interface EnsembleSubjectPolicy {
  * after creation must not silently re-aim a run already judging against the text they chose,
  * exactly as a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
  * versioned rubric id whose text is owned by the strategy that named it; a new rubric is a
- * new id beside the old one, so an old plan naming `best_of_n_v1` keeps its exact rubric.
+ * new id beside the old one, so an old plan keeps the exact rubric it named.
  */
 export type EnsembleEvaluatorGuidance =
   | { kind: "builtin"; rubricId: string }
@@ -524,31 +524,67 @@ export interface EnsembleReviewPersona {
 }
 
 /**
- * How a review stage judges. `kind` is the union point so a deterministic gate, a pairwise
- * scheduler or a Persona panel can be appended without touching the evaluation table; every
- * field below it is what ANY tool-less evaluator over immutable artifacts needs, which is why
- * the two shipped kinds share them rather than each carrying its own copy.
+ * One judge on a panel, as snapshotted into a compiled plan.
+ *
+ * `key` and `ordinal` are LOGICAL and deterministic (`judge-1`), for the reason
+ * `EnsembleRoleSpec.key` is: the same config has to compile to the same plan twice, so no runtime
+ * id appears here. `guidance` is the whole point - a panel is M judges over ONE subject set,
+ * differing only in the lens each was given, which is what makes their disagreement information
+ * rather than noise. A judge's runner/model overrides sit beside its guidance rather than on the
+ * policy because a panel may legitimately mix providers.
  */
-export type EnsembleEvaluatorPolicy = {
-  kind: EnsembleEvaluatorKind;
+export interface EnsemblePanelJudgeSpec {
+  key: string;
+  label: string;
+  /** Stable 1-based order, and the evaluation-row ordinal within one stage attempt. */
+  ordinal: number;
   guidance: EnsembleEvaluatorGuidance;
   /** Null resolves through the daemon's own ladder at attempt time. */
   runner: LlmRunnerId | null;
   model: string | null;
-  /**
-   * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
-   * are useful to the operator and invite brand and order bias in a judge.
-   *
-   * Every plan this build compiles pins it `true`, and the evidence packet does NOT consult it -
-   * anonymization is unconditional (`reviews/packet.ts`), so this records what a run does rather
-   * than selecting it, and no form offers it as a control. It stays a `boolean` rather than a
-   * literal because plans written by other builds are read back through this type: a stored
-   * `false` must still LOAD, and it is the packet, not this field, that decides what a model sees.
-   */
-  anonymizeSubjects: boolean;
-  /** Total artifact material one attempt may consume, allocated evenly across subjects. */
-  materialBudgetBytes: number;
-};
+}
+
+/**
+ * How a review stage judges. A union so a deterministic gate, a pairwise scheduler or a
+ * Persona panel can be appended without touching the evaluation table.
+ *
+ * The single-evaluator arms answer the same three questions the engine and their drivers ask -
+ * what guidance, whether to anonymize, and how much artifact material one attempt may consume -
+ * while a panel carries one guidance snapshot per judge and defines its partial-answer quorum.
+ */
+export type EnsembleEvaluatorPolicy =
+  | {
+      kind: "comparative_llm" | "consensus_llm";
+      guidance: EnsembleEvaluatorGuidance;
+      /** Null resolves through the daemon's own ladder at attempt time. */
+      runner: LlmRunnerId | null;
+      model: string | null;
+      /**
+       * Hide agent, model and ordinal from the evaluator's input. True in v1: those attributes
+       * are useful to the operator and invite brand and order bias in a judge.
+       */
+      anonymizeSubjects: boolean;
+      /** Total artifact material one attempt may consume, allocated evenly across subjects. */
+      materialBudgetBytes: number;
+    }
+  | {
+      kind: "panel_llm";
+      /** Two to five independent judges, each scoring EVERY eligible subject from its own lens. */
+      judges: EnsemblePanelJudgeSpec[];
+      /**
+       * The quorum, compiled into the plan rather than decided at execution time.
+       *
+       * A judge whose call is malformed or interrupted fails ITS attempt only; the stage succeeds
+       * when at least this many judges returned a valid ballot, and fails - retryably, against the
+       * same immutable subjects - when fewer did. Compiled rather than constant because the number
+       * that makes an aggregate defensible is a property of the plan the operator confirmed, and a
+       * later build changing its mind must not re-aim a run already in flight.
+       */
+      minSuccessfulJudges: number;
+      anonymizeSubjects: boolean;
+      /** Total artifact material ONE attempt may consume - the packet is built once and shared. */
+      materialBudgetBytes: number;
+    };
 
 /**
  * What a human is being asked to decide.

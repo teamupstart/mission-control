@@ -69,8 +69,8 @@ import {
  * preflights and pins launch inputs, delegates ordinary Task lifecycle through the injected
  * gateway, captures submissions through artifact adapters, recovers non-terminal runs, and
  * publishes the compact summaries the browser's live state receives. The public create, preview,
- * action and delete routes all enter through this boundary; production creation is enabled only
- * because every driver in the compiled Best-of-N plan has an executable implementation.
+ * action and delete routes all enter through this boundary; a strategy is enabled for production
+ * creation only when every driver in its compiled plan has an executable implementation.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog
@@ -145,7 +145,7 @@ export interface EnsembleManagerOptions {
   /** Artifact adapters, for tests that drive capture against a fake instead of real Git. */
   adapters?: ArtifactAdapterRegistry;
   /**
-   * The comparison executor - the shared review scheduler, the runner/model resolver, and the
+   * The review executor - the shared scheduler, the runner/model resolver, and the
    * provider call. Present in the daemon; absent, a review stage parks at `evaluating` rather than
    * running, which is exactly what the launch-only phases before this one did.
    */
@@ -604,7 +604,7 @@ export class EnsembleManager {
       };
     }
     const config = request.strategyConfig ?? {};
-    const context = this.compileContext(request.repoRoot, config, now);
+    const context = this.compileContext(descriptor, request.repoRoot, config, now);
     if (!context.ok) return { ok: false, outcome: { ok: false, reason: "invalid_config", issues: context.issues } };
     const compiled = descriptor.compile(config, context.value);
     if (!compiled.ok) return { ok: false, outcome: { ok: false, reason: "invalid_config", issues: compiled.issues } };
@@ -1078,66 +1078,71 @@ export class EnsembleManager {
   }
 
   private compileContext(
+    descriptor: StrategyDescriptor,
     repoRoot: string,
     config: unknown,
     now: number,
   ): { ok: true; value: StrategyCompileContext } | { ok: false; issues: StrategyIssue[] } {
-    // The only impure part of compilation, lifted out of it: a Persona id in the config is
-    // resolved to an immutable snapshot here, and the descriptor either receives that snapshot
-    // or refuses. Reading the id out of the raw blob is deliberate - the descriptor owns the
-    // config's type, and this only needs to know whether a name (and an optional pinned
-    // revision) was mentioned. Every refusal lands BEFORE any member Task exists.
-    const evaluator =
-      config && typeof config === "object" && "evaluator" in config
-        ? (config as { evaluator: unknown }).evaluator
-        : null;
-    const personaId = readPersonaId(evaluator);
-    if (personaId === null) {
-      return { ok: true, value: { repoRoot, persona: null, now } };
+    // The only impure part of compilation, lifted out of it: every Persona the config names is
+    // resolved to an immutable snapshot here, and the descriptor either receives those snapshots
+    // or refuses. WHICH ids a config names is the descriptor's own answer (`personaRefs`) rather
+    // than a path this method knows: one strategy spells it `evaluator.personaId` and the next
+    // spells it once per judge, and a manager that hard-coded the first spelling would silently
+    // resolve nothing for the second. Every refusal lands BEFORE any member Task exists.
+    const personas = new Map<string, EnsembleReviewPersona>();
+    const personaRefs = descriptor.personaRefs(config);
+    const guidanceBytesPerReference = Math.floor(
+      ENSEMBLE_LIMITS.reviewGuidanceBytes / Math.max(1, personaRefs.length),
+    );
+    for (const ref of personaRefs) {
+      const path = `strategyConfig.${ref.path}`;
+      // The same Persona named twice is ONE lookup, and deliberately so: a second read could only
+      // return the same bytes or - if the operator edited it between the two - a different
+      // revision, which would put two snapshots of "the same" judge in one plan.
+      const already = personas.get(ref.personaId);
+      const revision = already?.revision ?? null;
+      if (already === undefined) {
+        const resolved = this.resolvePersona(ref.personaId);
+        if (!resolved) {
+          return { ok: false, issues: [{ path, message: `no Persona ${ref.personaId}` }] };
+        }
+        // Archived is a refusal, not a downgrade: a run whose judge has been retired must not fall
+        // back to a built-in rubric under the operator's Persona choice.
+        if (resolved.archived) {
+          return {
+            ok: false,
+            issues: [{ path, message: `Persona ${ref.personaId} is archived and cannot judge` }],
+          };
+        }
+        personas.set(ref.personaId, {
+          id: resolved.id,
+          revision: resolved.revision,
+          name: resolved.name,
+          // Truncated to the plan's shared guidance budget HERE, once, so the plan cannot burst its
+          // cap and so the truncation is disclosed at the boundary that made it rather than at
+          // persistence.
+          guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, guidanceBytesPerReference),
+          runner: resolved.runner,
+          model: resolved.model,
+        });
+      }
+      // A pinned revision that no longer matches is a refusal too: the operator built the request
+      // against guidance that has since changed, and snapshotting the new text under the old
+      // request is the silent substitution the whole resolve step exists to prevent.
+      const live = revision ?? personas.get(ref.personaId)!.revision;
+      if (ref.revision !== null && ref.revision !== live) {
+        return {
+          ok: false,
+          issues: [
+            {
+              path,
+              message: `Persona ${ref.personaId} is at revision ${live}, not the requested ${ref.revision}`,
+            },
+          ],
+        };
+      }
     }
-    const resolved = this.resolvePersona(personaId);
-    if (!resolved) {
-      return {
-        ok: false,
-        issues: [{ path: "strategyConfig.evaluator.personaId", message: `no Persona ${personaId}` }],
-      };
-    }
-    // Archived is a refusal, not a downgrade: a run whose judge has been retired must not fall
-    // back to the built-in rubric under the operator's Persona choice.
-    if (resolved.archived) {
-      return {
-        ok: false,
-        issues: [
-          { path: "strategyConfig.evaluator.personaId", message: `Persona ${personaId} is archived and cannot judge a comparison` },
-        ],
-      };
-    }
-    // A pinned revision that no longer matches is a refusal too: the operator built the request
-    // against guidance that has since changed, and snapshotting the new text under the old
-    // request is the silent substitution the whole resolve step exists to prevent.
-    const pinnedRevision = readPersonaRevision(evaluator);
-    if (pinnedRevision !== null && pinnedRevision !== resolved.revision) {
-      return {
-        ok: false,
-        issues: [
-          {
-            path: "strategyConfig.evaluator.personaRevision",
-            message: `Persona ${personaId} is at revision ${resolved.revision}, not the requested ${pinnedRevision}`,
-          },
-        ],
-      };
-    }
-    const persona: EnsembleReviewPersona = {
-      id: resolved.id,
-      revision: resolved.revision,
-      name: resolved.name,
-      // Truncated to the plan's byte budget HERE, once, so the plan cannot burst its cap and
-      // so the truncation is disclosed at the boundary that made it rather than at persistence.
-      guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, ENSEMBLE_LIMITS.reviewGuidanceBytes),
-      runner: resolved.runner,
-      model: resolved.model,
-    };
-    return { ok: true, value: { repoRoot, persona, now } };
+    return { ok: true, value: { repoRoot, personas, now } };
   }
 }
 
@@ -1169,18 +1174,6 @@ function createRequestFingerprint(
       : null,
   };
   return createHash("sha256").update(canonicalEnsembleJson(material)).digest("hex");
-}
-
-function readPersonaId(evaluator: unknown): string | null {
-  if (!evaluator || typeof evaluator !== "object" || !("personaId" in evaluator)) return null;
-  const value = (evaluator as { personaId: unknown }).personaId;
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-function readPersonaRevision(evaluator: unknown): number | null {
-  if (!evaluator || typeof evaluator !== "object" || !("personaRevision" in evaluator)) return null;
-  const value = (evaluator as { personaRevision: unknown }).personaRevision;
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 /** Truncate a string to at most `maxBytes` UTF-8 bytes without splitting a code point. */

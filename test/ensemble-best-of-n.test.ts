@@ -9,6 +9,7 @@ import {
   BestOfNConfigSchema,
 } from "../src/shared/ensemble-strategies/best-of-n.ts";
 import { CompiledEnsemblePlanSchema } from "../src/shared/protocol.ts";
+import type { EnsembleReviewPersona } from "../src/shared/ensemble.ts";
 import { bestOfNStrategy } from "../src/server/ensembles/strategies/best-of-n.ts";
 import type { StrategyCompileContext } from "../src/server/ensembles/strategies/types.ts";
 
@@ -25,7 +26,12 @@ import type { StrategyCompileContext } from "../src/server/ensembles/strategies/
  *     looks fine, and nothing on screen says a different rubric decided it.
  */
 
-const context: StrategyCompileContext = { repoRoot: "/repo", persona: null, now: 1_000 };
+const context: StrategyCompileContext = { repoRoot: "/repo", personas: new Map(), now: 1_000 };
+
+/** A context carrying one resolved Persona snapshot, keyed the way the manager hands them over. */
+function withPersona(persona: EnsembleReviewPersona): StrategyCompileContext {
+  return { ...context, personas: new Map([[persona.id, persona]]) };
+}
 
 function compile(config: unknown, ctx: StrategyCompileContext = context) {
   return bestOfNStrategy.compile(config, ctx);
@@ -196,6 +202,8 @@ test("the shared defaults are the schema's own, so form and compiler cannot disa
 test("with no Persona chosen, the built-in rubric is snapshotted into the plan", () => {
   const review = planOf({}).stages.find((stage) => stage.id === "stage-2-review");
   assert.ok(review && review.driverKind === "review");
+  assert.equal(review.evaluator.kind, "comparative_llm", "Best-of-N compiles a single comparative evaluator");
+  if (review.evaluator.kind !== "comparative_llm") return;
   assert.deepEqual(review.evaluator.guidance, { kind: "builtin", rubricId: BEST_OF_N_BUILTIN_RUBRIC });
   assert.equal(review.evaluator.anonymizeSubjects, true);
 });
@@ -203,20 +211,18 @@ test("with no Persona chosen, the built-in rubric is snapshotted into the plan",
 test("a chosen Persona is snapshotted whole into the plan, not just pinned by id", () => {
   const plan = planOf(
     { evaluator: { personaId: "persona-1" } },
-    {
-      ...context,
-      persona: {
-        id: "persona-1",
-        revision: 4,
-        name: "Security",
-        guidanceMarkdown: "Weigh security risk heavily.",
-        runner: "codex",
-        model: "gpt-5.6-sol",
-      },
-    },
+    withPersona({
+      id: "persona-1",
+      revision: 4,
+      name: "Security",
+      guidanceMarkdown: "Weigh security risk heavily.",
+      runner: "codex",
+      model: "gpt-5.6-sol",
+    }),
   );
   const review = plan.stages.find((stage) => stage.id === "stage-2-review");
   assert.ok(review && review.driverKind === "review");
+  if (review.evaluator.kind !== "comparative_llm") throw new Error("expected a comparative evaluator");
   // The whole snapshot - name, guidance text and overrides - is in the plan, so recovery never
   // reloads the live Persona and a later edit cannot re-aim this run.
   assert.deepEqual(review.evaluator.guidance, {
@@ -242,17 +248,14 @@ test("a resolved Persona nobody asked for is refused too", () => {
   // config disagree about what is judging, and the plan would record the caller's answer.
   const result = compile(
     {},
-    {
-      ...context,
-      persona: {
-        id: "persona-1",
-        revision: 1,
-        name: "Security",
-        guidanceMarkdown: "Weigh security risk heavily.",
-        runner: null,
-        model: null,
-      },
-    },
+    withPersona({
+      id: "persona-1",
+      revision: 1,
+      name: "Security",
+      guidanceMarkdown: "Weigh security risk heavily.",
+      runner: null,
+      model: null,
+    }),
   );
   assert.equal(result.ok, false);
 });

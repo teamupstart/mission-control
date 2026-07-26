@@ -26,19 +26,37 @@ export interface StrategyCompileContext {
   /** Canonicalized repository root, already validated by the caller's repo policy. */
   repoRoot: string;
   /**
-   * A Persona the caller resolved to an exact, immutable SNAPSHOT, or null when none was
-   * requested.
+   * Every Persona this config named, resolved to an exact, immutable SNAPSHOT, keyed by id.
    *
-   * Resolved OUTSIDE compilation because looking one up reads SQLite. The whole snapshot -
-   * name, guidance text and runner/model overrides at the pinned revision - is handed in so
-   * the compiler can embed it in the plan and recovery never has to reload the live Persona.
-   * A descriptor that was asked for guidance and handed nothing must refuse rather than
-   * silently substitute its built-in rubric: a run judged by a different rubric than the
+   * A MAP rather than the single snapshot the first strategy needed, because a panel names one
+   * Persona per judge and a compiler that could only be handed one would have had to resolve the
+   * rest itself - which it cannot do, since resolving reads SQLite. Which ids appear here is the
+   * descriptor's own answer (`personaRefs`), so the manager never has to know the shape of a
+   * config it does not own.
+   *
+   * The whole snapshot - name, guidance text and runner/model overrides at the pinned revision -
+   * is handed in so the compiler can embed it in the plan and recovery never has to reload the
+   * live Persona. A descriptor that named a Persona and finds no entry here must REFUSE rather
+   * than silently substitute a built-in rubric: a run judged by a different rubric than the
    * operator chose is a much quieter failure than one that would not start.
    */
-  persona: EnsembleReviewPersona | null;
+  personas: ReadonlyMap<string, EnsembleReviewPersona>;
   /** Wall clock, injected so a compiler stays deterministic under test. */
   now: number;
+}
+
+/**
+ * One Persona a config names, as the descriptor reports it and the manager resolves it.
+ *
+ * `path` is the dotted path into that strategy's OWN config (`evaluator.personaId`,
+ * `judges.2.personaId`), so a refusal lands on the field the operator filled in rather than on the
+ * config as a whole. `revision` is the operator's optional pin: set, and a live Persona that has
+ * moved on is a refusal, never a newer snapshot under the request that was made.
+ */
+export interface StrategyPersonaRef {
+  path: string;
+  personaId: string;
+  revision: number | null;
 }
 
 /** One refusal, addressed to a field so a form can put it where the operator typed. */
@@ -70,6 +88,15 @@ export interface StrategyDescriptor extends EnsembleStrategyInfo {
   compilesVersion: number;
   compile(raw: unknown, context: StrategyCompileContext): StrategyCompileResult;
   /**
+   * Which Personas this raw config names, and where.
+   *
+   * Called BEFORE `compile`, on a config that has not been validated yet - so it must read
+   * defensively and answer "none" for anything it cannot make sense of, leaving the real refusal
+   * to the schema. Returning an empty list is the honest answer for a strategy that judges with
+   * built-in rubrics only, and it is what the default does.
+   */
+  personaRefs(raw: unknown): StrategyPersonaRef[];
+  /**
    * Bring an older stored config forward before validating it, or null when this build
    * cannot read it. Absent means "the schema has never changed".
    *
@@ -91,6 +118,8 @@ export interface TypedStrategySpec<C> extends EnsembleStrategyInfo<C> {
    * recovery trust the snapshot it stored.
    */
   compile(config: C, context: StrategyCompileContext): StrategyCompileResult;
+  /** Which Personas a RAW config names. Absent means this strategy never names one. */
+  personaRefs?(raw: unknown): StrategyPersonaRef[];
   migrateConfig?(raw: unknown, fromVersion: number): unknown | null;
 }
 
@@ -118,6 +147,7 @@ export function defineStrategy<C>(spec: TypedStrategySpec<C>): StrategyDescripto
     form: spec.form,
     estimate: spec.estimate,
     enabled: spec.enabled,
+    personaRefs: spec.personaRefs ?? (() => []),
     compile(raw, context) {
       const parsed = spec.configSchema.safeParse(raw);
       if (!parsed.success) {

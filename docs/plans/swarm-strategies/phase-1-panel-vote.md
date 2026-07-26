@@ -3,12 +3,13 @@
 ## Outcome and value
 
 The second product ensemble strategy: 2-5 members implement independently (as in
-Best-of-N), then M independent single-lens Persona judges each score **all** eligible
-artifacts in parallel; a pure aggregation ranks them and the disagreement between judges
-is surfaced beside the recommendation instead of averaged away. The human still confirms.
-Value: the first genuinely new operator signal after v1 - where the lenses disagree is
-information one comparative call cannot produce - at the smallest possible delta, which is
-why the engine plan names it the smallest second strategy.
+Best-of-N), then M independent single-lens judges - built-in rubrics or operator-authored
+Personas - each score **all** eligible artifacts in parallel; a pure aggregation ranks
+them and the disagreement between judges is surfaced beside the recommendation instead
+of averaged away. The human still confirms. Value: the first genuinely new operator
+signal after v1 - where the lenses disagree is information one comparative call cannot
+produce - at the smallest possible delta, which is why the engine plan names it the
+smallest second strategy.
 
 ## Entry criteria and direct dependencies
 
@@ -33,9 +34,10 @@ why the engine plan names it the smallest second strategy.
   evaluator snapshot, actual runner/model, bounded input, and typed per-artifact scores.
   A judge's malformed or interrupted result fails that judge's attempt only, with the
   kernel's bounded retry.
-- Aggregation: a pure shared function (rank aggregation over per-judge scores plus a
-  disagreement measure per artifact); quorum policy in the compiled plan - the evaluation
-  stage succeeds when at least two judges succeed, otherwise it fails with retry exposed.
+- Aggregation: a pure shared function (Borda ordering over each judge's ranks, never their
+  private 0-100 score scales, plus mean normalized Kendall tau disagreement); quorum policy
+  in the compiled plan - the evaluation stage succeeds when at least two judges succeed,
+  otherwise it fails with retry exposed.
 - Result renderer in the Ensemble detail: per-judge scorecards, aggregate rank, and a
   visible disagreement indicator; a Dispatch preset card. Both use the generic
   member/stage/evaluation data - no new route or event.
@@ -98,3 +100,17 @@ its quorum semantics or move scores onto members.
 
 - 2026-07-23: created; independent of Phases 2-4; only shared touchpoint is appending to
   the strategy registries beside them.
+- 2026-07-25: implemented. Three kernel generalizations were needed and are the ones
+  Phases 2-4 inherit, so they are recorded here rather than left to be rediscovered:
+  `EnsembleEvaluatorPolicy` became a discriminated union (the kernel's own comment
+  anticipated this); `ReviewOutcome` carries a LIST of evaluation records so a driver can
+  settle several rows in one attempt, and `ReviewPersist.beginEvaluation` takes the row's
+  ordinal and method; and `ReviewDriver.recover` moved the "is this crashed attempt
+  already a completed review" question from the engine to the driver. Persona resolution
+  also moved from a hard-coded `evaluator.personaId` path in `EnsembleManager` to a
+  `StrategyDescriptor.personaRefs` seam, since a panel names one Persona per judge.
+  `panel_vote` ships ONE review stage with a `panel_review@1` driver rather than M review
+  stages: the engine services one review at a time per run, so M stages would be M
+  sequential calls and no quorum. Built-in single-lens rubrics (Correctness,
+  Maintainability, Risk, Evidence, Scope) were added so the strategy is useful without
+  Persona setup, and duplicate built-in lenses are refused at validation.

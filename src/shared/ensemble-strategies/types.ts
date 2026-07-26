@@ -54,6 +54,24 @@ export type StrategyFormField =
       maxRows: number;
       /** Whether two rows may hold identical configuration. Repeats are legitimate. */
       allowDuplicates: boolean;
+    }
+  | {
+      /**
+       * A repeated row of ONE choice - the lens a judge is given - for a panel of evaluators.
+       *
+       * The second composite, and it is a distinct renderer rather than a `member_roster` variant
+       * because the two rows are about different things: a member row configures an AGENT that
+       * will hold a worktree, a judge row configures a LENS on the finished work. Duplicates are
+       * refused here (a panel of two identical lenses cannot disagree), which is the other half of
+       * why one renderer could not serve both.
+       */
+      kind: "lens_panel";
+      key: string;
+      label: string;
+      help: string;
+      minRows: number;
+      maxRows: number;
+      options: Array<{ value: string; label: string; help: string }>;
     };
 
 /**

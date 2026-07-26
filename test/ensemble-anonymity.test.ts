@@ -68,11 +68,12 @@ test("every compiled plan records anonymizeSubjects: true, whatever the config a
   const configs: Record<string, unknown> = {
     best_of_n: { members: [{}, {}], evaluator: { anonymizeSubjects: false } },
     consensus: { members: [{}, {}, {}], evaluator: { anonymizeSubjects: false } },
+    panel_vote: { anonymizeSubjects: false },
   };
   for (const id of ENSEMBLE_STRATEGY_IDS) {
     const result = ENSEMBLE_STRATEGIES[id].compile(configs[id], {
       repoRoot: "/repo",
-      persona: null,
+      personas: new Map(),
       now: 1000,
     });
     assert.ok(result.ok, `${id} failed to compile: ${JSON.stringify(result.ok ? null : result.issues)}`);
@@ -85,8 +86,13 @@ test("every compiled plan records anonymizeSubjects: true, whatever the config a
         `${id} compiled a plan claiming a de-anonymised evaluator`,
       );
     }
-    const config = result.config as { evaluator?: { anonymizeSubjects?: unknown } };
-    assert.equal(config.evaluator?.anonymizeSubjects, true, `${id} kept a de-anonymised config value`);
+    const config = result.config as {
+      anonymizeSubjects?: unknown;
+      evaluator?: { anonymizeSubjects?: unknown };
+    };
+    const anonymizeSubjects =
+      id === "panel_vote" ? config.anonymizeSubjects : config.evaluator?.anonymizeSubjects;
+    assert.equal(anonymizeSubjects, true, `${id} kept a de-anonymised config value`);
   }
 });
 

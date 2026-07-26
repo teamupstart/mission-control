@@ -208,7 +208,10 @@ test("review uses server estimates, routes nested issues, and hides unsupported 
   const modal = readFileSync(new URL("../src/web/components/DispatchModal.tsx", import.meta.url), "utf8");
   assert.match(dispatch, /reviewed && preview \? preview\.estimate : liveEstimate/);
   assert.match(dispatch, /normalizeIssuePath/);
-  assert.match(dispatch, /members\.\$\{index\}/);
+  // Repeated-row fields address their issues at the key the FORM declared, not at a literal
+  // "members" - there are two of them now (the candidate roster and the judge panel), and a
+  // hard-coded path would silently route one field's issues onto the other.
+  assert.match(dispatch, /\$\{fieldKey\}\.\$\{index\}/);
   assert.match(dispatch, /workflowVersionId/);
   assert.match(modal, /\{!ensembleMode && \(\s*<div className="field-row">\s*<label className="field">[\s\S]*?Priority/);
 });

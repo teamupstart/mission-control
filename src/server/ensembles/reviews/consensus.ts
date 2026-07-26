@@ -158,6 +158,8 @@ function validate(
 
 async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
   return runEvidenceReview(context, {
+    evaluatorKind: "consensus_llm",
+    purpose: "consensus_review",
     label: "The consensus pass",
     builtinRubric: {
       id: CONSENSUS_BUILTIN_RUBRIC,
@@ -182,5 +184,16 @@ export const consensusReviewDriver: ReviewDriver = {
   driverKey: "consensus_review@1",
   llmPurpose: "consensus_review",
   resultLabel,
+  recover({ policy, evaluations }) {
+    if (policy.kind !== "consensus_llm") return null;
+    const succeeded = evaluations.find((evaluation) => evaluation.status === "succeeded");
+    if (!succeeded) return null;
+    return {
+      evaluationIds: [succeeded.id],
+      resultLabel: succeeded.result
+        ? resultLabel({ result: succeeded.result, subjectArtifactIds: succeeded.subjectArtifactIds })
+        : null,
+    };
+  },
   run,
 };

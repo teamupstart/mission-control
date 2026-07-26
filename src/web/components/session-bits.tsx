@@ -386,7 +386,7 @@ export function EnsembleRailMark({
  * three read `task.scheduleId` and render nothing for manual, external-source, or
  * pre-feature work, exactly as `Task`/`TaskSummary` promise those fields move together.
  *
- * Clicking any of them opens the Scheduled Catalog at this schedule's run history through
+ * Clicking any of them opens Recurring Missions at this schedule's run history through
  * `onOpen`, which never touches session state - a provenance link is a deep link, not a
  * card action, so each stops propagation so it does not also select/expand the session or
  * start a backlog drag.

@@ -1490,7 +1490,7 @@ upstream (a sweep files new work; it does not reconcile old work, which has to d
 happens when a human has edited the task since), and it never **writes back** to the
 external system.
 
-## Recurring missions (Scheduled Catalog)
+## Recurring missions
 
 A **recurring mission** is a durable template that files an ordinary backlog task on a
 cadence: "audit dependencies every Monday at 8am". It is deliberately not a
@@ -1498,34 +1498,56 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-Open the **Scheduled Catalog** from the **Missions** button in the topbar, beside Dispatch
-and Sitrep. The button carries an attention badge when any enabled schedule needs you (a
+Open **Missions** from the topbar button of the same name, beside Dispatch and Sitrep. The button carries an attention badge when any enabled schedule needs you (a
 failed run, an invalid repo, an overdue instant, a stuck reservation - all derived on the
 daemon, never in the browser). The catalog is a wide operator overlay, not a settings
 category, and it owns Escape like every other overlay; there is **no keyboard shortcut** for
 it in V1.
 
-The overlay has four screens:
+The overlay has three screens:
 
-- **Catalog + detail** - search and filter (All / Healthy / Paused / Attention) the live
-  list, and read one schedule's template, next occurrence, policies, guarantee, and recent
-  outcome. Its actions are Pause/Resume, **Run now** (requests a manual occurrence, paused or
-  not; it files a backlog task only when the schedule's policies and safety checks allow, and
-  it never runs an agent), Preview, History, and Archive.
+- **Missions** - a rail to search and filter (All / Healthy / Paused / Attention) the live
+  list, and beside it one mission's detail: what it does (its name, its cadence as a
+  sentence, and the task every run files), its **spine**, and a Configuration disclosure
+  holding the exact stored cron, time zone, policies and task defaults. Its actions are
+  Pause/Resume, Edit, Archive, and **Run now** (requests a manual occurrence, paused or not;
+  it files a backlog task only when the schedule's policies and safety checks allow, and it
+  never runs an agent).
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
   template, the cadence and time zone, laptop availability, overlap and missed-run
   guardrails, and preview-and-enable. Readable presets (daily / weekdays / weekly / monthly)
-  and an Advanced cron mode both resolve to the same validated five-field expression. Two
-  explicit buttons: **Save paused** stores the configuration without starting the clock, and
-  **Save & enable** re-previews the exact definition before enabling it, so a stale preview
-  can never enable changed data.
-- **Preview & standby** - the next 10-50 occurrences with local time, UTC, and DST shifts,
-  plus a non-mutating standby simulation: give it a sleep window and it shows what the
-  missed-run policy would do with every instant that came due while the laptop was off. Every
-  instant and decision is the daemon's - the browser does no date math.
-- **Run history** - paginated, fetched on demand (never polled), with each occurrence's
-  scheduled time, trigger (scheduled or manual), outcome, delay, generated task, revision,
-  and an immutable audit. History survives archive.
+  and an Advanced cron mode both resolve to the same validated five-field expression. The
+  preview rail lists the next 10-50 occurrences with local time, UTC and DST shifts, plus a
+  non-mutating standby simulation: give it a sleep window and it shows what the missed-run
+  policy would do with every instant that came due while the laptop was off. Two explicit
+  buttons: **Save paused** stores the configuration without starting the clock, and **Save &
+  enable** re-previews the exact definition before enabling it, so a stale preview can never
+  enable changed data.
+- **Run history** - the spine on its own, for a generated task's deep link into a mission the
+  live catalog no longer lists because it was archived. History survives archive.
+
+### The spine
+
+A mission's detail is arranged around **one time axis**, read downward: what has run, where
+nothing did, `NOW`, and what is coming. It is composed from reads that already existed - the
+paginated occurrence history (fetched on demand, never polled) and the preview enumeration -
+so no new daemon route backs it.
+
+Past occurrences carry their real outcome, delay, trigger and generated task, and expand in
+place into the immutable audit of every field the ledger persisted. Future instants are a
+quiet ladder of dates with only the next one speaking; DST transitions and collisions with
+another enabled mission stay flagged. A **paused, archived or unreadable** mission draws no
+future at all - the axis stops with the reason, because showing instants a mission will not
+act on is the one thing this surface exists not to do.
+
+Where an instant sat unclaimed, **the rail breaks**: a dashed segment carrying the real
+duration and, inside it, the instants the ledger itself says were folded away. A gap is drawn
+from persisted columns only (`scheduled_for`, `claimed_at`, `covered_by_id`); nothing infers
+whether the machine was asleep, off, or merely stopped, because the database does not record
+which. Small mechanical delays do not break the rail - a break is a much louder claim than a
+"late" chip, and it is spent only on a window past every delay the local claim path produces.
+Throughout, the schedule's own wall clock is the primary reading and UTC is the audit line
+beneath it.
 
 Generated tasks carry their origin across the operator task surfaces: a provenance chip or
 compact glyph on the Board backlog card, the Sitrep backlog and recent outcomes, the Dispatch

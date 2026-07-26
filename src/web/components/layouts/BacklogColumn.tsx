@@ -81,7 +81,7 @@ export function BacklogColumn({
   onDragging: (repoRoot: string | null) => void;
   /** Reopen the dispatch modal over this task. */
   onEdit: (taskId: string) => void;
-  /** Open the Scheduled Catalog from a generated task's provenance mark. */
+  /** Open Recurring Missions from a generated task's provenance mark. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's copy. */
   scheduleNameById?: ReadonlyMap<string, string>;

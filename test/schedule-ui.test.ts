@@ -16,7 +16,7 @@ import { mkSchedule } from "./helpers/schedule-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 /**
- * The Scheduled Catalog's React surfaces, rendered statically (this runner has no DOM).
+ * The Recurring Missions React surfaces, rendered statically (this runner has no DOM).
  *
  * Two things are at stake and both are load-bearing. First, the honesty of the local
  * catch-up story: the operator must never read a promise that work ran on time or while
@@ -52,10 +52,21 @@ test("the catalog lists live schedules with their server-derived health", () => 
   );
   assert.match(html, /Alpha/);
   assert.match(html, /Beta/);
-  assert.match(html, /rm-pill-attention/);
-  assert.match(html, /local-catchup/);
+  // Health reaches the rail as a tone AND as a word an assistive reader can hear - never
+  // as the bare server token, which is how `attention` used to be printed at an operator.
+  assert.match(html, /rm-dot-attention/);
+  assert.match(html, /aria-label="Needs attention"/);
+  assert.match(html, /aria-label="Healthy"/);
+  assert.doesNotMatch(html, />healthy</);
   // The selected row is marked, so an SSE reorder can keep it highlighted.
   assert.match(html, /rm-row is-selected/);
+  // The rail is a real list of real list items. `<button role="listitem">` replaced the
+  // implicit button role, so assistive tech was never told the row could be activated.
+  assert.match(html, /<ul class="rm-catalog-rows"><li>/);
+  assert.doesNotMatch(html, /role="listitem"/);
+  // Execution mode is uniform in V1, so it is not per-row information - it used to be a
+  // column that truncated mid-word to `local-catc…` on every row.
+  assert.doesNotMatch(html, /local-catchup/);
 });
 
 test("the catalog shows a disconnected banner instead of fetching, and an empty state", () => {
@@ -88,8 +99,6 @@ test("the detail is honest about local catch-up: never on-time, never asleep exe
     createElement(ScheduleDetail, {
       schedule,
       onEdit: () => {},
-      onPreview: () => {},
-      onHistory: () => {},
       onArchived: () => {},
     }),
   );
@@ -102,9 +111,32 @@ test("the detail is honest about local catch-up: never on-time, never asleep exe
   assert.match(html, /0 8 \* \* 1/);
   assert.match(html, /Audit dependencies and open a PR if anything changed/);
   assert.match(html, /\/Users\/dev\/workspace\/mission-control/);
+  // The exact stored token stays reachable in the Configuration disclosure - an audit view
+  // is the one place a raw enum belongs - beside the sentence that reads it.
   assert.match(html, /local-catchup/);
-  assert.ok(html.includes(new Date(schedule.nextRunAt!).toISOString()));
-  assert.match(html, /on time/);
+  assert.match(html, /Durable local catch-up/);
+  // The machine-readable instant rides `dateTime` rather than being a fifth on-screen
+  // restatement of a value the spine already carries.
+  assert.ok(html.includes(`dateTime="${new Date(schedule.nextRunAt!).toISOString()}"`));
+});
+
+test("the detail leads with what the mission does, not with derived restatements", () => {
+  // Agent instructions used to be a `dd` weighing exactly as much as `NEXT (UTC)`, a
+  // restatement of a value printed 200px above it. The task is the mission; it reads first.
+  const html = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule(),
+      onEdit: () => {},
+      onArchived: () => {},
+    }),
+  );
+  const brief = html.indexOf("rm-brief");
+  const config = html.indexOf("rm-config");
+  const spine = html.indexOf("rm-spine");
+  assert.ok(brief > 0 && config > brief, "the task template precedes the configuration dump");
+  assert.ok(spine > brief, "the time axis follows what the mission does");
+  // The cadence is a sentence, not four notations of one instant.
+  assert.match(html, /Every Monday at 8:00 AM · America\/New_York/);
 });
 
 test("the detail's Run now explains it files a backlog task, not that it runs an agent", () => {
@@ -112,8 +144,6 @@ test("the detail's Run now explains it files a backlog task, not that it runs an
     createElement(ScheduleDetail, {
       schedule: mkSchedule(),
       onEdit: () => {},
-      onPreview: () => {},
-      onHistory: () => {},
       onArchived: () => {},
     }),
   );
@@ -172,8 +202,6 @@ test("the detail prevents newer-build schedules from being edited", () => {
         unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
       }),
       onEdit: () => {},
-      onPreview: () => {},
-      onHistory: () => {},
       onArchived: () => {},
     }),
   );
@@ -193,8 +221,6 @@ test("the detail disables Resume for a paused newer-build schedule, but not Paus
         unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
       }),
       onEdit: () => {},
-      onPreview: () => {},
-      onHistory: () => {},
       onArchived: () => {},
     }),
   );
@@ -209,8 +235,6 @@ test("the detail disables Resume for a paused newer-build schedule, but not Paus
         unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
       }),
       onEdit: () => {},
-      onPreview: () => {},
-      onHistory: () => {},
       onArchived: () => {},
     }),
   );
@@ -337,10 +361,7 @@ test("confirmation and standby simulation seal their underlying controls", () =>
 });
 
 test("history errors preserve provenance and clear after pagination recovers", () => {
-  const history = readFileSync(
-    path.join(WEB, "components/schedules/ScheduleHistory.tsx"),
-    "utf8",
-  );
+  const history = readFileSync(path.join(WEB, "components/schedules/ScheduleSpine.tsx"), "utf8");
   assert.match(
     history,
     /function loadOlder\(\): void \{[\s\S]*?setError\(null\);\s+setLoading\(true\);[\s\S]*?if \(!page\) \{[\s\S]*?return;\s+\}\s+setError\(null\);/,
@@ -350,24 +371,22 @@ test("history errors preserve provenance and clear after pagination recovers", (
 });
 
 test("history deep links, row activation, and timestamps preserve the audit", () => {
-  const history = readFileSync(
-    path.join(WEB, "components/schedules/ScheduleHistory.tsx"),
-    "utf8",
-  );
+  const history = readFileSync(path.join(WEB, "components/schedules/ScheduleSpine.tsx"), "utf8");
   // The deep link seeds the cursor from the occurrence's own instant so the exact run lands
   // on the first page (O(1)), and the fallback pages until found or history is exhausted -
   // no artificial page cap, per the Inspector round on #241.
   assert.match(history, /initialScheduledFor \+ 1/);
   assert.doesNotMatch(history, /DEEP_LINK_PAGE_LIMIT/);
   assert.match(history, /page\.nextCursor === null/);
-  // Row selection is a focusable, tooltip-wrapped <button> (a <tr> cannot be Tooltip-wrapped
-  // - its description span would be an invalid tbody child), per the Inspector round on #241.
-  assert.match(history, /className="rm-history-select"/);
-  assert.match(history, /aria-pressed=\{occ\.id === selectedId\}/);
-  assert.match(history, /onClick=\{\(\) => setSelectedId\(occ\.id\)\}/);
-  // Timestamps stay unambiguous: UTC with year in both the row and the audit head.
-  assert.match(history, /Current zone \(\{timezone\}\):/);
-  assert.match(history, /<h3>\{formatAuditInstantUtc\(occurrence\.scheduledFor\)\}<\/h3>/);
+  // The outcome is a focusable, tooltip-wrapped <button> that expands the audit in place,
+  // rather than selecting a row that fills a second pane.
+  assert.match(history, /className="rm-sp-toggle"/);
+  assert.match(history, /aria-expanded=\{open\}/);
+  assert.match(history, /setOpenId\(\(prev\) => \(prev === row\.occurrence\.id \? null : row\.occurrence\.id\)\)/);
+  // Timestamps stay unambiguous, but the operator's own zone leads and UTC is the audit
+  // line beneath it - the reverse of how history read before.
+  assert.match(history, /<div>\{formatInstant\(at, timezone, \{/);
+  assert.match(history, /<div className="rm-dim rm-tiny rm-mono">\{formatAuditInstantUtc\(at\)\}<\/div>/);
 });
 
 test("generated-task links route without abandoning retained audits", () => {
@@ -383,7 +402,7 @@ test("generated-task links route without abandoning retained audits", () => {
   // with a reason, and history renders it disabled rather than a click that does nothing.
   assert.match(app, /resolveTaskLink=\{/);
   assert.match(app, /openable: false, blockedReason:/);
-  const history = readFileSync(path.join(WEB, "components/schedules/ScheduleHistory.tsx"), "utf8");
-  assert.match(history, /function TaskLinkCell/);
+  const history = readFileSync(path.join(WEB, "components/schedules/ScheduleSpine.tsx"), "utf8");
+  assert.match(history, /function TaskLink/);
   assert.match(history, /rm-task-inert/);
 });

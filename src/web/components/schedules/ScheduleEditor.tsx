@@ -308,7 +308,13 @@ export function ScheduleEditor({
               placeholder="e.g. Dependency audit"
             />
           </Field>
-          <Field label="Repository" hint={`${repos.length} in workspace`} error={fieldErrors.repoRoot}>
+          {/* The hint names what the number COUNTS. Bare, it rendered as
+              "Repository 202 in workspace", which parses as the repository being named 202. */}
+          <Field
+            label="Repository"
+            hint={`${repos.length} available`}
+            error={fieldErrors.repoRoot}
+          >
             <RepoCombobox
               repos={repos}
               value={draft.repoRoot}

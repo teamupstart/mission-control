@@ -1,48 +1,54 @@
 import { useState } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { scheduleIsRunnable } from "@shared/schedules.ts";
-import {
-  archiveSchedule,
-  runScheduleNow,
-  setScheduleEnabled,
-} from "../../lib/api.ts";
+import { archiveSchedule, runScheduleNow, setScheduleEnabled } from "../../lib/api.ts";
 import {
   SCHEDULE_HEALTH_REASON_LABELS,
-  cadenceLabel,
-  delayIsLate,
-  formatDelay,
+  cadenceSentence,
+  executionModeLabel,
   formatInstantLong,
   missedPolicyLabel,
   occurrenceStatusView,
   overlapPolicyLabel,
+  scheduleHealthLabel,
+  scheduleHealthTone,
   shortRepo,
 } from "../../lib/schedules.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { ScheduleSpine } from "./ScheduleSpine.tsx";
 
 /**
- * The catalog's right half: everything about the selected schedule, and every operator
- * mutation it offers.
+ * Everything about the selected mission, arranged around its time axis.
  *
- * The daemon owns every decision shown here - health, the next instant, the policy
- * outcomes - and this reads them. What it adds is the action surface: Pause/Resume, Run
- * now, Archive, and the routes into Preview, Edit and History. Each mutation disables its
- * control while it is in flight (no duplicate clicks) and surfaces a structured error
- * rather than a blank failure. Run now is explicit that it FILES A BACKLOG TASK - it never
- * dispatches or types into a pane; Foreman remains the only autonomous path to execution.
+ * The order is the argument. WHAT this mission does (its name, its cadence as a sentence,
+ * and the task every run files) comes first because that is what an operator came to read;
+ * WHEN it has run and will run is the spine below it; and the exact stored configuration -
+ * the cron string, the zone, the policies, the machine-readable instants - sits in a
+ * disclosure, because it is an audit view rather than a headline. It used to be eleven
+ * `dt`/`dd` pairs at one weight, where the agent instructions carried exactly as much
+ * emphasis as a UTC restatement of a value printed 200px above them.
+ *
+ * The daemon still owns every judgement shown here - health, the next instant, the policy
+ * outcomes - and this reads them. What it adds is the action surface: Pause/Resume, Run now,
+ * Archive and the route into Edit. Each mutation disables its control while it is in flight
+ * and surfaces a structured error rather than a blank failure. Run now is explicit that it
+ * FILES A BACKLOG TASK - it never dispatches or types into a pane; Foreman remains the only
+ * autonomous path to execution.
  */
 export function ScheduleDetail({
   schedule,
   onEdit,
-  onPreview,
-  onHistory,
   onArchived,
+  onOpenTask,
+  resolveTaskLink,
 }: {
   schedule: MissionSchedule;
   onEdit: () => void;
-  onPreview: () => void;
-  onHistory: () => void;
   /** Archive committed; the catalog should select a neighbour. */
   onArchived: () => void;
+  /** Open a generated task from the spine's history half. */
+  onOpenTask?: (taskId: string) => void;
+  resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
 }): React.JSX.Element {
   const [busy, setBusy] = useState<null | "enable" | "run" | "archive">(null);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -50,7 +56,6 @@ export function ScheduleDetail({
 
   const runnable = scheduleIsRunnable(schedule);
   const template = schedule.template;
-  const last = schedule.lastOccurrence;
 
   async function toggleEnabled(): Promise<void> {
     setBusy("enable");
@@ -95,19 +100,27 @@ export function ScheduleDetail({
 
   return (
     <div className="rm-detail">
-      <div className="rm-panel-head">
-        <div className="rm-detail-title">
-          <span className="rm-row-icon" aria-hidden>
-            ◷
-          </span>
-          <div>
-            <h3>{schedule.name}</h3>
-            <p className="rm-dim">
-              {shortRepo(template?.repoRoot)} · revision {schedule.revision}
-            </p>
+      <div className="rm-detail-id">
+        <span className="rm-row-icon" aria-hidden>
+          ◷
+        </span>
+        <div className="rm-detail-name">
+          <h3>{schedule.name}</h3>
+          <p className="rm-detail-cadence">
+            {cadenceSentence(schedule.expression, schedule.timezone)}
+          </p>
+          <div className="rm-detail-chips">
+            <span className="rm-chip">{shortRepo(template?.repoRoot)}</span>
+            {template && <span className="rm-chip">{template.agent}</span>}
+            {template && <span className="rm-chip">{template.kind}</span>}
+            {template?.model && <span className="rm-chip">{template.model}</span>}
+            <span className="rm-chip">revision {schedule.revision}</span>
           </div>
         </div>
         <div className="rm-detail-actions">
+          <span className={`rm-pill rm-pill-${scheduleHealthTone(schedule.health)}`}>
+            {scheduleHealthLabel(schedule.health)}
+          </span>
           {/* Pause stays available even for an unreadable schedule (an operator must always
               be able to stop one), but Resume is disabled when !runnable: resuming would set
               the durable enabled flag on a config this build cannot run, and a later
@@ -158,61 +171,73 @@ export function ScheduleDetail({
           </ul>
         )}
 
-        <div className="rm-next-run">
-          <span className="rm-eyebrow">Next occurrence</span>
-          <div className="rm-next-time">
-            {schedule.nextRunAt != null
-              ? formatInstantLong(schedule.nextRunAt, schedule.timezone)
-              : schedule.enabled
-                ? "No next occurrence is scheduled"
-                : "Paused · no occurrence is scheduled"}
+        {template && (
+          <div className="rm-brief">
+            <span className="rm-eyebrow">Each run files this task</span>
+            <strong className="rm-brief-title">{template.title}</strong>
+            <p className="rm-brief-intent">{template.intent}</p>
           </div>
-          <p className="rm-dim">
-            Will create a normal backlog task. Foreman may dispatch it only after the
-            existing live-mode, allowlist, dependency and capacity checks pass.
-          </p>
-        </div>
+        )}
 
-        <dl className="rm-kv">
-          {template && (
-            <>
-              <dt>Task title</dt>
-              <dd>
-                <strong>{template.title}</strong>
-              </dd>
-            </>
-          )}
-          <dt>Cadence</dt>
-          <dd>{cadenceLabel(schedule.expression)}</dd>
-          <dt>Exact cron</dt>
-          <dd className="rm-mono">{schedule.expression}</dd>
-          <dt>Time zone</dt>
-          <dd>{schedule.timezone} · DST aware</dd>
-          <dt>Next (UTC)</dt>
-          <dd className="rm-mono">
-            {schedule.nextRunAt != null ? new Date(schedule.nextRunAt).toISOString() : "-"}
-          </dd>
-          <dt>Execution mode</dt>
-          <dd>{schedule.executionMode ?? "Unreadable by this build"}</dd>
-          {template && (
-            <>
-              <dt>Task intent</dt>
-              <dd>{template.intent}</dd>
-              <dt>Repository</dt>
-              <dd className="rm-mono">{template.repoRoot}</dd>
-              <dt>Task defaults</dt>
-              <dd>
-                {template.agent} · {template.kind}
-                {template.priority ? ` · ${template.priority}` : ""}
-                {template.model ? ` · ${template.model}` : " · model follows harness default"}
-              </dd>
-            </>
-          )}
-          <dt>Overlap</dt>
-          <dd>{overlapPolicyLabel(schedule.overlapPolicy)}</dd>
-          <dt>Missed runs</dt>
-          <dd>{missedPolicyLabel(schedule.missedPolicy)}</dd>
-        </dl>
+        <details className="rm-config">
+          <Tooltip label="Show the exact stored configuration this mission runs on">
+            <summary>
+              Configuration
+              <span className="rm-dim"> - cron, time zone, policies and task defaults</span>
+            </summary>
+          </Tooltip>
+          <dl className="rm-kv">
+            <dt>Cron expression</dt>
+            <dd className="rm-mono">{schedule.expression}</dd>
+            <dt>Time zone</dt>
+            <dd>{schedule.timezone} · DST aware</dd>
+            <dt>Next occurrence</dt>
+            <dd>
+              {/* The exact instant rides `dateTime`, so the audit value stays in the document
+                  without a second UTC restatement competing with the sentence beside it. */}
+              {schedule.nextRunAt != null ? (
+                <time dateTime={new Date(schedule.nextRunAt).toISOString()}>
+                  {formatInstantLong(schedule.nextRunAt, schedule.timezone)}
+                </time>
+              ) : schedule.enabled ? (
+                "None is scheduled"
+              ) : (
+                "Paused · none is scheduled"
+              )}
+            </dd>
+            <dt>Execution mode</dt>
+            <dd>
+              {executionModeLabel(schedule.executionMode)}
+              {schedule.executionMode && (
+                <span className="rm-dim rm-mono"> {schedule.executionMode}</span>
+              )}
+            </dd>
+            <dt>Overlap</dt>
+            <dd>{overlapPolicyLabel(schedule.overlapPolicy)}</dd>
+            <dt>Missed runs</dt>
+            <dd>{missedPolicyLabel(schedule.missedPolicy)}</dd>
+            {template && (
+              <>
+                <dt>Repository</dt>
+                <dd className="rm-mono">{template.repoRoot}</dd>
+                <dt>Task defaults</dt>
+                <dd>
+                  {template.agent} · {template.kind}
+                  {template.priority ? ` · ${template.priority}` : ""}
+                  {template.model ? ` · ${template.model}` : " · model follows harness default"}
+                </dd>
+              </>
+            )}
+          </dl>
+        </details>
+
+        <ScheduleSpine
+          key={schedule.id}
+          scheduleId={schedule.id}
+          schedule={schedule}
+          onOpenTask={onOpenTask}
+          resolveTaskLink={resolveTaskLink}
+        />
 
         <div className="rm-guarantee">
           <span className="rm-guarantee-mark" aria-hidden>
@@ -227,22 +252,6 @@ export function ScheduleDetail({
           </div>
         </div>
 
-        {last && (
-          <div className="rm-last-run">
-            <span className="rm-eyebrow">Most recent occurrence</span>
-            <span>
-              <span className={`rm-badge-inline rm-badge-${occurrenceStatusView(last.status).tone}`}>
-                {occurrenceStatusView(last.status).label}
-              </span>{" "}
-              ·{" "}
-              <span className={delayIsLate(last.delayMs) ? "rm-late" : ""}>
-                {formatDelay(last.delayMs)}
-              </span>{" "}
-              {last.taskId ? "· task filed" : ""}
-            </span>
-          </div>
-        )}
-
         {message && (
           <p
             className={message.tone === "error" ? "rm-error" : "rm-note-ok"}
@@ -253,38 +262,40 @@ export function ScheduleDetail({
         )}
 
         <div className="rm-detail-foot">
-          <Tooltip label="Enumerate the next occurrences and simulate standby, without writing anything">
-            <button className="btn" onClick={onPreview} disabled={busy !== null || !runnable}>
-              Preview
-            </button>
-          </Tooltip>
-          <Tooltip label="Open this mission's paginated run history">
-            <button className="btn" onClick={onHistory} disabled={busy !== null}>
-              History
-            </button>
-          </Tooltip>
-          <span className="rm-spacer" />
           {confirmArchive ? (
             <>
               <span className="rm-dim rm-small">Archive keeps history. Sure?</span>
-              <Tooltip label="Keep editing - do not archive">
-                <button className="btn" onClick={() => setConfirmArchive(false)} disabled={busy !== null}>
+              <Tooltip label="Keep this mission in the catalog - do not archive">
+                <button
+                  className="btn"
+                  onClick={() => setConfirmArchive(false)}
+                  disabled={busy !== null}
+                >
                   Cancel
                 </button>
               </Tooltip>
               <Tooltip label="Retire this mission; its generated tasks and history are preserved">
-                <button className="btn btn-danger" onClick={() => void archive()} disabled={busy !== null}>
+                <button
+                  className="btn btn-danger"
+                  onClick={() => void archive()}
+                  disabled={busy !== null}
+                >
                   {busy === "archive" ? "Archiving…" : "Archive"}
                 </button>
               </Tooltip>
             </>
           ) : (
             <Tooltip label="Retire this mission from the catalog; history is kept">
-              <button className="btn" onClick={() => setConfirmArchive(true)} disabled={busy !== null}>
+              <button
+                className="btn"
+                onClick={() => setConfirmArchive(true)}
+                disabled={busy !== null}
+              >
                 Archive
               </button>
             </Tooltip>
           )}
+          <span className="rm-spacer" />
           <Tooltip label="Files this mission's work now as a backlog task - it does not run an agent. Works while paused.">
             <button
               className="btn btn-primary"

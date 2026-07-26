@@ -6,7 +6,7 @@ import type {
 } from "../../src/shared/schedules.ts";
 
 /**
- * A representative live schedule for the Scheduled Catalog's render tests, and the one
+ * A representative live schedule for the Recurring Missions render tests, and the one
  * place a required `MissionSchedule` field is added when the type grows. Every field is
  * overridable so a test that cares about one says so and stays readable.
  */

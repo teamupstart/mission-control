@@ -41,7 +41,7 @@ export function RailRow({
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
-  /** Open the Scheduled Catalog from a scheduled task's rail glyph. */
+  /** Open Recurring Missions from a scheduled task's rail glyph. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the rail glyph's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;

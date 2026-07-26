@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session launchers · 02 Footer action row</title>
+    <link rel="stylesheet" href="launchers.css" />
+  </head>
+  <body data-option="b">
+    <div id="app"></div>
+
+    <template id="note">
+      <div class="note-card">
+        <h1>The two launchers join the action row</h1>
+        <p>
+          No new band at all: the buttons become two more entries in
+          <code>ActionBar</code>, beside <b>focus</b>, <b>diff</b>, <b>reset</b> and
+          <b>kill</b>. That row already means "do something to this session", and
+          <b>focus</b> is the closest existing neighbour - it raises the pane this session
+          already lives in, while these two open a new one.
+        </p>
+        <p>
+          The catch is that <code>ActionBar</code> renders two different vocabularies:
+          lowercase <code>.act</code> pills in the console/board footer, capitalised
+          <code>.btn</code> pills on the card - flip the layout switch to see both. It also
+          puts a popover at the very bottom of the pane, so the menu has to open
+          <b>upward</b>, and the row is already six controls wide before these arrive. It
+          is the cheapest option and the most crowded one.
+        </p>
+        <div class="tradeoffs">
+          <span class="up"><i>+</i>No new surface; reuses a row that already exists</span>
+          <span class="up"><i>+</i>Sits next to <b>focus</b>, its nearest relative</span>
+          <span class="down"><i>−</i>Two button vocabularies to satisfy</span>
+          <span class="down"><i>−</i>Menus open upward, out of a crowded row</span>
+          <span class="down"><i>−</i>Reads as a session action, not a worktree one</span>
+        </div>
+      </div>
+    </template>
+
+    <script src="launchers.js"></script>
+  </body>
+</html>

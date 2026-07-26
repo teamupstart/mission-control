@@ -815,12 +815,6 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       void session.pump(query);
       return session;
     },
-    // Verified against claude 2.1.x: `--resume <id>` opens the interactive TUI on that
-    // exact conversation, and an embedded session's id names a file in the same
-    // `~/.claude/projects/` store the TUI reads. No `--model` or mode flags ride along -
-    // a resumed session carries its own, and re-stating them here would silently change a
-    // conversation the operator asked to CONTINUE.
-    resumeArgv: (agentSessionId) => ["--resume", agentSessionId],
   };
 }
 

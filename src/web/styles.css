@@ -967,7 +967,12 @@ body {
 /* The "Open in" popover is only ever anchored under a files toolbar, which sounds like it
    could never reach the bar - but `.file-window` above is a window the human DRAGS, and it
    can be parked with its toolbar at y=0. */
-.is-desktop .open-in-pop {
+.is-desktop .open-in-pop,
+/* The conversation launchers' chooser. It opens inside the transcript, which on today's
+   layouts never overlaps the bar - but "the layout keeps it out of the rectangle" is the
+   assumption every entry above was added after breaking, and the cost of listing it is
+   nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
+.is-desktop .launch-pop {
   -webkit-app-region: no-drag;
 }
 
@@ -4528,6 +4533,212 @@ kbd {
 }
 .transcript-input:disabled {
   opacity: 0.55;
+}
+
+/* ---- conversation launchers (open a terminal, or the agent's own CLI) ----
+   A strip at the top of the transcript, so it reaches every layout that shows a
+   conversation from one mount. `flex: none` is load-bearing rather than tidy: the log
+   below it is `flex: 1 1 auto; min-height: 0` in both the expanded card and the console
+   detail, and a growable toolbar would take that height from the thing being read.
+   No vendor is named here - the agent button's colour arrives as the inline
+   `--agent-accent` the transcript already carries. */
+.conv-launch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.conv-launch-where {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.conv-launch-lbl {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* Ellipsis at the END. A `direction: rtl` trick clips the less useful half of a long path
+   but reorders the segments around the slashes - "~/.treehouse/pool" draws as
+   "treehouse/pool/.~" - so the path is simply truncated instead. */
+.conv-launch-path {
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-launch-sp {
+  flex: 1;
+}
+
+.launch {
+  position: relative;
+  flex: none;
+}
+.launch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.launch-btn:hover:not(:disabled),
+.launch-btn[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.launch-btn:disabled {
+  color: var(--dim);
+  opacity: 0.6;
+  cursor: default;
+}
+.launch-glyph-lead {
+  font-size: 11px;
+  color: var(--dim);
+}
+.launch-btn:hover:not(:disabled) .launch-glyph-lead,
+.launch-btn[aria-expanded="true"] .launch-glyph-lead {
+  color: var(--working);
+}
+.launch-caret {
+  font-size: 8px;
+  color: var(--dim);
+}
+/* The agent launcher wears its harness's accent, so which agent you are about to open is
+   readable before the label is. `--agent-accent` is set inline on `.transcript`. */
+.launch-agent .launch-glyph-lead,
+.launch-agent:hover:not(:disabled) .launch-glyph-lead,
+.launch-agent[aria-expanded="true"] .launch-glyph-lead {
+  color: var(--agent-accent, var(--neutral));
+}
+.launch-agent:hover:not(:disabled),
+.launch-agent[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--agent-accent, var(--working)) 55%, var(--border));
+}
+
+/* Right-anchored because the controls sit at the right edge of the strip; a left anchor
+   would put the menu off the side of a narrow card. */
+.launch-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+}
+.launch-head {
+  display: block;
+  padding: 7px 8px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.launch-row {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.launch-row:hover:not(:disabled),
+.launch-row:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.launch-row:disabled {
+  color: var(--dim);
+  cursor: default;
+}
+.launch-glyph {
+  flex: none;
+  margin-top: 1px;
+  color: var(--working);
+  font-size: 11px;
+}
+.launch-row:disabled .launch-glyph {
+  color: var(--dim);
+}
+.launch-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.launch-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.launch-label em {
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  font-style: normal;
+}
+.launch-note {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--dim);
+  font: 10.5px/1.4 var(--sans);
+}
+.launch-row .launch-note {
+  padding: 0;
+}
+.launch-note.is-error {
+  color: var(--danger);
+}
+
+/* What just happened, next to the buttons that did it. A success fades; a failure carries
+   a sentence and lingers, which is why the two are styled apart. */
+.launch-flash {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in oklab, var(--idle) 40%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--idle) 10%, transparent);
+  color: var(--idle);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.launch-flash.is-error {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  color: var(--danger);
 }
 
 /* ---- dropped images (transcript reply + dispatch task) ---- */

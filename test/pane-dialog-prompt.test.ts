@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 import { parsePaneDialog } from "../src/server/discovery/pane-dialog.ts";
 import { MULTI_SELECT } from "./fixtures/claude-panes.ts";
 import { activePaneDialog, reportBucket, needsYouReason } from "../src/shared/session.ts";
@@ -257,7 +258,7 @@ test("the reply box is closed while a menu is up, and says why", () => {
   // menus by cursor-walk; this is the same fix for the reply box.
   const open = renderToStaticMarkup(
     createElement(TranscriptPanel, {
-      sessionId: "s1", agent: "claude", canSend: true, dialogOpen: true,
+      session: mkSession(), canSend: true, dialogOpen: true,
     }),
   );
   assert.match(open, /Waiting on a menu - pick an option above/);
@@ -268,7 +269,7 @@ test("the reply box is closed while a menu is up, and says why", () => {
 test("the reply box reopens once the menu is gone", () => {
   const closed = renderToStaticMarkup(
     createElement(TranscriptPanel, {
-      sessionId: "s1", agent: "claude", canSend: true, dialogOpen: false,
+      session: mkSession(), canSend: true, dialogOpen: false,
     }),
   );
   assert.match(closed, /Reply to this session/);

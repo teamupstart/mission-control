@@ -1,11 +1,11 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type {
-  AgentType,
   ForemanEpisode,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
   TurnOrigin,
+  Session,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
@@ -26,6 +26,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { SessionLaunchers } from "./LaunchMenu.tsx";
 
 /** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
  *  because that's the name on the window the reader is looking at. */
@@ -57,8 +58,7 @@ export interface TranscriptHandle {
  * as paths. Closing the panel closes the stream, so the server stops tailing.
  */
 export function TranscriptPanel({
-  sessionId,
-  agent,
+  session,
   canSend,
   dialogOpen = false,
   episodes = [],
@@ -67,8 +67,16 @@ export function TranscriptPanel({
   resetNonce = 0,
   ref,
 }: {
-  sessionId: string;
-  agent: AgentType;
+  /**
+   * The whole session, not an id and an agent.
+   *
+   * It was those two fields until the launchers landed above the log, which need the
+   * checkout, the runtime, the pane handles and the conversation id to decide what they
+   * can do. Both call sites already hold the session, so passing it whole is fewer props
+   * rather than more - and it keeps this panel from growing one prop per new fact the
+   * toolbar learns to read.
+   */
+  session: Session;
   canSend: boolean;
   /**
    * Whether the session is parked on an option menu right now.
@@ -108,6 +116,9 @@ export function TranscriptPanel({
   onOpenFile?: WorkspaceLinkHandler;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
+  // The body below was written against these two names and still is; only the PROP changed.
+  const sessionId = session.id;
+  const agent = session.agent;
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
@@ -278,6 +289,7 @@ export function TranscriptPanel({
       style={agentAccentStyle(agent)}
       onClick={(e) => e.stopPropagation()}
     >
+      <SessionLaunchers session={session} />
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
         {/* An unavailable transcript still shows Foreman's record, and this is the
             case that most needs it: a session with no resolvable JSONL is exactly

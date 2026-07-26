@@ -108,7 +108,6 @@ function withFakeDriver(
       calls.push(opts);
       return launch(opts);
     },
-    resumeArgv: (id) => ["--resume", id],
   };
   return { restore: () => (HARNESSES.claude.sdk = real), calls };
 }

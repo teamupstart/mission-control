@@ -5,6 +5,7 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
+import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
@@ -2036,6 +2037,23 @@ export const OpenSessionFileSchema = z.object({
   target: z.enum(OPEN_TARGET_IDS),
 });
 export type OpenSessionFile = z.infer<typeof OpenSessionFileSchema>;
+
+/**
+ * Open a terminal on a session's checkout - a shell, or that session's own agent CLI
+ * resumed on its conversation.
+ *
+ * Both fields are CLOSED ENUMS, and neither carries anything that reaches an argv.
+ * `backend` names a registered adapter the daemon resolves for itself, the way
+ * `OpenSessionFileSchema.target` does. `payload` picks between two argvs the daemon
+ * composes - the operator's shell from the DAEMON's environment, or the harness's own
+ * resume argv - so a request can say which of two things to run and never what to run.
+ * A free-text command here would be remote code execution on the daemon's host.
+ */
+export const LaunchSessionTerminalSchema = z.object({
+  backend: z.enum(TERMINAL_BACKEND_IDS),
+  payload: z.enum(["shell", "agent"]),
+});
+export type LaunchSessionTerminal = z.infer<typeof LaunchSessionTerminalSchema>;
 
 // ---- Workflows and Personas -------------------------------------------------
 

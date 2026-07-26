@@ -22,7 +22,7 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
 | `src/mcp` | `server.ts` | MCP tools, stdio child of Claude Code. Reaches the daemon over HTTP. |
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
 | `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
-| `src/server/terminal` | `registry.ts` | tmux/wezterm behind two interfaces. Mechanism only; the write policy stays in `actions.ts`. |
+| `src/server/terminal` | `registry.ts` | Terminal backends behind multiplexer/emulator interfaces. Mechanism only; the write policy stays in `actions.ts`. |
 | `src/server/sdk` | `supervisor.ts` | Owns sessions the daemon RUNS (`runtime: "sdk"`). In the daemon, for the Inspector's reasons. |
 | `hooks/` | `harness-hook.mjs`, `codex-hook.mjs` | One bare node per hook event, one bridge per hook-capable harness. POSTs to the daemon. |
 
@@ -82,11 +82,12 @@ fails if an agent id turns up in the stylesheet again. It must also say which RU
 offers (`runtimes`, `@shared/harness-capabilities.ts`) and, if `"sdk"` is one of them, hold a
 driver behind it (`Harness.sdk`) - one fact in two files, pinned by `harness-sdk.test.ts`.
 `["terminal"]` with `sdk: null` is the honest answer for a harness nobody has written a
-driver for. An `SdkSpec` answers TWO questions, not one: how to `launch` an embedded
-session, and `resumeArgv` - the argv that continues that same conversation INTERACTIVELY,
-which is what "Continue in terminal" spawns. Both live on the spec for the reason every
-other capability does: the handoff route must reach it through the registry, never by
-testing `session.agent`.
+driver for. Resuming a conversation in an interactive CLI is a separate capability:
+`Harness.resume` holds a `ResumeSpec`, while `HarnessCapabilities.resumes` is its
+browser-readable mirror, pinned together by `harness-resume.test.ts`. Keep it off
+`SdkSpec`: a harness can reopen its own conversation without having an embedded driver.
+The handoff and session-launch routes reach the argv through the harness registry, never
+by testing `session.agent`.
 
 **A driver's transport is spoken in ONE module and its deps module, and nowhere else.**
 Claude's is `@anthropic-ai/claude-agent-sdk` behind `ClaudeSdkDeps.query`; Codex's is
@@ -341,7 +342,8 @@ to outrun a patch would work today and be a silent `failed` on the day it does n
 waits for the pump (so the harness has closed its session file before another process opens
 the same conversation), spawns through the SAME `spawnUniquely` a dispatch uses, records the
 home name so teardown can still find it, and rebinds to whatever discovery adopts. The argv
-comes from `SdkSpec.resumeArgv`, never composed at the route. Test: `sdk-answer-http.test.ts`.
+comes from `resumeArgvFor` through `Harness.resume`, never composed at the route. Test:
+`sdk-answer-http.test.ts`.
 
 **A dispatch may pin its input commit, and that is mechanism with no policy in it.**
 `TaskDispatchOptions` (`src/server/dispatcher.ts`) is ephemeral and server-only - nothing on
@@ -683,8 +685,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   two arrays are ORDERED, and the order is naming priority: `enumerateTerminals` sweeps
   multiplexers then emulators, and the first backend holding a pane on a session's tty
   names it. **They are two axes, not one**: a tmux pane lives *inside* a wezterm pane, so a
-  `Multiplexer` has named sessions and a copy-mode probe and cannot raise a window, while a
-  `TerminalEmulator` raises windows and has no persistence. Optional capabilities are
+  `Multiplexer` has named sessions and a copy-mode probe, while a `TerminalEmulator` raises
+  windows and has no persistence. Most multiplexer spawns are detached; cmux is the declared
+  exception because its sessions are never without a window. Optional capabilities are
   `T | null` and null is a declaration - Ghostty cannot read its own screen or retitle a tab,
   so `capture` and `retitle` are legitimately null. **Declare a null only after pointing the
   capability at a real install.** This line used to say Ghostty "has no scripting CLI, so
@@ -730,6 +733,13 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
   `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`,
   `terminal-host-join.test.ts`, `terminal-ghostty.test.ts`.
+  **Conversation launch targets are a composition, not an installed-backend check.**
+  `terminal/targets.ts` is the owner: an emulator must be able to spawn a tab, while a
+  detached multiplexer such as tmux is usable only when an installed emulator can run its
+  `attachArgv`. A multiplexer whose sessions are never windowless declares
+  `attachArgv: null` and stands alone. `unavailable` is a sentence, never a boolean, and
+  `glyph` is required on both adapter interfaces so a new backend cannot compile without
+  describing its row. Test: `terminal-target-contract.test.ts`.
   **Lifecycle is composition, and it is the reason there are two interfaces.** Focus is
   `Multiplexer.select` (decides what the session SHOWS, raises nothing) then an emulator
   raise - host tab via the `hostPanesFor` client-tty join, else the session's own emulator

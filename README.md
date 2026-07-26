@@ -685,6 +685,45 @@ triaging from the board does not mean opening a session to change its permission
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
+### Open a terminal, or the agent's own CLI, on a session
+
+Above every conversation sits the worktree that session is working in, and two buttons.
+
+**Terminal** opens your login shell (`$SHELL`, else `/bin/sh`) in that worktree. Its menu
+lists the four registered backends - **tmux**, **cmux**, **WezTerm** and **Ghostty** - and
+reports which this machine can use. An unavailable backend stays listed with a **sentence**
+saying why, because "not installed" and "installed, but nothing here can show its windows"
+are different things to go and fix. tmux is the second of those: `tmux new-session` opens
+**detached**, so its row is enabled only when an emulator is present to raise it, and then
+says which one it will use. A button that reported success and put nothing on screen would
+be worse than no button.
+
+The **agent button** puts you on that conversation. Its shape follows what is safe: it is a
+plain button when a live pane can be focused, and otherwise opens the same terminal chooser
+as **Terminal** so you can pick where the resumed CLI appears.
+
+Its behavior changes with the session:
+
+- The session **already runs in a terminal** - it has a pane. Then the button has no menu
+  at all; it takes you to that terminal. Opening a second `--resume` beside a live pane would
+  put two agent processes on one conversation file, which no harness arbitrates.
+- The session is [embedded](#session-runtimes-terminal-or-the-agent-sdk). **Continue in
+  terminal** opens the chooser, stops the live driver, then reopens that exact conversation
+  through the existing handoff lifecycle in the backend you selected.
+- The agent has **exited**, but its checkout and conversation id survive. Its old pane
+  handles are stale, so the chooser resumes the CLI in the selected backend. The daemon
+  claims that resume exclusively and transfers any active task and terminal-resource
+  ownership before the replacement session appears.
+
+A session whose checkout the daemon could not read renders **Terminal** disabled with the
+reason. A handoff or resume is disabled until it has both a checkout and a conversation id;
+a live pane remains focusable without either. If the harness cannot resume the conversation,
+the disabled agent button says so.
+
+This appears on **every layout that shows a conversation** - Cards, Console detail, and the
+Board's drilled-in pane - because it lives in the conversation panel itself rather than in
+any one card.
+
 ### Answer a session's menu from the dashboard
 
 When a session stops on an option menu - a **permission prompt**, an `AskUserQuestion`
@@ -2134,7 +2173,7 @@ round.
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
-once-only guard in one transaction. A missing or failed claim endpoint fails closed—Foreman
+once-only guard in one transaction. A missing or failed claim endpoint fails closed - Foreman
 does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
 session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered

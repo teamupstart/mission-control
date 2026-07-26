@@ -88,7 +88,7 @@ Inherits C1-C9 (and C11 is owned here). Findings:
    sessions hit the per-session refusal exactly as uninstrumented Codex does. Update
    `workQueueUnsupportedWhy` expectations in `harness-capabilities.test.ts`
    (pi moves from harness-refused to session-refused for terminal, allowed for SDK).
-3. **Handoff**: implement `SdkSpec.resumeArgv(agentSessionId)` as
+3. **Handoff**: implement `Harness.resume.argv(agentSessionId)` as
    `["--session", agentSessionId]`; the phase 2 route prepends `resolveAgentBin("pi")`
    without a pi-specific branch.
 4. **Dispatcher**: nothing pi-specific to add - the phase 2 branch covers it; verify the

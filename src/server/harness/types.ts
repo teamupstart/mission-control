@@ -504,23 +504,40 @@ export interface SdkSpec {
    * because the alternative is a card that looks dispatched and is running something else.
    */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+}
+
+/**
+ * How a conversation this harness already holds is CONTINUED interactively, in a terminal.
+ *
+ * This exists because every vendor here keeps one session store behind its programmatic and
+ * its interactive surfaces: a session writes the file (`~/.claude/projects/…`,
+ * `~/.codex/sessions/…`, pi's session dir) that `claude --resume <id>`, `codex resume <id>`
+ * and `pi --session <id>` read back. So "let me drive" is a handoff rather than a lost
+ * conversation, which is what stops an embedded session from being a trap.
+ *
+ * It lived on `SdkSpec` and was WRONG THERE, which is the reason to read this comment
+ * before moving it back. Only a harness with an embedded driver could answer it, so pi -
+ * whose session id and `--session` CLI are sufficient - could not say how to continue
+ * itself. Those are two unrelated capabilities: whether a harness can be driven
+ * programmatically, and whether its CLI can reopen a conversation. Every shipped harness
+ * answers this one; Claude and Codex currently answer the other.
+ *
+ * On the SPEC rather than composed at a route, for the rule the whole harness axis rests
+ * on: reach a capability through the registry, never by testing `s.agent`.
+ *
+ * `null` is a real answer - a harness whose CLI cannot reopen a conversation - and it is
+ * ONE FACT IN TWO FILES with `HarnessCapabilities.resumes`, which the browser reads to
+ * shape the control. `harness-resume.test.ts` fails until the two agree.
+ */
+export interface ResumeSpec {
   /**
-   * The argv - after this harness's own binary - that CONTINUES `agentSessionId`
-   * interactively, in a terminal.
+   * The argv AFTER this harness's own binary that continues `agentSessionId`.
    *
-   * This exists because both vendors keep one session store for their programmatic and
-   * their interactive surfaces: an embedded session writes the same file
-   * (`~/.claude/projects/…`, `~/.codex/sessions/…`) that `claude --resume <id>` and
-   * `codex resume <threadId>` read back. So "let me drive" is a handoff rather than a lost
-   * conversation, which is what stops the first embedded session an operator dispatches
-   * from being a trap.
-   *
-   * On the SPEC rather than composed at the handoff route, for the rule the whole harness
-   * axis rests on: reach a capability through the registry, never by testing `s.agent`. A
-   * driver that shipped without this would be a card offering an escape hatch that spawns
-   * the wrong command line.
+   * Measured against a real install for each harness, never read off release notes - the
+   * `HARNESSES.codex.tui` correction is what assuming costs. Claude takes a flag, Codex a
+   * subcommand, pi a different flag; the shape is not shared and must not be guessed.
    */
-  resumeArgv(agentSessionId: string): readonly string[];
+  argv(agentSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -854,4 +871,9 @@ export interface Harness extends HarnessCapabilities {
   control: ControlSpec;
   /** How to run this harness embedded, or null when no driver exists (yet). See `SdkSpec`. */
   sdk: SdkSpec | null;
+  /**
+   * How to continue one of this harness's conversations in a terminal, or null when its CLI
+   * cannot reopen one. See `ResumeSpec` - notably why this is NOT part of `sdk`.
+   */
+  resume: ResumeSpec | null;
 }

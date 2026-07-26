@@ -1,5 +1,5 @@
 import type { Session } from "@shared/types.ts";
-import { resolveAgentBin, sdkFor } from "../harness/index.ts";
+import { resumeArgvFor, sdkFor } from "../harness/index.ts";
 import { spawnUniquely, sessionLabel } from "../dispatcher.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
@@ -110,7 +110,12 @@ async function transfer(
   // discovery cannot read a cwd for, and a handoff has nowhere to open without one.
   const cwd = session.cwd;
   if (!cwd) return { ok: false, error: "this session has no checkout to open a terminal in" };
-  const argv = [resolveAgentBin(session.agent), ...spec.resumeArgv(session.agentSessionId)];
+  // From the HARNESS, not from `spec` above. The two questions this route asks - "can this
+  // be driven embedded" and "how is its conversation reopened" - used to be one slot, which
+  // meant a harness had to have a driver before it could say how to continue itself. The
+  // driver check stays because a handoff stops a driver; the argv comes from elsewhere.
+  const argv = resumeArgvFor(session.agent, session.agentSessionId);
+  if (!argv) return { ok: false, error: `${session.agent} cannot reopen a conversation` };
 
   // Before the stop, deliberately. See the ordering note above.
   const task = registry.listTasks().find((t) => t.sessionId === session.id) ?? null;

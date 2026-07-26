@@ -56,6 +56,43 @@ export type EmulatorId = (typeof EMULATOR_IDS)[number];
 export type TerminalBackendId = MultiplexerId | EmulatorId;
 
 /**
+ * Every backend id, multiplexers first.
+ *
+ * The order is `MULTIPLEXER_IDS` then `EMULATOR_IDS` for the reason stated above, and it is
+ * the order the conversation pane's terminal menu draws in - a list nobody chose an order
+ * for is a list that reorders when someone edits an unrelated array.
+ */
+export const TERMINAL_BACKEND_IDS = [...MULTIPLEXER_IDS, ...EMULATOR_IDS] as const;
+
+/**
+ * One backend, as the browser is told about it.
+ *
+ * The shape `OpenTargetView` has, for the same reason: what a backend IS can be answered
+ * without leaving the process, but whether it can be used RIGHT NOW cannot - it needs the
+ * filesystem, and on one axis it needs a second backend to exist. So the whole row is
+ * composed by the daemon and the browser only renders it.
+ */
+export interface TerminalTargetView {
+  id: TerminalBackendId;
+  /** The menu row's title, from the adapter. */
+  label: string;
+  /** Leading glyph. A character, never an image and never a vendor logo. */
+  glyph: string;
+  /** One line saying what pressing it produces. */
+  blurb: string;
+  /** The argv fragment, when nameable ("cli spawn --cwd"). Null when there isn't one. */
+  detail: string | null;
+  /**
+   * Null when this backend can be used right now; else WHY NOT, as a sentence.
+   *
+   * Never a boolean. "tmux is not installed" and "tmux is installed but no emulator can
+   * raise its session" are different things for a human to do, and a `false` collapses them
+   * into a greyed row that explains neither.
+   */
+  unavailable: string | null;
+}
+
+/**
  * What a multiplexer operation addresses. A pane, plus the session/window that reach it.
  *
  * Here rather than in `server/terminal/types.ts` because a `Session` now carries these: the

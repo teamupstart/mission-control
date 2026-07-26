@@ -49,11 +49,19 @@ test("the count, the sentence and the click all read that one list", () => {
   const pulse = app.slice(app.indexOf("function FleetPulse"));
   const chip = pulse.slice(pulse.indexOf("{reviews > 0 &&"), pulse.indexOf("</div>\n  );"));
   assert.notEqual(chip.length, 0, "the chip no longer gates on the answerable count");
-  assert.equal(
-    (chip.match(/\breviews\b/g) ?? []).length,
-    5,
-    "gate, figure, and the tooltip's plural (x2) and figure must all come from the one prop",
-  );
+
+  // Each reading asserted by NAME rather than by counting occurrences of `reviews`. A bare
+  // count passes for the wrong reasons - reword the tooltip and the number moves, while a
+  // reading that silently switched to another source keeps the total intact - and the
+  // figure itself tells a later reader nothing about which four things had to agree.
+  for (const [what, pattern] of [
+    ["the gate", /\{reviews > 0 &&/],
+    ["the figure", /n=\{reviews\}/],
+    ["the tooltip's count", /\$\{reviews\} agent/],
+    ["the tooltip's singular/plural", /reviews === 1/],
+  ] as const) {
+    assert.match(chip, pattern, `${what} no longer reads the \`reviews\` prop`);
+  }
   assert.doesNotMatch(chip, /pendingReviews|answerableReviews/, "the chip reads its prop only");
 
   // And the click, which is the half that was a dead end.

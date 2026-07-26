@@ -266,9 +266,16 @@ test("a control that keeps only a glyph still says what it is", () => {
     fileURLToPath(new URL("../src/web/components/ForemanBar.tsx", import.meta.url)),
     "utf8",
   );
-  const btn = foreman.slice(foreman.indexOf("foreman-btn$"));
+  // Located by the className EXPRESSION rather than by the literal `foreman-btn$`. That
+  // string does match today - the class sits in a template literal, so an interpolation's
+  // `$` really does follow it - but it matches by coincidence of the neighbouring syntax,
+  // and rewriting the same className any other way would leave this slicing from -1.
+  const at = foreman.search(/className=\{[^}]*foreman-btn/);
+  assert.notEqual(at, -1, "the Foreman button's className expression is gone");
+  const btn = foreman.slice(at, foreman.indexOf("</button>", at));
+  assert.notEqual(btn.length, 0, "no button markup followed the className - check the slice");
   assert.match(
-    btn.slice(0, btn.indexOf("</button>")),
+    btn,
     /aria-label=/,
     "Foreman's word is a `.tb-label` the ladder takes away; the button needs its own name",
   );

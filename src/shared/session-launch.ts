@@ -21,7 +21,7 @@
  * This is the treatment `resolveSessionRuntime` gets for the same reason.
  */
 
-import type { AgentType, SessionRuntime } from "./types.ts";
+import type { AgentType, SessionRuntime, SessionState } from "./types.ts";
 import type { PaneHandles } from "./pane.ts";
 import { canWriteTo } from "./pane.ts";
 import { capabilitiesFor } from "./harness-capabilities.ts";
@@ -43,6 +43,7 @@ export type AgentLaunchAction = "focus" | "resume";
 export interface LaunchableSession extends PaneHandles {
   agent: AgentType;
   runtime: SessionRuntime;
+  state: SessionState;
   cwd: string | null;
   /** The harness-native conversation id, once the session has reported one. */
   agentSessionId: string | null;
@@ -51,13 +52,14 @@ export interface LaunchableSession extends PaneHandles {
 /**
  * Which of the two the agent launcher does, or null when neither is possible.
  *
- * Order matters and is not arbitrary: the pane check comes FIRST, before any question about
- * whether the harness can resume. A session with a pane is focusable whatever its harness
- * can do with a session id, and asking about resume first would grey out the button for a
- * harness with no resume spec even though raising its pane would have worked perfectly.
+ * Order matters and is not arbitrary: an exited session's retained pane handles are stale.
+ * For every live session, the pane check still comes before any question about whether the
+ * harness can resume. A live session with a pane is focusable whatever its harness can do
+ * with a session id, and asking about resume first would grey out the button for a harness
+ * with no resume spec even though raising its pane would have worked perfectly.
  */
 export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | null {
-  if (canWriteTo(s)) return "focus";
+  if (s.state !== "exited" && canWriteTo(s)) return "focus";
   if (!capabilitiesFor(s.agent).resumes) return null;
   if (!s.agentSessionId) return null;
   if (!s.cwd) return null;

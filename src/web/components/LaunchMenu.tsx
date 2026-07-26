@@ -265,7 +265,7 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
       {/* The shape change described at the top of this file: with a pane there is nothing
           to choose, so this is a plain button and not a chooser. */}
       {action === "focus" ? (
-        <Tooltip label={`Raise the terminal ${agentLabel} is already running in`}>
+        <Tooltip label={`Go to the terminal ${agentLabel} is running in`}>
           <button type="button" className="launch-btn launch-agent" onClick={() => void focusPane()}>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
             {agentLabel}

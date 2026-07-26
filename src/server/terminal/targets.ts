@@ -16,9 +16,17 @@
  * because it is indistinguishable from a slow terminal.
  */
 
+import { randomUUID } from "node:crypto";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { MULTIPLEXER_IDS, EMULATOR_IDS } from "@shared/terminal.ts";
-import type { BinSpec, Multiplexer, TerminalEmulator, TerminalResult } from "./types.ts";
+import type {
+  BinSpec,
+  DetachedSessionSpec,
+  Multiplexer,
+  MuxSessions,
+  TerminalEmulator,
+  TerminalResult,
+} from "./types.ts";
 import { binPresent } from "./bin.ts";
 import { MULTIPLEXERS, EMULATORS } from "./registry.ts";
 
@@ -27,12 +35,14 @@ export interface TerminalTargetDeps {
   emulators: Record<string, TerminalEmulator>;
   /** Seam for the tests - the real one reads the filesystem and spawns nothing. */
   installed: (spec: BinSpec) => boolean;
+  launchId: () => string;
 }
 
 export const defaultTerminalTargetDeps: TerminalTargetDeps = {
   multiplexers: MULTIPLEXERS,
   emulators: EMULATORS,
   installed: binPresent,
+  launchId: () => randomUUID().slice(0, 6),
 };
 
 /** What a launcher asks for: a window, here, running this. */
@@ -156,6 +166,46 @@ export interface TerminalLaunchOutcome {
   status: number;
 }
 
+function uniqueSessionName(sessions: MuxSessions, baseName: string, launchId: string): string {
+  const base = sessions.names.sanitize(baseName);
+  const suffix = `-${launchId}`;
+  for (let length = base.length; length >= 0; length -= 1) {
+    const name = sessions.names.sanitize(`${base.slice(0, length)}${suffix}`);
+    if (name.endsWith(suffix)) return name;
+  }
+  return sessions.names.sanitize(`${launchId}-${base}`);
+}
+
+async function spawnDetachedUniquely(
+  sessions: MuxSessions,
+  spec: Omit<DetachedSessionSpec, "name">,
+  baseName: string,
+  launchId: () => string,
+): Promise<{ name: string; result: TerminalResult }> {
+  let name = uniqueSessionName(sessions, baseName, launchId());
+  let result = await sessions.spawnDetached({ name, ...spec });
+  if (!result.ok && !result.outcomeUnknown) {
+    name = uniqueSessionName(sessions, baseName, launchId());
+    result = await sessions.spawnDetached({ name, ...spec });
+  }
+  return { name, result };
+}
+
+async function cleanupDetachedFailure(
+  sessions: MuxSessions,
+  name: string,
+  label: string,
+  error: string,
+): Promise<string> {
+  if (!sessions.kill) return `${error}; ${label} cannot clean up the detached session`;
+  const cleanup = await sessions.kill(name);
+  if (cleanup.ok) return error;
+  if (cleanup.outcomeUnknown) {
+    return `${error}; cleanup of the detached ${label} session did not report back`;
+  }
+  return `${error}; cleanup failed: ${cleanup.error ?? `${label} could not close the detached session`}`;
+}
+
 /**
  * Open one window, on the backend the operator picked.
  *
@@ -180,30 +230,53 @@ export async function launchTerminal(
   const mux = deps.multiplexers[backend];
   if (mux?.sessions) {
     const sessions = mux.sessions;
-    const name = sessions.names.sanitize(spec.name);
-    // `sidePane: false`, and the difference from `spawnUniquely` is deliberate: a dispatch
-    // splits off a pane for the operator to watch the agent from, and this IS the operator,
-    // who asked for a terminal and not for a terminal plus a spare.
-    result = await sessions.spawnDetached({ name, cwd: spec.cwd, argv: spec.argv, sidePane: false });
+    const spawned = await spawnDetachedUniquely(
+      sessions,
+      { cwd: spec.cwd, argv: spec.argv, sidePane: false },
+      spec.name,
+      deps.launchId,
+    );
+    const name = spawned.name;
+    result = spawned.result;
     if (result.ok && sessions.attachArgv) {
       // Detached is not open. A backend whose sessions can exist without a window has only
       // half-finished at this point, and reporting success here would be the exact failure
       // this module's header is about.
       const raise = raiser(deps);
       if (!raise?.spawn) {
+        const error = await cleanupDetachedFailure(
+          sessions,
+          name,
+          view.label,
+          `${view.label} session started but no terminal could show it`,
+        );
         return {
           ok: false,
           label: view.label,
-          error: `${view.label} session started but no terminal could show it`,
+          error,
           status: 502,
         };
       }
       const shown = await raise.spawn.tab({ argv: sessions.attachArgv(name), title: name, cwd: null });
       if (!shown.ok) {
+        if (shown.outcomeUnknown) {
+          return {
+            ok: false,
+            label: view.label,
+            error: `${view.label} did not report back - the window may still be opening`,
+            status: 504,
+          };
+        }
+        const error = await cleanupDetachedFailure(
+          sessions,
+          name,
+          view.label,
+          shown.error ?? `${raise.label} could not open a window`,
+        );
         return {
           ok: false,
           label: view.label,
-          error: shown.error ?? `${raise.label} could not open a window`,
+          error,
           status: 502,
         };
       }

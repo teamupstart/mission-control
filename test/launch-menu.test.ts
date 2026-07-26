@@ -117,3 +117,9 @@ test("the menu names no backend itself - rows come only from what the daemon rep
     );
   }
 });
+
+test("the focus control does not promise to raise a terminal window", () => {
+  const src = source();
+  assert.match(src, /Go to the terminal \$\{agentLabel\} is running in/);
+  assert.doesNotMatch(src, /Raise the terminal \$\{agentLabel\}/);
+});

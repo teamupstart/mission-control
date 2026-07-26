@@ -56,8 +56,9 @@ function sessions(over: Partial<MuxSessions> = {}): MuxSessions {
 /** A multiplexer that records every session it was asked to create. */
 function recordingMux(
   opts: { sessions?: Partial<MuxSessions>; mux?: Partial<Multiplexer>; result?: TerminalResult } = {},
-): { created: DetachedSessionSpec[]; backend: Multiplexer } {
+): { created: DetachedSessionSpec[]; killed: string[]; backend: Multiplexer } {
   const created: DetachedSessionSpec[] = [];
+  const killed: string[] = [];
   const backend = fakeMultiplexer({
     ...opts.mux,
     sessions: sessions({
@@ -65,10 +66,14 @@ function recordingMux(
         created.push(spec);
         return opts.result ?? OK;
       },
+      kill: async (name) => {
+        killed.push(name);
+        return OK;
+      },
       ...opts.sessions,
     }),
   });
-  return { created, backend };
+  return { created, killed, backend };
 }
 
 /** An emulator that records every tab it was asked to open. */
@@ -89,7 +94,13 @@ function recordingEmu(
 }
 
 function deps(over: Partial<TerminalTargetDeps> = {}): TerminalTargetDeps {
-  return { multiplexers: {}, emulators: {}, installed: () => true, ...over };
+  return {
+    multiplexers: {},
+    emulators: {},
+    installed: () => true,
+    launchId: () => "abc123",
+    ...over,
+  };
 }
 
 /**
@@ -275,14 +286,14 @@ test("a detached session is followed by the raise that makes it visible", async 
     // `sidePane: false` is the deliberate difference from a dispatch: that splits off a pane
     // for the operator to watch the agent from, and this IS the operator, who asked for a
     // terminal and not for a terminal plus a spare.
-    { name: "Fix the login bug", cwd: "/w/api", argv: SPEC.argv, sidePane: false },
+    { name: "Fix the login bug-abc123", cwd: "/w/api", argv: SPEC.argv, sidePane: false },
   ]);
   assert.deepEqual(emu.opened, [
     {
       // The multiplexer's own attach argv, never one composed here - a second spelling of it
       // would attach to nothing on the day a backend changes its flags.
-      argv: ["fake-mux", "attach", "-t", "Fix the login bug"],
-      title: "Fix the login bug",
+      argv: ["fake-mux", "attach", "-t", "Fix the login bug-abc123"],
+      title: "Fix the login bug-abc123",
       // Null: the session already sits in the worktree, and the tab is only a viewport onto
       // it. Rooting the attach somewhere would be answering a question nobody asked.
       cwd: null,
@@ -307,6 +318,78 @@ test("a session that was created and never shown is a failure, not a success", a
   assert.equal(outcome.status, 502);
   assert.equal(outcome.error, "no window server", "the emulator's own words, not ours");
   assert.equal(mux.created.length, 1, "the session WAS created - what failed is that nobody saw it");
+  assert.deepEqual(mux.killed, ["api-abc123"]);
+});
+
+test("an uncertain raise leaves the detached session alone", async () => {
+  const mux = recordingMux();
+  const emu = recordingEmu({
+    result: { ok: false, outcomeUnknown: true, target: null },
+  });
+
+  const outcome = await launchTerminal(
+    "tmux",
+    SPEC,
+    deps({ multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend } }),
+  );
+
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.status, 504);
+  assert.equal(outcome.error, "tmux did not report back - the window may still be opening");
+  assert.deepEqual(mux.killed, []);
+});
+
+test("a known raise failure reports when the detached session cannot be cleaned up", async () => {
+  const mux = recordingMux({ sessions: { kill: null } });
+  const emu = recordingEmu({ result: { ...FAIL("no window server"), target: null } });
+
+  const outcome = await launchTerminal(
+    "tmux",
+    SPEC,
+    deps({ multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend } }),
+  );
+
+  assert.equal(outcome.status, 502);
+  assert.equal(
+    outcome.error,
+    "no window server; tmux cannot clean up the detached session",
+  );
+});
+
+test("a multiplexer launch uses a fresh name and retries one confirmed collision", async () => {
+  const created: DetachedSessionSpec[] = [];
+  const ids = ["abc123", "def456"];
+  const mux = recordingMux({
+    sessions: {
+      spawnDetached: async (spec) => {
+        created.push(spec);
+        return created.length === 1 ? FAIL("duplicate session") : OK;
+      },
+    },
+  });
+  const emu = recordingEmu();
+
+  const outcome = await launchTerminal(
+    "tmux",
+    { ...SPEC, name: "api".repeat(30) },
+    deps({
+      multiplexers: { tmux: mux.backend },
+      emulators: { wezterm: emu.backend },
+      launchId: () => ids.shift() ?? "unused",
+    }),
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(created.length, 2);
+  assert.match(created[0]?.name ?? "", /-abc123$/);
+  assert.match(created[1]?.name ?? "", /-def456$/);
+  assert.notEqual(created[0]?.name, created[1]?.name);
+  assert.deepEqual(emu.opened[0]?.argv, [
+    "fake-mux",
+    "attach",
+    "-t",
+    created[1]?.name,
+  ]);
 });
 
 test("a backend that draws its own window is launched without asking an emulator", async () => {
@@ -372,7 +455,12 @@ test("a name is spelled the backend's own way before anything is created under i
   // makes the session's real name a thing this process guessed - and the attach argv then
   // addresses a session that does not exist.
   const mux = recordingMux({
-    sessions: { names: { validate: () => null, sanitize: () => "coerced" } },
+    sessions: {
+      names: {
+        validate: () => null,
+        sanitize: (text) => `coerced-${text.match(/-([^-]+)$/)?.[1] ?? "name"}`,
+      },
+    },
   });
   const emu = recordingEmu();
 
@@ -383,9 +471,9 @@ test("a name is spelled the backend's own way before anything is created under i
   );
 
   assert.equal(outcome.ok, true);
-  assert.equal(mux.created[0]?.name, "coerced");
+  assert.equal(mux.created[0]?.name, "coerced-abc123");
   // The same string all the way through: what was created, what is attached to, what the tab
   // is called.
-  assert.deepEqual(emu.opened[0]?.argv, ["fake-mux", "attach", "-t", "coerced"]);
-  assert.equal(emu.opened[0]?.title, "coerced");
+  assert.deepEqual(emu.opened[0]?.argv, ["fake-mux", "attach", "-t", "coerced-abc123"]);
+  assert.equal(emu.opened[0]?.title, "coerced-abc123");
 });

@@ -86,6 +86,12 @@ test("an exited session that left its conversation behind still resumes", () => 
   assert.equal(agentLaunchBlockedReason(session), null);
 });
 
+test("an exited session resumes even while stale pane handles linger", () => {
+  const session = paneBacked({ state: "exited" });
+  assert.equal(agentLaunchAction(session), "resume");
+  assert.equal(agentLaunchBlockedReason(session), null);
+});
+
 test("no conversation id yet is refused, and the refusal says which id", () => {
   const session = embedded({ agentSessionId: null });
   assert.equal(agentLaunchAction(session), null);
@@ -135,6 +141,7 @@ test("the action and the reason never disagree, for any shape or harness", () =>
     ["embedded, no checkout", embedded({ cwd: null })],
     ["embedded, neither", embedded({ agentSessionId: null, cwd: null })],
     ["exited, conversation survives", survivingConversation()],
+    ["exited, stale pane handles linger", paneBacked({ state: "exited" })],
     ["exited, nothing survives", survivingConversation({ agentSessionId: null, cwd: null })],
   ];
   for (const agent of AGENT_TYPES) {

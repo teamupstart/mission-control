@@ -88,13 +88,14 @@ Out of scope:
    - Persist each cleanup result separately and mark the member eliminated only after Task state/resource observations agree.
    - A cleanup failure leaves the run in `finalizing` with the exact Task/member remediation; `completed` is forbidden while an unacknowledged loser resource remains.
    - Submitted private refs survive all Task cancellation.
+   - On a replacement path, reconcile the superseded original winner as specified by the [operator guide](../../ensembles.md#where-the-selected-result-lands).
 
 7. Finish without a Workflow handoff.
    - Build a bounded continuation containing original intent, selected member summary, evaluator recommendation/rationale/caveats, and explicit instruction to inspect and ship through the normal provenance-aware flow.
    - For a retained live winner, deliver through existing pane readiness/locking/injection paths only after reset/rebind is ready.
    - For a replacement Task, include the continuation in its initial intent rather than typing twice.
    - Persist a deterministic delivery key and acknowledgement so restart cannot send the continuation twice.
-   - Do not open a PR, push, invoke no-mistakes, or mark the Task done automatically.
+   - Do not open a PR, push, invoke no-mistakes, or mark the promoted Task done automatically.
 
 8. Resolve an optional Workflow handoff at creation.
    - Extend `POST /api/ensembles` preflight to resolve an operator-selected immutable Workflow version through WorkflowManager.

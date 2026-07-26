@@ -324,6 +324,84 @@ test("a winner whose session is not safe-idle gets exactly one replacement Task,
   assert.equal(finalize.continuations.length, 0, "a replacement carries its continuation in its intent, not a second delivery");
 });
 
+test("a superseded winner Task is settled done, keeping its checkout, and is never left running", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false; // force the replacement path
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const winnerTask = store.listAttempts(runId).find((a) => a.memberId === winner.memberId)!.taskId!;
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(store.getRun(runId)!.status, "completed");
+
+  // THE REGRESSION: the winner's original Task used to stay `running` for ever - an agent nothing
+  // would ever report against again, holding a worktree nothing offered to reclaim.
+  assert.equal(gateway.status(winnerTask), "done", "the superseded winner Task was settled terminally");
+  assert.equal(gateway.settled.length, 1, "exactly one Task was settled as superseded");
+  assert.equal(gateway.settled[0]!.taskId, winnerTask);
+  const outcome = store.getRun(runId)!.outcome;
+  const replacementId = outcome?.kind === "selected" ? outcome.materializedTaskId : null;
+  assert.match(gateway.settled[0]!.outcome, /selected as the ensemble winner/);
+  assert.equal(gateway.settled[0]!.outcome.includes(replacementId!), true, "the outcome names the Task it was promoted into");
+
+  // Settled is NOT torn down: the checkout survives for the operator's confirmed Clean up, which is
+  // the whole difference between this and the cancel a loser gets.
+  assert.equal(gateway.cancelled.includes(winnerTask), false, "the winner Task is never cancelled");
+  assert.equal(gateway.worktreePath(winnerTask), `/wt/${winnerTask}`, "the superseded winner keeps its worktree");
+  assert.equal(store.getMember(winner.memberId)!.status, "retained", "the member is still the retained winner");
+});
+
+test("the restored winner's own Task is never settled - it is the promoted one", async () => {
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const winnerTask = store.listAttempts(runId).find((a) => a.memberId === winner.memberId)!.taskId!;
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  // Nothing was superseded: this session IS the winner and has to stay running to work the
+  // continuation it was just handed. Settling it here would strand the promoted agent mid-turn.
+  assert.equal(gateway.settled.length, 0, "the restored winner is not superseded by anything");
+  assert.equal(gateway.status(winnerTask), "running", "the restored winner keeps executing");
+  assert.equal(finalize.continuations.length, 1);
+});
+
+test("a superseded winner is settled exactly once across a restart", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false; // force the replacement path
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  await decide(engine, runId, winner.artifactId);
+  assert.equal(gateway.settled.length, 1);
+  // Re-driving must find it already terminal and do nothing - the guard is the Task's own status,
+  // so a second `done` write (and a second event) can never happen.
+  await engine.recover(runId);
+  await engine.resolveFinalization(runId, false);
+  assert.equal(gateway.settled.length, 1, "recovery did not settle the superseded winner twice");
+});
+
+test("a superseded winner that cannot be settled parks the run instead of completing around it", async () => {
+  const finalize = new FakeFinalize();
+  finalize.safeIdle = false; // force the replacement path
+  const { store, gateway, engine } = harness(finalize);
+  const runId = await driveToDecision(store, gateway, engine);
+  const winner = winnerOf(store, runId, 1);
+  const winnerTask = store.listAttempts(runId).find((a) => a.memberId === winner.memberId)!.taskId!;
+  gateway.failSettle(winnerTask);
+  await decide(engine, runId, winner.artifactId);
+  // Completing here is the exact failure this guards: a `completed` run whose winner Task still
+  // claims to be executing is the leak, and it would never be revisited.
+  assert.equal(store.getRun(runId)!.status, "finalizing");
+  assert.match(store.getRun(runId)!.error ?? "", /superseded winner Task could not be settled/);
+  assert.equal(finalize.continuations.length, 0, "no continuation is delivered past a parked step");
+
+  gateway.settleFailures.delete(winnerTask);
+  await engine.resolveFinalization(runId, false);
+  assert.equal(store.getRun(runId)!.status, "completed");
+  assert.equal(gateway.status(winnerTask), "done");
+});
+
 test("a replacement still dispatching does not complete the run; it resumes when the session is up", async () => {
   const finalize = new FakeFinalize();
   finalize.safeIdle = false; // force the replacement path

@@ -271,9 +271,10 @@ export type EnsembleWorkflowHandoffState = (typeof ENSEMBLE_WORKFLOW_HANDOFF_STA
  * Which finalization step a `finalizing` run has durably reached.
  *
  * Recovery reads THIS off the finalize stage attempt to resume rather than restart: a run
- * interrupted after its winner was made exact but before its losers were reaped must not
- * re-verify a decision or re-materialize a winner. Ordered by execution, so a later step
- * proves every earlier one durable. Append-only.
+ * interrupted after its winner was made exact but before its member Tasks were reconciled must not
+ * re-verify a decision or re-materialize a winner. `reaping_losers` also settles a superseded
+ * original winner on the replacement path; the persisted step id remains append-only. Ordered by
+ * execution, so a later step proves every earlier one durable.
  */
 export const ENSEMBLE_FINALIZATION_STEPS = [
   "verifying",
@@ -824,7 +825,7 @@ export interface EnsembleFinalizationProgress {
   /** How the one exact winner was made available. */
   winner: { mode: "restored" | "replacement"; ready: boolean } | null;
   continuationInIntent: boolean;
-  /** True once every non-winner member is reconciled terminal through TaskManager. */
+  /** True once every loser is terminal and any superseded original winner has been settled. */
   losersReaped: boolean;
   /** Deterministic key for the one continuation message, so a restart cannot send it twice. */
   continuationDeliveryKey: string | null;

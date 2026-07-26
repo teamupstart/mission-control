@@ -1742,8 +1742,10 @@ cleanup); make one exact winner available - either the original member's checkou
 snapshot through the same session-reset that clears its queue, drafts and context, or, if that
 session is gone or busy, exactly one replacement task launched at the snapshot (never two, across
 any restart); reap every loser through the normal task cancellation that reclaims its worktree;
-then either hand the winner to a workflow or type it one continuation - never both. A step that
-cannot finish leaves the run *finalizing* with an actionable error and is resumed by
+reconcile a superseded original winner as described in
+[Where the selected result lands](docs/ensembles.md#where-the-selected-result-lands); then either
+hand the winner to a workflow or type it one continuation - never both. A step that cannot finish
+leaves the run *finalizing* with an actionable error and is resumed by
 `resolve_finalization`; the run reaches *completed* only once the winner is exact, every loser is
 reconciled, and any workflow submission is captured. Every loser's private snapshot survives.
 

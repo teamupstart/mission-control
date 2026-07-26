@@ -224,7 +224,14 @@ interface Pending {
   id: RequestId;
   kind: "commandExecution" | "fileChange" | "userInput";
   threadId: string | null;
-  /** For a form: the question ids, so an answer keyed by TEXT maps back to them. */
+  /**
+   * For a form: the question ids, so an answer keyed by TEXT maps back to them.
+   *
+   * Text-keyed, and safe to be: `userInputQuestions` refuses a payload whose questions
+   * share a text before this map is built, so no id here can be overwritten by another.
+   * Without that refusal the later id would silently replace the earlier one and the
+   * response would answer one question twice while omitting the other.
+   */
   questionIds?: Map<string, string>;
   fileChangeItemId?: string;
 }
@@ -1079,6 +1086,21 @@ export function userInputQuestions(p: ToolRequestUserInputParams): SessionReques
       if (!label) continue;
       const detail = typeof o.description === "string" ? o.description.trim() : "";
       options.push({ number: options.length + 1, label, ...(detail ? { detail } : {}) });
+    }
+    // A question is IDENTIFIED BY ITS TEXT everywhere above this driver: `questions` is
+    // keyed by it in `SessionRequestQuestion`, `/submit-options` matches on it, and
+    // `driverFormAnswer` (`sdk/answer.ts`) refuses a second entry naming the same text. That
+    // is C3's grammar and phase 4 does not get to change it - so two of Codex's questions
+    // sharing a text are not something this projection can carry. Silently keeping one is
+    // the worst option available: the human answers a form that looks complete and the
+    // response omits a question, which leaves the agent blocked on an ask nobody can see.
+    //
+    // So refuse the request, naming the collision. The turn ends with an error Codex can
+    // read and re-ask differently, which is the only outcome here that does not strand it.
+    if (out.some((prior) => prior.question === question)) {
+      throw new Error(
+        `two questions share the text "${question}", which this form cannot tell apart`,
+      );
     }
     out.push({
       question,

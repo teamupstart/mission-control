@@ -1304,6 +1304,40 @@ test("a question with no options remains available for a custom answer", () => {
   ]);
 });
 
+test("two questions sharing a text are refused rather than silently collapsed", async () => {
+  // Inspector finding on #260. A question is identified by its TEXT the whole way up -
+  // SessionRequestQuestion, /submit-options, and driverFormAnswer, which refuses a second
+  // entry naming the same text. So two Codex questions with one text cannot be carried:
+  // keeping either would leave the response answering one id twice and omitting the other,
+  // and the agent blocked on an ask the human already believes they completed.
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.push({
+    method: "item/tool/requestUserInput",
+    id: 13,
+    params: {
+      threadId: THREAD.id,
+      turnId: "turn-1",
+      itemId: "dupes",
+      autoResolutionMs: null,
+      questions: [
+        { id: "q-a", header: "First", question: "Which branch?", isOther: false, isSecret: false, options: [{ label: "main", description: "" }] },
+        { id: "q-b", header: "Second", question: "Which branch?", isOther: false, isSecret: false, options: [{ label: "release", description: "" }] },
+      ],
+    },
+  });
+  await settle();
+  // No card, and - the part that matters - no silence either: the turn ends with an error
+  // Codex can read and re-ask differently.
+  assert.equal(events.some((event) => event.kind === "request"), false);
+  const refusal = server.responseTo(13);
+  assert.equal((refusal?.error as { code: number }).code, -32602);
+  assert.match((refusal?.error as { message: string }).message, /share the text "Which branch\?"/);
+  await handle.stop();
+  await drained;
+});
+
 test("a secret question is refused explicitly instead of rendered as ordinary text", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);

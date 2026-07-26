@@ -1,5 +1,9 @@
 import { useMemo, useState } from "react";
-import type { EnsembleEvaluation, EnsembleSelectOneSelection } from "@shared/ensemble.ts";
+import type {
+  EnsembleEvaluation,
+  EnsembleSelectOneSelection,
+  EnsembleStageAttempt,
+} from "@shared/ensemble.ts";
 import {
   aggregatePanelVotes,
   parsePanelVerdict,
@@ -7,6 +11,7 @@ import {
   type PanelVerdict,
 } from "@shared/ensemble-strategies/panel-vote.ts";
 import { Tooltip } from "../../components/Tooltip.tsx";
+import type { EnsembleRunDetailResponse } from "../types.ts";
 import type { EnsembleResultContext } from "./index.ts";
 
 /**
@@ -24,17 +29,31 @@ import type { EnsembleResultContext } from "./index.ts";
  * view and the run's own summary cannot drift apart.
  */
 
-/** Every readable ballot on the newest attempt, in judge order. */
-function ballots(evaluations: EnsembleEvaluation[]): { verdicts: PanelVerdict[]; rows: EnsembleEvaluation[] } {
-  // One stage attempt is one panel: taking the newest attempt's rows keeps a retried panel from
-  // being aggregated together with the attempt it replaced, which would double-count its judges.
-  const succeeded = evaluations.filter((evaluation) => evaluation.status === "succeeded" && evaluation.result);
-  const newest = succeeded.reduce<EnsembleEvaluation | null>(
-    (best, evaluation) => (best === null || evaluation.updatedAt > best.updatedAt ? evaluation : best),
-    null,
-  );
-  const rows = succeeded
-    .filter((evaluation) => evaluation.stageAttemptId === newest?.stageAttemptId)
+/**
+ * Every readable ballot from the LATEST panel attempt, in judge order.
+ *
+ * Keyed on the newest review STAGE ATTEMPT, not on the newest succeeded evaluation, and the
+ * difference is a real run: an attempt that returns one ballot is below quorum and fails, and if
+ * its retry returns none, the newest succeeded evaluation still belongs to the attempt that
+ * failed. Reading it would render a one-ballot ranking - with a recommendation, and a vacuous 0%
+ * disagreement - for a panel that in fact reached no conclusion at all. Selecting the attempt
+ * first means the latest panel speaks for itself or nothing does.
+ */
+function ballots(detail: EnsembleRunDetailResponse): { verdicts: PanelVerdict[]; rows: EnsembleEvaluation[] } {
+  const latest = detail.stageAttempts
+    .filter((attempt) => attempt.driverKind === "review")
+    .reduce<EnsembleStageAttempt | null>(
+      (best, attempt) =>
+        best === null || attempt.attempt > best.attempt || attempt.createdAt > best.createdAt ? attempt : best,
+      null,
+    );
+  const rows = detail.evaluations
+    .filter(
+      (evaluation) =>
+        evaluation.status === "succeeded" &&
+        evaluation.result &&
+        evaluation.stageAttemptId === latest?.id,
+    )
     .sort((a, b) => a.attempt - b.attempt);
   const verdicts: PanelVerdict[] = [];
   const kept: EnsembleEvaluation[] = [];
@@ -56,7 +75,7 @@ function disagreementWording(aggregate: PanelAggregate): string {
 }
 
 export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element | null {
-  const { verdicts, rows } = useMemo(() => ballots(ctx.detail.evaluations), [ctx.detail.evaluations]);
+  const { verdicts, rows } = useMemo(() => ballots(ctx.detail), [ctx.detail]);
   const aggregate = useMemo(() => aggregatePanelVotes(verdicts), [verdicts]);
 
   if (verdicts.length === 0) {

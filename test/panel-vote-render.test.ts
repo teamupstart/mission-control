@@ -268,6 +268,26 @@ test("with no ballots the view says the panel has not run, and invents no rankin
   assert.doesNotMatch(html, /Recommended/);
 });
 
+test("a failed retry shows nothing rather than the previous attempt's partial ranking", () => {
+  // The run this exists for: attempt one returns a single ballot (below the quorum of two, so the
+  // stage fails), its retry returns none. Reading the newest SUCCEEDED evaluation would render
+  // that stale one-ballot ranking - with a recommendation and a vacuous 0% disagreement - for a
+  // panel that reached no conclusion. The latest attempt speaks for itself or nothing does.
+  const older = { ...stage, id: "sa-0", attempt: 1, status: "failed" as const, createdAt: 1000 };
+  const retry = { ...stage, id: "sa-1", attempt: 2, status: "failed" as const, createdAt: 2000 };
+  const orphan = { ...evaluation(1, verdict(1, "Correctness", ["art-1", "art-2"])), stageAttemptId: "sa-0" };
+  const html = renderToStaticMarkup(
+    createElement(ENSEMBLE_RESULT_RENDERERS.panel_vote!, {
+      detail: { ...detailWith([orphan]), stageAttempts: [older, retry] } as EnsembleRunDetailResponse,
+      subjectLabel: (id: string) => id,
+      decision: null,
+    }),
+  );
+  assert.match(html, /No ballot has been recorded yet/);
+  assert.doesNotMatch(html, /Recommended/);
+  assert.doesNotMatch(html, /disagreement/);
+});
+
 test("only the newest panel attempt is aggregated, so a retry is not counted twice", () => {
   // A failed attempt's ballots are still on the ledger. Aggregating both attempts together would
   // double-count the judges that answered in each.

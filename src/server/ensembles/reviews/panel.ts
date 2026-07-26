@@ -328,8 +328,14 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
     .map((judge) => resolveJudgeGuidance(judge.guidance))
     .filter((resolved): resolved is ResolvedGuidance => resolved !== null)
     .reduce<ResolvedGuidance | null>(
+      // UTF-8 BYTES, because that is what the budget is denominated in: a Persona that is shorter
+      // in characters can be larger in bytes, and picking it would hand the genuinely-largest
+      // judge a prompt over the ceiling the operator confirmed.
       (largest, resolved) =>
-        largest === null || resolved.text.length > largest.text.length ? resolved : largest,
+        largest === null ||
+        Buffer.byteLength(resolved.text, "utf8") > Buffer.byteLength(largest.text, "utf8")
+          ? resolved
+          : largest,
       null,
     );
   // Every judge's lens is one this build does not have: there is nothing to ask and no packet to

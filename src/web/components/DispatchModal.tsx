@@ -37,7 +37,11 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
-import { EnsembleDispatch } from "../ensembles/dispatch/EnsembleDispatch.tsx";
+import {
+  EnsembleDispatch,
+  EnsembleLaunchControls,
+  useEnsembleLaunch,
+} from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
 
 /**
@@ -460,6 +464,42 @@ function DispatchModal({
   // Parsed once per render: the preview below and the submit body must never disagree
   // about what the typed text means.
   const labels = parseLabelInput(draft.labels);
+  const draftHasBacklogDetails = Boolean(
+    draft.priority ||
+      draft.labels.trim() ||
+      draft.title.trim() ||
+      draft.dependencies.length > 0,
+  );
+  // The backlog details fold (priority, labels, title, dependencies). Open from the start
+  // when there is something inside to see - an edit, or a draft that already carries one of
+  // them - and closed on a fresh dispatch, where the summary line names what is unset.
+  const [detailsOpen, setDetailsOpen] = useState<boolean>(
+    () => editing !== null || draftHasBacklogDetails,
+  );
+  const previousEnsembleMode = useRef(ensembleMode);
+  useEffect(() => {
+    const returnedToSingle = previousEnsembleMode.current && !ensembleMode;
+    previousEnsembleMode.current = ensembleMode;
+    if (returnedToSingle && draftHasBacklogDetails) setDetailsOpen(true);
+  }, [draftHasBacklogDetails, ensembleMode]);
+  // The Ensemble preview/launch state machine, called unconditionally (it is a hook) and
+  // inert outside Ensemble mode. The form body and the footer both read this one object,
+  // so the plan strip and the Launch button cannot disagree about what is reviewed.
+  const ensembleLaunch = useEnsembleLaunch({
+    compose: {
+      repoRoot: draft.repoRoot,
+      title: draft.title,
+      intent: draft.intent,
+      attachments: draft.attachments,
+    },
+    ensemble: ensembleMode ? ensembleDraft : undefined,
+    onEnsembleChange: onEnsembleDraftChange,
+    uploading: drop.uploading,
+    onLaunched:
+      onEnsembleLaunched === undefined
+        ? undefined
+        : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
+  });
   const dependencyKey = (dependency: TaskDependencyInput): string =>
     dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`;
   const dependencyByKey = useMemo(() => {
@@ -503,21 +543,22 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
-  const dependencyKeys = draft.dependencies.map(dependencyKey);
-  const selectedDependenciesUnmet = draft.dependencies.some((dependency) => {
-    const stored = editing?.dependencies.find((candidate) =>
-      dependencyKey(
-        candidate.type === "task"
-          ? { type: "task", taskId: candidate.taskId }
-          : { type: "session", sessionId: candidate.sessionId },
-      ) === dependencyKey(dependency),
+  const unmetDependencyCount = draft.dependencies.filter((dependency) => {
+    const stored = editing?.dependencies.find(
+      (candidate) =>
+        dependencyKey(
+          candidate.type === "task"
+            ? { type: "task", taskId: candidate.taskId }
+            : { type: "session", sessionId: candidate.sessionId },
+        ) === dependencyKey(dependency),
     );
     if (stored?.satisfiedAt != null) return false;
     if (dependency.type === "session") {
       return sessions.find((session) => session.id === dependency.sessionId)?.prState !== "merged";
     }
     return sessions.find((session) => session.task?.id === dependency.taskId)?.prState !== "merged";
-  });
+  }).length;
+  const selectedDependenciesUnmet = unmetDependencyCount > 0;
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -645,11 +686,114 @@ function DispatchModal({
     else onSubmitted(submitted);
   }
 
+  // The brief - repo, title, task - is shared by both modes but arranged differently:
+  // Single leads repo-then-task with the title folded into Backlog details, Ensemble puts
+  // repo and title side by side above the shared composer. One JSX definition each, so the
+  // two arrangements cannot drift apart in behavior.
+  const repoField = (
+    <label className="field">
+      <span className="field-label">
+        Repo{" "}
+        <span className="field-hint">
+          {reposLoading
+            ? "indexing workspace…"
+            : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
+        </span>
+      </span>
+      <RepoCombobox
+        repos={repos}
+        value={draft.repoRoot}
+        onChange={(v) => update({ repoRoot: v })}
+      />
+    </label>
+  );
+
+  const titleField = (
+    <label className="field">
+      <span className="field-label">
+        Title{" "}
+        <span className="field-hint">
+          {/* "optional" is a promise about a field you are yet to fill in. On a task
+              that already has a title, the useful half of that sentence is what the
+              title will go on to name. */}
+          {editing
+            ? "names the session / card"
+            : ensembleMode
+              ? "optional - names the run"
+              : "optional - names the session / card"}
+        </span>
+      </span>
+      <input
+        className="field-input"
+        placeholder={
+          editing ? "clear it to re-derive one from the task" : "summarized from the task if left blank"
+        }
+        value={draft.title}
+        onChange={(e) => update({ title: e.target.value })}
+      />
+    </label>
+  );
+
+  const taskField = (
+    <label className="field">
+      <span className="field-label">
+        Task{" "}
+        <span className="field-hint">
+          {ensembleMode
+            ? "every candidate gets this brief - drop or paste images to attach"
+            : "drop or paste images to attach them"}
+        </span>
+      </span>
+      <div className="drop-zone" {...drop.dropProps}>
+        <textarea
+          ref={intentRef}
+          className="field-input field-textarea"
+          placeholder="What should this agent do?"
+          rows={5}
+          value={draft.intent}
+          onChange={(e) => update({ intent: e.target.value })}
+          onPaste={drop.onPaste}
+          onKeyDown={(e) => {
+            // In Ensemble mode the launch is a deliberate review-then-confirm, so the
+            // dispatch chord does not short-circuit it.
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !ensembleMode) void submit(true);
+          }}
+        />
+        <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
+        {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
+      </div>
+    </label>
+  );
+
+  // What the collapsed Backlog details row says. It names every field it hides, set or
+  // not, so nothing carried by the draft can hide behind the fold silently.
+  const dependencyCount = draft.dependencies.length;
+  const backlogSummary = [
+    draft.priority ? PRIORITY_LABELS[draft.priority] : "no priority",
+    labels.length > 0 ? labels.join(", ") : "no labels",
+    draft.title.trim() ? "titled" : "title summarized",
+    dependencyCount > 0
+      ? `${dependencyCount} ${dependencyCount === 1 ? "dependency" : "dependencies"}`
+      : "no dependencies",
+  ].join(" · ");
+
+  /** Dependency choices not already picked, for the add control's grouped options. */
+  const unselectedDependencies = (
+    group: "backlog" | "session",
+  ): Array<[string, { input: TaskDependencyInput; label: string }]> =>
+    [...dependencyByKey.entries()].filter(
+      ([key, option]) =>
+        option.group === group &&
+        !draft.dependencies.some((dependency) => dependencyKey(dependency) === key),
+    );
+
   return (
     <Overlay
       id={OVERLAY_IDS.dispatch}
       onClose={onClose}
-      className="modal dispatch-modal"
+      // Ensemble alone widens the dialog: a candidate lane holds four controls on one
+      // line at 760 and clips at Single's width.
+      className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}`}
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
       // Sealed while a submit is in flight, all four dismiss routes at once. A modal
@@ -660,6 +804,35 @@ function DispatchModal({
     >
       <header className="modal-head">
         <h2>{editing ? "Edit backlog task" : "Dispatch an agent"}</h2>
+        {/* The launch mode lives at dialog level, not among the fields: choosing Single or
+            Ensemble reshapes the whole form below it. Only a new dispatch has the choice -
+            an existing backlog Task cannot be turned into an Ensemble. */}
+        {!editing && onLaunchModeChange && (
+          <div className="dispatch-mode-toggle" role="radiogroup" aria-label="Launch mode">
+            <Tooltip label="Dispatch one agent to this task">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={launchMode === "single"}
+                className={launchMode === "single" ? "active" : ""}
+                onClick={() => onLaunchModeChange("single")}
+              >
+                Single agent
+              </button>
+            </Tooltip>
+            <Tooltip label="Launch several agents on the same task and compare them">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={launchMode === "ensemble"}
+                className={launchMode === "ensemble" ? "active" : ""}
+                onClick={() => onLaunchModeChange("ensemble")}
+              >
+                Ensemble
+              </button>
+            </Tooltip>
+          </div>
+        )}
         <Tooltip label={busy ? "Waiting for the dispatch to land" : "Close without dispatching (Escape)"}>
           <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
             ✕
@@ -695,304 +868,285 @@ function DispatchModal({
             </Tooltip>
           </div>
         )}
-        <label className="field">
-          <span className="field-label">
-            Repo{" "}
-            <span className="field-hint">
-              {reposLoading
-                ? "indexing workspace…"
-                : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
-            </span>
-          </span>
-          <RepoCombobox
-            repos={repos}
-            value={draft.repoRoot}
-            onChange={(v) => update({ repoRoot: v })}
-          />
-        </label>
-
-        {!editing && onLaunchModeChange && (
-          <div className="dispatch-mode-toggle" role="radiogroup" aria-label="Launch mode">
-            <Tooltip label="Dispatch one agent to this task">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={launchMode === "single"}
-                className={launchMode === "single" ? "active" : ""}
-                onClick={() => onLaunchModeChange("single")}
-              >
-                Single agent
-              </button>
-            </Tooltip>
-            <Tooltip label="Launch several agents on the same task and compare them">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={launchMode === "ensemble"}
-                className={launchMode === "ensemble" ? "active" : ""}
-                onClick={() => onLaunchModeChange("ensemble")}
-              >
-                Ensemble
-              </button>
-            </Tooltip>
+        {/* The brief leads: repo and task are the dispatch, everything below them is a
+            default you occasionally override. */}
+        {ensembleMode ? (
+          <div className="field-row dispatch-brief">
+            {repoField}
+            {titleField}
           </div>
+        ) : (
+          repoField
         )}
+
+        {taskField}
 
         {!ensembleMode && (
         <>
-        <div className="field-row">
-          <label className="field">
-            <span className="field-label">Kind</span>
-            <Tooltip label="Whether this task asks for a delivered change or an investigation">
-              <select
-                className="field-input"
-                value={draft.kind}
-                onChange={(e) => update({ kind: e.target.value as TaskKind })}
-              >
-                <option value="ship">ship - deliver a change</option>
-                <option value="scout">scout - investigate / report</option>
-              </select>
-            </Tooltip>
-          </label>
-          <label className="field">
-            <span className="field-label">Agent</span>
-            <Tooltip label="Which harness this task is dispatched to - switching resets the model and effort overrides">
-              <select
-                className="field-input"
-                value={draft.agent}
-                // Switching harness drops model and effort overrides with it: neither
-                // selection is portable across harnesses. Back to the defaults, which are
-                // per-agent and always right for the harness now chosen.
-                onChange={(e) =>
-                  update({ agent: e.target.value as AgentType, model: "", effort: "" })
-                }
-              >
-              {/* Driven off the union, so a harness that exists cannot be one the
-                  operator has no way to pick: a hand-written pair of options is a
-                  list that goes stale silently, with the new agent dispatchable
-                  everywhere except the modal that dispatches. */}
-                {AGENT_TYPES.map((a) => (
-                  <option key={a} value={a}>
-                    {AGENT_IDENTITY[a].label}
-                  </option>
-                ))}
-              </select>
-            </Tooltip>
-          </label>
+        {/* The crew: which agent, doing what kind of work, on which model at which effort -
+            one compact row instead of four full-width ones. Overrides read as values (a
+            named model instead of "Default"), so no per-field "overriding" hint is needed. */}
+        <div className="field dispatch-crew-field">
+          <span className="field-label">Crew</span>
+          <div className="dispatch-crew">
+            <label className="field">
+              <span className="field-label">Agent</span>
+              <Tooltip label="Which harness this task is dispatched to - switching resets the model and effort overrides">
+                <span
+                  className="agent-accent-select"
+                  style={{ ["--agent-accent" as string]: AGENT_IDENTITY[draft.agent].accent }}
+                >
+                  <select
+                    className="field-input"
+                    value={draft.agent}
+                    // Switching harness drops model and effort overrides with it: neither
+                    // selection is portable across harnesses. Back to the defaults, which are
+                    // per-agent and always right for the harness now chosen.
+                    onChange={(e) =>
+                      update({ agent: e.target.value as AgentType, model: "", effort: "" })
+                    }
+                  >
+                  {/* Driven off the union, so a harness that exists cannot be one the
+                      operator has no way to pick: a hand-written pair of options is a
+                      list that goes stale silently, with the new agent dispatchable
+                      everywhere except the modal that dispatches. */}
+                    {AGENT_TYPES.map((a) => (
+                      <option key={a} value={a}>
+                        {AGENT_IDENTITY[a].label}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </Tooltip>
+            </label>
+            <label className="field">
+              <span className="field-label">Kind</span>
+              <Tooltip label="Whether this task asks for a delivered change or an investigation">
+                <select
+                  className="field-input"
+                  value={draft.kind}
+                  onChange={(e) => update({ kind: e.target.value as TaskKind })}
+                >
+                  <option value="ship">ship</option>
+                  <option value="scout">scout</option>
+                </select>
+              </Tooltip>
+            </label>
+            <label className="field">
+              <span className="field-label">Model</span>
+              <Tooltip label="Pin the model this task's agent launches with, overriding the harness default">
+                <select
+                  className="field-input"
+                  value={draft.model}
+                  onChange={(e) => update({ model: e.target.value })}
+                >
+                <option value="">
+                  {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
+                </option>
+                {/* The draft's own id is folded in, for the same reason the Settings picker
+                    folds in the stored default: reopening a shelved task can seed this from a
+                    row naming a model this build's catalog doesn't list, and an unlisted value
+                    renders the select on nothing - reading as "Default" over a task that is
+                    pinned, and saving as one on the next edit. */}
+                  {modelChoicesFor(draft.agent, draft.model).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label} - {m.hint}
+                    </option>
+                  ))}
+                </select>
+              </Tooltip>
+            </label>
+            <label className="field">
+              <span className="field-label">Effort</span>
+              <Tooltip label="How much reasoning effort this task's agent spends, overriding the harness default">
+                <select
+                  className="field-input"
+                  value={draft.effort}
+                  onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
+                  aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
+                >
+                <option value="">
+                  {defaultEffortOptionLabel(draft.agent, defaults?.defaultEffort ?? null)}
+                </option>
+                  {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </Tooltip>
+            </label>
+          </div>
+          <span className="field-hint dispatch-crew-hint">
+            Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.
+          </span>
         </div>
-
-        {/* Its own row rather than a third column beside Kind and Agent: the option
-            labels name a model AND say when to reach for it, which is wider than a
-            third of this modal - squeezed into one it clipped its own text against
-            the select's chevron. */}
-        <label className="field">
-          <span className="field-label">
-            Model{" "}
-            <span className="field-hint">
-              {draft.model ? "overriding the default for this task" : "set in Settings → Harnesses"}
-            </span>
-          </span>
-          <Tooltip label="Pin the model this task's agent launches with, overriding the harness default">
-            <select
-              className="field-input"
-              value={draft.model}
-              onChange={(e) => update({ model: e.target.value })}
-            >
-            <option value="">
-              {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
-            </option>
-            {/* The draft's own id is folded in, for the same reason the Settings picker
-                folds in the stored default: reopening a shelved task can seed this from a
-                row naming a model this build's catalog doesn't list, and an unlisted value
-                renders the select on nothing - reading as "Default" over a task that is
-                pinned, and saving as one on the next edit. */}
-              {modelChoicesFor(draft.agent, draft.model).map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} - {m.hint}
-                </option>
-              ))}
-            </select>
-          </Tooltip>
-        </label>
-
-        <label className="field">
-          <span className="field-label">
-            Effort{" "}
-            <span className="field-hint">
-              {draft.effort
-                ? "overriding the default for this task"
-                : "set in Settings → Harnesses"}
-            </span>
-          </span>
-          <Tooltip label="How much reasoning effort this task's agent spends, overriding the harness default">
-            <select
-              className="field-input"
-              value={draft.effort}
-              onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
-              aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
-            >
-            <option value="">
-              {defaultEffortOptionLabel(draft.agent, defaults?.defaultEffort ?? null)}
-            </option>
-              {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-          </Tooltip>
-        </label>
         </>
         )}
 
+        {/* Backlog details: the fields that rank, label, name and gate the task. Folded
+            behind a summary that names every field it hides - set or not - so nothing the
+            draft carries can hide silently. Opens in place: dispatch stays one screen. */}
         {!ensembleMode && (
-        <div className="field-row">
-          <label className="field">
-            <span className="field-label">
-              Priority <span className="field-hint">optional</span>
-            </span>
-            <Tooltip label="How this task is ranked in the backlog - a task carries one only if you choose it">
-              <select
-                className="field-input"
-                value={draft.priority}
-                onChange={(e) => update({ priority: e.target.value as TaskPriority | "" })}
+          <div className="dispatch-more-wrap">
+            <Tooltip
+              label={
+                detailsOpen
+                  ? "Collapse the backlog details"
+                  : "Priority, labels, title and dependencies"
+              }
+            >
+              <button
+                type="button"
+                className={`dispatch-more${detailsOpen ? " open" : ""}`}
+                aria-expanded={detailsOpen}
+                onClick={() => setDetailsOpen((open) => !open)}
               >
-              {/* The empty option is first and is the default: a task carries a priority
-                  only because someone chose one, never because the form defaulted it. */}
-                <option value="">none</option>
-                {TASK_PRIORITIES.map((p) => (
-                  <option key={p} value={p}>
-                    {PRIORITY_LABELS[p]}
-                  </option>
-                ))}
-              </select>
+                <span className="dispatch-more-title">Backlog details</span>
+                {!detailsOpen && <span className="dispatch-more-summary">{backlogSummary}</span>}
+                <span className="dispatch-more-chev" aria-hidden>
+                  {detailsOpen ? "▴" : "▾"}
+                </span>
+              </button>
             </Tooltip>
-          </label>
-          <label className="field">
-            <span className="field-label">
-              Labels <span className="field-hint">optional - comma separated</span>
-            </span>
-            <input
-              className="field-input"
-              placeholder="e.g. bug, infra"
-              value={draft.labels}
-              onChange={(e) => update({ labels: e.target.value })}
-            />
-            {/* Previews what will actually be stored - deduped, trimmed and capped by
-                the same function the server applies - so a trailing comma or a repeat
-                is visibly a no-op rather than a surprise on the card. Rendered INSIDE
-                this field rather than under the row, or it would sit beneath the
-                priority select and read as that control's output. */}
-            {labels.length > 0 && (
-              <span className="dispatch-label-preview">
-                <LabelChips labels={labels} />
-                {labels.length >= MAX_LABELS && (
-                  <span className="field-hint">{MAX_LABELS} maximum</span>
-                )}
-              </span>
+            {detailsOpen && (
+              <div className="dispatch-more-body">
+                <div className="field-row">
+                  <label className="field">
+                    <span className="field-label">
+                      Priority <span className="field-hint">optional</span>
+                    </span>
+                    <Tooltip label="How this task is ranked in the backlog - a task carries one only if you choose it">
+                      <select
+                        className="field-input"
+                        value={draft.priority}
+                        onChange={(e) => update({ priority: e.target.value as TaskPriority | "" })}
+                      >
+                      {/* The empty option is first and is the default: a task carries a priority
+                          only because someone chose one, never because the form defaulted it. */}
+                        <option value="">none</option>
+                        {TASK_PRIORITIES.map((p) => (
+                          <option key={p} value={p}>
+                            {PRIORITY_LABELS[p]}
+                          </option>
+                        ))}
+                      </select>
+                    </Tooltip>
+                  </label>
+                  <label className="field">
+                    <span className="field-label">
+                      Labels <span className="field-hint">optional - comma separated</span>
+                    </span>
+                    <input
+                      className="field-input"
+                      placeholder="e.g. bug, infra"
+                      value={draft.labels}
+                      onChange={(e) => update({ labels: e.target.value })}
+                    />
+                    {/* Previews what will actually be stored - deduped, trimmed and capped by
+                        the same function the server applies - so a trailing comma or a repeat
+                        is visibly a no-op rather than a surprise on the card. Rendered INSIDE
+                        this field rather than under the row, or it would sit beneath the
+                        priority select and read as that control's output. */}
+                    {labels.length > 0 && (
+                      <span className="dispatch-label-preview">
+                        <LabelChips labels={labels} />
+                        {labels.length >= MAX_LABELS && (
+                          <span className="field-hint">{MAX_LABELS} maximum</span>
+                        )}
+                      </span>
+                    )}
+                  </label>
+                </div>
+
+                {titleField}
+
+                <div className="field">
+                  <span className="field-label">
+                    Dependencies{" "}
+                    <span className="field-hint">each waits for its merged PR</span>
+                  </span>
+                  {/* Chips plus one grouped add control, instead of an always-tall native
+                      multi-select: each chip names its target and removes with one click,
+                      and the picker only offers what is not already chosen. */}
+                  <div className="dep-chips">
+                    {draft.dependencies.map((dependency) => {
+                      const key = dependencyKey(dependency);
+                      const label = dependencyByKey.get(key)?.label ?? "unavailable";
+                      return (
+                        <span key={key} className="dep-chip">
+                          {label}
+                          <Tooltip label="Remove this dependency">
+                            <button
+                              type="button"
+                              className="dep-chip-x"
+                              aria-label={`Remove dependency: ${label}`}
+                              onClick={() =>
+                                update({
+                                  dependencies: draft.dependencies.filter(
+                                    (candidate) => dependencyKey(candidate) !== key,
+                                  ),
+                                })
+                              }
+                            >
+                              ✕
+                            </button>
+                          </Tooltip>
+                        </span>
+                      );
+                    })}
+                    <Tooltip label="Tasks that must finish before this one may be dispatched">
+                      <select
+                        className="dep-add"
+                        value=""
+                        aria-label="Add dependency"
+                        onChange={(event) => {
+                          const option = dependencyByKey.get(event.target.value);
+                          if (option) update({ dependencies: [...draft.dependencies, option.input] });
+                        }}
+                      >
+                        <option value="">+ Add dependency</option>
+                        {unselectedDependencies("backlog").length > 0 && (
+                          <optgroup label="Backlog tasks">
+                            {unselectedDependencies("backlog").map(([key, option]) => (
+                              <option key={key} value={key}>{option.label}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {unselectedDependencies("session").length > 0 && (
+                          <optgroup label="Active sessions">
+                            {unselectedDependencies("session").map(([key, option]) => (
+                              <option key={key} value={key}>{option.label}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                    </Tooltip>
+                  </div>
+                  <span className="field-hint">
+                    Sessions without observable hooks cannot be selected.
+                  </span>
+                  {selectedDependenciesUnmet && (
+                    <span className="dispatch-wait-note">
+                      <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
+                      {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
+                      {editing ? "stays in" : "lands in"} the backlog and dispatches when their
+                      PRs merge.
+                    </span>
+                  )}
+                </div>
+              </div>
             )}
-          </label>
-        </div>
-        )}
-
-        <label className="field">
-          <span className="field-label">
-            Title{" "}
-            <span className="field-hint">
-              {/* "optional" is a promise about a field you are yet to fill in. On a task
-                  that already has a title, the useful half of that sentence is what the
-                  title will go on to name. */}
-              {editing ? "names the session / card" : "optional - names the session / card"}
-            </span>
-          </span>
-          <input
-            className="field-input"
-            placeholder={
-              editing ? "clear it to re-derive one from the task" : "summarized from the task if left blank"
-            }
-            value={draft.title}
-            onChange={(e) => update({ title: e.target.value })}
-          />
-        </label>
-
-        {!ensembleMode && (
-        <label className="field">
-          <span className="field-label">
-            Dependencies{" "}
-            <span className="field-hint">optional - ⌘/Ctrl-click to choose several</span>
-          </span>
-          <Tooltip label="Tasks that must finish before this one may be dispatched">
-            <select
-              className="field-input dependency-select"
-              multiple
-            size={Math.min(7, Math.max(3, dependencyByKey.size))}
-            value={dependencyKeys}
-            onChange={(event) => {
-              const dependencies = Array.from(event.currentTarget.selectedOptions)
-                .map((option) => dependencyByKey.get(option.value)?.input)
-                .filter((dependency): dependency is TaskDependencyInput => dependency !== undefined);
-              update({ dependencies });
-            }}
-          >
-            <optgroup label="Backlog tasks">
-              {[...dependencyByKey.entries()]
-                .filter(([, option]) => option.group === "backlog")
-                .map(([key, option]) => <option key={key} value={key}>{option.label}</option>)}
-            </optgroup>
-            <optgroup label="Active sessions">
-              {[...dependencyByKey.entries()]
-                .filter(([, option]) => option.group === "session")
-                .map(([key, option]) => <option key={key} value={key}>{option.label}</option>)}
-            </optgroup>
-            </select>
-          </Tooltip>
-          <span className="field-hint">
-            Every dependency waits for its merged PR. Sessions without observable hooks cannot be selected.
-            {selectedDependenciesUnmet ? " This task will stay in the backlog." : ""}
-          </span>
-        </label>
-        )}
-
-        <label className="field">
-          <span className="field-label">
-            Task <span className="field-hint">drop or paste images to attach them</span>
-          </span>
-          <div className="drop-zone" {...drop.dropProps}>
-            <textarea
-              ref={intentRef}
-              className="field-input field-textarea"
-              placeholder="What should this agent do?"
-              rows={5}
-              value={draft.intent}
-              onChange={(e) => update({ intent: e.target.value })}
-              onPaste={drop.onPaste}
-              onKeyDown={(e) => {
-                // In Ensemble mode the launch is a deliberate review-then-confirm, so the
-                // dispatch chord does not short-circuit it.
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !ensembleMode) void submit(true);
-              }}
-            />
-            <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
-            {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
           </div>
-        </label>
+        )}
 
-        {ensembleMode && ensembleDraft && onEnsembleDraftChange && onEnsembleLaunched && (
+        {ensembleMode && ensembleDraft && onEnsembleDraftChange && (
           <EnsembleDispatch
-            compose={{
-              repoRoot: draft.repoRoot,
-              title: draft.title,
-              intent: draft.intent,
-              attachments: draft.attachments,
-            }}
             ensemble={ensembleDraft}
             onEnsembleChange={onEnsembleDraftChange}
-            uploading={drop.uploading}
             personas={personas}
             workflowSummaries={workflowSummaries}
-            onLaunched={(runId, submittedEnsemble) =>
-              onEnsembleLaunched(runId, draft, submittedEnsemble)
-            }
+            launch={ensembleLaunch}
           />
         )}
 
@@ -1001,7 +1155,7 @@ function DispatchModal({
 
       <footer className="modal-foot">
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
-            backlog" makes no sense there; the Launch control lives in the Ensemble body. */}
+            backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
         {!ensembleMode && (
           <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button
@@ -1041,7 +1195,11 @@ function DispatchModal({
             Cancel
           </button>
         </Tooltip>
-        {!ensembleMode && (
+        {ensembleMode ? (
+          // The Ensemble two-step lives in the primary slot: Review until the plan
+          // verifies, then a Reviewed chip beside Launch. One action row, like Single.
+          <EnsembleLaunchControls launch={ensembleLaunch} />
+        ) : (
           <Tooltip
             label={
               selectedDependenciesUnmet
@@ -1050,7 +1208,7 @@ function DispatchModal({
             }
           >
             <button
-              className="btn btn-primary"
+              className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={
                 busy ||

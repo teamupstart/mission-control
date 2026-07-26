@@ -69,14 +69,17 @@ test("the chevron is drawn in exactly one place, so dropdowns cannot drift apart
   assert.deepEqual(chevronSelectRules.flatMap((r) => r.selectors), ["select:not([multiple])"]);
 });
 
-test("the multi-select dependency picker opts out through :not([multiple])", () => {
-  // The `:not([multiple])` in the shared selector is the opt-out; it only means anything
-  // if a real picker is actually `multiple`. The dependency picker in Dispatch is that one.
+test("the dependency picker is chips plus one themed single select, not a listbox", () => {
+  // The dependency picker used to be the app's one `<select multiple>` - the least themed
+  // control in the modal. It is chips plus a grouped add-select now, which the shared
+  // dropdown rule themes like everything else. The `:not([multiple])` guard stays in the
+  // shared selector for whatever listbox arrives next.
   assert.ok(ruleFor("select:not([multiple])"), "the shared dropdown rule is gone");
-  assert.match(
+  assert.match(dispatchModal, /className="dep-add"/, "the dependency add-select is gone");
+  assert.doesNotMatch(
     dispatchModal,
-    /className="field-input dependency-select"[\s\S]{0,80}\bmultiple\b/,
-    "the dependency picker is no longer a <select multiple>, so :not([multiple]) guards nothing",
+    /\bmultiple\b/,
+    "a <select multiple> is back in Dispatch; theme it or turn it into chips",
   );
 });
 

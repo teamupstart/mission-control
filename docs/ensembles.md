@@ -14,10 +14,12 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 
 ## What Best of N does
 
-1. From **Dispatch**, switch the launch mode from *Single agent* to *Ensemble* and pick the Best of
-   N card. Configure two to five candidate rows (agent, model, effort, optional approach hint;
-   repeats are allowed), an optional evaluator Persona, and an optional
-   [workflow](../README.md#workflows-and-personas) to hand the winner to.
+1. From **Dispatch**, switch the header's launch mode from *Single agent* to *Ensemble* and pick
+   **Best of N** in the strategy control. Configure two to five candidate lanes (agent, model,
+   effort, optional approach hint; repeats are allowed), an optional evaluator Persona, and an
+   optional [workflow](../README.md#workflows-and-personas) to hand the winner to. The **Launch
+   plan** strip shows the pinned base, the lanes, the comparison and the human gate before you
+   commit.
 2. **Review launch** posts a side-effect-free preview (member count, concurrency, waves, comparison
    calls, and whether the chosen workflow mode is executable). Any later edit invalidates it, so
    **Launch N agents** confirms exactly what you reviewed. The launch is idempotent on a stable

@@ -89,12 +89,14 @@ test("a fresh dispatch is untouched by the edit mode", () => {
 });
 
 test("the dependency picker offers both backlog tasks and active sessions", () => {
+  // Through the editor rather than a fresh dispatch: the backlog-details fold opens on an
+  // edit, and a fresh form keeps it collapsed behind the summary line.
   const prerequisite = mkTask({ id: "pre", title: "Create the schema", kind: "ship" });
   const html = renderToStaticMarkup(
     withOverlayHost(
       createElement(DispatchLayer, {
         open: true,
-        editTask: null,
+        editTask: mkTask(),
         tasks: [prerequisite],
         sessions: [mkSession({ id: "active", name: "Manual investigation", task: null })],
         onClose: () => {},
@@ -105,7 +107,7 @@ test("the dependency picker offers both backlog tasks and active sessions", () =
   assert.match(html, /Create the schema \(ship\)/);
   assert.match(html, /<optgroup label="Active sessions">/);
   assert.match(html, /Manual investigation/);
-  assert.match(html, /Every dependency waits for its merged PR/);
+  assert.match(html, /each waits for its merged PR/);
 });
 
 test("a backlog card carries a focusable way into the editor, not just a click handler", () => {

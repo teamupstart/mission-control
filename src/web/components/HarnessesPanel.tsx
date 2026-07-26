@@ -46,7 +46,7 @@ const HARNESS_CARDS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((ag
 /**
  * Who the auto-mode switch reaches through a permission-mode launch flag, and who it
  * does not - read off `permissionModes.onDispatch` plus its launch renderer rather than
- * off the word "claude". Other harness-specific launch postures are outside this list.
+ * off the word "claude". Embedded-driver postures are outside this launch-flag list.
  *
  * Every sentence on that row named an agent, and each was its own literal ("claude
  * only", "Every Claude session…", "Codex support comes later"). Pi would have left all
@@ -75,11 +75,11 @@ const AUTO_MODE_LABEL = ((): string | null => {
 /**
  * The badge on a harness's card, capability-derived and never a literal harness name.
  *
- * Two mutually exclusive states, both read off the same permission-mode launch
+ * Two mutually exclusive launch-flag states, both read off the same permission-mode
  * capability:
- *  - a harness this capability REACHES wears "auto mode on" only while the switch is on,
+ *  - a harness this projection REACHES wears "auto mode on" only while the switch is on,
  *    so the card says what a dispatch will do right now rather than what it could;
- *  - a harness this capability DOES NOT REACH wears "no auto mode", carrying
+ *  - a harness this projection DOES NOT REACH wears "no auto mode", carrying
  *    `autoModeUnsupportedWhy` as its title - the sentence saying which of the two
  *    absences this is - so the reason is on the card, not just in the master row.
  */

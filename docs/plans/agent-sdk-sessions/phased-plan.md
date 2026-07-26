@@ -58,9 +58,10 @@ Verified against the worktree at planning time (implementers re-verify at execut
 - **SDK subprocess binary resolution**: the Agent SDK auto-detects `claude` on PATH; the
   adapter must pin it to `resolveAgentBin("claude")` (env override or the SDK's
   executable-path option - verify against the installed SDK version at implementation).
-  Same for `codex app-server` via `resolveAgentBin("codex")`. Any driver subprocess
-  inheriting the daemon's environment strips `TMUX_PANE`, `WEZTERM_PANE`, and
-  `TERM_PROGRAM` so hooks cannot attribute it to the daemon's own pane.
+  Codex app-server resolves the same configured binary spec as a terminal Codex launch.
+  Any driver subprocess inheriting the daemon's environment strips `TMUX_PANE`,
+  `WEZTERM_PANE`, and `TERM_PROGRAM` so hooks cannot attribute it to the daemon's own
+  pane.
 - **Packaging**: the daemon bundles to `dist/server/index.mjs` (esbuild); a new npm
   dependency must survive that bundle and electron-builder's `files:` allowlist, with
   asar disabled. Phase 2 owns this for `@anthropic-ai/claude-agent-sdk`; phase 4 adds no
@@ -148,9 +149,10 @@ Named once here; each phase file restates the ones it inherits or owns.
   `foremanAutomationAuthorized` gains the runtime-aware arm (SDK sessions are
   instrumented by construction). P6 relies on this arm for pi.
 - **C10 (P4): Codex transport.** One `codex app-server` subprocess per session (crash
-  isolation, per-session `-c` config scoping); generated bindings committed and pinned to
-  the launched binary version; the protocol is spoken only inside
-  `harness/codex/sdk.ts` and its bindings module.
+  isolation, per-session `-c` config scoping); generated bindings committed with their
+  generating version stamped. App-server method vocabulary is confined to
+  `harness/codex/sdk.ts`; the generic JSON-RPC client, subprocess transport, and generated
+  types remain in that harness's app-server modules.
 - **C11 (P6): pi transport.** `pi --mode rpc` JSONL (LF-only framing - not Node
   `readline`, per pi's own docs); `extension_ui_request` projects into C3;
   `new_session` implements `clearContext`; pi's work-queue capability is revisited on top

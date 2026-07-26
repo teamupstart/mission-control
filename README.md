@@ -376,9 +376,8 @@ runtime's.
   for me** takes effect on the session's next turn. The *sandbox* is not: Codex cannot move
   a running thread between `read-only`, `workspace-write` and `danger-full-access`, so
   picking a profile that would need a different one is refused with a sentence saying to
-  clear the context (which starts a fresh thread) or continue in a terminal and use
-  `/permissions`. The card's profile chip is read back from the rollout either way, so it
-  always shows what the agent is really running under.
+  continue in a terminal and use `/permissions`. The card's profile chip is read back from
+  the rollout either way, so it always shows what the agent is really running under.
 - **Auto mode on dispatch** gives an embedded Codex the same posture it gives a terminal one
   (`workspace-write` with approvals on request), with approvals routed to you rather than to
   Codex's own auto-reviewer - the point of the runtime being that you can answer them.
@@ -3841,7 +3840,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
-node scripts/codex-app-server-bindings.mjs  # regenerate the pinned Codex app-server types (on a Codex upgrade)
+node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 ```
 
 ## Security

@@ -737,13 +737,11 @@ export function skillsAgents(): AgentType[] {
 }
 
 /**
- * The agents "auto mode on dispatch" actually reaches - the ones that name a mode
- * meaning "proceed autonomously" and can render it as launch arguments.
+ * The agents whose "auto mode on dispatch" posture renders as launch arguments.
  *
- * A setting whose switch reaches only some of the grid has to say which some, and the
- * settings panel used to answer that with the literal words "claude only" and "Codex
- * support comes later" - a sentence that is wrong the moment a third harness lands and
- * that nothing would fail to catch.
+ * This is intentionally narrower than `dispatchPermissionMode`: an embedded driver can
+ * consume an `onDispatch` mode without an argv renderer. Callers using this projection
+ * must describe launch-flag coverage, not every runtime the setting reaches.
  */
 export function autoModeAgents(): AgentType[] {
   return AGENT_TYPES.filter((a) => {
@@ -753,14 +751,14 @@ export function autoModeAgents(): AgentType[] {
 }
 
 /**
- * Why "auto mode on dispatch" cannot arm this harness's permission mode at launch, or
- * null when it can.
+ * Why this harness cannot render "auto mode on dispatch" as a launch flag, or null when
+ * it can.
  *
  * Three different absences, said differently, because they are different facts: a
  * harness with no permission modes at all has nothing to arm, one that HAS modes but
  * names no `onDispatch` has nothing that would mean "proceed without asking", and one
- * with that mode but no launch renderer can support only human-driven live-session
- * changes. Rolling them into one sentence would misstate the declared capability.
+ * with that mode but no launch renderer needs another transport to apply it. Rolling
+ * them into one sentence would misstate the declared capability.
  *
  * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
@@ -768,7 +766,8 @@ export function autoModeAgents(): AgentType[] {
  * Codex; what it does not reach is a `--permission-mode` launch flag, because Codex
  * expresses the same posture through separate sandbox and approval flags. A panel
  * promising "unaffected" over a session launched with a widened sandbox is a consent
- * failure, not a copy nit.
+ * failure, not a copy nit. Embedded Codex is the complementary case: its driver consumes
+ * the declared mode directly even though this launch-flag projection excludes it.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
   const modes = HARNESS_CAPABILITIES[agent].permissionModes;

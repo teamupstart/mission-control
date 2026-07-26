@@ -1314,18 +1314,20 @@ const SessionRuntimeSchema = z.enum(SESSION_RUNTIMES);
  * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
  *
  * The scoping is the whole contract: `autoModeOnDispatch` affects only the dispatch
- * path. Claude starts in `auto` through `dispatchPermissionModeArgs`; Codex gets the
- * widened sandbox from `prepareCodexLaunch`. A session the operator started themselves
- * keeps its existing posture. Ships off because these autonomous postures let a session
- * act without stopping for the usual prompts, which the operator must opt into.
+ * path. Claude starts in `auto` through `dispatchPermissionModeArgs`. Terminal Codex
+ * keeps the posture from `prepareCodexLaunch`; embedded Codex receives that same posture
+ * through its driver. A session the operator started themselves keeps its existing
+ * posture. Ships off because changing a dispatched session's posture must be an operator
+ * choice.
  */
 export const HarnessesConfigSchema = z.object({
   /**
    * When on, every Claude session dispatched from Mission Control is launched directly
    * in `auto` permission mode (`--permission-mode auto`) - so it works through its task
-   * without pausing on permission prompts. Codex dispatches use their launch-scoped
-   * workspace-write/on-request posture instead; its native, feature-gated Approve for me
-   * menu is deliberately not selected after launch.
+   * without pausing on permission prompts. Codex dispatches use the existing
+   * workspace-write/on-request posture; terminal launches receive it from
+   * `prepareCodexLaunch`, while embedded launches receive it through app-server turn
+   * parameters. Codex's native Approve for me profile is deliberately not selected.
    */
   autoModeOnDispatch: z.boolean().default(false),
   /**

@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -431,6 +431,27 @@ test("kill and mode controls use the embedded driver", async () => {
 });
 
 test("scheduled Codex controls wait for rollout observation before changing the card", async () => {
+  const rolloutPath = join(home, "codex-controls-rollout.jsonl");
+  writeFileSync(
+    rolloutPath,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-07-25T12:00:00.000Z",
+        payload: {
+          id: "thread-1",
+          cwd: "/wt/codex",
+          timestamp: "2026-07-25T12:00:00.000Z",
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: "2026-07-25T12:00:01.000Z",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      }),
+      "",
+    ].join("\n"),
+  );
   const registry = new Registry();
   registry.registerSdkSession({
     id: "sdk:codex-controls",
@@ -442,7 +463,7 @@ test("scheduled Codex controls wait for rollout observation before changing the 
   registry.applyDriverEvent("sdk:codex-controls", {
     kind: "bound",
     agentSessionId: "thread-1",
-    transcriptPath: "/rollout.jsonl",
+    transcriptPath: rolloutPath,
     pid: 123,
   });
   registry.applyRuntimeMeta(

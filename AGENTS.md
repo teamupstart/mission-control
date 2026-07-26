@@ -807,10 +807,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `mcpServerPath()`'s reason: `docs/` is not in the packaged app and esbuild collapses the
   daemon, so a runtime read resolves in the checkout and silently nowhere else. Name and
   description are DERIVED from the document (`personaNameFromMarkdown` /
-  `personaDescriptionFromMarkdown`, `@shared/workflow.ts`), which is the same rule
-  **Import .md** uses, so a hand-imported copy and the shipped one cannot end up two
-  spellings of one role. `builtinPersonaId` is **append-only**: it reaches durable storage as
-  a draft's `personaId` and a published version's `sourcePersonaId`.
+  `personaDescriptionFromMarkdown`, `@shared/workflow.ts`). **Import .md** shares only the
+  heading-to-name rule and leaves description empty. Existing shipped slugs must not be
+  renamed because `builtinPersonaId` reaches durable storage as a draft's `personaId` and a
+  published version's `sourcePersonaId`. Removing a document removes its id from the catalog.
+  Published versions remain intact because they carry their own guidance copy, but a draft
+  naming that id stops validating until its node is replaced.
   **A built-in is not a row, and the merge lives in `WorkflowStore`** - one seam for the
   addressable catalog used by draft validation and Publish's guidance snapshot. The Registry
   and SSE carry that complete catalog. `personasForDisplay` (`@shared/workflow.ts`) applies

@@ -116,6 +116,34 @@ export function personasForDisplay<
   );
 }
 
+export function personaChoicesForDisplay<
+  T extends Pick<Persona, "archivedAt" | "builtin" | "id" | "normalizedName">,
+>(
+  personas: readonly T[],
+  retainedIds: readonly string[],
+): Array<{ persona: T; retained: boolean }> {
+  const visible = personasForDisplay(personas)
+    .filter((persona) => persona.archivedAt === null);
+  const visibleIds = new Set(visible.map((persona) => persona.id));
+  const retained = new Set(retainedIds);
+  return [
+    ...personas
+      .filter((persona) => retained.has(persona.id) && !visibleIds.has(persona.id))
+      .map((persona) => ({ persona, retained: true })),
+    ...visible.map((persona) => ({ persona, retained: false })),
+  ];
+}
+
+export function personaChoiceLabel(
+  persona: Pick<Persona, "archivedAt" | "builtin" | "name">,
+  retained: boolean,
+): string {
+  if (!retained) return persona.name;
+  if (persona.builtin) return `${persona.name} (Built-in, shadowed by your Persona)`;
+  if (persona.archivedAt !== null) return `${persona.name} (Archived)`;
+  return persona.name;
+}
+
 /** Workflow names use the same durable Unicode spelling rule as Persona names. */
 export const normalizeWorkflowName = normalizePersonaName;
 

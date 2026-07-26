@@ -4,7 +4,10 @@ import type {
   WorkflowDiagnostic,
   WorkflowDraftGraph,
 } from "@shared/workflow.ts";
-import { personasForDisplay } from "@shared/workflow.ts";
+import {
+  personaChoiceLabel,
+  personaChoicesForDisplay,
+} from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import type { WorkflowSelection } from "./WorkflowCanvas.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
@@ -231,8 +234,13 @@ export function WorkflowProperties({
   };
 
   const errorCount = diagnostics.filter((item) => item.severity === "error").length;
-  const activePersonas = personasForDisplay(personas)
-    .filter((persona) => persona.archivedAt === null);
+  const selectedPersonaId = selectedNode?.kind === "persona" ? selectedNode.personaId : null;
+  const personaChoices = personaChoicesForDisplay(
+    personas,
+    selectedPersonaId === null ? [] : [selectedPersonaId],
+  );
+  const selectedPersonaAvailable = selectedPersonaId === null
+    || personaChoices.some(({ persona }) => persona.id === selectedPersonaId);
 
   return (
     <aside className="workflow-properties" aria-label="Workflow properties and validation">
@@ -244,7 +252,14 @@ export function WorkflowProperties({
             <label>Persona
               <Tooltip label="Which reviewer Persona this node runs">
                 <select disabled={readOnly} value={selectedNode.personaId} onChange={(event) => replaceNode({ ...selectedNode, personaId: event.target.value })}>
-                  {activePersonas.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+                  {!selectedPersonaAvailable && (
+                    <option value={selectedNode.personaId}>Unavailable: {selectedNode.personaId}</option>
+                  )}
+                  {personaChoices.map(({ persona, retained }) => (
+                    <option key={persona.id} value={persona.id}>
+                      {personaChoiceLabel(persona, retained)}
+                    </option>
+                  ))}
                 </select>
               </Tooltip>
             </label>

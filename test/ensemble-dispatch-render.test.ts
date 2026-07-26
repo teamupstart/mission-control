@@ -169,6 +169,41 @@ test("dispatch Persona selectors hide a built-in shadowed by an operator row", (
   }
 });
 
+test("dispatch Persona selectors retain a shadowed current selection", () => {
+  const operator = persona("operator", "CODE RISK REVIEWER", "code risk reviewer", false);
+  const builtin = persona("builtin:code-risk-reviewer", "Code Risk Reviewer", "code risk reviewer", true);
+
+  const best = freshEnsembleDraft();
+  const bestWithPersona = {
+    ...best,
+    config: setConfigPath(
+      setConfigPath(best.config, "evaluator.personaId", builtin.id),
+      "evaluator.personaRevision",
+      builtin.revision,
+    ),
+  };
+
+  const panel = freshEnsembleDraft("panel_vote");
+  const judges = structuredClone(getConfigPath(panel.config, "judges")) as Record<string, unknown>[];
+  judges[0] = {
+    ...judges[0],
+    personaId: builtin.id,
+    personaRevision: builtin.revision,
+  };
+  const panelWithPersona = {
+    ...panel,
+    config: setConfigPath(panel.config, "judges", judges),
+  };
+
+  for (const html of [
+    render({ ensemble: bestWithPersona, personas: [operator, builtin] }),
+    render({ ensemble: panelWithPersona, personas: [operator, builtin] }),
+  ]) {
+    assert.match(html, /Code Risk Reviewer \(Built-in, shadowed by your Persona\)/);
+    assert.match(html, /value="(?:persona:)?operator"/);
+  }
+});
+
 test("a reviewed plan puts Launch in the primary slot with a Reviewed chip beside it", () => {
   const html = renderToStaticMarkup(
     createElement(EnsembleLaunchControls, { launch: reviewedLaunch() }),

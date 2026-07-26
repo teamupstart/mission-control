@@ -10,7 +10,10 @@ import type {
   WorkflowSummary,
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
-import { personasForDisplay } from "@shared/workflow.ts";
+import {
+  personaChoiceLabel,
+  personaChoicesForDisplay,
+} from "@shared/workflow.ts";
 import {
   ENSEMBLE_STRATEGY_INFO,
   type EnsembleStrategyInfo,
@@ -226,7 +229,6 @@ export function EnsembleDispatch({
 }): React.JSX.Element {
   const descriptor = ENSEMBLE_STRATEGY_INFO[ensemble.strategyId];
   const { preview, reviewed, previewIssues, estimate } = launch;
-  const selectablePersonas = personasForDisplay(personas);
 
   const issuesFor = (key: string): StrategyIssue[] =>
     previewIssues.filter((issue) => issueMatchesField(issue, key));
@@ -371,7 +373,7 @@ export function EnsembleDispatch({
           key={field.key}
           field={field}
           config={ensemble.config}
-          personas={selectablePersonas}
+          personas={personas}
           issues={issuesFor(field.key)}
           onChange={setConfig}
         />
@@ -383,14 +385,14 @@ export function EnsembleDispatch({
             key={field.key}
             field={field}
             config={ensemble.config}
-            personas={selectablePersonas}
+            personas={personas}
             issues={issuesFor(field.key)}
             onChange={setConfig}
           />
         ))}
         {isObject(getConfigPath(ensemble.config, "evaluator")) && (
           <EvaluatorPicker
-            personas={selectablePersonas}
+            personas={personas}
             selectedId={stringOrNull(getConfigPath(ensemble.config, "evaluator.personaId"))}
             issues={evaluatorIssues}
             onChange={(persona) => {
@@ -845,14 +847,13 @@ function JudgePanel({
   issues: StrategyIssue[];
   onChange: (rows: Record<string, unknown>[]) => void;
 }): React.JSX.Element {
-  const usablePersonas = personas.filter((persona) => persona.archivedAt === null);
   const valueOf = (row: Record<string, unknown>): string => {
     const personaId = stringOrNull(row.personaId);
     return personaId === null ? String(row.lens ?? lenses[0]?.value ?? "") : `persona:${personaId}`;
   };
   const rowFor = (value: string): Record<string, unknown> => {
     if (value.startsWith("persona:")) {
-      const persona = usablePersonas.find((p) => p.id === value.slice("persona:".length));
+      const persona = personas.find((p) => p.id === value.slice("persona:".length));
       return {
         lens: lenses[0]?.value ?? "",
         personaId: persona?.id ?? null,
@@ -884,7 +885,14 @@ function JudgePanel({
       {rows.map((row, index) => {
         const value = valueOf(row);
         const lens = lenses.find((option) => option.value === value);
-        const isPersona = stringOrNull(row.personaId) !== null;
+        const personaId = stringOrNull(row.personaId);
+        const isPersona = personaId !== null;
+        const personaChoices = personaChoicesForDisplay(
+          personas,
+          personaId === null ? [] : [personaId],
+        );
+        const selectedPersonaAvailable = personaId === null
+          || personaChoices.some(({ persona }) => persona.id === personaId);
         const rowIssues = issues.filter((issue) => {
           const path = normalizeIssuePath(issue.path);
           return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
@@ -906,11 +914,14 @@ function JudgePanel({
                     </option>
                   ))}
                 </optgroup>
-                {usablePersonas.length > 0 && (
-                  <optgroup label="Your Personas">
-                    {usablePersonas.map((persona) => (
+                {!selectedPersonaAvailable && (
+                  <option value={`persona:${personaId}`}>Unavailable: {personaId}</option>
+                )}
+                {personaChoices.length > 0 && (
+                  <optgroup label="Personas">
+                    {personaChoices.map(({ persona, retained }) => (
                       <option key={persona.id} value={`persona:${persona.id}`}>
-                        {persona.name} (rev {persona.revision})
+                        {personaChoiceLabel(persona, retained)} (rev {persona.revision})
                       </option>
                     ))}
                   </optgroup>
@@ -950,20 +961,26 @@ function EvaluatorPicker({
   issues: StrategyIssue[];
   onChange: (persona: PersonaView | null) => void;
 }): React.JSX.Element {
-  const usable = personas.filter((p) => p.archivedAt === null);
-  const selected = usable.find((p) => p.id === selectedId) ?? null;
+  const choices = personaChoicesForDisplay(
+    personas,
+    selectedId === null ? [] : [selectedId],
+  );
+  const selected = personas.find((persona) => persona.id === selectedId) ?? null;
+  const selectedAvailable = selectedId === null
+    || choices.some(({ persona }) => persona.id === selectedId);
   return (
     <Tooltip label="Which Persona (or the built-in rubric) guides the comparison">
     <label className="ensemble-field">
       <span className="ensemble-field-name">Judged by</span>
       <select
         value={selectedId ?? ""}
-        onChange={(e) => onChange(usable.find((p) => p.id === e.target.value) ?? null)}
+        onChange={(e) => onChange(personas.find((p) => p.id === e.target.value) ?? null)}
       >
         <option value="">Built-in rubric</option>
-        {usable.map((persona) => (
+        {!selectedAvailable && <option value={selectedId ?? ""}>Unavailable: {selectedId}</option>}
+        {choices.map(({ persona, retained }) => (
           <option key={persona.id} value={persona.id}>
-            {persona.name}
+            {personaChoiceLabel(persona, retained)}
           </option>
         ))}
       </select>

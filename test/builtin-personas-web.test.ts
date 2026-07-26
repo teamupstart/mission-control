@@ -2,12 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { PersonaView, WorkflowDraftGraph } from "../src/shared/workflow.ts";
+import type {
+  PersonaView,
+  WorkflowDefinition,
+  WorkflowDraftGraph,
+} from "../src/shared/workflow.ts";
 import { personasForDisplay } from "../src/shared/workflow.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import { PersonaLibrary } from "../src/web/workflows/PersonaLibrary.tsx";
 import { PipelineEditor } from "../src/web/workflows/PipelineEditor.tsx";
 import { WorkflowCanvas } from "../src/web/workflows/WorkflowCanvas.tsx";
+import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
 import { workflowPublishBlocked } from "../src/web/workflows/useWorkflowDraft.ts";
 
 const persona = (
@@ -48,6 +53,24 @@ const graph: WorkflowDraftGraph = {
     { id: "fail", source: "judge", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
   ],
 };
+const workflow: WorkflowDefinition = {
+  id: "workflow",
+  name: "Review",
+  normalizedName: "review",
+  description: "",
+  draft: graph,
+  completionPolicy: { kind: "none" },
+  bindingDefaults: {
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+  },
+  draftRevision: 1,
+  currentVersionId: null,
+  archivedAt: null,
+  createdAt: 1,
+  updatedAt: 1,
+};
 
 test("shadowed built-ins resolve while Persona pickers show the operator row", () => {
   assert.deepEqual(personasForDisplay(personas).map((persona) => persona.id), [operator.id]);
@@ -86,6 +109,21 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
   assert.doesNotMatch(pipeline, /Missing persona/);
   assert.match(pipeline, /<option value="operator">CODE RISK REVIEWER<\/option>/);
   assert.doesNotMatch(pipeline, /<option value="builtin:code-risk-reviewer">/);
+
+  const properties = renderToStaticMarkup(createElement(WorkflowProperties, {
+    workflow,
+    personas,
+    diagnostics: validation.diagnostics,
+    selection: { kind: "node", id: "judge" },
+    readOnly: false,
+    onUpdate: () => {},
+    onConfirm: () => {},
+  }));
+  assert.match(
+    properties,
+    /value="builtin:code-risk-reviewer"[^>]*>Code Risk Reviewer \(Built-in, shadowed by your Persona\)<\/option>/,
+  );
+  assert.match(properties, /value="operator">CODE RISK REVIEWER<\/option>/);
 
   const library = renderToStaticMarkup(createElement(PersonaLibrary, {
     personas,

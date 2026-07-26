@@ -1354,6 +1354,27 @@ body {
   .workflow-nav-btn .kb-hint {
     display: none;
   }
+
+  /* Disconnected compaction, and it belongs at the FIRST rung rather than the last.
+     `reconnecting` is about 76px wider than `live`, which is more than the ~45px of
+     headroom every rung carries - so a disconnected bar overflows as soon as the ladder
+     starts, not only at half screen. Placed on rung 5 it left a band of widths around
+     1518px where the connected bar sat on one row and the disconnected one wrapped, which
+     is precisely the moment a stable bar matters most. From here on it applies wherever the
+     ladder applies.
+
+     What it spends is the count segments' TONE DOTS and 2px of their padding - about 72px,
+     which very nearly cancels the 76px the longer word costs. The dot is the only genuinely
+     redundant ink in that segment: the figure beside it already carries the same tone
+     (`.pulse-attention .pulse-n`, `.pulse-working .pulse-n`), and while the stream is down
+     every one of them is at 50% opacity anyway. No figure and no control is removed - the
+     reviews button in particular stays present and clickable at every width. */
+  .pulse.is-down .pulse-seg:not(.pulse-link) .pulse-dot {
+    display: none;
+  }
+  .pulse.is-down .pulse-seg:not(.pulse-link) {
+    padding: 0 7px;
+  }
 }
 @container topbar (max-width: 1410px) {
   /* Rung 2 (-138px): the wordmark. */
@@ -1425,10 +1446,8 @@ body {
      `:not(.is-down)` on the link label is the one exception in the other direction: a lone
      red dot cannot be the only notice that every figure beside it stopped being true.
 
-     Disconnected, keeping that word and every count needs 809px before the redundant count
-     dots and 2px of their padding are spent. The figures already carry each dot's tone, and
-     this brings the bar to 737px in a 758px container, with the same 845px floor as the
-     connected state. */
+     The disconnected state's own compaction is NOT here - it moved up to rung 1, for the
+     reason recorded there. */
   .pulse .tb-label,
   .pulse:not(.is-down) .pulse-link-label {
     position: absolute;
@@ -1441,12 +1460,6 @@ body {
   }
   .pulse-seg {
     padding: 0 9px;
-  }
-  .pulse.is-down .pulse-seg:not(.pulse-link) .pulse-dot {
-    display: none;
-  }
-  .pulse.is-down .pulse-seg:not(.pulse-link) {
-    padding: 0 7px;
   }
 }
 

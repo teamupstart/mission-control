@@ -2306,23 +2306,47 @@ body {
   background: var(--bg-2);
   font-size: 12px;
   overflow: hidden;
+  /* Never gives. `overflow: hidden` zeroes a flex item's automatic minimum size,
+     and this sits in column flex containers that routinely want more room than
+     they have - the console conversation pane puts a `flex: 1 1 auto` transcript
+     directly below it. A COLLAPSED log was therefore crushed to its own two
+     borders: a 2px hairline carrying the only control that opens it, which is
+     why the log read as a divider rather than as something you could click. The
+     one case that MAY shrink is an open log in a detail pane, and it overrides
+     this beside its own layout rules. */
+  flex: none;
 }
+/* The collapsed row is the whole affordance - open, everything below it is the
+   feature, so this row is the only thing standing between a reader and the
+   record. Sized to be read and hit rather than to be inconspicuous. */
 .nm-rollup {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 9px;
   width: 100%;
-  padding: 9px 11px;
+  padding: 11px 13px;
   background: none;
   border: 0;
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   cursor: pointer;
   text-align: left;
 }
 .nm-rollup:hover {
-  background: color-mix(in oklab, var(--idle) 4%, transparent);
+  background: color-mix(in oklab, var(--idle) 7%, transparent);
+}
+.nm-rollup:hover .nm-log-brand {
+  color: var(--text);
+}
+.nm-rollup:hover .nm-log-caret {
+  color: var(--text);
+  border-color: color-mix(in oklab, var(--idle) 45%, var(--border));
+  background: color-mix(in oklab, var(--idle) 14%, transparent);
+}
+.nm-rollup:focus-visible {
+  outline: 1px solid color-mix(in oklab, var(--idle) 55%, var(--border));
+  outline-offset: -2px;
 }
 /* Never the element that gives: at the grid's 330px floor the row has to shrink
    somewhere, and "fixed by no-mistakes" breaking across two lines grows the row
@@ -2330,14 +2354,15 @@ body {
 .nm-log-brand {
   color: var(--muted);
   font-weight: 620;
-  font-size: 11px;
+  font-size: 11.5px;
   letter-spacing: 0.02em;
   white-space: nowrap;
   flex: none;
+  transition: color 0.16s ease;
 }
 .nm-log-split {
   color: var(--dim);
-  font-size: 10.5px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2345,19 +2370,36 @@ body {
 .nm-log-count {
   margin-left: auto;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--idle);
   background: color-mix(in oklab, var(--idle) 12%, transparent);
   border-radius: 5px;
-  padding: 1px 6px;
+  padding: 2px 7px;
   font-variant-numeric: tabular-nums;
   flex: none;
 }
+/* The only thing on the row that says "this opens". It was a 9px glyph in --dim
+   sitting loose next to a count chip, which reads as punctuation rather than as
+   a control - so even at full height the log looked like a static summary line.
+   Give it a button's size and border, and let it answer the hover the rest of
+   the row already responds to. */
 .nm-log-caret {
-  color: var(--dim);
-  font-size: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  transition: transform 0.16s ease;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  transition:
+    transform 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease;
 }
 .nm-log-open .nm-log-caret {
   transform: rotate(180deg);

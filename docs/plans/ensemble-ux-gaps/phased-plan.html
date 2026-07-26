@@ -111,7 +111,7 @@
 <p><b>Merge order:</b> any topological order; canonical sequence 1, 2 (either order), 3, 4, 5, 6.</p>
 
 <h2>Cross-phase contracts</h2>
-<div class="card"><code>membersNeedingInput</code> / <code>needsInput</code> / <code>ensembleStageWord</code> (Phase 1) are the ONE wire truth and vocabulary; no browser re-derivation, no second mapping. No new ensemble alert class for blocked members.</div>
+<div class="card"><code>membersNeedingInput</code> / <code>membersOut</code> / <code>needsInput</code> / <code>ensembleStageWord</code> (Phase 1) are the ONE wire truth and vocabulary; no browser re-derivation, no second mapping. No new ensemble alert class for blocked members. <code>membersOut</code> is store-computed row state; the other two are registry-derived at publish.</div>
 <div class="card"><code>orderSessions</code> (Phase 3) is the one fleet ordering feeding rendered order AND nav arrays; <code>EnsembleProgressDots</code> is the one progress leaf.</div>
 <div class="card">The topbar attention surface belongs to Phase 4's inbox (<code>OVERLAY_IDS.attention</code>, fold in <code>lib/attention.ts</code>); <code>DecisionPanel</code> is the one decision form.</div>
 <div class="card">Phase 2's route contract: single <code>?path=</code>, <code>?filesOnly=1</code>, <code>patchPaths</code>, complete <code>files</code> always.</div>

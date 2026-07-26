@@ -51,7 +51,7 @@ Any topological order of the graph. The canonical sequence: 1, 2 (either order),
 
 ## Cross-phase contracts (the load-bearing handoffs)
 
-- `membersNeedingInput` / `needsInput` / `ensembleStageWord` (Phase 1) are the ONE wire truth and vocabulary; no browser re-derivation, no second mapping. No new ensemble alert class for blocked members (5.4 rationale).
+- `membersNeedingInput` / `membersOut` / `needsInput` / `ensembleStageWord` (Phase 1) are the ONE wire truth and vocabulary; no browser re-derivation, no second mapping. No new ensemble alert class for blocked members (5.4 rationale). `membersOut` is store-computed row state; the other two are registry-derived at publish.
 - `orderSessions` (Phase 3) is the one fleet ordering feeding rendered order AND nav arrays; `EnsembleProgressDots` is the one progress leaf.
 - The topbar attention surface belongs to Phase 4's inbox (`OVERLAY_IDS.attention`, fold in `lib/attention.ts`); `DecisionPanel` is the one decision form.
 - Phase 2's route contract: single `?path=`, `?filesOnly=1`, `patchPaths`, complete `files` always.

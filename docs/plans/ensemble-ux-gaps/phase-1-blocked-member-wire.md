@@ -27,9 +27,10 @@ In scope: shared shapes, the manager-side derivation and republish edge, alert-e
 ### 5.1 Shared shapes (`src/shared/ensemble.ts`)
 
 1. Add `membersNeedingInput: number` to `EnsembleSummary` (beside `readyArtifacts`; document it as "derived from live session state at publish time, 0 in any context with no registry").
-2. Add `needsInput: boolean` to `TaskEnsembleLink` with the same derivation note.
-3. Widen `ensembleNeedsAttention` (currently `{status, unreadable}`, `ensemble.ts:1260-1268`) to accept an optional `membersNeedingInput?: number` and return true when it is > 0. Optional with a 0 default so existing callers compile unchanged.
-4. Add `ensembleStageWord(summary: Pick<EnsembleSummary, "status" | "outcomeKind">): string` - a pure total map: `planning` -> "launching", `running` -> "working", `waiting` -> "waiting", `evaluating` -> "reviewing", `awaiting_decision` -> "waiting on you", `finalizing` -> "promoting", `cancelling` -> "cancelling", `completed` -> "done", `cancelled` -> "cancelled", `failed` -> "failed", null/unreadable -> "unreadable". It reads only the summary (the compiled plan is not on the wire, deliberately).
+2. Add `membersOut: number` to `EnsembleSummary`: the count of members whose status is `failed | withdrawn | eliminated`. Unlike `membersNeedingInput` this is pure row state, so it is computed in `store.summaryFor`'s existing member-count SQL aggregate (`store.ts:1280-1291`), NOT in the manager decoration - without it, a progress rendering built from the summary cannot distinguish a failed member from a working one and would show a false "working" dot (Inspector round 2 on PR #263).
+3. Add `needsInput: boolean` to `TaskEnsembleLink` with the same derivation note as `membersNeedingInput`.
+4. Widen `ensembleNeedsAttention` (currently `{status, unreadable}`, `ensemble.ts:1260-1268`) to accept an optional `membersNeedingInput?: number` and return true when it is > 0. Optional with a 0 default so existing callers compile unchanged. `membersOut` does NOT feed attention - member failure already has its terminal-run and retry surfaces, and the barrier-impossible path fails the run.
+5. Add `ensembleStageWord(summary: Pick<EnsembleSummary, "status" | "outcomeKind">): string` - a pure total map: `planning` -> "launching", `running` -> "working", `waiting` -> "waiting", `evaluating` -> "reviewing", `awaiting_decision` -> "waiting on you", `finalizing` -> "promoting", `cancelling` -> "cancelling", `completed` -> "done", `cancelled` -> "cancelled", `failed` -> "failed", null/unreadable -> "unreadable". It reads only the summary (the compiled plan is not on the wire, deliberately).
 
 ### 5.2 Manager derivation (`src/server/ensembles/manager.ts`)
 
@@ -53,7 +54,8 @@ No DB change, no migration, no new route, no new ServerEvent variant. Both field
 
 ## 7. Tests and verification
 
-- Update `test/ensemble-sse.test.ts:135` exact-keys list (insert `"membersNeedingInput"` in sorted position between `"memberCount"` and `"outcomeKind"`).
+- Update `test/ensemble-sse.test.ts:135` exact-keys list (insert `"membersNeedingInput"` and `"membersOut"` in sorted position between `"memberCount"` and `"outcomeKind"`).
+- New assertion beside the member-count cases in `ensemble-store` or the new test file: `membersOut` counts exactly `failed | withdrawn | eliminated` and ignores `retained`.
 - Update `test/ensemble-contracts.test.ts:337-341` for the widened `ensembleNeedsAttention` and add cases: `membersNeedingInput > 0` forces attention regardless of status; 0 changes nothing.
 - Update the `test/ensemble-alerts` fixture's attention recomputation to pass the new field; assert a blocked member raises `attention` in the summary without emitting a new alert class.
 - Update `test/session-contracts.test.ts:138-152` link literal with `needsInput`.
@@ -67,8 +69,9 @@ Typecheck and full test suite green; `ensemble-sse` still proves the wire carrie
 
 ## 9. Downstream handoff
 
-Later phases may rely on: `EnsembleSummary.membersNeedingInput` and `TaskEnsembleLink.needsInput` being present, correct at boot and live, and edge-guarded; `ensembleStageWord` as the ONE stage vocabulary; `ensembleNeedsAttention`'s widened signature. They must not: re-derive needs-input from sessions in the browser (read the link/summary), add a second stage-word mapping, or add an ensemble alert class for blocked members without revisiting the 5.4 decision.
+Later phases may rely on: `EnsembleSummary.membersNeedingInput`, `EnsembleSummary.membersOut` and `TaskEnsembleLink.needsInput` being present, correct at boot and live, and (for the derived pair) edge-guarded; `ensembleStageWord` as the ONE stage vocabulary; `ensembleNeedsAttention`'s widened signature. They must not: re-derive needs-input from sessions in the browser (read the link/summary), add a second stage-word mapping, or add an ensemble alert class for blocked members without revisiting the 5.4 decision.
 
 ## 10. Cross-phase audit record
 
 - 2026-07-26: initial version. Reconciled against the source plan's Section 3 (which placed the join "at the registry" - disproved; it lives in the manager, with the registry kept store-independent). Stage vocabulary moved from the source plan's Solution A into this phase so Phases 3-6 share one function.
+- 2026-07-26 (round 2): added `membersOut` after PR #263's Inspector showed a summary without it forces Phase 3's progress dots to render a failed member as working. It is store-computed (row state), unlike the registry-derived `membersNeedingInput`, and does not feed attention. Phase 3's dot formula updated in lockstep.

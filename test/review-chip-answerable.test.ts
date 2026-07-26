@@ -1,11 +1,11 @@
 /**
- * What is at stake: the topbar chip must never count a review nothing can open.
+ * What is at stake: the topbar's reviews segment must never count a review nothing can open.
  *
  * The review modal is keyed on a SESSION - `modalSession` is `sessions.find(...)`, and
  * `modalOpen` is false without one. So a pending review whose session is gone is not merely
  * a wrong number: `openReviews` sets `reviewSessionId` to an id that matches nothing and the
  * click does nothing at all, with no way for the operator to reach or clear the eight
- * agents the chip says are blocked on them. That is the shape the live install was in.
+ * agents the readout says are blocked on them. That is the shape the live install was in.
  *
  * The daemon settling those is the real fix (`review-session-orphan.test.ts`). This pins the
  * half that makes it unreproducible: count and click read ONE list, and that list is
@@ -35,7 +35,7 @@ test("the chip's list is pending reviews narrowed to sessions that still exist",
 });
 
 test("the count, the sentence and the click all read that one list", () => {
-  // The chip now lives inside `FleetPulse`, which takes the figure as ONE `reviews` prop -
+  // The reviews segment now lives inside `FleetPulse`, which takes ONE `reviews` prop -
   // so the four readings that used to be spelled out side by side (gate, plural, sentence,
   // figure) cannot drift from each other by construction. What has to be pinned instead is
   // the seam: the narrowed list is what gets handed in, and nothing inside reaches past it.
@@ -49,11 +49,19 @@ test("the count, the sentence and the click all read that one list", () => {
   const pulse = app.slice(app.indexOf("function FleetPulse"));
   const chip = pulse.slice(pulse.indexOf("{reviews > 0 &&"), pulse.indexOf("</div>\n  );"));
   assert.notEqual(chip.length, 0, "the chip no longer gates on the answerable count");
-  assert.equal(
-    (chip.match(/\breviews\b/g) ?? []).length,
-    5,
-    "gate, figure, and the tooltip's plural (x2) and figure must all come from the one prop",
-  );
+
+  // Each reading asserted by NAME rather than by counting occurrences of `reviews`. A bare
+  // count passes for the wrong reasons - reword the tooltip and the number moves, while a
+  // reading that silently switched to another source keeps the total intact - and the
+  // figure itself tells a later reader nothing about which four things had to agree.
+  for (const [what, pattern] of [
+    ["the gate", /\{reviews > 0 &&/],
+    ["the figure", /n=\{reviews\}/],
+    ["the tooltip's count", /\$\{reviews\} agent/],
+    ["the tooltip's singular/plural", /reviews === 1/],
+  ] as const) {
+    assert.match(chip, pattern, `${what} no longer reads the \`reviews\` prop`);
+  }
   assert.doesNotMatch(chip, /pendingReviews|answerableReviews/, "the chip reads its prop only");
 
   // And the click, which is the half that was a dead end.

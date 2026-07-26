@@ -569,7 +569,7 @@ export function App(): React.JSX.Element {
 
   const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
-  // What the topbar chip counts, and it is deliberately NARROWER than `pendingReviews`.
+  // What the topbar's review segment counts, deliberately NARROWER than `pendingReviews`.
   //
   // The modal is keyed on a session (`modalSession`), so a review whose session is not in
   // the list cannot be opened by anything - `openReviews` would set `reviewSessionId` to an
@@ -1296,12 +1296,12 @@ export function App(): React.JSX.Element {
             reviews={answerableReviews.length}
             onOpenReviews={openReviews}
           />
-          {/* Eleven controls at one weight is what made this bar unreadable, so the
+          {/* Twelve peers at one weight is what made this bar unreadable, so the
               cluster is THREE groups with a rank, not one rhythm: destinations you
               navigate to, the two controls that act on the fleet (Foreman's posture and
               the primary Dispatch), and the glyph tools. The groups sit at 16px from each
               other and 8px within, which is what lets the eye find four things instead of
-              counting eleven. `live` is no longer stranded past the end of it - it moved
+              counting twelve. `live` is no longer stranded past the end of it - it moved
               into the pulse, where the rest of the status lives.
 
               Each degradable label is a `.tb-label`: at narrow container widths it goes
@@ -2151,11 +2151,9 @@ function FleetPulse({
 /**
  * The topbar's second row: the fleet strip, foldable.
  *
- * A row of its own rather than living among the session-count pills - mixed content there
- * used to wrap element-by-element (a pill here, a meter dangling on the next line there)
- * because both `.summary` and the strip wrap independently. `flex-basis: 100%` on
- * `.topbar-usage` forces this onto its own line unconditionally, so it never interleaves
- * with the pills again regardless of width.
+ * A row of its own rather than sharing the fleet pulse's row: `flex-basis: 100%` on
+ * `.topbar-usage` forces it below the primary controls, so its meters never interleave with
+ * them regardless of width.
  *
  * Still rendered INSIDE `<header className="topbar">`: `--topbar-h` is measured live off
  * `topbarRef` with a ResizeObserver, so anything inside the header is accounted for

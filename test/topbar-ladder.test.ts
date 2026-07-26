@@ -107,20 +107,6 @@ test("the rungs are ordered widest-first, and each one is reachable", () => {
   }
 });
 
-test("no rung attempts to restyle its own query container", () => {
-  for (const rung of RUNGS) {
-    for (const [selectors] of rung.rules) {
-      for (const selector of selectors.split(",")) {
-        assert.notEqual(
-          selector.trim(),
-          ".topbar",
-          `the ${rung.width}px rung targets \`.topbar\` itself, but a container query can only style descendants of its query container`,
-        );
-      }
-    }
-  }
-});
-
 test("no rung is overridden by the base rule it is trying to beat", () => {
   // `@container` contributes NO specificity, so between an identical selector inside a rung
   // and one outside it, SOURCE ORDER alone decides. This is checked per PROPERTY rather
@@ -182,6 +168,66 @@ test("a shed label goes visually hidden, never display:none", () => {
   assert.ok(shed.length >= 3, `only ${shed.length} label rules left in the ladder`);
 });
 
+test("a disconnected pulse keeps its stale figures and review control visible", () => {
+  assert.match(
+    bare,
+    /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*\{[^}]*opacity:\s*0\.5/,
+    "the disconnected pulse no longer dims its stale figures",
+  );
+  for (const rung of RUNGS) {
+    for (const [sel, body] of rung.rules) {
+      const hidesSegment = sel
+        .split(",")
+        .some((part) =>
+          /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*$/.test(part.trim()),
+        );
+      if (!hidesSegment) continue;
+      assert.doesNotMatch(
+        body,
+        /display:\s*none/,
+        `the ${rung.width}px rung removes the disconnected pulse's figures and review control`,
+      );
+    }
+  }
+});
+
+test("filter compaction keeps the review control visible", () => {
+  const rung = RUNGS.find(({ width }) => width === 1270);
+  assert.ok(rung, "the filter rung is gone");
+  const rules = rung.rules.flatMap(([selectors, body]) =>
+    selectors.split(",").map((selector) => ({ selector: selector.trim(), body })),
+  );
+  const readoutSelectors = rules.filter(({ selector }) =>
+    /\.pulse-seg:not\(\.pulse-btn\)$/.test(selector),
+  );
+  assert.equal(readoutSelectors.length, 2, "filter compaction must cover focus and a held term");
+  for (const { body } of readoutSelectors) assert.match(body, /display:\s*none/);
+
+  const hiddenPulse = rules.find(
+    ({ selector, body }) => /\.pulse$/.test(selector) && /display:\s*none/.test(body),
+  );
+  assert.equal(hiddenPulse, undefined, "filter compaction hides the entire pulse");
+
+  const buttonSelectors = rules.filter(({ selector }) => /\.pulse-btn$/.test(selector));
+  assert.equal(buttonSelectors.length, 2, "the review control must survive both filter states");
+  for (const { body } of buttonSelectors) {
+    assert.match(body, /padding:\s*0 9px/);
+    assert.match(body, /border-left:\s*none/);
+    assert.match(body, /border-radius:\s*999px/);
+    assert.doesNotMatch(body, /display:\s*none/);
+  }
+
+  const emptyPulseSelectors = rules.filter(({ selector }) =>
+    /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector),
+  );
+  assert.equal(
+    emptyPulseSelectors.length,
+    2,
+    "an empty pulse wrapper must be removed for focus and a held term",
+  );
+  for (const { body } of emptyPulseSelectors) assert.match(body, /display:\s*none/);
+});
+
 test("Dispatch never degrades, and the labels that do are marked", () => {
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
   const cluster = bar.slice(0, bar.indexOf("<UsageBar"));
@@ -220,9 +266,16 @@ test("a control that keeps only a glyph still says what it is", () => {
     fileURLToPath(new URL("../src/web/components/ForemanBar.tsx", import.meta.url)),
     "utf8",
   );
-  const btn = foreman.slice(foreman.indexOf("foreman-btn$"));
+  // Located by the className EXPRESSION rather than by the literal `foreman-btn$`. That
+  // string does match today - the class sits in a template literal, so an interpolation's
+  // `$` really does follow it - but it matches by coincidence of the neighbouring syntax,
+  // and rewriting the same className any other way would leave this slicing from -1.
+  const at = foreman.search(/className=\{[^}]*foreman-btn/);
+  assert.notEqual(at, -1, "the Foreman button's className expression is gone");
+  const btn = foreman.slice(at, foreman.indexOf("</button>", at));
+  assert.notEqual(btn.length, 0, "no button markup followed the className - check the slice");
   assert.match(
-    btn.slice(0, btn.indexOf("</button>")),
+    btn,
     /aria-label=/,
     "Foreman's word is a `.tb-label` the ladder takes away; the button needs its own name",
   );

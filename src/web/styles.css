@@ -1306,11 +1306,11 @@ body {
    The thresholds are MEASURED, not guessed. Laid out in full the bar's children come to
    1552px including gaps, and its container is the window less about 106px of chrome and
    padding - so the untouched layout needs a window near 1660px and every rung below is the
-   width at which the previous state stops fitting: 1552 -> 1364 -> 1226 -> 1072 -> 988 ->
-   699. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
+   width at which the previous state stops fitting: 1552 -> 1364 -> 1226 -> 1072 -> 1012 ->
+   723. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
    that fires early is a word thrown away for nothing, and a rung that saves much more than
    the width it was crossed at leaves the bar half empty for the next several hundred px -
-   which is why the last two are split rather than one 369px cliff.
+   which is why the last two are split rather than one 349px cliff.
 
    Every label the ladder sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so
    it costs no width and no flex gap, clipped so it paints nothing, and still in the
@@ -1390,13 +1390,10 @@ body {
   }
 }
 @container topbar (max-width: 1060px) {
-  /* Rung 4 (-84px): Foreman drops to its dot and queue badge, and the four zone gaps
-     tighten from 24px to 16px. Split from rung 5 deliberately - bundled, the two shed 369px
-     at once, and a rung that saves far more than the width it was crossed at leaves the bar
-     visibly half empty for the next 300px of window. */
-  .topbar {
-    column-gap: 16px;
-  }
+  /* Rung 4 (-60px): Foreman drops to its dot and queue badge. Split from rung 5
+     deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
+     the width it was crossed at leaves the bar visibly half empty for the next 300px of
+     window. */
   .foreman-btn .tb-label {
     position: absolute;
     width: 1px;
@@ -1410,7 +1407,7 @@ body {
 @container topbar (max-width: 980px) {
   /* Rung 5 (-289px): the pulse drops to dots and figures. Last, because it is the readout an
      operator actually scans - and this is the rung that holds half a 16" screen (a 758px
-     container against 699px of content).
+     container against 723px of content).
 
      Every pulse segment carries a Tooltip precisely so it can survive this, and Tooltip
      always renders its label into a hidden `aria-describedby` node, so the meaning is still

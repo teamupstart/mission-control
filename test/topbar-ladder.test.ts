@@ -107,6 +107,20 @@ test("the rungs are ordered widest-first, and each one is reachable", () => {
   }
 });
 
+test("no rung attempts to restyle its own query container", () => {
+  for (const rung of RUNGS) {
+    for (const [selectors] of rung.rules) {
+      for (const selector of selectors.split(",")) {
+        assert.notEqual(
+          selector.trim(),
+          ".topbar",
+          `the ${rung.width}px rung targets \`.topbar\` itself, but a container query can only style descendants of its query container`,
+        );
+      }
+    }
+  }
+});
+
 test("no rung is overridden by the base rule it is trying to beat", () => {
   // `@container` contributes NO specificity, so between an identical selector inside a rung
   // and one outside it, SOURCE ORDER alone decides. This is checked per PROPERTY rather

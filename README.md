@@ -304,6 +304,12 @@ through a pane. That is a session's **runtime**, and there are two.
   approval arrives as data - what is being asked, and the exact rows to offer - which the
   card renders directly.
 
+For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
+replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
+acknowledged turns and structured requests. Terminal is not a deprecated operator surface:
+sessions you start yourself are always terminal-backed, and terminal-runtime dispatch
+remains an explicit per-harness choice. The shipped defaults are unchanged.
+
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
 time, so flipping it mid-batch reaches the next session you launch. It ships as `terminal`
 for every harness and stays there until you change it: there is no per-task override and no

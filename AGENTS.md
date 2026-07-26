@@ -143,6 +143,10 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
 - **Shared leaf pieces live in `session-bits.tsx`** (`AgentDot`, `PrChip`, `StateBadge`,
   `SessionTitle`, `RuntimeMetaRow`, `GoalLine`). Put new ones there; do not inline a variant.
   Test: `session-leaf-parity.test.ts`.
+- **Runtime location is one shared fact in three vocabularies.** `SessionWhere` supplies the
+  card and detail runtime chip (or terminal source), `RuntimeTileFlag` supplies the Board
+  overview flag, and `runtimeRailMark` supplies the rail's `◈`. Change them together in
+  `session-bits.tsx`; `session-leaf-parity.test.ts` pins all four session drawings.
 - The backlog's scheduling toggle is one shared `ScheduleSwitch` in `session-bits.tsx`,
   used by both the Board card and Sitrep row. Test: `backlog-enabled-render.test.ts`.
 - **Three mark vocabularies still disagree**: `RailRow` glyphs, `SessionTile` `.tile-flag`
@@ -218,7 +222,10 @@ there; `registry.onSessionsObserved` is that moment (`reconcileTasksWithNoLiveSe
 `reconcileBindingsAfterDiscovery`, `orphanReviewsWithNoLiveSession`). The startup loop in
 `TaskManager`'s constructor is NOT that twin - it visits only tasks still holding a worktree or
 home, so an assigned task, which owns neither, was invisible to it on every restart and stayed
-`running` forever.
+`running` forever. SDK sessions have no process-table twin, so `SdkSupervisor.restore()`
+registers or evicts every resumable row BEFORE `startPoller(registry)` can produce that first
+completed sweep. A failed resume still takes the shared `beginEviction` path, which lets the
+same `session_remove` subscribers settle its durable bindings.
 
 **Settling is not tearing down.** `agentWentAway` marks the task `done` when any of its work
 episodes produced a merged PR (using the newest merge when several did), and `failed` only
@@ -596,13 +603,11 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `/clear` was Claude's alone and would land in Codex's prompt as text, and it is Codex's own
   command. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
-  refusing surface. **The work queue's `runtime === "sdk"` refusal is INTERIM and
-  runtime-scoped**, in both halves - `foremanAutomationAuthorized` (`harness/index.ts`) and
-  `workQueueBlockedReason` (`@shared/harness-capabilities.ts`). Scoped to the runtime rather
-  than to an agent deliberately: the second driver may land before the parity work does, and
-  a guard written as `agent === "claude"` would let its sessions through without an edit.
-  Phase 3 of `docs/plans/agent-sdk-sessions/plan.md` deletes both lines and gives the queue
-  its driver arm. `HARNESSES.codex.tui` was the FIRST counter-example, and is still the
+  refusing surface. The work queue's driver arm is runtime-scoped in both halves -
+  `foremanAutomationAuthorized` (`harness/index.ts`) and `workQueueBlockedReason`
+  (`@shared/harness-capabilities.ts`) - because an SDK session is instrumented by the handle
+  the supervisor owns, regardless of whether that harness also declares hooks.
+  `HARNESSES.codex.tui` was the FIRST counter-example, and is still the
   one to read before declaring any capability `null` - the five corrections above are what
   taking it seriously cost. It is NOT null. The guard it replaced said
   `agent !== "claude"`, with a comment above it asserting Codex "doesn't render these

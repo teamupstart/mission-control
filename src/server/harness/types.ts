@@ -418,25 +418,24 @@ export interface BinSpec {
 }
 
 /**
- * How a turn is DELIVERED to this harness. Required - every harness must answer it.
+ * How a turn is DELIVERED to a session. Required - every session must have an answer.
  *
- * This slot is what lets the interface outlive its current backends, and it is separate
- * from the TUI grammar on purpose. Delivery used to live half in the terminal axis and
- * half in constants beside the paste code, which quietly made "you talk to an agent by
- * TYPING INTO ITS TERMINAL" a permanent architectural assumption - and made a settle
- * window measured against one Claude build a property of the daemon rather than of the
- * harness it was measured on.
+ * The harness's `control` slot is the pane-backed answer: an operator-started session and
+ * a terminal-runtime dispatch use that harness's keystroke grammar. `controlFor(session)`
+ * projects an SDK-runtime session to `stream-json`, because its driver is the delivery
+ * channel and no pane grammar applies. Keeping that projection in this union makes the
+ * two pane-only refusal sites truthful backstops if an SDK session ever reaches them;
+ * ordinary SDK delivery routes through `SdkSupervisor` before either is consulted.
  *
- * It is not one. `claude -p --input-format stream-json --output-format stream-json` takes
- * follow-up turns on a live process with no keystrokes involved, and Codex exposes the
- * same as a JSON-RPC `turn/steer`. Declaring the seam is NOT a commitment to build
- * headless dispatch: a session a human owns stays `keystroke` regardless, because we do
- * not own their pty. The point is that a second delivery becomes a new variant behind an
- * existing slot rather than an interface change every migrated call site has to absorb.
+ * This is separate from the TUI grammar on purpose. Delivery used to live half in the
+ * terminal axis and half in constants beside the paste code, which quietly made "you talk
+ * to an agent by TYPING INTO ITS TERMINAL" a permanent architectural assumption - and
+ * made a settle window measured against one Claude build a property of the daemon rather
+ * than of the harness it was measured on.
  *
  * Required rather than nullable for the reason `Multiplexer.write` is: a harness we
  * cannot talk to is not a harness we can dispatch to, so there is no meaningful `null`
- * to degrade to. See `docs/plans/pluggable-integrations/plan.md`.
+ * to degrade to. See `docs/plans/agent-sdk-sessions/phase-5-keystroke-deprecation.md`.
  */
 export type ControlSpec =
   | {

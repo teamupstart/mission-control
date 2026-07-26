@@ -189,9 +189,10 @@ export class Dispatcher {
       // Which of the two runtimes this launch takes, resolved here for the same reason the
       // model and effort are: a toggle flipped mid-batch reaches the next session rather
       // than the next restart. Everything above this line is identical on both paths -
-      // provisioning a worktree is not a runtime question - and everything below the branch
-      // is the terminal path's own business (an argv, a home, a paste, and the waits that
-      // exist because none of those three can be acked).
+      // provisioning a worktree is not a runtime question. After the SDK return, EVERYTHING
+      // below is terminal-branch-only: the argv and ask-channel redirect, terminal home,
+      // `waitForSessionAtCwd`, `awaitReady` (including pi acceptance polling), and
+      // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if ((this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent) === "sdk") {
         await this.dispatchEmbedded(taskId, task, wt, model, effort, options.missionMcp ?? null);
         return;

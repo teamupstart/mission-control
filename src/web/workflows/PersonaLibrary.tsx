@@ -268,12 +268,20 @@ export function PersonaLibrary({
             </p>
           )}
           {listed.map((persona) => (
-            <Tooltip key={persona.id} label={`Open ${persona.name} in the editor`}>
+            <Tooltip
+              key={persona.id}
+              label={persona.builtin
+                ? `Open the built-in ${persona.name} - read-only, Duplicate to customize`
+                : `Open ${persona.name} in the editor`}
+            >
               <button
                 className={`persona-list-item${selectedId === persona.id ? " active" : ""}`}
                 onClick={() => select(persona.id)}
               >
-                <span>{persona.name}</span>
+                <span className="persona-list-name">
+                  <span>{persona.name}</span>
+                  {persona.builtin && <em className="persona-list-tag">Built-in</em>}
+                </span>
                 <small>{persona.archivedAt === null ? persona.description || "No description" : "Archived"}</small>
               </button>
             </Tooltip>

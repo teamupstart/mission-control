@@ -63,6 +63,7 @@ import type {
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
+import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
@@ -243,6 +244,8 @@ export function parsePersonaRow(value: unknown): Persona {
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // A row is operator data by construction: built-ins are never written to this table.
+    builtin: false,
   };
 }
 
@@ -804,7 +807,8 @@ export type PersonaStoreWrite =
   | { ok: true; persona: Persona }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived";
+      /** `builtin` is "this Persona ships with the app", the one refusal a retry cannot clear. */
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
       current: Persona | null;
     };
 
@@ -952,7 +956,51 @@ export interface ForemanCompletionStoreResult {
 }
 
 export class WorkflowStore {
-  constructor(private readonly db: DatabaseSync = openDb()) {}
+  /**
+   * `builtins` is injectable for the contract tests, and defaults to what this build ships.
+   *
+   * It is a constructor parameter rather than a module-level read inside each method so a
+   * test can prove the merge rules on a catalog it authored, without the four real documents
+   * deciding what "a name an operator already took" means.
+   */
+  constructor(
+    private readonly db: DatabaseSync = openDb(),
+    private readonly builtins: readonly Persona[] = BUILTIN_PERSONAS,
+  ) {}
+
+  /**
+   * Merge the shipped Personas into a set of rows.
+   *
+   * A stored Persona whose normalized name matches a built-in SHADOWS it, and that is a
+   * migration accommodation with a narrow cause: an operator who imported one of these
+   * documents by hand before it shipped built-in reserved that name durably, and their copy
+   * - which they may have edited, and which their published versions name - has to keep it.
+   * `create` and rename refuse a built-in's name, so no new shadow can appear. The shadowed
+   * built-in stays addressable by id, because a draft or version may already point at it.
+   *
+   * Only a LIVE row shadows. Two reasons, and the second is a bug this shape rules out: an
+   * archived Persona is retired, so it should not keep a shipped role out of new stages; and
+   * counting archived rows would make `listPersonas(true)` drop a built-in that
+   * `listPersonas(false)` still lists, so the archived listing - which is what the SSE
+   * snapshot is built from - would stop being a superset of the active one.
+   */
+  private withBuiltins(rows: Persona[]): Persona[] {
+    const taken = new Set(
+      rows.filter((persona) => persona.archivedAt === null).map((persona) => persona.normalizedName),
+    );
+    return rows
+      .concat(this.builtins.filter((persona) => !taken.has(persona.normalizedName)))
+      .sort((a, b) =>
+        a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+  }
+
+  private builtinPersona(id: string): Persona | null {
+    return this.builtins.find((persona) => persona.id === id) ?? null;
+  }
+
+  private builtinPersonaNamed(normalizedName: string): Persona | null {
+    return this.builtins.find((persona) => persona.normalizedName === normalizedName) ?? null;
+  }
 
   listPersonas(includeArchived = false): Persona[] {
     const rows = this.db
@@ -970,12 +1018,13 @@ export class WorkflowStore {
         diagnose(error);
       }
     }
-    return out;
+    // Built-ins are never archived, so they belong in both listings.
+    return this.withBuiltins(out);
   }
 
   getPersona(id: string): Persona | null {
     const row = this.db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id);
-    if (!row) return null;
+    if (!row) return this.builtinPersona(id);
     try {
       return parsePersonaRow(row);
     } catch (error) {
@@ -986,6 +1035,10 @@ export class WorkflowStore {
 
   insertPersona(input: PersonaInsert): PersonaStoreWrite {
     return transaction(this.db, () => {
+      const shipped = this.builtinPersona(input.id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const named = this.builtinPersonaNamed(input.normalizedName);
+      if (named) return { ok: false, reason: "name_conflict", current: named };
       const conflict = this.db
         .prepare(`SELECT * FROM personas WHERE normalized_name = ?`)
         .get(input.normalizedName);
@@ -1027,6 +1080,8 @@ export class WorkflowStore {
     updatedAt = Date.now(),
   ): PersonaStoreWrite {
     return transaction(this.db, () => {
+      const shipped = this.builtinPersona(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
       const current = this.getPersonaInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -1034,6 +1089,10 @@ export class WorkflowStore {
         return { ok: false, reason: "revision_conflict", current };
       }
       if (patch.normalizedName !== undefined) {
+        const named = this.builtinPersonaNamed(patch.normalizedName);
+        if (named && named.normalizedName !== current.normalizedName) {
+          return { ok: false, reason: "name_conflict", current: named };
+        }
         const conflict = this.db
           .prepare(`SELECT id FROM personas WHERE normalized_name = ? AND id <> ?`)
           .get(patch.normalizedName, id);
@@ -1070,6 +1129,8 @@ export class WorkflowStore {
 
   archivePersonaCas(id: string, expectedRevision: number, archivedAt = Date.now()): PersonaStoreWrite {
     return transaction(this.db, () => {
+      const shipped = this.builtinPersona(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
       const current = this.getPersonaInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -3862,11 +3923,19 @@ export class WorkflowStore {
     return delivery;
   }
 
+  /**
+   * The catalog Publish validates and snapshots against, built-ins included.
+   *
+   * The merge belongs here rather than at the call site because this list decides two things
+   * at once - whether a draft's Persona nodes are valid, and which guidance bytes get frozen
+   * into the version - and a built-in missing from it would fail the first with a message
+   * about a Persona the operator can see on screen.
+   */
   private listPersonasInTransaction(includeArchived: boolean): Persona[] {
     const rows = this.db.prepare(
       `SELECT * FROM personas ${includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY normalized_name ASC`,
     ).all() as unknown[];
-    return rows.map((row) => parsePersonaRow(row));
+    return this.withBuiltins(rows.map((row) => parsePersonaRow(row)));
   }
 
   private getWorkflowInTransaction(id: string): WorkflowDefinition | null {

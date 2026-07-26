@@ -1887,25 +1887,39 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 
-### Seed Personas you can import
+### Built-in Personas
 
-Four ready-made review roles ship in this repository under `docs/personas/`, distilled from
-the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. They are
-seeds, not built-ins: nothing imports them for you and nothing keeps your copy in sync with
-the file afterwards. Once imported they are ordinary Personas you own and can edit.
+Four ready-made review roles ship with the application, distilled from the
+[no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. Nothing has to be
+imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
+one immediately.
 
-| File | Imports as | What it judges |
-|---|---|---|
-| `docs/personas/intent-conformance-judge.md` | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
-| `docs/personas/code-risk-reviewer.md` | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
-| `docs/personas/test-evidence-auditor.md` | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
-| `docs/personas/documentation-steward.md` | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Persona | What it judges |
+|---|---|
+| Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
+| Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
+| Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
 
-**Import .md** in the Personas tab takes the whole file body as the guidance and the file's
-first level-one heading as the name, so each of these arrives named as the table says.
-Description stays empty and the provider and model overrides stay unset, which is the
-app-wide resolution above. Import each file once: a second import of the same file is
-refused, because the first already reserved that name.
+They are **app data, not your data**, and the Personas tab marks each one `Built-in`. Each
+carries exactly the guidance the build was made from, so an upgrade that improves a role
+improves it everywhere at once. Opening one shows it read-only: no Save, no Archive, and a
+line saying why. **Duplicate** is the way to a version you own - the copy is an ordinary
+Persona with its own name, editable, archivable, and never touched by an upgrade. Their
+guidance is still exactly as visible as any other: Copy Markdown, Download .md and the
+preview all work.
+
+Because they always exist, their names are reserved: creating or renaming a Persona to
+`Code Risk Reviewer` is refused the way any duplicate name is. The one exception is
+historical - a Persona you imported from these documents before they shipped built-in keeps
+the name it already reserved, and the built-in it shadows stays hidden behind your copy.
+Delete or rename your copy to see the built-in.
+
+The authored Markdown is in this repository under `docs/personas/`, one document per role,
+and it is compiled into the build - run `npm run personas` after editing one, and commit the
+generated module. Each document's first level-one heading is the Persona's name and the
+paragraph under it is the description, which is the same rule **Import .md** uses for a file
+of your own.
 
 The four are written to compose as the example workflow in
 `docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
@@ -3885,6 +3899,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
+npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 ```
 

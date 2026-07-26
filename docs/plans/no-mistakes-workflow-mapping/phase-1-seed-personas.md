@@ -29,6 +29,11 @@ Non-goals (decided in the source plan's dashboard review, 2026-07-23):
 - No workflow-owned delivery nodes (push/PR/CI stay with no-mistakes and Inspector).
 - No auto-import, no built-in read-only Personas, no seeding into SQLite: the operator
   imports and owns their copies; the DB stays canonical.
+  **Superseded 2026-07-26**, after this phase shipped: the four documents are compiled into
+  the build and merged into every Persona read as read-only built-ins, so nothing is
+  imported and nothing is seeded into SQLite. Duplicate produces the owned copy. The DB
+  stays canonical for everything an operator authors. See the README's Built-in Personas
+  section.
 - No example-workflow fixture; the README describes the assembly, the operator builds it.
 
 ## 4. Repository findings and inherited contracts

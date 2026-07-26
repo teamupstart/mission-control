@@ -256,9 +256,8 @@ Gate-semantics dictionary, for completeness:
 
 ## Adopted persona set
 
-Four Personas, authored as seed `.md` files shipped in-repo under `docs/personas/` and
-importable from the Personas tab (the operator imports and owns their copies; SQLite stays
-canonical). They are distilled from the no-mistakes prompts - the prompts are the tested
+Four Personas, authored as `.md` files shipped in-repo under `docs/personas/`. They are
+distilled from the no-mistakes prompts - the prompts are the tested
 asset here; the wording carries measured lessons, like the anti-overreach rules and the
 full-suite prohibitions:
 
@@ -332,6 +331,8 @@ Submitted through the Mission Control dashboard review on 2026-07-23:
    the PR head; the Inspector final gate makes them binding. No check-node kind is planned.
 3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
-4. **Persona texts**: seed `.md` files shipped in-repo (`docs/personas/`), importable from
-   the Personas tab.
+4. **Persona texts**: `.md` files shipped in-repo (`docs/personas/`). Originally decided as
+   seeds the operator imports and owns. **Superseded 2026-07-26**: they ship built in and
+   read-only - compiled into the build, merged into every Persona read, edits and archives
+   refused, Duplicate for a copy you own. See the README's Built-in Personas section.
 5. **Follow-up**: create a phased implementation plan with dependency-linked tasks.

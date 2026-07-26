@@ -36,6 +36,7 @@ const persona = (id: string, name: string): PersonaView => ({
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
+  builtin: false,
   execution: {
     runner: { id: "claude", source: "default", unknown: null },
     model: { id: "claude-haiku-4-5", source: "default" },

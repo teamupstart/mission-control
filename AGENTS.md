@@ -801,6 +801,28 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   none of the skills reload loop's `settledIdle` + pane-read + `withPaneLock` gate; if one
   ever can, that argument has to be redone. Test: `task-source-contract.test.ts`,
   `task-source-ingest.test.ts`, `github-issues-map.test.ts`, `task-sources-panel.test.ts`.
+- **Built-in Personas (the review roles that ship with the app)**: the documents are
+  `docs/personas/*.md`, and they reach a build through `scripts/builtin-personas.ts` into
+  the committed `builtin-personas.generated.ts` - **compiled in, never read at runtime**, for
+  `mcpServerPath()`'s reason: `docs/` is not in the packaged app and esbuild collapses the
+  daemon, so a runtime read resolves in the checkout and silently nowhere else. Name and
+  description are DERIVED from the document (`personaNameFromMarkdown` /
+  `personaDescriptionFromMarkdown`, `@shared/workflow.ts`), which is the same rule
+  **Import .md** uses, so a hand-imported copy and the shipped one cannot end up two
+  spellings of one role. `builtinPersonaId` is **append-only**: it reaches durable storage as
+  a draft's `personaId` and a published version's `sourcePersonaId`.
+  **A built-in is not a row, and the merge lives in `WorkflowStore`** - one seam, so the
+  library, draft validation and Publish's guidance snapshot all see the same catalog and no
+  caller can forget. Not being a row is what makes "always the Markdown this build was made
+  from" true without a seeding step that could half-run, and the write refusals
+  (`reason: "builtin"`) sit beside the merge for the same reason. A stored Persona SHADOWS a
+  built-in of the same normalized name, and only history can produce one: an operator who
+  imported the document before it shipped reserved that name durably, so their copy - which
+  they may have edited and which their versions name - keeps it, while `create` and rename
+  refuse a built-in's name so no new shadow appears. The shadowed built-in stays addressable
+  by id. `Persona.builtin` is the wire half: it is what the editor reads to open read-only
+  and offer Duplicate instead of Archive. Test: `builtin-personas.test.ts`,
+  `personas-http.test.ts`, `persona-editor-render.test.ts`.
 - **Ensemble strategies (how a GROUP of agents is run)**: the same purity split again.
   `ENSEMBLE_STRATEGY_INFO` (`@shared/ensemble-strategies.ts`) holds what the dashboard can
   answer in the browser, and `ENSEMBLE_STRATEGIES`

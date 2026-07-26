@@ -26,7 +26,7 @@ export type PersonaMutation =
   | { ok: true; persona: PersonaView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived";
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
       current: PersonaView | null;
     };
 
@@ -94,7 +94,9 @@ export class PersonaManager {
     private readonly registry: Registry,
     readonly store = new WorkflowStore(),
   ) {
-    // Archived rows remain in the snapshot because published history may link to them.
+    // Archived rows remain in the snapshot because published history may link to them, and
+    // the store's catalog already carries the Personas this build ships - so the dashboard's
+    // first snapshot has them without a seeding step that could have failed.
     registry.initializePersonas(this.store.listPersonas(true).map((persona) => personaView(persona)));
   }
 

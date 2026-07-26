@@ -22,6 +22,7 @@ const BASE: Persona = {
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
+  builtin: false,
 };
 
 const CLAUDE = { id: "claude", source: "default", unknown: null } as const;

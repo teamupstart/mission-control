@@ -69,6 +69,14 @@ export interface Persona {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Shipped with the application rather than authored here.
+   *
+   * A built-in is app data, not operator data: it is not a row, it always carries the
+   * Markdown this build was made from, and it can be neither edited nor archived. Duplicate
+   * is the path to a customized copy, and that copy is an ordinary Persona like any other.
+   */
+  builtin: boolean;
 }
 
 export interface PersonaExecutionView {
@@ -97,6 +105,37 @@ export function normalizePersonaName(name: string): string {
 
 /** Workflow names use the same durable Unicode spelling rule as Persona names. */
 export const normalizeWorkflowName = normalizePersonaName;
+
+/**
+ * The name a Persona Markdown document carries: its first level-one heading.
+ *
+ * One rule for both readers of authored Markdown - the built-ins compiled into the build and
+ * an operator's **Import .md** - so a file imported by hand and the same file shipped with the
+ * app arrive under the same name instead of two spellings that only collide at the unique index.
+ */
+export function personaNameFromMarkdown(markdown: string, fallback: string): string {
+  return /^#[^\S\r\n]+(.+?)[^\S\r\n]*\r?$/m.exec(markdown)?.[1]?.trim() || fallback;
+}
+
+/**
+ * The one-line summary a Persona Markdown document carries: the paragraph under its heading.
+ *
+ * Derived rather than stored so the description cannot drift from the document it describes.
+ * A file with nothing but headings has no summary, and an empty description is a legal answer.
+ */
+export function personaDescriptionFromMarkdown(markdown: string): string {
+  const body = markdown.replace(/^[\s\S]*?^#[^\S\r\n]+.*?$/m, "");
+  const paragraph = (body === markdown ? markdown : body)
+    .split(/(?:\r?\n){2,}/)
+    .map((block) => block.trim())
+    .find((block) => block.length > 0 && !block.startsWith("#"));
+  if (paragraph === undefined) return "";
+  const collapsed = paragraph.replace(/\s+/gu, " ");
+  if (collapsed.length <= WORKFLOW_LIMITS.personaDescription) return collapsed;
+  const cut = collapsed.slice(0, WORKFLOW_LIMITS.personaDescription - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
 
 export interface Point {
   x: number;

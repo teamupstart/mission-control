@@ -177,6 +177,38 @@ every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
 that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
 (`node:sqlite`).
 
+### The title bar sheds words, it does not wrap
+
+In the desktop app the top bar **is** the window's title bar, and its measured height is
+published as `--topbar-h` for every full-height surface underneath it. So how it behaves in
+a narrow window is not only a cosmetic question: a bar that grows takes that room from the
+board, the console and an expanded card's transcript.
+
+It is laid out as four zones - the brand, the filter, the **fleet pulse**, and the actions -
+and the actions are three ranked groups rather than one row of peers:
+
+| Group | What it holds | Weight |
+|---|---|---|
+| Destinations | Workflows, Missions | ghost button with a label |
+| Fleet | Foreman, **Dispatch** | Dispatch is the one filled, primary button |
+| Tools | Sitrep, Settings, Alerts | borderless glyphs |
+
+The **fleet pulse** is one readout, not a row of pills: the connection state leads it
+(`live`, or `reconnecting`, which dims the figures beside it because they are then stale),
+followed by the session counts and the reviews count, which is still clickable and still
+opens the review queue.
+
+When the window narrows, the bar drops the least useful ink in five measured steps rather
+than wrapping onto extra rows - Workflows and Missions become their glyphs, then the
+wordmark goes, then the filter collapses to its **⌕** (click it or press <kbd>/</kbd> to
+reopen it), then Foreman drops to its status dot, and last the pulse drops to dots and
+figures. **Dispatch keeps its label at every width.** Nothing that collapses loses its
+name: the words are hidden visually, so every glyph still has a tooltip and still announces
+itself to a screen reader.
+
+The result is a single row from a maximised window down to a half-screen one (about 860px),
+where it used to be three. Below roughly 840px it falls back to wrapping, as before.
+
 ### Which terminal you use is declared, not assumed
 
 Discovery names no terminal. It asks each registered backend what panes it can see and

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session launchers · 04 Remembered default</title>
+    <link rel="stylesheet" href="launchers.css" />
+  </head>
+  <body data-option="d">
+    <div id="app"></div>
+
+    <template id="note">
+      <div class="note-card">
+        <h1>Option 01's placement, but one click instead of two</h1>
+        <p>
+          Same strip, same rows - the button is split. The wide half launches your
+          remembered terminal immediately (it prints which one, so it never fires a
+          surprise), and the caret opens the chooser. Pick a different backend and it
+          becomes the new default; the popover marks the current one with a
+          <span style="color: var(--idle)">●</span>. The two buttons remember
+          <b>separately</b>, which is the point: a scratch shell and a resumed agent are not
+          the same job and do not want the same window.
+        </p>
+        <p>
+          This is the only option that gets cheaper the more you use it, and on a machine
+          with one terminal installed the chooser is a formality you pay for once. The cost
+          is a preference to persist and a first-run question - with nothing remembered the
+          wide half has to either pick for you or send you to the menu anyway.
+        </p>
+        <div class="tradeoffs">
+          <span class="up"><i>+</i>One click for the case you repeat all day</span>
+          <span class="up"><i>+</i>Keeps 01's single-component reach</span>
+          <span class="up"><i>+</i>Terminal and agent remember independently</span>
+          <span class="down"><i>−</i>A stored preference, and a first-run answer for it</span>
+          <span class="down"><i>−</i>Widest control of the four</span>
+        </div>
+      </div>
+    </template>
+
+    <script src="launchers.js"></script>
+  </body>
+</html>

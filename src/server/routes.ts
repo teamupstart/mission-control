@@ -46,6 +46,7 @@ import {
   SelectOptionSchema,
   SendTextSchema,
   OpenSessionFileSchema,
+  LaunchSessionTerminalSchema,
   SaveSessionFileSchema,
   SessionFilePathSchema,
   SubmitOptionsSchema,
@@ -103,7 +104,7 @@ import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
@@ -188,6 +189,12 @@ import {
   SessionFileError,
 } from "./session-files.ts";
 import { openFile, openTargetViews } from "./open-targets/index.ts";
+import { terminalTargetViews, launchTerminal } from "./terminal/targets.ts";
+import {
+  agentLaunchAction,
+  agentLaunchBlockedReason,
+  shellLaunchBlockedReason,
+} from "@shared/session-launch.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
@@ -1026,6 +1033,68 @@ export function buildApp(
       const status = known?.status === 403 ? 403 : known?.status === 404 ? 404 : 400;
       return c.json({ ok: false, error: known?.message ?? "could not open session file" }, status);
     }
+  });
+  // Which terminals this HOST can open a window in. Same reasoning as `/api/open-targets`:
+  // it is a question about the daemon's machine, not about the one the dashboard is being
+  // viewed from, and unavailable backends are RETURNED with their sentence rather than
+  // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
+  app.get("/api/terminal-targets", (c) => c.json({ targets: terminalTargetViews() }));
+  // Open a terminal on a session's checkout: a shell, or the session's own agent CLI
+  // resumed on this conversation.
+  //
+  // The two payloads differ only in argv, which is why one route serves both - the human
+  // is making the same choice either way (which terminal), and splitting it in two would
+  // duplicate every refusal below.
+  app.post("/api/sessions/:id/launch", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, LaunchSessionTerminalSchema);
+    if (!parsed.ok) return parsed.res;
+    const { backend, payload } = parsed.data;
+
+    const noCheckout = shellLaunchBlockedReason(session);
+    if (noCheckout) return c.json({ ok: false, error: noCheckout }, 400);
+    const cwd = session.cwd!;
+
+    let argv: readonly string[];
+    let name: string;
+    if (payload === "agent") {
+      // The daemon owns this rule and the browser reads the SAME predicate to shape the
+      // button. A session with a live pane is focusable, and resuming beside it would put
+      // a second process on one conversation file - so this refuses and names the action
+      // that does work, rather than doing something the operator did not ask for.
+      const action = agentLaunchAction(session);
+      if (action === "focus") {
+        return c.json(
+          { ok: false, error: "this session already has a terminal - focus it instead" },
+          409,
+        );
+      }
+      if (action !== "resume") {
+        return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+      }
+      // Non-null: `agentLaunchAction` returned "resume", which required both of these.
+      const composed = resumeArgvFor(session.agent, session.agentSessionId!);
+      if (!composed) {
+        return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+      }
+      argv = composed;
+      name = session.name;
+    } else {
+      // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
+      // be arbitrary code execution on this host from a button labelled "Terminal".
+      argv = [process.env.SHELL || "/bin/sh"];
+      name = session.name;
+    }
+
+    const result = await launchTerminal(backend, { name, cwd, argv });
+    const body = {
+      ok: result.ok,
+      backend,
+      label: result.label,
+      ...(result.error ? { error: result.error } : {}),
+    };
+    return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));

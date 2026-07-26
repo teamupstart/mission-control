@@ -490,14 +490,9 @@ test("live controls delegate, and a mode this CLI has never heard of is refused"
   await assert.rejects(() => handle.setPermissionMode!("askForApproval"), /no permission mode/);
 });
 
-test("the resume argv continues the conversation and states nothing else about it", () => {
-  // No `--model` or mode flags ride along: a resumed session carries its own, and
-  // re-stating them would silently change a conversation the operator asked to CONTINUE.
-  assert.deepEqual([...claudeSdkSpec(fakeDeps().deps).resumeArgv("agent-9")], [
-    "--resume",
-    "agent-9",
-  ]);
-});
+// The resume argv used to be asserted here, because it used to live on `SdkSpec`. It is a
+// harness capability now (every harness has one; only Claude has a driver), so it is pinned
+// in `harness-resume.test.ts` for all three rather than under this one adapter's tests.
 
 test("the subprocess env drops the daemon's own pane, or every hook binds to it", () => {
   // Machine-installed `~/.claude/settings.json` hooks fire inside this subprocess too, and

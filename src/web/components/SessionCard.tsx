@@ -453,8 +453,7 @@ export function SessionCard({
           {expanded && (
             <TranscriptPanel
               ref={transcriptRef}
-              sessionId={session.id}
-              agent={session.agent}
+              session={session}
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}

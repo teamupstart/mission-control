@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session launchers · 01 Conversation toolbar</title>
+    <link rel="stylesheet" href="launchers.css" />
+  </head>
+  <body data-option="a">
+    <div id="app"></div>
+
+    <template id="note">
+      <div class="note-card">
+        <h1>A strip at the top of the conversation itself</h1>
+        <p>
+          A <code>flex: none</code> row becomes the first child of
+          <code>TranscriptPanel</code>, above the scrolling log. It names the worktree the
+          two buttons act on, then the buttons sit right-aligned - the same shape as the
+          <b>Open in</b> control on the files toolbar, in the same 268px-ish popover, with
+          rows that carry a glyph, a label, the argv fragment and a blurb.
+        </p>
+        <p>
+          The reason to prefer this one is structural rather than visual: the request is
+          "on the conversation pane for all layouts", and this is the only placement where
+          that is true <b>by construction</b>. <code>TranscriptPanel</code> is the
+          conversation pane - both renderers that show a conversation mount it - so one
+          component gets Cards, Console and the Board drill-in at once, with no parity
+          rule to remember and nothing for a fourth layout to forget.
+        </p>
+        <div class="tradeoffs">
+          <span class="up"><i>+</i>One edit reaches every layout that has a conversation</span>
+          <span class="up"><i>+</i>The worktree is named right where you act on it</span>
+          <span class="up"><i>+</i>Popovers open downward, over the log, never clipped</span>
+          <span class="down"><i>−</i>Costs ~34px of transcript height</span>
+          <span class="down"><i>−</i>A new band in a pane that had none</span>
+        </div>
+      </div>
+    </template>
+
+    <script src="launchers.js"></script>
+  </body>
+</html>

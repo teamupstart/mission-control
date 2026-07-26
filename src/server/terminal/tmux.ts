@@ -319,6 +319,8 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
   return {
     id: "tmux",
     label: "tmux",
+    // Stacked panes - the multiplexer axis.
+    glyph: "▤",
     bin: TMUX_BIN,
 
     // Returns [] when tmux isn't running (no server / no sessions), which is the common case

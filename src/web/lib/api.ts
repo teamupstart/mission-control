@@ -57,6 +57,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
+import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
   MissionSchedule,
   ScheduleHistoryPage,
@@ -583,6 +584,16 @@ export const fetchOpenTargets = () =>
   fetchJson<{ targets: OpenTargetView[] }>("/api/open-targets");
 
 /**
+ * Which terminals the daemon's host can open a window in.
+ *
+ * Null on failure for `fetchOpenTargets`'s reason: an empty list would be a real answer,
+ * and drawing it for a dropped connection reads as "you have no terminals". See
+ * `useTerminalTargets`.
+ */
+export const fetchTerminalTargets = () =>
+  fetchJson<{ targets: TerminalTargetView[] }>("/api/terminal-targets");
+
+/**
  * Park a dropped image on the daemon's disk, resolving to the path an agent can
  * read. Never throws - maps failures into the shape, like the other uploaders
  * here, because a failed drop is a chip that says why, not a broken compose box.
@@ -643,6 +654,19 @@ export const api = {
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
+  /**
+   * Open a terminal on this session's checkout - a shell, or its own agent CLI resumed on
+   * this conversation.
+   *
+   * `payload` picks between two argvs the DAEMON composes; nothing here becomes part of a
+   * command line, which is why this takes two enums and no strings.
+   */
+  launchTerminal: (
+    id: string,
+    backend: TerminalBackendId,
+    payload: "shell" | "agent",
+  ): Promise<ActionResult & { label?: string }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),

@@ -406,8 +406,7 @@ export function ConsoleDetail({
             )}
             <TranscriptPanel
               ref={transcriptRef}
-              sessionId={session.id}
-              agent={session.agent}
+              session={session}
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={episodes}

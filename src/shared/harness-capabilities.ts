@@ -324,6 +324,25 @@ export interface HarnessCapabilities {
    * cannot advertise a driver that does not exist and a driver cannot ship invisible.
    */
   runtimes: readonly SessionRuntime[];
+  /**
+   * Can this harness's CLI reopen a conversation it already holds?
+   *
+   * The pure half of `Harness.resume` (`src/server/harness/types.ts`), and here for the
+   * same reason `runtimes` is: the BROWSER asks it. The conversation pane shapes its
+   * agent launcher from this - a harness that answers `false` gets a disabled control
+   * carrying a sentence rather than one that spawns a command line the CLI will reject -
+   * and it cannot import a spec that resolves a binary off the filesystem.
+   *
+   * ONE FACT IN TWO FILES with `HARNESSES[a].resume !== null`, the treatment `runtimes` /
+   * `sdk` gets: `harness-resume.test.ts` fails until they agree, so a capability cannot
+   * advertise a resume that does not exist and a spec cannot ship unreachable.
+   *
+   * Every harness shipped today answers `true`, each measured against a real install
+   * rather than assumed. That is not a reason to drop the flag: it is the difference
+   * between "no harness needs this yet" and "no harness will", and only the second would
+   * justify a boolean nobody can set.
+   */
+  resumes: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
   workQueue: WorkQueueSpec | null;
@@ -365,6 +384,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // every harness and is only ever changed by hand. `"sdk"` here and
     // `HARNESSES.claude.sdk` are one fact in two files (`harness-sdk.test.ts`).
     runtimes: ["terminal", "sdk"],
+    // `claude --resume <id>`. Already shipping - this is the argv the embedded handoff
+    // has spawned since the first driver landed.
+    resumes: true,
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It
@@ -409,6 +431,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // (`harness-sdk.test.ts`). `terminal` stays first for the reason Claude's entry gives:
     // the order is the shipped default, not a ranking, and only an operator moves it.
     runtimes: ["terminal", "sdk"],
+    // `codex resume <uuid>`. Measured against `codex resume --help`, which documents the
+    // positional as "Session id (UUID) or session name". Resuming and being drivable
+    // programmatically remain different capabilities, which is exactly why this flag
+    // could not stay on `SdkSpec`.
+    resumes: true,
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -497,6 +524,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     id: "pi",
     // Phase 6 adds `"sdk"` here, with the `--mode rpc` adapter.
     runtimes: ["terminal"],
+    // `pi --session <id>`. Measured against `pi --help`: "--session <path|id>  Use specific
+    // session file or partial UUID". Deliberately NOT `--resume`, which on pi opens an
+    // interactive PICKER rather than taking an id, and not `--fork`, which would branch the
+    // conversation instead of continuing it - three neighbouring flags, one right answer.
+    resumes: true,
     // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
     // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
     // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does

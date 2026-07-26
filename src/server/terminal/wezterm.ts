@@ -171,6 +171,8 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
   return {
     id: "wezterm",
     label: "WezTerm",
+    // A filled window - the emulator axis.
+    glyph: "▣",
     bin: WEZTERM_BIN,
 
     list,

@@ -191,6 +191,32 @@ test("a disconnected pulse keeps its stale figures and review control visible", 
   }
 });
 
+test("filter compaction keeps the review control visible", () => {
+  const rung = RUNGS.find(({ width }) => width === 1270);
+  assert.ok(rung, "the filter rung is gone");
+  const rules = rung.rules.flatMap(([selectors, body]) =>
+    selectors.split(",").map((selector) => ({ selector: selector.trim(), body })),
+  );
+  const readoutSelectors = rules.filter(({ selector }) =>
+    /\.pulse-seg:not\(\.pulse-btn\)$/.test(selector),
+  );
+  assert.equal(readoutSelectors.length, 2, "filter compaction must cover focus and a held term");
+  for (const { body } of readoutSelectors) assert.match(body, /display:\s*none/);
+
+  const hiddenPulse = rules.find(
+    ({ selector, body }) => /\.pulse$/.test(selector) && /display:\s*none/.test(body),
+  );
+  assert.equal(hiddenPulse, undefined, "filter compaction hides the entire pulse");
+
+  const buttonSelectors = rules.filter(({ selector }) => /\.pulse-btn$/.test(selector));
+  assert.equal(buttonSelectors.length, 2, "the review control must survive both filter states");
+  for (const { body } of buttonSelectors) {
+    assert.match(body, /padding:\s*0 9px/);
+    assert.match(body, /border-radius:\s*999px/);
+    assert.doesNotMatch(body, /display:\s*none/);
+  }
+});
+
 test("Dispatch never degrades, and the labels that do are marked", () => {
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
   const cluster = bar.slice(0, bar.indexOf("<UsageBar"));

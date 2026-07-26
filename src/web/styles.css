@@ -1405,18 +1405,27 @@ body {
   .filter-box {
     padding-right: 4px;
   }
-  /* Once the filter is collapsed there is no longer room for both it and the readout: at
-     half screen the bar has about 49px of slack, and a usable field needs 150. So the
-     readout steps aside for as long as the field has focus, which also happens to be the
-     one moment nobody is reading it - you are typing a filter because you are looking at
-     the list below. Without this the field simply pushed the bar onto a second row, which
-     is the behaviour this whole ladder exists to remove.
+  /* Once the filter is collapsed there is no longer room for both it and the full readout:
+     at half screen the bar has about 49px of slack, and a usable field needs 150. So the
+     four count readouts step aside while the field has focus or holds a term, but the
+     reviews control does not - an active filter must not make the bar's only route to
+     reviews unreachable. The surviving control sheds its redundant tone dot and becomes a
+     complete pill, preserving the one-row budget without hiding an interactive element.
 
      Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the
      search boxes on the settings and workflow pages. */
-  .topbar:has(.filter-box:focus-within) .pulse,
-  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse {
+  .topbar:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn),
+  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn) {
     display: none;
+  }
+  .topbar:has(.filter-box:focus-within) .pulse-btn .pulse-dot,
+  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-btn .pulse-dot {
+    display: none;
+  }
+  .topbar:has(.filter-box:focus-within) .pulse-btn,
+  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
+    padding: 0 9px;
+    border-radius: 999px;
   }
 }
 @container topbar (max-width: 1115px) {

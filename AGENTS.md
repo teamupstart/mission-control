@@ -912,7 +912,7 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 
 ## Styles
 
-`src/web/styles.css` is one 7,800-line file: no preprocessor, no modules, no Tailwind. A
+`src/web/styles.css` is one large file: no preprocessor, no modules, no Tailwind. A
 `:root` token block, then ~60 sections in feature order marked `/* ---- name ---- */`. Classes
 are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`, `board-`,
 `console-`, `rail-`, `detail-`).

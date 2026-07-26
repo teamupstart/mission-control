@@ -17,8 +17,15 @@ import {
   type PanelVerdict,
 } from "@shared/ensemble-strategies/panel-vote.ts";
 import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
-import { assembleEvidence, SUBJECT_LETTERS, validateRanking, type EvidencePacket } from "./evidence.ts";
-import { buildPanelBallotPrompt, fenceGuidance } from "./prompt.ts";
+import {
+  assembleEvidencePacket,
+  resolveGuidance as resolveSnapshotGuidance,
+  SUBJECT_LETTERS,
+  validateRanking,
+  type EvidencePacket,
+  type ResolvedGuidance,
+} from "./packet.ts";
+import { buildPanelBallotPrompt } from "./prompt.ts";
 import type {
   ReviewDriver,
   ReviewDriverContext,
@@ -60,18 +67,27 @@ interface JudgeRun {
   verdict: PanelVerdict | null;
 }
 
-function resolveGuidance(
-  guidance: EnsembleEvaluatorGuidance,
-): { label: string; text: string; fenced: boolean } | null {
+/**
+ * One judge's guidance, resolved through the SAME snapshot resolver every other evaluator uses.
+ *
+ * The panel differs from a single-evaluator driver in owning a SET of builtin rubrics rather than
+ * one, so it looks the compiled lens up first and hands that in; the resolver then applies the
+ * identical rules - a builtin id this build does not have fails THAT judge rather than quietly
+ * substituting a different lens, and a Persona's name is sanitized before it is interpolated into
+ * the prompt as prose. Routing both branches through it is what keeps the panel from growing its
+ * own copy of the name sanitization, which is precisely the drift the shared packet exists to stop.
+ */
+function resolveJudgeGuidance(guidance: EnsembleEvaluatorGuidance): ResolvedGuidance | null {
   if (guidance.kind === "builtin") {
-    // Only lenses this build actually has can judge. A plan naming an unknown rubric - a snapshot
-    // from a newer build, or a lens id that was renamed rather than appended - fails THAT judge
-    // rather than quietly substituting a different lens, which would put a ballot on the panel
-    // that answers a question nobody asked.
     const lens = panelLensText(guidance.rubricId);
-    return lens === null ? null : { label: lens.label, text: lens.text, fenced: false };
+    if (lens === null) return null;
+    return resolveSnapshotGuidance(guidance, {
+      id: guidance.rubricId,
+      text: lens.text,
+      label: lens.label,
+    });
   }
-  return fenceGuidance(guidance);
+  return resolveSnapshotGuidance(guidance, null);
 }
 
 /** The panel's compact label, derived from the same aggregation the dashboard draws. */
@@ -160,7 +176,7 @@ async function runJudge(
     verdict: null,
   });
 
-  const guidance = resolveGuidance(judge.guidance);
+  const guidance = resolveJudgeGuidance(judge.guidance);
   if (guidance === null) {
     return failedBefore("this build does not have the lens this judge was compiled against", null);
   }
@@ -304,22 +320,31 @@ async function run(context: ReviewDriverContext): Promise<ReviewOutcome> {
   }
   const policy = context.policy;
 
-  // The packet is budgeted against the LARGEST judge's guidance, so no judge's prompt can overrun
-  // what the budget promised - the alternative, budgeting per judge, would give the judges
-  // different diffs and make their disagreement uninterpretable.
-  const guidanceBytes = Math.max(
-    ...policy.judges.map((judge) => {
-      const resolved = resolveGuidance(judge.guidance);
-      return resolved === null ? 0 : Buffer.byteLength(resolved.text, "utf8");
-    }),
-    0,
-  );
-  const assembled = await assembleEvidence(context, {
-    materialBudgetBytes: policy.materialBudgetBytes,
-    guidanceBytes,
-  });
+  // ONE packet, budgeted against the LARGEST judge's guidance. Budgeting against a shorter judge's
+  // would let the longest one's prompt overrun the ceiling the operator previewed, and budgeting
+  // per judge would hand the judges different diffs - which would make their disagreement a fact
+  // about what each was shown rather than about the submissions.
+  const widest = policy.judges
+    .map((judge) => resolveJudgeGuidance(judge.guidance))
+    .filter((resolved): resolved is ResolvedGuidance => resolved !== null)
+    .reduce<ResolvedGuidance | null>(
+      (largest, resolved) =>
+        largest === null || resolved.text.length > largest.text.length ? resolved : largest,
+      null,
+    );
+  // Every judge's lens is one this build does not have: there is nothing to ask and no packet to
+  // build, so the attempt fails before any Git work rather than after materializing N diffs.
+  if (widest === null) {
+    return {
+      ok: false,
+      kind: "infrastructure",
+      detail: "this build has none of the lenses this panel was compiled against",
+      evaluations: [],
+    };
+  }
+  const assembled = await assembleEvidencePacket(context, widest);
   if (!assembled.ok) {
-    return { ok: false, kind: assembled.failure.kind, detail: assembled.failure.detail, evaluations: [] };
+    return { ok: false, kind: assembled.kind, detail: assembled.detail, evaluations: [] };
   }
   const packet = assembled.packet;
 

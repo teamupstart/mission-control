@@ -20,6 +20,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-ensemble-review-"));
 process.env.HARNESS_HOME = join(home, "state");
 
+const { ENSEMBLE_HARD_LIMITS } = await import("../src/shared/ensemble.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { EnsembleStore, clearEnsembleTables } = await import("../src/server/ensembles/store.ts");
 const { EnsembleEngine } = await import("../src/server/ensembles/engine.ts");
@@ -365,6 +366,22 @@ test("patch bytes are allocated fairly and truncation is disclosed, not hidden",
   const perSubject = perSubjectPatchBytes(4, 400 * 1024, 1_000, 1_000);
   assert.ok(perSubject > 0);
   assert.ok(perSubject * 4 <= 400 * 1024, "the four subjects' patches fit inside the packet budget");
+
+  // The operator's ceiling outranks the per-subject FLOOR, at every roster size a strategy allows.
+  // The floor exists so a large guidance snapshot cannot starve a subject of every diff byte, but
+  // raising each subject to it regardless would read `count * 8 KiB` out of a budget that may be
+  // smaller - 40 KiB against the schema's 16 KiB minimum with a full roster - which is more than
+  // the preview promised and grows with the roster exactly where the ceiling was meant to bind.
+  for (const budget of [16 * 1024, 64 * 1024, 400 * 1024, 2 * 1024 * 1024]) {
+    for (const count of [2, 3, 4, 5, ENSEMBLE_HARD_LIMITS.maxMembers]) {
+      const per = perSubjectPatchBytes(count, budget, 80 * 1024, 20 * 1024);
+      assert.ok(per >= 0, `count ${count} at ${budget} produced a negative allocation`);
+      assert.ok(
+        per * count <= budget,
+        `count ${count} at ${budget} allocated ${per * count} bytes of patch, over its budget`,
+      );
+    }
+  }
 
   const bigPatch = "x".repeat(500 * 1024);
   let seenBudget = 0;

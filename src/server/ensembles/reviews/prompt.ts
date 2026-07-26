@@ -54,12 +54,13 @@ function labelSlug(label: string): string {
 }
 
 /**
- * A snapshotted Persona, as a guidance section: how to NAME it, and the fact that its text is data.
+ * Operator-authored text that will be interpolated into our own framing as PROSE, made safe.
  *
- * Operator-authored Markdown is always fenced, whichever driver is asking, so an instruction
- * embedded in a Persona cannot override the contract. The name is stripped of control characters
- * and framing delimiters before it is interpolated into a sentence for the same reason - it is
- * operator text arriving inside our own framing.
+ * The one owner of this rule, used by every caller that puts a Persona's name into a prompt
+ * sentence: the guidance snapshot resolver in `packet.ts` and the panel ballot below. Control
+ * characters and the framing delimiters are stripped because the name lands OUTSIDE any fence -
+ * a name carrying a newline and a quote could otherwise close the quoted label and read as
+ * instructions. The guidance body underneath it is fenced as data separately.
  */
 export function sanitizePromptLabel(label: string): string {
   return label
@@ -68,14 +69,6 @@ export function sanitizePromptLabel(label: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
-}
-
-export function fenceGuidance(guidance: {
-  name: string;
-  guidanceMarkdown: string;
-}): { label: string; text: string; fenced: true } {
-  const name = sanitizePromptLabel(guidance.name);
-  return { label: `the "${name}" Persona`, text: guidance.guidanceMarkdown, fenced: true };
 }
 
 /** The bounded, fenced evidence section for one anonymous subject - identical for every driver. */

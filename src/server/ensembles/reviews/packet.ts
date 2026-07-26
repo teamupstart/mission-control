@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
   ensemblePayload,
+  ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
   type EnsembleEvaluatorKind,
   type EnsembleEvaluatorGuidance,
@@ -10,7 +11,7 @@ import {
 } from "@shared/ensemble.ts";
 import { parseModelJson, runStructured, type StructuredAttemptObserver } from "../../llm/structured.ts";
 import { boundedSection } from "../../review/prompt.ts";
-import type { PromptSubjectEvidence } from "./prompt.ts";
+import { sanitizePromptLabel, type PromptSubjectEvidence } from "./prompt.ts";
 import type {
   ReviewDriverContext,
   ReviewEvaluationRecord,
@@ -48,6 +49,17 @@ const PER_SUBJECT_METADATA_RESERVE_BYTES = 12 * 1024;
  * Split the packet budget so patches are allocated FAIRLY across subjects after the fixed and
  * per-subject metadata is reserved. Pure and exported so a test can assert the allocation without
  * a model. `guidanceBytes`/`intentBytes` are the actual sizes of those (already-capped) sections.
+ *
+ * The floor and the ceiling are both real, and the CEILING wins.
+ * `MIN_PER_SUBJECT_PATCH_BYTES` exists so a large guidance snapshot cannot starve a subject of
+ * every diff byte, but it is a preference inside the operator's budget, not a licence to exceed
+ * it. Raising every subject to the floor unconditionally reads `count * 8 KiB` of patch material
+ * however small the budget is - 40 KiB against a configured 16 KiB at the schema's minimum with a
+ * full roster - which is more than the operator previewed and agreed to, and it grows with the
+ * roster exactly where the ceiling was meant to bind. So the allocation is capped at an even share
+ * of the whole budget. A subject left with very few patch bytes is not silently mis-judged: the
+ * packet still carries its file statistics and reported claims, and the prompt tells the model to
+ * judge from those when no textual diff survived.
  */
 export function perSubjectPatchBytes(
   count: number,
@@ -58,7 +70,8 @@ export function perSubjectPatchBytes(
   const reserved =
     guidanceBytes + intentBytes + FRAMING_RESERVE_BYTES + count * PER_SUBJECT_METADATA_RESERVE_BYTES;
   const patchTotal = Math.max(count * MIN_PER_SUBJECT_PATCH_BYTES, packetBudget - reserved);
-  return Math.max(MIN_PER_SUBJECT_PATCH_BYTES, Math.floor(patchTotal / count));
+  const preferred = Math.max(MIN_PER_SUBJECT_PATCH_BYTES, Math.floor(patchTotal / count));
+  return Math.min(preferred, Math.floor(packetBudget / count));
 }
 
 export interface Reported {
@@ -125,28 +138,27 @@ export interface ResolvedGuidance {
 /**
  * Resolve a plan's guidance snapshot to the exact text this attempt will use.
  *
- * `builtin` is the ONE rubric the calling evaluator owns. A plan naming any other builtin id - a
- * snapshot from a newer build, or a rubric belonging to a different strategy - resolves to null
- * and fails the attempt rather than judging with a substitute, which would evaluate against
- * criteria the operator never chose with nothing on screen to say so.
+ * `builtin` is the ONE rubric this CALL may use. A plan naming any other builtin id - a snapshot
+ * from a newer build, or a rubric belonging to a different strategy - resolves to null and fails
+ * the attempt rather than judging with a substitute, which would evaluate against criteria the
+ * operator never chose with nothing on screen to say so. Null means the caller owns no builtin
+ * that applies here: an evaluator holding a SET of rubrics (a panel's lenses) picks the one this
+ * judge was given and passes it in, and passes null on the persona path, where the name
+ * sanitization below is the whole point of routing through here.
  */
 export function resolveGuidance(
   guidance: EnsembleEvaluatorGuidance,
-  builtin: { id: string; text: string; label: string },
+  builtin: { id: string; text: string; label: string } | null,
 ): ResolvedGuidance | null {
   if (guidance.kind === "builtin") {
-    return guidance.rubricId === builtin.id
+    return builtin !== null && guidance.rubricId === builtin.id
       ? { label: builtin.label, text: builtin.text, fenced: false }
       : null;
   }
-  // Control characters and backticks are stripped from the NAME because it is interpolated into
-  // the prompt as prose rather than fenced; the guidance body below it is fenced as data.
-  const name = guidance.name
-    .replace(/\p{Cc}/gu, " ")
-    .replace(/`/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+  // The NAME is interpolated into the prompt as prose rather than fenced, so it goes through the
+  // one shared sanitizer rather than a second copy of the same rule; the guidance body below it is
+  // fenced as data.
+  const name = sanitizePromptLabel(guidance.name);
   return { label: `the "${name}" Persona`, text: guidance.guidanceMarkdown, fenced: true };
 }
 
@@ -180,6 +192,13 @@ export interface EvidencePacket {
  */
 export async function assembleEvidencePacket(
   context: ReviewDriverContext,
+  /**
+   * The guidance this packet is BUDGETED against - only its size is read here.
+   *
+   * A single-evaluator driver passes the one snapshot it will send. A panel builds one packet that
+   * every judge shares, so it passes its LARGEST judge's: budgeting against a shorter one would let
+   * the longest-guidance judge's prompt exceed the ceiling the operator previewed.
+   */
   guidance: ResolvedGuidance,
 ): Promise<
   | { ok: true; packet: EvidencePacket }
@@ -483,4 +502,63 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
     ],
     resultLabel: validated.resultLabel,
   };
+}
+
+/** One subject's validated score, after structure but before de-anonymisation. */
+interface RankedSubject {
+  label: string;
+  score: number;
+  rank: number;
+  confidence: number;
+}
+
+/**
+ * The semantic rules a ranking over anonymous labels has to satisfy, checked once for every driver.
+ *
+ * Every rule REFUSES rather than repairs: a score of 250, a duplicate rank, a gap in the ranks, or
+ * a label the packet never used is a failed attempt, because a ranking that will inform a
+ * promotion may not be quietly corrected into a plausible one. Shared between the comparison and
+ * every panel ballot so the two cannot end up enforcing different arithmetic on the same numbers.
+ */
+export function validateRanking(
+  subjects: readonly RankedSubject[],
+  labelToArtifact: ReadonlyMap<string, string>,
+): { ok: true } | { ok: false; reason: string } {
+  const n = labelToArtifact.size;
+  if (subjects.length !== n) {
+    return { ok: false, reason: `expected ${n} subject scorecards, got ${subjects.length}` };
+  }
+  if (n > ENSEMBLE_HARD_LIMITS.maxMembers) {
+    return { ok: false, reason: `a ranking may not cover more than ${ENSEMBLE_HARD_LIMITS.maxMembers} subjects` };
+  }
+  const seenLabels = new Set<string>();
+  const seenRanks = new Set<number>();
+  for (const subject of subjects) {
+    if (!labelToArtifact.has(subject.label)) {
+      return { ok: false, reason: `unknown subject label ${JSON.stringify(subject.label)}` };
+    }
+    if (seenLabels.has(subject.label)) {
+      return { ok: false, reason: `subject label ${JSON.stringify(subject.label)} appears more than once` };
+    }
+    seenLabels.add(subject.label);
+    if (!Number.isInteger(subject.score) || subject.score < 0 || subject.score > 100) {
+      return { ok: false, reason: `score for ${subject.label} must be an integer 0-100` };
+    }
+    if (!Number.isInteger(subject.rank) || subject.rank < 1 || subject.rank > n) {
+      return { ok: false, reason: `rank for ${subject.label} must be an integer 1-${n}` };
+    }
+    if (seenRanks.has(subject.rank)) {
+      return { ok: false, reason: `rank ${subject.rank} is assigned to more than one subject` };
+    }
+    seenRanks.add(subject.rank);
+    if (!(subject.confidence >= 0 && subject.confidence <= 1)) {
+      return { ok: false, reason: `confidence for ${subject.label} must be within 0-1` };
+    }
+  }
+  for (let rank = 1; rank <= n; rank++) {
+    if (!seenRanks.has(rank)) {
+      return { ok: false, reason: `rank ${rank} is missing; ranks must be contiguous 1-${n}` };
+    }
+  }
+  return { ok: true };
 }

@@ -722,3 +722,65 @@ test("a pinned Persona revision that has moved on is refused rather than snapsho
   if (result.ok) return;
   assert.match(result.issues[0]!.message, /revision 5, not the requested 3/);
 });
+
+// ---- a cancelled run keeps no ballot from work that landed after it stopped ----
+
+test("a ballot that arrives after the run was cancelled is recorded interrupted, never succeeded", async () => {
+  // The window: a judge's provider call is in flight when the operator cancels, and the call then
+  // returns a perfectly valid ballot. Nothing about that ballot is wrong - it is simply evidence
+  // for a run nobody is watching any more, and recording it `succeeded` would leave a cancelled
+  // run holding ballots it never acted on, which a later reader cannot tell from a real panel.
+  //
+  // TWO things enforce this, and the outer one is what this test actually exercises. `cancelRun`
+  // runs `interruptRunningReviews` BEFORE it moves the run to `cancelled`, so every open row is
+  // already `interrupted` by the time the late outcome lands, and `finishEvaluation`'s
+  // `["running"]` precondition then refuses the late write whatever status it names. The inner one
+  // is `applyReviewOutcome`'s late branch, which names `interrupted` literally rather than the
+  // driver's per-record status. Because the outer defence settles the rows first, this test still
+  // passes if the inner one regresses - it pins the PROPERTY, not that branch.
+  const store = new EnsembleStore(db);
+  let release: ((reply: string) => void) | null = null;
+  const held = new Promise<string>((resolve) => {
+    release = resolve;
+  });
+  let asked = 0;
+  const { engine, gateway } = harness((prompt) => {
+    asked += 1;
+    // The first judge hangs until the test lets it answer; the rest answer immediately.
+    return asked === 1 ? held.then(() => ballot(prompt)) : ballot(prompt);
+  }, store);
+
+  const run = makeRun(store, panelPlan(3, 3));
+  await engine.launch(run.id);
+  for (const dispatch of [...gateway.dispatched]) {
+    const memberId = store.listAttempts(run.id).find((a) => a.taskId === dispatch.taskId)!.memberId;
+    gateway.running(dispatch.taskId, `/wt/${dispatch.taskId}`);
+    await engine.wake(run.id);
+    await engine.submit({
+      runId: run.id,
+      memberId,
+      claims: { summary: "work", checks: [], testEvidence: null },
+      source: "mcp",
+      requireWorktree: `/wt/${dispatch.taskId}`,
+    });
+  }
+  await waitFor(() => store.listEvaluations(run.id).length === 3, 6000);
+
+  // Cancel while that judge is still in flight, then let its call return a valid ballot.
+  await engine.cancelRun(run.id, "operator changed their mind");
+  release!("");
+  await waitFor(() => store.getRun(run.id)?.status === "cancelled", 6000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const evaluations = store.listEvaluations(run.id);
+  assert.equal(evaluations.length, 3, "the rows the attempt opened are still on the ledger");
+  for (const evaluation of evaluations) {
+    assert.notEqual(
+      evaluation.status,
+      "succeeded",
+      "a cancelled run must retain no ballot from work that arrived after it stopped",
+    );
+    assert.equal(evaluation.result, null, "and no ballot body either");
+  }
+  assert.equal(store.getRun(run.id)?.status, "cancelled");
+});

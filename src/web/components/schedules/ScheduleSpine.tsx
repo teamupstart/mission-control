@@ -26,6 +26,13 @@ import {
   shortTaskId,
   triggerKindLabel,
 } from "../../lib/schedules.ts";
+import {
+  EMPTY_SPINE_HISTORY,
+  appendOlderSpineHistory,
+  appendSpineHistoryBridge,
+  createSpineHistoryWindow,
+  mergeOccurrences,
+} from "../../lib/spine-history.ts";
 import { buildSpineRows } from "../../lib/spine.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
@@ -84,14 +91,6 @@ function timePart(at: number, timezone: string | null): string {
   return formatInstant(at, timezone, { hour: "numeric", minute: "2-digit" });
 }
 
-function mergeOccurrences(
-  fresh: ScheduleOccurrence[],
-  existing: ScheduleOccurrence[],
-): ScheduleOccurrence[] {
-  const freshIds = new Set(fresh.map((occurrence) => occurrence.id));
-  return [...fresh, ...existing.filter((occurrence) => !freshIds.has(occurrence.id))];
-}
-
 export function ScheduleSpine({
   scheduleId,
   schedule,
@@ -120,9 +119,7 @@ export function ScheduleSpine({
   resolveTaskLink?: (taskId: string) => { openable: boolean; blockedReason: string | null };
 }): React.JSX.Element {
   const [pageSchedule, setPageSchedule] = useState<MissionSchedule | null>(null);
-  const [rows, setRows] = useState<ScheduleOccurrence[]>([]);
-  const [cursor, setCursor] = useState<number | null>(null);
-  const [done, setDone] = useState(false);
+  const [history, setHistory] = useState(EMPTY_SPINE_HISTORY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(initialOccurrenceId ?? null);
@@ -145,83 +142,88 @@ export function ScheduleSpine({
   const requestRef = useRef(0);
   const deepLinkRef = useRef<HTMLLIElement>(null);
 
-  // First page on mount / schedule change. Resetting here is what makes a schedule switch
-  // discard the previous schedule's rows rather than appending across them.
+  // History window on mount / schedule change. Resetting here is what makes a schedule
+  // switch discard the previous schedule's rows rather than appending across them.
   useEffect(() => {
     const stamp = ++requestRef.current;
     setPageSchedule(null);
-    setRows([]);
-    setCursor(null);
-    setDone(false);
+    setHistory(EMPTY_SPINE_HISTORY);
     setLoading(true);
     setError(null);
     setOpenId(initialOccurrenceId ?? null);
     void (async () => {
-      let before: number | null =
+      const before: number | null =
         initialOccurrenceId && initialScheduledFor != null ? initialScheduledFor + 1 : null;
-      let accumulated: ScheduleOccurrence[] = [];
-      let firstPage = true;
-
-      for (;;) {
-        const page = await fetchScheduleHistory(scheduleId, {
+      const [firstPage, newestPage] = await Promise.all([
+        fetchScheduleHistory(scheduleId, {
           before,
+          limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
+        }),
+        before === null
+          ? Promise.resolve(null)
+          : fetchScheduleHistory(scheduleId, {
+              before: null,
+              limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
+            }),
+      ]);
+      if (stamp !== requestRef.current) return;
+      if (!firstPage || (before !== null && !newestPage)) {
+        setLoading(false);
+        setError("History is unavailable for this mission.");
+        return;
+      }
+
+      let accumulated = firstPage.occurrences;
+      let nextCursor = firstPage.nextCursor;
+      while (
+        initialOccurrenceId &&
+        !accumulated.some((occurrence) => occurrence.id === initialOccurrenceId) &&
+        nextCursor !== null
+      ) {
+        const page = await fetchScheduleHistory(scheduleId, {
+          before: nextCursor,
           limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
         });
         if (stamp !== requestRef.current) return;
         if (!page) {
-          setLoading(false);
-          setError(
-            firstPage
-              ? "History is unavailable for this mission."
-              : "Could not load the requested occurrence.",
+          setPageSchedule((newestPage ?? firstPage).schedule);
+          setHistory(
+            createSpineHistoryWindow({
+              occurrences: (newestPage ?? firstPage).occurrences,
+              nextCursor: (newestPage ?? firstPage).nextCursor,
+            }),
           );
-          return;
-        }
-        firstPage = false;
-
-        setError(null);
-        const seen = new Set(accumulated.map((occurrence) => occurrence.id));
-        accumulated = [
-          ...accumulated,
-          ...page.occurrences.filter((occurrence) => !seen.has(occurrence.id)),
-        ];
-        setPageSchedule(page.schedule);
-        setRows((current) => mergeOccurrences(accumulated, current));
-        setCursor(page.nextCursor);
-        setDone(page.nextCursor === null);
-
-        if (
-          !initialOccurrenceId ||
-          accumulated.some((occurrence) => occurrence.id === initialOccurrenceId) ||
-          page.nextCursor === null
-        ) {
-          if (initialOccurrenceId) setOpenId(initialOccurrenceId);
           setLoading(false);
+          setError("Could not load the requested occurrence.");
           return;
         }
-        before = page.nextCursor;
+        accumulated = mergeOccurrences(accumulated, page.occurrences);
+        nextCursor = page.nextCursor;
       }
-    })();
-    // initialOccurrenceId only seeds the opened audit; it must not re-fetch the page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduleId]);
 
-  const lastOccurrenceId = schedule?.lastOccurrence?.id ?? null;
-  const lastOccurrenceRef = useRef(lastOccurrenceId);
-  useEffect(() => {
-    const previous = lastOccurrenceRef.current;
-    lastOccurrenceRef.current = lastOccurrenceId;
-    if (lastOccurrenceId === null || previous === lastOccurrenceId) return;
-    const stamp = requestRef.current;
-    void fetchScheduleHistory(scheduleId, {
-      before: null,
-      limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
-    }).then((page) => {
-      if (stamp !== requestRef.current || !page) return;
-      setPageSchedule(page.schedule);
-      setRows((current) => mergeOccurrences(page.occurrences, current));
-    });
-  }, [lastOccurrenceId, scheduleId]);
+      const targetFound =
+        !initialOccurrenceId ||
+        accumulated.some((occurrence) => occurrence.id === initialOccurrenceId);
+      setPageSchedule((newestPage ?? firstPage).schedule);
+      setHistory(
+        createSpineHistoryWindow(
+          {
+            occurrences: (newestPage ?? firstPage).occurrences,
+            nextCursor: (newestPage ?? firstPage).nextCursor,
+          },
+          before === null
+            ? undefined
+            : {
+                occurrences: accumulated,
+                nextCursor,
+              },
+        ),
+      );
+      if (initialOccurrenceId && targetFound) setOpenId(initialOccurrenceId);
+      if (!targetFound) setError("The requested occurrence is no longer retained.");
+      setLoading(false);
+    })();
+  }, [initialOccurrenceId, initialScheduledFor, schedule, scheduleId]);
 
   const shown = schedule ?? pageSchedule;
   const timezone = shown?.timezone ?? null;
@@ -267,12 +269,12 @@ export function ScheduleSpine({
   }, [initialOccurrenceId, loading]);
 
   function loadOlder(): void {
-    if (done || loading || cursor === null) return;
+    if (history.olderDone || loading || history.olderCursor === null) return;
     const stamp = requestRef.current;
     setError(null);
     setLoading(true);
     void fetchScheduleHistory(scheduleId, {
-      before: cursor,
+      before: history.olderCursor,
       limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
     }).then((page) => {
       if (stamp !== requestRef.current) return;
@@ -282,12 +284,37 @@ export function ScheduleSpine({
         return;
       }
       setError(null);
-      setRows((prev) => {
-        const seen = new Set(prev.map((o) => o.id));
-        return [...prev, ...page.occurrences.filter((o) => !seen.has(o.id))];
-      });
-      setCursor(page.nextCursor);
-      setDone(page.nextCursor === null);
+      setHistory((current) =>
+        appendOlderSpineHistory(current, {
+          occurrences: page.occurrences,
+          nextCursor: page.nextCursor,
+        }),
+      );
+    });
+  }
+
+  function loadMissingHistory(): void {
+    if (loading || history.bridgeCursor === null) return;
+    const stamp = requestRef.current;
+    setError(null);
+    setLoading(true);
+    void fetchScheduleHistory(scheduleId, {
+      before: history.bridgeCursor,
+      limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
+    }).then((page) => {
+      if (stamp !== requestRef.current) return;
+      setLoading(false);
+      if (!page) {
+        setError("Could not load the missing history range.");
+        return;
+      }
+      setError(null);
+      setHistory((current) =>
+        appendSpineHistoryBridge(current, {
+          occurrences: page.occurrences,
+          nextCursor: page.nextCursor,
+        }),
+      );
     });
   }
 
@@ -301,6 +328,14 @@ export function ScheduleSpine({
     return map;
   }, [preview]);
 
+  const rows = history.occurrences;
+  const historyBreak = useMemo(
+    () =>
+      history.bridgeTargetAt !== null && history.bridgeBefore !== null
+        ? { after: history.bridgeTargetAt, before: history.bridgeBefore }
+        : null,
+    [history.bridgeBefore, history.bridgeTargetAt],
+  );
   const spine = useMemo(
     () =>
       buildSpineRows({
@@ -309,8 +344,9 @@ export function ScheduleSpine({
         instants: preview?.ok ? preview.instants : [],
         stopReason: futureReason,
         collisionsByInstant,
+        historyBreak,
       }),
-    [rows, now, preview, futureReason, collisionsByInstant],
+    [rows, now, preview, futureReason, collisionsByInstant, historyBreak],
   );
 
   const futureShown = spine.filter((row) => row.kind === "future").length;
@@ -342,7 +378,7 @@ export function ScheduleSpine({
       <div className="rm-spine-cap">
         {loading && rows.length === 0 ? (
           <span className="rm-dim rm-tiny">Loading history…</span>
-        ) : done && rows.length > 0 ? (
+        ) : history.olderDone && rows.length > 0 ? (
           <span className="rm-dim rm-tiny">Start of this mission's history</span>
         ) : rows.length === 0 ? (
           <span className="rm-dim rm-tiny">No occurrence has been recorded yet</span>
@@ -359,6 +395,17 @@ export function ScheduleSpine({
         {spine.map((row) => {
           if (row.kind === "gap") {
             return <GapRow key={row.key} row={row} timezone={timezone} />;
+          }
+          if (row.kind === "unloaded") {
+            return (
+              <HistoryBreakRow
+                key={row.key}
+                row={row}
+                timezone={timezone}
+                loading={loading}
+                onLoad={loadMissingHistory}
+              />
+            );
           }
           if (row.kind === "now") {
             return (
@@ -441,6 +488,43 @@ export function ScheduleSpine({
         </p>
       )}
     </div>
+  );
+}
+
+function HistoryBreakRow({
+  row,
+  timezone,
+  loading,
+  onLoad,
+}: {
+  row: { after: number; before: number };
+  timezone: string | null;
+  loading: boolean;
+  onLoad: () => void;
+}): React.JSX.Element {
+  return (
+    <li className="rm-sp-row rm-sp-unloaded">
+      <span className="rm-sp-when">
+        <b>History</b>
+      </span>
+      <span className="rm-sp-axis rm-sp-axis-gap">
+        <span className="rm-sp-moon" aria-hidden>
+          ⋯
+        </span>
+      </span>
+      <span className="rm-sp-what">
+        <span className="rm-sp-line rm-sp-gap-line">Some history is not loaded</span>
+        <span className="rm-sp-note">
+          Between {dayPart(row.after, timezone)} {timePart(row.after, timezone)} and{" "}
+          {dayPart(row.before, timezone)} {timePart(row.before, timezone)}.
+        </span>
+        <Tooltip label="Fetch the next page toward the selected occurrence">
+          <button className="btn rm-sp-more" onClick={onLoad} disabled={loading}>
+            {loading ? "Loading…" : "Load missing history"}
+          </button>
+        </Tooltip>
+      </span>
+    </li>
   );
 }
 

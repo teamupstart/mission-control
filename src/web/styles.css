@@ -14476,6 +14476,9 @@ select.foreman-model-input {
 .rm-sp-gap-line {
   color: var(--attention);
 }
+.rm-sp-unloaded .rm-sp-more {
+  margin-top: 6px;
+}
 .rm-sp-missed {
   margin: 6px 0 0;
   padding: 0;

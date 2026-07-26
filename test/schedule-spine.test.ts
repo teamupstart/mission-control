@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import {
+  appendSpineHistoryBridge,
+  createSpineHistoryWindow,
+} from "../src/web/lib/spine-history.ts";
 import { buildSpineRows, type SpineRow } from "../src/web/lib/spine.ts";
 import { mkOccurrence } from "./helpers/schedule-fixture.ts";
 
@@ -174,6 +178,92 @@ test("history arrives newest first and the axis still reads oldest to newest", (
   });
   const ids = rows.filter((row) => row.kind === "past").map((row) => row.occurrence.id);
   assert.deepEqual(ids, ["older", "newer"]);
+});
+
+test("a deep-linked target keeps an explicit break until newest history connects", () => {
+  const occurrence = (index: number) =>
+    mkOccurrence({
+      id: `occ-${index}`,
+      scheduledFor: T0 + index * HOUR,
+      claimedAt: T0 + index * HOUR,
+    });
+  const range = (from: number, through: number) =>
+    Array.from({ length: from - through + 1 }, (_, offset) => occurrence(from - offset));
+
+  let window = createSpineHistoryWindow(
+    { occurrences: range(100, 76), nextCursor: T0 + 76 * HOUR },
+    { occurrences: range(20, 0), nextCursor: null },
+  );
+  assert.equal(window.bridgeTargetAt, T0 + 20 * HOUR);
+  assert.equal(window.bridgeBefore, T0 + 76 * HOUR);
+  assert.equal(window.bridgeCursor, T0 + 76 * HOUR);
+
+  window = appendSpineHistoryBridge(window, {
+    occurrences: range(75, 51),
+    nextCursor: T0 + 51 * HOUR,
+  });
+  window = appendSpineHistoryBridge(window, {
+    occurrences: range(50, 26),
+    nextCursor: T0 + 26 * HOUR,
+  });
+  assert.equal(window.bridgeTargetAt, T0 + 20 * HOUR);
+  assert.equal(window.bridgeBefore, T0 + 26 * HOUR);
+
+  window = appendSpineHistoryBridge(window, {
+    occurrences: range(25, 1),
+    nextCursor: T0 + HOUR,
+  });
+  assert.equal(window.bridgeTargetAt, null);
+  assert.equal(window.bridgeBefore, null);
+  assert.equal(window.bridgeCursor, null);
+  assert.equal(new Set(window.occurrences.map((entry) => entry.id)).size, 101);
+});
+
+test("a refreshed catch-up window resets pagination beyond the newest 25 rows", () => {
+  const occurrence = (index: number, status: "claimed" | "created" = "created") =>
+    mkOccurrence({
+      id: `catch-up-${index}`,
+      scheduledFor: T0 + index * HOUR,
+      claimedAt: T0 + 50 * HOUR,
+      status,
+    });
+  const old = createSpineHistoryWindow({
+    occurrences: Array.from({ length: 10 }, (_, index) =>
+      occurrence(index, index === 0 ? "claimed" : "created"),
+    ),
+    nextCursor: null,
+  });
+  assert.equal(old.olderDone, true);
+  assert.equal(old.occurrences.find((entry) => entry.id === "catch-up-0")?.status, "claimed");
+
+  const refreshed = createSpineHistoryWindow({
+    occurrences: Array.from({ length: 25 }, (_, offset) => occurrence(50 - offset)),
+    nextCursor: T0 + 26 * HOUR,
+  });
+  assert.equal(refreshed.occurrences.length, 25);
+  assert.equal(refreshed.olderDone, false);
+  assert.equal(refreshed.olderCursor, T0 + 26 * HOUR);
+  assert.equal(refreshed.occurrences.some((entry) => entry.id === "catch-up-0"), false);
+
+  const recovered = createSpineHistoryWindow({
+    occurrences: [occurrence(0, "created")],
+    nextCursor: null,
+  });
+  assert.equal(recovered.occurrences[0]?.status, "created");
+});
+
+test("an unloaded history range is a row on the axis", () => {
+  const rows = buildSpineRows({
+    occurrences: [
+      mkOccurrence({ id: "target", scheduledFor: T0, claimedAt: T0 }),
+      mkOccurrence({ id: "newest", scheduledFor: T0 + 10 * HOUR, claimedAt: T0 + 10 * HOUR }),
+    ],
+    now: T0 + 11 * HOUR,
+    instants: [],
+    stopReason: null,
+    historyBreak: { after: T0, before: T0 + 10 * HOUR },
+  });
+  assert.deepEqual(kinds(rows), ["past", "unloaded", "past", "now"]);
 });
 
 test("a mission with no future draws the reason instead of instants it will not act on", () => {

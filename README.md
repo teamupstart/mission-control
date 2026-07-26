@@ -1540,6 +1540,13 @@ another enabled mission stay flagged. A **paused, archived or unreadable** missi
 future at all - the axis stops with the reason, because showing instants a mission will not
 act on is the one thing this surface exists not to do.
 
+A generated-task deep link seeks directly to its occurrence and also loads the newest
+history page. When those ranges do not yet meet, the axis shows the unloaded interval and
+offers **Load missing history** until the ranges connect. Live missions stay in catalog
+detail; only an archived mission uses the standalone history screen. Schedule upserts reset
+this history window from the server, so large catch-ups and recovered occurrences cannot
+leave stale pagination boundaries behind.
+
 Where an instant sat unclaimed, **the rail breaks**: a dashed segment carrying the real
 duration and, inside it, the instants the ledger itself says were folded away. A gap is drawn
 from persisted columns only (`scheduled_for`, `claimed_at`, `covered_by_id`); nothing infers

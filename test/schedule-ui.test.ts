@@ -377,7 +377,9 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   // no artificial page cap, per the Inspector round on #241.
   assert.match(history, /initialScheduledFor \+ 1/);
   assert.doesNotMatch(history, /DEEP_LINK_PAGE_LIMIT/);
-  assert.match(history, /page\.nextCursor === null/);
+  assert.match(history, /Promise\.all\(\[/);
+  assert.match(history, /Some history is not loaded/);
+  assert.match(history, /Load missing history/);
   // The outcome is a focusable, tooltip-wrapped <button> that expands the audit in place,
   // rather than selecting a row that fills a second pane.
   assert.match(history, /className="rm-sp-toggle"/);
@@ -390,7 +392,7 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   assert.match(history, /Historical instants use the mission&apos;s current time zone/);
 });
 
-test("live occurrence deep links stay in detail and history refreshes after a run", () => {
+test("live occurrence deep links stay in detail and schedule upserts reset history", () => {
   const panel = readFileSync(path.join(WEB, "components/RecurringMissionsPanel.tsx"), "utf8");
   const detail = readFileSync(
     path.join(WEB, "components/schedules/ScheduleDetail.tsx"),
@@ -400,8 +402,12 @@ test("live occurrence deep links stay in detail and history refreshes after a ru
   assert.match(panel, /!schedules\.some\(\(schedule\) => schedule\.id === initialScheduleId\)/);
   assert.match(panel, /initialOccurrenceId=\{/);
   assert.match(detail, /initialOccurrenceId=\{initialOccurrenceId\}/);
-  assert.match(spine, /schedule\?\.lastOccurrence\?\.id/);
-  assert.match(spine, /fetchScheduleHistory\(scheduleId, \{\s+before: null,/);
+  assert.match(
+    spine,
+    /\[initialOccurrenceId, initialScheduledFor, schedule, scheduleId\]/,
+  );
+  assert.match(spine, /setHistory\(EMPTY_SPINE_HISTORY\)/);
+  assert.doesNotMatch(spine, /lastOccurrenceId/);
 });
 
 test("future rungs reserve countdown text for the next instant", () => {

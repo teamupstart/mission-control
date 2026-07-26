@@ -48,6 +48,7 @@ export type SpineRow =
       /** Instants the ledger says this run represented. Empty is a legitimate answer. */
       missed: ScheduleOccurrence[];
     }
+  | { kind: "unloaded"; key: string; after: number; before: number }
   | { kind: "past"; key: string; occurrence: ScheduleOccurrence }
   | { kind: "now"; key: string; at: number }
   | { kind: "future"; key: string; at: number; dstShift: boolean; collisions: string[] }
@@ -59,6 +60,7 @@ export function buildSpineRows({
   instants,
   stopReason,
   collisionsByInstant,
+  historyBreak,
 }: {
   occurrences: ScheduleOccurrence[];
   now: number;
@@ -71,6 +73,7 @@ export function buildSpineRows({
    */
   stopReason: string | null;
   collisionsByInstant?: Map<number, string[]>;
+  historyBreak?: { after: number; before: number } | null;
 }): SpineRow[] {
   const out: SpineRow[] = [];
 
@@ -113,9 +116,22 @@ export function buildSpineRows({
     });
   }
 
+  let insertedHistoryBreak = false;
   for (const occurrence of past) {
     // A folded instant is not a run; it belongs inside the gap of the run that covered it.
     if (occurrence.coveredById) continue;
+    if (
+      historyBreak &&
+      !insertedHistoryBreak &&
+      occurrence.scheduledFor >= historyBreak.before
+    ) {
+      out.push({
+        kind: "unloaded",
+        key: `unloaded-${historyBreak.after}-${historyBreak.before}`,
+        ...historyBreak,
+      });
+      insertedHistoryBreak = true;
+    }
     const gap = gapByAnchor.get(occurrence.id);
     if (gap) {
       out.push({
@@ -125,6 +141,13 @@ export function buildSpineRows({
       });
     }
     out.push({ kind: "past", key: occurrence.id, occurrence });
+  }
+  if (historyBreak && !insertedHistoryBreak) {
+    out.push({
+      kind: "unloaded",
+      key: `unloaded-${historyBreak.after}-${historyBreak.before}`,
+      ...historyBreak,
+    });
   }
 
   out.push({ kind: "now", key: "now", at: now });

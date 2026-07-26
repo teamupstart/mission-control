@@ -36,6 +36,7 @@ import type {
   SandboxPolicy,
   ThreadItem,
   ThreadResumeParams,
+  ThreadStartedNotification,
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
@@ -250,6 +251,21 @@ class CodexSdkSession implements SdkSessionHandle {
     { threadId: string | null; changes: readonly FileUpdateChange[] }
   >();
   private readonly retiredThreads = new Set<string>();
+  /**
+   * Who each thread on this connection descends from, learned as the server mentions it.
+   *
+   * A connection is per session, but it does not carry ONE thread: `clearContext` leaves an
+   * abandoned root behind, and a collaboration mode spawns subagent threads under whichever
+   * root is running. So "is this frame mine?" is a question about a TREE, and answering it
+   * with a bare id was the hole the Inspector found on #260 - a retired root's subagent is
+   * not itself retired, so its late `gh pr create` completion reached the replacement card
+   * and would have attached the old thread's pull request to the new session's task.
+   *
+   * Parentage is never guessed. It is recorded from the two places the server states it:
+   * `thread/started`, whose `Thread` carries `parentThreadId`, and the `subAgentActivity` /
+   * `collabAgentToolCall` items a PARENT emits about the children it spawned.
+   */
+  private readonly threadParents = new Map<string, string>();
   private threadId: string | null = null;
   /**
    * The turn the server says is running, or null when the thread is idle.
@@ -596,7 +612,10 @@ class CodexSdkSession implements SdkSessionHandle {
   onRequest = (method: string, id: RequestId, params: unknown): void => {
     const threadId = frameThreadId(params);
     const kind = pendingKind(method);
-    if (threadId && this.retiredThreads.has(threadId) && kind) {
+    // A retired TREE, not just the retired root: a subagent of the thread we abandoned is
+    // asking on behalf of a conversation nobody is looking at any more, so it is answered
+    // closed rather than put on the replacement card.
+    if (this.isRetired(threadId) && kind) {
       this.client.respond(id, cancelResponse(kind));
       return;
     }
@@ -702,7 +721,10 @@ class CodexSdkSession implements SdkSessionHandle {
 
   private consume(method: string, params: unknown): void {
     const threadId = frameThreadId(params);
-    if (threadId && this.retiredThreads.has(threadId)) return;
+    // Learned BEFORE the retirement test, so a child announced by a retired root is already
+    // attached to that root the first time it is asked about.
+    this.learnThreadTree(method, params, threadId);
+    if (this.isRetired(threadId)) return;
     switch (method) {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
@@ -740,7 +762,7 @@ class CodexSdkSession implements SdkSessionHandle {
         }
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
-        if (method === "item/completed") this.notePullRequest(item);
+        if (method === "item/completed") this.notePullRequest(item, threadId);
         return;
       }
       case "thread/tokenUsage/updated": {
@@ -817,13 +839,93 @@ class CodexSdkSession implements SdkSessionHandle {
   private retireThread(threadId: string): void {
     this.retiredThreads.add(threadId);
     for (const [itemId, retained] of this.fileChanges) {
-      if (retained.threadId === threadId) this.fileChanges.delete(itemId);
+      if (this.isRetired(retained.threadId)) this.fileChanges.delete(itemId);
     }
     for (const [key, held] of this.pending) {
-      if (held.threadId !== threadId) continue;
+      if (!this.isRetired(held.threadId)) continue;
       this.client.respond(held.id, cancelResponse(held.kind));
       this.forgetPending(key, held);
     }
+  }
+
+  /**
+   * Record whatever this frame says about who descends from whom.
+   *
+   * Three statements, all the server's own - nothing here infers an edge from adjacency:
+   * `thread/started` carries the new thread's `parentThreadId`, and a parent's own
+   * `subAgentActivity` / `collabAgentToolCall` items name the threads it spawned. Reading
+   * them is what lets `rootOf` answer for a subagent at all; without it every child looks
+   * like a root of its own and a retired tree keeps leaking frames.
+   */
+  private learnThreadTree(method: string, params: unknown, threadId: string | null): void {
+    if (method === "thread/started") {
+      const thread = (params as ThreadStartedNotification).thread;
+      this.noteThreadParent(thread?.id ?? null, thread?.parentThreadId ?? null);
+      return;
+    }
+    if (method !== "item/started" && method !== "item/completed") return;
+    const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
+    if (!item) return;
+    if (item.type === "subAgentActivity") {
+      this.noteThreadParent(item.agentThreadId, threadId);
+      return;
+    }
+    if (item.type === "collabAgentToolCall") {
+      // The sender is the parent even when the frame arrived on another thread's stream.
+      for (const child of item.receiverThreadIds ?? []) {
+        this.noteThreadParent(child, item.senderThreadId ?? threadId);
+      }
+    }
+  }
+
+  /** Remember a parent -> child edge the server just stated. Self-edges are ignored. */
+  private noteThreadParent(child: string | null, parent: string | null): void {
+    if (!child || !parent || child === parent) return;
+    this.threadParents.set(child, parent);
+  }
+
+  /**
+   * The root this thread descends from, or null when we were told nothing about it.
+   *
+   * Bounded by the size of the map rather than trusting the server's edges to be acyclic:
+   * this runs on every frame, and a cycle would otherwise hang the pump.
+   */
+  private rootOf(threadId: string | null): string | null {
+    if (!threadId) return null;
+    let current = threadId;
+    for (let hops = 0; hops <= this.threadParents.size; hops++) {
+      const parent = this.threadParents.get(current);
+      if (!parent) return current;
+      current = parent;
+    }
+    return current;
+  }
+
+  /** Whether this frame belongs to a tree we have abandoned. */
+  private isRetired(threadId: string | null): boolean {
+    if (!threadId) return false;
+    const root = this.rootOf(threadId);
+    return this.retiredThreads.has(threadId) || (root !== null && this.retiredThreads.has(root));
+  }
+
+  /**
+   * Whether this thread is PROVABLY part of the tree the card is bound to.
+   *
+   * The positive counterpart of `isRetired`, and the two are deliberately not each other's
+   * negation. `isRetired` decides what to DISPLAY, so it fails open: a thread we know
+   * nothing about is admitted, because dropping it would silently lose a legitimate
+   * subagent's activity and asks, which the phase plan asks us to project.
+   *
+   * This one decides PR AUTHORSHIP, so it fails closed. A pull request adopted from the
+   * wrong session is the Inspector commenting on a stranger's PR under the operator's
+   * GitHub identity - the failure `adoptPr`'s whole two-signal rule exists to prevent - and
+   * AGENTS.md prices the asymmetry explicitly: a false negative costs one uninspected pull
+   * request, a false positive writes to somebody else's. So an unknown thread proves
+   * nothing and is refused here even though it is shown above.
+   */
+  private isOwnTree(threadId: string | null): boolean {
+    if (!threadId || !this.threadId) return false;
+    return threadId === this.threadId || this.rootOf(threadId) === this.threadId;
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
@@ -842,8 +944,14 @@ class CodexSdkSession implements SdkSessionHandle {
    * because Codex wraps most commands in `/bin/zsh -lc "…"` and the parsed action is where
    * the bare `gh pr create` actually appears.
    */
-  private notePullRequest(item: ThreadItem): void {
+  private notePullRequest(item: ThreadItem, threadId: string | null): void {
     if (item.type !== "commandExecution") return;
+    // The THIRD signal, and the one this driver has to supply that a hook never did: which
+    // conversation opened it. `isOwnTree` is a positive proof rather than the absence of a
+    // retirement, so a completion from a thread whose parentage the server never stated -
+    // the exact frame that reached the replacement card on #260 - proves nothing and is
+    // dropped. See `isOwnTree` for why this one fails closed while display does not.
+    if (!this.isOwnTree(threadId)) return;
     const opened =
       opensPullRequest(item.command) ||
       item.commandActions.some((a) => opensPullRequest((a as { command?: unknown }).command));

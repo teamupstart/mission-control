@@ -966,6 +966,113 @@ test("a retired thread cannot attribute a pull request to its replacement", asyn
   await drained;
 });
 
+test("a subagent of a retired thread cannot attribute a pull request either", async () => {
+  // Inspector finding on #260. Retiring only the ROOT id left the abandoned thread's
+  // children looking like threads of their own, so a delayed `gh pr create` completion from
+  // one of them passed the guard and attached the old conversation's pull request to the
+  // card that replaced it. PR authorship is proof-grade - it is what lets the Inspector
+  // comment on a pull request under the operator's identity - so this is the one place the
+  // driver has to fail closed.
+  let started = 0;
+  const server = new FakeServer({
+    ...defaultReplies(),
+    "thread/start": () => threadResponse(++started === 1 ? THREAD : SECOND_THREAD),
+  });
+  const { handle, events, drained } = await launch(server);
+  await settle();
+
+  // The server states the parentage itself, on the parent's own stream, BEFORE the clear.
+  const OLD_CHILD = "019f9b00-aaaa-7000-8000-000000000001";
+  server.notify("item/started", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    startedAtMs: 0,
+    item: { type: "subAgentActivity", id: "sa-1", kind: "started", agentThreadId: OLD_CHILD, agentPath: "reviewer" },
+  });
+  await settle();
+
+  assert.ok(handle.clearContext);
+  await handle.clearContext();
+  await settle();
+
+  // A child of the NEW root, announced the other way the server states parentage.
+  const NEW_CHILD = "019f9b00-bbbb-7000-8000-000000000002";
+  server.notify("thread/started", {
+    thread: { id: NEW_CHILD, parentThreadId: SECOND_THREAD.id, status: { type: "idle" }, turns: [] },
+  });
+  await settle();
+
+  const prCompletion = (threadId: string, url: string) => ({
+    threadId,
+    turnId: "turn-pr",
+    completedAtMs: 0,
+    item: {
+      type: "commandExecution",
+      id: `pr-${threadId}`,
+      command: `/bin/zsh -lc "gh pr create --fill"`,
+      cwd: "/work/repo",
+      processId: null,
+      source: "agent",
+      status: "completed",
+      commandActions: [{ type: "unknown", command: "gh pr create --fill" }],
+      aggregatedOutput: `${url}\n`,
+      exitCode: 0,
+      durationMs: 1,
+    },
+  });
+
+  // The retired root's child: suppressed, because its root is retired.
+  server.notify("item/completed", prCompletion(OLD_CHILD, "https://github.com/o/r/pull/51"));
+  // A thread nobody ever told us about: also suppressed, because `isOwnTree` is a positive
+  // proof rather than the absence of a retirement. This is the arm that fails CLOSED - the
+  // same frame's ACTIVITY is still shown, since losing a legitimate subagent's ticker is a
+  // cosmetic cost and adopting a stranger's pull request is not.
+  server.notify("item/completed", prCompletion("019f9b00-cccc-7000-8000-000000000003", "https://github.com/o/r/pull/52"));
+  // The live root's child: attributed, which is what keeps a real subagent PR adoptable.
+  server.notify("item/completed", prCompletion(NEW_CHILD, "https://github.com/o/r/pull/53"));
+  await settle();
+
+  assert.deepEqual(
+    events.filter((event) => event.kind === "pr_created"),
+    [{ kind: "pr_created", url: "https://github.com/o/r/pull/53" }],
+  );
+  await handle.stop();
+  await drained;
+});
+
+test("a retired thread's subagent ask is answered closed, not put on the new card", async () => {
+  let started = 0;
+  const server = new FakeServer({
+    ...defaultReplies(),
+    "thread/start": () => threadResponse(++started === 1 ? THREAD : SECOND_THREAD),
+  });
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  const OLD_CHILD = "019f9b00-dddd-7000-8000-000000000004";
+  server.notify("item/started", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    startedAtMs: 0,
+    item: { type: "subAgentActivity", id: "sa-2", kind: "started", agentThreadId: OLD_CHILD, agentPath: "reviewer" },
+  });
+  await settle();
+  await handle.clearContext!();
+  await settle();
+
+  server.push({
+    method: "item/commandExecution/requestApproval",
+    id: 11,
+    params: { threadId: OLD_CHILD, turnId: "t", itemId: "i", startedAtMs: 0, environmentId: null, command: "rm -rf /", cwd: "/work/repo", commandActions: [] },
+  });
+  await settle();
+  // Cancelled rather than shown: it belongs to a conversation nobody is looking at, and an
+  // ask nobody answered must never read as approval.
+  assert.deepEqual(server.responseTo(11), { jsonrpc: "2.0", id: 11, result: { decision: "cancel" } });
+  assert.equal(events.some((e) => e.kind === "request"), false);
+  await handle.stop();
+  await drained;
+});
+
 test("clearContext stops whatever the old thread was still running", async () => {
   let started = 0;
   const server = new FakeServer({

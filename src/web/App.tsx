@@ -1249,7 +1249,11 @@ export function App(): React.JSX.Element {
             <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
             <h1>Mission Control</h1>
           </div>
-          <div className="filter-box">
+          {/* A <label>, not a <div>: at narrow widths the input collapses to zero and the
+              box is just its ⌕, so the click that opens it lands on the glyph rather than
+              on the field. An implicit label makes that click focus the input, which is
+              what makes the collapse a control instead of a dead icon. */}
+          <label className="filter-box">
             <span className="filter-icon" aria-hidden>
               ⌕
             </span>
@@ -1283,140 +1287,147 @@ export function App(): React.JSX.Element {
                 </button>
               </Tooltip>
             )}
-          </div>
-          <div className="summary">
-            <Stat n={sessions.length} label="sessions" />
-            {counts.attention > 0 && <Stat n={counts.attention} label="need you" tone="attention" />}
-            {counts.working > 0 && <Stat n={counts.working} label="working" tone="working" />}
-            {answerableReviews.length > 0 && (
+          </label>
+          <FleetPulse
+            connected={connected}
+            sessions={sessions.length}
+            attention={counts.attention}
+            working={counts.working}
+            reviews={answerableReviews.length}
+            onOpenReviews={openReviews}
+          />
+          {/* Eleven controls at one weight is what made this bar unreadable, so the
+              cluster is THREE groups with a rank, not one rhythm: destinations you
+              navigate to, the two controls that act on the fleet (Foreman's posture and
+              the primary Dispatch), and the glyph tools. The groups sit at 16px from each
+              other and 8px within, which is what lets the eye find four things instead of
+              counting eleven. `live` is no longer stranded past the end of it - it moved
+              into the pulse, where the rest of the status lives.
+
+              Each degradable label is a `.tb-label`: at narrow container widths it goes
+              visually-hidden rather than `display: none`, so the button keeps its
+              accessible name and only its glyph is drawn. Dispatch has no `.tb-label` -
+              the one control you would hunt for keeps its word at every width. */}
+          <div className="topbar-actions">
+            <div className="tb-group">
               <Tooltip
-                label={`${answerableReviews.length} agent${answerableReviews.length === 1 ? "" : "s"} waiting on your review - open the queue`}
+                label={
+                  route.page === "fleet"
+                    ? `Open Workflows - author and run the personas agents follow (${formatChord(bindings.workflows)})`
+                    : route.page === "workflows"
+                      ? `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
+                      : "Return to the fleet of running sessions"
+                }
               >
-                <button className="stat-btn" onClick={openReviews}>
-                  <Stat n={answerableReviews.length} label="reviews" tone="attention" />
+                <button
+                  className="ghost-btn workflow-nav-btn"
+                  onClick={() =>
+                    navigate(
+                      route.page === "fleet"
+                        ? { page: "workflows", tab: "workflows" }
+                        : { page: "fleet" },
+                    )
+                  }
+                  aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
+                >
+                  {/* Trailing, unlike Dispatch's: this button's glyph is a real icon (and
+                      "←" says which way it goes), so the keycap joins it rather than
+                      taking its place. */}
+                  <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
+                  <span className="tb-label">
+                    {route.page === "fleet" ? "Workflows" : "Fleet"}
+                  </span>
+                  <Keycap action="workflows" />
                 </button>
               </Tooltip>
-            )}
-          </div>
-          {/* Every action shares one rhythm, tighter than the gap separating them
-              from the filter/stats, so they read as one cluster and wrap as a
-              unit. `live` stays outside it: that is status, not an action. */}
-          <div className="topbar-actions">
-            <Tooltip
-              label={
-                route.page === "fleet"
-                  ? `Open Workflows - author and run the personas agents follow (${formatChord(bindings.workflows)})`
-                  : route.page === "workflows"
-                    ? `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
-                    : "Return to the fleet of running sessions"
-              }
-            >
-              <button
-                className="ghost-btn workflow-nav-btn"
-                onClick={() =>
-                  navigate(
-                    route.page === "fleet"
-                      ? { page: "workflows", tab: "workflows" }
-                      : { page: "fleet" },
-                  )
-                }
-                aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
+              <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
+                <button
+                  className="ghost-btn missions-btn"
+                  onClick={openMissions}
+                  aria-label={
+                    scheduleAttentionCount > 0
+                      ? `Recurring missions - ${scheduleAttentionCount} need attention`
+                      : "Recurring missions"
+                  }
+                >
+                  <span aria-hidden>◷</span> <span className="tb-label">Missions</span>
+                  {scheduleAttentionCount > 0 && (
+                    <span className="ghost-badge">{scheduleAttentionCount}</span>
+                  )}
+                </button>
+              </Tooltip>
+            </div>
+            <div className="tb-group">
+              <ForemanBar
+                state={foreman}
+                onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
+              />
+              <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
+                <button className="dispatch-btn" onClick={openDispatch}>
+                  {/* The keycap REPLACES the decorative glyph rather than sitting beside
+                      it: the default chord is "+", so drawing both put a ＋ on each end of
+                      one word and read as a rendering fault. Any other chord takes the
+                      same slot, which is the one place on this button an operator is
+                      already looking. */}
+                  {keybindingHints ? <Keycap action="dispatch" /> : <span aria-hidden>＋</span>}
+                  Dispatch
+                </button>
+              </Tooltip>
+            </div>
+            <div className="tb-group tb-tools">
+              <Tooltip
+                label={`Sitrep - what every session is doing, and the backlog (${formatChord(bindings.roundup)})`}
               >
-                {/* Trailing, unlike Dispatch's: this button's glyph is a real icon (and
-                    "←" says which way it goes), so the keycap joins it rather than
-                    taking its place. */}
-                <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
-                {route.page === "fleet" ? "Workflows" : "Fleet"}
-                <Keycap action="workflows" />
-              </button>
-            </Tooltip>
-            <ForemanBar
-              state={foreman}
-              onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
-            />
-            <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
-              <button className="dispatch-btn" onClick={openDispatch}>
-                {/* The keycap REPLACES the decorative glyph rather than sitting beside
-                    it: the default chord is "+", so drawing both put a ＋ on each end of
-                    one word and read as a rendering fault. Any other chord takes the
-                    same slot, which is the one place on this button an operator is
-                    already looking. */}
-                {keybindingHints ? <Keycap action="dispatch" /> : <span aria-hidden>＋</span>}
-                Dispatch
-              </button>
-            </Tooltip>
-            <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
-              <button
-                className="ghost-btn missions-btn"
-                onClick={openMissions}
-                aria-label={
-                  scheduleAttentionCount > 0
-                    ? `Recurring missions - ${scheduleAttentionCount} need attention`
-                    : "Recurring missions"
-                }
-              >
-                <span aria-hidden>◷</span> Missions
-                {scheduleAttentionCount > 0 && (
-                  <span className="ghost-badge">{scheduleAttentionCount}</span>
-                )}
-              </button>
-            </Tooltip>
-            <Tooltip
-              label={`Sitrep - what every session is doing, and the backlog (${formatChord(bindings.roundup)})`}
-            >
-              <button
-                className="ghost-btn glyph-btn"
-                onClick={() => setReportOpen(true)}
-                aria-label="Sitrep"
-              >
-                <span aria-hidden>📡</span>
-                {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-              </button>
-            </Tooltip>
-            <Tooltip
-              label={
-                route.page === "settings"
-                  ? "Return to the fleet of running sessions"
-                  : gearPhrase
-                    ? `Settings (⌘,) - ${gearPhrase}`
-                    : "Settings (⌘,)"
-              }
-            >
-              <button
-                className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
-                onClick={() =>
-                  navigate(
-                    route.page === "settings"
-                      ? { page: "fleet" }
-                      : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
-                  )
-                }
-                // The label changes with what the click will do, the way the Workflows
-                // button's does. No `aria-pressed` beside it: a toggle button that
-                // renames itself and reports a pressed state announces the same fact
-                // twice, and the second telling contradicts the first ("Return to Fleet,
-                // pressed"). The worst-status phrase rides the label so the dot's meaning
-                // is not carried by colour alone.
-                aria-label={
+                <button
+                  className="ghost-btn glyph-btn"
+                  onClick={() => setReportOpen(true)}
+                  aria-label="Sitrep"
+                >
+                  <span aria-hidden>📡</span>
+                  {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+                </button>
+              </Tooltip>
+              <Tooltip
+                label={
                   route.page === "settings"
-                    ? "Return to Fleet"
+                    ? "Return to the fleet of running sessions"
                     : gearPhrase
-                      ? `Settings - ${gearPhrase}`
-                      : "Settings"
+                      ? `Settings (⌘,) - ${gearPhrase}`
+                      : "Settings (⌘,)"
                 }
               >
-                <span aria-hidden>⚙</span>
-                {/* The gear inherits the worst rail dot, so a subsystem needing attention
-                    is visible without opening Settings. Purely visual - the phrase above
-                    carries it to assistive tech. */}
-                {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
-              </button>
-            </Tooltip>
-            <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
-          </div>
-          <div className={`link ${connected ? "up" : "down"}`}>
-            <span className="link-dot" />
-            {connected ? "live" : "reconnecting"}
+                <button
+                  className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
+                  onClick={() =>
+                    navigate(
+                      route.page === "settings"
+                        ? { page: "fleet" }
+                        : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+                    )
+                  }
+                  // The label changes with what the click will do, the way the Workflows
+                  // button's does. No `aria-pressed` beside it: a toggle button that
+                  // renames itself and reports a pressed state announces the same fact
+                  // twice, and the second telling contradicts the first ("Return to Fleet,
+                  // pressed"). The worst-status phrase rides the label so the dot's meaning
+                  // is not carried by colour alone.
+                  aria-label={
+                    route.page === "settings"
+                      ? "Return to Fleet"
+                      : gearPhrase
+                        ? `Settings - ${gearPhrase}`
+                        : "Settings"
+                  }
+                >
+                  <span aria-hidden>⚙</span>
+                  {/* The gear inherits the worst rail dot, so a subsystem needing attention
+                      is visible without opening Settings. Purely visual - the phrase above
+                      carries it to assistive tech. */}
+                  {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
+                </button>
+              </Tooltip>
+              <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
+            </div>
           </div>
           <UsageBar
             fleet={fleetCost}
@@ -2017,11 +2028,122 @@ function matchesTaskFilter(t: Task, q: string): boolean {
   return haystack.includes(q);
 }
 
-function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): React.JSX.Element {
+/**
+ * One segment of the fleet pulse: a tone dot, a figure, and a word.
+ *
+ * The word is a `.tb-label`, so the narrow ladder can take it away and leave a dot and a
+ * number - which is why every segment carries a Tooltip whether or not it is clickable.
+ * Tooltip always renders its label into a hidden `aria-describedby` node, so the meaning
+ * survives the collapse for a screen reader as well as for a pointer.
+ */
+function PulseStat({
+  n,
+  label,
+  tip,
+  tone,
+  onClick,
+}: {
+  n: number;
+  label: string;
+  tip: string;
+  tone?: Tone;
+  onClick?: () => void;
+}): React.JSX.Element {
+  const cls = `pulse-seg${tone ? ` pulse-${tone}` : ""}`;
+  const body = (
+    <>
+      <span className="pulse-dot" aria-hidden />
+      <span className="pulse-n">{n}</span>
+      <span className="tb-label">{label}</span>
+    </>
+  );
   return (
-    <div className={`stat${tone ? ` stat-${tone}` : ""}`}>
-      <span className="stat-n">{n}</span>
-      <span className="stat-label">{label}</span>
+    <Tooltip label={tip}>
+      {onClick ? (
+        <button type="button" className={`${cls} pulse-btn`} onClick={onClick}>
+          {body}
+        </button>
+      ) : (
+        <div className={cls}>{body}</div>
+      )}
+    </Tooltip>
+  );
+}
+
+/**
+ * The fleet's state as ONE readout.
+ *
+ * This was four separately-bordered pills plus a `live` indicator stranded on the far side
+ * of the action cluster - five bordered boxes for one idea, at the same visual weight as
+ * the seven buttons beside them, and the widest thing in the bar. One container with
+ * hairline-separated segments says the same in roughly two thirds the width and one
+ * border, which is most of what buys the single row at half screen.
+ *
+ * The connection state leads the readout rather than trailing the actions, because that is
+ * what it qualifies: every figure to its right came over the stream, so when the stream is
+ * down they are stale and `.is-down` dims them to say so. That is also why the down state
+ * keeps its word while the counts give theirs up on the narrow ladder - a lone red dot is
+ * the one thing here you cannot afford to have to hover.
+ */
+function FleetPulse({
+  connected,
+  sessions,
+  attention,
+  working,
+  reviews,
+  onOpenReviews,
+}: {
+  connected: boolean;
+  sessions: number;
+  attention: number;
+  working: number;
+  reviews: number;
+  onOpenReviews: () => void;
+}): React.JSX.Element {
+  return (
+    <div className={`pulse${connected ? "" : " is-down"}`}>
+      <Tooltip
+        label={
+          connected
+            ? "Live - these figures are streaming from the daemon"
+            : "Reconnecting to the daemon - these figures may be stale"
+        }
+      >
+        <div className="pulse-seg pulse-link">
+          <span className="pulse-dot" aria-hidden />
+          <span className="pulse-link-label">{connected ? "live" : "reconnecting"}</span>
+        </div>
+      </Tooltip>
+      <PulseStat
+        n={sessions}
+        label={sessions === 1 ? "session" : "sessions"}
+        tip={`${sessions} session${sessions === 1 ? "" : "s"} on the fleet`}
+      />
+      {attention > 0 && (
+        <PulseStat
+          n={attention}
+          label="need you"
+          tone="attention"
+          tip={`${attention} session${attention === 1 ? " is" : "s are"} waiting on you`}
+        />
+      )}
+      {working > 0 && (
+        <PulseStat
+          n={working}
+          label="working"
+          tone="working"
+          tip={`${working} session${working === 1 ? " is" : "s are"} working`}
+        />
+      )}
+      {reviews > 0 && (
+        <PulseStat
+          n={reviews}
+          label="reviews"
+          tone="attention"
+          onClick={onOpenReviews}
+          tip={`${reviews} agent${reviews === 1 ? "" : "s"} waiting on your review - open the queue`}
+        />
+      )}
     </div>
   );
 }

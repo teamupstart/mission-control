@@ -877,8 +877,12 @@ body {
   z-index: 10;
   display: flex;
   align-items: center;
-  /* Wrap onto extra rows on narrow screens instead of overflowing the viewport
-     horizontally (the row-gap keeps wrapped controls from touching). */
+  /* Still the last resort below the narrowest rung of the ladder, and the row-gap still
+     keeps wrapped controls from touching. It is no longer the only responsive strategy,
+     which it should never have been: wrapping is per-ITEM, so a squeezed bar shed one
+     control at a time onto ragged extra rows and grew from 110px to 191px at half screen -
+     and `--topbar-h` is measured off this element, so every full-height surface under it
+     shrank by however much the bar had chosen to sprawl. */
   flex-wrap: wrap;
   gap: 12px 24px;
   padding: 18px 4px;
@@ -886,6 +890,16 @@ body {
   background: linear-gradient(var(--bg), rgba(10, 12, 15, 0.72));
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-soft);
+  /* The ladder below queries THIS element, not the viewport, and that is the whole reason
+     it is correct. The bar's usable width is the window minus the traffic-light inset
+     (`.is-desktop`, which itself moves with `100vw`), the page gutters, and - in the two
+     layouts that do not run full width - `.app`'s 1400px cap. A `@media` rung would fire at
+     a width the bar does not have: too early on a wide screen, too late in the desktop
+     shell, and differently again per layout. Containment is safe here: the popovers inside
+     the bar are `position: absolute` against their own relative parents, and every tooltip
+     is a body-level portal, so nothing in it depends on this element not being a
+     containing block. */
+  container: topbar / inline-size;
 }
 
 /* Desktop shell only: the window has no native title bar, so the topbar is it.
@@ -913,7 +927,14 @@ body {
    the reset time live - simply never appears. Only the figures opt out; the panel's own
    padding stays draggable, so the row is still somewhere you can pick the window up. */
 .is-desktop .topbar .fs-stat,
-.is-desktop .topbar .fs-runway {
+.is-desktop .topbar .fs-runway,
+/* The fleet pulse, for the same reason and more sharply. Four of its five segments are
+   divs, and on the narrow rungs of the ladder below they are drawn as a dot and a figure
+   with the word taken away - so its tooltip is the ONLY place a bare "3" says "need you".
+   A drag region swallows the mouse entirely, so a hover inside one never reaches the
+   renderer and that tooltip would simply never appear, on exactly the window widths where
+   it is load bearing. The bar keeps draggable space either side of it. */
+.is-desktop .topbar .pulse {
   -webkit-app-region: no-drag;
 }
 
@@ -975,6 +996,9 @@ body {
   gap: 6px;
   padding: 0 8px 0 10px;
   height: 30px;
+  /* A <label> defaults to the arrow cursor; this one is a text field wearing a glyph, and
+     on the narrow rung the glyph IS the field's click target. */
+  cursor: text;
   background: var(--panel);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
@@ -1018,41 +1042,111 @@ body {
   background: var(--panel-2);
 }
 
-.summary {
+/* ---- fleet pulse (topbar status readout) ---- */
+/* One container, hairline-separated segments - not four bordered pills. Four pills put
+   five bordered boxes (with `live` stranded past the actions) at the same weight as the
+   seven buttons beside them, which is what made the bar read as a heap; they were also the
+   widest thing in it, and the first thing to wrap. One border, one background, and tone
+   carried by the dot and the figure instead of by a tinted box says the same in about two
+   thirds the width - most of what buys a single row at half screen.
+
+   `min-width: 0` so it is the item that gives way when the bar is squeezed: the segments
+   drop their words on the narrow ladder below, and the bar stays one row rather than
+   wrapping this whole block onto a second. */
+.pulse {
   display: flex;
-  gap: 10px;
-  flex: 1;
-  flex-wrap: wrap;
-}
-.stat {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 5px 11px;
+  align-items: stretch;
+  min-width: 0;
+  height: 30px;
   border: 1px solid var(--border-soft);
   border-radius: 999px;
   background: var(--panel);
 }
-.stat-n {
-  font-weight: 680;
-  font-variant-numeric: tabular-nums;
-}
-.stat-label {
+.pulse-seg {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  font: inherit;
   font-size: 12.5px;
   color: var(--muted);
+  white-space: nowrap;
+  background: transparent;
+  border: none;
 }
-.stat-attention {
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-  background: color-mix(in oklab, var(--attention) 12%, var(--panel));
+/* A hairline, not a gap: the segments are one readout, and space between them would make
+   them four things again - which is the shape this replaced. */
+.pulse-seg + .pulse-seg {
+  border-left: 1px solid var(--border-soft);
 }
-.stat-attention .stat-n {
+.pulse-n {
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.pulse-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.pulse-attention .pulse-n {
   color: var(--attention);
 }
-.stat-working {
-  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+.pulse-attention .pulse-dot {
+  background: var(--attention);
 }
-.stat-working .stat-n {
+.pulse-working .pulse-n {
   color: var(--working);
+}
+.pulse-working .pulse-dot {
+  background: var(--working);
+}
+/* Only the reviews segment is clickable, so only it takes a hover affordance. Rounded on
+   the trailing edge alone: it is always last, and a fully-rounded hover inside a pill
+   reads as a second pill. */
+.pulse-btn {
+  cursor: pointer;
+  border-radius: 0 999px 999px 0;
+  transition: background 0.14s ease;
+}
+.pulse-btn:hover {
+  background: var(--panel-2);
+}
+.pulse-btn:hover .pulse-n {
+  color: var(--attention);
+}
+
+/* The connection state LEADS the readout instead of trailing the action cluster, because
+   that is what it qualifies: everything to its right arrived over the stream. */
+.pulse-link-label {
+  color: var(--muted);
+}
+.pulse-link .pulse-dot {
+  background: var(--idle);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent);
+  animation: breathe 2.6s ease-in-out infinite;
+}
+.pulse.is-down .pulse-link .pulse-dot {
+  background: var(--attention);
+  box-shadow: none;
+  animation: none;
+}
+.pulse.is-down .pulse-link-label {
+  color: var(--attention);
+}
+/* The figures are stale while the stream is down, so they say so rather than being read as
+   current. Dimmed and not hidden, because "how many were there when we lost it" is still a
+   question worth answering - the narrowest rung of the ladder is the one place that gives
+   way, and it says why. */
+.pulse.is-down .pulse-seg:not(.pulse-link) {
+  opacity: 0.5;
+}
+@keyframes breathe {
+  50% {
+    opacity: 0.55;
+  }
 }
 
 /* The topbar's foldable second row: the fleet strip. `flex-basis: 100%` on a flex-wrap
@@ -1205,31 +1299,142 @@ body {
   transition: width 0.3s ease;
 }
 
-.link {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  color: var(--muted);
-  white-space: nowrap;
+/* ---- topbar responsive ladder ----
+   Five rungs, each shedding the least useful ink first, so the bar stays ONE row from a
+   maximised window down to roughly half a 16" screen instead of wrapping into three.
+
+   The thresholds are MEASURED, not guessed. Laid out in full the bar's children come to
+   1552px including gaps, and its container is the window less about 106px of chrome and
+   padding - so the untouched layout needs a window near 1660px and every rung below is the
+   width at which the previous state stops fitting: 1552 -> 1364 -> 1226 -> 1072 -> 1012 ->
+   723. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
+   that fires early is a word thrown away for nothing, and a rung that saves much more than
+   the width it was crossed at leaves the bar half empty for the next several hundred px -
+   which is why the last two are split rather than one 349px cliff.
+
+   Every label the ladder sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so
+   it costs no width and no flex gap, clipped so it paints nothing, and still in the
+   accessibility tree - so the control keeps its accessible name and its tooltip, and only
+   its glyph is drawn. `display: none` would have taken the name with it and turned a
+   narrow window into a row of unnamed icons.
+
+   The brand wordmark is the one exception and takes `display: none`, because it is
+   decorative rather than a control's name: the mark beside it and the window itself
+   already say which app this is. */
+@container topbar (max-width: 1550px) {
+  /* Rung 1 (-188px): the two labelled destinations become glyphs. Both already carry a real
+     icon (the ⌘/← and the ◷) and an `aria-label`, so this costs the word and nothing else.
+     Foreman's word survives here and gives up its mode chip instead - the dot beside it
+     already carries live/off, and the chip is the wider of the two. Dispatch has no
+     `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
+  .workflow-nav-btn .tb-label,
+  .missions-btn .tb-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .foreman-chip {
+    display: none;
+  }
+  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
+     second glyph. The chord still works, and the tooltip still names it. */
+  .workflow-nav-btn .kb-hint {
+    display: none;
+  }
 }
-.link-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dim);
+@container topbar (max-width: 1360px) {
+  /* Rung 2 (-138px): the wordmark. */
+  .brand h1 {
+    display: none;
+  }
 }
-.link.up .link-dot {
-  background: var(--idle);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent);
-  animation: breathe 2.6s ease-in-out infinite;
+@container topbar (max-width: 1220px) {
+  /* Rung 3 (-154px): the filter collapses to its ⌕. Before the pulse's words, deliberately -
+     an empty 184px text box is the least useful ink on the bar, and the words beside it are
+     the readout an operator actually scans.
+
+     It reopens on focus and needs no new affordance to do it: the box is a <label>, so its
+     own glyph is the click target, and the `/` chord already focuses this input. */
+  .filter-input {
+    width: 0;
+    opacity: 0;
+    transition: width 0.16s ease, opacity 0.16s ease;
+  }
+  /* Open while it has focus - and ALSO while it holds a term, focus or not. A filter that
+     is actually filtering must never be a glyph: the fleet below would be missing cards
+     with nothing on screen saying why, which is a far worse failure than a wide bar. */
+  .filter-box:focus-within .filter-input,
+  .filter-input:not(:placeholder-shown) {
+    width: 150px;
+    opacity: 1;
+  }
+  .filter-box {
+    padding-right: 4px;
+  }
+  /* Once the filter is collapsed there is no longer room for both it and the readout: at
+     half screen the bar has about 49px of slack, and a usable field needs 150. So the
+     readout steps aside for as long as the field has focus, which also happens to be the
+     one moment nobody is reading it - you are typing a filter because you are looking at
+     the list below. Without this the field simply pushed the bar onto a second row, which
+     is the behaviour this whole ladder exists to remove.
+
+     Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the
+     search boxes on the settings and workflow pages. */
+  .topbar:has(.filter-box:focus-within) .pulse,
+  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse {
+    display: none;
+  }
 }
-.link.down .link-dot {
-  background: var(--attention);
+@container topbar (max-width: 1060px) {
+  /* Rung 4 (-60px): Foreman drops to its dot and queue badge. Split from rung 5
+     deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
+     the width it was crossed at leaves the bar visibly half empty for the next 300px of
+     window. */
+  .foreman-btn .tb-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
-@keyframes breathe {
-  50% {
-    opacity: 0.55;
+@container topbar (max-width: 980px) {
+  /* Rung 5 (-289px): the pulse drops to dots and figures. Last, because it is the readout an
+     operator actually scans - and this is the rung that holds half a 16" screen (a 758px
+     container against 723px of content).
+
+     Every pulse segment carries a Tooltip precisely so it can survive this, and Tooltip
+     always renders its label into a hidden `aria-describedby` node, so the meaning is still
+     there for a screen reader as well as for a pointer.
+
+     `:not(.is-down)` on the link label is the one exception in the other direction: a lone
+     red dot cannot be the only notice that every figure beside it stopped being true. */
+  .pulse .tb-label,
+  .pulse:not(.is-down) .pulse-link-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .pulse-seg {
+    padding: 0 9px;
+  }
+  /* The one rung where losing the stream also costs the stale figures. `reconnecting` is a
+     far wider word than `live`, so at this width the down pulse does not fit beside them -
+     and the alternative is the bar taking a second row on every brief SSE blip, which
+     reflows the whole board underneath it. Between four dimmed, label-less numbers nobody
+     should be reading anyway and a stable bar, the numbers go. The word stays. */
+  .pulse.is-down .pulse-seg:not(.pulse-link) {
+    display: none;
   }
 }
 
@@ -2547,12 +2752,6 @@ body {
 }
 .reviews-pill:hover {
   background: color-mix(in oklab, var(--attention) 26%, transparent);
-}
-.stat-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
 }
 .hint {
   color: var(--dim);
@@ -6072,13 +6271,38 @@ select:not([multiple]) option {
   font-size: 14px;
   line-height: 1;
 }
-/* The topbar's actions are peers, so they sit at half the 24px gap the bar uses
-   to separate its groups - at the full gap they read as unrelated buttons. Being
-   one flex item also means they wrap together instead of splitting across rows. */
+/* The topbar's actions are one flex item, so they wrap together rather than splitting
+   across rows - but they are no longer one undifferentiated rhythm. Three `.tb-group`s
+   (destinations, fleet controls, glyph tools) sit at 16px from each other and 8px within,
+   so the cluster reads as three things rather than seven. That two-level rhythm is what
+   ranking needs: at one gap, a primary button in the middle of six peers is just a
+   coloured peer. */
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
+  /* What holds the cluster against the right edge now that the pulse has stopped being a
+     `flex: 1` spacer. The pulse is sized by its content and shrinks by shedding words, so
+     the slack has to be claimed here instead. */
+  margin-left: auto;
+}
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Tertiaries: the glyph tools sit tighter still and drop their borders, so three icons
+   read as one instrument cluster instead of three more buttons competing with Dispatch. */
+.tb-tools {
+  gap: 2px;
+}
+.tb-tools .ghost-btn {
+  border-color: transparent;
+  background: transparent;
+}
+.tb-tools .ghost-btn:hover {
+  border-color: var(--border);
+  background: var(--panel-2);
 }
 
 /* ---- ensembles (list, detail, Best-of-N result, dispatch) ---- */

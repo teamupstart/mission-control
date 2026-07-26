@@ -177,6 +177,38 @@ every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
 that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
 (`node:sqlite`).
 
+### The title bar sheds words, it does not wrap
+
+In the desktop app the top bar **is** the window's title bar, and its measured height is
+published as `--topbar-h` for every full-height surface underneath it. So how it behaves in
+a narrow window is not only a cosmetic question: a bar that grows takes that room from the
+board, the console and an expanded card's transcript.
+
+It is laid out as four zones - the brand, the filter, the **fleet pulse**, and the actions -
+and the actions are three ranked groups rather than one row of peers:
+
+| Group | What it holds | Weight |
+|---|---|---|
+| Destinations | Workflows, Missions | ghost button with a label |
+| Fleet | Foreman, **Dispatch** | Dispatch is the one filled, primary button |
+| Tools | Sitrep, Settings, Alerts | borderless glyphs |
+
+The **fleet pulse** is one readout, not a row of pills: the connection state leads it
+(`live`, or `reconnecting`, which dims the figures beside it because they are then stale),
+followed by the session counts and the reviews count, which is still clickable and still
+opens the review queue.
+
+When the window narrows, the bar drops the least useful ink in five measured steps rather
+than wrapping onto extra rows - Workflows and Missions become their glyphs, then the
+wordmark goes, then the filter collapses to its **⌕** (click it or press <kbd>/</kbd> to
+reopen it; it stays open while a filter is active), then Foreman drops to its status dot,
+retaining its queue badge, and last the pulse drops to dots and figures. **Dispatch keeps
+its label at every width.** Nothing that collapses loses its name: the words are hidden
+visually, so every glyph still has a tooltip and still announces itself to a screen reader.
+
+The result is a single row from a maximised window down to a half-screen one (about 860px),
+where it used to be three. Below roughly 840px it falls back to wrapping, as before.
+
 ### Which terminal you use is declared, not assumed
 
 Discovery names no terminal. It asks each registered backend what panes it can see and
@@ -2322,8 +2354,8 @@ a terminal that talks to the daemon over localhost - with:
 npm run foreman
 ```
 
-Control it from the **Foreman** control in the top bar (beside Alerts): enable it, then
-pick a mode.
+Control it from the **Foreman** control in the top bar's fleet group, beside Dispatch:
+enable it, then pick a mode.
 
 | Mode | What it does |
 |------|--------------|
@@ -2351,8 +2383,8 @@ session it acted on shows a
 **◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
 brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
 session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
-**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
-depth.
+**alert**. The top-bar control shows whether the worker is running and the queue depth; at
+roomier widths its chip also shows the mode. Open it for the full state at any width.
 
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:

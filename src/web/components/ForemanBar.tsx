@@ -262,9 +262,13 @@ export function ForemanBar({
         <button
           className={`ghost-btn foreman-btn${enabled ? " on" : ""}`}
           onClick={() => setOpen((o) => !o)}
+          // Named explicitly because the word below is a `.tb-label`, which the topbar's
+          // narrow ladder takes away: the dot and the mode chip survive the collapse, the
+          // accessible name has to survive it too.
+          aria-label={`Foreman - the auto-responder (${enabled ? chip : "off"})`}
         >
           <span className={`foreman-dot${enabled && running ? " live" : ""}`} aria-hidden />
-          Foreman
+          <span className="tb-label">Foreman</span>
           <span className="foreman-chip">{chip}</span>
           {enabled && queue > 0 && <span className="ghost-badge">{queue}</span>}
         </button>

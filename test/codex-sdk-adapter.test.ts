@@ -918,6 +918,54 @@ test("a pull request is reported only with both halves of the provenance rule", 
   await drained;
 });
 
+test("a retired thread cannot attribute a pull request to its replacement", async () => {
+  let started = 0;
+  const server = new FakeServer({
+    ...defaultReplies(),
+    "thread/start": () => threadResponse(++started === 1 ? THREAD : SECOND_THREAD),
+  });
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  assert.ok(handle.clearContext);
+  await handle.clearContext();
+  await settle();
+
+  const completion = (threadId: string, url: string) => ({
+    threadId,
+    turnId: "turn-pr",
+    completedAtMs: 0,
+    item: {
+      type: "commandExecution",
+      id: `pr-${threadId}`,
+      command: `/bin/zsh -lc "gh pr create --fill"`,
+      cwd: "/work/repo",
+      processId: null,
+      source: "agent",
+      status: "completed",
+      commandActions: [{ type: "unknown", command: "gh pr create --fill" }],
+      aggregatedOutput: `${url}\n`,
+      exitCode: 0,
+      durationMs: 1,
+    },
+  });
+
+  server.notify(
+    "item/completed",
+    completion(THREAD.id, "https://github.com/o/r/pull/41"),
+  );
+  server.notify(
+    "item/completed",
+    completion(SECOND_THREAD.id, "https://github.com/o/r/pull/42"),
+  );
+  await settle();
+  assert.deepEqual(
+    events.filter((event) => event.kind === "pr_created"),
+    [{ kind: "pr_created", url: "https://github.com/o/r/pull/42" }],
+  );
+  await handle.stop();
+  await drained;
+});
+
 test("clearContext stops whatever the old thread was still running", async () => {
   let started = 0;
   const server = new FakeServer({

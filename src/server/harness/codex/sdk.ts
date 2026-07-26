@@ -222,6 +222,7 @@ interface Pending {
   /** The JSON-RPC id to respond to. */
   id: RequestId;
   kind: "commandExecution" | "fileChange" | "userInput";
+  threadId: string | null;
   /** For a form: the question ids, so an answer keyed by TEXT maps back to them. */
   questionIds?: Map<string, string>;
   fileChangeItemId?: string;
@@ -244,7 +245,11 @@ interface LaunchConfig {
 class CodexSdkSession implements SdkSessionHandle {
   private readonly out = new EventStream();
   private readonly pending = new Map<string, Pending>();
-  private readonly fileChanges = new Map<string, readonly FileUpdateChange[]>();
+  private readonly fileChanges = new Map<
+    string,
+    { threadId: string | null; changes: readonly FileUpdateChange[] }
+  >();
+  private readonly retiredThreads = new Set<string>();
   private threadId: string | null = null;
   /**
    * The turn the server says is running, or null when the thread is idle.
@@ -411,16 +416,24 @@ class CodexSdkSession implements SdkSessionHandle {
    */
   clearContext = async (): Promise<void> => {
     this.requireLive();
+    const retiring = this.requireThread();
+    this.retireThread(retiring);
     // The old thread is ABANDONED, not archived - so anything still running on it has to be
     // stopped first, or a turn nobody can see any more goes on spending tokens against a
     // conversation the operator just cleared. `/clear` on a pane costs the current turn too.
-    await this.interrupt();
-    const started = await this.client.request<ThreadStartResponse>("thread/start", {
-      ...threadStartParams(this.config),
-      // Codex's own word for this case, so its analytics record a cleared context rather
-      // than a second unexplained startup on one connection.
-      sessionStartSource: "clear",
-    } satisfies ThreadStartParams);
+    let started: ThreadStartResponse;
+    try {
+      await this.interrupt();
+      started = await this.client.request<ThreadStartResponse>("thread/start", {
+        ...threadStartParams(this.config),
+        // Codex's own word for this case, so its analytics record a cleared context rather
+        // than a second unexplained startup on one connection.
+        sessionStartSource: "clear",
+      } satisfies ThreadStartParams);
+    } catch (err) {
+      this.retiredThreads.delete(retiring);
+      throw err;
+    }
     this.activeTurnId = null;
     this.lastUsage = null;
     this.bind(started);
@@ -550,10 +563,6 @@ class CodexSdkSession implements SdkSessionHandle {
 
   /** Record the thread we are driving and tell the daemon who it is. */
   bind(thread: ThreadStartResponse | ThreadResumeResponse): void {
-    if (this.threadId && this.threadId !== thread.thread.id) {
-      this.cancelPending();
-      this.fileChanges.clear();
-    }
     const activeTurn = [...thread.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress");
@@ -591,6 +600,12 @@ class CodexSdkSession implements SdkSessionHandle {
    * unexpected payload, on a protocol whose own docs call several of these params unstable.
    */
   onRequest = (method: string, id: RequestId, params: unknown): void => {
+    const threadId = frameThreadId(params);
+    const kind = pendingKind(method);
+    if (threadId && this.retiredThreads.has(threadId) && kind) {
+      this.client.respond(id, cancelResponse(kind));
+      return;
+    }
     let projected: Pending | null = null;
     try {
       projected = this.project(method, id, params);
@@ -616,6 +631,7 @@ class CodexSdkSession implements SdkSessionHandle {
       return {
         id,
         kind: "commandExecution",
+        threadId: frameThreadId(p),
         request: {
           id: key,
           kind: "approval",
@@ -627,12 +643,16 @@ class CodexSdkSession implements SdkSessionHandle {
     if (method === "item/fileChange/requestApproval") {
       const p = params as FileChangeRequestApprovalParams;
       const reason = p.reason?.trim() || "Codex wants to apply a file change.";
-      const changes = fileChangeSummary(this.fileChanges.get(p.itemId));
+      const retained = this.fileChanges.get(p.itemId);
+      const changes = fileChangeSummary(
+        retained?.threadId === frameThreadId(p) ? retained.changes : undefined,
+      );
       const detail = changes ? `\n\nChanges: ${changes}` : "";
       const grant = p.grantRoot ? `\n\nIt is asking to write under ${p.grantRoot}.` : "";
       return {
         id,
         kind: "fileChange",
+        threadId: frameThreadId(p),
         fileChangeItemId: p.itemId,
         request: {
           id: key,
@@ -651,6 +671,7 @@ class CodexSdkSession implements SdkSessionHandle {
       return {
         id,
         kind: "userInput",
+        threadId: frameThreadId(p),
         questionIds,
         request: {
           id: key,
@@ -686,6 +707,8 @@ class CodexSdkSession implements SdkSessionHandle {
   };
 
   private consume(method: string, params: unknown): void {
+    const threadId = frameThreadId(params);
+    if (threadId && this.retiredThreads.has(threadId)) return;
     switch (method) {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
@@ -715,8 +738,11 @@ class CodexSdkSession implements SdkSessionHandle {
       case "item/completed": {
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
         if (item.type === "fileChange") {
-          if (method === "item/started") this.fileChanges.set(item.id, item.changes);
-          else this.fileChanges.delete(item.id);
+          if (method === "item/started") {
+            this.fileChanges.set(item.id, { threadId, changes: item.changes });
+          } else if (this.fileChanges.get(item.id)?.threadId === threadId) {
+            this.fileChanges.delete(item.id);
+          }
         }
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
@@ -785,8 +811,25 @@ class CodexSdkSession implements SdkSessionHandle {
 
   private forgetPending(key: string, held: Pending): void {
     this.pending.delete(key);
-    if (held.fileChangeItemId) this.fileChanges.delete(held.fileChangeItemId);
+    if (
+      held.fileChangeItemId &&
+      this.fileChanges.get(held.fileChangeItemId)?.threadId === held.threadId
+    ) {
+      this.fileChanges.delete(held.fileChangeItemId);
+    }
     this.out.emit({ kind: "request_resolved", requestId: key });
+  }
+
+  private retireThread(threadId: string): void {
+    this.retiredThreads.add(threadId);
+    for (const [itemId, retained] of this.fileChanges) {
+      if (retained.threadId === threadId) this.fileChanges.delete(itemId);
+    }
+    for (const [key, held] of this.pending) {
+      if (held.threadId !== threadId) continue;
+      this.client.respond(held.id, cancelResponse(held.kind));
+      this.forgetPending(key, held);
+    }
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
@@ -879,6 +922,19 @@ function approvalDecision(label: string): "accept" | "acceptForSession" | "decli
  */
 function cancelResponse(kind: Pending["kind"]): unknown {
   return kind === "userInput" ? ({ answers: {} } satisfies ToolRequestUserInputResponse) : { decision: "cancel" };
+}
+
+function pendingKind(method: string): Pending["kind"] | null {
+  if (method === "item/commandExecution/requestApproval") return "commandExecution";
+  if (method === "item/fileChange/requestApproval") return "fileChange";
+  if (method === "item/tool/requestUserInput") return "userInput";
+  return null;
+}
+
+function frameThreadId(params: unknown): string | null {
+  if (!params || typeof params !== "object") return null;
+  const threadId = (params as { threadId?: unknown }).threadId;
+  return typeof threadId === "string" ? threadId : null;
 }
 
 /** What a human is being asked to approve, in the words the interactive TUI would use. */

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ensemble UX gaps - phased implementation plan</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2128; --muted: #59636e; --line: #d7dde3;
+    --accent: #316dca; --work: #2da44e; --code-bg: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --panel: #151b23; --ink: #dce3ec; --muted: #8a96a6; --line: #2b3545;
+      --accent: #539bf5; --work: #3fb950; --code-bg: #1c232e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 25px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 42px 0 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+  p, li { max-width: 78ch; }
+  .meta { color: var(--muted); font-size: 13.5px; margin-bottom: 24px; }
+  code { background: var(--code-bg); border-radius: 4px; padding: .1em .35em;
+    font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); }
+  .scroll { overflow-x: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+  .svgwrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; margin: 16px 0; overflow-x: auto; }
+  .svgwrap svg { display: block; min-width: 700px; }
+  ol li, ul li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Ensemble UX gaps - phased implementation plan</h1>
+<p class="meta">Phases authored 2026-07-26 · Source of truth: <code>docs/plans/ensemble-ux-gaps/phased-plan.md</code> · Source plan: <a href="./plan.html">plan.html</a> (<code>plan.md</code>)</p>
+
+<h2>Incorporated human decisions (submitted 2026-07-26)</h2>
+<ol>
+  <li><b>Direction: phased composition</b> - wire prerequisite, then Fleet Lens, then Attention Inbox + Decision Dossier, then Run Console, in that order.</li>
+  <li><b>The wire prerequisite ships first regardless</b> of the rest.</li>
+  <li><b>Compare surface v1 is the full build</b>: file-touch matrix PLUS synchronized side-by-side diff panes (the reduced matrix-only scope was declined).</li>
+  <li><b>Follow-up</b>: this phased plan with dependency-linked tasks.</li>
+</ol>
+
+<h2>Investigation findings that shaped the phases</h2>
+<ul>
+  <li>The blocked-member join cannot live in the store (DB-only) or the registry (deliberately store-independent); it lives in <code>EnsembleManager</code>, decorating both <code>publish</code> and the boot <code>listSummaries</code> paths, with a NEW <code>session_upsert</code> subscription and a change-guard against the publish/resync feedback loop.</li>
+  <li><code>test/ensemble-sse.test.ts</code> pins the exact <code>EnsembleSummary</code> key list; <code>ensembleNeedsAttention</code> is pinned in <code>ensemble-contracts</code>; both are updated by Phase 1, additively.</li>
+  <li>Grid arrow-nav is geometric against live CSS tracks - a grid cluster FRAME breaks it silently, so the grid gets adjacency sorting only; board clustering requires one shared ordering function feeding both <code>boardColumns</code> and the rendered column order.</li>
+  <li>The topbar reviews chip opens a single session's modal today; the inbox replaces that behavior, so Phase 3 builds NO interim topbar chip (ceded to Phase 4).</li>
+  <li><code>ReviewCard</code> is session-agnostic but unexported; <code>PaneDialogPrompt</code> is portable; they are two wire protocols and stay two (rendered side by side in lanes; dialogs deep-linked, not answered, in the inbox).</li>
+  <li>The ensemble detail sees neither sessions nor reviews; Phase 5 threads both (App-scope data, no new wire). Phase 1's session-edge republish is what keeps the detail fresh without polling.</li>
+  <li><code>materializeSnapshotDiff</code> has no path parameter; Phase 2 adds <code>paths</code> (single <code>?path=</code> per request - the multi-path query-param failure is documented at <code>routes.ts:1113-1117</code>) and <code>?filesOnly=1</code>, keeping "stats always complete".</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+  <tr><th>#</th><th>File</th><th>Title</th><th>Direct prerequisites</th></tr>
+  <tr><td>1</td><td><code>phase-1-blocked-member-wire.md</code></td><td>Blocked-member wire signal + shared stage vocabulary</td><td>-</td></tr>
+  <tr><td>2</td><td><code>phase-2-per-file-patch-route.md</code></td><td>Per-file and files-only patch route cuts</td><td>-</td></tr>
+  <tr><td>3</td><td><code>phase-3-fleet-lens.md</code></td><td>Fleet Lens: clusters, marks, badges</td><td>1</td></tr>
+  <tr><td>4</td><td><code>phase-4-attention-inbox-decision-dossier.md</code></td><td>Attention inbox + decision dossier</td><td>1, 3</td></tr>
+  <tr><td>5</td><td><code>phase-5-run-console-lanes.md</code></td><td>Run console: pipeline, live lanes, inline answering</td><td>4</td></tr>
+  <tr><td>6</td><td><code>phase-6-compare-workspace.md</code></td><td>Compare workspace: matrix + synced panes</td><td>2, 5</td></tr>
+</table>
+</div>
+
+<h2>Dependency graph and concurrency</h2>
+<div class="svgwrap">
+<svg viewBox="0 0 720 170" width="720" height="170" role="img" aria-label="Phase dependency graph: 1 to 3 to 4 to 5 to 6; 2 directly to 6">
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: none; stroke: currentColor; stroke-width: 1.3; }
+    .lbl { font: 600 13px -apple-system, "Segoe UI", sans-serif; fill: currentColor; }
+    .sub { font: 11px -apple-system, "Segoe UI", sans-serif; fill: currentColor; opacity: .65; }
+    .edge { stroke: currentColor; stroke-width: 1.3; fill: none; marker-end: url(#arr); }
+  </style>
+  <g>
+    <rect class="box" x="10"  y="30" width="110" height="44" rx="7"/><text class="lbl" x="22" y="49">1 Wire signal</text><text class="sub" x="22" y="64">server + shared</text>
+    <rect class="box" x="160" y="30" width="110" height="44" rx="7"/><text class="lbl" x="172" y="49">3 Fleet Lens</text><text class="sub" x="172" y="64">layouts + marks</text>
+    <rect class="box" x="310" y="30" width="130" height="44" rx="7"/><text class="lbl" x="322" y="49">4 Inbox + Dossier</text><text class="sub" x="322" y="64">topbar + decision</text>
+    <rect class="box" x="480" y="30" width="110" height="44" rx="7"/><text class="lbl" x="492" y="49">5 Run console</text><text class="sub" x="492" y="64">lanes + pipeline</text>
+    <rect class="box" x="620" y="55" width="90" height="44" rx="7"/><text class="lbl" x="632" y="74">6 Compare</text><text class="sub" x="632" y="89">matrix + panes</text>
+    <rect class="box" x="10" y="110" width="130" height="44" rx="7"/><text class="lbl" x="22" y="129">2 Patch route</text><text class="sub" x="22" y="144">server only</text>
+    <path class="edge" d="M120 52 H157"/>
+    <path class="edge" d="M270 52 H307"/>
+    <path class="edge" d="M440 52 H477"/>
+    <path class="edge" d="M590 52 C 605 52, 608 62, 617 66"/>
+    <path class="edge" d="M140 132 C 380 132, 560 110, 617 90"/>
+  </g>
+</svg>
+</div>
+<ul>
+  <li><b>Concurrency group A</b>: Phases 1 and 2 start together (no shared files; mergeable in either order).</li>
+  <li>Phase 2 remains concurrent with 3, 4 and 5 - only Phase 6 consumes it.</li>
+  <li>Phases 3 → 4 → 5 are serialized deliberately: 3 and 4 both edit <code>App.tsx</code>/<code>session-bits.tsx</code>; 4 and 5 both restructure <code>EnsembleDetail.tsx</code>; and the approved direction ordered them.</li>
+</ul>
+<p><b>Merge order:</b> any topological order; canonical sequence 1, 2 (either order), 3, 4, 5, 6.</p>
+
+<h2>Cross-phase contracts</h2>
+<div class="card"><code>membersNeedingInput</code> / <code>needsInput</code> / <code>ensembleStageWord</code> (Phase 1) are the ONE wire truth and vocabulary; no browser re-derivation, no second mapping. No new ensemble alert class for blocked members.</div>
+<div class="card"><code>orderSessions</code> (Phase 3) is the one fleet ordering feeding rendered order AND nav arrays; <code>EnsembleProgressDots</code> is the one progress leaf.</div>
+<div class="card">The topbar attention surface belongs to Phase 4's inbox (<code>OVERLAY_IDS.attention</code>, fold in <code>lib/attention.ts</code>); <code>DecisionPanel</code> is the one decision form.</div>
+<div class="card">Phase 2's route contract: single <code>?path=</code>, <code>?filesOnly=1</code>, <code>patchPaths</code>, complete <code>files</code> always.</div>
+<div class="card">Threaded <code>sessions</code>/<code>reviews</code> props (Phase 5) are optional-with-default so route tests with stub registries stay valid.</div>
+
+<h2>Explicitly out of scope</h2>
+<ul>
+  <li>G9's stall TIMER / deadline policy: lanes show <code>lastActivity</code> age honestly; a policy is a separate product decision.</li>
+  <li>G10 observed-model capture (<code>member-launch.ts:75</code>) - server telemetry work, untouched.</li>
+  <li>G19 task-to-ensemble conversion and G20 non-manual source kinds - outside the approved direction's scope.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Each phase ships its own tests and manual verification. After Phase 6: full suite, then one end-to-end pass on a real Best-of-N run - launch from Dispatch, watch clusters in all three layouts, block a member with a question and answer it from the inbox AND from its lane, drive to <code>awaiting_decision</code>, decide from the dossier, compare two candidates per file, restore a loser - confirming every gap group G1-G18 against the source plan's catalog. The extension-contract invariants (<code>ensemble-extension-contract.test.ts</code>) must be green untouched after every phase.</p>
+
+</div>
+</body>
+</html>

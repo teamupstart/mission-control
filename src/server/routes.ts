@@ -493,6 +493,24 @@ export function buildApp(
   // session id. Otherwise a double-click before `session_remove` can start two agents on
   // the same conversation. A confirmed failure releases it for retry.
   const agentResumeClaims = new Set<string>();
+  // A claim must live exactly as long as the lingering session id it guards. Released
+  // earlier - on a timer, or when the launch returns - it stops covering the window it
+  // exists for; never released, it is an unbounded leak on a daemon that resumes many
+  // exited sessions.
+  //
+  // `session_remove` is that boundary, and it is SUBSCRIBED rather than inferred. Deriving
+  // it by asking whether the registry still holds the id looks equivalent and is not: a
+  // session id is derived from the tty, so a new agent on the same tty brings the same id
+  // back, and a claim pruned only on absence would be inherited by that new session and
+  // refuse its first resume forever. The event fires at the moment of removal, before any
+  // reuse can happen.
+  //
+  // Guarded because `buildApp` is constructed with hand-built registry stubs across ~20
+  // route tests, the same accommodation several parameters above already document. The
+  // daemon always passes a real Registry.
+  registry.subscribe?.((e) => {
+    if (e.type === "session_remove") agentResumeClaims.delete(e.id);
+  });
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -1198,7 +1216,13 @@ export function buildApp(
 
     // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
     // be arbitrary code execution on this host from a button labelled "Terminal".
-    const argv = [process.env.SHELL || "/bin/sh"];
+    //
+    // `-l` because the README calls this a LOGIN shell, and without it the promise is
+    // false in a way an operator feels immediately: bash and zsh skip their login startup
+    // files, so PATH, nvm/rbenv shims and prompt all differ from the terminal that person
+    // opens by hand - in a window that exists to run the same commands they would. Every
+    // shell this can resolve to (bash, zsh, fish, ksh, dash, csh/tcsh) accepts `-l`.
+    const argv = [process.env.SHELL || "/bin/sh", "-l"];
     const result = await terminalLauncher(backend, { name: session.name, cwd: session.cwd!, argv });
     const body = {
       ok: result.ok,

@@ -55,11 +55,22 @@ const UNCERTAIN_TASK = mkTask({
 });
 const TASKS = new Map([[UNCERTAIN_TASK.id, UNCERTAIN_TASK]]);
 
+// A real subscriber list, not a no-op: the resume claim is released on `session_remove`,
+// and a stub that swallowed the subscription would let that release rot untested.
+const subscribers: Array<(e: { type: string; id: string }) => void> = [];
+const emitSessionRemove = (id: string): void => {
+  for (const fn of subscribers) fn({ type: "session_remove", id });
+};
+
 const registry = {
   getSession: (id: string) => SESSIONS.get(id),
   listTasks: () => [...TASKS.values()],
   getTask: (id: string) => TASKS.get(id),
   upsertTask: (task: typeof UNCERTAIN_TASK) => TASKS.set(task.id, task),
+  subscribe: (fn: (e: { type: string; id: string }) => void) => {
+    subscribers.push(fn);
+    return () => {};
+  },
 } as unknown as Registry;
 
 const launched: Array<{ backend: string; argv: readonly string[] }> = [];
@@ -213,4 +224,58 @@ test("the terminal catalog answers without spawning anything", async () => {
     // different fixes.
     assert.ok(target.unavailable === null || target.unavailable.length > 0);
   }
+});
+
+// ---- Inspector follow-ups on PR #269 ----
+
+test("the Terminal button opens a LOGIN shell, because that is what it promises", async () => {
+  // The README calls this a login shell, and the difference is one an operator feels
+  // immediately rather than a technicality: without `-l`, bash and zsh skip their login
+  // startup files, so PATH, version-manager shims and prompt all differ from the terminal
+  // that person opens by hand - in a window whose whole purpose is running the same
+  // commands they would run there.
+  launched.length = 0;
+  const res = await launch("paned", { backend: "tmux", payload: "shell" });
+  assert.equal(res.status, 200);
+  assert.equal(launched.length, 1);
+  const argv = launched[0]?.argv ?? [];
+  assert.equal(argv.length, 2, `expected <shell> -l, got ${JSON.stringify(argv)}`);
+  assert.equal(argv[1], "-l");
+  // The shell itself comes from the DAEMON's environment, never from the checkout.
+  assert.equal(argv[0], process.env.SHELL || "/bin/sh");
+});
+
+test("a resume claim is released when the session is actually removed", () => {
+  // The claim has to outlive the launch - it guards the window in which a double-click
+  // could start a second agent on one conversation - but it must not outlive the SESSION,
+  // or a long-lived daemon accumulates an id per resume forever.
+  //
+  // Released on the EVENT rather than on the session's absence, and the difference is not
+  // academic: a session id is derived from the tty, so a new agent on the same tty brings
+  // the same id back. A claim dropped only when the registry stops holding the id would be
+  // inherited by that new session and refuse its first resume for good.
+  return (async () => {
+    const gone = mkSession({ id: "claim-gone", state: "exited" });
+    SESSIONS.set(gone.id, gone);
+    launched.length = 0;
+
+    assert.equal((await launch(gone.id, { backend: "tmux", payload: "agent" })).status, 200);
+    // Still lingering, so the claim stands and a second press is refused.
+    assert.equal((await launch(gone.id, { backend: "tmux", payload: "agent" })).status, 409);
+    assert.equal(launched.length, 1, "the claim must hold while the old card lingers");
+
+    // Eviction. The registry drops the session and emits this; the claim goes with it.
+    emitSessionRemove(gone.id);
+
+    // The same id, back on the same tty as a new session - the case an absence-based
+    // prune gets wrong.
+    SESSIONS.set(gone.id, mkSession({ id: gone.id, state: "exited" }));
+    assert.equal(
+      (await launch(gone.id, { backend: "tmux", payload: "agent" })).status,
+      200,
+      "a released claim must not refuse the next session to hold this id",
+    );
+    assert.equal(launched.length, 2);
+    SESSIONS.delete(gone.id);
+  })();
 });

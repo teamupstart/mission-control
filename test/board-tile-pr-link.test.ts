@@ -102,10 +102,25 @@ test("a click that only ends a drag-select does not open the session", () => {
   assert.equal(isDragSelection(null), false, "no selection at all still opens");
 });
 
-test("a PR number with no URL yet stays a plain flag rather than a dead link", () => {
+test("a PR number with no URL is not a PR at all", () => {
+  // This used to render a plain unlinked `.tile-flag`, an escape hatch for a state the
+  // server cannot produce: `prNumber` is only ever written as `prNumberFromUrl(prUrl)`
+  // beside the URL itself. Being reachable only from a hand-built fixture, it was dead code
+  // that read like a live contract - and the `prNumber` gate it existed for is what made the
+  // tile disagree with the card about whether a session HAS a pull request. The tile now
+  // takes the shared `prChipView` gate with the other three drawings; see
+  // `pr-chip-parity.test.ts`, which pins all four together.
   const html = render({ prNumber: 7, prState: "open", prUrl: null });
-  assert.match(html, /<span class="tile-flag pr-open">#7<\/span>/);
+  assert.ok(!/tile-flag/.test(html), "no url, so there is no PR to draw");
   assert.ok(!/<a /.test(html), "nothing to link to, so nothing should look clickable");
+});
+
+test("a PR whose url carries no parsable number still draws, as a bare PR flag", () => {
+  // The other side of that gate, and the bug it caused: gating on `prNumber` meant the tile
+  // silently drew nothing for a pull request the card was already showing.
+  const html = render({ prNumber: null, prState: "open", prUrl: "https://github.com/o/r/pulls/x" });
+  assert.match(html, /<a[^>]+class="tile-flag tile-flag-link pr-open"/);
+  assert.match(html, />PR</);
 });
 
 test("a failing check still rides along on the link rather than needing its own click", () => {

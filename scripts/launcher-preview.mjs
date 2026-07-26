@@ -8,8 +8,8 @@
  * That verifies exactly what a diff cannot: that the class names match rules, that the strip
  * does not eat the log's height, and that the popover anchors where it should.
  *
- * Not a test and not part of the build - `node scripts/launcher-preview.mjs` writes an HTML
- * file and prints its path.
+ * Not a test and not part of the build - `node --import tsx scripts/launcher-preview.mjs`
+ * writes an HTML file and prints its path.
  */
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";

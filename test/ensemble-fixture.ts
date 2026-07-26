@@ -68,7 +68,9 @@ export class FakeGateway implements EnsembleTaskGateway {
   readonly created: Array<MemberTaskRequest & { taskId: string }> = [];
   readonly dispatched: MemberDispatchRequest[] = [];
   readonly cancelled: string[] = [];
+  readonly settled: Array<{ taskId: string; outcome: string }> = [];
   readonly cancelFailures = new Set<string>();
+  readonly settleFailures = new Set<string>();
   readonly dispatchFailures = new Set<string>();
   /** Every create/dispatch in order, so a test can prove a whole wave existed before a dispatch. */
   readonly log: string[] = [];
@@ -102,6 +104,15 @@ export class FakeGateway implements EnsembleTaskGateway {
     this.cancelled.push(taskId);
     const t = this.state.get(taskId);
     if (t) t.status = "cancelled";
+  }
+
+  settleSuperseded(taskId: string, outcome: string): void {
+    if (this.settleFailures.has(taskId)) throw new Error(`cannot settle ${taskId}`);
+    this.settled.push({ taskId, outcome });
+    const t = this.state.get(taskId);
+    // Terminal, and the worktree/session are deliberately LEFT in place - the fake mirrors the real
+    // gateway's `complete`, so a test can assert the checkout was kept rather than reaped.
+    if (t) t.status = "done";
   }
 
   status(taskId: string): TaskGatewayStatus | null {
@@ -142,6 +153,9 @@ export class FakeGateway implements EnsembleTaskGateway {
   }
   failCancel(taskId: string): void {
     this.cancelFailures.add(taskId);
+  }
+  failSettle(taskId: string): void {
+    this.settleFailures.add(taskId);
   }
   failDispatch(taskId: string): void {
     this.dispatchFailures.add(taskId);

@@ -41,6 +41,25 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 7. You confirm one eligible submission (or declare **no consensus**). Only then does anything
    destructive run.
 
+### Where the selected result lands
+
+Confirming a winner never re-implements it. The chosen submission is an immutable commit, and
+promotion makes that exact commit available in one of two ways:
+
+- **Restored** - the winner's own session is reset to its snapshot and handed a continuation. One
+  session, the one you were already watching.
+- **Replacement** - if that session is gone, busy, uninstrumented or holding a parked review, it
+  cannot be safely reused, so the run launches exactly one new task, `<run title> - selected
+  result`, provisioned at the winner's snapshot. Its checkout already contains the winning work;
+  its opening prompt carries the original task, the winner's own summary and the reviewer's
+  caveats, and asks it to check and ship - not to rebuild.
+
+On the replacement path the winner's original task is settled **done**, recording the task it was
+promoted into. Its agent, worktree and branch are deliberately **kept**: it may have done work
+after submitting, and that work exists nowhere else. Free it with a confirmed **Clean up** when you
+have looked. Until that click you will see two sessions for the winner - the promoted one, which is
+live, and the original, which now has no task.
+
 ## What Consensus does differently
 
 Steps 1-5 are identical - three to five attempts (not two), isolated, from one pinned commit,
@@ -133,7 +152,7 @@ cancellation and worktree teardown.
 
 Finalization reaps loser **worktrees** but never loser **refs** - every candidate's snapshot is
 kept after completion or cancellation, and a **Restore** action can create a fresh task from any of
-them. There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit
+them. The **winner's** worktree is never reaped by finalization at all, on either promotion path. There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit
 **Delete ensemble** action (confirmed by echoing the run id), which removes the run's private refs
 and history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting
 an ensemble never touches a task or any linked workflow state, and it resumes the same remaining

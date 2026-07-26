@@ -60,7 +60,7 @@ export function RecurringMissionsPanel({
   hasSnapshot: boolean;
   /** A schedule to open on, from a generated task's provenance deep link. */
   initialScheduleId?: string | null;
-  /** An occurrence to open history at; its presence sends the panel straight to history. */
+  /** An occurrence to open in the mission's spine. */
   initialOccurrenceId?: string | null;
   /** The occurrence's instant, so history can open the exact run without a page cap. */
   initialScheduledFor?: number | null;
@@ -73,7 +73,9 @@ export function RecurringMissionsPanel({
   const sorted = useMemo(() => sortSchedulesForCatalog(schedules), [schedules]);
 
   const [screen, setScreen] = useState<Screen>(() =>
-    initialScheduleId && initialOccurrenceId
+    initialScheduleId &&
+    initialOccurrenceId &&
+    !schedules.some((schedule) => schedule.id === initialScheduleId)
       ? {
           kind: "history",
           scheduleId: initialScheduleId,
@@ -118,6 +120,13 @@ export function RecurringMissionsPanel({
       return null;
     }
     return schedules.find((schedule) => schedule.id === screen.scheduleId) ?? null;
+  }, [schedules, screen]);
+
+  useEffect(() => {
+    if (screen.kind !== "history") return;
+    if (!schedules.some((schedule) => schedule.id === screen.scheduleId)) return;
+    setSelectedId(screen.scheduleId);
+    setScreen({ kind: "catalog" });
   }, [schedules, screen]);
 
   function handleClose(): void {
@@ -221,6 +230,12 @@ export function RecurringMissionsPanel({
               <ScheduleDetail
                 key={selectedSchedule.id}
                 schedule={selectedSchedule}
+                initialOccurrenceId={
+                  selectedSchedule.id === initialScheduleId ? initialOccurrenceId : null
+                }
+                initialScheduledFor={
+                  selectedSchedule.id === initialScheduleId ? initialScheduledFor : null
+                }
                 onEdit={() => setScreen({ kind: "editor", scheduleId: selectedSchedule.id })}
                 onOpenTask={onOpenTask}
                 resolveTaskLink={resolveTaskLink}
@@ -314,4 +329,3 @@ export function RecurringMissionsPanel({
     </Overlay>
   );
 }
-

@@ -4,8 +4,8 @@ import type { ScheduleOccurrence, SchedulePreviewInstant } from "@shared/schedul
  * How long a mission must have gone unclaimed before the rail BREAKS.
  *
  * Deliberately not `delayIsLate`'s one minute. That band decides whether a run wears a
- * "late" chip, which is a note about one run; a break is a much louder claim - that for
- * this window the mission did not run at all - and spending it on two minutes of scheduler
+ * "late" chip, which is a note about one run; a break is a much louder claim - that a due
+ * instant remained unclaimed for this window - and spending it on two minutes of scheduler
  * latency is how a signature stops meaning anything. Fifteen minutes is past every
  * mechanical delay the local claim path produces (the tick interval and the overdue grace
  * are both well inside it) and short enough that a real sleep window always crosses it.
@@ -24,12 +24,11 @@ export const SPINE_GAP_MS = 15 * 60_000;
  * statuses, the delays, the health - but where the rail BREAKS is a reading of the ledger,
  * and a reading is something that has to be checkable without a DOM.
  *
- * The rule it holds: **a gap is drawn from persisted facts only.** The window is an
- * occurrence's own `scheduledFor -> claimedAt`, and the instants shown inside it are the
- * ones the ledger itself says were represented by that run (`coveredById`). Nothing here
- * infers that the machine was asleep, off, or merely stopped - the database does not record
- * which, so no row may claim to know. What is provable is that for that window this mission
- * did not run, and that is all a gap says.
+ * The rule it holds: **a gap is drawn from persisted facts only.** Windows are grouped by
+ * their shared `claimedAt`, and each opens at the earliest `scheduledFor` in that claim.
+ * The instants shown inside it are the ones the ledger itself says were represented by that
+ * run (`coveredById`). Nothing here infers that the machine was asleep, off, or merely
+ * stopped - the database does not record which, so no row may claim to know.
  *
  * Time reads DOWNWARD, oldest first, the same direction the transcript reads. History
  * arrives newest-first from the paged route, so the sort here is load-bearing rather than
@@ -44,6 +43,8 @@ export type SpineRow =
       from: number;
       /** When the run that ended the window was claimed. */
       to: number;
+      /** Occurrences claimed together after waiting in this window. */
+      waiting: ScheduleOccurrence[];
       /** Instants the ledger says this run represented. Empty is a legitimate answer. */
       missed: ScheduleOccurrence[];
     }
@@ -83,18 +84,44 @@ export function buildSpineRows({
     ]);
   }
 
+  const gapByAnchor = new Map<
+    string,
+    { from: number; to: number; waiting: ScheduleOccurrence[]; missed: ScheduleOccurrence[] }
+  >();
+  const waitingByClaim = new Map<number, ScheduleOccurrence[]>();
+  for (const occurrence of past) {
+    if (occurrence.coveredById) continue;
+    const missed = foldedInto.get(occurrence.id) ?? [];
+    if (occurrence.delayMs < SPINE_GAP_MS && missed.length === 0) continue;
+    waitingByClaim.set(occurrence.claimedAt, [
+      ...(waitingByClaim.get(occurrence.claimedAt) ?? []),
+      occurrence,
+    ]);
+  }
+  for (const [claimedAt, waiting] of waitingByClaim) {
+    const missed = waiting.flatMap((occurrence) => foldedInto.get(occurrence.id) ?? []);
+    const anchor = waiting[0];
+    if (!anchor) continue;
+    gapByAnchor.set(anchor.id, {
+      from: Math.min(
+        ...waiting.map((occurrence) => occurrence.scheduledFor),
+        ...missed.map((occurrence) => occurrence.scheduledFor),
+      ),
+      to: claimedAt,
+      waiting,
+      missed,
+    });
+  }
+
   for (const occurrence of past) {
     // A folded instant is not a run; it belongs inside the gap of the run that covered it.
     if (occurrence.coveredById) continue;
-    const missed = foldedInto.get(occurrence.id) ?? [];
-    if (occurrence.delayMs >= SPINE_GAP_MS || missed.length > 0) {
-      const from = Math.min(occurrence.scheduledFor, ...missed.map((m) => m.scheduledFor));
+    const gap = gapByAnchor.get(occurrence.id);
+    if (gap) {
       out.push({
         kind: "gap",
-        key: `gap-${occurrence.id}`,
-        from,
-        to: occurrence.claimedAt,
-        missed,
+        key: `gap-${gap.to}`,
+        ...gap,
       });
     }
     out.push({ kind: "past", key: occurrence.id, occurrence });

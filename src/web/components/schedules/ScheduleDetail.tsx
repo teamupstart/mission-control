@@ -37,12 +37,16 @@ import { ScheduleSpine } from "./ScheduleSpine.tsx";
  */
 export function ScheduleDetail({
   schedule,
+  initialOccurrenceId,
+  initialScheduledFor,
   onEdit,
   onArchived,
   onOpenTask,
   resolveTaskLink,
 }: {
   schedule: MissionSchedule;
+  initialOccurrenceId?: string | null;
+  initialScheduledFor?: number | null;
   onEdit: () => void;
   /** Archive committed; the catalog should select a neighbour. */
   onArchived: () => void;
@@ -235,6 +239,8 @@ export function ScheduleDetail({
           key={schedule.id}
           scheduleId={schedule.id}
           schedule={schedule}
+          initialOccurrenceId={initialOccurrenceId}
+          initialScheduledFor={initialScheduledFor}
           onOpenTask={onOpenTask}
           resolveTaskLink={resolveTaskLink}
         />

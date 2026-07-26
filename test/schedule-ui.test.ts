@@ -387,6 +387,28 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   // line beneath it - the reverse of how history read before.
   assert.match(history, /<div>\{formatInstant\(at, timezone, \{/);
   assert.match(history, /<div className="rm-dim rm-tiny rm-mono">\{formatAuditInstantUtc\(at\)\}<\/div>/);
+  assert.match(history, /Historical instants use the mission&apos;s current time zone/);
+});
+
+test("live occurrence deep links stay in detail and history refreshes after a run", () => {
+  const panel = readFileSync(path.join(WEB, "components/RecurringMissionsPanel.tsx"), "utf8");
+  const detail = readFileSync(
+    path.join(WEB, "components/schedules/ScheduleDetail.tsx"),
+    "utf8",
+  );
+  const spine = readFileSync(path.join(WEB, "components/schedules/ScheduleSpine.tsx"), "utf8");
+  assert.match(panel, /!schedules\.some\(\(schedule\) => schedule\.id === initialScheduleId\)/);
+  assert.match(panel, /initialOccurrenceId=\{/);
+  assert.match(detail, /initialOccurrenceId=\{initialOccurrenceId\}/);
+  assert.match(spine, /schedule\?\.lastOccurrence\?\.id/);
+  assert.match(spine, /fetchScheduleHistory\(scheduleId, \{\s+before: null,/);
+});
+
+test("future rungs reserve countdown text for the next instant", () => {
+  const spine = readFileSync(path.join(WEB, "components/schedules/ScheduleSpine.tsx"), "utf8");
+  assert.match(spine, /const countdown = isNext \? formatCountdown\(at, now\) : null/);
+  assert.doesNotMatch(spine, /dstShift \? countdown/);
+  assert.doesNotMatch(spine, /Nothing ran for/);
 });
 
 test("generated-task links route without abandoning retained audits", () => {

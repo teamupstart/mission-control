@@ -47,8 +47,8 @@ import { Tooltip } from "../Tooltip.tsx";
  * Every claim a gap makes is a persisted one. The window is `scheduledFor -> claimedAt` off
  * the occurrence row, and the instants shown inside it are the ones the ledger itself says
  * were folded in (`coveredById`) - never a guess about what the daemon was doing. The
- * headline says what is provable ("nothing ran for 7h 20m"), and the standing policy
- * sentence beside it is the product's guarantee, not a diagnosis of this particular gap.
+ * headline says how long those occurrences waited, and the standing policy sentence beside
+ * it is the product's guarantee, not a diagnosis of this particular gap.
  *
  * A PAUSED or unreadable mission gets no future half at all. Enumerating instants a
  * schedule will not act on would be the one lie this surface exists to remove.
@@ -82,6 +82,14 @@ function dayPart(at: number, timezone: string | null): string {
 
 function timePart(at: number, timezone: string | null): string {
   return formatInstant(at, timezone, { hour: "numeric", minute: "2-digit" });
+}
+
+function mergeOccurrences(
+  fresh: ScheduleOccurrence[],
+  existing: ScheduleOccurrence[],
+): ScheduleOccurrence[] {
+  const freshIds = new Set(fresh.map((occurrence) => occurrence.id));
+  return [...fresh, ...existing.filter((occurrence) => !freshIds.has(occurrence.id))];
 }
 
 export function ScheduleSpine({
@@ -178,7 +186,7 @@ export function ScheduleSpine({
           ...page.occurrences.filter((occurrence) => !seen.has(occurrence.id)),
         ];
         setPageSchedule(page.schedule);
-        setRows(accumulated);
+        setRows((current) => mergeOccurrences(accumulated, current));
         setCursor(page.nextCursor);
         setDone(page.nextCursor === null);
 
@@ -197,6 +205,23 @@ export function ScheduleSpine({
     // initialOccurrenceId only seeds the opened audit; it must not re-fetch the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleId]);
+
+  const lastOccurrenceId = schedule?.lastOccurrence?.id ?? null;
+  const lastOccurrenceRef = useRef(lastOccurrenceId);
+  useEffect(() => {
+    const previous = lastOccurrenceRef.current;
+    lastOccurrenceRef.current = lastOccurrenceId;
+    if (lastOccurrenceId === null || previous === lastOccurrenceId) return;
+    const stamp = requestRef.current;
+    void fetchScheduleHistory(scheduleId, {
+      before: null,
+      limit: SCHEDULE_HISTORY_DEFAULT_LIMIT,
+    }).then((page) => {
+      if (stamp !== requestRef.current || !page) return;
+      setPageSchedule(page.schedule);
+      setRows((current) => mergeOccurrences(page.occurrences, current));
+    });
+  }, [lastOccurrenceId, scheduleId]);
 
   const shown = schedule ?? pageSchedule;
   const timezone = shown?.timezone ?? null;
@@ -304,6 +329,15 @@ export function ScheduleSpine({
           </span>
         </p>
       )}
+
+      <div className="rm-spine-cap">
+        {shown && (
+          <span className="rm-dim rm-tiny">
+            Historical instants use the mission&apos;s current time zone:{" "}
+            <span className="rm-mono">{shown.timezone}</span>
+          </span>
+        )}
+      </div>
 
       <div className="rm-spine-cap">
         {loading && rows.length === 0 ? (
@@ -414,9 +448,15 @@ function GapRow({
   row,
   timezone,
 }: {
-  row: { from: number; to: number; missed: ScheduleOccurrence[] };
+  row: {
+    from: number;
+    to: number;
+    waiting: ScheduleOccurrence[];
+    missed: ScheduleOccurrence[];
+  };
   timezone: string | null;
 }): React.JSX.Element {
+  const count = row.waiting.length + row.missed.length;
   return (
     <li className="rm-sp-row rm-sp-gap">
       <span className="rm-sp-when">
@@ -430,7 +470,9 @@ function GapRow({
       </span>
       <span className="rm-sp-what">
         <span className="rm-sp-line rm-sp-gap-line">
-          Nothing ran for {formatSpan(row.to - row.from)}
+          {count === 1
+            ? `This occurrence waited ${formatSpan(row.to - row.from)} to be claimed`
+            : `${count} due instants waited up to ${formatSpan(row.to - row.from)} to be accounted for`}
         </span>
         <span className="rm-sp-note">
           Came due {timePart(row.from, timezone)}, claimed {timePart(row.to, timezone)}{" "}
@@ -471,7 +513,7 @@ function FutureRow({
   now: number;
   isNext: boolean;
 }): React.JSX.Element {
-  const countdown = formatCountdown(at, now);
+  const countdown = isNext ? formatCountdown(at, now) : null;
   return (
     <li className={`rm-sp-row${isNext ? " is-next" : ""}`}>
       <span className="rm-sp-when">
@@ -490,7 +532,7 @@ function FutureRow({
           {/* The machine-readable instant rides the element that already names it, so the
               exact UTC value stays in the document without a fifth restatement on screen. */}
           <time className={isNext ? "rm-sp-next" : "rm-dim"} dateTime={formatAuditInstantUtc(at)}>
-            {isNext ? `Next · ${countdown ?? "due now"}` : dstShift ? countdown : ""}
+            {isNext ? `Next · ${countdown ?? "due now"}` : ""}
           </time>
           {dstShift && (
             <Tooltip label="The UTC offset changes here: a daylight-saving transition. The wall-clock time stays fixed; the UTC instant moves.">

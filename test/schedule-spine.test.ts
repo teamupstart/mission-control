@@ -9,10 +9,10 @@ import { mkOccurrence } from "./helpers/schedule-fixture.ts";
  * Everything else on that screen was decided by the daemon - the instants, the statuses,
  * the delays, the health - and the browser only spells it. The spine's rail is the
  * exception: where it BREAKS is a reading of the occurrence ledger, and the claim that
- * reading makes to an operator ("nothing ran for 7h 20m") is the feature's central honesty
- * promise made visual. Mission Control runs on a laptop that sleeps and explicitly does not
- * promise wall-clock execution; a gap drawn in the wrong place, or one that appears where
- * the ledger says a run happened on time, turns that promise into a lie on screen.
+ * reading makes to an operator ("this occurrence waited 7h 20m") is the feature's central
+ * honesty promise made visual. Mission Control runs on a laptop that sleeps and explicitly
+ * does not promise wall-clock execution; a gap drawn in the wrong place, or one that appears
+ * where the ledger says a run happened on time, turns that promise into a lie on screen.
  *
  * So what is pinned here is the boundary: a gap is derived from persisted columns only
  * (`scheduledFor`, `claimedAt`, `coveredById`) and never from an inference about what the
@@ -41,7 +41,7 @@ test("an on-time ledger draws one unbroken rail", () => {
 
 test("a delay too small to mean anything does not break the rail", () => {
   // `delayIsLate`'s one-minute band decides whether ONE run wears a late chip. A break is a
-  // far louder claim - that the mission did not run at all for a window - and spending it on
+  // far louder claim - that an occurrence waited unclaimed for a window - and spending it on
   // two minutes of scheduler latency is how the signature stops meaning anything.
   const rows = buildSpineRows({
     occurrences: [
@@ -75,6 +75,7 @@ test("a late claim breaks the rail across the window it was actually unclaimed f
   // The window is the occurrence's own two columns. Nothing wider, nothing invented.
   assert.equal(gap.from, T0);
   assert.equal(gap.to, T0 + 7 * HOUR + 20 * 60_000);
+  assert.deepEqual(gap.waiting.map((entry) => entry.id), ["late"]);
   assert.deepEqual(gap.missed, []);
 });
 
@@ -119,6 +120,44 @@ test("coalesced instants sit inside the covering run's gap, not in the main sequ
   const past = rows[1];
   if (past?.kind !== "past") throw new Error("expected a past run");
   assert.equal(past.occurrence.id, "resume");
+});
+
+test("one catch-up claim produces one gap for every due instant it accounts for", () => {
+  const claimedAt = T0 + 8 * HOUR;
+  const rows = buildSpineRows({
+    occurrences: [
+      mkOccurrence({
+        id: "first",
+        scheduledFor: T0,
+        claimedAt,
+        delayMs: 8 * HOUR,
+        status: "created",
+      }),
+      mkOccurrence({
+        id: "second",
+        scheduledFor: T0 + HOUR,
+        claimedAt,
+        delayMs: 7 * HOUR,
+        status: "skipped_overlap",
+      }),
+      mkOccurrence({
+        id: "third",
+        scheduledFor: T0 + 2 * HOUR,
+        claimedAt,
+        delayMs: 6 * HOUR,
+        status: "skipped_overlap",
+      }),
+    ],
+    now: T0 + 10 * HOUR,
+    instants: [],
+    stopReason: null,
+  });
+  assert.deepEqual(kinds(rows), ["gap", "past", "past", "past", "now"]);
+  const gap = rows[0];
+  if (gap?.kind !== "gap") throw new Error("expected a gap");
+  assert.equal(gap.from, T0);
+  assert.equal(gap.to, claimedAt);
+  assert.deepEqual(gap.waiting.map((entry) => entry.id), ["first", "second", "third"]);
 });
 
 test("history arrives newest first and the axis still reads oldest to newest", () => {

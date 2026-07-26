@@ -44,9 +44,9 @@ const HARNESS_CARDS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((ag
 }));
 
 /**
- * Who the auto-mode switch reaches through a permission-mode launch flag, and who it
- * does not - read off `permissionModes.onDispatch` plus its launch renderer rather than
- * off the word "claude". Embedded-driver postures are outside this launch-flag list.
+ * Who the auto-mode switch reaches, and who it does not - read off the declared
+ * `permissionModes.onDispatch` posture plus either an argv renderer or an SDK runtime,
+ * rather than off a harness name.
  *
  * Every sentence on that row named an agent, and each was its own literal ("claude
  * only", "Every Claude session…", "Codex support comes later"). Pi would have left all
@@ -57,11 +57,15 @@ const HARNESS_CARDS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((ag
 const AUTO_AGENTS = autoModeAgents();
 const AUTO_LABEL = agentList(AUTO_AGENTS, "and");
 const AUTO_EXCLUDED = AGENT_TYPES.filter((a) => !AUTO_AGENTS.includes(a));
+const AUTO_SDK_ONLY = AUTO_AGENTS.filter((agent) => {
+  const capabilities = capabilitiesFor(agent);
+  return !capabilities.permissionModes?.launchArgs && capabilities.runtimes.includes("sdk");
+});
 
 /**
  * What "auto mode" is called, when every harness it reaches calls it the same thing.
  *
- * Null when they disagree, and the sentence then falls back to "its most autonomous"
+ * Null when they disagree, and the sentence then falls back to the declared posture
  * rather than naming one harness's spelling over another's - the alternative being a
  * settings row that promises a mode half the grid does not have.
  */
@@ -93,6 +97,10 @@ function CardBadge({
   autoMode: boolean;
 }): React.JSX.Element | null {
   const why = autoModeUnsupportedWhy(agent);
+  const capabilities = capabilitiesFor(agent);
+  const modeLabel =
+    permissionModeDisplay(capabilities.permissionModes?.onDispatch ?? null)?.label ??
+    "its auto-mode posture";
   if (why) {
     return (
       <Tooltip label={why}>
@@ -101,10 +109,11 @@ function CardBadge({
     );
   }
   if (!autoMode) return null;
+  const tooltip = capabilities.permissionModes?.launchArgs
+    ? `Dispatched ${label} sessions launch in ${modeLabel} permission mode via a launch flag, even while a folder-trust dialog hides the mode footer.`
+    : `Embedded ${label} dispatches start in ${modeLabel} through their driver; terminal dispatches use the harness's own launch treatment instead.`;
   return (
-    <Tooltip
-      label={`Dispatched ${label} sessions launch in ${AUTO_MODE_LABEL ?? "their most autonomous"} permission mode via a launch flag, even while a folder-trust dialog hides the mode footer.`}
-    >
+    <Tooltip label={tooltip}>
       <span className="skill-badge skill-badge-always-on">auto mode on</span>
     </Tooltip>
   );
@@ -288,15 +297,24 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             )}
           </span>
           <span className="kb-row-desc">
-            Every {AUTO_LABEL} session dispatched from Mission Control launches directly in{" "}
-            <strong>{AUTO_MODE_LABEL ?? "its most autonomous"}</strong> permission mode via a
-            launch flag, so the mode is set even while a folder-trust dialog hides the mode
-            footer.
+            When enabled, every {AUTO_LABEL} session dispatched from Mission Control starts in{" "}
+            <strong>
+              {AUTO_MODE_LABEL
+                ? `${AUTO_MODE_LABEL} permission mode`
+                : "its harness's declared auto-mode posture"}
+            </strong>
+            .{" "}
+            {AUTO_SDK_ONLY.map((agent) => (
+              <span key={agent}>
+                For {AGENT_IDENTITY[agent].label}, embedded dispatches apply that posture through
+                the driver; terminal dispatches use the harness's own launch treatment instead.{" "}
+              </span>
+            ))}
           </span>
         </div>
         <div className="kb-row-controls">
           <Tooltip
-            label={`Launch every dispatched ${AUTO_LABEL} session directly in ${AUTO_MODE_LABEL ?? "its most autonomous"} mode via a launch flag`}
+            label={`Start every dispatched ${AUTO_LABEL} session with its harness's declared auto-mode posture`}
           >
             <label className="skill-switch">
               <input
@@ -304,7 +322,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
                 checked={autoMode}
                 disabled={!config}
                 onChange={(e) => void update({ autoModeOnDispatch: e.target.checked })}
-                aria-label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode`}
+                aria-label={`Start every dispatched ${AUTO_LABEL} session with its harness's declared auto-mode posture`}
               />
             </label>
           </Tooltip>

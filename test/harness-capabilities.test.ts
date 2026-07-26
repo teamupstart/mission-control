@@ -33,9 +33,16 @@ process.env.CODEX_HOME = join(home, "codex");
 
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { AGENT_IDENTITY } = await import("../src/shared/agent.ts");
-const { HARNESS_CAPABILITIES, capabilitiesFor, sessionEffortLevels, skillsAgents, supportsSessionEffort, workQueueUnsupportedWhy } = await import(
-  "../src/shared/harness-capabilities.ts"
-);
+const {
+  HARNESS_CAPABILITIES,
+  autoModeAgents,
+  autoModeUnsupportedWhy,
+  capabilitiesFor,
+  sessionEffortLevels,
+  skillsAgents,
+  supportsSessionEffort,
+  workQueueUnsupportedWhy,
+} = await import("../src/shared/harness-capabilities.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
@@ -173,6 +180,31 @@ const registry = { getSession: (id: string) => SESSIONS.get(id) } as unknown as 
 const app = buildApp(registry, {} as never, {} as never, {} as never);
 const HEADERS = { host: "127.0.0.1:7317" };
 const SESSIONS = new Map<string, Session>();
+
+test("auto mode can be armed by launch arguments or an SDK driver", () => {
+  const codex = capabilitiesFor("codex");
+  assert.equal(codex.permissionModes?.launchArgs, null);
+  assert.equal(codex.runtimes.includes("sdk"), true);
+  assert.equal(autoModeAgents().includes("codex"), true);
+  assert.equal(autoModeUnsupportedWhy("codex"), null);
+
+  const claude = HARNESS_CAPABILITIES.claude;
+  const modes = claude.permissionModes!;
+  const launchArgs = modes.launchArgs;
+  const runtimes = claude.runtimes;
+  modes.launchArgs = null;
+  claude.runtimes = ["terminal"];
+  try {
+    assert.equal(autoModeAgents().includes("claude"), false);
+    assert.equal(
+      autoModeUnsupportedWhy("claude"),
+      "Claude Code has an autonomous permission mode but no launch-argument renderer, so Mission Control cannot arm it at launch; its live TUI walk is reserved for a human changing an existing session.",
+    );
+  } finally {
+    modes.launchArgs = launchArgs;
+    claude.runtimes = runtimes;
+  }
+});
 
 test("both mode routes refuse a harness with no permission modes, and name it", async () => {
   const { hasnt } = split("permissionModes");

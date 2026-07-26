@@ -737,45 +737,47 @@ export function skillsAgents(): AgentType[] {
 }
 
 /**
- * The agents whose "auto mode on dispatch" posture renders as launch arguments.
+ * The agents whose "auto mode on dispatch" posture Mission Control can arm.
  *
- * This is intentionally narrower than `dispatchPermissionMode`: an embedded driver can
- * consume an `onDispatch` mode without an argv renderer. Callers using this projection
- * must describe launch-flag coverage, not every runtime the setting reaches.
+ * A terminal launch can carry the posture through `launchArgs`; an embedded launch can
+ * hand it directly to an SDK driver. `onDispatch` remains the primary requirement - an
+ * available transport cannot invent an autonomous mode the harness did not declare.
  */
 export function autoModeAgents(): AgentType[] {
   return AGENT_TYPES.filter((a) => {
-    const modes = HARNESS_CAPABILITIES[a].permissionModes;
-    return !!modes?.onDispatch && !!modes.launchArgs;
+    const capabilities = HARNESS_CAPABILITIES[a];
+    const modes = capabilities.permissionModes;
+    return !!modes?.onDispatch && (!!modes.launchArgs || capabilities.runtimes.includes("sdk"));
   });
 }
 
 /**
- * Why this harness cannot render "auto mode on dispatch" as a launch flag, or null when
- * it can.
+ * Why Mission Control cannot arm this harness's "auto mode on dispatch" posture, or null
+ * when it can.
  *
  * Three different absences, said differently, because they are different facts: a
  * harness with no permission modes at all has nothing to arm, one that HAS modes but
  * names no `onDispatch` has nothing that would mean "proceed without asking", and one
- * with that mode but no launch renderer needs another transport to apply it. Rolling
- * them into one sentence would misstate the declared capability.
+ * with that mode but neither a launch renderer nor an SDK driver lacks a transport that
+ * can apply it. Rolling them into one sentence would misstate the declared capability.
  *
- * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
+ * No refusal may say the dispatch is UNAFFECTED, which is what two branches used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
  * `--sandbox workspace-write --ask-for-approval on-request` at launch. The switch reaches
  * Codex; what it does not reach is a `--permission-mode` launch flag, because Codex
  * expresses the same posture through separate sandbox and approval flags. A panel
  * promising "unaffected" over a session launched with a widened sandbox is a consent
  * failure, not a copy nit. Embedded Codex is the complementary case: its driver consumes
- * the declared mode directly even though this launch-flag projection excludes it.
+ * the declared mode directly even though its permission capability has no argv renderer.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
-  const modes = HARNESS_CAPABILITIES[agent].permissionModes;
+  const capabilities = HARNESS_CAPABILITIES[agent];
+  const modes = capabilities.permissionModes;
   const who = AGENT_IDENTITY[agent].label;
   if (!modes) return `${who} has no permission modes to arm with a launch flag.`;
   if (!modes.onDispatch)
     return `${who} has permission modes but none that mean "proceed without asking", so no mode is armed at launch.`;
-  if (!modes.launchArgs)
+  if (!modes.launchArgs && !capabilities.runtimes.includes("sdk"))
     return `${who} has an autonomous permission mode but no launch-argument renderer, so Mission Control cannot arm it at launch; its live TUI walk is reserved for a human changing an existing session.`;
   return null;
 }

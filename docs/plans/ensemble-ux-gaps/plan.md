@@ -104,7 +104,7 @@ Grouped by the question the operator is asking. Each entry: what happens today, 
 
 Whichever direction is chosen, the blocked-member signal must reach the wire. Today the "needs you" facts (pending reviews, pane/driver dialogs) live on the *session*, and the ensemble summary is derived purely from run rows, so the fleet and the run views cannot agree about a blocked member.
 
-The fix is a derivation, not a new persisted status (the member status tuple stays append-only and untouched): where session state and the task link meet (the registry), fold "this member's session needs input" into the published projections:
+The fix is a derivation, not a new persisted status (the member status tuple stays append-only and untouched): where session state and the task link meet - the `EnsembleManager`, which holds both the store and the registry (repository verification showed the store is DB-only and the registry is deliberately store-independent, so neither can host the join; see `phase-1-blocked-member-wire.md`) - fold "this member's session needs input" into the published projections:
 
 - `EnsembleSummary` gains `membersNeedingInput: number` (and `attention` ORs it in),
 - `TaskEnsembleLink` gains `needsInput: boolean` so the chip/flag/mark can say it,
@@ -122,7 +122,7 @@ flowchart LR
   end
   subgraph after [After]
     A2[Member session: pending review / dialog] --> B2[Session tone: attention]
-    A2 --> G2[Registry join: session x taskLink]
+    A2 --> G2[Manager join: session x taskLink]
     D2[Ensemble store: run rows] --> G2
     G2 --> E2[EnsembleSummary SSE + membersNeedingInput]
     E2 --> F2[Run list, detail, chips: 'candidate 3 needs an answer']
@@ -139,7 +139,7 @@ This is one derived field in two shared shapes plus a publish edge - it does not
 
 What ships:
 
-1. **Ensemble clusters.** In the grid and on the Board, member sessions render inside a group frame: a slim header row with the run title, strategy, humanized stage word, progress dots (one per member: submitted / working / blocked / failed), aggregate cost, and an attention rollup. The header deep-links to the run. On the Board the cluster lives in the column of its worst member tone (attention wins), so the needs-you column keeps meaning "needs you". The console rail gets a section header per run above its member rows.
+1. **Ensemble clusters.** Member sessions render as a visible group: a slim header row with the run title, strategy, humanized stage word, progress dots (one per member: submitted / working / blocked / failed), aggregate cost, and an attention rollup, deep-linking to the run. *(Superseded detail - see `phase-3-fleet-lens.md`, which is authoritative: repository verification showed grid arrow-nav is geometric, so the GRID gets adjacency sorting only and no frame; Board clusters never cross tone boundaries - a blocked member sits in the attention column with the cluster header repeated, rather than dragging working siblings into "needs you".)* The console rail gets a section header per run above its member rows.
 2. **State-rich marks.** The chip becomes stage- and state-aware: "⧉ Best of N · reviewing · 3/5 in", or "⧉ needs an answer" (attention-toned) when that member is blocked. The rail's bare `E` gains the same tone. Tile flags carry `E 3/5`.
 3. **Progress where the summary already is.** The Ensembles tab gets an attention badge; the run list rows render the progress dots and `readyArtifacts/launchedMembers` counts that are already on the wire; the topbar gains an ensembles chip when any run needs attention (decision waiting or member blocked), clicking through to the run.
 4. **Humanized stage vocabulary.** One shared function maps the compiled plan's `driverKind` sequence to operator words (launching, working, reviewing, waiting on you, promoting, done) - used by clusters, chips, list rows, and the run detail header (replacing the raw `activeStageId` code).
@@ -200,6 +200,8 @@ They are separable but not exclusive: A's shared stage vocabulary and the wire p
 ---
 
 ## 8. Adopted decisions (2026-07-26)
+
+> **Where this section and a phase file disagree, the phase file wins.** The phase documents beside this plan (`phase-1-*.md` ... `phase-6-*.md`, indexed by `phased-plan.md`) were written after repository verification and record explicit reconciliations against this design record: the blocked-member join lives in `EnsembleManager` (not the registry or store), the grid gets adjacency sorting (never a frame), Board clusters never cross tone boundaries, and Phase 3 builds no topbar chip (the topbar surface belongs to Phase 4's inbox). Each reconciliation is logged in the owning phase's cross-phase audit record.
 
 The open choices were put to the operator and resolved as follows:
 

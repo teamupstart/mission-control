@@ -43,6 +43,11 @@ interface Rule {
   body: string;
 }
 
+function subjectHasClass(selector: string, cls: string): boolean {
+  const subject = selector.split(/\s*[>+~]\s*|\s+/).filter(Boolean).pop() ?? "";
+  return subject.split(/(?=\.)|:/).some((token) => token === `.${cls}`);
+}
+
 /**
  * styles.css has no preprocessor and no nesting, so this flat pass is exact. Comments
  * go first, because several of them quote declarations in prose. An `@media` wrapper
@@ -67,18 +72,84 @@ const ALL = rules(css);
 
 /** The declared value of one property in a rule body, or null. */
 function decl(body: string, prop: string): string | null {
-  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:([^;]*)`, "i").exec(body);
-  return m ? (m[1] ?? "").trim() : null;
+  const re = new RegExp(`(?:^|;)\\s*${prop}\\s*:([^;]*)`, "gi");
+  let value: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) value = (m[1] ?? "").trim();
+  return value;
 }
 
 /** Rules whose SUBJECT - the compound after the last combinator - carries `cls`. */
 function subjectRules(cls: string): Rule[] {
-  return ALL.filter((r) =>
-    r.selectors.some((sel) => {
-      const subject = sel.split(/\s*[>+~]\s*|\s+/).filter(Boolean).pop() ?? "";
-      return subject.split(/(?=\.)|:/).some((tok) => tok === `.${cls}`);
-    }),
-  );
+  return ALL.filter((rule) => rule.selectors.some((selector) => subjectHasClass(selector, cls)));
+}
+
+function numericValue(value: string): number | null {
+  const normalized = value.replace(/\s*!important\s*$/i, "").trim();
+  return /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(normalized) ? Number(normalized) : null;
+}
+
+function shorthandShrink(value: string): number | null {
+  const normalized = value.replace(/\s*!important\s*$/i, "").trim().toLowerCase();
+  if (normalized === "none") return 0;
+  const parts = normalized.split(/\s+/);
+  const first = numericValue(parts[0] ?? "");
+  if (first === null) return null;
+  if (parts.length === 1) return 1;
+  const second = numericValue(parts[1] ?? "");
+  return second ?? 1;
+}
+
+function effectiveShrink(body: string): number | null | undefined {
+  const re = /(?:^|;)\s*(flex|flex-shrink)\s*:([^;]*)/gi;
+  let shrink: number | null | undefined;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    const property = (m[1] ?? "").toLowerCase();
+    const value = (m[2] ?? "").trim();
+    shrink = property === "flex" ? shorthandShrink(value) : numericValue(value);
+  }
+  return shrink;
+}
+
+function splitFunctionArgs(value: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    else if (char === "," && depth === 0) {
+      args.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  args.push(value.slice(start).trim());
+  return args;
+}
+
+function guaranteesPositiveLength(value: string): boolean {
+  const normalized = value.replace(/\s*!important\s*$/i, "").trim().toLowerCase();
+  const literal = /^([+]?(?:\d+\.?\d*|\.\d+))(?:%|[a-z]+)$/i.exec(normalized);
+  if (literal) return Number(literal[1]) > 0;
+
+  const fn = /^(min|max|clamp)\((.*)\)$/i.exec(normalized);
+  if (!fn) return false;
+  const args = splitFunctionArgs(fn[2] ?? "");
+  if (fn[1] === "min") return args.length > 0 && args.every(guaranteesPositiveLength);
+  if (fn[1] === "max") return args.some(guaranteesPositiveLength);
+  return args.length === 3 && guaranteesPositiveLength(args[0] ?? "");
+}
+
+function selectorMinHeight(selector: string): string | null {
+  let value: string | null = null;
+  for (const rule of ALL) {
+    if (!rule.selectors.includes(selector)) continue;
+    const candidate = decl(rule.body, "min-height");
+    if (candidate !== null) value = candidate;
+  }
+  return value;
 }
 
 test("a collapsed fix log cannot be crushed: if .nm-log clips, it also refuses to shrink", () => {
@@ -104,27 +175,42 @@ test("a collapsed fix log cannot be crushed: if .nm-log clips, it also refuses t
 });
 
 test("no rule hands a COLLAPSED fix log its flexibility back", () => {
-  // An open log in a detail pane may shrink - it has a `min-height` floor to land on.
-  // A collapsed one has no floor, so a shrinkable `flex` on it is the original defect.
-  const offenders = subjectRules("nm-log")
-    .filter((r) => decl(r.body, "flex") !== null)
-    .filter((r) => decl(r.body, "flex") !== "none")
-    .filter((r) => !r.selectors.every((sel) => sel.includes(".nm-log-open")));
+  // An open log may shrink only when that selector has a positive `min-height`
+  // floor to land on. A collapsed one has no floor, so any non-zero shrink is the
+  // original overflow/min-height:auto defect, whether declared by shorthand or
+  // longhand.
+  const shrinkable = subjectRules("nm-log").flatMap((rule) => {
+    const shrink = effectiveShrink(rule.body);
+    if (shrink === undefined || shrink === 0) return [];
+    return rule.selectors.filter((selector) => subjectHasClass(selector, "nm-log"));
+  });
+  const collapsed = shrinkable.filter((selector) => !subjectHasClass(selector, "nm-log-open"));
+  const openWithoutFloor = shrinkable.filter(
+    (selector) =>
+      subjectHasClass(selector, "nm-log-open") &&
+      !guaranteesPositiveLength(selectorMinHeight(selector) ?? ""),
+  );
 
   assert.deepEqual(
-    offenders.map((r) => r.selectors.join(", ")),
+    collapsed,
     [],
-    "these rules let a collapsed .nm-log shrink; only `.nm-log-open` selectors may, " +
-      "and only because they carry a min-height floor",
+    "these selectors let a collapsed .nm-log shrink; overflow:hidden zeroes its " +
+      "min-height:auto, so non-zero flex shrink crushes the only control that opens it",
   );
+  assert.deepEqual(
+    openWithoutFloor,
+    [],
+    "these open-log selectors can shrink without a positive min-height floor; " +
+      "overflow:hidden removes the automatic floor, so their content can be clipped away",
+  );
+});
 
-  // And the one that does shrink really does have that floor, in the same rule.
-  const openConv = ALL.find((r) => r.selectors.includes(".detail-conv > .nm-log-open"));
-  assert.ok(openConv, "expected the `.detail-conv > .nm-log-open` rule");
-  assert.ok(
-    /^min\(|px|dvh|vh/.test(decl(openConv.body, "min-height") ?? ""),
-    "an open log is allowed to shrink only because it declares a min-height to stop at",
-  );
+test("the guard reads flex shorthand and flex-shrink with CSS declaration order", () => {
+  assert.equal(effectiveShrink("flex: none"), 0);
+  assert.equal(effectiveShrink("flex: 1 1 auto"), 1);
+  assert.equal(effectiveShrink("flex: 1"), 1);
+  assert.equal(effectiveShrink("flex: none; flex-shrink: 1"), 1);
+  assert.equal(effectiveShrink("flex-shrink: 1; flex: none"), 0);
 });
 
 test("the caret is a sized, bordered control rather than a loose glyph", () => {

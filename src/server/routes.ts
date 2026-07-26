@@ -104,7 +104,7 @@ import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
-import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
@@ -483,7 +483,6 @@ export function buildApp(
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
    */
   handoffDeps?: HandoffDeps,
-  launchSessionTerminal?: typeof launchTerminal,
 ): Hono {
   const app = new Hono();
 
@@ -1055,12 +1054,8 @@ export function buildApp(
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
   app.get("/api/terminal-targets", (c) => c.json({ targets: terminalTargetViews() }));
-  // Open a terminal on a session's checkout: a shell, or the session's own agent CLI
-  // resumed on this conversation.
-  //
-  // The two payloads differ only in argv, which is why one route serves both - the human
-  // is making the same choice either way (which terminal), and splitting it in two would
-  // duplicate every refusal below.
+  // Open a shell on a session's checkout, or delegate a live embedded conversation to the
+  // existing terminal handoff.
   app.post("/api/sessions/:id/launch", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -1068,13 +1063,6 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const { backend, payload } = parsed.data;
 
-    const noCheckout = shellLaunchBlockedReason(session);
-    if (noCheckout) return c.json({ ok: false, error: noCheckout }, 400);
-    const cwd = session.cwd!;
-
-    let argv: readonly string[];
-    let name: string;
-    let transferredTaskId: string | null = null;
     if (payload === "agent") {
       // The daemon owns this rule and the browser reads the SAME predicate to shape the
       // button. A session with a live pane is focusable, and resuming beside it would put
@@ -1100,39 +1088,16 @@ export function buildApp(
           : { ok: false, backend, label: "default terminal", error: handedOff.error };
         return handedOff.ok ? c.json(body) : c.json(body, 409);
       }
-      if (action !== "resume") {
-        return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
-      }
-      // Non-null: `agentLaunchAction` returned "resume", which required both of these.
-      const composed = resumeArgvFor(session.agent, session.agentSessionId!);
-      if (!composed) {
-        return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
-      }
-      argv = composed;
-      name = session.name;
-      const task = registry.listTasks().find((candidate) => candidate.sessionId === session.id);
-      if (task) {
-        transferredTaskId = task.id;
-        registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
-      }
-    } else {
-      // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
-      // be arbitrary code execution on this host from a button labelled "Terminal".
-      argv = [process.env.SHELL || "/bin/sh"];
-      name = session.name;
+      return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
     }
 
-    let result;
-    try {
-      result = await (launchSessionTerminal ?? launchTerminal)(backend, { name, cwd, argv });
-    } catch (error) {
-      if (transferredTaskId) tasks.settleAfterFailedHandoff(transferredTaskId);
-      const message = error instanceof Error ? error.message : String(error);
-      return c.json({ ok: false, backend, error: message }, 502);
-    }
-    if (transferredTaskId && !result.ok && result.status !== 504) {
-      tasks.settleAfterFailedHandoff(transferredTaskId);
-    }
+    const noCheckout = shellLaunchBlockedReason(session);
+    if (noCheckout) return c.json({ ok: false, error: noCheckout }, 400);
+
+    // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
+    // be arbitrary code execution on this host from a button labelled "Terminal".
+    const argv = [process.env.SHELL || "/bin/sh"];
+    const result = await launchTerminal(backend, { name: session.name, cwd: session.cwd!, argv });
     const body = {
       ok: result.ok,
       backend,

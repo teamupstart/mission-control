@@ -1,26 +1,28 @@
 # Open a terminal, or the session's own agent CLI, from the conversation pane
 
 Two controls at the top of every conversation. **Terminal** opens a shell in the session's
-worktree. **Claude Code** / **Codex** / **pi** - labelled with whichever harness the session
-actually runs - puts you on that session's conversation in a real terminal.
+worktree. The agent control focuses a live pane or hands a live embedded conversation to a
+terminal.
 
 Mockups: `docs/mockups/session-launchers/index.html`. Option 01 (conversation toolbar) was
 selected, along with two behavioural decisions recorded under [Decisions taken](#decisions-taken).
 
 ## The idea this rests on
 
-Both buttons open **the same list**, because the choice a human is making is the same one -
-*which terminal*. What differs is only the argv that terminal is handed:
+The **Terminal** button opens the backend list. The agent control is always plain because it
+does not create an independent session:
 
 | Button | argv |
 |---|---|
 | Terminal | the operator's shell (`$SHELL`, else `/bin/sh`) |
-| Agent | `resolveAgentBin(agent)` + that harness's resume argv |
+| Agent, live pane | none - use the existing focus route |
+| Agent, embedded | the existing `handOffToTerminal` lifecycle |
 
 So this introduces **no new backend registry**. `launchHome({ name, cwd, argv, sidePane })`
 (`src/server/terminal/home.ts`) already opens a window at a cwd on whichever of tmux, cmux,
-WezTerm or Ghostty is installed. This plan adds one route that calls it with two payloads,
-one browser-readable view of which backends can serve it, and one toolbar.
+WezTerm or Ghostty is installed. This plan adds one route for the shell payload, delegates
+embedded sessions to the existing handoff, adds one browser-readable view of which backends
+can serve the shell, and adds one toolbar.
 
 What it does add is a **capability that was declared in the wrong place** - see phase 1.
 
@@ -33,13 +35,12 @@ What it does add is a **capability that was declared in the wrong place** - see 
    parity rule to remember and nothing for a fourth layout to forget. `SessionTile` and
    `RailRow` render no transcript and are correctly untouched.
 
-2. **The agent button focuses a session that already has a pane.** Opening
+2. **The agent button acts only on a running session.** Opening
    `claude --resume <id>` beside a live pane starts a second process on one conversation
-   file. So the button *focuses* when there is a pane to focus and only *resumes* into a new
-   terminal when there is not - an embedded (`runtime: "sdk"`) session, or one whose agent
-   has exited. This changes the control's shape, which is the honest rendering of it: with a
-   live pane it is a plain button (no caret, no menu, nothing to choose), because focusing
-   raises the terminal the session is already in and there is no second terminal to pick.
+   file. So the button *focuses* when there is a pane and uses the existing handoff when the
+   session is embedded (`runtime: "sdk"`), stopping its live driver before reopening the
+   conversation. Both are plain buttons: no caret, no menu, nothing to choose. An exited
+   session is disabled and points at the Terminal button for access to its worktree.
 
 3. **Ship the four backends that exist.** tmux, cmux, WezTerm, Ghostty. Terminal.app,
    iTerm2, Kitty and Alacritty are not "off" - there is no adapter, and adding one is an
@@ -130,21 +131,20 @@ Body validated by `LaunchSessionSchema` in `@shared/protocol.ts` through `parseB
 Order of refusals:
 
 1. Unknown session → 404.
-2. `!session.cwd` → 400, "this session has no checkout to open a terminal in". `Session.cwd`
-   is genuinely nullable: discovery could not read the process cwd and no pane reported a
-   path.
-3. `payload: "agent"` where `agentLaunchAction(session) !== "resume"` → 409 naming what to
-   do instead. **The daemon owns this rule, and the browser reads the same predicate to
-   decide the button's shape** - the two must not disagree, the same reason
-   `resolveDispatchRuntime` composes `resolveSessionRuntime` rather than restating it.
-4. `payload: "agent"` with no `resume` spec or no `session.agentSessionId` → 409 with the
-   sentence.
-5. Backend unavailable → 409 with the same sentence the view carries.
+2. `payload: "agent"` with `"focus"` → 409 naming the existing focus action.
+3. `payload: "agent"` with `"handoff"` → the existing `handOffToTerminal` path; any other
+   result → 409 with `agentLaunchBlockedReason(session)`. **The daemon owns this rule, and
+   the browser reads the same predicate to decide the button's shape** - the two must not
+   disagree, the same reason `resolveDispatchRuntime` composes `resolveSessionRuntime`
+   rather than restating it.
+4. Shell payload with `!session.cwd` → 400, "this session has no checkout to open a terminal
+   in". `Session.cwd` is genuinely nullable: discovery could not read the process cwd and no
+   pane reported a path.
+5. Shell backend unavailable → 409 with the same sentence the view carries.
 
-Then `launchHome({ name, cwd: session.cwd, argv, sidePane: false })`, restricted to the
-requested backend. `sidePane: false` is deliberate and differs from `spawnUniquely`: a
-dispatch wants a side pane for the operator to watch from, and this *is* the operator asking
-for a window.
+Only the shell arm reaches
+`launchTerminal(backend, { name, cwd: session.cwd, argv })`, restricted to the
+requested backend. The agent arm never calls it.
 
 The route **never resolves a shell from the checkout.** `$SHELL` comes from the daemon's own
 environment with `/bin/sh` as the floor; a repo-supplied value would be arbitrary code
@@ -155,14 +155,14 @@ execution on a click.
 `@shared/session-launch.ts`:
 
 ```ts
-agentLaunchAction(session): "focus" | "resume" | null
+agentLaunchAction(session): "focus" | "handoff" | null
 agentLaunchBlockedReason(session): string | null
 ```
 
-`"focus"` when `canWriteTo(session)` - there is a pane, raise it. `"resume"` when there is
-no pane, the harness `resumes`, and `session.agentSessionId` is set. `null` otherwise, with
-the reason saying which of those was missing. It takes the narrow shape `canMessage` takes,
-not a whole `Session`, so a `DiscoveredSession` caller can use it too.
+`"focus"` for a running session with a pane. `"handoff"` for a live SDK session whose
+harness can resume and whose checkout and conversation id are known. `null` otherwise,
+including every exited session, with a sentence saying why. It takes the narrow shape
+`canMessage` takes, not a whole `Session`, so a `DiscoveredSession` caller can use it too.
 
 ## Phase 3 - the toolbar
 
@@ -214,20 +214,23 @@ flowchart LR
   end
   subgraph daemon[Daemon :7317]
     R[POST /api/sessions/:id/launch]
+    O[POST /api/sessions/:id/handoff]
     V[GET /api/terminal-targets]
     H[launchHome]
-    HR[harness.resume]
+    HR[handOffToTerminal]
   end
   L -- which backends? --> V
-  L -- backend + payload --> R
-  L -- payload=agent, pane alive --> F[POST /api/sessions/:id/focus]
-  R --> HR
+  L -- shell backend --> R
+  L -- pane alive --> F[POST /api/sessions/:id/focus]
+  L -- embedded --> O
+  O --> HR
   R --> H
+  HR --> H
   H --> TB[tmux / cmux / WezTerm / Ghostty]
 ```
 
-The agent button's two destinations are the point: with a live pane it goes to the existing
-focus route and never reaches `launchHome` at all.
+The agent button's two destinations are the existing focus and handoff routes. It never
+opens a backend chooser or launches an exited conversation.
 
 ## Tests
 
@@ -238,14 +241,14 @@ focus route and never reaches `launchHome` at all.
 | `harness-resume.test.ts` | `Record<AgentType, ResumeSpec \| null>` is complete; `resumes` and `resume` agree; `handoff.ts` composes argv from the harness, not `SdkSpec` |
 | `terminal-target-contract.test.ts` | Driven with injected deps so every branch is testable off-platform: an uninstalled backend refuses with a sentence and **spawns nothing**; tmux is unavailable when no emulator can raise it and says so when one can; cmux is judged without `attachArgv` |
 | `session-launch-http.test.ts` | Via `buildApp` with stub registries: unknown session, no cwd, an unregistered backend id rejected by the enum, `payload: "agent"` on a pane-backed session refused with the focus sentence, missing `agentSessionId` refused, and the shell argv never read from the checkout |
-| `session-launch-predicate.test.ts` | Every session shape maps to exactly one of focus / resume / blocked - a shape belonging to none is a dead button, one belonging to two is a race |
+| `session-launch-predicate.test.ts` | Every session shape maps to focus / handoff / blocked; exited SDK sessions and SDK sessions awaiting identity are pinned as blocked with reasons |
 | `launch-menu.test.ts` | `renderToStaticMarkup` over `LaunchList`: an unavailable row is `disabled` and shows the reason *instead of* the blurb; a failed fetch reads differently from an empty list; the component contains no backend id or vendor string; the Escape handler greps as capture-phase with `stopImmediatePropagation()` |
 | `session-leaf-parity.test.ts` (existing) | Extended: the launchers live in `TranscriptPanel`, so both renderers that show a conversation get them from one mount |
 
 ## Done means
 
-- README gains a section under the session capabilities describing both buttons, what the
-  agent button does with and without a live pane, and which four backends are supported.
+- README gains a section under the session capabilities describing the Terminal menu, the
+  agent button's focus/handoff behavior, and which four backends are supported.
 - No `CHANGELOG.md` edit.
 - All three layouts opened in a real build against a real session before this is called
   done - a diff is not evidence a UI works, and `:5173` serves whichever checkout started
@@ -258,5 +261,9 @@ focus route and never reaches `launchHome` at all.
 - **A remembered default per button** (mockup option 04). It needs a persisted preference
   and a first-run answer; revisit once the placement has been used.
 - **A keyboard shortcut**, for the reason given in phase 3.
-- **Opening a terminal on a session with no checkout.** Both buttons render disabled with a
-  sentence rather than disappearing, so the control does not flicker as discovery settles.
+- **Resuming an exited session.** It needs an exclusive resume claim plus transfer of
+  `Task.sessionId`, `homeName`, `terminalResourceId`, and backend-aware liveness. The
+  existing handoff owns that lifecycle only while there is a live driver to stop.
+- **Opening a terminal on a session with no checkout.** Terminal and embedded handoff render
+  disabled with a sentence rather than disappearing, so the control does not flicker as
+  discovery settles.

@@ -2,17 +2,21 @@
  * What the conversation pane's AGENT launcher does for a given session - and the one place
  * that is decided.
  *
- * The button means "put me on this conversation, in a real terminal", and there are three
- * genuinely different ways to honour that:
+ * The button means "put me on this running conversation, in a real terminal", and there are
+ * two genuinely different ways to honour that:
  *
  *  - The session already runs in a pane. Then the terminal exists, and the answer is to
- *    RAISE it. Spawning `claude --resume <id>` beside it would start a SECOND process on
+ *    FOCUS it. Spawning `claude --resume <id>` beside it would start a SECOND process on
  *    one conversation file, which is not a second view of the session - it is two agents
  *    appending to the same store, and the harnesses do not arbitrate that.
  *  - The session is embedded (`runtime: "sdk"`). Its driver has to stop before the same
  *    conversation opens in a terminal, so this is a handoff rather than a second launch.
- *  - A terminal session's agent has exited and only the conversation survives. There is
- *    nothing to raise or stop, so the answer is to resume it in a new terminal.
+ *
+ * An exited session is deliberately outside this control. Resuming it correctly requires
+ * an exclusive claim plus transfer of its task binding, home name, terminal resource and
+ * backend-aware liveness. `handOffToTerminal` owns that lifecycle for a LIVE driver; an
+ * exited session has no driver to stop, so its equivalent is a separate feature rather
+ * than a partial launch path here.
  *
  * Pure, and in `shared`, because BOTH sides have to reach the same verdict. The browser
  * asks it to shape the control - with a live pane there is no terminal to choose, so the
@@ -31,7 +35,7 @@ import { capabilitiesFor } from "./harness-capabilities.ts";
  * What the agent launcher will do. `null` means it can do nothing, and
  * `agentLaunchBlockedReason` says what was missing.
  */
-export type AgentLaunchAction = "focus" | "handoff" | "resume";
+export type AgentLaunchAction = "focus" | "handoff";
 
 /**
  * The narrow shape this needs, rather than a whole `Session`.
@@ -57,15 +61,15 @@ export interface LaunchableSession extends PaneHandles {
  * For every live session, the pane check still comes before any question about whether the
  * harness can resume. A live session with a pane is focusable whatever its harness can do
  * with a session id, and asking about resume first would grey out the button for a harness
- * with no resume spec even though raising its pane would have worked perfectly.
+ * with no resume spec even though focusing its pane would have worked perfectly.
  */
 export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | null {
-  if (s.state !== "exited" && canWriteTo(s)) return "focus";
+  if (s.state === "exited") return null;
+  if (canWriteTo(s)) return "focus";
   if (!capabilitiesFor(s.agent).resumes) return null;
   if (!s.agentSessionId) return null;
   if (!s.cwd) return null;
-  if (s.runtime === "sdk") return "handoff";
-  return s.state === "exited" ? "resume" : null;
+  return s.runtime === "sdk" ? "handoff" : null;
 }
 
 /**
@@ -82,6 +86,9 @@ export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | nul
  */
 export function agentLaunchBlockedReason(s: LaunchableSession): string | null {
   if (agentLaunchAction(s) !== null) return null;
+  if (s.state === "exited") {
+    return "this session is not running - open a terminal in its worktree instead";
+  }
   if (!capabilitiesFor(s.agent).resumes) {
     return `${s.agent} cannot reopen a conversation from its command line`;
   }

@@ -12,12 +12,12 @@ import {
 
 /*
  * What is at stake: this predicate is read from BOTH ends of the same decision. The browser
- * asks it to shape the launcher - whether the agent button raises a pane, opens a chooser,
- * or greys out with a sentence - and the daemon asks it to refuse a request that disagrees.
- * So every session shape has to land on exactly one of focus / resume / blocked. A shape
- * belonging to none is a dead button nobody can explain; a shape belonging to two is the
- * race the whole file exists to rule out - a UI offering resume over a live pane, and a
- * route that takes it, which is two agents appending to one conversation file.
+ * asks it to shape the launcher - focus, handoff, or a disabled button with a sentence -
+ * and the daemon asks it to refuse a request that disagrees. So every session shape has to
+ * land on exactly one of focus / handoff / blocked. A shape belonging to none is a dead
+ * button nobody can explain; a shape belonging to two is the race the whole file exists to
+ * rule out - a UI offering handoff over a live pane, and a route that starts a second agent
+ * on one conversation file.
  *
  * The order is part of the contract, not an implementation detail. The pane check runs
  * first, so a session with a terminal stays focusable whatever its harness can do with a
@@ -77,22 +77,25 @@ test("an embedded session with a conversation id and a checkout hands off", () =
   assert.equal(agentLaunchBlockedReason(session), null);
 });
 
-test("an exited session that left its conversation behind still resumes", () => {
-  // The case that makes the feature worth having: the agent is gone, the pane is gone, and
-  // the transcript on disk is the only thing left. Reading "no pane" as "nothing to do"
-  // here would strand every conversation the moment its process died.
+test("an exited terminal session is blocked even when its conversation survives", () => {
   const session = survivingConversation();
-  assert.equal(agentLaunchAction(session), "resume");
-  assert.equal(agentLaunchBlockedReason(session), null);
+  assert.equal(agentLaunchAction(session), null);
+  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
 });
 
-test("an exited session resumes even while stale pane handles linger", () => {
+test("an exited session is blocked even while stale pane handles linger", () => {
   const session = paneBacked({ state: "exited" });
-  assert.equal(agentLaunchAction(session), "resume");
-  assert.equal(agentLaunchBlockedReason(session), null);
+  assert.equal(agentLaunchAction(session), null);
+  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
 });
 
-test("no conversation id yet is refused, and the refusal says which id", () => {
+test("an exited SDK session is blocked instead of handed off without a driver", () => {
+  const session = embedded({ state: "exited" });
+  assert.equal(agentLaunchAction(session), null);
+  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
+});
+
+test("an SDK session awaiting its conversation id is blocked with the reason", () => {
   const session = embedded({ agentSessionId: null });
   assert.equal(agentLaunchAction(session), null);
   assert.match(agentLaunchBlockedReason(session) ?? "", /conversation id/);
@@ -156,9 +159,7 @@ test("the action and the reason never disagree, for any shape or harness", () =>
             action !== null,
             `${agent} ${what} (resumes=${resumes}): action ${action} with reason ${reason}`,
           );
-          if (action !== null) {
-            assert.ok(action === "focus" || action === "handoff" || action === "resume");
-          }
+          if (action !== null) assert.ok(action === "focus" || action === "handoff");
         };
         if (resumes) check();
         else withoutResume(agent, check);

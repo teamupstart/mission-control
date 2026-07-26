@@ -125,7 +125,7 @@ test("the focus control does not promise to raise a terminal window", () => {
   assert.doesNotMatch(src, /Raise the terminal \$\{agentLabel\}/);
 });
 
-test("embedded handoff is a plain control while exited resume keeps its chooser", () => {
+test("the agent control is always plain, including blocked SDK and exited states", () => {
   const embedded = renderToStaticMarkup(
     createElement(SessionLaunchers, {
       session: mkSession({ runtime: "sdk", terminals: [], tty: null }),
@@ -134,8 +134,24 @@ test("embedded handoff is a plain control while exited resume keeps its chooser"
   const exited = renderToStaticMarkup(
     createElement(SessionLaunchers, { session: mkSession({ state: "exited" }) }),
   );
+  const unboundSdk = renderToStaticMarkup(
+    createElement(SessionLaunchers, {
+      session: mkSession({
+        runtime: "sdk",
+        terminals: [],
+        tty: null,
+        agentSessionId: null,
+      }),
+    }),
+  );
 
   assert.match(embedded, />Continue in terminal</);
   assert.equal(embedded.match(/aria-haspopup="menu"/g)?.length, 1);
-  assert.equal(exited.match(/aria-haspopup="menu"/g)?.length, 2);
+  assert.equal(exited.match(/aria-haspopup="menu"/g)?.length, 1);
+  assert.match(exited, /disabled/);
+  assert.match(exited, /not running/);
+  assert.equal(unboundSdk.match(/aria-haspopup="menu"/g)?.length, 1);
+  assert.match(unboundSdk, />Continue in terminal</);
+  assert.match(unboundSdk, /disabled/);
+  assert.match(unboundSdk, /conversation id/);
 });

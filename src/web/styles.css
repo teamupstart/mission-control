@@ -4444,9 +4444,6 @@ kbd {
   color: var(--working);
   font-size: 11px;
 }
-.launch-agent-pop .launch-glyph {
-  color: var(--agent-accent, var(--working));
-}
 .launch-row:disabled .launch-glyph {
   color: var(--dim);
 }

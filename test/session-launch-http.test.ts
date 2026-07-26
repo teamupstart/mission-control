@@ -14,7 +14,7 @@ import { mkSession, mkMuxHandle } from "./helpers/session-fixture.ts";
 // out of the checkout, would be remote code execution behind a button labelled "Terminal".
 //
 // The second thing pinned here is the agent payload's refusal. `agentLaunchAction` decides
-// whether a session is focused or resumed, the browser reads it to shape the button, and
+// whether a session is focused or handed off, the browser reads it to shape the button, and
 // this route reads it to refuse a request that disagrees. If the daemon simply did what it
 // was told, a stale tab - or anyone with curl - could put a second agent process on one
 // conversation file, which the harnesses do not arbitrate.
@@ -33,12 +33,14 @@ const EMBEDDED = mkSession({
 });
 const NO_ID = mkSession({ id: "noid", runtime: "sdk", terminals: [], agentSessionId: null });
 const NO_CWD = mkSession({ id: "nocwd", runtime: "sdk", terminals: [], cwd: null });
+const EXITED = mkSession({ id: "exited", state: "exited" });
 
 const SESSIONS = new Map([
   [PANED.id, PANED],
   [EMBEDDED.id, EMBEDDED],
   [NO_ID.id, NO_ID],
   [NO_CWD.id, NO_CWD],
+  [EXITED.id, EXITED],
 ]);
 
 const registry = {
@@ -72,8 +74,8 @@ test("the backend is a registered id, never a command", async () => {
 });
 
 test("the payload is one of two words, so a request never names a command", async () => {
-  // The operator picks BETWEEN two argvs; they never supply one. A payload the enum does
-  // not know is the shape a command-injection attempt would take.
+  // The operator picks between two daemon-owned actions; they never supply an argv. A
+  // payload the enum does not know is the shape a command-injection attempt would take.
   for (const payload of ["", "bash", "shell; id", null, { cmd: "sh" }]) {
     const res = await launch("embedded", { backend: "tmux", payload });
     assert.equal(res.status, 400, `${JSON.stringify(payload)} must not be accepted`);
@@ -107,13 +109,20 @@ test("resuming a session that already has a pane is refused, and names focus ins
   assert.match(body.error, /focus/);
 });
 
-test("a session that has not reported a conversation id cannot be resumed", async () => {
+test("an embedded session awaiting its conversation id cannot be handed off", async () => {
   // Nothing to resume FROM. Launching anyway would start a fresh agent wearing this
   // session's card, which is worse than refusing.
   const res = await launch("noid", { backend: "tmux", payload: "agent" });
   assert.equal(res.status, 409);
   const body = (await res.json()) as { error: string };
   assert.match(body.error, /conversation id/);
+});
+
+test("an exited session refuses the agent arm and points at its Terminal button", async () => {
+  const res = await launch("exited", { backend: "tmux", payload: "agent" });
+  assert.equal(res.status, 409);
+  const body = (await res.json()) as { error: string };
+  assert.match(body.error, /not running.*terminal/i);
 });
 
 // The shell arm's asymmetry - a shell is not the agent's conversation, so having a pane

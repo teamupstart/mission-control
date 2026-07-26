@@ -11,16 +11,16 @@ import { Tooltip } from "./Tooltip.tsx";
  * The conversation pane's two launchers: a terminal on this session's worktree, and this
  * session's own agent CLI on this conversation.
  *
- * Two buttons over ONE popover vocabulary, because the choice a human makes is the same for
- * both - which terminal - and only the argv differs. That is also why neither button learns
- * a backend's name: every row is folded out of what the daemon reports for
+ * The Terminal button owns the popover vocabulary, and the agent control is always plain:
+ * focus a live pane, hand off a live embedded driver, or explain why neither is possible.
+ * No control learns a backend's name: every row is folded out of what the daemon reports for
  * `TERMINAL_BACKEND_IDS`, so a fifth adapter is a file under `src/server/terminal/` and
  * changes nothing here and nothing in the stylesheet.
  *
  * The agent button changes SHAPE with the session, and that is the honest rendering of
  * `agentLaunchAction` rather than a flourish. A live pane is focused directly, an embedded
- * driver is handed to the configured terminal path, and only an exited terminal session
- * offers a backend choice.
+ * driver is handed to the configured terminal path, and every unavailable state is a
+ * disabled plain button with its reason.
  */
 
 /**
@@ -76,7 +76,6 @@ export function LaunchList({
 
 /** One launcher: a button, and the backend chooser it opens. */
 function Launcher({
-  kind,
   label,
   glyph,
   blocked,
@@ -84,7 +83,6 @@ function Launcher({
   verb,
   onChoose,
 }: {
-  kind: "shell" | "agent";
   label: string;
   glyph: string;
   /** Why this cannot be used, as a sentence, or null when it can. */
@@ -168,7 +166,7 @@ function Launcher({
       <Tooltip label={blocked ?? heading}>
         <button
           type="button"
-          className={`launch-btn${kind === "agent" ? " launch-agent" : ""}`}
+          className="launch-btn"
           aria-haspopup="menu"
           aria-expanded={open}
           disabled={Boolean(blocked)}
@@ -181,7 +179,7 @@ function Launcher({
       </Tooltip>
       {open && (
         <div
-          className={`launch-pop${kind === "agent" ? " launch-agent-pop" : ""}`}
+          className="launch-pop"
           role="menu"
           aria-label={heading}
         >
@@ -212,6 +210,7 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
   const agentLabel = AGENT_IDENTITY[session.agent].label;
   const action = agentLaunchAction(session);
+  const agentBlocked = agentLaunchBlockedReason(session);
   const noCheckout = shellLaunchBlockedReason(session);
 
   // A flash clears itself; a failure lingers longer, because it has a sentence to read.
@@ -221,8 +220,8 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
     return () => clearTimeout(timer);
   }, [flash]);
 
-  async function launch(backend: TerminalBackendId, payload: "shell" | "agent"): Promise<void> {
-    const result = await api.launchTerminal(session.id, backend, payload);
+  async function launch(backend: TerminalBackendId): Promise<void> {
+    const result = await api.launchTerminal(session.id, backend, "shell");
     setFlash(
       result.ok
         ? { text: `Opened in ${result.label ?? backend}`, error: false }
@@ -258,13 +257,12 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
         <span className={`launch-flash${flash.error ? " is-error" : ""}`}>{flash.text}</span>
       )}
       <Launcher
-        kind="shell"
         label="Terminal"
         glyph="❯_"
         blocked={noCheckout}
         heading="Open a shell in the worktree with"
         verb="Open a shell in"
-        onChoose={(backend) => void launch(backend, "shell")}
+        onChoose={(backend) => void launch(backend)}
       />
       {/* The shape change described at the top of this file: with a pane there is nothing
           to choose, so this is a plain button and not a chooser. */}
@@ -275,23 +273,30 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
             {agentLabel}
           </button>
         </Tooltip>
-      ) : action === "handoff" ? (
-        <Tooltip label="Stop the embedded driver and continue this conversation in a terminal">
-          <button type="button" className="launch-btn launch-agent" onClick={() => void handoff()}>
+      ) : session.runtime === "sdk" ? (
+        <Tooltip
+          label={
+            agentBlocked ??
+            "Stop the embedded driver and continue this conversation in a terminal"
+          }
+        >
+          <button
+            type="button"
+            className="launch-btn launch-agent"
+            disabled={action !== "handoff"}
+            onClick={() => void handoff()}
+          >
             <span className="launch-glyph-lead" aria-hidden>◆</span>
             Continue in terminal
           </button>
         </Tooltip>
       ) : (
-        <Launcher
-          kind="agent"
-          label={agentLabel}
-          glyph="◆"
-          blocked={agentLaunchBlockedReason(session)}
-          heading={`${agentLabel} · resume this conversation in`}
-          verb={`Resume this conversation in`}
-          onChoose={(backend) => void launch(backend, "agent")}
-        />
+        <Tooltip label={agentBlocked ?? "this session is unavailable"}>
+          <button type="button" className="launch-btn launch-agent" disabled>
+            <span className="launch-glyph-lead" aria-hidden>◆</span>
+            {agentLabel}
+          </button>
+        </Tooltip>
       )}
     </div>
   );

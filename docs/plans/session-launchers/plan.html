@@ -367,9 +367,8 @@
       <h1>Open a terminal, or the session's own agent CLI, from the conversation pane</h1>
       <p class="lede">
         Two controls at the top of every conversation. <b>Terminal</b> opens a shell in the
-        session's worktree. <b>Claude Code</b> / <b>Codex</b> / <b>pi</b> - labelled with
-        whichever harness the session actually runs - puts you on that session's conversation
-        in a real terminal.
+        session's worktree. The agent control focuses a live pane or hands a live embedded
+        conversation to a terminal.
       </p>
       <p class="meta">
         Source: <code>docs/plans/session-launchers/plan.md</code> · Mockups:
@@ -379,9 +378,8 @@
 
       <h2>The idea this rests on</h2>
       <p>
-        Both buttons open <b>the same list</b>, because the choice a human is making is the
-        same one - <i>which terminal</i>. What differs is only the argv that terminal is
-        handed:
+        The <b>Terminal</b> button opens the backend list. The agent control is always plain
+        because it does not create an independent session:
       </p>
 
       <div class="tablewrap">
@@ -391,7 +389,8 @@
           </thead>
           <tbody>
             <tr><td>Terminal</td><td>the operator's shell (<code>$SHELL</code>, else <code>/bin/sh</code>)</td></tr>
-            <tr><td>Agent</td><td><code>resolveAgentBin(agent)</code> + that harness's resume argv</td></tr>
+            <tr><td>Agent, live pane</td><td>none - use the existing focus route</td></tr>
+            <tr><td>Agent, embedded</td><td>the existing <code>handOffToTerminal</code> lifecycle</td></tr>
           </tbody>
         </table>
       </div>
@@ -401,8 +400,8 @@
         <code>launchHome({ name, cwd, argv, sidePane })</code>
         (<code>src/server/terminal/home.ts</code>) already opens a window at a cwd on
         whichever of tmux, cmux, WezTerm or Ghostty is installed. This plan adds one route
-        that calls it with two payloads, one browser-readable view of which backends can
-        serve it, and one toolbar.
+        for the shell payload, delegates embedded sessions to the existing handoff, adds one
+        browser-readable view of which backends can serve the shell, and adds one toolbar.
       </p>
       <p>
         What it does add is a <b>capability that was declared in the wrong place</b> - see
@@ -425,17 +424,16 @@
         </li>
         <li>
           <p>
-            <b>The agent button focuses a session that already has a pane.</b> Opening
+            <b>The agent button acts only on a running session.</b> Opening
             <code>claude --resume &lt;id&gt;</code> beside a live pane starts a second process
-            on one conversation file. So the button <i>focuses</i> when there is a pane to
-            focus and only <i>resumes</i> into a new terminal when there is not - an embedded
-            (<code>runtime: "sdk"</code>) session, or one whose agent has exited.
+            on one conversation file. So the button <i>focuses</i> when there is a pane and
+            uses the existing handoff when the session is embedded
+            (<code>runtime: "sdk"</code>), stopping its live driver before reopening the
+            conversation.
           </p>
           <p>
-            This changes the control's shape, which is the honest rendering of it: with a live
-            pane it is a plain button - no caret, no menu, nothing to choose - because
-            focusing raises the terminal the session is already in and there is no second
-            terminal to pick.
+            Both are plain buttons - no caret, no menu, nothing to choose. An exited session
+            is disabled and points at the Terminal button for access to its worktree.
           </p>
         </li>
         <li>
@@ -589,31 +587,26 @@
       <p>Order of refusals:</p>
       <ol>
         <li>Unknown session → 404.</li>
+        <li><code>payload: "agent"</code> with <code>"focus"</code> → 409 naming the existing focus action.</li>
         <li>
-          <code>!session.cwd</code> → 400, "this session has no checkout to open a terminal
-          in". <code>Session.cwd</code> is genuinely nullable: discovery could not read the
-          process cwd and no pane reported a path.
+          <code>payload: "agent"</code> with <code>"handoff"</code> → the existing
+          <code>handOffToTerminal</code> path; any other result → 409 with
+          <code>agentLaunchBlockedReason(session)</code>. <b>The daemon owns this rule, and
+          the browser reads the same predicate to decide the button's shape</b> - the two
+          must not disagree.
         </li>
         <li>
-          <code>payload: "agent"</code> where
-          <code>agentLaunchAction(session) !== "resume"</code> → 409 naming what to do
-          instead. <b>The daemon owns this rule, and the browser reads the same predicate to
-          decide the button's shape</b> - the two must not disagree, the same reason
-          <code>resolveDispatchRuntime</code> composes <code>resolveSessionRuntime</code>
-          rather than restating it.
+          Shell payload with <code>!session.cwd</code> → 400, "this session has no checkout
+          to open a terminal in". <code>Session.cwd</code> is genuinely nullable: discovery
+          could not read the process cwd and no pane reported a path.
         </li>
-        <li>
-          <code>payload: "agent"</code> with no <code>resume</code> spec or no
-          <code>session.agentSessionId</code> → 409 with the sentence.
-        </li>
-        <li>Backend unavailable → 409 with the same sentence the view carries.</li>
+        <li>Shell backend unavailable → 409 with the same sentence the view carries.</li>
       </ol>
 
       <p>
-        Then <code>launchHome({ name, cwd: session.cwd, argv, sidePane: false })</code>,
-        restricted to the requested backend. <code>sidePane: false</code> is deliberate and
-        differs from <code>spawnUniquely</code>: a dispatch wants a side pane for the operator
-        to watch from, and this <i>is</i> the operator asking for a window.
+        Only the shell arm reaches
+        <code>launchTerminal(backend, { name, cwd: session.cwd, argv })</code>, restricted to
+        the requested backend. The agent arm never calls it.
       </p>
 
       <div class="callout warn">
@@ -626,13 +619,13 @@
 
       <h3>The shared predicate</h3>
       <p><code>@shared/session-launch.ts</code>:</p>
-      <pre><code>agentLaunchAction(session): "focus" | "resume" | null
+      <pre><code>agentLaunchAction(session): "focus" | "handoff" | null
 agentLaunchBlockedReason(session): string | null</code></pre>
       <p>
-        <code>"focus"</code> when <code>canWriteTo(session)</code> - there is a pane, raise it.
-        <code>"resume"</code> when there is no pane, the harness <code>resumes</code>, and
-        <code>session.agentSessionId</code> is set. <code>null</code> otherwise, with the
-        reason saying which of those was missing. It takes the narrow shape
+        <code>"focus"</code> for a running session with a pane. <code>"handoff"</code> for a
+        live SDK session whose harness can resume and whose checkout and conversation id are
+        known. <code>null</code> otherwise, including every exited session, with a sentence
+        saying why. It takes the narrow shape
         <code>canMessage</code> takes, not a whole <code>Session</code>, so a
         <code>DiscoveredSession</code> caller can use it too.
       </p>
@@ -709,7 +702,7 @@ agentLaunchBlockedReason(session): string | null</code></pre>
 
       <figure>
         <svg viewBox="0 0 860 400" role="img"
-             aria-label="The dashboard's launcher control calls the terminal-targets route to list backends, then either the existing focus route when the session has a live pane, or the new launch route which composes argv from the harness resume spec and hands it to launchHome, which opens tmux, cmux, WezTerm or Ghostty.">
+             aria-label="The Terminal control lists backends and opens a shell through the launch route. The agent control uses the existing focus route for a live pane or the handoff route for a live embedded driver.">
           <defs>
             <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
                     markerHeight="7" orient="auto-start-reverse">
@@ -747,11 +740,11 @@ agentLaunchBlockedReason(session): string | null</code></pre>
           <text class="d-t-sm" x="433" y="152" text-anchor="middle">exists</text>
 
           <rect class="d-box-accent" x="320" y="188" width="226" height="42" rx="7" />
-          <text class="d-t" x="433" y="206" text-anchor="middle">POST …/:id/launch</text>
-          <text class="d-t-sm" x="433" y="222" text-anchor="middle">new</text>
+          <text class="d-t" x="433" y="206" text-anchor="middle">POST …/:id/handoff</text>
+          <text class="d-t-sm" x="433" y="222" text-anchor="middle">exists</text>
 
           <rect class="d-box" x="320" y="256" width="226" height="40" rx="7" />
-          <text class="d-t" x="433" y="281" text-anchor="middle">harness.resume.argv()</text>
+          <text class="d-t" x="433" y="281" text-anchor="middle">POST …/:id/launch (shell)</text>
 
           <rect class="d-box" x="320" y="316" width="226" height="40" rx="7" />
           <text class="d-t" x="433" y="341" text-anchor="middle">launchHome()</text>
@@ -764,10 +757,13 @@ agentLaunchBlockedReason(session): string | null</code></pre>
           <text class="d-l" x="243" y="176" text-anchor="middle">pane alive</text>
 
           <path class="d-arrow" d="M 206 166 C 250 176 258 209 316 209" />
-          <text class="d-l" x="238" y="226" text-anchor="middle">backend + payload</text>
+          <text class="d-l" x="238" y="226" text-anchor="middle">embedded</text>
+
+          <path class="d-arrow" d="M 206 172 C 250 230 258 276 316 276" />
+          <text class="d-l" x="246" y="270" text-anchor="middle">shell backend</text>
 
           <!-- inside daemon -->
-          <path class="d-arrow" d="M 433 230 L 433 252" />
+          <path class="d-arrow" d="M 433 230 L 433 312" />
           <path class="d-arrow" d="M 433 296 L 433 312" />
 
           <!-- daemon -> backends -->
@@ -778,11 +774,11 @@ agentLaunchBlockedReason(session): string | null</code></pre>
 
           <!-- focus -> backends -->
           <path class="d-arrow-good" d="M 546 139 C 640 139 700 200 740 290" />
-          <text class="d-l" x="690" y="176" text-anchor="middle">raises the existing pane</text>
+          <text class="d-l" x="690" y="176" text-anchor="middle">selects the existing pane</text>
         </svg>
         <figcaption>
-          The agent button's two destinations are the point: with a live pane it goes to the
-          existing focus route (green) and never reaches <code>launchHome</code> at all.
+          The agent button's two destinations are the existing focus and handoff routes. It
+          never opens a backend chooser or launches an exited conversation.
         </figcaption>
       </figure>
 
@@ -829,8 +825,8 @@ agentLaunchBlockedReason(session): string | null</code></pre>
             <tr>
               <td><code>session-launch-predicate.test.ts</code></td>
               <td>
-                Every session shape maps to exactly one of focus / resume / blocked - a shape
-                belonging to none is a dead button, one belonging to two is a race
+                Every session shape maps to focus / handoff / blocked; exited SDK sessions
+                and SDK sessions awaiting identity are pinned as blocked with reasons
               </td>
             </tr>
             <tr>
@@ -857,8 +853,8 @@ agentLaunchBlockedReason(session): string | null</code></pre>
       <h2>Done means</h2>
       <ul>
         <li>
-          README gains a section under the session capabilities describing both buttons, what
-          the agent button does with and without a live pane, and which four backends are
+          README gains a section under the session capabilities describing the Terminal
+          menu, the agent button's focus/handoff behavior, and which four backends are
           supported.
         </li>
         <li>No <code>CHANGELOG.md</code> edit.</li>
@@ -882,9 +878,15 @@ agentLaunchBlockedReason(session): string | null</code></pre>
         </li>
         <li><b>A keyboard shortcut</b>, for the reason given in phase 3.</li>
         <li>
-          <b>Opening a terminal on a session with no checkout.</b> Both buttons render
-          disabled with a sentence rather than disappearing, so the control does not flicker
-          as discovery settles.
+          <b>Resuming an exited session.</b> It needs an exclusive resume claim plus
+          transfer of <code>Task.sessionId</code>, <code>homeName</code>,
+          <code>terminalResourceId</code>, and backend-aware liveness. The existing handoff
+          owns that lifecycle only while there is a live driver to stop.
+        </li>
+        <li>
+          <b>Opening a terminal on a session with no checkout.</b> Terminal and embedded
+          handoff render disabled with a sentence rather than disappearing, so the control
+          does not flicker as discovery settles.
         </li>
       </ul>
 

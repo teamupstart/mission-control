@@ -1303,14 +1303,24 @@ body {
    Five rungs, each shedding the least useful ink first, so the bar stays ONE row from a
    maximised window down to roughly half a 16" screen instead of wrapping into three.
 
-   The thresholds are MEASURED, not guessed. Laid out in full the bar's children come to
-   1552px including gaps, and its container is the window less about 106px of chrome and
-   padding - so the untouched layout needs a window near 1660px and every rung below is the
-   width at which the previous state stops fitting: 1552 -> 1364 -> 1226 -> 1072 -> 1012 ->
-   723. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
+   The thresholds are MEASURED, and they carry HEADROOM on purpose. In each state the bar
+   needs roughly 1552 / 1364 / 1226 / 1072 / 1004 / 724px of content including gaps, and
+   its container is the window less about 106px of chrome and padding. But those figures
+   are not constants: the pulse is sized by its own text, so a fleet that reaches three
+   digits, or a review count appearing, moves them 10-25px on its own. A rung set to the
+   exact width its state stops fitting therefore opens a band - tens of px wide - where the
+   bar has already wrapped and its rung has not yet fired. Sampling at round window widths
+   does not find those; sweeping every integer width does, which is how they were found.
+
+   So each rung fires ~45px ABOVE the widest its previous state has been measured at. A
+   word disappearing 45px early is invisible; a bar jumping to two rows is not. Re-sweep
+   every integer width if you add a control - and note the real limit this leaves: laid out
+   in full the bar needs 1552 of a 1622px maximum container, so the two destination labels
+   only survive on a nearly-maximised window. `flex-wrap` below is still the last resort,
+   and on a busy enough fleet it is what catches the overflow. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
    that fires early is a word thrown away for nothing, and a rung that saves much more than
    the width it was crossed at leaves the bar half empty for the next several hundred px -
-   which is why the last two are split rather than one 349px cliff.
+   which is why the last two are split rather than one 369px cliff.
 
    Every label the ladder sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so
    it costs no width and no flex gap, clipped so it paints nothing, and still in the
@@ -1321,7 +1331,7 @@ body {
    The brand wordmark is the one exception and takes `display: none`, because it is
    decorative rather than a control's name: the mark beside it and the window itself
    already say which app this is. */
-@container topbar (max-width: 1550px) {
+@container topbar (max-width: 1600px) {
   /* Rung 1 (-188px): the two labelled destinations become glyphs. Both already carry a real
      icon (the ⌘/← and the ◷) and an `aria-label`, so this costs the word and nothing else.
      Foreman's word survives here and gives up its mode chip instead - the dot beside it
@@ -1346,13 +1356,13 @@ body {
     display: none;
   }
 }
-@container topbar (max-width: 1360px) {
+@container topbar (max-width: 1410px) {
   /* Rung 2 (-138px): the wordmark. */
   .brand h1 {
     display: none;
   }
 }
-@container topbar (max-width: 1220px) {
+@container topbar (max-width: 1270px) {
   /* Rung 3 (-154px): the filter collapses to its ⌕. Before the pulse's words, deliberately -
      an empty 184px text box is the least useful ink on the bar, and the words beside it are
      the readout an operator actually scans.
@@ -1389,11 +1399,14 @@ body {
     display: none;
   }
 }
-@container topbar (max-width: 1060px) {
-  /* Rung 4 (-60px): Foreman drops to its dot and queue badge. Split from rung 5
-     deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
-     the width it was crossed at leaves the bar visibly half empty for the next 300px of
-     window. */
+@container topbar (max-width: 1115px) {
+  /* Rung 4 (-84px): Foreman drops to its dot and queue badge, and the four zone gaps
+     tighten from 24px to 16px. Split from rung 5 deliberately - bundled, the two shed 369px
+     at once, and a rung that saves far more than the width it was crossed at leaves the bar
+     visibly half empty for the next 300px of window. */
+  .topbar {
+    column-gap: 16px;
+  }
   .foreman-btn .tb-label {
     position: absolute;
     width: 1px;
@@ -1404,10 +1417,10 @@ body {
     white-space: nowrap;
   }
 }
-@container topbar (max-width: 980px) {
+@container topbar (max-width: 1045px) {
   /* Rung 5 (-289px): the pulse drops to dots and figures. Last, because it is the readout an
      operator actually scans - and this is the rung that holds half a 16" screen (a 758px
-     container against 723px of content).
+     container against 699px of content).
 
      Every pulse segment carries a Tooltip precisely so it can survive this, and Tooltip
      always renders its label into a hidden `aria-describedby` node, so the meaning is still

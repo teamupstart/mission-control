@@ -201,10 +201,10 @@ opens the review queue.
 When the window narrows, the bar drops the least useful ink in five measured steps rather
 than wrapping onto extra rows - Workflows and Missions become their glyphs, then the
 wordmark goes, then the filter collapses to its **⌕** (click it or press <kbd>/</kbd> to
-reopen it; it stays open while a filter is active), then Foreman drops to its status dot,
-retaining its queue badge, and last the pulse drops to dots and figures. **Dispatch keeps
-its label at every width.** Nothing that collapses loses its name: the words are hidden
-visually, so every glyph still has a tooltip and still announces itself to a screen reader.
+reopen it), then Foreman drops to its status dot, and last the pulse drops to dots and
+figures. **Dispatch keeps its label at every width.** Nothing that collapses loses its
+name: the words are hidden visually, so every glyph still has a tooltip and still announces
+itself to a screen reader.
 
 The result is a single row from a maximised window down to a half-screen one (about 860px),
 where it used to be three. Below roughly 840px it falls back to wrapping, as before.
@@ -2354,8 +2354,8 @@ a terminal that talks to the daemon over localhost - with:
 npm run foreman
 ```
 
-Control it from the **Foreman** control in the top bar's fleet group, beside Dispatch:
-enable it, then pick a mode.
+Control it from the **Foreman** control in the top bar (beside Alerts): enable it, then
+pick a mode.
 
 | Mode | What it does |
 |------|--------------|
@@ -2383,8 +2383,8 @@ session it acted on shows a
 **◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
 brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
 session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
-**alert**. The top-bar control shows whether the worker is running and the queue depth; at
-roomier widths its chip also shows the mode. Open it for the full state at any width.
+**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
+depth.
 
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:

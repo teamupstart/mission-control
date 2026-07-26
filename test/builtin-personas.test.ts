@@ -26,7 +26,7 @@ const { BUILTIN_PERSONA_SOURCES } = await import("../src/server/workflows/builti
 // The generator itself, not a second implementation of it: a drift check that re-rendered the
 // module its own way would agree with itself and say nothing about `npm run personas`.
 const { builtinPersonaSources, renderBuiltinPersonaModule } = await import("../scripts/builtin-personas.ts");
-const { normalizePersonaName } = await import("../src/shared/workflow.ts");
+const { normalizePersonaName, personasForDisplay } = await import("../src/shared/workflow.ts");
 
 const root = resolve(import.meta.dirname, "..");
 const docsDir = join(root, "docs", "personas");
@@ -162,10 +162,8 @@ test("a Persona imported before it shipped keeps its name and shadows the built-
   });
   assert.equal(edited.ok, true);
 
-  // Archiving that copy retires it, and the built-in it was hiding comes back - in BOTH
-  // listings. An archived row that kept shadowing would drop the built-in out of
-  // `listPersonas(true)`, which is what the SSE snapshot is built from, while leaving it in
-  // the active list: the archived listing has to stay a superset of the active one.
+  // Archiving that copy retires it, and the built-in it was hiding comes back in both
+  // listings. The archived listing has to stay a superset of the active one.
   assert.equal(store.archivePersonaCas("legacy", 4, 900).ok, true);
   const activeIds = new Set(store.listPersonas().map((persona) => persona.id));
   const allIds = new Set(store.listPersonas(true).map((persona) => persona.id));
@@ -176,7 +174,7 @@ test("a Persona imported before it shipped keeps its name and shadows the built-
   for (const id of activeIds) assert.equal(allIds.has(id), true, `${id} vanished from the archived listing`);
 });
 
-test("archiving a shadowing row publishes the revealed built-in to the Registry", () => {
+test("the Registry stays addressable while display shadowing follows the live row", () => {
   const target = BUILTIN_PERSONAS[0]!;
   db.prepare(
     `INSERT INTO personas (id, name, normalized_name, description, guidance_md, runner_id,
@@ -186,7 +184,11 @@ test("archiving a shadowing row publishes the revealed built-in to the Registry"
 
   const registry = new Registry();
   const manager = new PersonaManager(registry, store);
-  assert.equal(registry.snapshot().personas.some((persona) => persona.id === target.id), false);
+  assert.equal(registry.snapshot().personas.some((persona) => persona.id === target.id), true);
+  assert.equal(
+    personasForDisplay(registry.snapshot().personas).some((persona) => persona.id === target.id),
+    false,
+  );
 
   const events: ServerEvent[] = [];
   const unsubscribe = registry.subscribe((event) => events.push(event));
@@ -195,6 +197,10 @@ test("archiving a shadowing row publishes the revealed built-in to the Registry"
 
   assert.equal(archived.ok, true);
   assert.equal(registry.snapshot().personas.some((persona) => persona.id === target.id), true);
+  assert.equal(
+    personasForDisplay(registry.snapshot().personas).some((persona) => persona.id === target.id),
+    true,
+  );
   assert.equal(
     events.some((event) => event.type === "persona_upsert" && event.persona.id === target.id),
     true,

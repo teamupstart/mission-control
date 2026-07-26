@@ -811,10 +811,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   **Import .md** uses, so a hand-imported copy and the shipped one cannot end up two
   spellings of one role. `builtinPersonaId` is **append-only**: it reaches durable storage as
   a draft's `personaId` and a published version's `sourcePersonaId`.
-  **A built-in is not a row, and the merge lives in `WorkflowStore`** - one seam, so the
-  library, draft validation and Publish's guidance snapshot all see the same catalog and no
-  caller can forget. Not being a row is what makes "always the Markdown this build was made
-  from" true without a seeding step that could half-run, and the write refusals
+  **A built-in is not a row, and the merge lives in `WorkflowStore`** - one seam for the
+  addressable catalog used by draft validation and Publish's guidance snapshot. The Registry
+  and SSE carry that complete catalog. `personasForDisplay` (`@shared/workflow.ts`) applies
+  live-row shadowing only where the server or browser presents Personas to choose from. Not
+  being a row is what makes "always the Markdown this build was made from" true without a
+  seeding step that could half-run, and the write refusals
   (`reason: "builtin"`) sit beside the merge for the same reason. A stored Persona SHADOWS a
   built-in of the same normalized name, and only history can produce one: an operator who
   imported the document before it shipped reserved that name durably, so their copy - which

@@ -103,6 +103,19 @@ export function normalizePersonaName(name: string): string {
   return name.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
 }
 
+export function personasForDisplay<
+  T extends Pick<Persona, "archivedAt" | "builtin" | "normalizedName">,
+>(personas: readonly T[]): T[] {
+  const liveOperatorNames = new Set(
+    personas
+      .filter((persona) => !persona.builtin && persona.archivedAt === null)
+      .map((persona) => persona.normalizedName),
+  );
+  return personas.filter(
+    (persona) => !persona.builtin || !liveOperatorNames.has(persona.normalizedName),
+  );
+}
+
 /** Workflow names use the same durable Unicode spelling rule as Persona names. */
 export const normalizeWorkflowName = normalizePersonaName;
 

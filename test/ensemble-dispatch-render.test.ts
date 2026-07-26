@@ -28,6 +28,30 @@ import type { EnsemblePreviewResult } from "../src/web/ensembles/types.ts";
 
 const compose = { repoRoot: "/repo", title: "Ship it", intent: "do the thing", attachments: [] };
 
+const persona = (
+  id: string,
+  name: string,
+  normalizedName: string,
+  builtin: boolean,
+): PersonaView => ({
+  id,
+  name,
+  normalizedName,
+  description: "",
+  guidanceMarkdown: "# Review",
+  runner: null,
+  model: null,
+  revision: builtin ? 1 : 3,
+  archivedAt: null,
+  createdAt: builtin ? 0 : 1,
+  updatedAt: builtin ? 0 : 1,
+  builtin,
+  execution: {
+    runner: { id: "claude", source: "default", unknown: null },
+    model: { id: "claude-haiku-4-5", source: "default" },
+  } as PersonaView["execution"],
+});
+
 /**
  * The body plus the footer controls, wired through the real hook - the same pairing the
  * dispatch modal renders. Static markup means no preview has happened, so the footer is in
@@ -131,6 +155,18 @@ test("the dispatch renders descriptor-driven strategy segments, lanes, and a two
   assert.match(html, /base pinned at launch/); // the plan strip names the pin
   assert.match(html, /Judged by/); // the evaluator selector (config carries an evaluator)
   assert.match(html, /no workflow/i); // the optional workflow-placement selector
+});
+
+test("dispatch Persona selectors hide a built-in shadowed by an operator row", () => {
+  const operator = persona("operator", "CODE RISK REVIEWER", "code risk reviewer", false);
+  const builtin = persona("builtin:code-risk-reviewer", "Code Risk Reviewer", "code risk reviewer", true);
+  for (const html of [
+    render({ personas: [operator, builtin] }),
+    render({ ensemble: freshEnsembleDraft("panel_vote"), personas: [operator, builtin] }),
+  ]) {
+    assert.match(html, /value="(?:persona:)?operator"/);
+    assert.doesNotMatch(html, /value="(?:persona:)?builtin:code-risk-reviewer"/);
+  }
 });
 
 test("a reviewed plan puts Launch in the primary slot with a Reviewed chip beside it", () => {

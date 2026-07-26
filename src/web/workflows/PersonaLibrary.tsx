@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LlmProviderView } from "@shared/types.ts";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { personasForDisplay, WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -71,7 +71,8 @@ export function PersonaLibrary({
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
   const ordered = useMemo(
-    () => [...personas].sort((a, b) => a.normalizedName.localeCompare(b.normalizedName, "en-US")),
+    () => personasForDisplay(personas)
+      .sort((a, b) => a.normalizedName.localeCompare(b.normalizedName, "en-US")),
     [personas],
   );
   const active = useMemo(() => ordered.filter((persona) => persona.archivedAt === null), [ordered]);

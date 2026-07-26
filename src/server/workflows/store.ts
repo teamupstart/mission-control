@@ -29,6 +29,7 @@ import {
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_TRIGGER_MODES,
+  personasForDisplay,
   type WorkflowTriggerSource,
   type WorkflowGateSummary,
   type WorkflowInspectorGateState,
@@ -990,11 +991,8 @@ export class WorkflowStore {
   }
 
   private withBuiltins(rows: Persona[]): Persona[] {
-    const taken = new Set(
-      rows.filter((persona) => persona.archivedAt === null).map((persona) => persona.normalizedName),
-    );
     return this.sortPersonas(
-      rows.concat(this.builtins.filter((persona) => !taken.has(persona.normalizedName))),
+      personasForDisplay(rows.concat(this.builtins)),
     );
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   normalizeWorkflowName,
+  personasForDisplay,
   WORKFLOW_LIMITS,
   type PersonaView,
   type WorkflowDraftNode,
@@ -148,7 +149,10 @@ export function WorkflowLibrary({
     [personas, workflow?.completionPolicy, workflow?.draft],
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
-  const activePersonas = personas.filter((persona) => persona.archivedAt === null);
+  const activePersonas = useMemo(
+    () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
+    [personas],
+  );
   // One walk answers both questions: the sentences the Graph-view banner shows, and whether
   // the Pipeline can draw this graph at all. Passing the live Personas is what keeps a draft
   // reviewer's blocker from reading "Missing persona".

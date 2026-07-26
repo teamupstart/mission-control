@@ -10,6 +10,7 @@ import type {
   WorkflowSummary,
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
+import { personasForDisplay } from "@shared/workflow.ts";
 import {
   ENSEMBLE_STRATEGY_INFO,
   type EnsembleStrategyInfo,
@@ -225,6 +226,7 @@ export function EnsembleDispatch({
 }): React.JSX.Element {
   const descriptor = ENSEMBLE_STRATEGY_INFO[ensemble.strategyId];
   const { preview, reviewed, previewIssues, estimate } = launch;
+  const selectablePersonas = personasForDisplay(personas);
 
   const issuesFor = (key: string): StrategyIssue[] =>
     previewIssues.filter((issue) => issueMatchesField(issue, key));
@@ -369,7 +371,7 @@ export function EnsembleDispatch({
           key={field.key}
           field={field}
           config={ensemble.config}
-          personas={personas}
+          personas={selectablePersonas}
           issues={issuesFor(field.key)}
           onChange={setConfig}
         />
@@ -381,14 +383,14 @@ export function EnsembleDispatch({
             key={field.key}
             field={field}
             config={ensemble.config}
-            personas={personas}
+            personas={selectablePersonas}
             issues={issuesFor(field.key)}
             onChange={setConfig}
           />
         ))}
         {isObject(getConfigPath(ensemble.config, "evaluator")) && (
           <EvaluatorPicker
-            personas={personas}
+            personas={selectablePersonas}
             selectedId={stringOrNull(getConfigPath(ensemble.config, "evaluator.personaId"))}
             issues={evaluatorIssues}
             onChange={(persona) => {

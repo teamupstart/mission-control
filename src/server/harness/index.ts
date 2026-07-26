@@ -113,9 +113,11 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // whatever is highlighted now. See `codex/sdk.ts`. Paired with `runtimes` in
     // `HARNESS_CAPABILITIES.codex` (`harness-sdk.test.ts` fails until they agree).
     sdk: codexSdk,
-    // `codex resume <uuid>` - a SUBCOMMAND, not a flag, and the id is positional. Non-null
-    // beside `sdk` is still a separate capability: reopening Codex's own rollout is not
-    // the same question as driving it through app-server.
+    // `codex resume <uuid>` - a SUBCOMMAND, not a flag, and the id is positional. Codex's
+    // interactive and programmatic surfaces share the same session store, so an app-server
+    // thread id reopens the same rollout in the TUI. No model, effort, or sandbox flags ride
+    // along: the resumed rollout carries its own settings. This remains separate from `sdk`;
+    // Pi's non-null `resume` beside `sdk: null` demonstrates why the split is load-bearing.
     resume: { argv: (agentSessionId) => ["resume", agentSessionId] },
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image

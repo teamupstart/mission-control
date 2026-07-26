@@ -433,8 +433,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     runtimes: ["terminal", "sdk"],
     // `codex resume <uuid>`. Measured against `codex resume --help`, which documents the
     // positional as "Session id (UUID) or session name". Resuming and being drivable
-    // programmatically remain different capabilities, which is exactly why this flag
-    // could not stay on `SdkSpec`.
+    // programmatically remain different capabilities: Codex supports both, while Pi's
+    // non-null resume beside a terminal-only runtime demonstrates why this flag could not
+    // stay on `SdkSpec`.
     resumes: true,
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the

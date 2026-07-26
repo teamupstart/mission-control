@@ -1337,16 +1337,6 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
   await handle.stop();
 });
 
-test("the resume argv opens the same thread in a terminal", () => {
-  // Verified against codex-cli 0.145.0. No model, effort or sandbox flags ride along - a
-  // resumed thread carries its own, and re-stating them would change a conversation the
-  // operator asked to CONTINUE.
-  assert.deepEqual(codexSdkSpec({ connect: async () => new FakeServer({}) }).resumeArgv("abc"), [
-    "resume",
-    "abc",
-  ]);
-});
-
 // ---- the pure projections, on their own ------------------------------------------------
 
 test("an approval prompt leads with the reason and shows what is being run", () => {

@@ -8,10 +8,9 @@ import { join } from "node:path";
 // ONE FACT written in two files, and it spent its whole life in the wrong one.
 //
 // The argv lived on `SdkSpec`, so only a harness that ALSO had an embedded driver could
-// answer it. Claude had one; Codex and pi declared `sdk: null` and were therefore unable to
-// say how to continue themselves - not because their CLIs cannot (all three can, measured
-// below) but because the slot was welded to an unrelated capability. Anything reading
-// "can this session be reopened" got Claude and two false negatives.
+// answer it. Pi remains the demonstration that those capabilities are independent: its CLI
+// can continue a session although it has no embedded driver. Codex now supports both, which
+// is equally valid; the slot was still welded to an unrelated capability.
 //
 // Both halves now have to agree. `HarnessCapabilities.resumes` is the pure boolean the
 // BROWSER reads to shape the agent launcher on the conversation pane; `Harness.resume` is
@@ -47,7 +46,8 @@ test("every agent declares a resume slot, and the two halves agree", () => {
 test("resume is independent of having an embedded driver", () => {
   // The whole reason this capability moved. Pi has no driver and can still reopen its
   // conversation; if these two ever have to agree again, the split has been undone.
-  // Codex is intentionally not used as the negative example: it now ships an SDK driver.
+  // Codex supports both capabilities; that is valid and does not weaken Pi's counterexample.
+  assert.notEqual(HARNESSES.codex.sdk, null);
   assert.notEqual(HARNESSES.codex.resume, null);
   assert.equal(HARNESSES.pi.sdk, null);
   assert.notEqual(HARNESSES.pi.resume, null);

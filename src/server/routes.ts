@@ -223,6 +223,9 @@ import {
 } from "@shared/protocol.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
+// The one statement of which patch paths are usable, imported rather than restated: a route
+// that spelled the rule itself would drift from the invocation that has to survive it.
+import { snapshotPathRefusal } from "./git/ensemble-snapshot.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -1637,12 +1640,35 @@ export function buildApp(
     }
     const adapter = artifactAdapterFor(artifact.kind);
     if (!adapter) return c.json({ error: `no adapter for ${artifact.kind} artifacts` }, 409);
+    // Two cheaper questions than "the whole patch", both narrowing the patch text alone:
+    // `?path=` is one file's hunks, `?filesOnly=1` is the file list with no patch body at all.
+    // The statistics come back complete either way, so `files` - never an empty patch - is what
+    // says whether a file was touched.
+    //
+    // ONE path per request, and a repeated key is refused rather than quietly reduced to the
+    // first. The `/api/sessions/:id/standards` route above is the precedent for why there is no
+    // list form: a few hundred encoded paths as query params overrun Node's 16KB default
+    // `maxHeaderSize` and the request never arrives, which the caller can only see as an empty
+    // answer. Taking the first of several would be the same silent wrongness in miniature - a
+    // caller that meant to batch would get one file's diff labelled as the set.
+    const requestedPaths = c.req.queries("path") ?? [];
+    if (requestedPaths.length > 1) {
+      return c.json({ error: "one path per request: repeat the request, not the path parameter" }, 400);
+    }
+    const path = requestedPaths[0];
+    if (path !== undefined) {
+      const refusal = snapshotPathRefusal(path);
+      if (refusal) return c.json({ error: refusal }, 400);
+    }
+    const filesOnly = ["1", "true"].includes(c.req.query("filesOnly") ?? "");
     // Materialized on demand from the immutable commit, never stored - the ref lives in the shared
     // git dir, so the run's repo root can read it. The cap is explicit and its truncation honest.
     const maxBytes = boundedLimit(c.req.query("maxBytes"), 400 * 1024, 4 * 1024 * 1024);
     const material = await adapter.materialize(artifact.locator, {
       repoPath: detail.run.repoRoot,
       maxPatchBytes: maxBytes,
+      paths: path === undefined ? undefined : [path],
+      patch: !filesOnly,
     });
     return c.json(material);
   });

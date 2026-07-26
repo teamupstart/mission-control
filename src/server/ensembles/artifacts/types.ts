@@ -53,6 +53,11 @@ export interface ArtifactRecoveryInput {
 
 /** Bounded, on-demand evidence for one ready artifact - re-derived, never stored. */
 export interface ArtifactMaterialization {
+  /**
+   * Every file this artifact changed. COMPLETE in every response, whatever was asked of the
+   * patch - a per-file or patch-less request narrows the patch text and nothing else, so this
+   * list, never the presence of hunks, is what answers "did this candidate touch that file".
+   */
   files: Array<{
     path: string;
     oldPath: string | null;
@@ -67,6 +72,12 @@ export interface ArtifactMaterialization {
   patch: string;
   truncated: boolean;
   omittedBytes: number;
+  /**
+   * Which paths `patch` covers: `null` for the whole difference, the requested paths for a
+   * per-file cut, and an EMPTY list when no patch was rendered at all. Additive - a caller
+   * that asked for nothing in particular still gets `null` and the behaviour it always had.
+   */
+  patchPaths: string[] | null;
 }
 
 export interface ArtifactAdapter {
@@ -76,10 +87,19 @@ export interface ArtifactAdapter {
   /** Turn a member's worktree into an immutable artifact WITHOUT disturbing it. */
   capture(input: ArtifactCaptureInput): Promise<CapturedArtifact>;
   recover(input: ArtifactRecoveryInput): Promise<CapturedArtifact | null>;
-  /** Re-derive bounded evidence from a ready locator. Reads the immutable artifact, never a live worktree. */
+  /**
+   * Re-derive bounded evidence from a ready locator. Reads the immutable artifact, never a live
+   * worktree.
+   *
+   * `paths` and `patch` are the two CHEAPER questions than "the whole patch", and both narrow
+   * the patch alone: the statistics stay complete so no answer here can be mistaken for a
+   * smaller change than the artifact holds. Paths are repository-relative, and an adapter
+   * refuses one it cannot honour (absolute, escaping, empty) rather than sanitizing it into a
+   * different path and answering confidently about the wrong file.
+   */
   materialize(
     locator: ArtifactLocator,
-    input: { repoPath: string; maxPatchBytes?: number },
+    input: { repoPath: string; maxPatchBytes?: number; paths?: string[]; patch?: boolean },
   ): Promise<ArtifactMaterialization>;
   /** Whether the artifact's private ref still resolves to exactly the commit it recorded. */
   verify(locator: ArtifactLocator, input: { repoPath: string }): Promise<boolean>;

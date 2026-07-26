@@ -214,6 +214,78 @@ export interface SnapshotDiff {
   truncated: boolean;
   /** Exactly how many bytes of patch were left out. Zero when `truncated` is false. */
   omittedBytes: number;
+  /**
+   * Which paths the returned `patch` covers, so a reader can tell a CUT from the whole thing.
+   *
+   * `null` is the whole difference - the historical behaviour and what a caller asking nothing
+   * gets. A list is exactly the paths the patch was filtered to. An EMPTY list is "no patch was
+   * rendered at all" (`patch: false`), which is the one reading that must not be confused with
+   * "this artifact changed nothing": `files` is complete in every case, so it, not the patch
+   * text, is what answers whether a file was touched.
+   */
+  patchPaths: string[] | null;
+}
+
+/**
+ * The subprocess seam for one materialization - `run` in production, a recorder in a test.
+ *
+ * Same shape and same reason as `PaneDeps.pane`: a test drives the REAL code path - the argv,
+ * the `--` separation, the literal-pathspec env, the numstat parse and the cap - and observes
+ * only the spawns. That is what lets "asking for stats alone runs ONE git invocation" be an
+ * assertion rather than a comment, and a skipped subprocess is the entire value of `filesOnly`.
+ */
+export interface SnapshotDiffDeps {
+  run: typeof run;
+}
+
+export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
+
+/**
+ * Why one patch-filter path cannot be used, as a sentence, or null when it can.
+ *
+ * The rule is REFUSAL, never sanitization: a path that has been quietly rewritten still
+ * returns a patch, and a caller comparing "the diff of src/a.ts" against a diff of something
+ * else has no way to notice. Three things are refused - an empty path (names nothing), an
+ * absolute path (names something outside the repository's own vocabulary), and a `..` segment
+ * (walks out of the tree the artifact is a picture of).
+ *
+ * Pathspec MAGIC (`:(glob)**`, `:!x`, `:/`) is deliberately NOT refused here: the invocation
+ * that consumes these runs with `GIT_LITERAL_PATHSPECS=1`, so `:(glob)**` names a file called
+ * `:(glob)**` and nothing else. Refusing it would deny a legal filename; reading it as magic
+ * would turn a single-file request into a multi-file expansion, which is the failure this pairs
+ * with the env var to rule out.
+ */
+export function snapshotPathRefusal(path: string): string | null {
+  if (path === "") return "a patch path must name a file, not the empty string";
+  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) {
+    return `a patch path must be repository-relative, got "${path}"`;
+  }
+  if (path.split(/[\\/]/).includes("..")) {
+    return `a patch path must not contain ".." segments, got "${path}"`;
+  }
+  return null;
+}
+
+/**
+ * A path this materialization will not filter on.
+ *
+ * Typed rather than a bare `Error` because the caller nearest the operator - the HTTP route -
+ * has to answer 400 rather than 500: a query parameter nobody could have satisfied is the
+ * caller's mistake, not the daemon failing.
+ */
+export class SnapshotPathRefused extends Error {
+  readonly path: string;
+  constructor(path: string, why: string) {
+    super(why);
+    this.name = "SnapshotPathRefused";
+    this.path = path;
+  }
+}
+
+function requirePatchPath(path: string): string {
+  const why = snapshotPathRefusal(path);
+  if (why) throw new SnapshotPathRefused(path, why);
+  return path;
 }
 
 /**
@@ -228,30 +300,90 @@ export interface SnapshotDiff {
  * The statistics are always complete; only the patch is capped. `truncated` and
  * `omittedBytes` are the disclosure that goes with it, because an evaluator that cannot
  * tell a small change from a truncated one will happily call the second one tidy.
+ *
+ * That invariant is what `paths` and `patch` extend rather than bend. A filter narrows the
+ * PATCH invocation only, so "which files did this member touch" is answered identically
+ * whether the caller wanted one file's hunks, all of them, or none: `files` is the complete
+ * list either way, and `patchPaths` says which of it the patch text covers.
  */
-export async function materializeSnapshotDiff(input: {
-  /** Any working directory inside the repository holding both commits. */
-  repoPath: string;
-  baseSha: string;
-  snapshotSha: string;
-  maxPatchBytes?: number;
-}): Promise<SnapshotDiff> {
+export async function materializeSnapshotDiff(
+  input: {
+    /** Any working directory inside the repository holding both commits. */
+    repoPath: string;
+    baseSha: string;
+    snapshotSha: string;
+    maxPatchBytes?: number;
+    /**
+     * Restrict the PATCH to these repository-relative paths. Absent or empty is the whole
+     * patch. Each is validated by `snapshotPathRefusal` and taken LITERALLY - see below.
+     */
+    paths?: string[];
+    /**
+     * Render a patch at all. `false` skips the second git invocation entirely, which is the
+     * whole point of asking: the file list and its statistics cost one `--numstat`, and a
+     * caller that only needs to know WHICH files a candidate touched should not pay for the
+     * bytes of every hunk to find out.
+     */
+    patch?: boolean;
+  },
+  deps: SnapshotDiffDeps = defaultSnapshotDiffDeps,
+): Promise<SnapshotDiff> {
   const baseSha = requireSha("baseSha", input.baseSha);
   const snapshotSha = requireSha("snapshotSha", input.snapshotSha);
   const budget = input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
+  const filter = (input.paths ?? []).map(requirePatchPath);
+  const wantPatch = input.patch ?? true;
 
   // `-z` rather than the default: a rename's two paths and any path needing quotes both
   // become unambiguous NUL-separated fields instead of something to un-escape by hand.
-  const numstat = await git(input.repoPath, [
-    "diff", "--numstat", "-z", "--find-renames", baseSha, snapshotSha,
-  ]);
+  //
+  // NEVER filtered, however narrow the patch request was. The statistics are the answer to a
+  // different question - what this artifact changed - and a reader given one file's hunks
+  // beside one file's statistics cannot tell a focused candidate from a sprawling one.
+  const numstat = await deps.run(
+    "git",
+    ["-C", input.repoPath, "diff", "--numstat", "-z", "--find-renames", baseSha, snapshotSha],
+    { timeoutMs: 60_000 },
+  );
   requireOk("git diff --numstat", numstat);
   const files = parseNumstatZ(numstat.stdout);
 
-  const patchRun = await run(
+  const stats = {
+    baseSha,
+    snapshotSha,
+    files,
+    filesChanged: files.length,
+    insertions: files.reduce((n, f) => n + f.insertions, 0),
+    deletions: files.reduce((n, f) => n + f.deletions, 0),
+  };
+
+  if (!wantPatch) {
+    // No second subprocess, and an empty `patchPaths` saying so. Nothing was rendered, so
+    // nothing was cut short either - the truncation disclosure is about a patch that exists.
+    return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: [] };
+  }
+
+  const patchRun = await deps.run(
     "git",
-    ["-C", input.repoPath, "diff", "--find-renames", baseSha, snapshotSha],
-    { timeoutMs: 60_000, maxBuffer: PATCH_MAX_BUFFER },
+    [
+      "-C", input.repoPath, "diff", "--find-renames", baseSha, snapshotSha,
+      // `--` first, so a path can never be read as a flag or a revision: a tracked file
+      // named `--exploit` is a legal filename and an illegal argument, and only the
+      // separator tells the two apart.
+      ...(filter.length > 0 ? ["--", ...filter] : []),
+    ],
+    {
+      timeoutMs: 60_000,
+      maxBuffer: PATCH_MAX_BUFFER,
+      // `--` stops flag parsing; it does NOT stop PATHSPEC parsing, and those are two
+      // different readings of the same word. `:(glob)**`, `:!src` and `:/` are all magic
+      // after the separator, so a "one file" request could quietly return hunks for many -
+      // exactly the expansion a per-file cut exists to avoid. Literal pathspecs make every
+      // path name a file, including the one whose name looks like magic. Set on this
+      // invocation because it is the only one that ever carries a pathspec, and set
+      // explicitly rather than inherited so an operator's exported value cannot decide it.
+      env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" },
+    },
   );
   if (patchRun.overflowed) {
     // Refuse rather than report a truncation whose size we would have to invent. A caller
@@ -265,15 +397,11 @@ export async function materializeSnapshotDiff(input: {
   const { patch, truncated, omittedBytes } = capPatch(patchRun.stdout, budget);
 
   return {
-    baseSha,
-    snapshotSha,
-    files,
-    filesChanged: files.length,
-    insertions: files.reduce((n, f) => n + f.insertions, 0),
-    deletions: files.reduce((n, f) => n + f.deletions, 0),
+    ...stats,
     patch,
     truncated,
     omittedBytes,
+    patchPaths: filter.length > 0 ? filter : null,
   };
 }
 

@@ -12,7 +12,10 @@ import {
   resetWorktreeToCommit,
   resolveEnsembleRef,
   restoreSnapshotIntoWorktree,
+  snapshotPathRefusal,
+  type SnapshotDiffDeps,
 } from "../src/server/git/ensemble-snapshot.ts";
+import { run } from "../src/server/util/exec.ts";
 
 // What is at stake: taking a picture of an agent's work without touching the work.
 //
@@ -378,4 +381,184 @@ test("a diff between ids that are not full commits is refused", async () => {
     materializeSnapshotDiff({ repoPath: repo, baseSha: "HEAD", snapshotSha: baseSha }),
     /full 40-character commit id/,
   );
+});
+
+// ---- cutting the patch down: one file, or none at all ----------------------------------
+//
+// What is at stake here is per-file evidence that stays HONEST. Two things can go wrong with
+// a cheaper answer, and both look fine from the outside. A filter that git reads as anything
+// other than "this exact file" - a flag, a revision, a `:(glob)**` expansion - returns hunks
+// for files the caller never asked about, under a label saying it is one file's diff. And a
+// cut that narrowed the STATISTICS too would make a sprawling candidate indistinguishable
+// from a focused one, which is precisely the comparison these cuts exist to serve. So: the
+// filter reaches the patch invocation only, it reaches it literally, and `files` is complete
+// in every response - including the one with no patch in it at all.
+
+/** How many files a patch actually covers, read off its own headers. */
+function patchFiles(patch: string): string[] {
+  return [...patch.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]!);
+}
+
+/** The exec seam, wrapping the REAL `run` so the invocations are counted, never faked. */
+function recordingDeps(): { calls: string[][]; deps: SnapshotDiffDeps } {
+  const calls: string[][] = [];
+  const recorded: SnapshotDiffDeps["run"] = (bin, args, opts) => {
+    calls.push(args);
+    return run(bin, args, opts);
+  };
+  return { calls, deps: { run: recorded } };
+}
+
+/** A member whose divergence includes files whose NAMES are the hazard. */
+async function capturedWithNastyNames(name: string) {
+  const { repo, member, baseSha } = mkRepoWithMember(name);
+  writeFileSync(join(member, "keep.txt"), "edited by the member\n");
+  writeFileSync(join(member, "--exploit"), "a filename that is also a flag\n");
+  writeFileSync(join(member, ":(glob)**"), "a filename that is also pathspec magic\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+  return { repo, member, baseSha, snapshotSha: captured.snapshotSha };
+}
+
+test("a path filter cuts the patch to that file and leaves the statistics whole", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("per-file");
+
+  const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["keep.txt"] });
+
+  assert.deepEqual(patchFiles(cut.patch), ["keep.txt"], "only the requested file's hunks");
+  assert.ok(patchFiles(whole.patch).length > 1, "the whole patch really does cover more");
+  assert.deepEqual(cut.patchPaths, ["keep.txt"], "the response says which cut this is");
+  assert.equal(whole.patchPaths, null, "and null is still the whole difference");
+  // The point of the cut is a cheaper PATCH, never a smaller picture of the change.
+  assert.deepEqual(cut.files, whole.files, "the file list is complete in a filtered response");
+  assert.equal(cut.filesChanged, whole.filesChanged);
+  assert.equal(cut.insertions, whole.insertions);
+  assert.equal(cut.deletions, whole.deletions);
+});
+
+test("a path that is also a flag is a path: `--` separates them", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("flag-named");
+
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["--exploit"] });
+
+  // Without the separator git parses `--exploit` as an unknown option and the whole call
+  // fails - or worse, a future name matches a real flag and the diff quietly changes shape.
+  assert.deepEqual(patchFiles(cut.patch), ["--exploit"]);
+  assert.ok(
+    cut.files.some((f) => f.path === "--exploit"),
+    "and the statistics still list it",
+  );
+});
+
+test("a path that looks like pathspec magic names a file, and expands to nothing else", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("magic-named");
+
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [":(glob)**"] });
+
+  // `--` stops FLAG parsing and nothing else: read as magic, `:(glob)**` matches every file
+  // in the repository, so a "one file" request would answer with the whole patch under a
+  // per-file label. `GIT_LITERAL_PATHSPECS=1` is what makes it the filename it is.
+  assert.deepEqual(patchFiles(cut.patch), [":(glob)**"], "exactly the file with that name");
+  assert.deepEqual(cut.patchPaths, [":(glob)**"]);
+});
+
+test("a magic-looking path that names no file returns an empty patch, never an expansion", async () => {
+  // The same request against a repository that has no such file. The honest answer is "no
+  // hunks"; the dangerous one is "here is everything, because `**` matched it".
+  const { repo, member, baseSha } = mkRepoWithMember("magic-absent");
+  diverge(member);
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: [":(glob)**"],
+  });
+
+  assert.equal(cut.patch, "", "no file by that name, so no hunks");
+  assert.ok(cut.files.length > 1, "while the statistics still describe the whole change");
+  assert.deepEqual(cut.patchPaths, [":(glob)**"]);
+});
+
+test("a filtered patch that overruns its budget still reports what it left out", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("filtered-truncation");
+  writeFileSync(join(member, "big.txt"), Array.from({ length: 4000 }, (_, i) => `line ${i}\n`).join(""));
+  writeFileSync(join(member, "small.txt"), "also changed\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const whole = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 10_000_000,
+    paths: ["big.txt"],
+  });
+  const capped = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 2048,
+    paths: ["big.txt"],
+  });
+
+  assert.equal(whole.truncated, false);
+  assert.equal(capped.truncated, true);
+  // The disclosure is measured against the FILTERED patch, which is the only one that was
+  // ever rendered - a number quoted against the whole diff would overstate what is missing.
+  assert.equal(
+    Buffer.byteLength(capped.patch, "utf8") + capped.omittedBytes,
+    Buffer.byteLength(whole.patch, "utf8"),
+  );
+  assert.deepEqual(capped.files, whole.files, "and the statistics are complete either way");
+});
+
+test("asking for the file list alone runs one git invocation and renders no patch", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("files-only");
+  const { calls, deps } = recordingDeps();
+
+  const filesOnly = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, patch: false }, deps);
+
+  // The saving IS the skipped subprocess: a file-touch matrix over N candidates that still
+  // rendered N patches would cost exactly what asking for the list was meant to avoid.
+  assert.equal(calls.length, 1, `expected one git invocation, got ${calls.length}`);
+  assert.ok(calls[0]!.includes("--numstat"), "and it is the statistics one");
+  assert.equal(filesOnly.patch, "");
+  assert.deepEqual(filesOnly.patchPaths, [], "empty says no patch was rendered at all");
+  assert.equal(filesOnly.truncated, false, "nothing was rendered, so nothing was cut short");
+  assert.equal(filesOnly.omittedBytes, 0);
+
+  const withPatch = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
+  assert.deepEqual(filesOnly.files, withPatch.files, "the file list is the same complete list");
+  assert.equal(filesOnly.filesChanged, withPatch.filesChanged);
+});
+
+test("a patch path that is absolute, escaping or empty is refused rather than repaired", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("path-refusal");
+
+  for (const bad of ["/etc/passwd", "../outside.txt", "src/../../etc/passwd", ""]) {
+    assert.ok(snapshotPathRefusal(bad), `the rule should refuse: ${JSON.stringify(bad)}`);
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [bad] }),
+      /patch path/,
+      `should refuse: ${JSON.stringify(bad)}`,
+    );
+  }
+  // Refusal, not sanitization: the legal neighbours of those paths still work, so nothing was
+  // quietly rewritten into a different file and answered about confidently.
+  for (const ok of ["keep.txt", "--exploit", ":(glob)**", "a/b/c.txt"]) {
+    assert.equal(snapshotPathRefusal(ok), null, `should accept: ${ok}`);
+  }
 });

@@ -28,6 +28,27 @@ export function refreshDriverBranches(
   registry.applyDriverBranches(new Map(targets.map((t) => [t.id, read(t.cwd)])));
 }
 
+export async function pollOnce(
+  registry: Registry,
+  find: typeof discover = discover,
+  refresh: (registry: Registry) => void = refreshDriverBranches,
+): Promise<void> {
+  try {
+    const sessions = await find();
+    registry.applyDiscovery(sessions);
+  } catch (err) {
+    console.error("[poller] sweep failed:", err);
+  }
+
+  // Driver-run sessions have no process on a tty, so their filesystem refresh must not
+  // depend on terminal discovery succeeding.
+  try {
+    refresh(registry);
+  } catch (err) {
+    console.error("[poller] driver branch refresh failed:", err);
+  }
+}
+
 /**
  * Drive passive discovery on a fixed interval. Each tick sweeps the OS, then
  * reconciles the registry (which emits SSE events for anything that changed).
@@ -39,15 +60,9 @@ export function startPoller(registry: Registry): () => void {
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
-    try {
-      const sessions = await discover();
-      registry.applyDiscovery(sessions);
-      // After the sweep, so a session that has just been rediscovered on the process table
-      // and one the daemon runs itself are both current before the PR poller reads either.
-      refreshDriverBranches(registry);
-    } catch (err) {
-      console.error("[poller] sweep failed:", err);
-    }
+    // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the
+    // daemon runs itself are both current before the PR poller reads either.
+    await pollOnce(registry);
     if (stopped) return;
     timer = unref(setTimeout(tick, POLL_INTERVAL_MS));
   };

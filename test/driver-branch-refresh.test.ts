@@ -7,7 +7,7 @@ import { join } from "node:path";
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-driver-branch-"));
 const { Registry } = await import("../src/server/registry.ts");
-const { refreshDriverBranches } = await import("../src/server/discovery/poller.ts");
+const { pollOnce, refreshDriverBranches } = await import("../src/server/discovery/poller.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 /**
@@ -142,4 +142,25 @@ test("an unchanged branch emits nothing", () => {
   refreshDriverBranches(reg, () => BRANCH);
 
   assert.equal(emitted, 0, "a steady branch must not churn SSE on every 1.5s tick");
+});
+
+test("a failed terminal sweep does not skip the driver branch refresh", async () => {
+  const reg = new Registry();
+  sdkSession(reg);
+
+  const previousError = console.error;
+  console.error = () => {};
+  try {
+    await pollOnce(
+      reg,
+      async () => {
+        throw new Error("terminal backend unavailable");
+      },
+      (registry) => refreshDriverBranches(registry, () => BRANCH),
+    );
+  } finally {
+    console.error = previousError;
+  }
+
+  assert.equal(reg.snapshot().sessions[0]?.gitBranch, BRANCH);
 });

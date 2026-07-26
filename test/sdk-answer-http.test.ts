@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,6 +80,7 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
   const answered: { id: string; requestId: string; answer: SessionRequestAnswer }[] = [];
   const stopped: string[] = [];
   const modes: string[] = [];
+  const efforts: string[] = [];
   // A real claim set, not a stub: the concurrency test below is only meaningful if the
   // fake refuses a second handoff the way the supervisor does.
   const handingOff = new Set<string>();
@@ -88,6 +89,7 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     answered,
     stopped,
     modes,
+    efforts,
     /** Let a test say the driver has already gone, which is what refuses a REPEAT. */
     killDriver: () => (live = false),
     handleFor() {
@@ -111,11 +113,15 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     async setPermissionMode(id: string, mode: string) {
       modes.push(`${id}:${mode}`);
     },
+    async setEffort(id: string, effort: string) {
+      efforts.push(`${id}:${effort}`);
+    },
     taskLiveness: () => null,
   } as unknown as SdkSupervisor & {
     answered: typeof answered;
     stopped: string[];
     modes: string[];
+    efforts: string[];
     /** Say the driver has gone, so the live-driver preflight refuses the next handoff. */
     killDriver: () => void;
   };
@@ -422,6 +428,77 @@ test("kill and mode controls use the embedded driver", async () => {
   });
   assert.equal(killed.status, 200);
   assert.deepEqual(supervisor.stopped, ["sdk:controls"]);
+});
+
+test("scheduled Codex controls wait for rollout observation before changing the card", async () => {
+  const rolloutPath = join(home, "codex-controls-rollout.jsonl");
+  writeFileSync(
+    rolloutPath,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-07-25T12:00:00.000Z",
+        payload: {
+          id: "thread-1",
+          cwd: "/wt/codex",
+          timestamp: "2026-07-25T12:00:00.000Z",
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        timestamp: "2026-07-25T12:00:01.000Z",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      }),
+      "",
+    ].join("\n"),
+  );
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: "sdk:codex-controls",
+    agent: "codex",
+    name: "Codex controls",
+    cwd: "/wt/codex",
+    permissionMode: "askForApproval",
+  });
+  registry.applyDriverEvent("sdk:codex-controls", {
+    kind: "bound",
+    agentSessionId: "thread-1",
+    transcriptPath: rolloutPath,
+    pid: 123,
+  });
+  registry.applyRuntimeMeta(
+    "sdk:codex-controls",
+    {
+      modelId: "gpt-5.6-sol",
+      contextTokens: 20_000,
+      contextWindow: 258_400,
+      contextPct: 8,
+      longContext: false,
+      thinkingLevel: "high",
+      effortRevision: "turn-1",
+    },
+    "transcript",
+  );
+  const supervisor = fakeSupervisor();
+  const app = mkApp(registry, supervisor);
+
+  const mode = await app.request("/api/sessions/sdk:codex-controls/mode", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ mode: "approveForMe" }),
+  });
+  assert.equal(mode.status, 200);
+  assert.deepEqual(supervisor.modes, ["sdk:codex-controls:approveForMe"]);
+  assert.equal(registry.getSession("sdk:codex-controls")?.permissionMode, "askForApproval");
+
+  const effort = await app.request("/api/sessions/sdk:codex-controls/effort", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ effort: "max" }),
+  });
+  assert.equal(effort.status, 200);
+  assert.deepEqual(supervisor.efforts, ["sdk:codex-controls:max"]);
+  assert.equal(registry.getSession("sdk:codex-controls")?.meta?.thinkingLevel, "high");
 });
 
 test("a handoff with no identity to resume from is refused before anything is stopped", async () => {

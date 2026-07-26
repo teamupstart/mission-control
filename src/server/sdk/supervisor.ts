@@ -12,6 +12,7 @@ import {
   recordSdkSessionBinding,
   sdkSessionIsLive,
   setSdkSessionEffort,
+  setSdkSessionModel,
   setSdkSessionPermissionMode,
   setSdkSessionStatus,
   upsertSdkSession,
@@ -274,6 +275,30 @@ export class SdkSupervisor {
       }
       await handle.setEffort(effort);
       setSdkSessionEffort(id, effort);
+    });
+  }
+
+  /**
+   * The third control, completing the pair above.
+   *
+   * All three follow one order and it is the order that matters: ask the DRIVER first, and
+   * persist only once it accepted. A row written first would promise a posture across a
+   * restart that the live session refused - and Codex refuses a mode whose sandbox its
+   * running thread cannot move to, so that is a real branch rather than a hypothetical.
+   *
+   * The durable write is what carries an accepted change through a restart: `resume`
+   * relaunches from these columns, so a change made while a session is idle is re-asserted
+   * on its next turn rather than lost. That is deliberately SEPARATE from the card's
+   * observed value, which the routes leave alone until the harness confirms the change -
+   * one says what the session will run under, the other what it is running under now.
+   */
+  setModel(id: string, model: string): Promise<void> {
+    return this.serialize(id, async (handle) => {
+      if (!handle.setModel) {
+        throw new Error("this session's embedded driver cannot change model");
+      }
+      await handle.setModel(model);
+      setSdkSessionModel(id, model);
     });
   }
 

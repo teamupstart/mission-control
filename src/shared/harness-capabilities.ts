@@ -405,8 +405,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   codex: {
     id: "codex",
-    // Phase 4 adds `"sdk"` here, with the app-server adapter.
-    runtimes: ["terminal"],
+    // `codex app-server` JSON-RPC, behind `HARNESSES.codex.sdk` - one fact in two files
+    // (`harness-sdk.test.ts`). `terminal` stays first for the reason Claude's entry gives:
+    // the order is the shipped default, not a ranking, and only an operator moves it.
+    runtimes: ["terminal", "sdk"],
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -426,10 +428,17 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         // Codex deliberately puts its most permissive profile behind a second menu.
         confirmations: { fullAccess: "Yes, continue anyway" },
       },
-      // `prepareCodexLaunch` owns the launch-time sandbox flags. This slot is about a
-      // post-launch mode to arm, and Approve for me may not even be offered unless the
-      // Guardian Approval feature is enabled, so dispatch does not drive this menu.
-      onDispatch: null,
+      // The mode an auto dispatch arms, and it costs the TERMINAL path nothing: with
+      // `launchArgs` null, `dispatchPermissionModeArgs` still renders no flags for Codex,
+      // so a dispatched pane is byte-identical - `prepareCodexLaunch` goes on owning its
+      // launch-time sandbox flags, and the live `/permissions` menu is still reserved for a
+      // human. It is the EMBEDDED runtime that needed a mode named here: it sets its
+      // posture through the app-server's own turn parameters rather than through argv,
+      // which is the case `dispatchPermissionModeArgs` documents itself as not holding
+      // back. `askForApproval` is `workspace-write` + `on-request` - the same posture the
+      // auto flags produce - with approvals routed to the human, because an approval a card
+      // can answer is the whole reason that runtime exists.
+      onDispatch: "askForApproval",
       launchArgs: null,
     },
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
@@ -728,46 +737,47 @@ export function skillsAgents(): AgentType[] {
 }
 
 /**
- * The agents "auto mode on dispatch" actually reaches - the ones that name a mode
- * meaning "proceed autonomously" and can render it as launch arguments.
+ * The agents whose "auto mode on dispatch" posture Mission Control can arm.
  *
- * A setting whose switch reaches only some of the grid has to say which some, and the
- * settings panel used to answer that with the literal words "claude only" and "Codex
- * support comes later" - a sentence that is wrong the moment a third harness lands and
- * that nothing would fail to catch.
+ * A terminal launch can carry the posture through `launchArgs`; an embedded launch can
+ * hand it directly to an SDK driver. `onDispatch` remains the primary requirement - an
+ * available transport cannot invent an autonomous mode the harness did not declare.
  */
 export function autoModeAgents(): AgentType[] {
   return AGENT_TYPES.filter((a) => {
-    const modes = HARNESS_CAPABILITIES[a].permissionModes;
-    return !!modes?.onDispatch && !!modes.launchArgs;
+    const capabilities = HARNESS_CAPABILITIES[a];
+    const modes = capabilities.permissionModes;
+    return !!modes?.onDispatch && (!!modes.launchArgs || capabilities.runtimes.includes("sdk"));
   });
 }
 
 /**
- * Why "auto mode on dispatch" cannot arm this harness's permission mode at launch, or
- * null when it can.
+ * Why Mission Control cannot arm this harness's "auto mode on dispatch" posture, or null
+ * when it can.
  *
  * Three different absences, said differently, because they are different facts: a
  * harness with no permission modes at all has nothing to arm, one that HAS modes but
  * names no `onDispatch` has nothing that would mean "proceed without asking", and one
- * with that mode but no launch renderer can support only human-driven live-session
- * changes. Rolling them into one sentence would misstate the declared capability.
+ * with that mode but neither a launch renderer nor an SDK driver lacks a transport that
+ * can apply it. Rolling them into one sentence would misstate the declared capability.
  *
- * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
+ * No refusal may say the dispatch is UNAFFECTED, which is what two branches used to say and
  * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
  * `--sandbox workspace-write --ask-for-approval on-request` at launch. The switch reaches
  * Codex; what it does not reach is a `--permission-mode` launch flag, because Codex
  * expresses the same posture through separate sandbox and approval flags. A panel
  * promising "unaffected" over a session launched with a widened sandbox is a consent
- * failure, not a copy nit.
+ * failure, not a copy nit. Embedded Codex is the complementary case: its driver consumes
+ * the declared mode directly even though its permission capability has no argv renderer.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
-  const modes = HARNESS_CAPABILITIES[agent].permissionModes;
+  const capabilities = HARNESS_CAPABILITIES[agent];
+  const modes = capabilities.permissionModes;
   const who = AGENT_IDENTITY[agent].label;
   if (!modes) return `${who} has no permission modes to arm with a launch flag.`;
   if (!modes.onDispatch)
     return `${who} has permission modes but none that mean "proceed without asking", so no mode is armed at launch.`;
-  if (!modes.launchArgs)
+  if (!modes.launchArgs && !capabilities.runtimes.includes("sdk"))
     return `${who} has an autonomous permission mode but no launch-argument renderer, so Mission Control cannot arm it at launch; its live TUI walk is reserved for a human changing an existing session.`;
   return null;
 }

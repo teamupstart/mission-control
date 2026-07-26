@@ -479,3 +479,57 @@ test("a dead embedded row still fails an interrupted dispatch", async () => {
   assert.equal(supervisor.liveSessionForTask("task-dead"), null);
   assert.equal(supervisor.taskLiveness("task-dead"), false);
 });
+
+test("a control accepted while idle is re-asserted after a restart", async () => {
+  // Inspector findings r2/r4 on #260 read the driver in isolation and concluded that a
+  // same-sandbox mode change lives only in the handle's in-memory config, so a restart
+  // before the next turn silently reverts it. It does not, and this is the guard that says
+  // so in the repository rather than in a reply: the CARD's observed value is deliberately
+  // left alone until the harness confirms the change, but the DURABLE ROW is written on a
+  // different path, and `resume` relaunches from that row.
+  //
+  // Both halves are asserted, because either alone would pass while the feature was broken:
+  // the column has to move, AND the relaunched driver has to be handed what the column says.
+  const first = fakeHandle();
+  const accepted: string[] = [];
+  first.setPermissionMode = async (mode) => void accepted.push(`mode:${mode}`);
+  first.setEffort = async (effort) => void accepted.push(`effort:${effort}`);
+  first.setModel = async (model) => void accepted.push(`model:${model}`);
+
+  const second = fakeHandle();
+  const fake = withFakeDriver(async () => (accepted.length ? second : first));
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start({ ...START, model: "old-model", effort: "low" });
+    // A binding is what makes the row resumable at all.
+    first.push({ kind: "bound", agentSessionId: "agent-x", transcriptPath: null, pid: null });
+    await new Promise((r) => setTimeout(r, 5));
+
+    await supervisor.setPermissionMode(session.id, "acceptEdits");
+    await supervisor.setEffort(session.id, "xhigh");
+    await supervisor.setModel(session.id, "new-model");
+    assert.deepEqual(accepted, ["mode:acceptEdits", "effort:xhigh", "model:new-model"]);
+
+    // The driver accepted first, and only then was the row written - so a change the live
+    // session refused (Codex refuses a sandbox its thread cannot move to) never becomes a
+    // promise a restart would keep.
+    const row = getSdkSession(session.id)!;
+    assert.equal(row.permissionMode, "acceptEdits");
+    assert.equal(row.effort, "xhigh");
+    assert.equal(row.model, "new-model");
+
+    // Now the restart, for real: a new process is a fresh supervisor AND a fresh registry
+    // over the same store, which is the only thing that survives. Reusing the old registry
+    // would hit the duplicate-registration refusal and prove nothing about restore.
+    await supervisor.stopAll(50);
+    await new SdkSupervisor(new Registry()).restore();
+    const relaunch = fake.calls.at(-1)!;
+    assert.equal(relaunch.resume, "agent-x", "the same conversation, not a new one");
+    assert.equal(relaunch.permissionMode, "acceptEdits");
+    assert.equal(relaunch.effort, "xhigh");
+    assert.equal(relaunch.model, "new-model");
+  } finally {
+    fake.restore();
+  }
+});

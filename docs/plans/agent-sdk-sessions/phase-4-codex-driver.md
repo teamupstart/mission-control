@@ -4,9 +4,9 @@
 
 The Harnesses toggle appears for Codex; flipping it makes the next dispatched Codex
 session run over `codex app-server` JSON-RPC: approvals arrive as answerable requests on
-the card, threads resume across daemon restarts, permission posture and effort apply as
-per-turn overrides, and the automation machinery from phase 3 (if merged) drives it with
-no Codex-specific edits.
+the card, threads resume across daemon restarts, approval policy, reviewer, and effort
+apply as per-turn overrides, and the automation machinery from phase 3 (if merged) drives
+it with no Codex-specific edits. The sandbox is fixed for the life of a thread.
 
 ## Entry criteria and dependencies
 
@@ -32,19 +32,20 @@ edit (phase 3 owns that machinery, runtime-generically).
 Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findings:
 
 - **Transport (C10)**: one `codex app-server` subprocess per session, spawned from
-  `resolveAgentBin("codex")`, stdio JSONL JSON-RPC 2.0, `initialize` handshake (use
-  `optOutNotificationMethods` to drop delta noise we do not consume). Per-session
-  subprocess buys crash isolation and per-session `-c` config scoping; revisit only if
-  spawn cost is measured to matter. Strip inherited `TMUX_PANE`, `WEZTERM_PANE`, and
-  `TERM_PROGRAM` before spawning, matching the first driver's attribution guard.
+  the same resolved Codex binary spec as a terminal dispatch, stdio JSONL JSON-RPC 2.0,
+  `initialize` handshake (use `optOutNotificationMethods` to drop delta noise we do not
+  consume). Per-session subprocess buys crash isolation and per-session `-c` config
+  scoping; revisit only if spawn cost is measured to matter. Strip inherited
+  `TMUX_PANE`, `WEZTERM_PANE`, and `TERM_PROGRAM` before spawning, matching the first
+  driver's attribution guard.
 - **Bindings**: `codex app-server generate-ts --out <dir>` against the pinned binary;
   commit under `src/server/harness/codex/app-server/` with the generating version
   recorded in the module. The protocol is experimental - drift is absorbed by
   regenerating on a Codex version bump, and by the adapter being its only consumer.
 - **Approvals**: v2 `item/commandExecution/requestApproval` /
   `item/fileChange/requestApproval` server-to-client requests, answered
-  accept/decline/cancel. Codex's `ask_user_question` / `request_user_input` items exist
-  in some collaboration modes; project them if they arrive, but do not depend on them.
+  accept/accept-for-session/decline. Project `item/tool/requestUserInput` requests into
+  the same question form rather than depending on a terminal menu.
 - **Rollouts still written** (`~/.codex/sessions/`): `codexTranscript.locate` and
   `codexUsage` keep working for SDK sessions once `agentSessionId` (the thread/rollout
   id) is bound - C5's read-path guarantee. Verify `locate` finds a rollout by thread id
@@ -54,12 +55,14 @@ Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findin
   `scope: "launch"` semantics are unaffected for terminal sessions.
 - **Permission modes**: `PermissionMode`'s Codex values
   (`askForApproval` / `approveForMe` / `fullAccess` / `readOnly`) map to
-  approval-policy + sandbox pairs (e.g. `on-request` + `workspace-write`,
-  `never` + `workspace-write`, `never` + `danger-full-access` behind the same
-  confirmation posture the menu had, `on-request` + `read-only`). The auto-dispatch
-  posture reuses `prepareCodexLaunch`'s existing choice
-  (`workspace-write` + `on-request`). Write the mapping table in the adapter with the
-  measured-values doctrine (verify each against the pinned binary).
+  approval-policy + reviewer + sandbox triples. `askForApproval` and `approveForMe`
+  are both `on-request` + `workspace-write`; the reviewer (`user` or `auto_review`)
+  distinguishes them. `fullAccess` is `never` + `danger-full-access`, and `readOnly`
+  is `on-request` + `read-only`. Approval policy and reviewer apply on the next turn,
+  but a live thread cannot change sandbox, so refuse a profile requiring a different
+  sandbox. The auto-dispatch posture reuses `prepareCodexLaunch`'s existing
+  `workspace-write` + `on-request` choice and routes approvals to the user. Keep the
+  mapping table inverse to `parseRolloutPermissionModeRead`, which renders the card chip.
 
 ## Implementation steps
 
@@ -69,19 +72,21 @@ Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findin
    testable, the C4 seam).
 2. **`src/server/harness/codex/sdk.ts`**:
    - `launch(opts)`: spawn `codex app-server`, initialize, `thread/start` with cwd,
-     model, effort (`modelReasoningEffort`), sandbox/approval from the mapped
-     `permissionMode`, MCP via `-c mcp_servers.mission-control.*` spawn config (reuse
-     `mission-mcp.ts`'s descriptor rendering - all three keys or none, the existing
-     rule); `turn/start` with `opts.prompt`. `thread.started` → `bound` (thread id as
-     `agentSessionId`).
+     model and mapped sandbox/approval posture, MCP via
+     `-c mcp_servers.mission-control.*` spawn config (reuse `mission-mcp.ts`'s
+     descriptor rendering - all three keys or none, the existing rule);
+     `turn/start` with `opts.prompt`, model, effort, approval policy, and reviewer.
+     `thread/started` → `bound` (thread id as `agentSessionId`).
    - Item/turn notifications → `state` / activity ticker / `turn_done` (token usage).
    - Approval requests → C3 projection (`kind: "approval"`, command or diff summary as
-     prompt, accept/decline options); `answer()` responds to the JSON-RPC request.
+     prompt, accept/accept-for-session/decline options); `answer()` responds to the
+     JSON-RPC request.
      Track pending approvals so an expired/superseded answer 409s like a changed pane
      menu.
    - `send()` → `turn/start` (or `turn/steer` when a turn is in flight - measured
      behavior, verify); `interrupt()` → `turn/interrupt`; `setPermissionMode` → store +
-     apply on next `turn/start` overrides, report the applied posture;
+     apply approval/reviewer on subsequent `turn/start` calls, refusing a different
+     sandbox rather than reporting it applied;
      `setEffort` and `setModel` → per-turn overrides; `clearContext()` → new
      `thread/start` on the same card, re-emit `bound` with the new thread id (the registry
      rebind path from phase 2 handles rotation).
@@ -128,8 +133,9 @@ provenance) - if not yet merged, phase 5 owns that combined gate.
 Phase 5 may rely on: Codex SDK sessions being fully answerable and resumable; the
 mapping table as the single statement of Codex mode posture for SDK sessions. Phase 6
 may rely on: the adapter as the second reference implementation proving C4's transport
-seam. No later phase may speak app-server outside `harness/codex/sdk.ts` and its
-bindings module.
+seam. No later phase may add app-server method vocabulary outside
+`harness/codex/sdk.ts`; transport and generated types stay in its adjacent app-server
+modules.
 
 ## Cross-phase audit record
 
@@ -139,3 +145,8 @@ bindings module.
   except `harness-capabilities.ts` (phase 3 does not edit it) and tests are additive.
   The phase 2 interim queue refusal was confirmed runtime-scoped so it covers Codex
   regardless of merge order - recorded also in phase 2's audit.
+- 2026-07-25: implemented against codex-cli 0.145.0. The corrected permission,
+  effort, transport, and generated-binding contracts are recorded in the findings and
+  implementation steps above; `codex-sdk-modes.test.ts`,
+  `dispatch-auto-mode.test.ts`, and `codex-app-server-bindings.test.ts` guard them.
+  Phase 3 had not merged, so phase 5 owns the combined parity gate.

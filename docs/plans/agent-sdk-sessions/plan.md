@@ -84,20 +84,23 @@ app, and the official Python SDK use - surfaces everything we need:
 
 - **Approvals as answerable server-to-client requests**: v2
   `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`, answered
-  `accept` / `decline` / `cancel`.
+  `accept` / `acceptForSession` / `decline`.
 - **Threads and turns**: `thread/start`, `thread/resume`, `thread/fork`, `turn/start`
-  (with per-turn model / effort / sandbox overrides), `turn/interrupt`, and
-  `turn/steer` - input appended to an in-flight turn, which no other Codex interface has.
+  (with per-turn model / effort / approval-policy / reviewer overrides),
+  `turn/interrupt`, and `turn/steer` - input appended to an in-flight turn, which no
+  other Codex interface has. The sandbox is resolved when the thread starts and cannot
+  be changed on that live thread.
 - **Programmatic equivalents of TUI-only commands**: `thread/compact` (`/compact`),
   `review/start` (`/review`), `account/rateLimits/read`.
-- **Typed bindings** generated from the pinned binary: `codex app-server generate-ts`.
+- **Typed bindings** generated and version-stamped from a known binary:
+  `codex app-server generate-ts`.
 - **Shared rollouts**: sessions land in `~/.codex/sessions/` like every other Codex
   surface; the interactive TUI resumes them (`codex resume`, with
   `--include-non-interactive` in its picker).
 
 Caveat: the protocol is documented as experimental with no third-party stability
-guarantee. Mitigation is the generated bindings against the binary we launch, plus the
-adapter isolation below - the protocol is spoken in exactly one module.
+guarantee. Mitigation is the version-stamped generated bindings plus the adapter
+isolation below - app-server method names live in exactly one module.
 
 ### pi: has a first-class RPC mode
 
@@ -122,7 +125,7 @@ The direct answer to "is there any current functionality we'd lose?".
 |---|---|---|---|
 | Surviving daemon death | tmux keeps the agent running if the daemon crashes or restarts; the sweep re-adopts it | SDK subprocesses are daemon children: a daemon restart interrupts the in-flight turn. Conversation state survives (session files); the supervisor resumes on startup, but the interrupted turn's remaining work is lost and must be re-prompted | The one real regression. Mitigated by resume-on-start and graceful drain on shutdown; accepted because the daemon is already the control plane for everything else about a dispatched session |
 | Glanceable terminal presence | Every session is a wezterm/tmux pane you can look at and type into | No pane. The dashboard transcript stream is the view; taking over means an explicit handoff (below), not wandering into a terminal | Medium. The shared session storage makes handoff first-class: `claude --resume <id>` / `codex resume <threadId>` continue the same conversation interactively |
-| Codex live TUI menus | `/permissions` picker driven by keystrokes; `/model`, `/status` readable | No slash commands headless. Permission posture becomes per-turn `turn/start` overrides (approval policy + sandbox); `/compact` and `/review` become `thread/compact` / `review/start`; `/status` facts come from the event stream | Low. Every lost menu has a structured replacement |
+| Codex live TUI menus | `/permissions` picker driven by keystrokes; `/model`, `/status` readable | No slash commands headless. Approval policy and reviewer become per-turn `turn/start` overrides; changing to a profile with a different sandbox is refused because the sandbox is fixed for the thread. `/compact` and `/review` become `thread/compact` / `review/start`; `/status` facts come from the event stream | Low. Every lost menu has a structured replacement |
 | Codex protocol stability | The TUI's screen grammar (also unstable, also unversioned) | `app-server` is explicitly experimental. Pinned, generated bindings; one adapter module absorbs drift | Low, and strictly better than screen-scraping the same vendor's TUI |
 | Claude TUI chrome | Todo strip, background-bash UI, spinner | Narration still comes from the transcript file (unchanged reader); background bash has no UI equivalent | Cosmetic |
 | `/login` and first-run auth | An operator can log in inside the pane | SDK requires auth to already exist (subscription login or API key) - but dispatched sessions already assume this today | None in practice |
@@ -335,8 +338,9 @@ Per-harness projection into that shape:
 | Claude `canUseTool` (ordinary tool) | kind `permission`; options `Yes` / `Yes, don't ask again` (from `suggestions`) / `No`; answering resolves the callback with allow / allow+updatedPermissions / deny |
 | Claude `AskUserQuestion` | kind `question`; one entry per question with its own options and `multiSelect`; free text allowed; answering resolves with `updatedInput.answers` |
 | Claude `ExitPlanMode` | kind `plan`; the plan text as prompt; approve / keep planning |
-| Codex `item/commandExecution/requestApproval` | kind `approval`; the command as prompt; accept / decline |
-| Codex `item/fileChange/requestApproval` | kind `approval`; the diff summary as prompt; accept / decline |
+| Codex `item/commandExecution/requestApproval` | kind `approval`; the command as prompt; accept / accept for session / decline |
+| Codex `item/fileChange/requestApproval` | kind `approval`; the diff summary as prompt; accept / accept for session / decline |
+| Codex `item/tool/requestUserInput` | kind `question`; one entry per question with its own options; free text allowed |
 | Pane parse (`parsePaneDialog`) | exactly what it produces today, `source` absent |
 
 Answering routes by runtime, not by caller:
@@ -391,8 +395,8 @@ instead of a null:
 | `clearContext` | type `/clear` (`/new` for pi) | Claude: send `/clear` as a user message (supported input; supervisor rebinds the rotated session id). Codex: start a fresh thread on the same card - `handle.clearContext` owns which |
 | `skills.invoke` (wrap-up) | single-line composer grammar incl. Codex's popup-closing clause | the same line delivered as turn text via `send()` - the clause machinery becomes inert but harmless for SDK delivery |
 | `skills.reloadCommand` | typed at idle sessions holding a pane | Claude SDK: same line via `send()`; the pane-guard preconditions (mode line readable, pane idle) reduce to "driver idle" |
-| `permissionModes.liveControl` | Shift+Tab cycle / `/permissions` menu | `handle.setPermissionMode`: Claude maps 1:1; Codex renders modes as per-turn approval-policy + sandbox overrides (mapping table in the Codex driver) |
-| `effort.sessionPicker` | TUI picker walks | Claude: `setEffort` through live query flag settings; Codex: per-turn `modelReasoningEffort` override |
+| `permissionModes.liveControl` | Shift+Tab cycle / `/permissions` menu | `handle.setPermissionMode`: Claude maps 1:1; Codex applies approval policy and reviewer on subsequent turns, but refuses a profile whose sandbox differs from the live thread |
+| `effort.sessionPicker` | TUI picker walks | Claude: `setEffort` through live query flag settings; Codex: per-turn `effort` override |
 
 None of these become nulls - which matters, because every null on this table costs a real
 feature (`workQueueBlockedReason`, wrap-up degradation to `ask`).
@@ -526,9 +530,9 @@ flowchart TB
 3. **Automation parity on Claude**: Foreman structured answers + prompt runtime
    projection, work queue over `send()`, reset, wrap-up invocation, cost double-count
    verification, PR provenance events.
-4. **Codex driver**: app-server adapter with generated bindings pinned to the launched
-   binary, approval projections, per-turn permission/effort overrides, thread resume,
-   parity re-run of phase 3's checklist.
+4. **Codex driver**: app-server adapter with version-stamped generated bindings,
+   approval projections, per-turn approval/reviewer/effort overrides with a
+   thread-fixed sandbox, thread resume, parity re-run of phase 3's checklist.
 5. **Deprecation of the dispatched-session keystroke surfaces**: defaults stay
    `"terminal"` - cut-over is the operator flipping each harness's toggle, never a
    default change (resolved decision). What this phase retires is the machinery only
@@ -556,8 +560,8 @@ Submitted from the Mission Control dashboard on 2026-07-24:
 
 1. **Codex transport: `codex app-server`.** The only interface with answerable
    approvals; the official `@openai/codex-sdk` was rejected because it reduces approvals
-   to pre-set policy. Drift risk is absorbed by generated typed bindings pinned to the
-   launched binary, spoken in exactly one adapter module.
+   to pre-set policy. Drift risk is absorbed by version-stamped generated typed bindings;
+   app-server method names are spoken in exactly one adapter module.
 2. **Toggle scope: Harnesses settings panel only.** One per-agent default read at
    dispatch time; no per-dispatch override.
 3. **Terminal handoff: built with the Claude driver (phase 2).** The first SDK sessions

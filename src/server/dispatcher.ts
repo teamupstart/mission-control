@@ -85,11 +85,10 @@ export interface TaskDispatchOptions {
  * args at all.
  *
  * Empty in three cases, each correct rather than a fallback: the setting is off; the
- * harness has no `onDispatch` mode to arm (Codex names none here - its autonomous launch
- * is a widened sandbox built in `prepareCodexLaunch`, not a permission mode); or the
- * harness has such a mode but can only reach it through its live TUI after launch
- * (`launchArgs: null`), in which case dispatch declines rather than typing at it - the
- * live control is reserved for a human swapping a LIVE session's mode from the card.
+ * harness has no `onDispatch` mode to arm; or the harness has such a mode but no argv
+ * renderer (`launchArgs: null`). Codex is the third case: the terminal path keeps its
+ * posture in `prepareCodexLaunch`, while the embedded path receives the mode itself from
+ * `dispatchPermissionMode` and applies it through app-server.
  *
  * This replaced the post-launch `setPermissionMode` walk on the dispatch path: the walk
  * read the mode off the pane footer, which a fresh session's folder-trust dialog hides,

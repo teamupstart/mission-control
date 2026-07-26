@@ -168,6 +168,7 @@ import {
   setPermissionMode,
   setSessionEffort,
   sessionEffortTargetResult,
+  driverEffortTargetResult,
   defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
@@ -1744,7 +1745,10 @@ export function buildApp(
     // observation even on failure. A menu failure observed no new mode: recording its
     // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
     const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
-    if (r.ok || (session.runtime === "terminal" && liveControl?.kind === "cycle")) {
+    if (
+      (session.runtime === "terminal" || session.agent !== "codex") &&
+      (r.ok || liveControl?.kind === "cycle")
+    ) {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);
@@ -1774,7 +1778,9 @@ export function buildApp(
     }
     const r = session.runtime === "sdk"
       ? await (async () => {
-          const targetResult = sessionEffortTargetResult(session, parsed.data.effort);
+          // The DRIVER gate, not the pane one: a `shortcuts` picker's one-step-at-a-time
+          // reachability is a fact about keystrokes, and an embedded session has none.
+          const targetResult = driverEffortTargetResult(session, parsed.data.effort);
           if (targetResult) return targetResult;
           if (!sdkSessions) {
             return {
@@ -1803,7 +1809,11 @@ export function buildApp(
               current.transcriptPath === session.transcriptPath;
           },
         });
-    if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
+    if (
+      r.ok &&
+      (session.runtime === "terminal" || session.agent !== "codex") &&
+      !registry.recordObservedSessionEffort(session.id, r.effort, session)
+    ) {
       return c.json({
         ok: false,
         error: "the live effort changed, but the session identity changed before it could be published",

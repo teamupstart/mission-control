@@ -8,7 +8,7 @@ import type {
   SessionRequestQuestion,
   ThinkingLevel,
 } from "@shared/types.ts";
-import { opensPullRequest } from "@shared/pr-command.mjs";
+import { opensPullRequest, pullRequestUrlIn } from "@shared/pr-command.mjs";
 import type {
   SdkEvent,
   SdkLaunchOptions,
@@ -28,6 +28,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
+import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
 //
@@ -81,9 +82,6 @@ const PLAN_KEEP_LABEL = "No, keep planning";
  */
 const ASK_USER_QUESTION = "AskUserQuestion";
 const EXIT_PLAN_MODE = "ExitPlanMode";
-
-/** A GitHub PR URL as `gh pr create` prints it - the same pattern the hook bridge sniffs. */
-const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 
 /** Root of Claude's per-project transcript store, mirrored from `transcript.ts`. */
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -274,57 +272,6 @@ class TurnStream {
       }
       if (this.closed) return;
       const message = await new Promise<IteratorResult<ClaudeSdkUserMessage>>((resolve) => {
-        this.waiting = resolve;
-      });
-      if (message.done) return;
-      yield message.value;
-    }
-  }
-}
-
-/**
- * An event mailbox with the same shape, for the OUTPUT side.
- *
- * The supervisor pumps `handle.events`, and the events do not all come from one place: the
- * message loop produces most of them, but `canUseTool` and the PR hook are callbacks the
- * SDK invokes on its own schedule. A queue is what lets all three write to one ordered
- * stream without either side blocking the other.
- */
-class EventStream {
-  private queued: SdkEvent[] = [];
-  private waiting: ((m: IteratorResult<SdkEvent>) => void) | null = null;
-  private ended = false;
-
-  emit(evt: SdkEvent): void {
-    if (this.ended) return;
-    const waiter = this.waiting;
-    if (waiter) {
-      this.waiting = null;
-      waiter({ value: evt, done: false });
-      return;
-    }
-    this.queued.push(evt);
-  }
-
-  end(): void {
-    if (this.ended) return;
-    this.ended = true;
-    const waiter = this.waiting;
-    if (waiter) {
-      this.waiting = null;
-      waiter({ value: undefined as never, done: true });
-    }
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<SdkEvent> {
-    for (;;) {
-      const next = this.queued.shift();
-      if (next) {
-        yield next;
-        continue;
-      }
-      if (this.ended) return;
-      const message = await new Promise<IteratorResult<SdkEvent>>((resolve) => {
         this.waiting = resolve;
       });
       if (message.done) return;
@@ -708,7 +655,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (!toolUseId || !this.prPending.delete(toolUseId)) return {};
       const response = input.tool_response;
       const text = typeof response === "string" ? response : JSON.stringify(response ?? "");
-      const url = PR_URL_RE.exec(text)?.[0] ?? null;
+      const url = pullRequestUrlIn(text);
       if (url) this.out.emit({ kind: "pr_created", url });
       return {};
     };

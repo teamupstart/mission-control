@@ -94,10 +94,18 @@ test("the auto-mode row names exactly the harnesses it reaches", () => {
   // so this asserts the PAIR: reached agents named, unreached agents never claimed.
   const html = render({ autoModeOnDispatch: false });
   assert.match(html, new RegExp(`${AUTO.join(" / ")} only`, "i"));
-  for (const a of AUTO) assert.match(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+  for (const a of AUTO) {
+    assert.match(
+      html,
+      new RegExp(`When enabled, every[^<]*${AGENT_IDENTITY[a].label}`, "i"),
+    );
+  }
   for (const a of EXCLUDED) {
     // Never named in the sentence describing what the switch does.
-    assert.doesNotMatch(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+    assert.doesNotMatch(
+      html,
+      new RegExp(`When enabled, every[^<]*${AGENT_IDENTITY[a].label}`, "i"),
+    );
   }
 });
 
@@ -107,24 +115,10 @@ test("the auto-mode row makes no promise about harnesses it doesn't reach", () =
   assert.doesNotMatch(render({ autoModeOnDispatch: false }), /comes later|coming soon/i);
 });
 
-test("auto mode support requires a launch-argument renderer", () => {
-  const modes = HARNESS_CAPABILITIES.claude.permissionModes!;
-  const launchArgs = modes.launchArgs;
-  modes.launchArgs = null;
-  try {
-    assert.equal(autoModeAgents().includes("claude"), false);
-    assert.match(autoModeUnsupportedWhy("claude") ?? "", /no launch-argument renderer/i);
-    assert.match(autoModeUnsupportedWhy("claude") ?? "", /human changing an existing session/i);
-  } finally {
-    modes.launchArgs = launchArgs;
-  }
-});
-
-test("the auto-mode row describes launch flags rather than a post-launch walk", () => {
+test("the auto-mode row describes each supported transport rather than a live TUI walk", () => {
   const html = render({ autoModeOnDispatch: true });
-  assert.match(html, /launch(?:es)? directly in/i);
-  assert.match(html, /launch flag/i);
-  assert.match(html, /folder-trust dialog hides the mode footer/i);
+  assert.match(html, /embedded dispatches apply that posture through the driver/i);
+  assert.match(html, /terminal dispatches use the harness(?:&#x27;|')s own launch treatment/i);
   assert.doesNotMatch(html, /switched to.*once (?:it(?:&#x27;)?s )?ready/i);
 });
 

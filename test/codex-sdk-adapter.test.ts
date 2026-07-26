@@ -1040,6 +1040,47 @@ test("a subagent of a retired thread cannot attribute a pull request either", as
   await drained;
 });
 
+test("retired-thread bookkeeping is bounded, and forgetting falls the safe way", async () => {
+  // Inspector r6 on #260: both collections grew for the life of a card. Bounding them is
+  // only defensible because of HOW they are read - `isOwnTree` is a positive proof, not the
+  // negation of `isRetired` - so this pins the consequence rather than the cap.
+  //
+  // Forget a parent edge and the child stops proving it belongs to the live root, so PR
+  // attribution SUPPRESSES. That is the direction that matters: the alternative failure,
+  // adopting a stranger's pull request, is the one AGENTS.md prices as unacceptable.
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+
+  const ORPHAN = "019f9b00-eeee-7000-8000-000000000005";
+  server.notify("item/completed", {
+    threadId: ORPHAN,
+    turnId: "turn-pr",
+    completedAtMs: 0,
+    item: {
+      type: "commandExecution",
+      id: "pr-orphan",
+      command: `/bin/zsh -lc "gh pr create --fill"`,
+      cwd: "/work/repo",
+      processId: null,
+      source: "agent",
+      status: "completed",
+      commandActions: [{ type: "unknown", command: "gh pr create --fill" }],
+      aggregatedOutput: "https://github.com/o/r/pull/61\n",
+      exitCode: 0,
+      durationMs: 1,
+    },
+  });
+  await settle();
+  // No parentage was ever stated for this thread - the same state an evicted edge leaves -
+  // so nothing is attributed...
+  assert.equal(events.some((e) => e.kind === "pr_created"), false);
+  // ...while its activity is still shown, which is the cost that IS acceptable.
+  assert.ok(events.some((e) => e.kind === "state" && (e.activity ?? "").includes("gh pr create")));
+  await handle.stop();
+  await drained;
+});
+
 test("a retired thread's subagent ask is answered closed, not put on the new card", async () => {
   let started = 0;
   const server = new FakeServer({

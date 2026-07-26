@@ -217,6 +217,39 @@ const MUTED_NOTIFICATIONS = [
 /** How long an activity line may be. `Session.activity` renders on one line in every layout. */
 const ACTIVITY_CAP = 120;
 
+/**
+ * How much thread bookkeeping one session keeps, and why forgetting the rest is SAFE.
+ *
+ * Both collections would otherwise grow for the life of a card: every `/clear` retires
+ * another root, and every collaboration frame can name another child. Neither is large, but
+ * neither has an end either, and a long-lived session is exactly the one that accumulates
+ * them.
+ *
+ * Bounding is only safe because BOTH degradations fall the safe way, which is a property of
+ * `isOwnTree` being a positive test rather than the negation of `isRetired`:
+ *
+ *  - forget a RETIRED root, and a late frame from it is admitted for DISPLAY again - a
+ *    stale activity line on a card, and nothing more;
+ *  - forget a PARENT edge, and `rootOf` answers with the thread itself, so `isOwnTree`
+ *    stops proving ownership and PR attribution SUPPRESSES rather than misfires.
+ *
+ * So the eviction can cost a wrong ticker line and can never cost a pull request adopted
+ * onto the wrong task. The caps are generous against the real numbers - a session with
+ * sixty-four context clears, or five hundred live subagents, is far outside anything the
+ * dashboard produces - so in practice nothing is forgotten at all.
+ */
+const RETIRED_THREAD_CAP = 64;
+const THREAD_PARENT_CAP = 512;
+
+/** Insert, then drop the oldest entries past `cap`. Insertion order is Map/Set order. */
+function capped<K, V>(map: Map<K, V>, cap: number): void {
+  while (map.size > cap) {
+    const oldest = map.keys().next();
+    if (oldest.done) return;
+    map.delete(oldest.value);
+  }
+}
+
 /** A server-to-client request we are holding open, and how to answer it. */
 interface Pending {
   request: SessionRequest;
@@ -257,7 +290,8 @@ class CodexSdkSession implements SdkSessionHandle {
     string,
     { threadId: string | null; changes: readonly FileUpdateChange[] }
   >();
-  private readonly retiredThreads = new Set<string>();
+  /** Retired roots, newest last. Bounded - see `RETIRED_THREAD_CAP`. */
+  private readonly retiredThreads = new Map<string, true>();
   /**
    * Who each thread on this connection descends from, learned as the server mentions it.
    *
@@ -844,7 +878,8 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   private retireThread(threadId: string): void {
-    this.retiredThreads.add(threadId);
+    this.retiredThreads.set(threadId, true);
+    capped(this.retiredThreads, RETIRED_THREAD_CAP);
     for (const [itemId, retained] of this.fileChanges) {
       if (this.isRetired(retained.threadId)) this.fileChanges.delete(itemId);
     }
@@ -889,6 +924,7 @@ class CodexSdkSession implements SdkSessionHandle {
   private noteThreadParent(child: string | null, parent: string | null): void {
     if (!child || !parent || child === parent) return;
     this.threadParents.set(child, parent);
+    capped(this.threadParents, THREAD_PARENT_CAP);
   }
 
   /**

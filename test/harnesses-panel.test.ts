@@ -94,10 +94,18 @@ test("the auto-mode row names exactly the harnesses it reaches", () => {
   // so this asserts the PAIR: reached agents named, unreached agents never claimed.
   const html = render({ autoModeOnDispatch: false });
   assert.match(html, new RegExp(`${AUTO.join(" / ")} only`, "i"));
-  for (const a of AUTO) assert.match(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+  for (const a of AUTO) {
+    assert.match(
+      html,
+      new RegExp(`When enabled, every[^<]*${AGENT_IDENTITY[a].label}`, "i"),
+    );
+  }
   for (const a of EXCLUDED) {
     // Never named in the sentence describing what the switch does.
-    assert.doesNotMatch(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+    assert.doesNotMatch(
+      html,
+      new RegExp(`When enabled, every[^<]*${AGENT_IDENTITY[a].label}`, "i"),
+    );
   }
 });
 

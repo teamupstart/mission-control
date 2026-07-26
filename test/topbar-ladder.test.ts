@@ -168,6 +168,24 @@ test("a shed label goes visually hidden, never display:none", () => {
   assert.ok(shed.length >= 3, `only ${shed.length} label rules left in the ladder`);
 });
 
+test("a disconnected pulse keeps its stale figures and review control visible", () => {
+  assert.match(
+    bare,
+    /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*\{[^}]*opacity:\s*0\.5/,
+    "the disconnected pulse no longer dims its stale figures",
+  );
+  for (const rung of RUNGS) {
+    for (const [sel, body] of rung.rules) {
+      if (!/\.pulse\.is-down.*\.pulse-seg/.test(sel)) continue;
+      assert.doesNotMatch(
+        body,
+        /display:\s*none/,
+        `the ${rung.width}px rung removes the disconnected pulse's figures and review control`,
+      );
+    }
+  }
+});
+
 test("Dispatch never degrades, and the labels that do are marked", () => {
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
   const cluster = bar.slice(0, bar.indexOf("<UsageBar"));

@@ -24,7 +24,7 @@ process.env.HARNESS_HOME = home;
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
-const { mkTask } = await import("./helpers/session-fixture.ts");
+const { mkTask, mkMuxHandle } = await import("./helpers/session-fixture.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
 
@@ -36,6 +36,7 @@ type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 type Session = import("../src/shared/types.ts").Session;
+type DiscoveredSession = import("../src/server/discovery/correlate.ts").DiscoveredSession;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -131,6 +132,7 @@ function mkApp(
   registry: Registry_,
   supervisor: SdkSupervisor,
   handoffDeps?: Parameters<typeof buildApp>[10],
+  launchSessionTerminal?: Parameters<typeof buildApp>[11],
 ) {
   return buildApp(
     registry,
@@ -144,6 +146,7 @@ function mkApp(
     undefined,
     supervisor,
     handoffDeps,
+    launchSessionTerminal,
   );
 }
 
@@ -378,6 +381,99 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
   assert.equal(task.sessionId, "proc:tty:1:2");
   assert.equal(task.homeName, body.homeName);
   assert.equal(getSdkSession("sdk:hand")?.taskId, null);
+});
+
+test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async () => {
+  const registry = new Registry();
+  seed(registry, null, "sdk:launch");
+  const supervisor = fakeSupervisor();
+  const spawned: string[] = [];
+  const app = mkApp(
+    registry,
+    supervisor,
+    {
+      spawn: async (name) => {
+        spawned.push(name);
+        return `${name}-abc123`;
+      },
+      waitForSessionAtCwd: async () => null,
+      settleTask: () => assert.fail("a successful handoff settles nothing"),
+    },
+    async () => assert.fail("an embedded launcher must not call launchTerminal"),
+  );
+
+  const res = await app.request("/api/sessions/sdk:launch/launch", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ backend: "ghostty", payload: "agent" }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(supervisor.stopped, ["sdk:launch"]);
+  assert.equal(spawned.length, 1);
+  assert.equal(((await res.json()) as { label: string }).label, "default terminal");
+});
+
+test("exited resume clears its task binding before launch and survives session removal", async () => {
+  const registry = new Registry();
+  const tasks = new RealTaskManager(registry);
+  const sessionId = "proc:tty1:9:1";
+  const cwd = "/wt/exited";
+  const discovered: DiscoveredSession = {
+    syntheticId: sessionId,
+    agent: "claude",
+    name: "Exited work",
+    nameSource: "tmux",
+    cwd,
+    gitBranch: "harness/exited",
+    gitRoot: cwd,
+    repoRoot: "/repo",
+    nomistakesGated: false,
+    pid: 9,
+    tty: "tty1",
+    terminals: [mkMuxHandle({ session: "exited", paneId: "%9" })],
+    startedAt: 1,
+    agentSessionId: "agent-exited",
+  };
+  registry.applyDiscovery([discovered]);
+  registry.upsertTask(
+    mkTask({
+      id: "task-exited",
+      status: "running",
+      sessionId,
+      repoRoot: "/repo",
+      worktreePath: cwd,
+    }),
+  );
+  registry.applyDiscovery([]);
+
+  const app = buildApp(
+    registry,
+    {} as unknown as ReviewManager,
+    tasks,
+    {} as unknown as QueueManager,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      assert.equal(registry.getTask("task-exited")?.sessionId, null);
+      return { ok: true, label: "tmux", status: 200 };
+    },
+  );
+  const res = await app.request(`/api/sessions/${sessionId}/launch`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ backend: "tmux", payload: "agent" }),
+  });
+
+  assert.equal(res.status, 200);
+  registry.emit("event", { type: "session_remove", id: sessionId });
+  assert.equal(registry.getTask("task-exited")?.status, "running");
+  assert.equal(registry.getTask("task-exited")?.sessionId, null);
 });
 
 test("a late terminal successor rebinds an unbound running task by its worktree", () => {

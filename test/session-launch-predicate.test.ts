@@ -71,9 +71,9 @@ test("the pane check comes first, ahead of anything about the harness", () => {
   });
 });
 
-test("an embedded session with a conversation id and a checkout resumes", () => {
+test("an embedded session with a conversation id and a checkout hands off", () => {
   const session = embedded();
-  assert.equal(agentLaunchAction(session), "resume");
+  assert.equal(agentLaunchAction(session), "handoff");
   assert.equal(agentLaunchBlockedReason(session), null);
 });
 
@@ -156,7 +156,9 @@ test("the action and the reason never disagree, for any shape or harness", () =>
             action !== null,
             `${agent} ${what} (resumes=${resumes}): action ${action} with reason ${reason}`,
           );
-          if (action !== null) assert.ok(action === "focus" || action === "resume");
+          if (action !== null) {
+            assert.ok(action === "focus" || action === "handoff" || action === "resume");
+          }
         };
         if (resumes) check();
         else withoutResume(agent, check);

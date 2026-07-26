@@ -4,8 +4,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LaunchList } from "../src/web/components/LaunchMenu.tsx";
+import { LaunchList, SessionLaunchers } from "../src/web/components/LaunchMenu.tsx";
 import type { TerminalTargetView } from "../src/shared/terminal.ts";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 // What is at stake: the two launchers are a FOLD over what the daemon reports for
 // `TERMINAL_BACKEND_IDS`, so a fifth adapter is a file under `src/server/terminal/` and
@@ -122,4 +123,19 @@ test("the focus control does not promise to raise a terminal window", () => {
   const src = source();
   assert.match(src, /Go to the terminal \$\{agentLabel\} is running in/);
   assert.doesNotMatch(src, /Raise the terminal \$\{agentLabel\}/);
+});
+
+test("embedded handoff is a plain control while exited resume keeps its chooser", () => {
+  const embedded = renderToStaticMarkup(
+    createElement(SessionLaunchers, {
+      session: mkSession({ runtime: "sdk", terminals: [], tty: null }),
+    }),
+  );
+  const exited = renderToStaticMarkup(
+    createElement(SessionLaunchers, { session: mkSession({ state: "exited" }) }),
+  );
+
+  assert.match(embedded, />Continue in terminal</);
+  assert.equal(embedded.match(/aria-haspopup="menu"/g)?.length, 1);
+  assert.equal(exited.match(/aria-haspopup="menu"/g)?.length, 2);
 });

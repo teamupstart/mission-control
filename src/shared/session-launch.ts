@@ -2,16 +2,17 @@
  * What the conversation pane's AGENT launcher does for a given session - and the one place
  * that is decided.
  *
- * The button means "put me on this conversation, in a real terminal", and there are two
+ * The button means "put me on this conversation, in a real terminal", and there are three
  * genuinely different ways to honour that:
  *
  *  - The session already runs in a pane. Then the terminal exists, and the answer is to
  *    RAISE it. Spawning `claude --resume <id>` beside it would start a SECOND process on
  *    one conversation file, which is not a second view of the session - it is two agents
  *    appending to the same store, and the harnesses do not arbitrate that.
- *  - The session has no pane - it is embedded (`runtime: "sdk"`), or its agent has exited
- *    and only the conversation survives. Then there is nothing to raise and the answer is
- *    to open a terminal on it.
+ *  - The session is embedded (`runtime: "sdk"`). Its driver has to stop before the same
+ *    conversation opens in a terminal, so this is a handoff rather than a second launch.
+ *  - A terminal session's agent has exited and only the conversation survives. There is
+ *    nothing to raise or stop, so the answer is to resume it in a new terminal.
  *
  * Pure, and in `shared`, because BOTH sides have to reach the same verdict. The browser
  * asks it to shape the control - with a live pane there is no terminal to choose, so the
@@ -30,7 +31,7 @@ import { capabilitiesFor } from "./harness-capabilities.ts";
  * What the agent launcher will do. `null` means it can do nothing, and
  * `agentLaunchBlockedReason` says what was missing.
  */
-export type AgentLaunchAction = "focus" | "resume";
+export type AgentLaunchAction = "focus" | "handoff" | "resume";
 
 /**
  * The narrow shape this needs, rather than a whole `Session`.
@@ -63,7 +64,8 @@ export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | nul
   if (!capabilitiesFor(s.agent).resumes) return null;
   if (!s.agentSessionId) return null;
   if (!s.cwd) return null;
-  return "resume";
+  if (s.runtime === "sdk") return "handoff";
+  return s.state === "exited" ? "resume" : null;
 }
 
 /**
@@ -84,7 +86,8 @@ export function agentLaunchBlockedReason(s: LaunchableSession): string | null {
     return `${s.agent} cannot reopen a conversation from its command line`;
   }
   if (!s.agentSessionId) return "this session has not reported a conversation id yet";
-  return "this session has no checkout to open a terminal in";
+  if (!s.cwd) return "this session has no checkout to open a terminal in";
+  return "this live session has no terminal pane to focus";
 }
 
 /**

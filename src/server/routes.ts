@@ -483,6 +483,7 @@ export function buildApp(
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
    */
   handoffDeps?: HandoffDeps,
+  launchSessionTerminal?: typeof launchTerminal,
 ): Hono {
   const app = new Hono();
 
@@ -508,6 +509,21 @@ export function buildApp(
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
+  const handoffSession = async (session: Session) => {
+    if (!sdkSessions) {
+      return { ok: false as const, error: "this build has no session supervisor" };
+    }
+    return handOffToTerminal(
+      registry,
+      sdkSessions,
+      session,
+      handoffDeps ?? {
+        spawn: spawnUniquely,
+        waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
+        settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
+      },
+    );
+  };
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
@@ -1058,6 +1074,7 @@ export function buildApp(
 
     let argv: readonly string[];
     let name: string;
+    let transferredTaskId: string | null = null;
     if (payload === "agent") {
       // The daemon owns this rule and the browser reads the SAME predicate to shape the
       // button. A session with a live pane is focusable, and resuming beside it would put
@@ -1070,6 +1087,19 @@ export function buildApp(
           409,
         );
       }
+      if (action === "handoff") {
+        const handedOff = await handoffSession(session);
+        const body = handedOff.ok
+          ? {
+              ok: true,
+              backend,
+              label: "default terminal",
+              homeName: handedOff.homeName,
+              sessionId: handedOff.sessionId,
+            }
+          : { ok: false, backend, label: "default terminal", error: handedOff.error };
+        return handedOff.ok ? c.json(body) : c.json(body, 409);
+      }
       if (action !== "resume") {
         return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
       }
@@ -1080,6 +1110,11 @@ export function buildApp(
       }
       argv = composed;
       name = session.name;
+      const task = registry.listTasks().find((candidate) => candidate.sessionId === session.id);
+      if (task) {
+        transferredTaskId = task.id;
+        registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+      }
     } else {
       // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
       // be arbitrary code execution on this host from a button labelled "Terminal".
@@ -1087,7 +1122,17 @@ export function buildApp(
       name = session.name;
     }
 
-    const result = await launchTerminal(backend, { name, cwd, argv });
+    let result;
+    try {
+      result = await (launchSessionTerminal ?? launchTerminal)(backend, { name, cwd, argv });
+    } catch (error) {
+      if (transferredTaskId) tasks.settleAfterFailedHandoff(transferredTaskId);
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ ok: false, backend, error: message }, 502);
+    }
+    if (transferredTaskId && !result.ok && result.status !== 504) {
+      tasks.settleAfterFailedHandoff(transferredTaskId);
+    }
     const body = {
       ok: result.ok,
       backend,
@@ -1631,16 +1676,7 @@ export function buildApp(
   app.post("/api/sessions/:id/handoff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (!sdkSessions) {
-      return c.json({ ok: false, error: "this build has no session supervisor" }, 409);
-    }
-    const r = await handOffToTerminal(registry, sdkSessions, session, handoffDeps ?? {
-      spawn: spawnUniquely,
-      waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
-      // Reached only when the driver was stopped and no terminal could replace it, which is
-      // the one case nothing else can settle - see `settleAfterFailedHandoff`.
-      settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
-    });
+    const r = await handoffSession(session);
     return c.json(r, r.ok ? 200 : 409);
   });
 

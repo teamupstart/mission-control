@@ -18,10 +18,9 @@ import { Tooltip } from "./Tooltip.tsx";
  * changes nothing here and nothing in the stylesheet.
  *
  * The agent button changes SHAPE with the session, and that is the honest rendering of
- * `agentLaunchAction` rather than a flourish. With a live pane there is no terminal to
- * choose - the one that exists gets raised - so the button carries no caret and opens no
- * menu. Drawing a chooser there would offer a decision whose every option does the same
- * thing.
+ * `agentLaunchAction` rather than a flourish. A live pane is focused directly, an embedded
+ * driver is handed to the configured terminal path, and only an exited terminal session
+ * offers a backend choice.
  */
 
 /**
@@ -236,6 +235,11 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
     if (!result.ok) setFlash({ text: result.error ?? "could not focus", error: true });
   }
 
+  async function handoff(): Promise<void> {
+    const result = await api.handoff(session.id);
+    if (!result.ok) setFlash({ text: result.error ?? "could not continue in a terminal", error: true });
+  }
+
   return (
     <div className="conv-launch">
       <span className="conv-launch-where">
@@ -269,6 +273,13 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
           <button type="button" className="launch-btn launch-agent" onClick={() => void focusPane()}>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
             {agentLabel}
+          </button>
+        </Tooltip>
+      ) : action === "handoff" ? (
+        <Tooltip label="Stop the embedded driver and continue this conversation in a terminal">
+          <button type="button" className="launch-btn launch-agent" onClick={() => void handoff()}>
+            <span className="launch-glyph-lead" aria-hidden>◆</span>
+            Continue in terminal
           </button>
         </Tooltip>
       ) : (

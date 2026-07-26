@@ -119,13 +119,14 @@
 
 <h2>Explicitly out of scope</h2>
 <ul>
+  <li>G5's feature-home relocation: the phases add the tab badge and inbox entry points, but ensembles remain a tab on the Workflows page - moving the feature's home was not part of any approved solution.</li>
   <li>G9's stall TIMER / deadline policy: lanes show <code>lastActivity</code> age honestly; a policy is a separate product decision.</li>
   <li>G10 observed-model capture (<code>member-launch.ts:75</code>) - server telemetry work, untouched.</li>
   <li>G19 task-to-ensemble conversion and G20 non-manual source kinds - outside the approved direction's scope.</li>
 </ul>
 
 <h2>Final verification strategy</h2>
-<p>Each phase ships its own tests and manual verification. After Phase 6: full suite, then one end-to-end pass on a real Best-of-N run - launch from Dispatch, watch clusters in all three layouts, block a member with a question and answer it from the inbox AND from its lane, drive to <code>awaiting_decision</code>, decide from the dossier, compare two candidates per file, restore a loser - confirming every gap group G1-G18 against the source plan's catalog. The extension-contract invariants (<code>ensemble-extension-contract.test.ts</code>) must be green untouched after every phase.</p>
+<p>Each phase ships its own tests and manual verification. After Phase 6: full suite, then one end-to-end pass on a real Best-of-N run - launch from Dispatch, watch clusters in all three layouts, block a member with a question and answer it from the inbox AND from its lane, drive to <code>awaiting_decision</code>, decide from the dossier, compare two candidates per file, restore a loser - confirming every phase-owned gap (G1-G4, G6-G8, G11-G18, and the badge half of G5) against the source plan's catalog; the out-of-scope list above is what deliberately remains open. The extension-contract invariants (<code>ensemble-extension-contract.test.ts</code>) must be green untouched after every phase.</p>
 
 </div>
 </body>

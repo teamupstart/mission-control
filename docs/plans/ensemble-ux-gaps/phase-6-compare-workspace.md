@@ -42,7 +42,7 @@ No server changes (Phase 2's contract consumed as-is). `EnsembleResultContext` u
 
 ## 8. Merge and exit criteria
 
-Suite green; `docs/ensembles.md` gains the Compare section (including the >= 2 gate and the single-path fetch rule); README ensemble paragraph updated. The final state of the six phases matches the approved plan: every gap group G1-G18 has its owning surface shipped (G9's timer policy and G10/G19/G20 recorded as out of scope in the index).
+Suite green; `docs/ensembles.md` gains the Compare section (including the >= 2 gate and the single-path fetch rule); README ensemble paragraph updated. The final state of the six phases matches the approved plan: every gap OWNED by a phase is shipped - G1-G4, G6-G8, G11-G18, and the badge half of G5 - while the recorded out-of-scope remainder stays open and stays recorded (G5's feature-home relocation, G9's stall timer policy, G10, G19, G20; see the index's out-of-scope section).
 
 ## 9. Downstream handoff
 
@@ -50,4 +50,5 @@ None planned beyond this phase. Future strategy work may rely on: Compare being 
 
 ## 10. Cross-phase audit record
 
+- 2026-07-26 (round 3): exit criteria narrowed from "every gap group G1-G18" to the phase-owned set after PR #263's Inspector noted the blanket claim contradicted the index's own out-of-scope list (G5's home relocation, G9's timer, G10, G19, G20); the index's out-of-scope section and final verification paragraph updated in lockstep.
 - 2026-07-26: initial version. Reconciliations: (a) `filesOnly` moved into Phase 2 after this phase's matrix design showed N full-patch fetches otherwise; (b) the approved decision "matrix PLUS synchronized panes" is honored - the reduced matrix-only scope offered during review was declined; (c) panes fetch per file per artifact (never multi-path) per Phase 2's recorded header-size rule.

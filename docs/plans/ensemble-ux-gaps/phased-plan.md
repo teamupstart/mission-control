@@ -59,10 +59,11 @@ Any topological order of the graph. The canonical sequence: 1, 2 (either order),
 
 ## Explicitly out of scope (recorded, not owned by any phase)
 
+- G5's feature-home relocation: the phases add the tab badge and inbox entry points, but ensembles remain a tab on the Workflows page - moving the feature's home was not part of any approved solution.
 - G9's stall TIMER / deadline policy: the lanes show `lastActivity` age honestly; a policy is a separate product decision.
 - G10 observed-model capture (`member-launch.ts:75` "a later phase records") - server telemetry work, untouched.
 - G19 task-to-ensemble conversion and G20 non-manual source kinds - out of the approved direction's scope.
 
 ## Final verification strategy
 
-Each phase ships its own tests and manual verification (listed per file). After Phase 6: run the full suite, then one end-to-end pass on a real Best-of-N run - launch from Dispatch, watch clusters in all three layouts, block a member with a question and answer it from the inbox AND from its lane, drive to `awaiting_decision`, decide from the dossier, compare two candidates per file, restore a loser - confirming every gap group G1-G18 against the source plan's catalog. The extension-contract invariants (`ensemble-extension-contract.test.ts`: no strategy branch in the engine, no Ensemble node in the Workflow graph) must be green untouched after every phase.
+Each phase ships its own tests and manual verification (listed per file). After Phase 6: run the full suite, then one end-to-end pass on a real Best-of-N run - launch from Dispatch, watch clusters in all three layouts, block a member with a question and answer it from the inbox AND from its lane, drive to `awaiting_decision`, decide from the dossier, compare two candidates per file, restore a loser - confirming every phase-owned gap (G1-G4, G6-G8, G11-G18, and the badge half of G5) against the source plan's catalog; the out-of-scope list above is what deliberately remains open. The extension-contract invariants (`ensemble-extension-contract.test.ts`: no strategy branch in the engine, no Ensemble node in the Workflow graph) must be green untouched after every phase.

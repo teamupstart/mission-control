@@ -224,7 +224,15 @@ export const PanelVoteConfigSchema = z
       .min(PANEL_VOTE_MIN_JUDGES)
       .max(PANEL_VOTE_MAX_JUDGES)
       .default(DEFAULT_JUDGES),
-    /** The panel always anonymizes, so this durable parity field is not offered as a form control. */
+    /**
+     * Persisted, always `true`, and NOT an operator control - see the consensus strategy's copy of
+     * this field for the argument. The panel packet is unconditionally anonymous, so this states
+     * what happens rather than choosing it, and it NORMALIZES rather than refusing: a stored
+     * `false` written by another build must still LOAD and compile to an anonymous plan, which is
+     * the property `ensemble-anonymity.test.ts` folds over every strategy to pin. Refusing here
+     * instead would make one strategy reject a config the other two accept, and would turn a run
+     * from another build into one this build cannot execute at all.
+     */
     anonymizeSubjects: z
       .boolean()
       .default(true)

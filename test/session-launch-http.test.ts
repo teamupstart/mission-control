@@ -6,6 +6,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import { mkSession, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
 // question is what a request is allowed to influence. The answer has to be "which of two
@@ -99,7 +100,11 @@ const app = buildApp(
         status: 504,
       };
     }
-    return { ok: true, label: backend, homeName: "resumed", status: 200 };
+    // Mirrors the REAL launcher's per-axis contract: only a multiplexer produces a
+    // durable, enumerable home. An emulator tab has none, and a fake that invented one
+    // here would hide the very bug this seam exists to catch.
+    const durable = MULTIPLEXER_IDS.includes(backend as (typeof MULTIPLEXER_IDS)[number]);
+    return { ok: true, label: backend, homeName: durable ? "resumed" : null, status: 200 };
   },
 );
 
@@ -278,4 +283,36 @@ test("a resume claim is released when the session is actually removed", () => {
     assert.equal(launched.length, 2);
     SESSIONS.delete(gone.id);
   })();
+});
+
+test("resuming through an emulator persists NO home, not the dead one", async () => {
+  // The route half of the same contract. The launcher reports null when the backend made no
+  // durable home; this must be WRITTEN as null rather than falling back to the task's
+  // existing `homeName`. That old home belonged to the agent that exited, so keeping it is
+  // the identical bug by another path: a restart reads it as gone and reclaims a worktree
+  // the resumed CLI is working in. Only `false` reclaims, and null is not `false`.
+  const session = mkSession({ id: "emu-resume", state: "exited" });
+  SESSIONS.set(session.id, session);
+  const task = mkTask({
+    id: "task-emu",
+    status: "running",
+    sessionId: session.id,
+    homeName: "home-of-the-agent-that-exited",
+  });
+  TASKS.set(task.id, task);
+  launched.length = 0;
+
+  const res = await launch(session.id, { backend: "wezterm", payload: "agent" });
+  assert.equal(res.status, 200);
+
+  const after = TASKS.get(task.id);
+  assert.equal(
+    after?.homeName,
+    null,
+    "a stale home must be cleared, never carried forward onto a live agent",
+  );
+  assert.equal(after?.terminalResourceId, null);
+
+  TASKS.delete(task.id);
+  SESSIONS.delete(session.id);
 });

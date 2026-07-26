@@ -1193,7 +1193,13 @@ export function buildApp(
         if (current) {
           registry.upsertTask({
             ...current,
-            homeName: result.homeName ?? current.homeName,
+            // `?? null`, never `?? current.homeName`. The launcher reports null when the
+            // backend produced no durable home (an emulator tab), and keeping the OLD name
+            // there would be the same bug by a different route: that home belonged to the
+            // agent that exited, so a restart would read it as gone and reclaim a worktree
+            // the resumed CLI is working in. Null means "could not tell", and only `false`
+            // reclaims - see `TerminalLaunchOutcome.homeName` and `homeAlive`.
+            homeName: result.homeName ?? null,
             terminalResourceId: null,
             updatedAt: Date.now(),
           });

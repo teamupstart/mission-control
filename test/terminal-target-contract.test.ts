@@ -478,3 +478,41 @@ test("a name is spelled the backend's own way before anything is created under i
   assert.deepEqual(emu.opened[0]?.argv, ["fake-mux", "attach", "-t", "coerced-abc123"]);
   assert.equal(emu.opened[0]?.title, "coerced-abc123");
 });
+
+// ---- Inspector follow-up on PR #269, round 2 ----
+
+test("an emulator launch reports NO durable home, because it produced none", async () => {
+  // The three-valued liveness contract, at the point where a value enters it. A tab title
+  // is a label, not a resource: no backend enumerates it, so `heldHomeNames` can never
+  // contain it and `homeAlive` reads it as `false`. `false` is the ONE value that lets
+  // `reconcileOnStartup` run `git worktree remove --force`, so persisting a title as a home
+  // means a restart deletes the checkout of an agent that is alive in that very tab.
+  //
+  // Null is the honest answer and maps to "could not tell", which reclaims nothing.
+  const emu = recordingEmu();
+  const outcome = await launchTerminal(
+    "wezterm",
+    SPEC,
+    deps({ emulators: { wezterm: emu.backend } }),
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.homeName, null, "a tab title must never be persisted as a home");
+  // The title still reaches the tab - it is a label, and that is all it ever was.
+  assert.equal(emu.opened[0]?.title, PLAIN_NAMES.sanitize(SPEC.name));
+});
+
+test("a multiplexer launch DOES report a durable home", async () => {
+  // The other half, so the null above reads as a distinction rather than as "we stopped
+  // reporting homes". A multiplexer session name is enumerable by `heldHomeNames` and
+  // addressable by `killHome`, so a later liveness check can answer truthfully about it.
+  const mux = recordingMux();
+  const emu = recordingEmu();
+  const outcome = await launchTerminal(
+    "tmux",
+    SPEC,
+    deps({ multiplexers: { tmux: mux.backend }, emulators: { wezterm: emu.backend } }),
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(typeof outcome.homeName, "string");
+  assert.equal(outcome.homeName, mux.created[0]?.name, "the home is the session actually made");
+});

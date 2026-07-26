@@ -162,8 +162,23 @@ export interface TerminalLaunchOutcome {
   ok: boolean;
   /** The backend that took it, for the flash the operator reads. */
   label: string;
-  /** The terminal home name to persist when this launch carries a task. */
-  homeName?: string;
+  /**
+   * The DURABLE terminal home to persist when this launch carries a task, or null when
+   * this backend produced none.
+   *
+   * Null is a first-class answer and the axes genuinely differ. A multiplexer session name
+   * is durable: `heldHomeNames` enumerates it and `killHome` addresses it, so a later
+   * `homeAlive` can answer truthfully. An emulator tab has no such handle - its title is a
+   * label, not a resource, and no backend enumerates it.
+   *
+   * Returning that title as a home would be worse than returning nothing, which is the
+   * defect this replaced. `homeAlive` consults the multiplexer axis when one is installed,
+   * a window title is never in that list, so it reads `false` - and `false` is the ONE
+   * value that lets `reconcileOnStartup` run `git worktree remove --force`. A task whose
+   * agent is alive in a WezTerm tab would have had its checkout deleted on the next daemon
+   * restart. Null maps to "could not tell", which reclaims nothing.
+   */
+  homeName?: string | null;
   error?: string;
   status: number;
 }
@@ -229,7 +244,7 @@ export async function launchTerminal(
   }
 
   let result: TerminalResult;
-  let homeName: string;
+  let homeName: string | null;
   const mux = deps.multiplexers[backend];
   if (mux?.sessions) {
     const sessions = mux.sessions;
@@ -297,7 +312,10 @@ export async function launchTerminal(
     // `spec.name` through raw let a control character in a session name reach a real tab
     // title. Both shipped emulators declare `PLAIN_NAMES`, which is what strips it.
     const title = emulator.names.sanitize(spec.name);
-    homeName = title;
+    // NOT a home. See `TerminalLaunchOutcome.homeName`: a tab title is a label no backend
+    // can enumerate, and persisting it as a home is what makes `homeAlive` say `false` and
+    // a restart reclaim a live agent's worktree.
+    homeName = null;
     result = await emulator.spawn.tab({ argv: spec.argv, title, cwd: spec.cwd });
   }
 

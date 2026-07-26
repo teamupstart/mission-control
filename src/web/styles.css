@@ -1423,7 +1423,12 @@ body {
      there for a screen reader as well as for a pointer.
 
      `:not(.is-down)` on the link label is the one exception in the other direction: a lone
-     red dot cannot be the only notice that every figure beside it stopped being true. */
+     red dot cannot be the only notice that every figure beside it stopped being true.
+
+     Disconnected, keeping that word and every count needs 809px before the redundant count
+     dots and 2px of their padding are spent. The figures already carry each dot's tone, and
+     this brings the bar to 737px in a 758px container, with the same 845px floor as the
+     connected state. */
   .pulse .tb-label,
   .pulse:not(.is-down) .pulse-link-label {
     position: absolute;
@@ -1436,6 +1441,12 @@ body {
   }
   .pulse-seg {
     padding: 0 9px;
+  }
+  .pulse.is-down .pulse-seg:not(.pulse-link) .pulse-dot {
+    display: none;
+  }
+  .pulse.is-down .pulse-seg:not(.pulse-link) {
+    padding: 0 7px;
   }
 }
 

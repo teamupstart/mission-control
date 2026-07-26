@@ -176,7 +176,12 @@ test("a disconnected pulse keeps its stale figures and review control visible", 
   );
   for (const rung of RUNGS) {
     for (const [sel, body] of rung.rules) {
-      if (!/\.pulse\.is-down.*\.pulse-seg/.test(sel)) continue;
+      const hidesSegment = sel
+        .split(",")
+        .some((part) =>
+          /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*$/.test(part.trim()),
+        );
+      if (!hidesSegment) continue;
       assert.doesNotMatch(
         body,
         /display:\s*none/,

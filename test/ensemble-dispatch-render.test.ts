@@ -7,10 +7,14 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import type { WorkflowSummary, WorkflowVersionMetadata } from "../src/shared/workflow.ts";
+import type { PersonaView } from "../src/shared/workflow.ts";
 import {
   compatibilityForWorkflowVersion,
   EnsembleDispatch,
+  EnsembleLaunchControls,
+  useEnsembleLaunch,
   workflowVersionCompatibilityKey,
+  type EnsembleLaunchState,
 } from "../src/web/ensembles/dispatch/EnsembleDispatch.tsx";
 import {
   buildEnsembleCreateInput,
@@ -18,23 +22,79 @@ import {
   freshEnsembleDraft,
   getConfigPath,
   setConfigPath,
+  type EnsembleDispatchDraft,
 } from "../src/web/ensembles/dispatch/config.ts";
+import type { EnsemblePreviewResult } from "../src/web/ensembles/types.ts";
 
 const compose = { repoRoot: "/repo", title: "Ship it", intent: "do the thing", attachments: [] };
 
-function render(over: Partial<Parameters<typeof EnsembleDispatch>[0]> = {}): string {
-  return renderToStaticMarkup(
-    createElement(EnsembleDispatch, {
+/**
+ * The body plus the footer controls, wired through the real hook - the same pairing the
+ * dispatch modal renders. Static markup means no preview has happened, so the footer is in
+ * its unreviewed state (Review launch in the primary slot).
+ */
+function render(over: Partial<{
+  ensemble: EnsembleDispatchDraft;
+  personas: PersonaView[];
+  workflowSummaries: WorkflowSummary[];
+  uploading: boolean;
+}> = {}): string {
+  const props = {
+    ensemble: freshEnsembleDraft(),
+    personas: [] as PersonaView[],
+    workflowSummaries: [] as WorkflowSummary[],
+    uploading: false,
+    ...over,
+  };
+  function Harness(): React.JSX.Element {
+    const launch = useEnsembleLaunch({
       compose,
-      ensemble: freshEnsembleDraft(),
+      ensemble: props.ensemble,
       onEnsembleChange: () => {},
-      uploading: false,
-      personas: [],
-      workflowSummaries: [],
+      uploading: props.uploading,
       onLaunched: () => {},
-      ...over,
-    }),
-  );
+    });
+    return createElement(
+      "div",
+      null,
+      createElement(EnsembleDispatch, {
+        ensemble: props.ensemble,
+        onEnsembleChange: () => {},
+        personas: props.personas,
+        workflowSummaries: props.workflowSummaries,
+        launch,
+      }),
+      createElement(EnsembleLaunchControls, { launch }),
+    );
+  }
+  return renderToStaticMarkup(createElement(Harness));
+}
+
+/** A fabricated post-review state, for pinning the footer's reviewed rendering. */
+function reviewedLaunch(over: Partial<EnsembleLaunchState> = {}): EnsembleLaunchState {
+  return {
+    active: true,
+    reviewed: true,
+    previewing: false,
+    launching: false,
+    uploading: false,
+    hasCompose: true,
+    canLaunch: true,
+    preview: {
+      ok: true,
+      reason: null,
+      issues: [],
+      estimate: { initialMembers: 3, maxMembers: 3, maxConcurrentMembers: 3, maxWaves: 1, evaluationCalls: 1 },
+      workflow: null,
+    } satisfies EnsemblePreviewResult,
+    previewIssues: [],
+    workflowUnsupported: false,
+    launchError: null,
+    estimate: { initialMembers: 3, maxMembers: 3, maxConcurrentMembers: 3, maxWaves: 1, evaluationCalls: 1 },
+    review: async () => {},
+    launchNow: async () => {},
+    ...over,
+  };
 }
 
 test("a fresh ensemble draft is Best-of-N, with a request id and three defaulted candidates", () => {
@@ -58,17 +118,28 @@ test("editing config invalidates the preview fingerprint, but the request id nev
   assert.equal(ensemblePreviewFingerprint(buildEnsembleCreateInput(compose, "do the thing", rekeyed)), base);
 });
 
-test("the dispatch renders descriptor-driven strategy cards, a roster, and a two-step launch", () => {
+test("the dispatch renders descriptor-driven strategy segments, lanes, and a two-step launch", () => {
   const html = render();
-  assert.match(html, /Best of N/); // the strategy card, from ENSEMBLE_STRATEGY_INFO
-  assert.match(html, /aria-label="Candidate 1 agent"/); // roster rows are keyboard reachable
+  assert.match(html, /Best of N/); // the strategy segment, from ENSEMBLE_STRATEGY_INFO
+  assert.match(html, /aria-label="Ensemble strategy"/); // one segmented control, not a card grid
+  assert.match(html, /aria-label="Candidate 1 agent"/); // lanes are keyboard reachable
   assert.match(html, /aria-label="Candidate 3 approach"/); // three default rows
-  assert.match(html, /Review launch/);
-  assert.match(html, /Launch 3 agents/);
+  assert.match(html, /Review launch/); // unreviewed: Review holds the primary slot
+  assert.doesNotMatch(html, /Launch 3 agents/); // Launch appears only once the plan is reviewed
   assert.match(html, /will push or open a pull request/i); // the publishing-prohibition rule, stated before launch
   assert.match(html, /A person confirms the winner/); // the destructive-decision requirement
-  assert.match(html, /Evaluator guidance/); // the evaluator selector (config carries an evaluator)
+  assert.match(html, /base pinned at launch/); // the plan strip names the pin
+  assert.match(html, /Judged by/); // the evaluator selector (config carries an evaluator)
   assert.match(html, /no workflow/i); // the optional workflow-placement selector
+});
+
+test("a reviewed plan puts Launch in the primary slot with a Reviewed chip beside it", () => {
+  const html = renderToStaticMarkup(
+    createElement(EnsembleLaunchControls, { launch: reviewedLaunch() }),
+  );
+  assert.match(html, /Reviewed ✓/);
+  assert.match(html, /Launch 3 agents/);
+  assert.doesNotMatch(html, /Review launch/);
 });
 
 test("workflow placement leaves unselected versions lazy", () => {
@@ -88,8 +159,8 @@ test("workflow placement leaves unselected versions lazy", () => {
   };
   const html = render({ workflowSummaries: [workflow] });
   assert.match(html, /Review winner \(v1\)/);
+  // Unselected versions are never probed: no per-option compatibility fetch, no status.
   assert.doesNotMatch(html, /Review winner \(v1\) · checking compatibility/);
-  assert.match(html, /loaded when selected and confirmed by the backend at Review/);
 });
 
 test("workflow placement identifies unsupported Live and Foreman modes", () => {
@@ -164,8 +235,16 @@ test("workflow compatibility loads selected metadata by pinned version", () => {
 });
 
 test("uploading attachments blocks the launch controls", () => {
-  const html = render({ uploading: true });
-  // The primary launch button reads Uploading and is disabled while an upload is in flight.
+  // Unreviewed: Review is disabled while an upload is in flight (an image still uploading
+  // has no path yet, so the plan under review would be missing its screenshot).
+  const unreviewed = render({ uploading: true });
+  assert.match(unreviewed, /class="btn btn-primary" disabled=""[^>]*>Review launch/);
+  // Reviewed: the primary reads Uploading and is disabled.
+  const html = renderToStaticMarkup(
+    createElement(EnsembleLaunchControls, {
+      launch: reviewedLaunch({ uploading: true, canLaunch: false }),
+    }),
+  );
   assert.match(html, /Uploading…<\/button>/);
   assert.match(html, /class="btn btn-primary"[^>]*disabled/);
 });
@@ -213,5 +292,7 @@ test("review uses server estimates, routes nested issues, and hides unsupported 
   // hard-coded path would silently route one field's issues onto the other.
   assert.match(dispatch, /\$\{fieldKey\}\.\$\{index\}/);
   assert.match(dispatch, /workflowVersionId/);
-  assert.match(modal, /\{!ensembleMode && \(\s*<div className="field-row">\s*<label className="field">[\s\S]*?Priority/);
+  // Task metadata an Ensemble cannot carry (priority, labels, dependencies) lives inside
+  // the Single-only backlog-details fold, so Ensemble mode never renders it.
+  assert.match(modal, /\{!ensembleMode && \(\s*<div className="dispatch-more-wrap">[\s\S]*?Priority/);
 });

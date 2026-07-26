@@ -1052,6 +1052,17 @@ what it's working on. A terminal-runtime session stays out of the way until you 
 Choose **Add to backlog** instead of **Dispatch now** to shelve a task without launching
 it yet.
 
+The form leads with the brief: repo, then the task composer, with the crew row (Agent,
+Kind, Model, Effort) beneath them and one shared hint in place of per-field boilerplate.
+**Backlog details** - priority, labels, title, and dependencies - fold behind a summary
+row that names what is set ("no priority · no labels · title summarized · no
+dependencies"), so nothing the draft carries can hide; the fold opens automatically when
+you edit a shelved task or the draft already holds one of them. Dependencies are chips
+with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
+unmet dependency raises an amber note beside them as well as renaming the primary button.
+The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
+whole dialog.
+
 **Dependencies** can be selected from tasks already in the backlog and from active
 sessions. They are durable scheduling constraints, not notes: if any selected dependency
 is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the new task is
@@ -1611,14 +1622,18 @@ below and the [operator guide](docs/ensembles.md) for the full strategy, judging
 semantics.
 
 **Start one from Dispatch, watch it under Workflows.** Open the dispatch modal and flip the
-launch mode from **Single agent** to **Ensemble**. The same title/repo/intent/attachment
-compose area serves both; below it, descriptor-driven strategy cards render the chosen
-strategy's own form - a roster of candidate rows choosing their own agent, model, effort and
-optional approach hint, plus the strategy's judging Persona or panel, and an optional
-[workflow](#workflows-and-personas) where the strategy supports one. **Review launch** posts a
-side-effect-free preview (member count, concurrency, waves, evaluation calls, and whether the
-chosen workflow mode is executable) and any edit after that invalidates it, so **Launch N agents**
-always confirms exactly what you reviewed. The launch is idempotent on a stable request id: a lost
+header's launch mode from **Single agent** to **Ensemble** (the modal widens so a candidate
+lane holds one line). The same title/repo/intent/attachment compose area serves both; below
+it, a descriptor-driven segmented **Strategy** control renders the chosen strategy's own
+form - candidate lanes choosing their own agent, model, effort and optional approach hint,
+steppers for the tuning knobs, the strategy's judging Persona or panel, and an optional
+[workflow](#workflows-and-personas) where the strategy supports one. A **Launch plan** strip
+draws what pressing Launch starts - the pinned base, the isolated lanes, the evaluation, and
+the human gate - with the estimate figures beside it. **Review launch** sits in the footer's
+primary slot and posts a side-effect-free preview (member count, concurrency, waves,
+evaluation calls, and whether the chosen workflow mode is executable); once it verifies, a
+green **Reviewed** chip appears and **Launch N agents** takes the slot. Any edit after that
+invalidates the review, so the launch always confirms exactly what you reviewed. The launch is idempotent on a stable request id: a lost
 response and a retry return the same run, never a second fleet. Every candidate is grouped in
 Cards, Console and Board by a distinct **E** mark (separate from a workflow's **W**) that opens the
 run. The **Ensembles** tab beside Workflows, Personas and Runs is the monitoring, evidence,

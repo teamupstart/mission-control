@@ -4821,8 +4821,209 @@ kbd {
 }
 
 /* ---- dispatch modal ---- */
+/* Single leads with the brief and compresses the crew to one row at 640; Ensemble alone
+   widens to 760 so a candidate lane's four controls hold one line without clipping. */
 .dispatch-modal {
-  width: min(560px, 100%);
+  width: min(640px, 100%);
+}
+.dispatch-modal-ensemble {
+  width: min(760px, 100%);
+}
+/* The launch-mode toggle lives in the modal header: it reshapes the whole form below it,
+   so it is a property of the dialog, not a field among fields. The title takes the slack
+   so the toggle sits against the close button. */
+.dispatch-modal .modal-head {
+  gap: 10px;
+}
+.dispatch-modal .modal-head h2 {
+  flex: 1;
+}
+.modal-head .dispatch-mode-toggle {
+  margin-bottom: 0;
+}
+.modal-head .dispatch-mode-toggle button {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* The crew row: agent, kind, model, effort as one compact line. Model gets the widest
+   track because its closed value names a model ("Default - Opus 5"); the shared hint
+   below replaces the per-field "set in Settings" repetition. */
+.dispatch-crew {
+  display: grid;
+  grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
+  gap: 10px;
+}
+.dispatch-crew .field {
+  gap: 4px;
+}
+.dispatch-crew .field-label {
+  font-size: 11px;
+}
+.dispatch-crew-hint {
+  font-size: 11.5px;
+}
+
+/* A select wearing its harness's accent: the same inline --agent-accent every card and
+   rail row uses, painted as a dot inside the control. */
+.agent-accent-select {
+  position: relative;
+  display: block;
+}
+.agent-accent-select::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--agent-accent, var(--neutral));
+  pointer-events: none;
+  z-index: 1;
+}
+/* The :not([multiple]) restatement matters: the shared dropdown rule carries it too and
+   sits later in this file, so without it that rule's own padding wins the tie and the
+   dot lands on the first letter. */
+.agent-accent-select select:not([multiple]) {
+  width: 100%;
+  padding-left: 23px;
+}
+
+/* Backlog details: the disclosure that folds priority, labels, title and dependencies.
+   The collapsed summary names what is set, so nothing hides silently. */
+.dispatch-more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* A button shrinks to its content; with the summary hidden (fold open) that would
+     unseat the tab look over the body below. */
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+.dispatch-more:hover {
+  border-color: var(--border);
+  color: var(--fg);
+}
+.dispatch-more.open {
+  border-radius: 8px 8px 0 0;
+  border-bottom-color: transparent;
+}
+.dispatch-more-title {
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.dispatch-more-summary {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dispatch-more-chev {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+}
+.dispatch-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--border-soft);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 12px 12px 14px;
+  background: color-mix(in srgb, var(--bg-2) 45%, transparent);
+}
+
+/* Dependencies as chips plus one grouped add control, replacing the native multi-select
+   listbox - the least themed control this modal had. */
+.dep-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--working) 35%, var(--border));
+  background: color-mix(in srgb, var(--working) 9%, var(--panel));
+  border-radius: 999px;
+  padding: 4px 6px 4px 9px;
+  max-width: 100%;
+}
+.dep-chip-x {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  padding: 0 3px;
+  cursor: pointer;
+}
+.dep-chip-x:hover {
+  color: var(--fg);
+}
+/* Doubled selector for the same tie-break reason as .agent-accent-select: the shared
+   dropdown rule's `border:` shorthand would otherwise re-solid the dash. The fixed width
+   stops the closed control sizing to its longest OPTION (a dependency title), which as a
+   blockified flex item overflowed the fold; the popup list still shows full titles. */
+.dep-chips select.dep-add {
+  border-style: dashed;
+  color: var(--dim);
+  width: 165px;
+}
+.dep-chips select.dep-add:hover {
+  color: var(--muted);
+  border-color: var(--muted);
+}
+
+/* Unmet dependencies speak in the attention tone, once: a compact note beside the
+   dependencies, and the primary button recolored below. */
+.dispatch-wait-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--attention);
+  border: 1px solid color-mix(in srgb, var(--attention) 30%, var(--border));
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  border-radius: 8px;
+  padding: 8px 11px;
+}
+/* The doubled class outranks .btn-primary's hover !important by specificity, whatever
+   the source order. */
+.btn-primary.btn-wait {
+  color: #1a1206;
+  background: color-mix(in oklab, var(--attention) 88%, #402c07);
+  border-color: color-mix(in oklab, var(--attention) 70%, var(--border));
+}
+.btn-primary.btn-wait:hover:not(:disabled) {
+  background: var(--attention) !important;
+  color: #1a1206 !important;
+}
+
+@media (max-width: 720px) {
+  .dispatch-crew {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 .modal-head h2 {
   margin: 0;
@@ -4888,6 +5089,9 @@ kbd {
   color: var(--muted);
 }
 .field-hint {
+  /* Explicit, not inherited: a hint outside a .field-label (the dependencies note) would
+     otherwise pick up the 16px document default and read as body copy. */
+  font-size: 11.5px;
   font-weight: 400;
   color: var(--dim);
 }
@@ -4913,6 +5117,11 @@ select:not([multiple]) {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939eae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
+  /* A narrow track (the dispatch crew row) may hold a long option label; ellipsis beats
+     hard clipping against the chevron. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: border-color 0.14s ease;
 }
 select:not([multiple]):focus {
@@ -4953,17 +5162,6 @@ select:not([multiple]) option {
   resize: vertical;
   min-height: 90px;
   line-height: 1.5;
-}
-.dependency-select {
-  min-height: 82px;
-  line-height: 1.4;
-}
-.dependency-select optgroup {
-  color: var(--muted);
-}
-.dependency-select option {
-  color: var(--fg);
-  padding: 3px 6px;
 }
 
 /* ---- themed repo combobox (replaces the un-styleable native datalist) ---- */
@@ -6119,8 +6317,7 @@ select:not([multiple]) option {
   gap: 8px;
 }
 
-.ensemble-member-ordinal,
-.ensemble-roster-ordinal {
+.ensemble-member-ordinal {
   font-weight: 700;
 }
 
@@ -6777,8 +6974,10 @@ select:not([multiple]) option {
   font-size: 12px;
 }
 
+/* Selects are deliberately absent here: the app-wide `select:not([multiple])` rule
+   themes them (colour, radius, chevron), and a `background` shorthand in this block was
+   erasing that chevron on every ensemble form. */
 .ensemble-field input,
-.ensemble-field select,
 .ensemble-field textarea {
   width: 100%;
   border: 1px solid var(--border);
@@ -6787,6 +6986,10 @@ select:not([multiple]) option {
   color: var(--fg);
   padding: 8px;
   font: inherit;
+}
+
+.ensemble-field select {
+  width: 100%;
 }
 
 .ensemble-field small {
@@ -6889,60 +7092,16 @@ select:not([multiple]) option {
   gap: 14px;
 }
 
-.ensemble-strategy-cards {
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 10px;
-  margin: 0;
+/* The strategy segments reuse the launch-mode toggle chrome; the selected strategy's
+   blurb sits beneath them, with the full explanation on hover. */
+.ensemble-strategy-seg {
+  align-self: start;
 }
 
-.ensemble-strategy-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 8px;
-}
-
-.ensemble-strategy-card {
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 10px;
-  cursor: pointer;
-}
-
-.ensemble-strategy-card.selected {
-  border-color: var(--working);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--working) 40%, transparent);
-}
-
-.ensemble-strategy-card:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.ensemble-strategy-label {
-  font-weight: 600;
-}
-
-.ensemble-strategy-blurb,
-.ensemble-strategy-disabled {
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-.ensemble-strategy-explain {
+.ensemble-strategy-blurb {
   color: var(--muted);
   font-size: 12px;
-  margin: 8px 0 0;
-}
-
-.ensemble-config-form {
-  display: grid;
-  gap: 12px;
+  margin: 0;
 }
 
 .ensemble-toggle-row {
@@ -6952,53 +7111,213 @@ select:not([multiple]) option {
   color: var(--fg);
 }
 
-.ensemble-roster {
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 10px;
-  margin: 0;
+/* A roster is a plain field section now - label, help, lanes, one adder - not a fieldset
+   with browser legend chrome. Its label row is flex so the spacer can push the
+   "3 of 5" count to the right edge. */
+.ensemble-roster > .field-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
-.ensemble-roster-rows {
+.ensemble-roster-help {
+  margin: -2px 0 0;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+.ensemble-lanes {
   list-style: none;
-  margin: 8px 0;
+  margin: 2px 0 0;
   padding: 0;
   display: grid;
   gap: 8px;
 }
 
-.ensemble-roster-row {
+/* One candidate: ordinal, agent, model, effort, approach, remove - one bordered lane. */
+.ensemble-lane {
   display: grid;
-  grid-template-columns: auto 1fr 1fr 1fr 1.4fr auto;
+  grid-template-columns: auto 1.25fr 1fr 0.9fr 1.5fr auto;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  padding: 8px 10px;
 }
 
-.ensemble-roster-row select,
-.ensemble-roster-row input {
+/* A judge lane holds one lens and its meaning, nothing else. */
+.ensemble-judge-lane {
+  grid-template-columns: auto 1.1fr 2.2fr auto;
+}
+
+.ensemble-lane select,
+.ensemble-lane input {
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-  color: var(--fg);
-  padding: 6px;
-  font: inherit;
+  width: 100%;
 }
 
-.ensemble-roster-row > .ensemble-field-error {
+.ensemble-lane input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+}
+
+.ensemble-lane input::placeholder {
+  color: var(--dim);
+}
+
+.ensemble-lane-ordinal {
+  font: 600 10.5px/1 var(--mono);
+  color: var(--dim);
+  min-width: 18px;
+}
+
+.ensemble-lane-x {
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.ensemble-lane-x:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.ensemble-lane-x:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.ensemble-lane > .ensemble-field-error {
   grid-column: 2 / -1;
 }
 
-.ensemble-launch-summary {
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 10px;
-  background: var(--panel);
+.ensemble-lane-add {
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  text-align: left;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  margin-top: 8px;
 }
 
-.ensemble-workflow-placement {
-  display: grid;
-  gap: 8px;
+.ensemble-lane-add:hover:not(:disabled) {
+  color: var(--muted);
+  border-color: var(--muted);
+}
+
+.ensemble-lane-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Inside the dispatch pane, ensemble text inputs wear the app-wide input chrome rather
+   than the run-detail form look the shared .ensemble-field rules carry. Selects need no
+   override: the app-wide dropdown rule already themes them. */
+.ensemble-dispatch .ensemble-field input,
+.ensemble-dispatch .ensemble-field textarea {
+  background: var(--bg-2);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.ensemble-dispatch .ensemble-field-name,
+.ensemble-dispatch .ensemble-field > span {
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--muted);
+}
+
+/* A judge row whose lens is one of the operator's Personas wears the off-palette
+   purple - the app's judgement tone. */
+select.ensemble-judge-persona {
+  color: var(--purple);
+}
+
+/* The tuning knobs share one wrapping row: steppers, the evaluator, the workflow
+   handoff. Each control's help lives in its tooltip; the row shares one hint below. */
+.ensemble-tune {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.ensemble-tune > .ensemble-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.ensemble-tune-hint {
+  margin: -6px 0 0;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* Steppers replace bare number inputs - the last unthemed controls this form had. */
+.ensemble-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.ensemble-stepper button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.ensemble-stepper button:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.ensemble-stepper button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The dividers live on the input, not on :first-child/:last-child buttons - a disabled
+   stepper button gains the Tooltip's wrapper element, which would unseat those selectors. */
+.ensemble-dispatch .ensemble-stepper input {
+  width: 44px;
+  text-align: center;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border-soft);
+  border-right: 1px solid var(--border-soft);
+  border-radius: 0;
+  outline: none;
+  appearance: textfield;
+}
+
+.ensemble-stepper input::-webkit-outer-spin-button,
+.ensemble-stepper input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .ensemble-workflow-resolution {
@@ -7009,32 +7328,148 @@ select:not([multiple]) option {
   font-size: 11.5px;
 }
 
-.ensemble-launch-summary h5 {
-  margin: 0 0 6px;
+/* The launch plan strip: what pressing Launch starts, drawn rather than listed. One
+   pinned base, N isolated lanes, one evaluation node in the judgement purple, and the
+   human gate in green - the estimate figures in mono beside it. */
+.ensemble-plan {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 12px 14px 11px;
 }
 
-.ensemble-launch-summary ul,
-.ensemble-launch-rules {
-  margin: 4px 0;
-  padding-left: 18px;
-  font-size: 12px;
+.ensemble-plan-eyebrow {
+  font: 600 9.5px/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
 }
 
-.ensemble-launch-rules {
+.ensemble-plan-flow {
+  display: flex;
+  align-items: center;
+  margin: 12px 0 10px;
+  overflow-x: auto;
+}
+
+.ensemble-plan-node {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 6px 10px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.ensemble-plan-base {
   color: var(--muted);
+}
+
+.ensemble-plan-judge {
+  border-color: color-mix(in srgb, var(--purple) 45%, var(--border));
+  background: color-mix(in srgb, var(--purple) 8%, var(--panel));
+  color: var(--purple);
+}
+
+.ensemble-plan-human {
+  border-color: color-mix(in srgb, var(--idle) 45%, var(--border));
+  background: color-mix(in srgb, var(--idle) 8%, var(--panel));
+  color: var(--idle);
+}
+
+.ensemble-plan-line {
+  width: 18px;
+  height: 1px;
+  background: var(--border);
+  flex: none;
+}
+
+.ensemble-plan-lanes {
+  position: relative;
+  display: grid;
+  gap: 6px;
+}
+
+/* The vertical rail joining each lane's tick, so the fan-out reads as one graph. */
+.ensemble-plan-lanes::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--border);
+}
+
+.ensemble-plan-lane {
+  display: flex;
+  align-items: center;
+}
+
+.ensemble-plan-tick {
+  width: 12px;
+  height: 1px;
+  background: var(--border);
+  flex: none;
+}
+
+.ensemble-plan-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 10.5px/1 var(--mono);
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.ensemble-plan-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.ensemble-plan-figs {
+  margin: 0 0 4px;
+  font: 500 11px/1.6 var(--mono);
+  color: var(--working);
+}
+
+.ensemble-plan-rules {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* The footer's reviewed state: a chip, not a third button. */
+.ensemble-reviewed-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--idle);
+  border: 1px solid color-mix(in srgb, var(--idle) 40%, var(--border));
+  background: color-mix(in srgb, var(--idle) 10%, var(--panel));
+  border-radius: 999px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.ensemble-stale-note {
+  margin: 0;
 }
 
 .ensemble-issues {
   margin: 0;
   padding-left: 18px;
   color: var(--danger);
-}
-
-.ensemble-launch-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
 }
 
 /* Narrow viewports: config grids and scorecards collapse to one column. */
@@ -7047,11 +7482,11 @@ select:not([multiple]) option {
     border-bottom: 1px solid var(--border);
   }
   .ensemble-evidence-split,
-  .ensemble-scorecard-cols,
-  .ensemble-strategy-grid {
+  .ensemble-scorecard-cols {
     grid-template-columns: 1fr;
   }
-  .ensemble-roster-row {
+  .ensemble-lane,
+  .ensemble-judge-lane {
     grid-template-columns: 1fr 1fr;
   }
   .ensemble-manual-submit {

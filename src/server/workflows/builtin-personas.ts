@@ -20,11 +20,12 @@ import { BUILTIN_PERSONA_SOURCES } from "./builtin-personas.generated.ts";
  * - Edits and archives are refused in the store rather than in each caller, so a customized
  *   copy is one gesture with an honest name: Duplicate.
  *
- * `builtinPersonaId` is **APPEND-ONLY**. The id reaches durable storage as a published
- * version's `sourcePersonaId` and as a draft graph's `personaId`, so renaming a file renames
- * an id an operator's draft already points at, and that draft stops validating. A retired
- * role is removed from `docs/personas/`, which leaves published versions intact - they carry
- * their own guidance copy - and only stops it being offered to new stages.
+ * `builtinPersonaId` is append-only for a role that remains shipped. The id reaches durable
+ * storage as a published version's `sourcePersonaId` and as a draft graph's `personaId`, so
+ * renaming a file slug silently repoints an id an operator's draft already uses. Removing a
+ * document removes its id from the catalog. Published versions remain intact because they
+ * carry their own guidance copy, but a draft naming that id stops validating until its node
+ * is replaced.
  */
 export const BUILTIN_PERSONA_ID_PREFIX = "builtin:";
 

@@ -1918,8 +1918,8 @@ Delete or rename your copy to see the built-in.
 The authored Markdown is in this repository under `docs/personas/`, one document per role,
 and it is compiled into the build - run `npm run personas` after editing one, and commit the
 generated module. Each document's first level-one heading is the Persona's name and the
-paragraph under it is the description, which is the same rule **Import .md** uses for a file
-of your own.
+paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
+an imported Persona's description stays empty.
 
 The four are written to compose as the example workflow in
 `docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap

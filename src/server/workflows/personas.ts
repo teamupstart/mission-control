@@ -159,6 +159,9 @@ export class PersonaManager {
     const view = personaView(result.persona);
     // Archive is an upsert: the row remains addressable and its archived state is live data.
     this.registry.upsertPersona(view);
+    for (const persona of this.store.listPersonas(true)) {
+      if (persona.builtin) this.registry.upsertPersona(personaView(persona));
+    }
     return { ok: true, persona: view };
   }
 }

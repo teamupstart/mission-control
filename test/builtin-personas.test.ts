@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { ServerEvent } from "../src/shared/types.ts";
 
 // What is at stake: the four review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
@@ -17,7 +18,9 @@ const home = mkdtempSync(join(tmpdir(), "mission-builtin-personas-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
+const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { BUILTIN_PERSONAS, builtinPersonaId } = await import("../src/server/workflows/builtin-personas.ts");
 const { BUILTIN_PERSONA_SOURCES } = await import("../src/server/workflows/builtin-personas.generated.ts");
 // The generator itself, not a second implementation of it: a drift check that re-rendered the
@@ -173,8 +176,41 @@ test("a Persona imported before it shipped keeps its name and shadows the built-
   for (const id of activeIds) assert.equal(allIds.has(id), true, `${id} vanished from the archived listing`);
 });
 
-test("Publish validates and snapshots a built-in without it ever being a row", () => {
+test("archiving a shadowing row publishes the revealed built-in to the Registry", () => {
   const target = BUILTIN_PERSONAS[0]!;
+  db.prepare(
+    `INSERT INTO personas (id, name, normalized_name, description, guidance_md, runner_id,
+       model_id, revision, archived_at, created_at, updated_at)
+     VALUES ('legacy', ?, ?, '', '# Mine', NULL, NULL, 3, NULL, 1, 1)`,
+  ).run(target.name, target.normalizedName);
+
+  const registry = new Registry();
+  const manager = new PersonaManager(registry, store);
+  assert.equal(registry.snapshot().personas.some((persona) => persona.id === target.id), false);
+
+  const events: ServerEvent[] = [];
+  const unsubscribe = registry.subscribe((event) => events.push(event));
+  const archived = manager.archive("legacy", 3, 900);
+  unsubscribe();
+
+  assert.equal(archived.ok, true);
+  assert.equal(registry.snapshot().personas.some((persona) => persona.id === target.id), true);
+  assert.equal(
+    events.some((event) => event.type === "persona_upsert" && event.persona.id === target.id),
+    true,
+  );
+});
+
+test("Publish validates and snapshots a shadowed built-in by id", () => {
+  const target = BUILTIN_PERSONAS[0]!;
+  db.prepare(
+    `INSERT INTO personas (id, name, normalized_name, description, guidance_md, runner_id,
+       model_id, revision, archived_at, created_at, updated_at)
+     VALUES ('legacy', ?, ?, '', '# Mine', NULL, NULL, 3, NULL, 1, 1)`,
+  ).run(target.name, target.normalizedName);
+  assert.equal(store.listPersonas().some((persona) => persona.id === target.id), false);
+  assert.equal(store.personaCatalog().some((persona) => persona.id === target.id), true);
+
   const draft = {
     nodes: [
       { id: "session", kind: "session" as const, position: { x: 0, y: 0 } },

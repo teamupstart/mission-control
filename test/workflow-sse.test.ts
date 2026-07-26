@@ -47,7 +47,13 @@ test("snapshot, upsert, archive, and reconnect produce one equivalent Persona ca
   assert.equal(archived.ok, true);
   unsubscribe();
 
-  assert.deepEqual(events.map((event) => event.type), ["persona_upsert", "persona_upsert"]);
+  assert.equal(events.every((event) => event.type === "persona_upsert"), true);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "persona_upsert" && !event.persona.builtin)
+      .map((event) => event.persona.id),
+    [created.persona.id, created.persona.id],
+  );
   const reduced = new Map<string, PersonaView>(opening.map((persona) => [persona.id, persona]));
   for (const event of events) {
     if (event.type === "persona_upsert") reduced.set(event.persona.id, event.persona);

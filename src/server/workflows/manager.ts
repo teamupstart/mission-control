@@ -432,7 +432,7 @@ export class WorkflowManager {
     }
     const result = validateWorkflowGraph({
       graph: workflow.draft,
-      personas: this.store.listPersonas(true),
+      personas: this.store.personaCatalog(),
       completionPolicy: workflow.completionPolicy,
     });
     return { ok: true, workflow, ...result };
@@ -464,7 +464,7 @@ export class WorkflowManager {
     if (!workflow) return null;
     return validateWorkflowGraph({
       graph: workflow.draft,
-      personas: this.store.listPersonas(true),
+      personas: this.store.personaCatalog(),
       completionPolicy: workflow.completionPolicy,
     }).diagnostics;
   }

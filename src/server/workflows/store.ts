@@ -984,14 +984,22 @@ export class WorkflowStore {
    * `listPersonas(false)` still lists, so the archived listing - which is what the SSE
    * snapshot is built from - would stop being a superset of the active one.
    */
+  private sortPersonas(personas: Persona[]): Persona[] {
+    return personas.sort((a, b) =>
+      a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+  }
+
   private withBuiltins(rows: Persona[]): Persona[] {
     const taken = new Set(
       rows.filter((persona) => persona.archivedAt === null).map((persona) => persona.normalizedName),
     );
-    return rows
-      .concat(this.builtins.filter((persona) => !taken.has(persona.normalizedName)))
-      .sort((a, b) =>
-        a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+    return this.sortPersonas(
+      rows.concat(this.builtins.filter((persona) => !taken.has(persona.normalizedName))),
+    );
+  }
+
+  private withAddressableBuiltins(rows: Persona[]): Persona[] {
+    return this.sortPersonas(rows.concat(this.builtins));
   }
 
   private builtinPersona(id: string): Persona | null {
@@ -1020,6 +1028,28 @@ export class WorkflowStore {
     }
     // Built-ins are never archived, so they belong in both listings.
     return this.withBuiltins(out);
+  }
+
+  /**
+   * Return every Persona that a durable draft may address.
+   *
+   * Unlike `listPersonas`, this catalog never applies live-row name shadowing. Shadowing is
+   * only a display rule, while validation and Publish must continue resolving every built-in
+   * id that may already be stored in a draft.
+   */
+  personaCatalog(): Persona[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM personas ORDER BY normalized_name ASC, id ASC`)
+      .all() as unknown[];
+    const out: Persona[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parsePersonaRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return this.withAddressableBuiltins(out);
   }
 
   getPersona(id: string): Persona | null {
@@ -1343,7 +1373,7 @@ export class WorkflowStore {
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
       }
-      const personas = this.listPersonasInTransaction(true);
+      const personas = this.listPersonasInTransaction();
       const validation = validateWorkflowGraph({
         graph: workflow.draft,
         personas,
@@ -1410,7 +1440,7 @@ export class WorkflowStore {
   summary(workflow: WorkflowDefinition): WorkflowSummary {
     const validation = validateWorkflowGraph({
       graph: workflow.draft,
-      personas: this.listPersonas(true),
+      personas: this.personaCatalog(),
       completionPolicy: workflow.completionPolicy,
     });
     const current = workflow.currentVersionId === null
@@ -3924,18 +3954,17 @@ export class WorkflowStore {
   }
 
   /**
-   * The catalog Publish validates and snapshots against, built-ins included.
+   * The addressable catalog Publish validates and snapshots against, built-ins included.
    *
    * The merge belongs here rather than at the call site because this list decides two things
    * at once - whether a draft's Persona nodes are valid, and which guidance bytes get frozen
-   * into the version - and a built-in missing from it would fail the first with a message
-   * about a Persona the operator can see on screen.
+   * into the version. Name shadowing cannot remove an id from either decision.
    */
-  private listPersonasInTransaction(includeArchived: boolean): Persona[] {
+  private listPersonasInTransaction(): Persona[] {
     const rows = this.db.prepare(
-      `SELECT * FROM personas ${includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY normalized_name ASC`,
+      `SELECT * FROM personas ORDER BY normalized_name ASC, id ASC`,
     ).all() as unknown[];
-    return this.withBuiltins(rows.map((row) => parsePersonaRow(row)));
+    return this.withAddressableBuiltins(rows.map((row) => parsePersonaRow(row)));
   }
 
   private getWorkflowInTransaction(id: string): WorkflowDefinition | null {

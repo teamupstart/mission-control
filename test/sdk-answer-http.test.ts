@@ -131,6 +131,7 @@ function mkApp(
   registry: Registry_,
   supervisor: SdkSupervisor,
   handoffDeps?: Parameters<typeof buildApp>[10],
+  launchSessionTerminal?: Parameters<typeof buildApp>[11],
 ) {
   return buildApp(
     registry,
@@ -144,6 +145,7 @@ function mkApp(
     undefined,
     supervisor,
     handoffDeps,
+    launchSessionTerminal,
   );
 }
 
@@ -384,15 +386,20 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   const registry = new Registry();
   seed(registry, null, "sdk:launch");
   const supervisor = fakeSupervisor();
-  const spawned: string[] = [];
-  const app = mkApp(registry, supervisor, {
-    spawn: async (name) => {
-      spawned.push(name);
-      return `${name}-abc123`;
+  const launched: Array<{ backend: string; argv: readonly string[] }> = [];
+  const app = mkApp(
+    registry,
+    supervisor,
+    {
+      spawn: async () => assert.fail("the selected backend must own the launch"),
+      waitForSessionAtCwd: async () => null,
+      settleTask: () => assert.fail("a successful handoff settles nothing"),
     },
-    waitForSessionAtCwd: async () => null,
-    settleTask: () => assert.fail("a successful handoff settles nothing"),
-  });
+    async (backend, spec) => {
+      launched.push({ backend, argv: spec.argv });
+      return { ok: true, label: "Ghostty", homeName: "Add a toggle", status: 200 };
+    },
+  );
 
   const res = await app.request("/api/sessions/sdk:launch/launch", {
     method: "POST",
@@ -402,8 +409,10 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
 
   assert.equal(res.status, 200);
   assert.deepEqual(supervisor.stopped, ["sdk:launch"]);
-  assert.equal(spawned.length, 1);
-  assert.equal(((await res.json()) as { label: string }).label, "default terminal");
+  assert.equal(launched.length, 1);
+  assert.equal(launched[0]?.backend, "ghostty");
+  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
+  assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
 });
 
 test("a late terminal successor rebinds an unbound running task by its worktree", () => {

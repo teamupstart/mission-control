@@ -45,9 +45,9 @@ test("every agent declares a resume slot, and the two halves agree", () => {
 });
 
 test("resume is independent of having an embedded driver", () => {
-  // The whole reason this capability moved. Codex has no driver and has always been able to
-  // reopen a rollout; if these two ever have to agree again, the split has been undone.
-  assert.equal(HARNESSES.codex.sdk, null);
+  // The whole reason this capability moved. Pi has no driver and can still reopen its
+  // conversation; if these two ever have to agree again, the split has been undone.
+  // Codex is intentionally not used as the negative example: it now ships an SDK driver.
   assert.notEqual(HARNESSES.codex.resume, null);
   assert.equal(HARNESSES.pi.sdk, null);
   assert.notEqual(HARNESSES.pi.resume, null);

@@ -162,6 +162,8 @@ export interface TerminalLaunchOutcome {
   ok: boolean;
   /** The backend that took it, for the flash the operator reads. */
   label: string;
+  /** The terminal home name to persist when this launch carries a task. */
+  homeName?: string;
   error?: string;
   status: number;
 }
@@ -227,6 +229,7 @@ export async function launchTerminal(
   }
 
   let result: TerminalResult;
+  let homeName: string;
   const mux = deps.multiplexers[backend];
   if (mux?.sessions) {
     const sessions = mux.sessions;
@@ -237,6 +240,7 @@ export async function launchTerminal(
       deps.launchId,
     );
     const name = spawned.name;
+    homeName = name;
     result = spawned.result;
     if (result.ok && sessions.attachArgv) {
       // Detached is not open. A backend whose sessions can exist without a window has only
@@ -292,10 +296,11 @@ export async function launchTerminal(
     // `spec.name` through raw let a control character in a session name reach a real tab
     // title. Both shipped emulators declare `PLAIN_NAMES`, which is what strips it.
     const title = emulator.names.sanitize(spec.name);
+    homeName = title;
     result = await emulator.spawn.tab({ argv: spec.argv, title, cwd: spec.cwd });
   }
 
-  if (result.ok) return { ok: true, label: view.label, status: 200 };
+  if (result.ok) return { ok: true, label: view.label, homeName, status: 200 };
   // `outcomeUnknown` is not a failure: the spawn may well have landed and saying "it did not
   // work" would send the operator to press it a second time. `openFile` draws this line in
   // the same place.
@@ -303,6 +308,7 @@ export async function launchTerminal(
     return {
       ok: false,
       label: view.label,
+      homeName,
       error: `${view.label} did not report back - the window may still be opening`,
       status: 504,
     };

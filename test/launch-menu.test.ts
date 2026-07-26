@@ -125,7 +125,10 @@ test("the focus control does not promise to raise a terminal window", () => {
   assert.doesNotMatch(src, /Raise the terminal \$\{agentLabel\}/);
 });
 
-test("the agent control is always plain, including blocked SDK and exited states", () => {
+test("the agent control is plain only while it can focus a live pane", () => {
+  const paned = renderToStaticMarkup(
+    createElement(SessionLaunchers, { session: mkSession() }),
+  );
   const embedded = renderToStaticMarkup(
     createElement(SessionLaunchers, {
       session: mkSession({ runtime: "sdk", terminals: [], tty: null }),
@@ -145,13 +148,10 @@ test("the agent control is always plain, including blocked SDK and exited states
     }),
   );
 
-  assert.match(embedded, />Continue in terminal</);
-  assert.equal(embedded.match(/aria-haspopup="menu"/g)?.length, 1);
-  assert.equal(exited.match(/aria-haspopup="menu"/g)?.length, 1);
-  assert.match(exited, /disabled/);
-  assert.match(exited, /not running/);
+  assert.equal(paned.match(/aria-haspopup="menu"/g)?.length, 1);
+  assert.equal(embedded.match(/aria-haspopup="menu"/g)?.length, 2);
+  assert.equal(exited.match(/aria-haspopup="menu"/g)?.length, 2);
   assert.equal(unboundSdk.match(/aria-haspopup="menu"/g)?.length, 1);
-  assert.match(unboundSdk, />Continue in terminal</);
   assert.match(unboundSdk, /disabled/);
   assert.match(unboundSdk, /conversation id/);
 });

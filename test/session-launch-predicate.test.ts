@@ -77,22 +77,22 @@ test("an embedded session with a conversation id and a checkout hands off", () =
   assert.equal(agentLaunchBlockedReason(session), null);
 });
 
-test("an exited terminal session is blocked even when its conversation survives", () => {
+test("an exited terminal session can resume when its conversation survives", () => {
   const session = survivingConversation();
-  assert.equal(agentLaunchAction(session), null);
-  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
+  assert.equal(agentLaunchAction(session), "resume");
+  assert.equal(agentLaunchBlockedReason(session), null);
 });
 
-test("an exited session is blocked even while stale pane handles linger", () => {
+test("an exited session ignores stale pane handles and resumes", () => {
   const session = paneBacked({ state: "exited" });
-  assert.equal(agentLaunchAction(session), null);
-  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
+  assert.equal(agentLaunchAction(session), "resume");
+  assert.equal(agentLaunchBlockedReason(session), null);
 });
 
-test("an exited SDK session is blocked instead of handed off without a driver", () => {
+test("an exited SDK session resumes instead of handing off without a driver", () => {
   const session = embedded({ state: "exited" });
-  assert.equal(agentLaunchAction(session), null);
-  assert.match(agentLaunchBlockedReason(session) ?? "", /not running.*terminal/i);
+  assert.equal(agentLaunchAction(session), "resume");
+  assert.equal(agentLaunchBlockedReason(session), null);
 });
 
 test("an SDK session awaiting its conversation id is blocked with the reason", () => {
@@ -159,7 +159,9 @@ test("the action and the reason never disagree, for any shape or harness", () =>
             action !== null,
             `${agent} ${what} (resumes=${resumes}): action ${action} with reason ${reason}`,
           );
-          if (action !== null) assert.ok(action === "focus" || action === "handoff");
+          if (action !== null) {
+            assert.ok(action === "focus" || action === "handoff" || action === "resume");
+          }
         };
         if (resumes) check();
         else withoutResume(agent, check);

@@ -104,7 +104,7 @@ import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
-import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
@@ -123,6 +123,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
+import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver } from "./sdk/deliver.ts";
 import { stopSession } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
@@ -483,8 +484,15 @@ export function buildApp(
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
    */
   handoffDeps?: HandoffDeps,
+  /** The selected terminal launcher. Injected so route tests never open a real window. */
+  launchSessionTerminal?: typeof launchTerminal,
 ): Hono {
   const app = new Hono();
+  const terminalLauncher = launchSessionTerminal ?? launchTerminal;
+  // A successful exited-session resume keeps its claim for the life of this lingering
+  // session id. Otherwise a double-click before `session_remove` can start two agents on
+  // the same conversation. A confirmed failure releases it for retry.
+  const agentResumeClaims = new Set<string>();
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
   // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
@@ -508,20 +516,55 @@ export function buildApp(
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;
-  const handoffSession = async (session: Session) => {
+  const defaultHandoffDeps: HandoffDeps = handoffDeps ?? {
+    spawn: spawnUniquely,
+    waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
+    settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
+  };
+  const handoffSession = async (
+    session: Session,
+    backend?: Parameters<typeof launchTerminal>[0],
+  ) => {
     if (!sdkSessions) {
-      return { ok: false as const, error: "this build has no session supervisor" };
+      return {
+        ok: false as const,
+        error: "this build has no session supervisor",
+        label: backend ?? "default terminal",
+      };
     }
-    return handOffToTerminal(
+    let label = "default terminal";
+    const deps = backend
+      ? {
+          ...defaultHandoffDeps,
+          spawn: async (
+            name: string,
+            _shortId: string,
+            cwd: string,
+            bin: string,
+            args: readonly string[] = [],
+          ) => {
+            const launched = await terminalLauncher(backend, {
+              name,
+              cwd,
+              argv: [bin, ...args],
+            });
+            label = launched.label;
+            // A 504 means the terminal may have opened. The embedded driver is already
+            // stopped, so preserve the transfer and let discovery settle what appeared.
+            if (!launched.ok && launched.status !== 504) {
+              throw new Error(launched.error ?? `${launched.label} could not open a window`);
+            }
+            return launched.homeName ?? name;
+          },
+        }
+      : defaultHandoffDeps;
+    const result = await handOffToTerminal(
       registry,
       sdkSessions,
       session,
-      handoffDeps ?? {
-        spawn: spawnUniquely,
-        waitForSessionAtCwd: (cwd, timeoutMs) => registry.waitForSessionAtCwd(cwd, timeoutMs),
-        settleTask: (taskId) => tasks.settleAfterFailedHandoff(taskId),
-      },
+      deps,
     );
+    return { ...result, label };
   };
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
@@ -1054,8 +1097,8 @@ export function buildApp(
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
   app.get("/api/terminal-targets", (c) => c.json({ targets: terminalTargetViews() }));
-  // Open a shell on a session's checkout, or delegate a live embedded conversation to the
-  // existing terminal handoff.
+  // Open a terminal on a session's checkout: a shell, or the session's own agent CLI.
+  // Both payloads use the backend the operator selected; only their daemon-owned argv differs.
   app.post("/api/sessions/:id/launch", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -1076,19 +1119,78 @@ export function buildApp(
         );
       }
       if (action === "handoff") {
-        const handedOff = await handoffSession(session);
+        const handedOff = await handoffSession(session, backend);
         const body = handedOff.ok
           ? {
               ok: true,
               backend,
-              label: "default terminal",
+              label: handedOff.label,
               homeName: handedOff.homeName,
               sessionId: handedOff.sessionId,
             }
-          : { ok: false, backend, label: "default terminal", error: handedOff.error };
+          : { ok: false, backend, label: handedOff.label, error: handedOff.error };
         return handedOff.ok ? c.json(body) : c.json(body, 409);
       }
-      return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+      if (action !== "resume") {
+        return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+      }
+      if (agentResumeClaims.has(session.id)) {
+        return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
+      }
+
+      const argv = resumeArgvFor(session.agent, session.agentSessionId!);
+      if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
+
+      agentResumeClaims.add(session.id);
+      const task =
+        registry
+          .listTasks()
+          .find(
+            (candidate) =>
+              candidate.sessionId === session.id &&
+              (candidate.status === "running" || candidate.status === "dispatching"),
+          ) ?? null;
+      if (task) {
+        if (session.runtime === "sdk") clearSdkSessionTask(session.id);
+        // Before launch: the old session's pending `session_remove` must not settle work
+        // that is transferring to the replacement process.
+        registry.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+      }
+
+      let result;
+      try {
+        result = await terminalLauncher(backend, {
+          name: session.name,
+          cwd: session.cwd!,
+          argv,
+        });
+      } catch (error) {
+        agentResumeClaims.delete(session.id);
+        if (task) tasks.settleAfterFailedHandoff(task.id);
+        const message = error instanceof Error ? error.message : String(error);
+        return c.json({ ok: false, backend, error: message }, 502);
+      }
+      if (task && (result.ok || result.status === 504)) {
+        const current = registry.getTask(task.id);
+        if (current) {
+          registry.upsertTask({
+            ...current,
+            homeName: result.homeName ?? current.homeName,
+            terminalResourceId: null,
+            updatedAt: Date.now(),
+          });
+        }
+      } else if (!result.ok) {
+        agentResumeClaims.delete(session.id);
+        if (task) tasks.settleAfterFailedHandoff(task.id);
+      }
+      const body = {
+        ok: result.ok,
+        backend,
+        label: result.label,
+        ...(result.error ? { error: result.error } : {}),
+      };
+      return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
     }
 
     const noCheckout = shellLaunchBlockedReason(session);
@@ -1097,7 +1199,7 @@ export function buildApp(
     // From the DAEMON's own environment, never the checkout. A repo-supplied shell would
     // be arbitrary code execution on this host from a button labelled "Terminal".
     const argv = [process.env.SHELL || "/bin/sh"];
-    const result = await launchTerminal(backend, { name: session.name, cwd: session.cwd!, argv });
+    const result = await terminalLauncher(backend, { name: session.name, cwd: session.cwd!, argv });
     const body = {
       ok: result.ok,
       backend,

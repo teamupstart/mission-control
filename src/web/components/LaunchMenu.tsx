@@ -11,16 +11,15 @@ import { Tooltip } from "./Tooltip.tsx";
  * The conversation pane's two launchers: a terminal on this session's worktree, and this
  * session's own agent CLI on this conversation.
  *
- * The Terminal button owns the popover vocabulary, and the agent control is always plain:
- * focus a live pane, hand off a live embedded driver, or explain why neither is possible.
+ * Both buttons own the same popover vocabulary because both ask the operator which terminal
+ * to use. The agent control is plain only when a live pane already exists to focus.
  * No control learns a backend's name: every row is folded out of what the daemon reports for
  * `TERMINAL_BACKEND_IDS`, so a fifth adapter is a file under `src/server/terminal/` and
  * changes nothing here and nothing in the stylesheet.
  *
  * The agent button changes SHAPE with the session, and that is the honest rendering of
- * `agentLaunchAction` rather than a flourish. A live pane is focused directly, an embedded
- * driver is handed to the configured terminal path, and every unavailable state is a
- * disabled plain button with its reason.
+ * `agentLaunchAction` rather than a flourish. A live pane is focused directly; every
+ * resumable no-pane state opens the backend chooser.
  */
 
 /**
@@ -220,8 +219,8 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
     return () => clearTimeout(timer);
   }, [flash]);
 
-  async function launch(backend: TerminalBackendId): Promise<void> {
-    const result = await api.launchTerminal(session.id, backend, "shell");
+  async function launch(backend: TerminalBackendId, payload: "shell" | "agent"): Promise<void> {
+    const result = await api.launchTerminal(session.id, backend, payload);
     setFlash(
       result.ok
         ? { text: `Opened in ${result.label ?? backend}`, error: false }
@@ -232,11 +231,6 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
   async function focusPane(): Promise<void> {
     const result = await api.focus(session.id);
     if (!result.ok) setFlash({ text: result.error ?? "could not focus", error: true });
-  }
-
-  async function handoff(): Promise<void> {
-    const result = await api.handoff(session.id);
-    if (!result.ok) setFlash({ text: result.error ?? "could not continue in a terminal", error: true });
   }
 
   return (
@@ -262,7 +256,7 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
         blocked={noCheckout}
         heading="Open a shell in the worktree with"
         verb="Open a shell in"
-        onChoose={(backend) => void launch(backend)}
+        onChoose={(backend) => void launch(backend, "shell")}
       />
       {/* The shape change described at the top of this file: with a pane there is nothing
           to choose, so this is a plain button and not a chooser. */}
@@ -273,23 +267,15 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
             {agentLabel}
           </button>
         </Tooltip>
-      ) : session.runtime === "sdk" ? (
-        <Tooltip
-          label={
-            agentBlocked ??
-            "Stop the embedded driver and continue this conversation in a terminal"
-          }
-        >
-          <button
-            type="button"
-            className="launch-btn launch-agent"
-            disabled={action !== "handoff"}
-            onClick={() => void handoff()}
-          >
-            <span className="launch-glyph-lead" aria-hidden>◆</span>
-            Continue in terminal
-          </button>
-        </Tooltip>
+      ) : action === "handoff" || action === "resume" ? (
+        <Launcher
+          label={agentLabel}
+          glyph="◆"
+          blocked={null}
+          heading={`${agentLabel} · resume this conversation in`}
+          verb="Resume this conversation in"
+          onChoose={(backend) => void launch(backend, "agent")}
+        />
       ) : (
         <Tooltip label={agentBlocked ?? "this session is unavailable"}>
           <button type="button" className="launch-btn launch-agent" disabled>

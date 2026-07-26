@@ -45,13 +45,26 @@ const SESSIONS = new Map([
 
 const registry = {
   getSession: (id: string) => SESSIONS.get(id),
+  listTasks: () => [],
 } as unknown as Registry;
 
+const launched: Array<{ backend: string; argv: readonly string[] }> = [];
 const app = buildApp(
   registry,
   {} as unknown as ReviewManager,
   {} as unknown as TaskManager,
   {} as unknown as QueueManager,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  async (backend, spec) => {
+    launched.push({ backend, argv: spec.argv });
+    return { ok: true, label: backend, homeName: "resumed", status: 200 };
+  },
 );
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
@@ -118,11 +131,18 @@ test("an embedded session awaiting its conversation id cannot be handed off", as
   assert.match(body.error, /conversation id/);
 });
 
-test("an exited session refuses the agent arm and points at its Terminal button", async () => {
+test("an exited session resumes through the selected backend despite stale pane handles", async () => {
+  launched.length = 0;
   const res = await launch("exited", { backend: "tmux", payload: "agent" });
-  assert.equal(res.status, 409);
-  const body = (await res.json()) as { error: string };
-  assert.match(body.error, /not running.*terminal/i);
+  assert.equal(res.status, 200);
+  assert.equal(launched.length, 1);
+  assert.equal(launched[0]?.backend, "tmux");
+  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
+
+  const repeated = await launch("exited", { backend: "ghostty", payload: "agent" });
+  assert.equal(repeated.status, 409);
+  assert.match(((await repeated.json()) as { error: string }).error, /already being resumed/);
+  assert.equal(launched.length, 1, "a lingering card must not reopen one conversation twice");
 });
 
 // The shell arm's asymmetry - a shell is not the agent's conversation, so having a pane

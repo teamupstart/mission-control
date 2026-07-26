@@ -212,13 +212,18 @@ export interface Harness extends HarnessCapabilities {
   // ...
   /** How to run this harness embedded, or null when no driver exists (yet). */
   sdk: SdkSpec | null;
+  /** How its CLI continues a conversation, independent of an embedded driver. */
+  resume: ResumeSpec | null;
 }
 
 export interface SdkSpec {
   /** Start (or resume) an embedded session. Rejects rather than degrades. */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+}
+
+export interface ResumeSpec {
   /** Argv after the harness binary for continuing this conversation interactively. */
-  resumeArgv(agentSessionId: string): readonly string[];
+  argv(agentSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -459,7 +464,7 @@ surfaces, "let me drive" is an explicit handoff rather than a lost capability:
 `POST /sessions/:id/handoff` (SDK sessions only): the supervisor stops the driver
 gracefully, marks the SDK session exited (normal eviction settles nothing prematurely -
 the task binding transfers), and launches a terminal home in the same cwd using
-`SdkSpec.resumeArgv(agentSessionId)`. For the planned drivers that is
+`Harness.resume.argv(agentSessionId)`. For the planned drivers that is
 `claude --resume <agentSessionId>` / `codex resume <threadId>`. Discovery adopts the new
 process; session decorations keyed by `noteKeyFor` follow the agent session id through the
 same rebind machinery a `/clear` exercises today. The card gains a "Continue in terminal"

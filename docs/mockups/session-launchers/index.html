@@ -10,6 +10,13 @@
     <div class="wrap">
       <div class="lede">
         <h1>Open a terminal, or the agent's own CLI, on a session</h1>
+        <p class="callout">
+          <b>Design archive.</b> These pages preserve the four placement alternatives that
+          were reviewed, including questions and proposals that were later resolved. Option
+          01 was selected; the implemented behavior is owned by
+          <a href="../../plans/session-launchers/plan.md">the session-launchers plan</a> and
+          the user-facing <a href="../../../README.md">README</a>.
+        </p>
         <p>
           Two controls on the conversation pane. <b>Terminal</b> opens a shell in the
           session's worktree. <b>Claude Code</b> / <b>Codex</b> - labelled with whichever
@@ -112,12 +119,12 @@
         </div>
 
         <div class="q">
-          <h3>2. Codex and pi cannot answer this yet, and the fix is one line each</h3>
+          <h3>2. Resume argv is coupled to the wrong capability</h3>
           <p>
-            The argv that resumes a conversation lives on <code>SdkSpec.resumeArgv</code>,
-            and only Claude ships an <code>SdkSpec</code> - Codex and pi declare
-            <code>sdk: null</code>. So today a Codex session's agent button would be
-            permanently greyed out, which is a lie: <code>codex resume</code> exists.
+            At design time the argv that resumed a conversation lived on
+            <code>SdkSpec.resumeArgv</code>. That coupled an interactive CLI capability to
+            an embedded driver and left pi unable to declare the <code>--session</code>
+            behavior its CLI already supported.
           </p>
           <p>
             The honest fix is that resuming is a <b>harness</b> capability, not an embedded-driver

@@ -120,7 +120,7 @@ Named once here; each phase file restates the ones it inherits or owns.
   `runtimes.includes("sdk") === (HARNESSES[a].sdk !== null)`. Adapters (P2/P4/P6) are
   constructed over an injectable transport seam (the `PaneDeps` pattern) so tests drive
   real adapters on scripted frames. P2 extends the seam with
-  `SdkSpec.resumeArgv(agentSessionId)` for harness-neutral terminal handoff and nullable
+  `Harness.resume.argv(agentSessionId)` for harness-neutral terminal handoff and nullable
   `SdkSessionHandle.setEffort`.
 - **C5 (P1): registration and eviction.** `registry.registerSdkSession`,
   `registry.applyDriverEvent`, supervisor-driven removal via the existing

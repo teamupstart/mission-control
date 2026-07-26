@@ -516,11 +516,11 @@ export interface SdkSpec {
  * conversation, which is what stops an embedded session from being a trap.
  *
  * It lived on `SdkSpec` and was WRONG THERE, which is the reason to read this comment
- * before moving it back. Only a harness with an embedded driver could answer it, so a
- * terminal-run Codex session - which has a rollout, an id, and a `codex resume` that works -
- * could not say how to continue itself. Those are two unrelated capabilities: whether a
- * harness can be driven programmatically, and whether its CLI can reopen a conversation.
- * Every shipped harness answers this one; none but Claude answers the other.
+ * before moving it back. Only a harness with an embedded driver could answer it, so pi -
+ * whose session id and `--session` CLI are sufficient - could not say how to continue
+ * itself. Those are two unrelated capabilities: whether a harness can be driven
+ * programmatically, and whether its CLI can reopen a conversation. Every shipped harness
+ * answers this one; Claude and Codex currently answer the other.
  *
  * On the SPEC rather than composed at a route, for the rule the whole harness axis rests
  * on: reach a capability through the registry, never by testing `s.agent`.

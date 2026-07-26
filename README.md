@@ -666,16 +666,17 @@ picker. When the pane cannot be written the chip stays read-only.
 Above every conversation sits the worktree that session is working in, and two buttons.
 
 **Terminal** opens your login shell (`$SHELL`, else `/bin/sh`) in that worktree. Its menu
-lists the backends this machine actually has: **tmux**, **cmux**, **WezTerm** and
-**Ghostty**. A backend that cannot be used is still listed, with a **sentence** saying why,
-because "not installed" and "installed, but nothing here can show its windows" are different
-things to go and fix. tmux is the second of those: `tmux new-session` opens **detached**, so
-its row is offered only when an emulator is present to raise it, and then says which one it
-will use. A button that reported success and put nothing on screen would be worse than no
-button.
+lists the four registered backends - **tmux**, **cmux**, **WezTerm** and **Ghostty** - and
+reports which this machine can use. An unavailable backend stays listed with a **sentence**
+saying why, because "not installed" and "installed, but nothing here can show its windows"
+are different things to go and fix. tmux is the second of those: `tmux new-session` opens
+**detached**, so its row is enabled only when an emulator is present to raise it, and then
+says which one it will use. A button that reported success and put nothing on screen would
+be worse than no button.
 
-The **agent button** puts you on the current running conversation. It is always a plain
-button, never a terminal chooser:
+The **agent button** puts you on that conversation. Its shape follows what is safe: it is a
+plain button when a live pane can be focused, and otherwise opens the same terminal chooser
+as **Terminal** so you can pick where the resumed CLI appears.
 
 Its behavior changes with the session:
 
@@ -683,16 +684,17 @@ Its behavior changes with the session:
   at all; it takes you to that terminal. Opening a second `--resume` beside a live pane would
   put two agent processes on one conversation file, which no harness arbitrates.
 - The session is [embedded](#session-runtimes-terminal-or-the-agent-sdk). **Continue in
-  terminal** stops the live driver first, then reopens that exact conversation through the
-  existing handoff lifecycle.
-- The session is **not running**. The agent button is disabled and points you at
-  **Terminal**, which still opens a shell in the worktree. Reopening an exited conversation
-  safely needs exclusive resume ownership plus task and terminal-resource transfer, so it
-  is not part of this control.
+  terminal** opens the chooser, stops the live driver, then reopens that exact conversation
+  through the existing handoff lifecycle in the backend you selected.
+- The agent has **exited**, but its checkout and conversation id survive. Its old pane
+  handles are stale, so the chooser resumes the CLI in the selected backend. The daemon
+  claims that resume exclusively and transfers any active task and terminal-resource
+  ownership before the replacement session appears.
 
 A session whose checkout the daemon could not read renders **Terminal** disabled with the
-reason. An embedded handoff is disabled until it has both a checkout and a conversation id;
-a live pane remains focusable without either.
+reason. A handoff or resume is disabled until it has both a checkout and a conversation id;
+a live pane remains focusable without either. If the harness cannot resume the conversation,
+the disabled agent button says so.
 
 This appears on **every layout that shows a conversation** - Cards, Console detail, and the
 Board's drilled-in pane - because it lives in the conversation panel itself rather than in

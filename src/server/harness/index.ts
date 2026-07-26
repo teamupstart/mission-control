@@ -226,8 +226,8 @@ const STREAM_JSON_CONTROL: ControlSpec = { kind: "stream-json" };
  * cannot reopen one.
  *
  * Beside `sdkFor` and deliberately NOT part of it: the two answer different questions and
- * every harness here answers this one while only Claude answers the other. See `ResumeSpec`
- * for what welding them together cost.
+ * every harness here answers this one while only Claude and Codex answer the other. See
+ * `ResumeSpec` for what welding them together cost.
  */
 export function resumeFor(agent: AgentType): ResumeSpec | null {
   return HARNESSES[agent].resume;

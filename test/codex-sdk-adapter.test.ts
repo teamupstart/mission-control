@@ -1114,6 +1114,49 @@ test("a retired thread's subagent ask is answered closed, not put on the new car
   await drained;
 });
 
+test("a clear survives a turn that finished while it was interrupting", async () => {
+  // Inspector r8 on #260. Codex rejects an interrupt naming a turn that has already
+  // completed, and the clear used to let that escape - so pressing Clear on a session that
+  // had just gone idle failed, which is the moment an operator is most likely to press it.
+  let started = 0;
+  const server = new FakeServer({
+    ...defaultReplies(),
+    "thread/start": () => threadResponse(++started === 1 ? THREAD : SECOND_THREAD),
+    // The race, made deterministic: the interrupt is refused, and the completion that
+    // caused the refusal is already on the wire behind it.
+    "turn/interrupt": undefined as never,
+  });
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
+
+  await handle.clearContext!();
+  await settle();
+  // The clear went through: a second thread, and the card re-bound to it.
+  const bounds = events.filter((e) => e.kind === "bound");
+  assert.equal(bounds.length, 2);
+  assert.equal(bounds[1]?.kind === "bound" && bounds[1].agentSessionId, SECOND_THREAD.id);
+  await handle.stop();
+  await drained;
+});
+
+test("a clear does NOT proceed when the interrupt failed and the turn is still running", async () => {
+  // The other half, and the reason the rejection is re-examined instead of swallowed:
+  // abandoning a thread with work still on it is what the interrupt exists to prevent.
+  const server = new FakeServer({ ...defaultReplies(), "turn/interrupt": undefined as never });
+  const { handle, drained } = await launch(server);
+  await settle();
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  await assert.rejects(() => handle.clearContext!(), /no fake reply for turn\/interrupt/);
+  // No replacement thread was started, so the card still points at the live conversation.
+  assert.equal(server.calls("thread/start").length, 1);
+  await handle.stop();
+  await drained;
+});
+
 test("clearContext stops whatever the old thread was still running", async () => {
   let started = 0;
   const server = new FakeServer({

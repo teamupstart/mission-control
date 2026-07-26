@@ -477,7 +477,24 @@ class CodexSdkSession implements SdkSessionHandle {
     // The old thread is ABANDONED, not archived - so anything still running on it has to be
     // stopped first, or a turn nobody can see any more goes on spending tokens against a
     // conversation the operator just cleared. `/clear` on a pane costs the current turn too.
-    await this.interrupt();
+    //
+    // A turn can finish between `interrupt` reading `activeTurnId` and the server handling
+    // the call, and Codex rejects an interrupt naming a turn that has already completed.
+    // That is a RACE, not a failure, and letting it escape made Clear fail on a session
+    // that had just gone idle - the one moment an operator is most likely to press it.
+    //
+    // So the rejection is re-examined rather than swallowed: yield once to let the frame
+    // pump apply whatever it has already read, and continue only if the turn is genuinely
+    // gone. A still-active turn rethrows, because abandoning a thread with work running on
+    // it is exactly what the interrupt above exists to prevent. Yielding too early costs
+    // nothing new - the clear is refused and the operator presses again, which is the
+    // behaviour this replaces - so the safe direction is the default one.
+    try {
+      await this.interrupt();
+    } catch (err) {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (this.activeTurnId !== null) throw err;
+    }
     const started = await this.client.request<ThreadStartResponse>("thread/start", {
       ...threadStartParams(this.config),
       // Codex's own word for this case, so its analytics record a cleared context rather

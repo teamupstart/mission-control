@@ -57,6 +57,23 @@ const SINCE_MAX_TURNS = 48;
  * whole point of `grow` is that the bytes a turn count costs are not ours to predict.
  */
 const MAX_SCAN_BYTES = 16 * 1024 * 1024;
+const BOUNDARY_SCAN_BYTES = 64 * 1024;
+
+function previousRecordStart(path: string, end: number): number | null {
+  try {
+    let cursor = Math.max(0, end - 1);
+    while (cursor > 0) {
+      const start = Math.max(0, cursor - BOUNDARY_SCAN_BYTES);
+      const buf = readRange(path, start, cursor);
+      const nl = buf.lastIndexOf(NL);
+      if (nl >= 0) return start + nl + 1;
+      cursor = start;
+    }
+    return 0;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Read a widening slice until it yields `want` turns, and report the slice that did.
@@ -372,12 +389,23 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       const text = buf.subarray(from).toString("utf8");
       return parseMany(text ? text.split("\n") : []);
     };
-    const { messages } = grow(end, wantTurns, PAGE_TAIL_BYTES, read);
+    let messages: TranscriptMessage[];
+    try {
+      ({ messages } = grow(end, wantTurns, PAGE_TAIL_BYTES, read));
+    } catch {
+      return { messages: [], start: 0, end: 0, atStart: true };
+    }
     // A page that renders nothing is not the end of the history: a stretch of pure tool
-    // output can fill a window with no turn in it, and `begin` still moved, so the caller
-    // pages on. `atStart` is reserved for the two cases where it genuinely cannot - the
-    // top of the file, and a record too large for the scan ceiling to step over.
-    return { messages, start: begin, end, atStart: begin <= 0 || begin >= end };
+    // output can fill a window with no turn in it. If one record exceeds the scan ceiling,
+    // find its preceding line boundary in fixed-size reads and return an empty page that
+    // still advances the caller. Only offset zero or an unreadable file ends the walk.
+    if (begin >= end) {
+      const boundary = previousRecordStart(path, end);
+      if (boundary === null) return { messages: [], start: 0, end: 0, atStart: true };
+      begin = boundary;
+      messages = [];
+    }
+    return { messages, start: begin, end, atStart: begin === 0 };
   };
 
   /** Read whatever complete lines were appended since `pos`. */

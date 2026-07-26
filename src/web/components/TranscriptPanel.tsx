@@ -144,6 +144,7 @@ export function TranscriptPanel({
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
+  const historyEpoch = useRef(0);
   /**
    * Scroll height captured just before a page of older turns is spliced in above the
    * reader, so the layout effect below can put back what prepending pushed down.
@@ -226,10 +227,12 @@ export function TranscriptPanel({
   }, [resetNonce]);
 
   useEffect(() => {
+    historyEpoch.current += 1;
     // Show whatever this session already has while the stream connects, instead of
     // clearing to "Loading…" and throwing away scroll-back the map still holds.
     setMessages(flattenHistory(readHistory(sessionId)));
     setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    setLoadingOlder(false);
     setOlderError(null);
     setStatus("connecting");
     setNote("");
@@ -260,8 +263,11 @@ export function TranscriptPanel({
       }
     };
     // EventSource auto-reconnects on transient errors; keep the last view.
-    return () => es.close();
-  }, [sessionId]);
+    return () => {
+      historyEpoch.current += 1;
+      es.close();
+    };
+  }, [resetNonce, sessionId]);
 
   /**
    * Fetch the page above what we hold and splice it in.
@@ -280,7 +286,9 @@ export function TranscriptPanel({
     }
     setLoadingOlder(true);
     setOlderError(null);
+    const requestEpoch = historyEpoch.current;
     const res = await fetchTranscriptBefore(sessionId, anchor);
+    if (requestEpoch !== historyEpoch.current) return;
     if (!res.ok) {
       setOlderError(res.error);
       setLoadingOlder(false);
@@ -390,38 +398,30 @@ export function TranscriptPanel({
             where its decisions are the ONLY account of what happened. The reason
             line stays above them, so "no transcript" is still said rather than
             implied by its absence. */}
-        {status === "unavailable" && episodes.length === 0 ? (
-          <p className="transcript-empty">{note}</p>
-        ) : messages.length === 0 && episodes.length === 0 ? (
-          <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
-        ) : (
-          <>
-            {status === "unavailable" && <p className="transcript-empty">{note}</p>}
-            {/* The top of the log says what is above it. Scrolling here loads the next
-                page automatically; the button is for the reader who wants it now, and
-                for the one whose pointer cannot generate a scroll event. Rendering
-                nothing when the history is complete is the point - "no older messages"
-                on a six-turn session is noise. */}
-            {(canLoadOlder || loadingOlder || olderError) && (
-              <div className="transcript-older">
-                {olderError ? (
-                  <Tooltip label={olderError}>
-                    <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
-                      Couldn't load older messages - retry
-                    </button>
-                  </Tooltip>
-                ) : loadingOlder ? (
-                  <span className="transcript-older-note">Loading older messages…</span>
-                ) : (
-                  <Tooltip label="Read further back in this session's transcript">
-                    <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
-                      Load older messages
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
+        {status === "unavailable" && <p className="transcript-empty">{note}</p>}
+        {(canLoadOlder || loadingOlder || olderError) && (
+          <div className="transcript-older">
+            {olderError ? (
+              <Tooltip label={olderError}>
+                <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                  Couldn't load older messages - retry
+                </button>
+              </Tooltip>
+            ) : loadingOlder ? (
+              <span className="transcript-older-note">Loading older messages…</span>
+            ) : (
+              <Tooltip label="Read further back in this session's transcript">
+                <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                  Load older messages
+                </button>
+              </Tooltip>
             )}
-            {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
+          </div>
+        )}
+        {status !== "unavailable" && messages.length === 0 && episodes.length === 0 && (
+          <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
+        )}
+        {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
               row.kind === "episode" ? (
                 <div
                   key={`ep-${row.episode.id}`}
@@ -435,8 +435,6 @@ export function TranscriptPanel({
               ) : (
                 <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} onOpenFile={onOpenFile} />
               ),
-            )}
-          </>
         )}
       </div>
 

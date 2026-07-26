@@ -1,11 +1,11 @@
 import { statSync } from "node:fs";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
-import type { TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import type { TranscriptStreamMsg } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { Registry } from "./registry.ts";
 import { sessionMessages, transcriptFor } from "./harness/index.ts";
-import { originOf } from "./injections.ts";
+import { attributeTranscript } from "./transcript-attribution.ts";
 import { sleep } from "./util/timers.ts";
 
 // The live transcript feed behind the expanded card: send the recent history, then poll
@@ -27,18 +27,9 @@ const HEARTBEAT_MS = 15000;
  *
  * Deliberately not inside the harness's line parser: that's a pure parse of a file, this
  * is a fact only the running daemon holds (see injections.ts). Only the SSE stream is
- * annotated - the one-shot window feeds Foreman's own reviewer, which is reading for what
- * the AGENT did.
+ * annotated for the dashboard's live stream and backward pages. The one-shot reviewer
+ * window stays unattributed because it is reading for what the AGENT did.
  */
-function attribute(sessionId: string | undefined, messages: TranscriptMessage[]): TranscriptMessage[] {
-  if (!sessionId) return messages;
-  return messages.map((m) => {
-    if (m.role !== "user" || !m.text) return m;
-    const origin = originOf(sessionId, m.text);
-    return origin ? { ...m, origin } : m;
-  });
-}
-
 /** SSE handler for `GET /api/sessions/:id/transcript/stream`. */
 export function transcriptStreamHandler(registry: Registry) {
   return (c: Context) =>
@@ -71,7 +62,7 @@ export function transcriptStreamHandler(registry: Registry) {
         pos = init.pos;
         await send({
           type: "init",
-          messages: attribute(id, init.messages),
+          messages: attributeTranscript(id, init.messages),
           start: init.start,
           atStart: init.atStart,
         });
@@ -90,7 +81,7 @@ export function transcriptStreamHandler(registry: Registry) {
           const { messages, pos: next } = read.appended(path, pos);
           pos = next;
           if (messages.length > 0) {
-            await send({ type: "append", messages: attribute(id, messages) });
+            await send({ type: "append", messages: attributeTranscript(id, messages) });
             sinceHeartbeat = 0;
             continue;
           }

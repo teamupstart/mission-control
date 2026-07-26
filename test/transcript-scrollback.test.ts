@@ -209,3 +209,39 @@ test("a missing file answers empty instead of throwing at the reader", () => {
   const page = claude.before(join(dir, "nope.jsonl"), 4096);
   assert.deepEqual(page, { messages: [], start: 0, end: 0, atStart: true });
 });
+
+test("a record larger than the scan ceiling cannot strand older history", () => {
+  const path = join(dir, "oversized.jsonl");
+  const early = JSON.stringify({
+    type: "user",
+    uuid: "early",
+    timestamp: new Date(0).toISOString(),
+    message: { role: "user", content: "EARLY" },
+  });
+  const oversized = JSON.stringify({
+    type: "user",
+    uuid: "oversized",
+    timestamp: new Date(1000).toISOString(),
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "huge", content: "x".repeat(17 * 1024 * 1024) }],
+    },
+  });
+  const recent = JSON.stringify({
+    type: "assistant",
+    uuid: "recent",
+    timestamp: new Date(2000).toISOString(),
+    message: { role: "assistant", content: [{ type: "text", text: "RECENT" }] },
+  });
+  writeFileSync(path, `${early}\n${oversized}\n${recent}\n`);
+
+  const init = claude.initial(path);
+  assert.deepEqual(spoken(init.messages), ["RECENT"]);
+  const skipped = claude.before(path, init.start);
+  assert.deepEqual(skipped.messages, []);
+  assert.ok(skipped.start < skipped.end);
+  assert.equal(skipped.atStart, false);
+  const oldest = claude.before(path, skipped.start);
+  assert.deepEqual(spoken(oldest.messages), ["EARLY"]);
+  assert.equal(oldest.atStart, true);
+});

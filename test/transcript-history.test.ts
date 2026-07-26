@@ -1,6 +1,10 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { TranscriptMessage } from "../src/shared/types.ts";
+import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 import {
   appendLive,
   backAnchor,
@@ -127,4 +131,13 @@ test("an unseeded session accumulates nothing", () => {
   assert.equal(prependPage("ghost", { start: 0, end: 10, messages: [], atStart: true }), null);
   assert.deepEqual(flattenHistory(null), []);
   assert.equal(backAnchor(null), null);
+});
+
+test("an empty tail still renders the control that reaches older history", () => {
+  seedTail("s1", { messages: [], start: 400, atStart: false });
+  const html = renderToStaticMarkup(
+    createElement(TranscriptPanel, { session: mkSession(), canSend: true }),
+  );
+  assert.match(html, /Load older messages/);
+  assert.match(html, /Loading…/);
 });

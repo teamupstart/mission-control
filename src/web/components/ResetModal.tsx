@@ -21,7 +21,7 @@ export function ResetModal({
 }: {
   session: Session;
   /** Fired once the reset succeeds (before the modal closes) so the app can retire
-   *  the session's client-side state - its parked send / reply drafts. */
+   *  the session's client-side state. */
   onReset?: () => void;
   onClose: () => void;
   /** Local editor buffers that are not safely represented on disk yet. */

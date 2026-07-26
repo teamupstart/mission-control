@@ -108,6 +108,7 @@ import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
+import { attributeTranscript } from "./transcript-attribution.ts";
 import {
   claimForemanLease,
   foremanStatus,
@@ -1290,12 +1291,13 @@ export function buildApp(
     const beforeRaw = c.req.query("before");
     if (beforeRaw !== undefined && beforeRaw !== "") {
       const before = Number(beforeRaw);
-      if (!Number.isFinite(before) || before < 0) {
+      if (!Number.isSafeInteger(before) || before < 0) {
         return c.json({ error: "before must be a byte offset" }, 400);
       }
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
-      return c.json(t.read.before(t.path, before, want));
+      const page = t.read.before(t.path, before, want);
+      return c.json({ ...page, messages: attributeTranscript(session.id, page.messages) });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));

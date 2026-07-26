@@ -1014,16 +1014,17 @@ opening Settings. Pick a different one to override it for this task alone - more
 horsepower for a gnarly refactor, something cheap and fast for a one-line fix - and the
 daemon passes that model through the selected runtime (`--model <id>` in a terminal,
 the driver's model option on the Agent SDK). Switching **Agent** resets the model,
-since model ids are harness-specific. Leaving it on **Default** stores no model at
-all rather than pinning today's, so a task you shelve now picks up the default in force
-when it's actually dispatched.
+since model ids are harness-specific. Leaving the named **Default - …** choice selected
+stores no model at all rather than pinning today's, so a task you shelve now picks up the
+default in force when it's actually dispatched.
 
 **Effort** sits immediately after Model and follows the same rule: it starts on the
 chosen harness's default, can be overridden for one task, and switching Agent resets it.
 Terminal-runtime Claude launches with `--effort <level>`; an embedded Claude launch passes
 the same selection through the SDK and can change it live. Codex receives the corresponding
-`model_reasoning_effort` launch override; Pi receives `--thinking <level>`. Leaving it on
-**Default** keeps the task tied to the effort default in force when it launches.
+`model_reasoning_effort` launch override; Pi receives `--thinking <level>`. Leaving the
+named **Default - …** choice selected keeps the task tied to the effort default in force
+when it launches.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
@@ -1170,9 +1171,9 @@ readable afterwards rather than a single row overwritten four times.
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
 [Roundup](#roundup) panel. Every field is editable, including its dependencies and more
-screenshots dropped onto it. Put **Model** or **Effort** back on **Default** to un-pin it,
-so the task follows the corresponding harness default when it finally launches. **Save**
-keeps it in the backlog;
+screenshots dropped onto it. Put **Model** or **Effort** back on its named **Default - …**
+choice to un-pin it, so the task follows the corresponding harness default when it finally
+launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.

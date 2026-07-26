@@ -1155,7 +1155,7 @@ function DispatchModal({
 
       <footer className="modal-foot">
         {/* Ensemble launches immediately and owns its own member backlog wave, so "Add to
-            backlog" makes no sense there; the Launch control lives in the Ensemble body. */}
+            backlog" makes no sense there; its Review/Launch control owns the primary slot. */}
         {!ensembleMode && (
           <Tooltip label={editing ? "Keep it in the backlog" : "Shelve it without launching an agent"}>
             <button

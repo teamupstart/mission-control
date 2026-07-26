@@ -27,15 +27,14 @@ import type { TaskEnsembleLink } from "@shared/ensemble.ts";
  * reason even though they hang off a Task rather than a Session: the board's backlog
  * column and the roundup panel both draw them, and two copies is how they drift.
  *
- * Every surface is a consumer here, the card included: the card, the console's detail
- * pane and the board's tile each arrange these SAME bits rather than importing one
- * another or keeping a private copy of the PR-icon SVG or the rename flow. That matters
- * because the card is rendered by ONE layout while the detail serves two, so a private
- * copy means a fix lands in two layouts and silently misses the third.
+ * Every drawing is a consumer here, the card included: the card, console detail, board
+ * tile and rail row arrange these SAME bits rather than importing one another or keeping
+ * private copies. Compact drawings may use a different vocabulary, but their decision and
+ * leaf variant still live here. That matters because the card is rendered by ONE layout
+ * while the detail serves two, so a private copy can silently miss another layout.
  *
- * `test/session-leaf-parity.test.ts` pins this: it renders each bit standalone and
- * asserts all three surfaces contain that exact output, so a re-inlined copy fails as
- * soon as it drifts.
+ * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
+ * `test/pr-chip-parity.test.ts` pins the PR decision across all four.
  */
 
 /**
@@ -635,7 +634,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
   };
 }
 
-/** The Inspector chip. Shared by all four session surfaces - see CLAUDE.md on parity. */
+/** The card/detail Inspector chip; all four drawings share `inspectorChipView`. */
 export function InspectorChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = inspectorChipView(session.inspector);
   if (!view || !session.inspector) return null;

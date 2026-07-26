@@ -484,9 +484,9 @@ export interface EnsembleSubjectPolicy {
  *
  * The persona case carries the FULL guidance text, not just an id and a revision, and that
  * is load-bearing: it is embedded in the compiled plan, and recovery executes the compiled
- * plan rather than reloading the live Persona. An operator who edits or archives the Persona
- * after creation must not silently re-aim a run already judging against the text they chose,
- * exactly as a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
+ * plan rather than reloading the live Persona. A later edit, archive, or shipped built-in
+ * update must not silently re-aim a run already judging against its captured text, exactly as
+ * a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
  * versioned rubric id whose text is owned by the strategy that named it; a new rubric is a
  * new id beside the old one, so an old plan keeps the exact rubric it named.
  */
@@ -511,8 +511,9 @@ export type EnsembleEvaluatorGuidance =
  *
  * This is what a review-guidance resolver hands the compiler, and what the compiler pins into
  * the `persona` guidance case above. `id` here is the source Persona's id; the guidance case
- * spells it `personaId`. Resolving one reads SQLite, so it happens OUTSIDE the pure compiler -
- * the same reason the launch runtime, not the compiler, pins a base commit.
+ * spells it `personaId`. Resolving one reads the WorkflowStore catalog (a SQLite row or a
+ * compiled-in Persona), so it happens OUTSIDE the pure compiler - the same reason the launch
+ * runtime, not the compiler, pins a base commit.
  */
 export interface EnsembleReviewPersona {
   id: string;

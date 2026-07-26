@@ -818,8 +818,9 @@ function Roster({
  *
  * A judge is one built-in lens or one Persona, so a single select offers both in two groups rather
  * than a lens picker plus a Persona picker whose interaction the operator has to work out. Choosing
- * a Persona pins the revision it was chosen at, which is what makes the daemon refuse the launch if
- * that Persona moves on before the operator confirms - the same drift a base-commit pin removes.
+ * Choosing an operator-authored Persona pins its row revision so the daemon refuses the launch if
+ * that row moves on before confirmation. A built-in is immutable within this build and its exact
+ * current guidance is snapshotted when the Ensemble is created.
  *
  * The next free lens is what a new row defaults to, because the panel refuses duplicate built-in
  * lenses: defaulting to a repeat would add a row that is invalid the moment it appears.

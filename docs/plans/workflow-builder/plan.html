@@ -70,14 +70,14 @@
     <li>Build and publish a cyclic review graph over one visible Session node, Persona judges, explicit concurrency joins, and terminal outcomes.</li>
     <li>Bind a published workflow version to a session and start it manually or when Foreman judges the session complete.</li>
     <li>See every Persona verdict, approval rationale, requested change, retry, repair round, and optional Inspector final-gate state in a durable run history.</li>
-    <li>Copy or download every Persona as Markdown, while keeping the local SQLite database as the canonical store.</li>
+    <li>Copy or download every Persona as Markdown, while keeping the local SQLite database as the canonical store for Personas the operator authors.</li>
   </ol>
   <p>The design keeps three axes separate: a <strong>Persona</strong> is judging instructions, an <strong>LLM runner</strong> executes the headless call, and a session <strong>harness</strong> is the interactive agent being reviewed and repaired. Personas are not new <code>AgentType</code> values, terminal sessions, Foreman roles, or Inspector instances. Each attempt is a fresh structured call through <code>LlmRunner.run</code>.</p>
 
   <h2>Product decisions adopted by this plan</h2>
   <div class="table-wrap"><table>
     <thead><tr><th>Area</th><th>Decision</th></tr></thead><tbody>
-      <tr><td>Persona storage</td><td>SQLite is canonical. Guidance is exact Markdown and can be copied, downloaded as <code>.md</code>, or imported.</td></tr>
+      <tr><td>Persona storage</td><td>SQLite is canonical for operator-authored Personas. Guidance is exact Markdown and can be copied, downloaded as <code>.md</code>, or imported; app-owned built-ins are compiled into the build.</td></tr>
       <tr><td>Workflow editing</td><td>Mutable drafts and immutable published versions. Bindings pin a version.</td></tr>
       <tr><td>Cycles</td><td>Every legal cycle returns to the one Session node. The engine records the resubmission boundary internally; there is no checkpoint node in the palette. Persona-only cycles are rejected.</td></tr>
       <tr><td>Concurrency</td><td>Fan-out runs independent Personas concurrently. An explicit all-pass Join aggregates all predecessor results.</td></tr>

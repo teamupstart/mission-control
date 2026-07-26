@@ -1,5 +1,8 @@
 # Phased implementation: no-mistakes gates as workflow Personas
 
+> Historical implementation record. Its seed/import instructions were superseded after
+> delivery; the README's Built-in Personas section owns the current behavior.
+
 Source plan: `docs/plans/no-mistakes-workflow-mapping/plan.md` (approved 2026-07-23; rendered
 page `plan.html` beside it).
 
@@ -16,7 +19,8 @@ the source plan:
 3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: seed `.md` files shipped in-repo under `docs/personas/`, importable
-   from the Personas tab.
+   from the Personas tab. **Superseded 2026-07-26**; see the README's Built-in Personas
+   section.
 5. **Follow-up**: this phased implementation plan.
 
 Decisions 2 and 3 are do-nothing decisions: they select the already-planned workflow-builder

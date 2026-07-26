@@ -19,9 +19,9 @@
 // like a feature quietly missing rather than a build that breaks.
 //
 // This script therefore does one thing and no interpretation: it embeds the exact bytes of
-// each document. Name, description and id are derived from those bytes at load time by
-// `builtin-personas.ts`, using the same shared helpers `Import .md` uses, so nothing about
-// a Persona is stated twice.
+// each document. `builtin-personas.ts` derives the name and description at load time and
+// derives the durable id from the filename slug. **Import .md** shares the name helper; its
+// description remains empty.
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -61,7 +61,7 @@ export interface Persona {
   name: string;
   normalizedName: string;
   description: string;
-  /** Exact operator-authored bytes after UTF-8 decoding. Never normalize this field. */
+  /** Exact Markdown after UTF-8 decoding, whether operator-authored or shipped. Never normalize. */
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;

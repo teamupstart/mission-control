@@ -1867,10 +1867,10 @@ The top-bar button opens the graph library and restores the last active workflow
 in this browser when it is still available.
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
-or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
-name, description, optional provider and model overrides, and guidance are revisioned
-together. Saves use compare-and-swap, so a second tab editing an older revision gets an
-explicit conflict and keeps its local text. Archive is soft: archived Personas are
+or Inspector setting. Personas you create or import live in Mission Control's SQLite
+database. Their name, description, optional provider and model overrides, and guidance are
+revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
+gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
 normalized names.
 
@@ -1977,10 +1977,11 @@ Session-centered cycles, active Personas, graph limits, and finite bounded coord
 **Publish** is enabled only for a saved, conflict-free, valid revision. It is idempotent for
 that revision and creates an immutable version containing the exact name, description,
 Markdown, provider/model overrides, and revision of every Persona. Editing or archiving a
-Persona later never changes old versions; history marks its snapshot as outdated or its
-source as archived. To update a published design, edit the mutable draft and publish a new
-version. Opening a workflow fetches only bounded version metadata; selecting one history
-entry fetches that immutable graph and its exact Persona Markdown from the version route.
+Persona you own, or updating a shipped built-in in a later build, never changes old versions;
+history marks its snapshot as outdated or its source as archived. To update a published
+design, edit the mutable draft and publish a new version. Opening a workflow fetches only
+bounded version metadata; selecting one history entry fetches that immutable graph and its
+exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The

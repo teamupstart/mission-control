@@ -80,7 +80,7 @@ const DEFAULT_MEMBER: BestOfNMember = { agent: null, model: null, effort: null, 
 
 export const BestOfNEvaluatorSchema = z.object({
   /**
-   * An operator-authored Persona to judge with, or null for the built-in rubric.
+   * A catalog Persona to judge with, or null for the strategy's built-in rubric.
    *
    * A bare id here, resolved to an exact revision by the daemon at creation and snapshotted
    * into the plan. The compiler refuses to compile an id it was not handed a resolution
@@ -89,10 +89,10 @@ export const BestOfNEvaluatorSchema = z.object({
    */
   personaId: z.string().min(1).max(200).nullable().default(null),
   /**
-   * Optionally pin the Persona revision the operator built this request against. When set and
-   * the live Persona has since moved on, creation is REFUSED rather than snapshotting newer
-   * guidance under the request they made - the same drift a base-commit pin removes. Null
-   * snapshots whatever the current revision is at creation.
+   * Optionally pin the revision of an operator-authored Persona this request was built against.
+   * When set and the row has since moved on, creation is REFUSED rather than snapshotting newer
+   * guidance under the request they made. Built-ins have one build-local revision and their exact
+   * current guidance is snapshotted at creation. Null snapshots the current catalog entry.
    */
   personaRevision: z.number().int().positive().nullable().default(null),
   runner: z.enum(LLM_RUNNER_IDS).nullable().default(null),

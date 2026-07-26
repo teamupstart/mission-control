@@ -1126,9 +1126,10 @@ export class EnsembleManager {
           model: resolved.model,
         });
       }
-      // A pinned revision that no longer matches is a refusal too: the operator built the request
-      // against guidance that has since changed, and snapshotting the new text under the old
-      // request is the silent substitution the whole resolve step exists to prevent.
+      // A stored Persona revision that no longer matches is a refusal too: the operator built the
+      // request against guidance that has since changed, and snapshotting the new text under the
+      // old request is the silent substitution the whole resolve step exists to prevent.
+      // Built-ins have one build-local revision; their exact current text was captured above.
       const live = revision ?? personas.get(ref.personaId)!.revision;
       if (ref.revision !== null && ref.revision !== live) {
         return {

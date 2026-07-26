@@ -332,7 +332,6 @@ Submitted through the Mission Control dashboard review on 2026-07-23:
 3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: `.md` files shipped in-repo (`docs/personas/`). Originally decided as
-   seeds the operator imports and owns. **Superseded 2026-07-26**: they ship built in and
-   read-only - compiled into the build, merged into every Persona read, edits and archives
-   refused, Duplicate for a copy you own. See the README's Built-in Personas section.
+   seeds the operator imports and owns. **Superseded 2026-07-26**; see the README's Built-in
+   Personas section for the current behavior.
 5. **Follow-up**: create a phased implementation plan with dependency-linked tasks.

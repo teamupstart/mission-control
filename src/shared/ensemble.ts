@@ -6,10 +6,9 @@ import type { LlmRunnerId } from "./llm.ts";
  *
  * An **ensemble** is a group of ordinary Tasks run under one versioned strategy, plus the
  * group-level facts a Task cannot express - a compiled plan, member roles, immutable
- * artifacts, comparative evaluations, a human decision, and a terminal outcome. Best-of-N
- * is the first STRATEGY, not the name of the engine: nothing in this file says candidate,
- * judge, diff or winner, because a tournament, a critique round and a synthesis all have to
- * persist through these same nouns.
+ * artifacts, evaluations, a human decision, and a terminal outcome. Best-of-N is the first
+ * STRATEGY, not the name of the engine: strategy-specific compiled policies can describe
+ * candidates or judges, but every strategy persists through these same durable nouns.
  *
  * No `node:` imports reach this file and none may: the dashboard consumes these contracts,
  * so one `node:` import in the module graph takes the web bundle down. Compilation,
@@ -59,7 +58,7 @@ export type EnsembleStageDriverKind = (typeof ENSEMBLE_STAGE_DRIVER_KINDS)[numbe
  *
  * A plan PERSISTS this key rather than relying on whatever the current build considers the
  * default for its stage kind. That is the whole reason it exists: an in-flight run whose
- * comparative reviewer changed shape must go on executing the reviewer it was compiled
+ * review driver changed shape must go on executing the driver it was compiled
  * against, and a driver version that has been removed while a non-terminal run still names
  * it is a startup health error - never permission to invoke the latest one.
  *
@@ -82,9 +81,9 @@ export type EnsembleDriverKey = (typeof ENSEMBLE_DRIVER_KEYS)[number];
  * What a member can submit, and what an evaluation can consume.
  *
  * Append-only: an artifact row's `kind` is how a later build knows which adapter validates
- * its locator. `commit` is the one Best-of-N v1 will produce (an immutable private Git
- * commit created through a temporary index); the rest are named now so that appending an
- * adapter later never has to widen the member or stage tables.
+ * its locator. `commit` is the one both enabled strategies produce (an immutable private
+ * Git commit created through a temporary index); the rest are named now so that appending
+ * an adapter later never has to widen the member or stage tables.
  */
 export const ENSEMBLE_ARTIFACT_KINDS = [
   "patch",
@@ -324,13 +323,13 @@ export const ENSEMBLE_LIMITS = {
   errorText: 4_000,
   resultLabel: 60,
   /**
-   * The comparative reviewer's guidance text, as SNAPSHOTTED into the compiled plan.
+   * Review guidance text, as SNAPSHOTTED into the compiled plan.
    *
    * Smaller than a Workflow Persona's own `personaGuidanceBytes` (100 KiB) on purpose: this
-   * text lives INSIDE the compiled plan, which has its own `compiledPlanJsonBytes` ceiling,
-   * so a Persona snapshotted here is truncated to this many UTF-8 bytes before persistence
-   * rather than being allowed to burst the plan. The truncation is disclosed where it
-   * happens; it is not a silent clip.
+   * text lives INSIDE the compiled plan, which has its own `compiledPlanJsonBytes` ceiling.
+   * The manager divides this shared budget across the Persona references named by a strategy
+   * and truncates each snapshot before persistence rather than allowing the plan to burst.
+   * The truncation is disclosed where it happens; it is not a silent clip.
    */
   reviewGuidanceBytes: 80_000,
   /** Page size reserved for the later HTTP detail surface. */
@@ -481,7 +480,7 @@ export interface EnsembleSubjectPolicy {
 }
 
 /**
- * Where the comparative reviewer's guidance comes from, snapshotted at creation.
+ * Where a reviewer's guidance comes from, snapshotted at creation.
  *
  * The persona case carries the FULL guidance text, not just an id and a revision, and that
  * is load-bearing: it is embedded in the compiled plan, and recovery executes the compiled
@@ -489,7 +488,7 @@ export interface EnsembleSubjectPolicy {
  * after creation must not silently re-aim a run already judging against the text they chose,
  * exactly as a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
  * versioned rubric id whose text is owned by the strategy that named it; a new rubric is a
- * new id beside the old one, so an old plan naming `best_of_n_v1` keeps its exact rubric.
+ * new id beside the old one, so an old plan keeps the exact rubric it named.
  */
 export type EnsembleEvaluatorGuidance =
   | { kind: "builtin"; rubricId: string }

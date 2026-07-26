@@ -37,15 +37,17 @@ import type {
  *     packet plus its lens. Judges that saw different bytes would produce a disagreement measure
  *     that says nothing about the submissions, and re-materialising N diffs per judge would make a
  *     five-lens panel five times the Git work for no extra evidence.
- *  2. **A judge fails alone.** A malformed ballot, a provider that threw, a lens this build no
- *     longer has - each settles ONE evaluation row `failed` and the panel goes on with the rest.
- *     The stage succeeds if the compiled quorum returned a usable ballot and fails, retryably,
- *     if it did not. What must never happen is a recommendation built from one surviving judge:
- *     its disagreement measure is vacuously zero, which reads on screen as unanimity.
- *  3. **The aggregate is derived, never stored.** Scores live on evaluation rows - one per judge -
- *     and the ranking is `aggregatePanelVotes` over them, called by this driver for the stage's
- *     label and by the dashboard for the result view. Persisting the aggregate as well would be a
- *     second copy of a pure function's output, free to drift from the rows it was computed from.
+ *  2. **A judge fails alone.** A malformed ballot or provider failure settles that judge's opened
+ *     evaluation row `failed`; a lens this build no longer has is refused before a row or call is
+ *     opened. The panel goes on with the rest. The stage succeeds if the compiled quorum returned
+ *     a usable ballot and fails, retryably, if it did not. What must never happen is a
+ *     recommendation built from one surviving judge: its disagreement measure is vacuously zero,
+ *     which reads on screen as unanimity.
+ *  3. **The aggregate is derived, never stored.** Scores live on evaluation rows - one per judge
+ *     that produced a ballot - and the ranking is `aggregatePanelVotes` over them, called by this
+ *     driver for the stage's label and by the dashboard for the result view. Persisting the
+ *     aggregate as well would be a second copy of a pure function's output, free to drift from the
+ *     rows it was computed from.
  *
  * Like every review driver its authority is tiny: it reads evidence and returns advice. It never
  * launches, selects, cancels, or deletes.

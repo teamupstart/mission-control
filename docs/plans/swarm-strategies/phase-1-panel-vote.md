@@ -3,12 +3,13 @@
 ## Outcome and value
 
 The second product ensemble strategy: 2-5 members implement independently (as in
-Best-of-N), then M independent single-lens Persona judges each score **all** eligible
-artifacts in parallel; a pure aggregation ranks them and the disagreement between judges
-is surfaced beside the recommendation instead of averaged away. The human still confirms.
-Value: the first genuinely new operator signal after v1 - where the lenses disagree is
-information one comparative call cannot produce - at the smallest possible delta, which is
-why the engine plan names it the smallest second strategy.
+Best-of-N), then M independent single-lens judges - built-in rubrics or operator-authored
+Personas - each score **all** eligible artifacts in parallel; a pure aggregation ranks
+them and the disagreement between judges is surfaced beside the recommendation instead
+of averaged away. The human still confirms. Value: the first genuinely new operator
+signal after v1 - where the lenses disagree is information one comparative call cannot
+produce - at the smallest possible delta, which is why the engine plan names it the
+smallest second strategy.
 
 ## Entry criteria and direct dependencies
 
@@ -33,9 +34,10 @@ why the engine plan names it the smallest second strategy.
   evaluator snapshot, actual runner/model, bounded input, and typed per-artifact scores.
   A judge's malformed or interrupted result fails that judge's attempt only, with the
   kernel's bounded retry.
-- Aggregation: a pure shared function (rank aggregation over per-judge scores plus a
-  disagreement measure per artifact); quorum policy in the compiled plan - the evaluation
-  stage succeeds when at least two judges succeed, otherwise it fails with retry exposed.
+- Aggregation: a pure shared function (Borda ordering over each judge's ranks, never their
+  private 0-100 score scales, plus mean normalized Kendall tau disagreement); quorum policy
+  in the compiled plan - the evaluation stage succeeds when at least two judges succeed,
+  otherwise it fails with retry exposed.
 - Result renderer in the Ensemble detail: per-judge scorecards, aggregate rank, and a
   visible disagreement indicator; a Dispatch preset card. Both use the generic
   member/stage/evaluation data - no new route or event.

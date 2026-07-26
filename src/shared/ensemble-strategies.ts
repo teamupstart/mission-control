@@ -112,10 +112,9 @@ export function creatableStrategies(): EnsembleStrategyInfo[] {
 /**
  * The display label for a persisted strategy key, whoever wrote it.
  *
- * Falls back to the raw key rather than to a known strategy's label: a run written by a
- * newer build has to be nameable on screen so it can be cancelled, and labelling it
- * "Best of N" because that is the only strategy this build has would be a lie about what
- * an operator is looking at.
+ * Falls back to the raw key rather than to any known strategy's label: a run written by a
+ * newer build has to be nameable on screen so it can be cancelled, and substituting a
+ * familiar label would be a lie about what an operator is looking at.
  */
 export function strategyLabelFor(id: string, fallback: string): string {
   return (ENSEMBLE_STRATEGY_IDS as readonly string[]).includes(id)

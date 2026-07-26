@@ -97,10 +97,10 @@ export interface ReviewPersist {
    * id every later call and the terminal write reference.
    *
    * `ordinal` identifies the row WITHIN this stage attempt and makes the call idempotent: a
-   * comparison opens exactly one at ordinal 1, a panel opens one per judge at that judge's
-   * compiled ordinal, and re-opening the same ordinal returns the existing row rather than a
-   * second one. `method` is what actually judged, recorded on the row so a reader can tell a
-   * ballot from a comparison without re-deriving it from the plan.
+   * comparison opens exactly one at ordinal 1, while a panel opens one for each judge that reaches
+   * its provider call at that judge's compiled ordinal. Re-opening the same ordinal returns the
+   * existing row rather than a second one. `method` is what actually judged, recorded on the row
+   * so a reader can tell a ballot from a comparison without re-deriving it from the plan.
    */
   beginEvaluation(input: {
     ordinal: number;
@@ -172,7 +172,7 @@ export type ReviewFailureKind = "empty_evidence" | "invalid_output" | "infrastru
  * One evaluation row this attempt opened, and how the engine must settle it.
  *
  * A LIST of these rather than a single id, because how many models a review asks is the driver's
- * business and not the engine's: a comparison opens one, a panel opens one per judge and may
+ * business and not the engine's: a comparison opens one, while a panel may open one per judge and
  * legitimately settle some `succeeded` and some `failed` in the same attempt. The engine writes
  * every one of them under the run lock, in one pass, after the last call has landed - so a run
  * cancelled mid-panel finds every row `interrupted` rather than a half-committed ledger.

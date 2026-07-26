@@ -75,16 +75,17 @@ select-one).
   blind A/B evaluator calibration follow-up is the measurement version of the same
   instinct.
 
-### Named in the engine plan's pattern table (compositions awaiting their primitive)
+### Named in the engine plan's pattern table
 
 - **Deterministic gate then rank** - a hybrid evaluator pipeline: tests/static evidence
   eliminate ineligible artifacts, the comparative model ranks survivors. Blocked on the
   *evaluation profiles* follow-up, because v1 has no safe repository-neutral command to
   run; until then gates can use only observed evidence (diff stats, no-mistakes state when
   present).
-- **Persona panel vote** - M independent single-lens judges over the same artifacts, with
-  aggregation and visible disagreement. The engine plan itself calls this the smallest
-  second product strategy. New primitive: parallel evaluator panel plus vote aggregation.
+- **Persona panel vote** - shipped as `panel_vote` in
+  [Phase 1](phase-1-panel-vote.md). M independent single-lens judges review the same
+  artifacts, with rank aggregation and visible disagreement; the phase document owns its
+  implementation and durable contracts.
 - **Pairwise tournament** - bracket / Swiss / round-robin pair comparisons; judges are
   more reliable at "which of these two" than at absolute scores, and each pair is a small
   checkable evaluation row. New primitive: pair scheduler and accumulated standings. This

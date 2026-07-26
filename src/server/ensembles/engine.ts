@@ -48,7 +48,7 @@ import {
 } from "./reviews/index.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 
-/** The wall-clock budget for one comparison provider call. Matches the Workflow Persona ceiling. */
+/** The wall-clock budget for one review provider call. Matches the Workflow Persona ceiling. */
 const DEFAULT_REVIEW_TIMEOUT_MS = 120_000;
 
 /**
@@ -246,7 +246,7 @@ export interface EnsembleEngineDeps {
   /** Re-read one run and push its compact summary + task projection onto the live channel. */
   publish: (runId: string) => void;
   adapters?: ArtifactAdapterRegistry;
-  /** The comparison executor. Absent, a review stage parks rather than runs. */
+  /** The review executor. Absent, a review stage parks rather than runs. */
   review?: EnsembleReviewDeps;
   /** The finalization executor. Absent, a finalize stage parks at `finalizing` rather than runs. */
   finalize?: EnsembleFinalizeDeps;
@@ -521,7 +521,7 @@ export class EnsembleEngine {
   }
 
   private async cancelLocked(state: RawRunState, reason: string | null): Promise<boolean> {
-    // Stop an in-flight comparison from starting its next parse attempt; its own `stillActive`
+    // Stop an in-flight review from starting its next parse attempt; its own `stillActive`
     // check would catch the cancel too, but aborting makes it prompt.
     this.reviewAborts.get(state.run.id)?.abort();
     const now = this.now();
@@ -1461,16 +1461,16 @@ export class EnsembleEngine {
     return await this.serviceFinalizeStage(state, stage as EnsembleStageSpec & { driverKind: "finalize" });
   }
 
-  // ---- review execution (comparative_review@1) ----
+  // ---- review execution ----
 
   /**
    * Start one review stage attempt and kick its async execution.
    *
    * The stage attempt and the `evaluating` status are persisted synchronously under the run lock,
-   * so a restart mid-review finds the running row rather than launching a second comparison. The
-   * comparison itself runs OUTSIDE the lock (a 120s model call must not hold a run's other actions),
-   * re-acquiring it only to persist the result. A fresh attempt number is used on every retry, so a
-   * failed comparison re-runs against the same immutable evidence rather than rewriting a plan.
+   * so a restart mid-review finds the running row rather than launching a second review. The
+   * driver runs OUTSIDE the lock (model calls must not hold a run's other actions), re-acquiring it
+   * only to persist the result. A fresh attempt number is used on every retry, so a failed review
+   * re-runs against the same immutable evidence rather than rewriting a plan.
    */
   private startReviewStage(
     state: RunState,

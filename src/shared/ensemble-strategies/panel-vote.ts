@@ -225,7 +225,10 @@ export const PanelVoteConfigSchema = z
       .max(PANEL_VOTE_MAX_JUDGES)
       .default(DEFAULT_JUDGES),
     /** The panel always anonymizes, so this durable parity field is not offered as a form control. */
-    anonymizeSubjects: z.boolean().default(true),
+    anonymizeSubjects: z
+      .boolean()
+      .default(true)
+      .transform(() => true as const),
     maxAttempts: z.number().int().min(1).max(ENSEMBLE_HARD_LIMITS.maxStageAttempts).default(2),
     materialBudgetBytes: z
       .number()

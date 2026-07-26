@@ -32,7 +32,7 @@ const { ENSEMBLE_LIMITS, ensemblePayload } = await import("../src/shared/ensembl
 const { buildPanelBallotPrompt } = await import("../src/server/ensembles/reviews/prompt.ts");
 const { EnsembleManager } = await import("../src/server/ensembles/manager.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { FakeGateway, ARTIFACT_ADAPTERS, fakeSha, runInsert } = await import("./ensemble-fixture.ts");
+const { FakeFinalize, FakeGateway, ARTIFACT_ADAPTERS, fakeSha, runInsert } = await import("./ensemble-fixture.ts");
 type CompiledEnsemblePlan = import("../src/shared/ensemble.ts").CompiledEnsemblePlan;
 type PanelVerdict = import("../src/shared/ensemble-strategies/panel-vote.ts").PanelVerdict;
 
@@ -161,7 +161,11 @@ function ballot(prompt: string, order?: (labels: string[]) => string[]): string 
   });
 }
 
-function harness(runModel: (prompt: string) => Promise<string> | string, existing?: Store) {
+function harness(
+  runModel: (prompt: string) => Promise<string> | string,
+  existing?: Store,
+  finalize?: InstanceType<typeof FakeFinalize>,
+) {
   const store = existing ?? new EnsembleStore(db);
   const gateway = new FakeGateway();
   const prompts: string[] = [];
@@ -170,6 +174,7 @@ function harness(runModel: (prompt: string) => Promise<string> | string, existin
     tasks: gateway,
     publish: () => {},
     adapters: reviewAdapters(),
+    finalize,
     armTimer: () => () => {},
     review: {
       scheduler: <T>(fn: () => Promise<T>) => fn(),
@@ -318,6 +323,51 @@ test("the aggregate the daemon labelled the stage with is the one the ballots pr
   const ids = store.listEvaluations(run.id)[0]!.subjectArtifactIds;
   const letter = "AB"[ids.indexOf(aggregate.recommendedArtifactId!)];
   assert.ok(label.includes(`Submission ${letter}`));
+});
+
+test("a human can confirm the panel recommendation and complete with every snapshot retained", async () => {
+  let call = 0;
+  const finalize = new FakeFinalize();
+  const { store, gateway, engine } = harness(
+    (prompt) => {
+      call += 1;
+      return call <= 2 ? ballot(prompt, (labels) => [labels[1]!, labels[0]!]) : ballot(prompt);
+    },
+    undefined,
+    finalize,
+  );
+  const run = makeRun(store, panelPlan(2, 3));
+  assert.equal(await runToPanel(engine, gateway, store, run.id), "awaiting_decision");
+
+  const aggregate = aggregatePanelVotes(verdictsOf(store, run.id));
+  assert.ok(aggregate.recommendedArtifactId);
+  const before = store.listArtifacts(run.id).map((artifact) => artifact.id).sort();
+  const decision = await engine.decide({
+    runId: run.id,
+    requestId: "panel-human-confirmation",
+    expectedStatus: "awaiting_decision",
+    selection: { kind: "selected", artifactId: aggregate.recommendedArtifactId },
+    rationale: "The panel split, but the majority ranking and evidence support this candidate.",
+    actorId: null,
+  });
+
+  assert.equal(decision.ok, true, decision.ok ? "" : decision.detail);
+  const finished = store.getRun(run.id)!;
+  const selectedArtifact = store.listArtifacts(run.id).find((artifact) => artifact.id === aggregate.recommendedArtifactId)!;
+  const selectedMemberId = store.listAttempts(run.id).find((attempt) => attempt.id === selectedArtifact.attemptId)!.memberId;
+  assert.equal(finished.status, "completed");
+  assert.deepEqual(finished.outcome, {
+    kind: "selected",
+    memberIds: [selectedMemberId],
+    artifactIds: [aggregate.recommendedArtifactId],
+    materializedTaskId: null,
+  });
+  assert.deepEqual(
+    store.listArtifacts(run.id).map((artifact) => artifact.id).sort(),
+    before,
+    "the winner and non-winner immutable snapshots both survive the final decision",
+  );
+  assert.equal(finalize.restored.length, 1, "the selected snapshot was restored only after the person decided");
 });
 
 test("a tied panel receipt names no leader", async () => {

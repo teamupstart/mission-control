@@ -69,8 +69,8 @@ import {
  * preflights and pins launch inputs, delegates ordinary Task lifecycle through the injected
  * gateway, captures submissions through artifact adapters, recovers non-terminal runs, and
  * publishes the compact summaries the browser's live state receives. The public create, preview,
- * action and delete routes all enter through this boundary; production creation is enabled only
- * because every driver in the compiled Best-of-N plan has an executable implementation.
+ * action and delete routes all enter through this boundary; a strategy is enabled for production
+ * creation only when every driver in its compiled plan has an executable implementation.
  *
  * The catalog and the store are constructor arguments rather than module globals so a test
  * can drive a descriptor of its own against a temp database - and so the production catalog
@@ -145,7 +145,7 @@ export interface EnsembleManagerOptions {
   /** Artifact adapters, for tests that drive capture against a fake instead of real Git. */
   adapters?: ArtifactAdapterRegistry;
   /**
-   * The comparison executor - the shared review scheduler, the runner/model resolver, and the
+   * The review executor - the shared scheduler, the runner/model resolver, and the
    * provider call. Present in the daemon; absent, a review stage parks at `evaluating` rather than
    * running, which is exactly what the launch-only phases before this one did.
    */

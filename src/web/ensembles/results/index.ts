@@ -7,7 +7,7 @@ import { PanelVoteResult } from "./PanelVote.tsx";
 /**
  * The strategy result-renderer registry. Generic run detail shows stages, members, artifacts
  * and evaluations the same way for every strategy; the strategy-specific PRESENTATION of the
- * result - Best-of-N's scorecards, a future panel's agreement view, a tournament's bracket -
+ * result - Best-of-N's scorecards, Panel vote's disagreement view, a future tournament's bracket -
  * lives behind this seam, keyed by the run's strategy id. A new strategy that reuses the
  * existing tables and routes adds a renderer here and nothing else, which is the Phase 8
  * extension contract: no new page, no new session field, no new engine branch.

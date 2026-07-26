@@ -1149,10 +1149,10 @@ body {
 }
 
 /* The topbar's foldable second row: the fleet strip. `flex-basis: 100%` on a flex-wrap
-   parent forces it onto its own line unconditionally, so it can never interleave with the
-   session-count pills the way it used to. Still INSIDE the topbar, because --topbar-h is
-   measured off the header with a ResizeObserver - a sibling placed after </header> would
-   overflow focus mode by exactly this row's height. */
+   parent forces it below the primary controls, so its meters can never interleave with
+   them. Still INSIDE the topbar, because --topbar-h is measured off the header with a
+   ResizeObserver - a sibling placed after </header> would overflow focus mode by exactly
+   this row's height. */
 .topbar-usage {
   flex-basis: 100%;
   display: flex;
@@ -1316,10 +1316,10 @@ body {
    every integer width if you add a control - and note the real limit this leaves: laid out
    in full the bar needs 1552 of a 1622px maximum container, so the two destination labels
    only survive on a nearly-maximised window. `flex-wrap` below is still the last resort,
-   and on a busy enough fleet it is what catches the overflow. Re-measure them if you add a control; a rung that fires late is a wrapped row, one
-   that fires early is a word thrown away for nothing, and a rung that saves much more than
-   the width it was crossed at leaves the bar half empty for the next several hundred px -
-   which is why the last two are split rather than one 369px cliff.
+   and on a busy enough fleet it is what catches the overflow. A rung that fires late is a
+   wrapped row, one that fires early is a word thrown away for nothing, and a rung that
+   saves much more than the width it was crossed at leaves the bar half empty for the next
+   several hundred px - which is why the last two are split rather than one 369px cliff.
 
    Every label the ladder sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so
    it costs no width and no flex gap, clipped so it paints nothing, and still in the

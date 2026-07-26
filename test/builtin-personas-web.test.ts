@@ -6,13 +6,18 @@ import type {
   PersonaView,
   WorkflowDefinition,
   WorkflowDraftGraph,
+  WorkflowVersion,
 } from "../src/shared/workflow.ts";
-import { personasForDisplay } from "../src/shared/workflow.ts";
+import {
+  personaSnapshotIsOutdated,
+  personasForDisplay,
+} from "../src/shared/workflow.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import { PersonaLibrary } from "../src/web/workflows/PersonaLibrary.tsx";
 import { PipelineEditor } from "../src/web/workflows/PipelineEditor.tsx";
 import { WorkflowCanvas } from "../src/web/workflows/WorkflowCanvas.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
+import { WorkflowVersionDetail } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import { workflowPublishBlocked } from "../src/web/workflows/useWorkflowDraft.ts";
 
 const persona = (
@@ -134,4 +139,65 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
   }));
   assert.equal(library.match(/class="persona-list-item/g)?.length, 1);
   assert.doesNotMatch(library, /class="persona-list-tag">Built-in</);
+});
+
+test("published built-in snapshots compare shipped guidance instead of revision", () => {
+  const version: WorkflowVersion = {
+    id: "version",
+    workflowId: workflow.id,
+    version: 1,
+    sourceDraftRevision: workflow.draftRevision,
+    graph: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        {
+          id: "judge",
+          kind: "persona",
+          persona: {
+            sourcePersonaId: builtin.id,
+            sourceRevision: 1,
+            name: builtin.name,
+            description: builtin.description,
+            guidanceMarkdown: builtin.guidanceMarkdown,
+            runner: builtin.runner,
+            model: builtin.model,
+          },
+          position: { x: 220, y: 0 },
+        },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+      ],
+      edges: [],
+    },
+    completionPolicy: workflow.completionPolicy,
+    bindingDefaults: workflow.bindingDefaults,
+    publishedAt: 1,
+  };
+  const snapshot = version.graph.nodes.find((node) => node.kind === "persona")?.persona;
+  assert.ok(snapshot);
+  assert.equal(personaSnapshotIsOutdated(snapshot, builtin), false);
+
+  const currentHtml = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
+    version,
+    personas: [builtin],
+  }));
+  assert.doesNotMatch(currentHtml, /outdated/);
+  assert.doesNotMatch(currentHtml, /source unavailable/);
+
+  const changedBuiltin = {
+    ...builtin,
+    guidanceMarkdown: `${builtin.guidanceMarkdown}\n\nUpdated guidance`,
+  };
+  assert.equal(personaSnapshotIsOutdated(snapshot, changedBuiltin), true);
+  const outdatedHtml = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
+    version,
+    personas: [changedBuiltin],
+  }));
+  assert.match(outdatedHtml, /outdated/);
+
+  const unavailableHtml = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
+    version,
+    personas: [],
+  }));
+  assert.match(unavailableHtml, /source unavailable/);
+  assert.doesNotMatch(unavailableHtml, /outdated/);
 });

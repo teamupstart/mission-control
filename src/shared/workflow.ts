@@ -223,6 +223,15 @@ export interface PersonaSnapshot {
   model: string | null;
 }
 
+export function personaSnapshotIsOutdated(
+  snapshot: PersonaSnapshot,
+  current: Persona | null | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.builtin) return snapshot.guidanceMarkdown !== current.guidanceMarkdown;
+  return snapshot.sourceRevision !== current.revision;
+}
+
 export type PublishedWorkflowNode =
   | Exclude<WorkflowDraftNode, { kind: "persona" }>
   | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point };

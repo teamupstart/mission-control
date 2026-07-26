@@ -1903,17 +1903,17 @@ one immediately.
 
 They are **app data, not your data**, and the Personas tab marks each one `Built-in`. Each
 carries exactly the guidance the build was made from, so an upgrade that improves a role
-improves it everywhere at once. Opening one shows it read-only: no Save, no Archive, and a
-line saying why. **Duplicate** is the way to a version you own - the copy is an ordinary
-Persona with its own name, editable, archivable, and never touched by an upgrade. Their
-guidance is still exactly as visible as any other: Copy Markdown, Download .md and the
-preview all work.
+improves it everywhere at once. Opening one shows it read-only: Save is disabled, Archive
+is absent, and there is a line saying why. **Duplicate** is the way to a version you own -
+the copy is an ordinary Persona with its own name, editable, archivable, and never touched
+by an upgrade. Their guidance is still exactly as visible as any other: Copy Markdown,
+Download .md and the preview all work.
 
 Because they always exist, their names are reserved: creating or renaming a Persona to
 `Code Risk Reviewer` is refused the way any duplicate name is. The one exception is
 historical - a Persona you imported from these documents before they shipped built-in keeps
 the name it already reserved, and the built-in it shadows stays hidden behind your copy.
-Delete or rename your copy to see the built-in.
+Archive or rename your copy to see the built-in.
 
 The authored Markdown is in this repository under `docs/personas/`, one document per role,
 and it is compiled into the build - run `npm run personas` after editing one, and commit the

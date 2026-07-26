@@ -2337,10 +2337,10 @@ body {
   background: color-mix(in oklab, var(--idle) 7%, transparent);
 }
 .nm-rollup:hover .nm-log-brand {
-  color: var(--text);
+  color: var(--fg);
 }
 .nm-rollup:hover .nm-log-caret {
-  color: var(--text);
+  color: var(--fg);
   border-color: color-mix(in oklab, var(--idle) 45%, var(--border));
   background: color-mix(in oklab, var(--idle) 14%, transparent);
 }

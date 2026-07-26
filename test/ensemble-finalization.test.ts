@@ -339,7 +339,8 @@ test("a superseded winner Task is settled done, keeping its checkout, and is nev
   assert.equal(gateway.status(winnerTask), "done", "the superseded winner Task was settled terminally");
   assert.equal(gateway.settled.length, 1, "exactly one Task was settled as superseded");
   assert.equal(gateway.settled[0]!.taskId, winnerTask);
-  const replacementId = store.getRun(runId)!.outcome?.kind === "selected" ? store.getRun(runId)!.outcome!.materializedTaskId : null;
+  const outcome = store.getRun(runId)!.outcome;
+  const replacementId = outcome?.kind === "selected" ? outcome.materializedTaskId : null;
   assert.match(gateway.settled[0]!.outcome, /selected as the ensemble winner/);
   assert.equal(gateway.settled[0]!.outcome.includes(replacementId!), true, "the outcome names the Task it was promoted into");
 

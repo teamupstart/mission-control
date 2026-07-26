@@ -1710,14 +1710,11 @@ re-verify the winner's private ref still resolves to its snapshot (a missing ref
 cleanup); make one exact winner available - either the original member's checkout reset to the
 snapshot through the same session-reset that clears its queue, drafts and context, or, if that
 session is gone or busy, exactly one replacement task launched at the snapshot (never two, across
-any restart); reap every loser through the normal task cancellation that reclaims its worktree,
-and - on the replacement path only - settle the winner's *original* task as **done**, naming the
-task it was promoted into, so no row is left claiming to execute on an agent that will never
-report against it again; then either hand the winner to a workflow or type it one continuation -
-never both. Settling is not a teardown: that original agent, its worktree and its branch all
-survive for a confirmed **Clean up**, because whatever it did after submitting exists only in that
-checkout - which is exactly why it was too busy to reuse. A step that
-cannot finish leaves the run *finalizing* with an actionable error and is resumed by
+any restart); reap every loser through the normal task cancellation that reclaims its worktree;
+reconcile a superseded original winner as described in
+[Where the selected result lands](docs/ensembles.md#where-the-selected-result-lands); then either
+hand the winner to a workflow or type it one continuation - never both. A step that cannot finish
+leaves the run *finalizing* with an actionable error and is resumed by
 `resolve_finalization`; the run reaches *completed* only once the winner is exact, every loser is
 reconciled, and any workflow submission is captured. Every loser's private snapshot survives.
 

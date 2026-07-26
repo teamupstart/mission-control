@@ -152,11 +152,12 @@ cancellation and worktree teardown.
 
 Finalization reaps loser **worktrees** but never loser **refs** - every candidate's snapshot is
 kept after completion or cancellation, and a **Restore** action can create a fresh task from any of
-them. The **winner's** worktree is never reaped by finalization at all, on either promotion path. There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit
-**Delete ensemble** action (confirmed by echoing the run id), which removes the run's private refs
-and history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting
-an ensemble never touches a task or any linked workflow state, and it resumes the same remaining
-refs after a crash.
+them. The **winner's** worktree is never reaped by finalization at all, on either promotion path.
+There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit **Delete
+ensemble** action (confirmed by echoing the run id), which removes the run's private refs and
+history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting an
+ensemble never touches a task or any linked workflow state, and it resumes the same remaining refs
+after a crash.
 
 ## Costs
 

@@ -2255,12 +2255,13 @@ export class EnsembleEngine {
    * Drive one finalize stage as far as it can go, idempotently, from its persisted receipts.
    *
    * The engine performs every destructive step itself, in the order the recovery contract requires:
-   * verify the winner ref, make one exact winner available, reap losers through TaskManager, then
-   * hand off to a Workflow or deliver a continuation, then complete. A step that cannot finish
-   * (a missing ref, a busy session, a Workflow conflict) leaves the run `finalizing` with an
-   * actionable error and returns; a later wake, `resolve_finalization`, or restart re-drives from
-   * the same receipts. Every step is safe to repeat, so re-driving never doubles an effect - which
-   * is what makes "interrupt at any point and resume" true rather than hoped for.
+   * verify the winner ref, make one exact winner available, reap losers and settle any superseded
+   * original winner through TaskManager, then hand off to a Workflow or deliver a continuation,
+   * then complete. A step that cannot finish (a missing ref, a busy session, a Workflow conflict)
+   * leaves the run `finalizing` with an actionable error and returns; a later wake,
+   * `resolve_finalization`, or restart re-drives from the same receipts. Every step is safe to
+   * repeat, so re-driving never doubles an effect - which is what makes "interrupt at any point and
+   * resume" true rather than hoped for.
    */
   private async serviceFinalizeStage(
     state: RunState,

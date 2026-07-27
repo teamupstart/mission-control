@@ -276,18 +276,23 @@ build caches survive. The command runs in the pinned lease, never in `sessionRep
 work in pooled checkouts under `~/.treehouse/`, while `sessionRepoRoot` names the shared main
 repository and `sessionCwd` continues changing after capture.
 
-The check owns one pool slot while it runs. The lease is returned after every result and
-failure, and startup recovery returns any lease recorded by an interrupted daemon before
-scheduling resumes. Pool acquisition, pinning, or other setup failure is infrastructure and
-never a fail verdict against the submission. Repositories need enough warm pool capacity for
-the configured check concurrency, but checks create no additional checkout.
+The check owns one pool slot from acquisition through confirmed return. A dedicated
+`workflow_check_leases` table owns that lifecycle across attempt retries and daemon restarts,
+while `PoolPins.checkLeasePaths` protects every active check lease from the pool reaper.
+Startup restores those pins before the reaper or workflow pump starts. Pool acquisition,
+pinning, or other setup failure is infrastructure and never a fail verdict against the
+submission. Lease-return failure is retried separately while its durable row and pin remain,
+and no new attempt may acquire a second lease until return succeeds.
 
-Each command runs in its own process group. Timeout, cancellation, daemon shutdown, and
-startup recovery terminate the group and wait for descendants before returning the reusable
-lease. Output is bounded, execution is timed, and durable lease lifecycle plus the final
-result fit the existing `workflow_node_attempts.output_json`, so no migration is needed. A
-missing executable is classified from the streaming spawn's `ENOENT`, not an `onPath`
-precheck that would resolve repository-relative paths against the daemon cwd.
+Each command runs behind a trusted supervisor in its own process group. The supervisor holds
+branch code behind a gate until its pid and operating-system process start time are durable.
+Timeout, cancellation, daemon shutdown, and startup recovery verify that identity, terminate
+the group, and wait for descendants before returning the reusable lease. A mismatched
+identity is treated as already gone rather than risking a signal to a recycled pid. Output is
+bounded, execution is timed, and only the final result lives in
+`workflow_node_attempts.output_json`. A missing executable is classified from the streaming
+spawn's `ENOENT`, not an `onPath` precheck that would resolve repository-relative paths
+against the daemon cwd.
 
 The slot indirection trusts the command, not the code it executes. A command such as
 `npm test` still loads scripts and source from the branch under review. Checks therefore

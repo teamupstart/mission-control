@@ -26,8 +26,8 @@ In scope:
 - `WORKFLOW_CHECK_SLOTS`, append-only.
 - Slot-to-command configuration in `WorkflowConfig`, edited in Settings, plus a consent switch.
 - Execution: bounded, timed, in a pooled worktree leased and pinned to the captured commit,
-  on its own concurrency limit, with process-group teardown and lease return on completion
-  and daemon restart.
+  on its own concurrency limit, with a durable lease registry, pool-reaper pins, a gated
+  process supervisor, process-group teardown, and separately retried lease return.
 - A scrubbed child environment, repository allowlisting, and consent copy that names the
   filesystem authority granted to branch-authored code.
 - Validation, Graph-view rendering, run-detail presentation, README, tests.
@@ -40,7 +40,8 @@ Explicit non-goals:
 - **No repository-file command source.** Settings only, per decision 5. The default-branch
   file is a named follow-up, not this phase.
 - **No shell.** The streaming check runner spawns an argv directly with `shell: false`.
-- **No DB migration.** The existing attempt row accommodates a check.
+- **No existing-table migration.** The existing attempt row accommodates the check outcome,
+  but a new `workflow_check_leases` table owns crash-safe lease and process cleanup.
 - **No auto-fix.** A failing check returns findings to the Session through the same repair
   packet a Persona fail produces.
 - **No full execution sandbox.** Environment scrubbing reduces credential exposure, but the
@@ -73,14 +74,21 @@ Explicit non-goals:
   `provisionWorktree` returns the pool lease when pinning or verification fails
   (`dispatcher.ts:788-802`), and `teardownWorktree` uses the same return path for ordinary
   completion. Check setup and recovery inherit that ownership rule.
+- **The pool reaper does not know about check leases.** `PoolPins` (`pool.ts:175`) contains
+  only `sessionCwds` and `taskWorktrees`, populated from live sessions and Task rows. An
+  active check lease is neither, so Phase 2 adds `checkLeasePaths` as a third source. It is
+  populated from the durable check-lease registry plus acquisitions not yet committed, and
+  is active from acquisition through confirmed return.
 - **Detached children need group teardown.** The headless LLM runners already spawn with
   `detached: true` and signal the negative child pid on POSIX so descendants do not outlive
   the owner. A check command needs the same process-group boundary plus cancellation owned
   by `WorkflowEngine.stop()`.
-- **`workflow_node_attempts` needs no migration.** `persona_snapshot_json`, `runner_id`,
+- **`workflow_node_attempts` needs no widening for outcomes.** `persona_snapshot_json`, `runner_id`,
   `model_id` and `verdict_json` are all nullable (`db.ts:461-478`), and `insertAttempt`
-  already writes `input.persona === null ? null : ...` (`store.ts:2443`). This corrects the
-  source plan, which left widening open.
+  already writes `input.persona === null ? null : ...` (`store.ts:2443`). The final
+  `CheckOutcome` fits `output_json`, but cleanup state cannot: `handleInfrastructureFailure`
+  finishes the old attempt without output and creates a fresh retry. A dedicated durable
+  lease table must outlive both attempt rows.
 - **`ReviewScheduler` is explicitly a ceiling on tool-less MODEL calls**
   (`llm/review-scheduler.ts`), and its comment defines membership that way. Today
   `WorkflowEngine.pump()` wraps every runnable attempt in that scheduler before
@@ -93,8 +101,10 @@ Explicit non-goals:
 - **The engine branches in four**: `engine.ts:150`, 213 (persona attempt insertion), 230, 256,
   319. A check needs an arm beside 213 and its own runner beside `runAttempt`.
 - **`handleInfrastructureFailure`** already implements "an infrastructure problem is never a
-  fail verdict", with `MAX_INFRA_ATTEMPTS = 3` and exponential backoff. A check that could not
-  run takes that path, not a fail.
+  fail verdict", with `MAX_INFRA_ATTEMPTS = 3` and exponential backoff. It finishes the old
+  attempt without output and creates a fresh retry, so it is used only after check resources
+  are clean. Lease-return failure stays in a separate cleanup retry and cannot make another
+  attempt runnable.
 - **`WorkflowConfig`** is `{ liveEnabled, repoAllowlist, retention }` (`workflow.ts:486-509`),
   an `app_config` blob edited by `WorkflowSettingsPanel.tsx`.
   `WorkflowConfigSchema` uses `.default()`, not `.catch()`, so malformed persisted values
@@ -237,27 +247,45 @@ The lease and return commands have one shared adapter used by Dispatcher and che
 copy their argv into `checks.ts`. There is deliberately no fallback to `git worktree add`.
 The pool is what preserves ignored dependencies while `pinLeasedWorktree` removes tracked
 and nonignored residue and proves HEAD equals the captured commit. A missing pool, dry lease,
-invalid commit, ownership refusal, reset failure, or return failure is infrastructure and
-takes `handleInfrastructureFailure`; none becomes a `failed` check verdict.
+invalid commit, ownership refusal, or reset failure is infrastructure and reaches
+`handleInfrastructureFailure` only after cleanup succeeds; none becomes a `failed` check
+verdict.
 
-Lease ownership is durable before execution starts. `output_json` becomes a typed check
-lifecycle union: a `leased` variant records `leasePath` after acquisition and before pin or
-spawn; a `running` variant adds the process-group id immediately after spawn; the final
-variant carries `CheckOutcome`. Startup recovery can therefore finish teardown without a
-schema migration. Return the lease in `finally` after pass, fail, spawn refusal, timeout, or
-cancellation. On daemon startup, reconcile every unfinished check before `pump()` schedules
-work: terminate any recorded process group, wait for it to stop, return the recorded lease,
-clear the lifecycle state, and only then make the attempt runnable. The concurrency ceiling
-bounds resource use to one pre-warmed pool slot per running check. It creates no extra
-checkout, but repositories need enough configured pool capacity for the chosen check
-concurrency.
+Add `workflow_check_leases`, keyed by attempt id, with the repository root, unique lease
+path, cleanup state, process pid, process start-time identity, and timestamps. This table,
+not `workflow_node_attempts.output_json`, is the durable owner of a live lease. `output_json`
+holds only the final `CheckOutcome`. A cleanup worker retains the lease row until pool return
+is confirmed, retries teardown independently with backoff, and only then lets
+`handleInfrastructureFailure` create or release a runnable attempt. A failed return must
+not delete the row, release its reaper pin, or permit a second lease. This invariant prevents
+attempt rollover from erasing the only record of a resource that is still owned.
 
-The streaming runner spawns the command in its own process group. Timeout, cancellation, and
-daemon shutdown signal the whole group, wait for descendant termination, and escalate to a
-hard kill after a bounded grace period. Process teardown must finish before lease return.
-Returning a reusable tree while a descendant can still write into it would corrupt the next
-lessee. `WorkflowEngine.stop()` therefore cancels live check groups before awaiting its
-in-flight attempts instead of merely waiting for their command timeout.
+Extend `PoolPins` with `checkLeasePaths`. Its value is the union of paths in
+`workflow_check_leases` and the lease manager's just-acquired in-memory set. The manager adds
+a path synchronously when acquisition returns, before yielding for persistence, and removes
+it only after confirmed pool return. Each lease uses a check-specific holder token tied to
+the durable attempt id, so startup can reconcile an acquisition interrupted before the path
+commit. On startup, restore durable rows and reconcile those holder tokens before starting
+the pool reaper or `pump()`. This invariant pins a check lease from acquisition through
+confirmed return, including setup, teardown, and daemon restart, and prevents the reaper
+from returning or re-leasing an active tree.
+
+The streaming runner starts a trusted supervisor in its own process group with the branch
+command stopped or held behind a gate. Read the supervisor's pid and operating-system process
+start time, persist both in `workflow_check_leases`, and only then release the gate so branch
+code can execute. Timeout, cancellation, and daemon shutdown verify the pid plus start-time
+identity, signal the whole group, wait for descendant termination, and escalate to a hard
+kill after a bounded grace period. Startup recovery performs the same identity check before
+signalling. A missing or mismatched identity is treated as already gone and is never
+signalled. Persist-before-release prevents branch code from running without a durable owner;
+identity verification prevents a recycled pid from targeting an unrelated process group.
+
+Process teardown must finish before lease return. Returning a reusable tree while a
+descendant can still write into it would corrupt the next lessee. `WorkflowEngine.stop()`
+therefore cancels live check groups before awaiting its in-flight attempts instead of merely
+waiting for their command timeout. The concurrency ceiling bounds resource use to one
+pre-warmed pool slot per running check. It creates no extra checkout, but repositories need
+enough configured pool capacity for the chosen check concurrency.
 
 Build the child environment through one pure scrubber. It removes the daemon auth token and
 the `MISSION_HOME` / `FLEET_HOME` / `HARNESS_HOME` aliases that locate it, plus variables
@@ -324,7 +352,11 @@ full sandbox. Add the two Settings rows under Configuration.
 
 ## Data, API and compatibility
 
-- **No migration.** The attempt row already accommodates a check.
+- **New durable lease table.** `workflow_node_attempts` needs no new columns for the final
+  outcome, but `workflow_check_leases` owns leases across attempt retries and daemon
+  restarts. It remains present until return is confirmed.
+- **Pool reaper contract widens.** `PoolPins.checkLeasePaths` is a third pin source beside
+  session CWDs and Task worktrees.
 - **`WORKFLOW_CHECK_SLOTS` is append-only.** A slot id reaches published graphs; renaming one
   orphans every graph naming the old spelling.
 - **A published version pins no command.** Two runs of the same version on different machines
@@ -355,8 +387,17 @@ full sandbox. Add the two Settings rows under Configuration.
   proving HEAD equals the full captured commit.
 - Lease acquisition, pin, and other setup failures take the infrastructure retry path and
   never produce a fail verdict.
+- The pool reaper runs while a check holds a lease during setup, execution, and teardown and
+  leaves the tree alone until confirmed return.
+- A return stub fails once: the durable lease row and reaper pin remain, no new attempt runs
+  or acquires a second lease, the cleanup worker retries separately, and only successful
+  return releases the pin and infrastructure retry.
+- The supervisor holds the branch command behind its gate until pid plus process start time
+  are durable. Startup recovery signals a matching identity and treats a mismatched,
+  simulated recycled pid as already gone without signalling it.
 - The lease is returned after pass, fail, spawn refusal, timeout, and cancellation. Startup
-  recovery returns a simulated recorded lease before attempts resume.
+  recovery restores lease pins, terminates a matching recorded process group, and returns
+  the lease before the pool reaper or attempts resume.
 - A test command spawns a descendant; timeout, explicit cancellation, and daemon shutdown
   each terminate the full process group before the lease-return stub is called.
 - The scrubbed environment drops auth and credential-shaped variables while retaining the
@@ -393,9 +434,12 @@ detail. Confirm on your own Vite port.
   blocks.
 - A timeout is an infrastructure failure, not a fail verdict.
 - Every command runs in a pooled lease pinned to the captured commit, warm ignored
-  dependencies survive the pin, and the lease is returned after completion and restart.
+  dependencies survive the pin, and the lease remains durably pinned until confirmed return
+  after completion or restart.
 - Timeout, cancellation, and shutdown terminate the command's process group before returning
   its reusable lease.
+- Branch code cannot start until its pid and process start time are durable, and recovery
+  never signals a process whose identity does not match.
 - The child environment contains no daemon auth token or credential-shaped variables, and
   the consent UI names the remaining filesystem authority.
 - No shell is invoked anywhere in the path.
@@ -426,8 +470,9 @@ Phase 3 **must** change:
   (different subsections). Neither phase's tests import the other's modules. Confirmed
   mergeable in either order.
 - **Correction carried back into the index**: the source plan left open whether
-  `workflow_node_attempts` needs widening. The repository answers it, so this phase adds no
-  migration. Recorded in `phased-plan.md` under investigated findings.
+  `workflow_node_attempts` needs widening. The repository answers that outcomes fit without
+  new attempt columns, while crash-safe cleanup needs a separate `workflow_check_leases`
+  table. Recorded in `phased-plan.md` under investigated findings.
 - **Scheduler boundary**: the first draft of this phase reused `ReviewScheduler`. A separate
   limiter inside `runAttempt` is still insufficient because `pump()` already acquires the
   review scheduler around every attempt. Corrected so `pump()` resolves node kind and routes

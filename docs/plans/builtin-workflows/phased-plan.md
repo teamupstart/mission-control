@@ -49,12 +49,13 @@ Verified against `HEAD` at `0f5d045b`.
   fail route on Personas and Joins (179-188), requires two distinct Join predecessors each
   contributing exactly one pass and one fail edge (190-207), and requires every cycle to
   include Session. No validator change is needed for Phase 1.
-- **`workflow_node_attempts` needs no migration for checks.** `persona_snapshot_json`,
+- **`workflow_node_attempts` needs no widening for check outcomes.** `persona_snapshot_json`,
   `runner_id`, `model_id` and `verdict_json` are all nullable (`db.ts:461-478`) and
   `insertAttempt` already writes `input.persona === null ? null : ...`
-  (`store.ts:2443`). A check attempt fits the existing row with exit code and bounded output
-  in `output_json`. This materially shrinks Phase 2 against the source plan's expectation
-  that the row might need widening.
+  (`store.ts:2443`). A check outcome fits the existing row with exit code and bounded output
+  in `output_json`. Crash-safe resource ownership does not: Phase 2 adds a
+  `workflow_check_leases` table because attempt failure clears output and creates a fresh
+  retry.
 - **The engine switches on node kind in four places**: `engine.ts:150` (session), 213
   (persona), 230 (session return), 256 (all_pass), 319 (end). A check node needs an arm
   beside the persona arm at 213 and a runnable-attempt path beside `runAttempt`.
@@ -89,14 +90,24 @@ Verified against `HEAD` at `0f5d045b`.
   `sessionCwd` is the live mutable checkout. This is the normal dispatch shape because
   sessions run under `~/.treehouse/`. Phase 2 leases a pre-warmed pooled tree and reuses
   `pinLeasedWorktree` to reset it to the captured commit without deleting ignored
-  dependencies. Setup failures are infrastructure, and the lease is returned after every
-  exit path and restart.
+  dependencies. Setup failures are infrastructure, and a durable lease registry owns return
+  after every exit path and restart.
+- **The pool reaper has only session and Task pins.** `PoolPins` has `sessionCwds` and
+  `taskWorktrees`, so an active check lease would look abandoned. Phase 2 adds
+  `checkLeasePaths`, populated from acquisition through confirmed return and restored before
+  the reaper starts.
 - **`onPath` resolves slash-containing commands against the daemon cwd.** Phase 2 removes
   that precheck and classifies the real streaming spawn's `ENOENT`, so
   `./scripts/check` and `node_modules/.bin/tsc` resolve from the pinned lease.
 - **A direct-child kill does not stop test workers.** Phase 2 gives each command its own
   process group and terminates all descendants on timeout, cancellation, shutdown, and
-  startup recovery before returning the reusable lease.
+  startup recovery before returning the reusable lease. A trusted supervisor gates branch
+  execution until pid plus process start time are durable, and recovery verifies both before
+  signalling.
+- **Attempt failure cannot own lease cleanup.** `handleInfrastructureFailure` finishes the
+  old attempt without output and creates a fresh retry. Phase 2 keeps lease state in the
+  dedicated table, retries return separately, and prevents another attempt from becoming
+  runnable until return succeeds.
 - **A trusted argv does not make branch code trusted.** Commands such as `npm test` load
   scripts and source from the reviewed branch. Phase 2 requires repository allowlisting,
   scrubs auth and credential-shaped environment variables, and makes the consent UI name the
@@ -112,15 +123,16 @@ Verified against `HEAD` at `0f5d045b`.
 
 One discrepancy against the source plan, corrected here: the source plan says a check
 attempt "needs either widened columns or a synthetic verdict". The repository answers it -
-the existing row already accommodates a check with no migration, so Phase 2 adds no
-`addColumn` call and no index.
+the existing row accommodates the final outcome without new columns. The crash-safe pooled
+execution contract adds `workflow_check_leases` as a new table, so Phase 2 has schema work
+even though it adds no `addColumn` call or dependent index.
 
 ## Phase table
 
 | Phase | Name | Direct prerequisites | Deliverable |
 |---|---|---|---|
 | 1 | Built-in workflows and No-Mistakes Review | planning session | `builtin` on the workflow types, `BUILTIN_WORKFLOWS`, the store merge and refusals, the shipped graph, read-only web treatment, README, tests |
-| 2 | The check node | planning session | `check` node kind end to end: types, zod, validation, slot-to-command settings, consent, bounded execution, Graph-view rendering, README, tests |
+| 2 | The check node | planning session | `check` node kind end to end: types, zod, validation, slot-to-command settings, consent, crash-safe pooled execution, Graph-view rendering, README, tests |
 | 3 | Pipeline checks and No-Mistakes Review v2 | 1, 2 | `StageMember` union so checks render in the Pipeline editor, then a second built-in version adding the check gates |
 
 Three phases. Phase 1 and Phase 2 are independent vertical slices and may run concurrently.

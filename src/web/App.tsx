@@ -192,6 +192,8 @@ export function App(): React.JSX.Element {
   // this in one go. Reset whenever we leave settings (below), so returning via the gear
   // never reopens a palette the operator closed.
   const [searchOpen, setSearchOpen] = useState(false);
+  const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
+  const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
@@ -472,6 +474,20 @@ export function App(): React.JSX.Element {
   const requestConversationTab = useCallback((sessionId: string) => {
     setConversationTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, []);
+  const showLauncherFocusError = useCallback((message: string) => {
+    if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+    setLauncherFocusError(message);
+    launcherFocusErrorTimer.current = setTimeout(() => {
+      launcherFocusErrorTimer.current = null;
+      setLauncherFocusError(null);
+    }, 6000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+    },
+    [],
+  );
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     if (layout === "grid") {
       setDiffCommit(commit ?? null);
@@ -1219,18 +1235,22 @@ export function App(): React.JSX.Element {
         if (!sel) return;
         e.preventDefault();
         const run = launcher[1];
-        if (run === "openAgent") {
-          const action = agentLaunchAction(sel);
-          if (!action) return;
-          if (action === "focus") {
-            void api.focus(sel.id);
-            return;
-          }
-        }
         const mounted = launcherHandles.current.get(sel.id);
         if (mounted) {
           mounted[run]();
           return;
+        }
+        if (run === "openAgent") {
+          const action = agentLaunchAction(sel);
+          if (!action) return;
+          if (action === "focus") {
+            void api.focus(sel.id).then((result) => {
+              if (!result.ok) {
+                showLauncherFocusError(result.error ?? "could not focus");
+              }
+            });
+            return;
+          }
         }
 
         // Cards mount the toolbar only when expanded; the Board overview only after it
@@ -1285,7 +1305,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1365,6 +1385,11 @@ export function App(): React.JSX.Element {
             reviews={answerableReviews.length}
             onOpenReviews={openReviews}
           />
+          {launcherFocusError && (
+            <span className="launch-flash is-error" role="status">
+              {launcherFocusError}
+            </span>
+          )}
           {/* Twelve peers at one weight is what made this bar unreadable, so the
               cluster is THREE groups with a rank, not one rhythm: destinations you
               navigate to, the two controls that act on the fleet (Foreman's posture and

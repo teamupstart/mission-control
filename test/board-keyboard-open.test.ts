@@ -89,17 +89,23 @@ test("launcher chords focus directly or reveal Conversation for a chooser", () =
     app.indexOf("const launcher = LAUNCHER_ACTIONS.find"),
     app.indexOf("const bar = BAR_ACTIONS.find"),
   );
+  const mounted = launcherBlock.indexOf("launcherHandles.current.get(sel.id)");
   const focus = launcherBlock.indexOf('action === "focus"');
   const reveal = launcherBlock.indexOf("pendingLauncherAction.current");
+  assert.notEqual(mounted, -1);
   assert.notEqual(focus, -1);
+  assert.ok(mounted < focus, "a visible launcher must own focus feedback");
   assert.ok(focus < reveal);
   assert.match(launcherBlock.slice(focus, reveal), /api\.focus\(sel\.id\)/);
+  assert.match(launcherBlock.slice(focus, reveal), /if \(!result\.ok\)/);
+  assert.match(launcherBlock.slice(focus, reveal), /showLauncherFocusError/);
   assert.match(launcherBlock.slice(focus, reveal), /return;/);
   assert.match(
     launcherBlock,
     /pendingLauncherAction\.current = \{ id: sel\.id, run \};[\s\S]*?requestConversationTab\(sel\.id\)/,
   );
   assert.match(app, /handle\[pending\.run\]\(\)/);
+  assert.match(app, /className="launch-flash is-error" role="status"/);
 });
 
 test("the board's drill-in is the selection, not a second id that can drift from it", () => {

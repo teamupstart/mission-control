@@ -180,14 +180,17 @@ test("editing an unknown-runner Persona retains its server-resolved provider", (
   });
 });
 
-test("a selected Persona renders metadata, effective values, editor, preview, and exact exports", () => {
+test("a selected Persona opens in the shared editor and offers preview as a separate mode", () => {
   const html = text(renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks })));
   assert.match(html, /Revision 3/);
   assert.match(html, /Review correctness/);
   assert.match(html, /Claude Code/);
   assert.match(html, /claude-sonnet-5/);
   assert.match(html, /Editor for code-quality\.md/);
-  assert.match(html, /Exact guidance/);
+  assert.match(html, /aria-label="Persona guidance view"/);
+  assert.match(html, /aria-pressed="false"[^>]*>Preview/);
+  assert.match(html, /aria-pressed="true"[^>]*>Editor/);
+  assert.doesNotMatch(html, /<article class="persona-markdown/, "preview is not rendered beside the editor");
   assert.match(html, /Copy Markdown/);
   assert.match(html, /Download \.md/);
   assert.match(html, /Duplicate/);

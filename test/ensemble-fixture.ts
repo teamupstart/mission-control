@@ -200,7 +200,7 @@ export function stubAdapters(): ArtifactAdapterRegistry {
       return null;
     },
     async materialize() {
-      return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0 };
+      return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0, patchPaths: null };
     },
     async verify() {
       return true;
@@ -224,7 +224,7 @@ export function failingAdapters(): ArtifactAdapterRegistry {
         return null;
       },
       async materialize() {
-        return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0 };
+        return { files: [], filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false, omittedBytes: 0, patchPaths: null };
       },
       async verify() {
         return true;

@@ -148,6 +148,17 @@ Both id components are validated as generated UUIDs before they reach a ref name
 recoverable evidence for every candidate, winner and loser alike, and they survive task
 cancellation and worktree teardown.
 
+A candidate's diff is re-derived on demand from its immutable commit, never stored, and can be asked
+for in three sizes: the whole patch, one file's hunks (`?path=` - one path per request, taken
+literally, so a filename that reads as a flag or as pathspec magic is still just that file), or the
+file list with no patch body at all (`?filesOnly=1`). A directory passed as `?path=` is refused
+whether or not anything under it changed, and so is a name that identifies more than one changed
+entry - refused rather than answered with whichever git happened to list first; either side of a
+rename selects that one rename diff, while a file absent from the difference returns an empty
+patch. The **statistics are complete in every answer** - a narrower request
+narrows the patch text and nothing else, so which files a candidate touched is read from the file
+list rather than from what happens to be in the patch.
+
 ## Retention and deletion
 
 Finalization reaps loser **worktrees** but never loser **refs** - every candidate's snapshot is

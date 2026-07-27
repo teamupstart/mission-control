@@ -214,6 +214,301 @@ export interface SnapshotDiff {
   truncated: boolean;
   /** Exactly how many bytes of patch were left out. Zero when `truncated` is false. */
   omittedBytes: number;
+  /**
+   * Which paths the returned `patch` covers, so a reader can tell a CUT from the whole thing.
+   *
+   * `null` is the whole difference - the historical behaviour and what a caller asking nothing
+   * gets. A list is exactly the paths the patch was filtered to. An EMPTY list is "no patch was
+   * rendered at all" (`patch: false`), which is the one reading that must not be confused with
+   * "this artifact changed nothing": `files` is complete in every case, so it, not the patch
+   * text, is what answers whether a file was touched.
+   */
+  patchPaths: string[] | null;
+}
+
+/**
+ * The subprocess seam for one materialization - `run` in production, a recorder in a test.
+ *
+ * Same shape and same reason as `PaneDeps.pane`: a test drives the REAL code path - the argv,
+ * the `--` separation, the literal-pathspec env, the numstat parse and the cap - and observes
+ * only the spawns. That is what lets "asking for stats alone runs ONE git invocation" be an
+ * assertion rather than a comment, and a skipped subprocess is the entire value of `filesOnly`.
+ */
+export interface SnapshotDiffDeps {
+  run: typeof run;
+}
+
+export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
+
+/**
+ * Why one patch-filter path cannot be used, as a sentence, or null when it can.
+ *
+ * The rule is REFUSAL, never sanitization: a path that has been quietly rewritten still
+ * returns a patch, and a caller comparing "the diff of src/a.ts" against a diff of something
+ * else has no way to notice. Six things are refused - an empty path (names nothing), a NUL
+ * byte (cannot be passed as an argv entry), an absolute path (names something outside the
+ * repository's own vocabulary), a `..` segment (walks out of the tree the artifact is a
+ * picture of), a `.` segment, and an empty segment.
+ *
+ * "Absolute" is taken to mean absolute ANYWHERE, not absolute here: `/x`, a drive-letter
+ * `C:\x`, a current-drive-rooted `\x` and a UNC `\\server\share\x` are all refused on every
+ * platform. Doing it per-platform would make the same request a refusal on one machine and a
+ * 200 with an empty patch on another - and that empty patch is the failure, not the refusal,
+ * because it reads as "this candidate did not touch that file". The cost is stated rather than
+ * hidden: a POSIX file whose name genuinely begins with a backslash cannot be asked for
+ * per-file. That is a loud 400 about an exotic name, against a quiet wrong answer.
+ *
+ * Those last two are the difference between two spellings of one file, and the reason they are
+ * refused rather than normalized is what happens when they are not. `files` spells a path
+ * exactly as git's `--numstat` does, so `./a.txt` matches no entry and reads as "not in this
+ * difference" - while `<commit>:./a.txt` resolves to the very blob that changed (measured).
+ * The answer would be a 200 with an empty patch for a file the candidate DID edit, labelled
+ * with the caller's own spelling, which is the most convincing possible way to be wrong.
+ * `a.txt/`, `a//b.txt` and `a/./b.txt` fail the other way - git resolves none of them - and
+ * produce the same misleading emptiness. Normalizing would work here and would also be the
+ * first crack in "refusal, never sanitization"; one canonical spelling per file keeps the
+ * numstat list and the request talking about the same thing.
+ *
+ * `/` only for those two, because that is what git splits `<commit>:<path>` and its pathspecs
+ * on: a backslash is an ordinary character in a POSIX filename, not a separator.
+ *
+ * Pathspec MAGIC (`:(glob)**`, `:!x`, `:/`) is deliberately NOT refused here: the invocation
+ * that consumes these runs with `GIT_LITERAL_PATHSPECS=1`, so `:(glob)**` names a file called
+ * `:(glob)**` and nothing else. Refusing it would deny a legal filename; reading it as magic
+ * would turn a single-file request into a multi-file expansion, which is the failure this pairs
+ * with the env var to rule out.
+ */
+export function snapshotPathRefusal(path: string): string | null {
+  if (path === "") return "a patch path must name a file, not the empty string";
+  if (path.includes("\0")) return "a patch path must not contain a NUL byte";
+  if (path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path)) {
+    return `a patch path must be repository-relative, got "${path}"`;
+  }
+  if (path.split(/[\\/]/).includes("..")) {
+    return `a patch path must not contain ".." segments, got "${path}"`;
+  }
+  const segments = path.split("/");
+  if (segments.includes(".")) {
+    return `a patch path must not contain "." segments, got "${path}"`;
+  }
+  if (segments.includes("")) {
+    return `a patch path must not contain empty segments, got "${path}"`;
+  }
+  return null;
+}
+
+/**
+ * A path this materialization will not filter on.
+ *
+ * Typed rather than a bare `Error` because the caller nearest the operator - the HTTP route -
+ * has to answer 400 rather than 500: a query parameter nobody could have satisfied is the
+ * caller's mistake, not the daemon failing.
+ */
+export class SnapshotPathRefused extends Error {
+  readonly path: string;
+  constructor(path: string, why: string) {
+    super(why);
+    this.name = "SnapshotPathRefused";
+    this.path = path;
+  }
+}
+
+function requirePatchPath(path: string): string {
+  const why = snapshotPathRefusal(path);
+  if (why) throw new SnapshotPathRefused(path, why);
+  return path;
+}
+
+function fileStatPaths(file: SnapshotFileStat): string[] {
+  return file.oldPath === null ? [file.path] : [file.oldPath, file.path];
+}
+
+/** How one changed entry reads in a refusal - a rename is one file with two names. */
+function describeFileStat(file: SnapshotFileStat): string {
+  return file.oldPath === null ? `"${file.path}"` : `the rename "${file.oldPath}" -> "${file.path}"`;
+}
+
+/**
+ * Which changed entries the requested paths select, and which named nothing that changed.
+ *
+ * A path that names MORE THAN ONE entry is refused rather than resolved by list order. Today's
+ * argv cannot produce that - with `--find-renames` alone, a path present in both commits is one
+ * modify entry, and a rename's source is by definition absent from the snapshot, so no path
+ * appears twice. But that is an argument about git's pairing rules, not a property of this
+ * function's input: `files` is parsed data, and one flag away (`-B`, `--find-copies`) the
+ * argument stops holding. Picking the first match would then answer "the diff of a" with one of
+ * two entries, chosen by list order and indistinguishable from the other. Same rule as the
+ * directory case: a per-file cut answers about exactly one file, or it does not answer.
+ */
+function exactPatchFiles(
+  paths: string[],
+  files: SnapshotFileStat[],
+): { exact: SnapshotFileStat[]; unchanged: string[] } {
+  const changedPaths = files.flatMap(fileStatPaths);
+  const exact: SnapshotFileStat[] = [];
+  const unchanged: string[] = [];
+  for (const path of paths) {
+    const matches = files.filter((candidate) => fileStatPaths(candidate).includes(path));
+    if (matches.length > 1) {
+      throw new SnapshotPathRefused(
+        path,
+        `a per-file patch path must name exactly one file; "${path}" names ${matches.map(describeFileStat).join(" and ")}`,
+      );
+    }
+    const file = matches[0];
+    if (file !== undefined) {
+      if (!exact.includes(file)) exact.push(file);
+      continue;
+    }
+    const directory = path.replace(/\/+$/, "");
+    const prefix = directory === "." ? "" : `${directory}/`;
+    const nested = changedPaths.find((candidate) => prefix === "" || candidate.startsWith(prefix));
+    if (nested !== undefined) {
+      throw new SnapshotPathRefused(
+        path,
+        `a per-file patch path must name exactly one file; "${path}" is a directory containing "${nested}"`,
+      );
+    }
+    // Nothing in this difference is at or under it. That is either a file neither commit
+    // touched - an honest empty patch - or a directory neither commit touched, which the
+    // complete file list cannot tell apart. `refuseUnchangedDirectories` asks the trees.
+    unchanged.push(path);
+  }
+  return { exact, unchanged };
+}
+
+/**
+ * Refuse a path that names a DIRECTORY in either commit, even one this difference never
+ * touched.
+ *
+ * The complete file list answers "is this a directory?" only when something under it changed.
+ * A `src/` that both commits hold and neither modified matches no entry at all, so without
+ * this it would take the absent-file path and come back 200 with an empty patch - a directory
+ * masquerading as an untouched file, which is exactly the reading the one-file rule exists to
+ * prevent. The trees are the only place that answer lives.
+ *
+ * `<commit>:<path>` rather than a pathspec, deliberately: it is a literal lookup, so a
+ * filename that reads as pathspec magic cannot expand here either. Asked only for paths the
+ * file list could not settle - never on the hot path, where the caller names a file it read
+ * out of `files` - and the snapshot is asked first because a blob there ends the question.
+ */
+async function refuseUnchangedDirectories(
+  paths: string[],
+  input: { repoPath: string; baseSha: string; snapshotSha: string },
+  deps: SnapshotDiffDeps,
+): Promise<void> {
+  for (const path of paths) {
+    for (const [label, commit] of [["snapshot", input.snapshotSha], ["base", input.baseSha]] as const) {
+      const probe = await deps.run(
+        "git",
+        ["-C", input.repoPath, "cat-file", "-t", `${commit}:${path}`],
+        { timeoutMs: 60_000 },
+      );
+      // A path neither commit holds exits non-zero, and that is an answer: it names no file
+      // and no directory, so the empty patch is the honest reply.
+      const kind = probe.code === 0 ? probe.stdout.trim() : "";
+      if (kind === "tree") {
+        throw new SnapshotPathRefused(
+          path,
+          `a per-file patch path must name exactly one file; "${path}" is a directory in the ${label}`,
+        );
+      }
+      if (kind === "blob") break;
+    }
+  }
+}
+
+const GIT_C_ESCAPES = new Map<number, string>([
+  [0x07, "\\a"],
+  [0x08, "\\b"],
+  [0x09, "\\t"],
+  [0x0a, "\\n"],
+  [0x0b, "\\v"],
+  [0x0c, "\\f"],
+  [0x0d, "\\r"],
+  [0x22, "\\\""],
+  [0x5c, "\\\\"],
+]);
+
+export function quoteGitDiffPath(path: string): string {
+  let quoted = false;
+  let rendered = "";
+  for (const char of path) {
+    const codePoint = char.codePointAt(0)!;
+    const escaped = GIT_C_ESCAPES.get(codePoint);
+    if (escaped !== undefined) {
+      quoted = true;
+      rendered += escaped;
+    } else if (codePoint < 0x20 || codePoint === 0x7f) {
+      quoted = true;
+      rendered += `\\${codePoint.toString(8).padStart(3, "0")}`;
+    } else {
+      rendered += char;
+    }
+  }
+  return quoted ? `"${rendered}"` : rendered;
+}
+
+function diffHeaderFor(file: SnapshotFileStat): string {
+  const oldPath = file.oldPath ?? file.path;
+  return `diff --git ${quoteGitDiffPath(`a/${oldPath}`)} ${quoteGitDiffPath(`b/${file.path}`)}`;
+}
+
+function findDiffHeader(patch: string, from: number): number {
+  const marker = "diff --git ";
+  let index = patch.indexOf(marker, from);
+  while (index !== -1 && index !== 0 && patch[index - 1] !== "\n") {
+    index = patch.indexOf(marker, index + marker.length);
+  }
+  return index;
+}
+
+function sliceExactPatch(
+  patch: string,
+  files: SnapshotFileStat[],
+  selectedFiles: SnapshotFileStat[],
+  refusalPath: string,
+): string {
+  const filesByHeader = new Map<string, SnapshotFileStat[]>();
+  for (const file of files) {
+    const header = diffHeaderFor(file);
+    const candidates = filesByHeader.get(header);
+    if (candidates === undefined) filesByHeader.set(header, [file]);
+    else candidates.push(file);
+  }
+  const selected = new Set(selectedFiles);
+  const sections: string[] = [];
+  let start = findDiffHeader(patch, 0);
+  if (start === -1) {
+    if (patch === "") return "";
+    throw new SnapshotPathRefused(refusalPath, "a per-file patch contained no attributable diff header");
+  }
+  if (start !== 0) {
+    throw new SnapshotPathRefused(refusalPath, "a per-file patch contained content before its first diff header");
+  }
+  while (start !== -1) {
+    const lineEnd = patch.indexOf("\n", start);
+    const headerEnd = lineEnd === -1 ? patch.length : lineEnd;
+    const header = patch.slice(start, headerEnd);
+    const candidates = filesByHeader.get(header);
+    if (candidates === undefined) {
+      throw new SnapshotPathRefused(
+        refusalPath,
+        `a per-file patch contained an unattributable diff header: "${header}"`,
+      );
+    }
+    const selectedCount = candidates.reduce((count, file) => count + Number(selected.has(file)), 0);
+    if (selectedCount > 0 && selectedCount !== candidates.length) {
+      throw new SnapshotPathRefused(
+        refusalPath,
+        `a per-file patch contained an ambiguous diff header: "${header}"`,
+      );
+    }
+    const next = findDiffHeader(patch, headerEnd);
+    if (selectedCount > 0) sections.push(patch.slice(start, next === -1 ? patch.length : next));
+    start = next;
+  }
+  return sections.join("");
 }
 
 /**
@@ -228,30 +523,126 @@ export interface SnapshotDiff {
  * The statistics are always complete; only the patch is capped. `truncated` and
  * `omittedBytes` are the disclosure that goes with it, because an evaluator that cannot
  * tell a small change from a truncated one will happily call the second one tidy.
+ *
+ * That invariant is what `paths` and `patch` extend rather than bend. A filter narrows the
+ * PATCH invocation only, so "which files did this member touch" is answered identically
+ * whether the caller wanted one file's hunks, all of them, or none: `files` is the complete
+ * list either way, and `patchPaths` says which of it the patch text covers.
  */
-export async function materializeSnapshotDiff(input: {
-  /** Any working directory inside the repository holding both commits. */
-  repoPath: string;
-  baseSha: string;
-  snapshotSha: string;
-  maxPatchBytes?: number;
-}): Promise<SnapshotDiff> {
+export async function materializeSnapshotDiff(
+  input: {
+    /** Any working directory inside the repository holding both commits. */
+    repoPath: string;
+    baseSha: string;
+    snapshotSha: string;
+    maxPatchBytes?: number;
+    /**
+     * Restrict the PATCH to these exact repository-relative files. Absent or empty is the
+     * whole patch.
+     *
+     * Exactly one file, or a refusal: a directory is refused whether or not anything under it
+     * changed, and so is a path that names more than one changed entry (a rename's source is
+     * still a path, so `a` can name both the rename `a` -> `b` and a newly added `a`). A path
+     * that names a file neither commit touched is NOT an error - it yields an empty patch,
+     * because "this candidate did not touch that file" is a real answer. A rename is one file,
+     * so either its old or new path selects the same rename diff, and `patchPaths` echoes the
+     * path the caller requested. Each path is validated by `snapshotPathRefusal` and taken
+     * LITERALLY - see below.
+     */
+    paths?: string[];
+    /**
+     * Render a patch at all. `false` skips the second git invocation entirely, which is the
+     * whole point of asking: the file list and its statistics cost one `--numstat`, and a
+     * caller that only needs to know WHICH files a candidate touched should not pay for the
+     * bytes of every hunk to find out.
+     */
+    patch?: boolean;
+  },
+  deps: SnapshotDiffDeps = defaultSnapshotDiffDeps,
+): Promise<SnapshotDiff> {
   const baseSha = requireSha("baseSha", input.baseSha);
   const snapshotSha = requireSha("snapshotSha", input.snapshotSha);
   const budget = input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;
+  const filter = (input.paths ?? []).map(requirePatchPath);
+  const wantPatch = input.patch ?? true;
 
   // `-z` rather than the default: a rename's two paths and any path needing quotes both
   // become unambiguous NUL-separated fields instead of something to un-escape by hand.
-  const numstat = await git(input.repoPath, [
-    "diff", "--numstat", "-z", "--find-renames", baseSha, snapshotSha,
-  ]);
+  //
+  // NEVER filtered, however narrow the patch request was. The statistics are the answer to a
+  // different question - what this artifact changed - and a reader given one file's hunks
+  // beside one file's statistics cannot tell a focused candidate from a sprawling one.
+  const numstat = await deps.run(
+    "git",
+    ["-C", input.repoPath, "diff", "--numstat", "-z", "--find-renames", baseSha, snapshotSha],
+    { timeoutMs: 60_000 },
+  );
   requireOk("git diff --numstat", numstat);
   const files = parseNumstatZ(numstat.stdout);
+  const { exact: selectedFiles, unchanged } = exactPatchFiles(filter, files);
+  // Before anything is rendered or skipped, so a directory is refused identically whether the
+  // caller wanted its hunks or only the file list.
+  if (unchanged.length > 0) {
+    await refuseUnchangedDirectories(unchanged, { repoPath: input.repoPath, baseSha, snapshotSha }, deps);
+  }
+  const pathsInDifference = [...new Set(selectedFiles.flatMap(fileStatPaths))];
 
-  const patchRun = await run(
+  const stats = {
+    baseSha,
+    snapshotSha,
+    files,
+    filesChanged: files.length,
+    insertions: files.reduce((n, f) => n + f.insertions, 0),
+    deletions: files.reduce((n, f) => n + f.deletions, 0),
+  };
+
+  if (!wantPatch) {
+    // No second subprocess, and an empty `patchPaths` saying so. Nothing was rendered, so
+    // nothing was cut short either - the truncation disclosure is about a patch that exists.
+    return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: [] };
+  }
+
+  if (filter.length > 0 && pathsInDifference.length === 0) {
+    return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: filter };
+  }
+
+  const filtered = filter.length > 0;
+  const patchEnv = filtered ? { ...process.env } : undefined;
+  if (patchEnv !== undefined) {
+    delete patchEnv.GIT_GLOB_PATHSPECS;
+    delete patchEnv.GIT_NOGLOB_PATHSPECS;
+    delete patchEnv.GIT_ICASE_PATHSPECS;
+    patchEnv.GIT_LITERAL_PATHSPECS = "1";
+  }
+
+  const patchRun = await deps.run(
     "git",
-    ["-C", input.repoPath, "diff", "--find-renames", baseSha, snapshotSha],
-    { timeoutMs: 60_000, maxBuffer: PATCH_MAX_BUFFER },
+    [
+      "-C", input.repoPath,
+      ...(filtered ? ["-c", "core.quotePath=false"] : []),
+      "diff",
+      ...(filtered
+        ? ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"]
+        : []),
+      "--find-renames", baseSha, snapshotSha,
+      // `--` first, so a path can never be read as a flag or a revision: a tracked file
+      // named `--exploit` is a legal filename and an illegal argument, and only the
+      // separator tells the two apart.
+      ...(pathsInDifference.length > 0 ? ["--", ...pathsInDifference] : []),
+    ],
+    {
+      timeoutMs: 60_000,
+      maxBuffer: PATCH_MAX_BUFFER,
+      // `--` stops flag parsing; it does NOT stop PATHSPEC parsing, and those are two
+      // different readings of the same word. `:(glob)**`, `:!src` and `:/` are all magic
+      // after the separator, so a "one file" request could quietly return hunks for many -
+      // exactly the expansion a per-file cut exists to avoid. Literal pathspecs make every
+      // path name literal, including the one whose name looks like magic. Set on this
+      // invocation because it is the only one that ever carries a pathspec, and set
+      // explicitly rather than inherited so an operator's exported value cannot decide it.
+      // Git rejects literal pathspec mode when any other global pathspec mode is inherited.
+      ...(patchEnv === undefined ? {} : { env: patchEnv }),
+    },
   );
   if (patchRun.overflowed) {
     // Refuse rather than report a truncation whose size we would have to invent. A caller
@@ -261,19 +652,18 @@ export async function materializeSnapshotDiff(input: {
     );
   }
   requireOk("git diff", patchRun);
+  const renderedPatch = filter.length > 0
+    ? sliceExactPatch(patchRun.stdout, files, selectedFiles, filter[0]!)
+    : patchRun.stdout;
 
-  const { patch, truncated, omittedBytes } = capPatch(patchRun.stdout, budget);
+  const { patch, truncated, omittedBytes } = capPatch(renderedPatch, budget);
 
   return {
-    baseSha,
-    snapshotSha,
-    files,
-    filesChanged: files.length,
-    insertions: files.reduce((n, f) => n + f.insertions, 0),
-    deletions: files.reduce((n, f) => n + f.deletions, 0),
+    ...stats,
     patch,
     truncated,
     omittedBytes,
+    patchPaths: filter.length > 0 ? filter : null,
   };
 }
 

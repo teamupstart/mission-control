@@ -9,10 +9,14 @@ import {
   captureWorktreeSnapshot,
   ensembleSnapshotRef,
   materializeSnapshotDiff,
+  quoteGitDiffPath,
   resetWorktreeToCommit,
   resolveEnsembleRef,
   restoreSnapshotIntoWorktree,
+  snapshotPathRefusal,
+  type SnapshotDiffDeps,
 } from "../src/server/git/ensemble-snapshot.ts";
+import { run, stubRun } from "../src/server/util/exec.ts";
 
 // What is at stake: taking a picture of an agent's work without touching the work.
 //
@@ -378,4 +382,518 @@ test("a diff between ids that are not full commits is refused", async () => {
     materializeSnapshotDiff({ repoPath: repo, baseSha: "HEAD", snapshotSha: baseSha }),
     /full 40-character commit id/,
   );
+});
+
+// ---- cutting the patch down: one file, or none at all ----------------------------------
+//
+// What is at stake here is per-file evidence that stays HONEST. Two things can go wrong with
+// a cheaper answer, and both look fine from the outside. A filter that git reads as anything
+// other than "this exact file" - a flag, a revision, a `:(glob)**` expansion - returns hunks
+// for files the caller never asked about, under a label saying it is one file's diff. And a
+// cut that narrowed the STATISTICS too would make a sprawling candidate indistinguishable
+// from a focused one, which is precisely the comparison these cuts exist to serve. So: the
+// filter reaches the patch invocation only, it reaches it literally, and `files` is complete
+// in every response - including the one with no patch in it at all.
+
+/** How many files a patch actually covers, read off its own headers. */
+function patchFiles(patch: string): string[] {
+  return [...patch.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]!);
+}
+
+function patchSectionCount(patch: string): number {
+  return patch.match(/^diff --git /gm)?.length ?? 0;
+}
+
+/** The exec seam, wrapping the REAL `run` so the invocations are counted, never faked. */
+function recordingDeps(): { calls: string[][]; deps: SnapshotDiffDeps } {
+  const calls: string[][] = [];
+  const recorded: SnapshotDiffDeps["run"] = (bin, args, opts) => {
+    calls.push(args);
+    return run(bin, args, opts);
+  };
+  return { calls, deps: { run: recorded } };
+}
+
+/** A member whose divergence includes files whose NAMES are the hazard. */
+async function capturedWithNastyNames(name: string) {
+  const { repo, member, baseSha } = mkRepoWithMember(name);
+  writeFileSync(join(member, "keep.txt"), "edited by the member\n");
+  writeFileSync(join(member, "--exploit"), "a filename that is also a flag\n");
+  writeFileSync(join(member, ":(glob)**"), "a filename that is also pathspec magic\n");
+  writeFileSync(join(member, "space name.txt"), "a filename containing a space\n");
+  writeFileSync(join(member, "quote\"name.txt"), "a filename containing a quote\n");
+  writeFileSync(join(member, "café.txt"), "a filename containing non-ASCII text\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+  return { repo, member, baseSha, snapshotSha: captured.snapshotSha };
+}
+
+test("a path filter cuts the patch to that file and leaves the statistics whole", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("per-file");
+
+  const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["keep.txt"] });
+
+  assert.deepEqual(patchFiles(cut.patch), ["keep.txt"], "only the requested file's hunks");
+  assert.ok(patchFiles(whole.patch).length > 1, "the whole patch really does cover more");
+  assert.deepEqual(cut.patchPaths, ["keep.txt"], "the response says which cut this is");
+  assert.equal(whole.patchPaths, null, "and null is still the whole difference");
+  // The point of the cut is a cheaper PATCH, never a smaller picture of the change.
+  assert.deepEqual(cut.files, whole.files, "the file list is complete in a filtered response");
+  assert.equal(cut.filesChanged, whole.filesChanged);
+  assert.equal(cut.insertions, whole.insertions);
+  assert.equal(cut.deletions, whole.deletions);
+});
+
+test("a path that is also a flag is a path: `--` separates them", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("flag-named");
+
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["--exploit"] });
+
+  // Without the separator git parses `--exploit` as an unknown option and the whole call
+  // fails - or worse, a future name matches a real flag and the diff quietly changes shape.
+  assert.deepEqual(patchFiles(cut.patch), ["--exploit"]);
+  assert.ok(
+    cut.files.some((f) => f.path === "--exploit"),
+    "and the statistics still list it",
+  );
+});
+
+test("a path that looks like pathspec magic names a file, and expands to nothing else", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("magic-named");
+
+  const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [":(glob)**"] });
+
+  // `--` stops FLAG parsing and nothing else: read as magic, `:(glob)**` matches every file
+  // in the repository, so a "one file" request would answer with the whole patch under a
+  // per-file label. `GIT_LITERAL_PATHSPECS=1` is what makes it the filename it is.
+  assert.deepEqual(patchFiles(cut.patch), [":(glob)**"], "exactly the file with that name");
+  assert.deepEqual(cut.patchPaths, [":(glob)**"]);
+});
+
+test("a magic-looking path that names no file returns an empty patch, never an expansion", async () => {
+  // The same request against a repository that has no such file. The honest answer is "no
+  // hunks"; the dangerous one is "here is everything, because `**` matched it".
+  const { repo, member, baseSha } = mkRepoWithMember("magic-absent");
+  diverge(member);
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: [":(glob)**"],
+  });
+
+  assert.equal(cut.patch, "", "no file by that name, so no hunks");
+  assert.ok(cut.files.length > 1, "while the statistics still describe the whole change");
+  assert.deepEqual(cut.patchPaths, [":(glob)**"]);
+});
+
+test("a directory path is refused before rendering, including for files-only cuts", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("directory-refusal");
+  mkdirSync(join(member, "src"), { recursive: true });
+  writeFileSync(join(member, "src", "a.ts"), "changed below a directory\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  for (const patch of [true, false]) {
+    const { calls, deps } = recordingDeps();
+    await assert.rejects(
+      materializeSnapshotDiff(
+        { repoPath: repo, baseSha, snapshotSha: captured.snapshotSha, paths: ["src"], patch },
+        deps,
+      ),
+      /must name exactly one file.*"src" is a directory/,
+    );
+    assert.equal(calls.length, 1, "identity comes from the already-fetched complete file list");
+  }
+});
+
+test("either side of a rename selects exactly that one rename diff", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("rename-filter");
+  git(member, "mv", "moves.txt", "moved.txt");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const fromOld = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["moves.txt"],
+  });
+  const fromNew = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["moved.txt"],
+  });
+
+  assert.equal(fromOld.patch, fromNew.patch);
+  assert.match(fromOld.patch, /^diff --git a\/moves\.txt b\/moved\.txt$/m);
+  assert.equal(patchFiles(fromOld.patch).length, 1);
+  assert.deepEqual(fromOld.patchPaths, ["moves.txt"]);
+  assert.deepEqual(fromNew.patchPaths, ["moved.txt"]);
+});
+
+test("a file-to-directory collision returns only the exact file section", async () => {
+  const repo = join(tmp, "file-directory-collision");
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  git(repo, "config", "user.email", "t@test");
+  git(repo, "config", "user.name", "t");
+  writeFileSync(join(repo, "src"), "the blob that will be deleted\n");
+  git(repo, "add", "src");
+  git(repo, "commit", "-qm", "base");
+  const baseSha = git(repo, "rev-parse", "HEAD");
+  const member = join(tmp, "file-directory-collision-member");
+  git(repo, "worktree", "add", "-q", "-b", "member/file-directory-collision", member, baseSha);
+  rmSync(join(member, "src"));
+  mkdirSync(join(member, "src"));
+  writeFileSync(join(member, "src", "a.ts"), "");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["src"],
+  });
+
+  assert.equal(patchSectionCount(cut.patch), 1);
+  assert.match(cut.patch, /^diff --git a\/src b\/src$/m);
+  assert.doesNotMatch(cut.patch, /src\/a\.ts/);
+  assert.deepEqual(cut.files.map((file) => file.path).sort(), ["src", "src/a.ts"]);
+  assert.deepEqual(cut.patchPaths, ["src"]);
+});
+
+test("a path naming two changed entries is refused, not resolved by list order", async () => {
+  // Today's argv cannot produce this: with `--find-renames` alone a path present in both
+  // commits is one modify entry, and a rename's source is absent from the snapshot, so no path
+  // is on two entries. That is an argument about git's pairing rules, not about this
+  // function's INPUT - `files` is parsed data, and `-B` or copy detection would end the
+  // argument while the code kept trusting it. So the file list is fed in through the exec seam
+  // exactly as a future flag could hand it over, and the answer must be a refusal rather than
+  // whichever entry came first: the caller could not tell the two apart afterwards.
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("ambiguous-path");
+  const numstat = ["1\t1\t\0moves.txt\0moved.txt", "2\t0\tmoves.txt"].join("\0") + "\0";
+  const calls: string[][] = [];
+  const deps: SnapshotDiffDeps = {
+    run: (bin, args, opts) => {
+      calls.push(args);
+      if (args.includes("--numstat")) {
+        return Promise.resolve(stubRun({ stdout: numstat, stderr: "", code: 0 }));
+      }
+      return run(bin, args, opts);
+    },
+  };
+
+  for (const patch of [true, false]) {
+    calls.length = 0;
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["moves.txt"], patch }, deps),
+      /must name exactly one file.*names the rename "moves\.txt" -> "moved\.txt" and "moves\.txt"/,
+      `patch: ${patch}`,
+    );
+    assert.equal(calls.length, 1, "refused off the file list, before rendering anything");
+  }
+
+  // An unambiguous name in the same list still answers, so this refuses an ambiguous NAME
+  // rather than giving up on the cut whenever a rename is present.
+  const moved = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["moved.txt"] }, deps);
+  assert.deepEqual(moved.patchPaths, ["moved.txt"]);
+});
+
+test("a directory this difference never touched is still refused, not read as an untouched file", async () => {
+  // The complete file list can only spot a directory that CONTAINS a change. One both commits
+  // hold and neither modified matches no entry at all, so without asking the trees it would
+  // take the absent-file path and come back 200 with an empty patch - a directory wearing an
+  // untouched file's answer, which is the one reading the exact-file rule exists to prevent.
+  const { repo, member, baseSha } = mkRepoWithMember("unchanged-directory");
+  mkdirSync(join(member, "untouched"), { recursive: true });
+  writeFileSync(join(member, "untouched", "stable.txt"), "committed in the base\n");
+  git(member, "add", "-A");
+  git(member, "commit", "-qm", "a directory neither side of the difference touches");
+  const withDirectory = git(member, "rev-parse", "HEAD");
+  writeFileSync(join(member, "keep.txt"), "the only change in this difference\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const diff = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha: withDirectory,
+    snapshotSha: captured.snapshotSha,
+  });
+  assert.deepEqual(diff.files.map((file) => file.path), ["keep.txt"], "nothing under the directory changed");
+
+  for (const patch of [true, false]) {
+    await assert.rejects(
+      materializeSnapshotDiff({
+        repoPath: repo,
+        baseSha: withDirectory,
+        snapshotSha: captured.snapshotSha,
+        paths: ["untouched"],
+        patch,
+      }),
+      /must name exactly one file.*"untouched" is a directory/,
+      `patch: ${patch}`,
+    );
+  }
+  // A FILE neither commit touched is a different answer and must stay a 200-shaped one.
+  const absent = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha: withDirectory,
+    snapshotSha: captured.snapshotSha,
+    paths: ["untouched/stable.txt"],
+  });
+  assert.equal(absent.patch, "", "an untouched file has no hunks");
+  assert.deepEqual(absent.patchPaths, ["untouched/stable.txt"]);
+  assert.deepEqual(absent.files.map((file) => file.path), ["keep.txt"], "and the statistics stay complete");
+});
+
+test("a second spelling of a changed file is refused, never answered as untouched", async () => {
+  // The trap this closes: `files` spells paths exactly as `--numstat` does, so `./keep.txt`
+  // matches no entry and reads as "not in this difference" - while git resolves the same
+  // string to the very blob that changed. Answering that with a 200 and an empty patch would
+  // tell a comparison the candidate never touched a file it did edit, in the caller's own
+  // spelling. One canonical spelling per file is what keeps the list and the request talking
+  // about the same thing.
+  const { repo, member, baseSha } = mkRepoWithMember("dot-segments");
+  writeFileSync(join(member, "keep.txt"), "edited by the member\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  // git really does read the two spellings as one file - the aliasing is measured, not assumed.
+  assert.equal(git(repo, "cat-file", "-t", `${captured.snapshotSha}:./keep.txt`), "blob");
+  assert.equal(git(repo, "cat-file", "-t", `${captured.snapshotSha}:keep.txt`), "blob");
+
+  const canonical = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["keep.txt"],
+  });
+  assert.equal(patchSectionCount(canonical.patch), 1, "the canonical spelling answers");
+
+  for (const alias of ["./keep.txt", "keep.txt/", "./sub/../keep.txt"]) {
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha: captured.snapshotSha, paths: [alias] }),
+      /patch path must not contain/,
+      `should refuse: ${alias}`,
+    );
+  }
+});
+
+test("exact filenames with spaces and quoted characters keep one section", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("quoted-paths");
+  assert.equal(quoteGitDiffPath("a/space name.txt"), "a/space name.txt");
+  assert.equal(quoteGitDiffPath("a/café.txt"), "a/café.txt");
+  assert.equal(quoteGitDiffPath("a/quote\"name.txt"), "\"a/quote\\\"name.txt\"");
+  assert.equal(quoteGitDiffPath("a/control\u0001.txt"), "\"a/control\\001.txt\"");
+
+  for (const path of ["space name.txt", "quote\"name.txt", "café.txt"]) {
+    const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [path] });
+    const header = `diff --git ${quoteGitDiffPath(`a/${path}`)} ${quoteGitDiffPath(`b/${path}`)}`;
+    assert.equal(patchSectionCount(cut.patch), 1, path);
+    assert.ok(cut.patch.startsWith(`${header}\n`), path);
+    assert.deepEqual(cut.patchPaths, [path]);
+  }
+});
+
+test("an unfiltered patch keeps the historical argv and environment", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("whole-patch-argv");
+  let patchOptions: Parameters<SnapshotDiffDeps["run"]>[2] | undefined;
+  const calls: string[][] = [];
+  const deps: SnapshotDiffDeps = {
+    run: (bin, args, opts) => {
+      calls.push(args);
+      if (!args.includes("--numstat")) patchOptions = opts;
+      return run(bin, args, opts);
+    },
+  };
+
+  const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha }, deps);
+
+  assert.deepEqual(calls[1], [
+    "-C", repo, "diff", "--find-renames", baseSha, snapshotSha,
+  ]);
+  assert.equal(patchOptions?.env, undefined);
+  assert.equal(whole.patchPaths, null);
+});
+
+test("a filtered patch forces canonical headers despite repository diff config", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("configured-prefixes");
+  git(repo, "config", "diff.noprefix", "true");
+  git(repo, "config", "diff.mnemonicPrefix", "true");
+  git(repo, "config", "color.diff", "always");
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha,
+    paths: ["keep.txt"],
+  });
+
+  assert.equal(patchSectionCount(cut.patch), 1);
+  assert.ok(cut.patch.startsWith("diff --git a/keep.txt b/keep.txt\n"));
+  assert.doesNotMatch(cut.patch, /\u001b\[/);
+});
+
+test("a filtered patch refuses any rendered diff header outside the requested file", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("header-post-check");
+  const deps: SnapshotDiffDeps = {
+    run: async (bin, args, opts) => {
+      const result = await run(bin, args, opts);
+      if (args.includes("--numstat")) return result;
+      return {
+        ...result,
+        stdout: `${result.stdout}\ndiff --git a/not-requested.txt b/not-requested.txt\n`,
+      };
+    },
+  };
+
+  await assert.rejects(
+    materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["keep.txt"] }, deps),
+    /unattributable diff header/,
+  );
+});
+
+test("literal patch mode removes inherited conflicting pathspec modes", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("pathspec-env");
+  const names = ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    for (const name of names) {
+      process.env[name] = "1";
+      const cut = await materializeSnapshotDiff({
+        repoPath: repo,
+        baseSha,
+        snapshotSha,
+        paths: ["keep.txt"],
+      });
+      assert.ok(cut.patch.length > 0, `filtered patch succeeds with inherited ${name}`);
+      delete process.env[name];
+    }
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("a filtered patch that overruns its budget still reports what it left out", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("filtered-truncation");
+  writeFileSync(join(member, "big.txt"), Array.from({ length: 4000 }, (_, i) => `line ${i}\n`).join(""));
+  writeFileSync(join(member, "small.txt"), "also changed\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const whole = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 10_000_000,
+    paths: ["big.txt"],
+  });
+  const capped = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    maxPatchBytes: 2048,
+    paths: ["big.txt"],
+  });
+
+  assert.equal(whole.truncated, false);
+  assert.equal(capped.truncated, true);
+  // The disclosure is measured against the FILTERED patch, which is the only one that was
+  // ever rendered - a number quoted against the whole diff would overstate what is missing.
+  assert.equal(
+    Buffer.byteLength(capped.patch, "utf8") + capped.omittedBytes,
+    Buffer.byteLength(whole.patch, "utf8"),
+  );
+  assert.deepEqual(capped.files, whole.files, "and the statistics are complete either way");
+});
+
+test("asking for the file list alone runs one git invocation and renders no patch", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("files-only");
+  const { calls, deps } = recordingDeps();
+
+  const filesOnly = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, patch: false }, deps);
+
+  // The saving IS the skipped subprocess: a file-touch matrix over N candidates that still
+  // rendered N patches would cost exactly what asking for the list was meant to avoid.
+  assert.equal(calls.length, 1, `expected one git invocation, got ${calls.length}`);
+  assert.ok(calls[0]!.includes("--numstat"), "and it is the statistics one");
+  assert.equal(filesOnly.patch, "");
+  assert.deepEqual(filesOnly.patchPaths, [], "empty says no patch was rendered at all");
+  assert.equal(filesOnly.truncated, false, "nothing was rendered, so nothing was cut short");
+  assert.equal(filesOnly.omittedBytes, 0);
+
+  const withPatch = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
+  assert.deepEqual(filesOnly.files, withPatch.files, "the file list is the same complete list");
+  assert.equal(filesOnly.filesChanged, withPatch.filesChanged);
+});
+
+test("an unusable patch path is refused rather than repaired", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("path-refusal");
+
+  for (const bad of [
+    "/etc/passwd",
+    // Absolute anywhere is absolute here: a drive letter, a current-drive-rooted path and a
+    // UNC share are refused on this platform too, because the same request must not be a
+    // refusal on one machine and a 200 with an empty patch on another.
+    "C:\\Windows\\win.ini",
+    "\\Windows\\win.ini",
+    "\\\\server\\share\\file.txt",
+    "../outside.txt",
+    "src/../../etc/passwd",
+    "",
+    "nul\0path",
+    "./keep.txt",
+    "a/./b.txt",
+    ".",
+    "keep.txt/",
+    "a//b.txt",
+  ]) {
+    assert.ok(snapshotPathRefusal(bad), `the rule should refuse: ${JSON.stringify(bad)}`);
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [bad] }),
+      /patch path/,
+      `should refuse: ${JSON.stringify(bad)}`,
+    );
+  }
+  // Refusal, not sanitization: the legal neighbours of those paths still work, so nothing was
+  // quietly rewritten into a different file and answered about confidently.
+  for (const ok of ["keep.txt", "--exploit", ":(glob)**", "a/b/c.txt"]) {
+    assert.equal(snapshotPathRefusal(ok), null, `should accept: ${ok}`);
+  }
 });

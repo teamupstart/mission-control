@@ -170,14 +170,19 @@ async function recover(input: ArtifactRecoveryInput): Promise<CapturedArtifact |
 
 async function materialize(
   locator: ArtifactLocator,
-  input: { repoPath: string; maxPatchBytes?: number },
+  input: { repoPath: string; maxPatchBytes?: number; paths?: string[]; patch?: boolean },
 ): Promise<ArtifactMaterialization> {
   const parsed = parseLocator(locator);
+  // `paths` and `patch` are passed straight down: the primitive owns the `--` separation, the
+  // literal-pathspec env and the per-path refusal, because it is the one place that builds the
+  // argv. Duplicating any of that here would be a second answer that agrees only by luck.
   const diff = await materializeSnapshotDiff({
     repoPath: input.repoPath,
     baseSha: parsed.baseSha,
     snapshotSha: parsed.snapshotSha,
     maxPatchBytes: input.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES,
+    paths: input.paths,
+    patch: input.patch,
   });
   return {
     files: diff.files,
@@ -187,6 +192,7 @@ async function materialize(
     patch: diff.patch,
     truncated: diff.truncated,
     omittedBytes: diff.omittedBytes,
+    patchPaths: diff.patchPaths,
   };
 }
 

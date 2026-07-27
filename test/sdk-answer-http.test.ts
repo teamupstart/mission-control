@@ -349,6 +349,7 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
     effort: null,
     permissionMode: null,
     status: "running",
+    turnInProgress: false,
   });
   const realStop = supervisor.stop.bind(supervisor);
   supervisor.stop = async (id: string) => {
@@ -787,6 +788,7 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
     effort: null,
     permissionMode: null,
     status: "running",
+    turnInProgress: false,
   });
   const supervisor = {
     async stop() {

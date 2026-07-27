@@ -123,7 +123,7 @@ The direct answer to "is there any current functionality we'd lose?".
 
 | What | Today (terminal) | Under the SDK runtime | Severity |
 |---|---|---|---|
-| Surviving daemon death | tmux keeps the agent running if the daemon crashes or restarts; the sweep re-adopts it | SDK subprocesses are daemon children: a daemon restart interrupts the in-flight turn. Conversation state survives (session files); the supervisor resumes on startup, but the interrupted turn's remaining work is lost and must be re-prompted | The one real regression. Mitigated by resume-on-start and graceful drain on shutdown; accepted because the daemon is already the control plane for everything else about a dispatched session |
+| Surviving daemon death | tmux keeps the agent running if the daemon crashes or restarts; the sweep re-adopts it | SDK subprocesses are daemon children: a daemon restart interrupts the process. Conversation state survives, and the supervisor durably records an in-progress turn, resumes the same conversation on startup, then sends a cautious continuation without replaying the original intent | Low residual risk. Recovery is deliberately at-least-once across the SQLite/vendor boundary, so the continuation tells the agent to inspect current state and avoid repeating completed work |
 | Glanceable terminal presence | Every session is a wezterm/tmux pane you can look at and type into | No pane. The dashboard transcript stream is the view; taking over means an explicit handoff (below), not wandering into a terminal | Medium. The shared session storage makes handoff first-class: `claude --resume <id>` / `codex resume <threadId>` continue the same conversation interactively |
 | Codex live TUI menus | `/permissions` picker driven by keystrokes; `/model`, `/status` readable | No slash commands headless. Approval policy and reviewer become per-turn `turn/start` overrides; changing to a profile with a different sandbox is refused because the sandbox is fixed for the thread. `/compact` and `/review` become `thread/compact` / `review/start`; `/status` facts come from the event stream | Low. Every lost menu has a structured replacement |
 | Codex protocol stability | The TUI's screen grammar (also unstable, also unversioned) | `app-server` is explicitly experimental. Pinned, generated bindings; one adapter module absorbs drift | Low, and strictly better than screen-scraping the same vendor's TUI |
@@ -294,16 +294,19 @@ Responsibilities:
   `registry.applyDriverEvent`, a first-class ingest beside `applyHook`. No attribution
   guard is needed: the supervisor *owns* the binding it reports, which is a stronger claim
   than any hook can make.
-- **Persists** to a new `sdk_sessions` table (id TEXT PRIMARY KEY NOT NULL, agent,
-  agent_session_id, cwd, task_id, model, effort, permission_mode, status, timestamps).
-  New table, so `migrate()` needs nothing; no REFERENCES clauses (the ensemble family
-  stays the only one).
+- **Persists** to `sdk_sessions` (id TEXT PRIMARY KEY NOT NULL, agent,
+  agent_session_id, cwd, task_id, model, effort, permission_mode, status,
+  `turn_in_progress`, timestamps). The interrupted-turn column is added through
+  `migrate()` for existing databases; there are no REFERENCES clauses (the ensemble
+  family stays the only one).
 - **Resumes on startup**: restore rows, relaunch handles with `resume`, register the
   sessions as `starting` - and this restore completes **before** the discovery poller
   starts, so `registry.onSessionsObserved` (the restart twin that settles orphaned tasks)
   sees SDK sessions on the first completed sweep exactly as it sees rediscovered terminal
-  ones. A session whose resume fails is registered, marked `exited`, and evicted through
-  the normal path so `TaskManager.reconcileTasksBoundTo` settles its task visibly.
+  ones. A row whose turn was in progress receives one idempotent continuation through the
+  ordinary serialized send path; an idle row receives nothing. A session whose resume
+  fails is registered, marked `exited`, and evicted through the normal path so
+  `TaskManager.reconcileTasksBoundTo` settles its task visibly.
 - **Suspends on daemon shutdown**: a clean stop records `suspended`, not `exited`, so
   startup reconciliation does not reclaim a worktree whose interrupted conversation the
   supervisor is about to resume. Persisted status values are append-only.

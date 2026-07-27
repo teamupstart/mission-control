@@ -22,10 +22,17 @@ import {
   setSdkSessionModel,
   setSdkSessionPermissionMode,
   setSdkSessionStatus,
+  setSdkSessionTurnInProgress,
   upsertSdkSession,
   type SdkSessionRow,
   type SdkSessionStatus,
 } from "./store.ts";
+
+const RESTART_CONTINUATION_PROMPT =
+  "Mission Control restarted while your previous turn was still in progress. " +
+  "Continue that work from the current checkout and conversation. Inspect the current " +
+  "state before acting, do not repeat completed work, and ask again for any approval or " +
+  "input you still need.";
 
 /**
  * The owner of every embedded (SDK-runtime) session: its handle, its row, and its events.
@@ -165,7 +172,14 @@ export class SdkSupervisor {
         nomistakesGated: checkout.nomistakesGated,
       },
       handle,
-      durable: { taskId: input.taskId, model: input.model, effort: input.effort },
+      durable: {
+        taskId: input.taskId,
+        model: input.model,
+        effort: input.effort,
+        // The driver accepted turn one before `adopt` can persist anything. Recording it
+        // here closes the startup window before the detached event pump catches up.
+        turnInProgress: input.prompt.length > 0,
+      },
     });
   }
 
@@ -191,6 +205,8 @@ export class SdkSupervisor {
       effort: ThinkingLevel | null;
       /** Carried on a RESUME, so the row keeps the identity it is being picked up from. */
       agentSessionId?: string | null;
+      /** Carried on a resume; adopting a fresh handle must not forgive unfinished work. */
+      turnInProgress: boolean;
     };
   }): Session {
     const { registration, handle, durable } = input;
@@ -211,6 +227,7 @@ export class SdkSupervisor {
       effort: durable.effort,
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
+      turnInProgress: durable.turnInProgress,
     });
     const session = this.registry.registerSdkSession(registration);
     this.handles.set(registration.id, handle);
@@ -260,7 +277,14 @@ export class SdkSupervisor {
    * shape of failure the acked send exists to remove, so it must not be reintroduced here.
    */
   send(id: string, turn: SdkTurn): Promise<SdkSendDisposition> {
-    return this.serialize(id, (handle) => handle.send(turn));
+    return this.serialize(id, async (handle) => {
+      const disposition = await handle.send(turn);
+      // Accepted first, persisted second: a rejected delivery must not become work a later
+      // daemon promises to continue. Driver `state: working` is the independent backstop
+      // for the narrow crash window between those two systems.
+      this.recordTurnInProgress(id, true);
+      return disposition;
+    });
   }
 
   /** Resolve a pending request. Serialized with sends - it is input to the same turn. */
@@ -429,6 +453,25 @@ export class SdkSupervisor {
     return rows.length === 0 ? null : rows[rows.length - 1]!;
   }
 
+  /**
+   * Best-effort durable mirror of the driver's turn lifecycle.
+   *
+   * A write failure cannot change an already-acknowledged delivery into a rejection: the
+   * caller would reasonably retry text the harness already accepted. Binding and status
+   * writes remain lifecycle-critical; this recovery hint logs and leaves the live session
+   * truthful instead of converting a bookkeeping failure into duplicate work.
+   */
+  private recordTurnInProgress(id: string, turnInProgress: boolean): void {
+    try {
+      setSdkSessionTurnInProgress(id, turnInProgress);
+    } catch (err) {
+      console.error(
+        `[sdk] could not record turn state for ${id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   private serialize<T>(id: string, op: (handle: SdkSessionHandle) => Promise<T>): Promise<T> {
     const handle = this.handles.get(id);
     const noLiveDriver = () => new Error(`no live driver for session ${id}`);
@@ -505,8 +548,25 @@ export class SdkSupervisor {
         model: row.model,
         effort: row.effort,
         agentSessionId: row.agentSessionId,
+        turnInProgress: row.turnInProgress,
       },
     });
+    if (row.turnInProgress) {
+      try {
+        // Through the ordinary send path AFTER adoption: Codex can resume with an active
+        // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
+        // unconditional `turn/start`. Claude's handle starts the new continuation turn.
+        await this.send(row.id, { text: RESTART_CONTINUATION_PROMPT });
+      } catch (err) {
+        // The conversation itself DID resume, so do not send it through the unresumable
+        // eviction path. Keep the durable bit set: another daemon restart may recover it,
+        // and the live card still gives the operator an honest place to retry.
+        console.error(
+          `[sdk] could not continue interrupted turn for ${row.id}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
   }
 
   /**
@@ -563,6 +623,12 @@ export class SdkSupervisor {
       for await (const evt of handle.events) {
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
+        }
+        if (evt.kind === "state" && evt.state === "working") {
+          this.recordTurnInProgress(id, true);
+        }
+        if (evt.kind === "turn_done") {
+          this.recordTurnInProgress(id, false);
         }
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a

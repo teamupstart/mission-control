@@ -174,7 +174,12 @@ test("adoption refusals do not create or overwrite durable rows", async () => {
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: "task-original", model: "model-original", effort: null },
+    durable: {
+      taskId: "task-original",
+      model: "model-original",
+      effort: null,
+      turnInProgress: false,
+    },
   });
   driver.emit({
     kind: "bound",
@@ -191,7 +196,12 @@ test("adoption refusals do not create or overwrite durable rows", async () => {
       sup.adopt({
         registration: registration(),
         handle: fakeHandle().handle,
-        durable: { taskId: "task-replacement", model: "model-replacement", effort: null },
+        durable: {
+          taskId: "task-replacement",
+          model: "model-replacement",
+          effort: null,
+          turnInProgress: false,
+        },
       }),
     /already registered/,
   );
@@ -203,7 +213,7 @@ test("adoption refusals do not create or overwrite durable rows", async () => {
       sup.adopt({
         registration: registration({ id: invalidId }),
         handle: fakeHandle().handle,
-        durable: { taskId: null, model: null, effort: null },
+        durable: { taskId: null, model: null, effort: null, turnInProgress: false },
       }),
     /sdk:/,
   );
@@ -233,7 +243,7 @@ test("bound fills the identity the read path needs and confirms instrumentation"
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({
     kind: "bound",
@@ -279,7 +289,7 @@ test("driver state and turn_done move the card the way a hook does", async () =>
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({ kind: "state", state: "working", activity: "editing registry.ts" });
   await settle();
@@ -299,7 +309,7 @@ test("a driver request is the dialog every surface already renders", async () =>
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({
     kind: "request",
@@ -343,7 +353,7 @@ test("a multi-question ask becomes a form, with its questions intact", async () 
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({
     kind: "request",
@@ -385,7 +395,7 @@ test("an exited driver leaves through session_remove, on the ordinary linger", a
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({ kind: "exited", reason: "turn complete", resumable: true });
   // The pump is detached, and mocked timers do not stop microtasks resolving.
@@ -428,7 +438,7 @@ test("a driver stream that just ends still evicts the session", async () => {
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.end();
   await settle();
@@ -443,7 +453,7 @@ test("delivery is acked and serialized per session, and refused when nothing is 
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   await Promise.all([
     sup.send(SDK_ID, { text: "first" }),
@@ -482,7 +492,7 @@ test("queued delivery is refused when its driver exits before it runs", async ()
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
 
   const first = sup.send(SDK_ID, { text: "first" });
@@ -534,7 +544,7 @@ test("stopping refuses queued and new delivery before the driver exits", async (
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
 
   const first = sup.send(SDK_ID, { text: "first" });
@@ -586,7 +596,7 @@ test("a driver-observed gh pr create decorates the card and proves authorship on
   sup.adopt({
     registration: registration(),
     handle: driver.handle,
-    durable: { taskId: null, model: null, effort: null },
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
   });
   driver.emit({ kind: "pr_created", url: "https://github.com/o/r/pull/7" });
   await settle();

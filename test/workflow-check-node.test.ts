@@ -321,6 +321,48 @@ test("command resolution matches a worktree of a configured repository, longest 
   assert.equal(checkCommandFor(config, null, "/repos/other", "test")?.repoRoot, "/repos");
 });
 
+test("a nested command reaches a DISPATCHED session, which stands in a pooled worktree", () => {
+  // The case that carries the feature. A dispatched session's cwd is under `~/.treehouse/`,
+  // outside the repository entirely, while its repoRoot still names the main checkout - so
+  // absolute containment selects only the repository-wide entry and the package override
+  // worked for a plain checkout and silently never for a dispatched one. A worktree mirrors
+  // its repository's layout, so the entry's repo-relative subpath is matched against the
+  // tail of the session's directory.
+  const config = configWith({
+    checkCommands: [
+      { repoRoot: "/repo", slot: "test", command: ["repo-wide"] },
+      { repoRoot: "/repo/packages/web", slot: "test", command: ["package"] },
+    ],
+  });
+  const pick = (cwd: string | null, root: string | null) =>
+    checkCommandFor(config, cwd, root, "test")?.command ?? null;
+
+  // A pooled worktree standing in the package.
+  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/web", "/repo"), ["package"]);
+  // ...and deeper inside it.
+  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/web/src", "/repo"), ["package"]);
+  // A pooled worktree at the top of the repository still gets the repository-wide entry.
+  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo", "/repo"), ["repo-wide"]);
+  // A pooled worktree in a DIFFERENT package likewise.
+  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/api", "/repo"), ["repo-wide"]);
+  // The plain-checkout case keeps working through ordinary containment.
+  assert.deepEqual(pick("/repo/packages/web", "/repo"), ["package"]);
+  assert.deepEqual(pick("/repo", "/repo"), ["repo-wide"]);
+
+  // The tail rule is scoped to entries inside THIS session's repository, so a same-named
+  // package in an unrelated project cannot be reached by it.
+  const other = configWith({
+    checkCommands: [{ repoRoot: "/other/packages/web", slot: "test", command: ["stranger"] }],
+  });
+  assert.equal(
+    checkCommandFor(other, "/home/u/.treehouse/repo-abc/1/repo/packages/web", "/repo", "test"),
+    null,
+  );
+  // And with no cwd at all there is nothing to compare a tail against, so it declines
+  // rather than guessing.
+  assert.deepEqual(pick(null, "/repo"), ["repo-wide"]);
+});
+
 test("a nested command's execution directory is relative to the checkout, not absolute", () => {
   // Relative because the runtime does not run in the operator's directory: it leases a
   // pooled worktree of the repository and pins it to the captured commit, so an absolute

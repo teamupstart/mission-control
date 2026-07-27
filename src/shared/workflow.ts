@@ -626,6 +626,20 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
  * a duplicate `(repoRoot, slot)` pair. It has to be enforced somewhere, because this
  * function silently keeps the first of a tie - which would make the command that runs
  * depend on array order, a thing no surface shows the operator.
+ *
+ * A nested entry has a THIRD way to match, and it is the one that carries the common case.
+ * Absolute containment alone selects `/repo/packages/web` only for a session standing under
+ * that literal path - but a dispatched session stands in a pooled worktree under
+ * `~/.treehouse/`, whose `cwd` is outside `/repo` entirely while its `repoRoot` still names
+ * `/repo`. Containment therefore fell through to the repository-wide entry, so the package
+ * override worked for a plain checkout and silently never for a dispatched one. A worktree
+ * MIRRORS its repository's layout, so the entry's repository-relative subpath is matched
+ * against the tail of the session's directory instead.
+ *
+ * That tail match is deliberately narrow: it applies only to an entry that is inside THIS
+ * session's repository, so a same-named package in an unrelated project cannot be reached
+ * by it. Within one repository two directories sharing a trailing path are the same
+ * directory in different checkouts, which is exactly what this is trying to identify.
  */
 export function checkCommandFor(
   config: Pick<WorkflowConfig, "checkCommands">,
@@ -636,7 +650,7 @@ export function checkCommandFor(
   let best: WorkflowCheckCommand | null = null;
   for (const entry of config.checkCommands) {
     if (entry.slot !== slot) continue;
-    if (!repoAllowlisted(cwd, repoRoot, [entry.repoRoot])) continue;
+    if (!checkCommandApplies(entry.repoRoot, cwd, repoRoot)) continue;
     if (!best || entry.repoRoot.length > best.repoRoot.length) best = entry;
   }
   // The whole ENTRY, not just its argv. The matched root is not decoration: when a nested
@@ -644,6 +658,35 @@ export function checkCommandFor(
   // only the argv has no way to know that - it would run the package's command at the top
   // of the repository and report the answer as the package's.
   return best ? { ...best, command: [...best.command] } : null;
+}
+
+/** Drop a single trailing separator so `/repo/` and `/repo` compare equal. */
+function trimSlash(p: string): string {
+  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
+}
+
+/**
+ * Whether one configured entry applies to a session, by any of the three routes.
+ *
+ * Split out so the tail rule is stated once and can be tested directly: it is the only part
+ * of resolution that is a heuristic rather than a containment test, and a heuristic nobody
+ * can point at is one nobody checks.
+ */
+function checkCommandApplies(
+  entryRoot: string,
+  cwd: string | null,
+  repoRoot: string | null,
+): boolean {
+  // The two containment routes: the session stands inside the entry, or the entry covers
+  // the session's whole repository.
+  if (repoAllowlisted(cwd, repoRoot, [entryRoot])) return true;
+  // The worktree route. Only for an entry nested inside THIS session's repository, and only
+  // when we have a directory to compare against.
+  if (!repoRoot || !cwd) return false;
+  const subpath = checkCommandSubpath(repoRoot, entryRoot);
+  if (!subpath) return false;
+  const dir = trimSlash(cwd);
+  return dir.endsWith(`/${subpath}`) || dir.includes(`/${subpath}/`);
 }
 
 /**
@@ -677,10 +720,8 @@ export function checkCommandFor(
  * a root the matcher can never match would be an entry that silently never applies.
  */
 export function checkCommandRoot(repoRoot: string, requestedPath: string): string {
-  const root = repoRoot.length > 1 && repoRoot.endsWith("/") ? repoRoot.slice(0, -1) : repoRoot;
-  const path = requestedPath.length > 1 && requestedPath.endsWith("/")
-    ? requestedPath.slice(0, -1)
-    : requestedPath;
+  const root = trimSlash(repoRoot);
+  const path = trimSlash(requestedPath);
   return path === root || path.startsWith(`${root}/`) ? path : root;
 }
 
@@ -689,8 +730,8 @@ export function checkCommandSubpath(
   entryRoot: string,
 ): string {
   if (!repoRoot) return "";
-  const root = repoRoot.length > 1 && repoRoot.endsWith("/") ? repoRoot.slice(0, -1) : repoRoot;
-  const entry = entryRoot.length > 1 && entryRoot.endsWith("/") ? entryRoot.slice(0, -1) : entryRoot;
+  const root = trimSlash(repoRoot);
+  const entry = trimSlash(entryRoot);
   if (entry === root) return "";
   // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
   return entry.startsWith(`${root}/`) ? entry.slice(root.length + 1) : "";

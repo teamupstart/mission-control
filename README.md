@@ -2161,8 +2161,10 @@ Each repository may configure a slot **once**; a second entry for the same pair 
 rather than silently ignored. A **subdirectory** entry beats the repository-wide one, which
 is how a monorepo gives one package its own command - and the command then runs *in that
 subdirectory*, not at the top of the tree. Worktrees of a configured repository count too,
-wherever they live on disk, so a dispatched session in a pooled checkout resolves the same
-command its repository configured.
+wherever they live on disk: a dispatched session usually stands in a pooled checkout under
+`~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
+checkout's `packages/web` resolves the command configured for the repository's
+`packages/web`.
 
 **An unrun gate passes, with a note saying why.** A slot with no command configured for this
 repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,

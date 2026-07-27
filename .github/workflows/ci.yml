@@ -28,7 +28,19 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Blacksmith, not `ubuntu-latest`. 4 vCPU / 16 GB is the same SHAPE as the GitHub
+    # runner it replaces - deliberately, because `npm test` runs two isolated test-file
+    # workers and the gates after it are sequential precisely so they don't compete for
+    # that budget. The win here is faster cores and a colocated cache, not more of them;
+    # widening the runner without widening the test concurrency buys only the non-test
+    # gates. Blacksmith's image mirrors actions/runner-images, so `xvfb-run` and the rest
+    # of the preinstalled toolchain are the same ones this job already relies on.
+    #
+    # NOTE: no `useblacksmith/*` action forks. Blacksmith's cache is transparent to the
+    # upstream actions - `actions/setup-node`'s `cache: npm` below already lands on it -
+    # and the forks (`useblacksmith/setup-node`, `useblacksmith/cache`) are archived
+    # upstream. Pinning one would be adopting an unmaintained action for no cache gain.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +87,13 @@ jobs:
   # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.
   # There are no native modules to rebuild (node:sqlite is a builtin), so this just
   # bundles + wraps with electron-builder and uploads the dmg as an artifact.
+  #
+  # Stays on the GitHub-hosted macOS runner while `check` moves to Blacksmith, and the
+  # asymmetry is deliberate: this job is off the PR path, so it is not where CI latency
+  # is felt, and Blacksmith's macOS runners are billed per minute outside the free
+  # allowance. Blacksmith also publishes no macos-14 image, so moving it would silently
+  # bump the OS the shipped dmg is built on - a release-artifact change wearing a CI
+  # change's clothes.
   package:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: macos-14

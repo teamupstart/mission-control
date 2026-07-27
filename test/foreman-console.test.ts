@@ -11,7 +11,7 @@ import {
 } from "../src/web/components/ForemanSettingsPanel.tsx";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
-import type { ForemanEpisode, ForemanStatus } from "../src/shared/types.ts";
+import type { ForemanEpisodeSummary, ForemanStatus } from "../src/shared/types.ts";
 
 // What is at stake: this panel now makes two claims nothing else in the app makes, and
 // both are the kind that are worse wrong than absent.
@@ -30,34 +30,22 @@ import type { ForemanEpisode, ForemanStatus } from "../src/shared/types.ts";
 // panels: the dashboard holds an SSE connection open and hangs headless automation.
 // Effects never run here, so nothing fetches.
 
-function episode(over: Partial<ForemanEpisode> = {}): ForemanEpisode {
+// The LEAN shape the ledger route actually returns - not the drawer's full episode.
+// The ask arrives already reduced by the daemon (`askPreviewForWire`), which is what
+// keeps a hundred captured screens off a 4-second poll.
+function episode(over: Partial<ForemanEpisodeSummary> = {}): ForemanEpisodeSummary {
   return {
     id: 1,
     noteKey: "3f2a91cc-0d44-4d1e-9f1a-77e2b0c9aa10",
-    sessionId: "proc:/dev/ttys004:4123:1700",
     marker: "await:1700",
-    situation: "terminal-pane",
-    surface: "terminal",
-    question: "Claude needs your permission to run the tests",
-    pane: null,
-    menu: null,
-    reviewId: null,
+    ask: "Claude needs your permission to run the tests",
     purpose: "Approving a test run.",
-    brief: null,
-    recommendation: null,
-    classification: "routine-access",
-    confidence: 0.6,
     tier: 2,
     cheapAction: null,
     divergence: null,
     disposition: "answered",
-    lastAction: null,
-    sentText: null,
-    sentOption: null,
-    sentBy: "foreman",
-    createdAt: 1000,
-    resolvedAt: 1000,
     resolvedBy: "foreman",
+    createdAt: 1000,
     ...over,
   };
 }

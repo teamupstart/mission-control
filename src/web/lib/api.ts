@@ -3,6 +3,7 @@ import type {
   AssignResetConfirm,
   BacklogPlan,
   ForemanEpisode,
+  ForemanEpisodeSummary,
   ForemanStatus,
   InspectorInspection,
   InspectorStatus,
@@ -114,7 +115,7 @@ export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/s
  * that shows it costs no second timer.
  */
 export const fetchForemanEpisodes = () =>
-  fetchJson<ForemanEpisode[]>("/api/foreman/episodes");
+  fetchJson<ForemanEpisodeSummary[]>("/api/foreman/episodes");
 /**
  * Foreman's reading of the backlog - what waits on what, and in what order.
  *

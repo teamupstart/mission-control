@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
-import type { BacklogPlan, ForemanEpisode, ForemanStatus } from "@shared/types.ts";
+import type { BacklogPlan, ForemanEpisodeSummary, ForemanStatus } from "@shared/types.ts";
 import {
   api,
   fetchBacklogPlan,
@@ -51,7 +51,7 @@ export interface ForemanState {
    * "the daemon has not answered" through `config`, which is the same signal every other
    * control on it already reads.
    */
-  episodes: ForemanEpisode[];
+  episodes: ForemanEpisodeSummary[];
   /**
    * Apply a patch, resolving to whether the daemon accepted it. Callers that only edit a
    * field ignore the boolean (`void update(...)`); a caller that must chain a SECOND write
@@ -67,7 +67,7 @@ export function useForeman(): ForemanState {
   const [config, setConfigState] = useState<ForemanConfig | null>(null);
   const [status, setStatus] = useState<ForemanStatus | null>(null);
   const [backlogPlan, setBacklogPlan] = useState<BacklogPlan | null>(null);
-  const [episodes, setEpisodes] = useState<ForemanEpisode[]>([]);
+  const [episodes, setEpisodes] = useState<ForemanEpisodeSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.

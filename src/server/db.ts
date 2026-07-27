@@ -6,6 +6,7 @@ import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
+  ForemanEpisodeSummary,
   InspectorComment,
   InspectorCommentStatus,
   InspectorFailKind,
@@ -37,6 +38,7 @@ import type {
 } from "@shared/types.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { readCheapAction, readDivergence } from "@shared/foreman.ts";
+import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 
@@ -2083,18 +2085,46 @@ export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
  * across the upsert, so two episodes recorded in the same millisecond still come back in
  * the order they were written rather than in whatever order the scan happens to reach them.
  *
- * Not on the SSE channel, deliberately - see `Registry.recordEpisode`. A row carries a
- * screen capture, and a fleet-wide list of them belongs in a fetch the panel that shows it
- * makes, not in every frame every client receives.
+ * **Returns a SUMMARY, not the stored row, and that is the point.** The first cut reused
+ * `episodeFromRow` and therefore put up to a hundred captured terminal screens on a
+ * 4-second poll: on a real 631-episode database `pane` was 50.6% of the response and the
+ * drawer-only fields came to 82KB per poll, about 72MB an hour with the Settings page
+ * open. That is the same cost this feature already refused to pay on the SSE channel (see
+ * `Registry.recordEpisode`), just reached by a different transport - a poll is not a
+ * loophole in that argument. The pane and menu are still READ here, because the ask is
+ * derived from them, but they are reduced to one line by the shared `askPreview` and only
+ * that line is returned. The full capture stays on `episodesFor`, which is the read for a
+ * surface that shows one decision at a time.
  */
-export function recentEpisodes(limit = 100): ForemanEpisode[] {
+export function recentEpisodes(limit = 100): ForemanEpisodeSummary[] {
   const rows = openDb()
     .prepare(
-      `SELECT ${EPISODE_COLUMNS}
+      `SELECT id, note_key, marker, question, pane, menu, purpose, tier, cheap_action,
+              divergence, disposition, resolved_by, created_at
          FROM foreman_episodes ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
     .all(limit) as unknown as Array<Record<string, unknown>>;
-  return rows.map(episodeFromRow);
+  return rows.map(
+    (r): ForemanEpisodeSummary => ({
+      id: Number(r.id ?? 0),
+      noteKey: String(r.note_key ?? ""),
+      marker: String(r.marker ?? ""),
+      // Reduced HERE rather than in the browser, which is the whole saving: the inputs
+      // are the two biggest columns in the table and the output is one clipped line.
+      ask: askPreviewForWire({
+        pane: typeof r.pane === "string" ? r.pane : null,
+        menu: parseMenu(r.menu),
+        question: String(r.question ?? ""),
+      }),
+      purpose: typeof r.purpose === "string" ? r.purpose : null,
+      tier: typeof r.tier === "number" ? r.tier : null,
+      cheapAction: readCheapAction(r.cheap_action),
+      divergence: readDivergence(r.divergence),
+      disposition: episodeDisposition(r.disposition),
+      resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
+      createdAt: Number(r.created_at ?? 0),
+    }),
+  );
 }
 
 /**

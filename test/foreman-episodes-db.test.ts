@@ -85,6 +85,7 @@ function seedPreFeatureDb(): void {
 seedPreFeatureDb();
 
 const db = await import("../src/server/db.ts");
+const { MAX_ASK_PREVIEW } = await import("../src/shared/foreman-ask.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -203,6 +204,58 @@ test("recentEpisodes breaks a created_at tie by id, not by scan order", () => {
 });
 
 // ---- the shadow measurement round-trips ----------------------------------------------
+
+// The Inspector's finding on PR #285, pinned. `recentEpisodes` is polled every 4 seconds
+// by the Settings page, and its first cut reused the full-episode row mapper - so every
+// poll shipped up to a hundred captured terminal screens. Measured on a real 631-episode
+// database, `pane` alone was 50.6% of that payload and the drawer-only fields came to
+// 82KB per poll, about 72MB an hour. That is the same cost this feature already refused
+// to pay on the SSE channel; a poll is not a loophole in that argument.
+//
+// The ask is NOT lost by dropping them: it is derived from pane/menu/question by the
+// shared `askPreview`, which the daemon now runs so the wire carries only its one line.
+test("the fleet-wide ledger ships no stored pane captures, only the reduced ask", () => {
+  const pane = [
+    "Bash command",
+    "",
+    "rm -rf ./build && npm run build",
+    "",
+    "Do you want to proceed?",
+    "1. Yes",
+    "2. No",
+  ].join("\n");
+  write({ noteKey: "lean", marker: "lean-1", createdAt: 9500, pane, question: "Needs approval: Bash" });
+
+  const row = db.recentEpisodes(100).find((r) => r.marker === "lean-1");
+  assert.ok(row);
+  // The heavy, drawer-only fields are absent from the summary entirely - not null, absent.
+  for (const heavy of ["pane", "menu", "brief", "recommendation", "sentText", "question"]) {
+    assert.ok(!(heavy in row), `${heavy} is still on the fleet-wide ledger payload`);
+  }
+  // ...and the ask still says what the decision was about, reduced from that same pane.
+  assert.equal(row.ask, "rm -rf ./build && npm run build");
+
+  // The per-session read is unchanged and still carries the full capture, because that
+  // surface shows one decision at a time and the pane is the only copy of the question.
+  const full = db.episodesFor("lean").find((r) => r.marker === "lean-1");
+  assert.equal(full?.pane, pane);
+});
+
+// A pane long enough to matter must not cross the wire in full even via the ask.
+test("the reduced ask is clamped for the wire", () => {
+  const long = "x".repeat(5000);
+  write({
+    noteKey: "clamp",
+    marker: "clamp-1",
+    createdAt: 9600,
+    pane: null,
+    question: long,
+  });
+  const row = db.recentEpisodes(100).find((r) => r.marker === "clamp-1");
+  assert.ok(row);
+  assert.ok(row.ask.length <= MAX_ASK_PREVIEW, `ask was ${row.ask.length} chars`);
+  assert.ok(row.ask.endsWith("…"));
+});
 
 test("a shadow measurement survives the write and reads back on both reads", () => {
   write({

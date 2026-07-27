@@ -9,10 +9,9 @@ import type { ForemanConfigPatch } from "@shared/protocol.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
-import type { ForemanEpisode, NoteDisposition } from "@shared/types.ts";
+import type { ForemanEpisodeSummary, NoteDisposition } from "@shared/types.ts";
 import type { ModelChoiceSpec } from "@shared/model-choice.ts";
 import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
-import { askPreview } from "./ForemanDrawer.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import {
   ConsoleCard,
@@ -82,7 +81,7 @@ const BACKLOG_TASK_MODEL_SPECS: Record<(typeof AGENT_TYPES)[number], ModelChoice
  */
 export type EpisodeBucket = NoteDisposition;
 
-export function episodeBucket(row: ForemanEpisode): EpisodeBucket {
+export function episodeBucket(row: ForemanEpisodeSummary): EpisodeBucket {
   return row.disposition;
 }
 
@@ -91,7 +90,7 @@ export function episodeBucket(row: ForemanEpisode): EpisodeBucket {
  * `ForemanStatus.counts` - see the STRIP comment for why those two are different
  * populations and must not be swapped for one another.
  */
-export function episodeTallies(rows: readonly ForemanEpisode[]): Record<EpisodeBucket, number> {
+export function episodeTallies(rows: readonly ForemanEpisodeSummary[]): Record<EpisodeBucket, number> {
   const t: Record<EpisodeBucket, number> = { escalated: 0, pending: 0, answered: 0, skipped: 0 };
   for (const row of rows) t[episodeBucket(row)] += 1;
   return t;
@@ -514,8 +513,11 @@ export function ForemanSettingsPanel({
                     handle={sessionHandle(row.noteKey)}
                     tooltip={`Session key ${row.noteKey}`}
                   />
-                  <Tooltip label={row.purpose ?? askPreview(row)}>
-                    <span className="sc-ask">{askPreview(row)}</span>
+                  {/* Reduced by the daemon, not here: the inputs are the captured
+                      screen and the menu rows, which is exactly what must not ride a
+                      4s poll. See `ForemanEpisodeSummary`. */}
+                  <Tooltip label={row.purpose ?? row.ask}>
+                    <span className="sc-ask">{row.ask}</span>
                   </Tooltip>
                   <span className={`sc-verdict sc-verdict-${row.disposition}`}>
                     {row.disposition === "pending" ? "drafted" : row.disposition}

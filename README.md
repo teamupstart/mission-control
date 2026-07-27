@@ -2728,6 +2728,12 @@ giving it more rope. The count strip above the table filters it: **escalated**,
 **drafted**, **answered**, **skipped**. The last 100 decisions are shown, and episodes are
 kept for 30 days.
 
+The ledger is a **summary**, not the stored record: the daemon reduces each ask to the one
+line the table shows and sends only that, so the captured terminal screens - by far the
+largest thing in the table - never ride the 4-second poll. Open a session's Foreman drawer
+for the full question, the screen it was asked on, the reviewer's brief, and what was sent
+back.
+
 The panel also states, in words, **whether Foreman is running at all**. A worker holds a
 lease and renews it; when nothing does, Foreman is enabled, set to whatever mode you chose,
 and nothing is executing it - a state that until now looked exactly like a quiet fleet.

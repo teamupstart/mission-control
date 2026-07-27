@@ -761,6 +761,43 @@ export interface ForemanEpisode {
 }
 
 /**
+ * One episode as the FLEET-WIDE ledger reads it - a strict subset, and deliberately so.
+ *
+ * `ForemanEpisode` above is the per-session drawer's shape: it carries the captured
+ * terminal screen, the menu rows, the reviewer's brief and recommendation, and the text
+ * that was delivered. All of that is the right payload for a surface you open on ONE
+ * decision and read in full. It is the wrong payload for a list of a hundred, polled
+ * every four seconds - measured on a real 631-episode database, `pane` alone was 50.6% of
+ * that response and the drawer-only fields came to 82KB per poll, roughly 72MB an hour
+ * with the Settings page open.
+ *
+ * So the ledger gets what it actually renders and nothing else. The one field that looks
+ * like a loss is the ask, and it is not: the daemon runs the same `askPreview` the drawer
+ * would have run and ships the one line it produces, so the two surfaces cannot disagree
+ * about what a decision was about while the screen capture stays where it is read.
+ *
+ * Adding a field here is adding it to every poll. Prefer the per-session read.
+ */
+export interface ForemanEpisodeSummary {
+  id: number;
+  /** Same key as the note, and what the ledger groups by. */
+  noteKey: string;
+  marker: string;
+  /** The ask, already reduced by `askPreview` server-side and clamped for the wire. */
+  ask: string;
+  /** Foreman's 1-2 sentence reading of what this decision was for; the row's tooltip. */
+  purpose: string | null;
+  /** Which tier produced the verdict that was used (0 structural, 1 cheap, 2 review). */
+  tier: number | null;
+  cheapAction: CheapAction | null;
+  divergence: Divergence | null;
+  disposition: NoteDisposition;
+  /** Who DECIDED it - not who sent the text. See `ForemanEpisode.resolvedBy`. */
+  resolvedBy: EpisodeAuthor | null;
+  createdAt: number;
+}
+
+/**
  * The menu rows an episode's pane was showing, as stored. A structural echo of the
  * server's `PaneDialog` rather than a re-export: this crosses the wire and is read
  * back from JSON written by an older daemon, so it must stay loose about fields the

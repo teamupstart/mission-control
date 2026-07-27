@@ -324,9 +324,11 @@ through a pane. That is a session's **runtime**, and there are two.
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A turn is a call that is *acknowledged*, and a permission prompt or an
-  approval arrives as data - what is being asked, and the exact rows to offer - which the
-  card renders directly.
+  There is no pane. A submitted message is *acknowledged* as a new turn, added to Codex's
+  current turn, or queued behind Claude's current turn. Both the conversation reply box and
+  the compact Send box show that disposition, so accepted input does not disappear while an
+  agent is busy. A permission prompt or an approval arrives as data - what is being asked,
+  and the exact rows to offer - which the card renders directly.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -3384,6 +3386,8 @@ shortcut works in every layout:
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
+| <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
+| <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>P</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
@@ -3414,12 +3418,12 @@ while a card in that strip has focus - so they are fixed for the same reason.
 
 ### Keycaps on the buttons
 
-The buttons those shortcuts drive print the key on their own face - Send, Focus, Files,
-Queue, Reset, Complete and Kill on a card; Focus, Diff, Reset, Complete and Kill in the
-Console footer; the Console's Conversation, Work queue, Diff and Files tabs; a card's
-`diff` pill; Dispatch and Workflows in the top bar; and the settings rail's search box.
-They show the *resolved* chord, so a rebind moves what they say and an unset action shows
-no keycap.
+The buttons those shortcuts drive print the key on their own face - Terminal and
+Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete and
+Kill on a card; Focus, Diff, Reset, Complete and Kill in the Console footer; the Console's
+Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and Workflows
+in the top bar; and the settings rail's search box. They show the *resolved* chord, so a
+rebind moves what they say and an unset action shows no keycap.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
 them. Small icon-only controls (the ⚙ gear, the 📡 sitrep glyph, the expand chevron) never

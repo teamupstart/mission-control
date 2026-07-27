@@ -95,7 +95,10 @@ function fakeHandle(): {
   })();
   const handle: SdkSessionHandle = {
     events,
-    send: async (turn) => void sent.push(turn.text),
+    send: async (turn) => {
+      sent.push(turn.text);
+      return "started";
+    },
     interrupt: async () => {},
     answer: async () => {},
     setPermissionMode: null,
@@ -468,6 +471,7 @@ test("queued delivery is refused when its driver exits before it runs", async ()
       markFirstStarted();
       await firstBlocked;
     }
+    return "started";
   };
   sup.adopt({
     registration: registration(),
@@ -514,6 +518,7 @@ test("stopping refuses queued and new delivery before the driver exits", async (
       markFirstStarted();
       await firstBlocked;
     }
+    return "started";
   };
   driver.handle.stop = async () => {
     markStopStarted();

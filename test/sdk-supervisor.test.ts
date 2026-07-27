@@ -82,7 +82,9 @@ function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; 
         }
       },
     },
-    async send() {},
+    async send() {
+      return "started" as const;
+    },
     async interrupt() {},
     async answer() {},
     setPermissionMode: null,

@@ -54,6 +54,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     resetNonces: {},
     registerEl: () => {},
     registerActions: () => {},
+    registerLaunchers: () => {},
     registerDetailScroll: () => {},
     registerReaderTab: () => {},
     renamingId: null,

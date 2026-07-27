@@ -178,6 +178,29 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.ok(events.some((e) => e.kind === "state" && e.state === "working"));
 });
 
+test("a follow-up reports whether Claude queued it behind an active turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+
+  // Turn one was seeded at launch, so the SDK accepts this message but will not present it
+  // as a new transcript turn until the current result arrives.
+  assert.equal(await handle.send({ text: "after that, run the tests" }), "queued");
+
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(
+    await handle.send({ text: "one more thing" }),
+    "queued",
+    "the first queued follow-up still owns the next turn",
+  );
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await handle.send({ text: "now idle" }), "started");
+  query.end();
+});
+
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts());

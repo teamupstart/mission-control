@@ -155,3 +155,11 @@ test("the agent control is plain only while it can focus a live pane", () => {
   assert.match(unboundSdk, /disabled/);
   assert.match(unboundSdk, /conversation id/);
 });
+
+test("both launcher buttons show their customizable shortcut hints", () => {
+  const src = source();
+  assert.match(src, /<Keycap action=\{action\} \/>/);
+  assert.match(src, /action="terminal"/);
+  assert.match(src, /<Keycap action="agent" \/>/);
+  assert.match(src, /registerLaunchers\(session\.id, handle\)/);
+});

@@ -1,5 +1,6 @@
 import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
+import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -96,6 +97,8 @@ export interface SessionViewProps {
   resetNonces: Record<string, number>;
   registerEl: (id: string, el: HTMLElement | null) => void;
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
+  /** Register the conversation toolbar's terminal and agent launch controls. */
+  registerLaunchers: (id: string, handle: SessionLaunchersHandle | null) => void;
   /** Register the open detail pane's vertical reader for Console arrow-key scrolling. */
   registerDetailScroll: (id: string, scroll: ((direction: -1 | 1) => void) | null) => void;
   /** Register the open detail's tab stepper, so Tab/Shift+Tab can cycle its tabs. Returns
@@ -158,6 +161,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     resetNonce: p.resetNonces[s.id] ?? 0,
     registerEl: p.registerEl,
     registerActions: p.registerActions,
+    registerLaunchers: p.registerLaunchers,
     renaming: p.renamingId === s.id,
     onRenameStart: () => p.onRenameStart(s.id),
     onRenameClose: p.onRenameClose,

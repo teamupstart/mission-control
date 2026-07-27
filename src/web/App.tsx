@@ -2,9 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode, gateParked } from "@shared/session.ts";
+import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
+import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
@@ -81,6 +83,14 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
   ["mode", "cycleMode"],
   ["complete", "requestComplete"],
   ["kill", "requestKill"],
+];
+
+/** The two conversation-toolbar controls driven by selection shortcuts. */
+const LAUNCHER_ACTIONS: readonly (
+  readonly [ActionId, keyof SessionLaunchersHandle]
+)[] = [
+  ["terminal", "openTerminal"],
+  ["agent", "openAgent"],
 ];
 
 /**
@@ -182,6 +192,8 @@ export function App(): React.JSX.Element {
   // this in one go. Reset whenever we leave settings (below), so returning via the gear
   // never reopens a palette the operator closed.
   const [searchOpen, setSearchOpen] = useState(false);
+  const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
+  const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
@@ -274,6 +286,7 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
+  const launcherHandles = useRef<Map<string, SessionLaunchersHandle>>(new Map());
   const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
   // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
   // ConsoleDetail owns that state, so it registers a stepper here that App's global key
@@ -291,6 +304,12 @@ export function App(): React.JSX.Element {
   // A selection chord the board's overview had no action bar to run yet: it opens the
   // drill-in and this holds what to do against the bar that mounts with it.
   const pendingBarAction = useRef<{ id: string; run: keyof ActionBarHandle } | null>(null);
+  // A launcher chord may have to reveal the conversation pane before its button exists.
+  // Registration below consumes this the moment that exact session's toolbar mounts.
+  const pendingLauncherAction = useRef<{
+    id: string;
+    run: keyof SessionLaunchersHandle;
+  } | null>(null);
   const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
@@ -325,6 +344,21 @@ export function App(): React.JSX.Element {
     if (handle) actionHandles.current.set(id, handle);
     else actionHandles.current.delete(id);
   }, []);
+
+  const registerLaunchers = useCallback(
+    (id: string, handle: SessionLaunchersHandle | null) => {
+      if (!handle) {
+        launcherHandles.current.delete(id);
+        return;
+      }
+      launcherHandles.current.set(id, handle);
+      const pending = pendingLauncherAction.current;
+      if (!pending || pending.id !== id) return;
+      pendingLauncherAction.current = null;
+      handle[pending.run]();
+    },
+    [],
+  );
 
   const registerDetailScroll = useCallback((id: string, scroll: ((direction: -1 | 1) => void) | null) => {
     if (scroll) detailScrollers.current.set(id, scroll);
@@ -440,6 +474,20 @@ export function App(): React.JSX.Element {
   const requestConversationTab = useCallback((sessionId: string) => {
     setConversationTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, []);
+  const showLauncherFocusError = useCallback((message: string) => {
+    if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+    setLauncherFocusError(message);
+    launcherFocusErrorTimer.current = setTimeout(() => {
+      launcherFocusErrorTimer.current = null;
+      setLauncherFocusError(null);
+    }, 6000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
+    },
+    [],
+  );
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     if (layout === "grid") {
       setDiffCommit(commit ?? null);
@@ -722,6 +770,7 @@ export function App(): React.JSX.Element {
     resetNonces,
     registerEl,
     registerActions,
+    registerLaunchers,
     registerDetailScroll,
     registerReaderTab,
     renamingId,
@@ -1180,6 +1229,45 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
+      const launcher = LAUNCHER_ACTIONS.find(([id]) => chord === bindings[id]);
+      if (launcher) {
+        const sel = selectedId ? visible.find((session) => session.id === selectedId) : null;
+        if (!sel) return;
+        e.preventDefault();
+        const run = launcher[1];
+        const mounted = launcherHandles.current.get(sel.id);
+        if (mounted) {
+          mounted[run]();
+          return;
+        }
+        if (run === "openAgent") {
+          const action = agentLaunchAction(sel);
+          if (!action) return;
+          if (action === "focus") {
+            void api.focus(sel.id).then((result) => {
+              if (!result.ok) {
+                showLauncherFocusError(result.error ?? "could not focus");
+              }
+            });
+            return;
+          }
+        }
+
+        // Cards mount the toolbar only when expanded; the Board overview only after it
+        // drills in; Console and an already-open Board detail may be sitting on another
+        // tab. Reveal Conversation in the appropriate vocabulary, then registration runs
+        // the exact button action rather than choosing a terminal backend on the user's
+        // behalf.
+        pendingLauncherAction.current = { id: sel.id, run };
+        if (layout === "grid") {
+          if (expandedId !== sel.id) toggleExpand(sel.id);
+        } else if (layout === "board" && !boardOpen) {
+          setBoardOpen(true);
+        } else {
+          requestConversationTab(sel.id);
+        }
+        return;
+      }
       const bar = BAR_ACTIONS.find(([id]) => chord === bindings[id]);
       if (!bar) return;
       const run = bar[1];
@@ -1217,7 +1305,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1297,6 +1385,11 @@ export function App(): React.JSX.Element {
             reviews={answerableReviews.length}
             onOpenReviews={openReviews}
           />
+          {launcherFocusError && (
+            <span className="launch-flash is-error" role="status">
+              {launcherFocusError}
+            </span>
+          )}
           {/* Twelve peers at one weight is what made this bar unreadable, so the
               cluster is THREE groups with a rank, not one rhythm: destinations you
               navigate to, the two controls that act on the fleet (Foreman's posture and

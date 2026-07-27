@@ -1,4 +1,4 @@
-import type { Session } from "@shared/types.ts";
+import type { SdkSendDisposition, Session } from "@shared/types.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 
 /**
@@ -12,7 +12,7 @@ import type { SdkSupervisor } from "./supervisor.ts";
  * when the harness ACCEPTED the turn, so:
  *
  *  - success is `pasted: true, submitVerified: true` - it is one call, and the harness
- *    said yes;
+ *    said yes; `delivery` says whether it started, steered, or queued the turn;
  *  - failure is `pasted: false, submitVerified: false` - the call rejected, so nothing
  *    was appended to any composer and a caller may safely retry.
  *
@@ -25,6 +25,8 @@ export interface SdkDelivery {
   error?: string;
   pasted: boolean;
   submitVerified: boolean;
+  /** How the driver accepted the turn; absent on refusal. */
+  delivery?: SdkSendDisposition;
 }
 
 export async function deliverToDriver(
@@ -40,8 +42,8 @@ export async function deliverToDriver(
   });
   if (!supervisor) return failed("this build has no session supervisor");
   try {
-    await supervisor.send(session.id, { text });
-    return { ok: true, pasted: true, submitVerified: true };
+    const delivery = await supervisor.send(session.id, { text });
+    return { ok: true, pasted: true, submitVerified: true, delivery };
   } catch (err) {
     return failed(err instanceof Error ? err.message : String(err));
   }

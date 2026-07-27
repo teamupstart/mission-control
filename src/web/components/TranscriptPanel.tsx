@@ -11,6 +11,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   appendLive,
   backAnchor,
@@ -36,7 +37,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { SessionLaunchers } from "./LaunchMenu.tsx";
+import { SessionLaunchers, type SessionLaunchersHandle } from "./LaunchMenu.tsx";
 
 /** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
  *  because that's the name on the window the reader is looking at. */
@@ -85,6 +86,7 @@ export function TranscriptPanel({
   episodes = [],
   onReplyBox,
   onOpenFile,
+  registerLaunchers,
   resetNonce = 0,
   ref,
 }: {
@@ -135,6 +137,8 @@ export function TranscriptPanel({
   onReplyBox?: (present: boolean) => void;
   /** Claim links that resolve to a file in this transcript's session checkout. */
   onOpenFile?: WorkspaceLinkHandler;
+  /** Register the launch buttons so App's selection shortcuts drive these exact controls. */
+  registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
@@ -152,10 +156,11 @@ export function TranscriptPanel({
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const atBottom = useRef(true);
   const historyEpoch = useRef(0);
   /**
@@ -174,6 +179,22 @@ export function TranscriptPanel({
   // take newlines or images. So: mounted panel, reply box - reported as such.
   const notifyRef = useRef(onReplyBox);
   notifyRef.current = onReplyBox;
+
+  function showFlash(next: { text: string; ok: boolean }, duration: number): void {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setFlash(next);
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null;
+      setFlash(null);
+    }, duration);
+  }
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
     notifyRef.current?.(true);
     // Retract on unmount without depending on the callback identity - a card whose
@@ -426,6 +447,10 @@ export function TranscriptPanel({
     const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
     if (r.ok) {
+      const confirmation = sdkDeliveryConfirmation(r.delivery);
+      if (confirmation) {
+        showFlash({ text: confirmation, ok: true }, 5000);
+      }
       // Delivered - so this is the one path that forgets the draft. A failed send
       // leaves it be: the text is all the human has, and it's about to be retried.
       clearDraft(sessionId, "reply");
@@ -433,8 +458,7 @@ export function TranscriptPanel({
       revokeAttachments(attachments);
       setAttachments([]);
     } else {
-      setFlash(r.error ?? "send failed");
-      setTimeout(() => setFlash(null), 3500);
+      showFlash({ text: r.error ?? "send failed", ok: false }, 3500);
     }
   }
 
@@ -447,7 +471,7 @@ export function TranscriptPanel({
       style={agentAccentStyle(agent)}
       onClick={(e) => e.stopPropagation()}
     >
-      <SessionLaunchers session={session} />
+      <SessionLaunchers session={session} registerLaunchers={registerLaunchers} />
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
         {/* An unavailable transcript still shows Foreman's record, and this is the
             case that most needs it: a session with no resolvable JSONL is exactly
@@ -554,7 +578,11 @@ export function TranscriptPanel({
             </button>
           </Tooltip>
         </div>
-        {flash && <span className="action-flash">{flash}</span>}
+        {flash && (
+          <span className={`action-flash${flash.ok ? " is-ok" : ""}`} role="status">
+            {flash.text}
+          </span>
+        )}
         {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
       </div>
     </div>

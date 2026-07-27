@@ -1498,11 +1498,11 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-Open **Missions** from the topbar button of the same name, beside Dispatch and Sitrep. The button carries an attention badge when any enabled schedule needs you (a
-failed run, an invalid repo, an overdue instant, a stuck reservation - all derived on the
-daemon, never in the browser). The catalog is a wide operator overlay, not a settings
-category, and it owns Escape like every other overlay; there is **no keyboard shortcut** for
-it in V1.
+Open **Missions** from the topbar button of the same name, beside Dispatch and Sitrep. The
+button carries an attention badge when any enabled schedule needs you (a failed run, an
+invalid repo, an overdue instant, a stuck reservation - all derived on the daemon, never in
+the browser). The catalog is a wide operator overlay, not a settings category, and it owns
+Escape like every other overlay; there is **no keyboard shortcut** for it in V1.
 
 The overlay has three screens:
 

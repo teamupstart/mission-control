@@ -350,6 +350,23 @@ test("workflow removal reconciles only a previously observed selected summary", 
   );
 });
 
+test("leaving a tombstoned dirty draft takes an explicit discard", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // The banner tells the operator to copy what they need before selecting another workflow or
+  // creating one. Both paths correctly skip the usual saveNow() guard, because the workflow is
+  // gone and a save can only fail - and that is exactly why nothing else stood between a stray
+  // click on the list and the draft being dropped. An instruction the UI does not enforce is
+  // not a warning, it is a caption on data loss.
+  assert.match(source, /Copy anything you need before selecting another workflow or creating a new one/);
+  assert.match(source, /if \(!selectedWorkflowRemoved \|\| !draft\.dirty\) return false;/);
+  // Both doors, not one. Each returns early when the confirmation takes over.
+  assert.match(source, /if \(requireTombstoneDiscard\(\(\) => void selectNow\(id\)\)\) return;/);
+  assert.match(source, /if \(requireTombstoneDiscard\(\(\) => void createNow\(\)\)\) return;/);
+  // A confirmation, not a block: refusing to navigate would strand the operator on a
+  // workflow that no longer exists.
+  assert.match(source, /confirmLabel: "Discard and continue"/);
+});
+
 test("workflow lifecycle refusals use the existing load error surface", () => {
   const refusal = (code: string) => new WorkflowApiError("request refused", 409, { code });
 

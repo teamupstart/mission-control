@@ -321,8 +321,32 @@ export function WorkflowLibrary({
     }
   };
 
-  const select = async (id: string): Promise<void> => {
-    if (id === selectedId || transitionRef.current) return;
+  /**
+   * Leaving a TOMBSTONED draft is the discard, so it takes a deliberate answer.
+   *
+   * The banner tells the operator to copy what they need before selecting another workflow
+   * or creating one. Nothing enforced that: both paths skip the usual `saveNow()` guard,
+   * correctly - the workflow is gone and a save can only fail - and then dropped the draft on
+   * the next click of the list. This is what makes the banner's instruction true. It is a
+   * confirmation rather than a block because refusing to navigate would strand the operator
+   * on a workflow that no longer exists.
+   *
+   * Returns whether it took over; the caller proceeds only when it did not.
+   */
+  const requireTombstoneDiscard = (proceed: () => void): boolean => {
+    if (!selectedWorkflowRemoved || !draft.dirty) return false;
+    setConfirm({
+      title: "Discard unsaved changes",
+      body: `${workflow?.name ?? "This workflow"} was deleted elsewhere, so these unsaved changes cannot be saved anywhere. Leaving now discards them for good.`,
+      confirmLabel: "Discard and continue",
+      confirmHint: "Discards these unsavable changes and leaves the deleted workflow",
+      danger: true,
+      onConfirm: proceed,
+    });
+    return true;
+  };
+
+  const selectNow = async (id: string): Promise<void> => {
     await runTransition(async () => {
       if (selectedWorkflowRemoved) {
         if (draft.saving) await draft.saveNow();
@@ -333,7 +357,13 @@ export function WorkflowLibrary({
     });
   };
 
-  const create = async (): Promise<void> => {
+  const select = async (id: string): Promise<void> => {
+    if (id === selectedId || transitionRef.current) return;
+    if (requireTombstoneDiscard(() => void selectNow(id))) return;
+    await selectNow(id);
+  };
+
+  const createNow = async (): Promise<void> => {
     await runTransition(async () => {
       if (selectedWorkflowRemoved) {
         if (draft.saving) await draft.saveNow();
@@ -346,6 +376,12 @@ export function WorkflowLibrary({
       });
       openWorkflow(response.summary.id);
     });
+  };
+
+  const create = async (): Promise<void> => {
+    if (transitionRef.current) return;
+    if (requireTombstoneDiscard(() => void createNow())) return;
+    await createNow();
   };
 
   const duplicate = async (): Promise<void> => {

@@ -21,7 +21,7 @@ import {
   type CheckExecutionRequest,
   type CheckExecutionResult,
 } from "../src/server/workflows/checks.ts";
-import { WorkflowCheckOutcomeSchema } from "../src/shared/protocol.ts";
+import { WorkflowCheckOutcomeSchema, WorkflowConfigSchema } from "../src/shared/protocol.ts";
 
 // What is at stake: three of a check's four outcomes PASS, and the ones that pass are the
 // ones nobody will look at until a shipped workflow carrying check gates lands on a machine
@@ -339,17 +339,63 @@ test("the argv split is quote-aware, and every ambiguity is an error rather than
 });
 
 test("formatCheckCommand round-trips through the parser", () => {
+  // The panel's promise is that what it prints back is what will run, so every printed argv
+  // has to re-parse to the argv it came from. The control-character cases are the ones that
+  // caught a real defect: the formatter used JSON.stringify, which escapes a tab as the two
+  // characters \t, and this parser reads those literally (its double-quote rule honours \"
+  // and \\ and nothing else, deliberately, so "C:\tmp" stays a path). A configured argument
+  // containing a tab was therefore DISPLAYED as a different command from the one stored.
   for (const argv of [
     ["npm", "test"],
     ["npm", "test", "--filter=a b"],
     ["grep", 'a "quoted" thing'],
     ["x", "back\\slash"],
+    ["x", "a\tb"],
+    ["x", "a\nb"],
+    ["x", "a\rb"],
+    ["x", "tab\tand\\slash\"and quote"],
+    ["x", "'single'"],
+    ["x", "\u00e9\u4e2d\u6587 spaced"],
   ]) {
     const printed = formatCheckCommand(argv);
     const parsed = parseCheckCommand(printed);
-    assert.ok(parsed.ok, `${printed} should re-parse`);
-    assert.deepEqual(parsed.ok ? parsed.argv : null, argv);
+    assert.ok(parsed.ok, `${JSON.stringify(printed)} should re-parse`);
+    assert.deepEqual(
+      parsed.ok ? parsed.argv : null,
+      argv,
+      `${JSON.stringify(printed)} re-parsed to something else`,
+    );
   }
+});
+
+test("a repository may configure a slot only once, refused at the write boundary", () => {
+  // `(repoRoot, slot)` is the key `checkCommandFor` resolves by, and it keeps the first of a
+  // tie - so two entries sharing one are two commands the operator can see and one that can
+  // ever run, chosen by array order that no surface displays. Refused rather than silently
+  // deduplicated, because a caller who sent two is otherwise never told which survived.
+  const base = { liveEnabled: false, repoAllowlist: [] };
+  const duplicate = WorkflowConfigSchema.safeParse({
+    ...base,
+    checkCommands: [
+      { repoRoot: "/repo", slot: "test", command: ["a"] },
+      { repoRoot: "/repo", slot: "test", command: ["b"] },
+    ],
+  });
+  assert.equal(duplicate.success, false);
+
+  // The pair is what is unique, not either half: the same root with a different slot, and
+  // the same slot in a different root, are both ordinary configurations.
+  assert.equal(
+    WorkflowConfigSchema.safeParse({
+      ...base,
+      checkCommands: [
+        { repoRoot: "/repo", slot: "test", command: ["a"] },
+        { repoRoot: "/repo", slot: "lint", command: ["b"] },
+        { repoRoot: "/other", slot: "test", command: ["c"] },
+      ],
+    }).success,
+    true,
+  );
 });
 
 test("the check budget is its own, small, and not the review scheduler's three", async () => {

@@ -621,8 +621,11 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
  * is what makes an entry naming the project reach a worktree of that project.
  *
  * The LONGEST matching root wins, so a monorepo subdirectory can override the entry that
- * covers the whole tree. Ties cannot occur: two entries with the same root and slot are the
- * same key, and the first is kept.
+ * covers the whole tree. Two entries sharing a root and slot cannot occur, and that is
+ * ENFORCED at the write boundary rather than assumed here: `WorkflowConfigSchema` refuses
+ * a duplicate `(repoRoot, slot)` pair. It has to be enforced somewhere, because this
+ * function silently keeps the first of a tie - which would make the command that runs
+ * depend on array order, a thing no surface shows the operator.
  */
 export function checkCommandFor(
   config: Pick<WorkflowConfig, "checkCommands">,
@@ -781,9 +784,25 @@ export function parseCheckCommand(
   return { ok: true, argv };
 }
 
-/** How the panel and run detail print an argv back, so both quote the same things. */
+/**
+ * How the panel and run detail print an argv back, so both quote the same things.
+ *
+ * The escaping is `parseCheckCommand`'s OWN, not JSON's, and that is the whole contract:
+ * whatever this prints must re-parse to the argv it was given. `JSON.stringify` looked
+ * right and was not - it escapes a tab as the two characters `\t`, which this parser reads
+ * literally as a backslash and a `t` (its double-quote rule honours `\"` and `\\` and
+ * nothing else, deliberately, so that `"C:\tmp"` is a path and not a tab). An argument
+ * carrying a control character therefore displayed as an argv that would run differently
+ * from the one configured.
+ *
+ * A raw control character inside double quotes round-trips exactly, because the parser
+ * copies everything up to the closing quote verbatim - so the fix is to escape LESS, not
+ * more: only the two characters that would end or escape the quoted run.
+ */
 export function formatCheckCommand(argv: readonly string[]): string {
-  return argv.map((arg) => (/[\s'"\\]/.test(arg) ? JSON.stringify(arg) : arg)).join(" ");
+  return argv
+    .map((arg) => (/[\s'"\\]/.test(arg) ? `"${arg.replace(/[\\"]/g, "\\$&")}"` : arg))
+    .join(" ");
 }
 
 export interface WorkflowCompletionClaim {

@@ -2525,6 +2525,21 @@ export const WorkflowConfigSchema = z.object({
   checkCommands: z
     .array(WorkflowCheckCommandSchema)
     .max(WORKFLOW_LIMITS.checkCommands)
+    // `(repoRoot, slot)` is the KEY `checkCommandFor` resolves by, so two entries sharing
+    // one are two commands an operator can see and only one that can ever run - which of
+    // them depends on array order, a thing no surface displays. The panel already replaces
+    // rather than appends on a repeat; this is the same rule for a direct API write, which
+    // otherwise stores a config the panel could not have produced.
+    //
+    // REFUSED, not silently deduplicated, for the reason this schema carries no `.catch()`:
+    // a write that quietly dropped one of two commands is a caller who sent two and is
+    // never told which survived.
+    .refine(
+      (commands) =>
+        new Set(commands.map((entry) => `${entry.repoRoot} ${entry.slot}`)).size
+          === commands.length,
+      { message: "Each repository may configure a slot only once" },
+    )
     .default([]),
 });
 export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;

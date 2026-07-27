@@ -639,10 +639,10 @@ kbd {
 document.addEventListener("click", (e) => {
   const more = e.target.closest("[data-menu]");
   document.querySelectorAll(".menu").forEach((m) => {
-    const own = more && more.parentElement.contains(m);
+    const own = Boolean(more && more.parentElement.contains(m));
     const open = own && m.dataset.open !== "true";
     m.dataset.open = String(open);
-    if (own) more.setAttribute("aria-expanded", String(open));
+    m.parentElement.querySelector("[data-menu]")?.setAttribute("aria-expanded", String(open));
   });
   if (more) return;
 

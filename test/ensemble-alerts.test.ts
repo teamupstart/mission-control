@@ -35,6 +35,9 @@ function summary(patch: Partial<EnsembleSummary> = {}): EnsembleSummary {
     launchedMembers: 3,
     maxMembers: 3,
     readyArtifacts: 0,
+    membersOut: 0,
+    membersNeedingInput: 0,
+    membersReady: 0,
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
@@ -45,9 +48,15 @@ function summary(patch: Partial<EnsembleSummary> = {}): EnsembleSummary {
     completedAt: null,
   };
   const merged = { ...base, ...patch };
-  // The daemon derives `attention` from status+unreadable; keep the fixture honest so a test
-  // reading it cannot drift from what the store would actually broadcast.
-  merged.attention = ensembleNeedsAttention({ status: merged.status, unreadable: merged.unreadable });
+  // The daemon derives `attention` from status, unreadable AND the blocked-member count; keep the
+  // fixture honest so a test reading it cannot drift from what the manager would actually
+  // broadcast. A member waiting on the operator is the third input, and it arrives here rather
+  // than as a new alert class - see the blocked-member test below.
+  merged.attention = ensembleNeedsAttention({
+    status: merged.status,
+    unreadable: merged.unreadable,
+    membersNeedingInput: merged.membersNeedingInput,
+  });
   return merged;
 }
 
@@ -118,6 +127,33 @@ test("completion, cancellation and failure are digest-only; unreadable and stuck
   );
   assert.equal(stuckFinalizing[0]?.id, "ensemble:ens-1:finalizing");
   assert.equal(stuckFinalizing[0]?.severity, "attention");
+});
+
+test("a blocked member raises the run's attention without inventing a second notification", () => {
+  // The whole point of the blocked-member wire: a run whose STATUS is `running` while a candidate
+  // sits on an unanswered question is a run that needs the operator, so the badge, the
+  // attention-first sort and the digest all light up.
+  const working = summary();
+  assert.equal(working.attention, false);
+  const blocked = summary({ membersNeedingInput: 1 });
+  assert.equal(blocked.attention, true, "a member waiting on you is the run waiting on you");
+  assert.match(digestLine(scope(blocked)), /1 ensemble attention/);
+  assert.equal(hasReportable(scope(blocked)), true);
+
+  // And deliberately NO new alert class. That member's own session already fired the
+  // session-level review/needs-input alert; a second OS notification for the same fact is a
+  // duplicate the operator has to dismiss twice. Revisit this decision before adding one.
+  assert.deepEqual(detectAlerts(scope(working), scope(blocked)), []);
+  assert.deepEqual(detectAlerts(scope(blocked), scope(working)), []);
+  // The classes that DO fire still fire while a member is blocked - the two are independent.
+  const parked = detectAlerts(
+    scope(blocked),
+    scope(summary({ status: "awaiting_decision", membersNeedingInput: 1 })),
+  );
+  assert.deepEqual(
+    parked.map((alert) => alert.id),
+    ["ensemble:ens-1:decision"],
+  );
 });
 
 test("a reconnect from an empty scope still surfaces an attention run, coalesced not stormed", () => {

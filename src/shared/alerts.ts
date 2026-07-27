@@ -411,9 +411,9 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   // ensemble: an orchestration run crossed a boundary worth telling you about. Edge-triggered
   // per (run, cause) off the compact summary - never off the full detail, which stays on HTTP -
   // so a reconnect that re-delivers the same summary, or a recovery that re-derives it, does not
-  // re-announce a decision you already saw. Only three kinds are attention (blocked on a person),
-  // and they are detected the same way `ensembleNeedsAttention` derives the dashboard badge, so
-  // the toast and the badge cannot disagree about what is waiting on you.
+  // re-announce a decision you already saw. These three run-owned causes raise attention alerts;
+  // `EnsembleSummary.attention` additionally rolls up a blocked member for visible attention, but
+  // deliberately leaves its notification to that member's existing session-level alert.
   const previousEnsembles = new Map((prev.ensembleSummaries ?? []).map((e) => [e.id, e]));
   for (const e of next.ensembleSummaries ?? []) {
     const beforeE = previousEnsembles.get(e.id);

@@ -186,6 +186,21 @@ the Away digest. Each is edge-triggered by stable run identity, so a reconnect o
 re-announces a decision you already saw. An ensemble toast deep-links to
 `#/workflows/ensembles/<id>`.
 
+A run needs your attention when it is **failed**, **cancelling**, parked on a **decision**,
+**unreadable** - or when **a member is waiting on your answer**. That last one is a question on a
+member's own session (a review from the ask channel, or a dialog on its pane), and it lights the run
+up wherever attention is read: the run row's dot, its attention-first sort, and the Away digest's
+count. It closes the disagreement where the candidate's card was red and asking a question while the
+run it belongs to still reported *working*.
+
+**A blocked member deliberately raises no alert of its own.** That member's session already fires
+the ordinary session-level review / needs-input alert, so a second ensemble notification would be
+the same fact asking to be dismissed twice. The signal is carried by the run's attention state
+instead - visible whenever you look, silent when you are not being interrupted. A member being
+**lost** (failed, withdrawn, eliminated) is likewise counted but never alerted: retry and restore
+are on the run's own surfaces, and a barrier that can no longer be met fails the run, which does
+alert.
+
 ## Restart and recovery
 
 Every effect is persist-before-act, so a daemon restart resumes rather than restarts:

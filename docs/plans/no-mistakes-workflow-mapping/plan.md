@@ -319,7 +319,8 @@ reproduces no-mistakes' "fix commits re-validate the whole branch" discipline.
   Inspector rather than performing delivery. Running both is coherent: personas gate the
   work, no-mistakes ships it, Inspector gates the shipped head.
 - **Deterministic command gates** - the adopted decision leaves them to CI and the
-  Inspector final gate.
+  Inspector final gate. **Superseded 2026-07-26**: `docs/plans/builtin-workflows/plan.md`
+  adopts a check node kind.
 
 ## Adopted decisions
 
@@ -329,6 +330,10 @@ Submitted through the Mission Control dashboard review on 2026-07-23:
    Evidence Auditor, Documentation Steward. The Lint/Housekeeping option was not adopted.
 2. **Deterministic test/lint command gates**: leave outside the graph. CI enforces them at
    the PR head; the Inspector final gate makes them binding. No check-node kind is planned.
+   **Superseded 2026-07-26** by `docs/plans/builtin-workflows/plan.md`, which adopts one. The
+   reasoning here holds for why a command gate is not a *Persona*; it does not hold for why it
+   is not a *node*. Deferring every deterministic check to CI lets a repair round pass all four
+   judges and only then discover the branch does not compile.
 3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: `.md` files shipped in-repo (`docs/personas/`). Originally decided as

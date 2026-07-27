@@ -512,7 +512,8 @@
       coherent: personas gate the work, no-mistakes ships it, Inspector gates the shipped
       head.</li>
     <li><b>Deterministic command gates</b> - the adopted decision leaves them to CI and the
-      Inspector final gate.</li>
+      Inspector final gate. <b>Superseded 2026-07-26</b>:
+      <code>docs/plans/builtin-workflows/plan.md</code> adopts a check node kind.</li>
   </ul>
 
   <h2 id="decisions">Adopted decisions</h2>
@@ -523,7 +524,11 @@
       adopted.</li>
     <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
       them at the PR head; the Inspector final gate makes them binding. No check-node kind is
-      planned.</li>
+      planned. <b>Superseded 2026-07-26</b> by
+      <code>docs/plans/builtin-workflows/plan.md</code>, which adopts one. The reasoning here
+      holds for why a command gate is not a <i>Persona</i>; it does not hold for why it is not
+      a <i>node</i>. Deferring every deterministic check to CI lets a repair round pass all
+      four judges and only then discover the branch does not compile.</li>
     <li><b>Ship tail</b>: as planned - graph success shows a missing-PR wait offering
       the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
       delivery nodes.</li>

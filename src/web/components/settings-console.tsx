@@ -1,22 +1,29 @@
 import type { ReactNode } from "react";
 import { Tooltip } from "./Tooltip.tsx";
 
-// The pieces the two OUTBOUND panels are drawn from - Inspector and Shipping, the only
-// two categories whose writes leave this machine.
+// The pieces a settings panel with a LEDGER is drawn from - Inspector, Shipping and
+// Foreman today.
 //
-// They are one shape deliberately, and were before this module existed: a master switch,
-// a posture line, a handful of knobs, a repository grant, and a per-pull-request ledger.
-// What changed is which half leads. The ledger used to be a 12px list at the bottom of a
-// vertical form, and it is the thing an operator opens either panel to READ - "what did
-// the Inspector say", "why has nothing merged" - while the knobs above it are set once
-// and then never touched. So the pane splits: controls in a narrow column, ledger in a
-// wide one, with a count strip over it that doubles as the filter.
+// The shape, not the subject matter, is what these panels share: a posture line saying
+// what the subsystem is doing right now, a handful of set-once knobs, and an append-only
+// record of what it has decided. What changed when this module appeared is which half
+// leads. The ledger used to be a 12px list at the bottom of a vertical form, and it is
+// the thing an operator opens the panel to READ - "what did the Inspector say", "why has
+// nothing merged", "what did the cheap tier decide" - while the knobs above it are set
+// once and then never touched. So the pane splits: controls in a narrow column, ledger in
+// a wide one, with a count strip over it that doubles as the filter.
+//
+// This module was `outbound-console.tsx` and its classes were `oc-`, justified as "the two
+// categories whose writes leave this machine". That framing stopped being true the moment
+// a `machine`-scoped panel adopted the shape: Foreman's ledger is a record of local
+// decisions and nothing in it leaves the laptop. The name now describes what is actually
+// common, which is the layout - see `docs/plans/settings-ops-console/plan.md` D1.
 //
 // Sharing the leaves is the same argument `session-bits.tsx` makes for the four session
-// drawings. Two panels that look alike because they ARE alike must not drift into looking
+// drawings. Panels that look alike because they ARE alike must not drift into looking
 // alike by coincidence: a chip restyled on one side and not the other says the two
 // subsystems work differently, which is exactly the thing this app cannot afford to imply
-// about "posts a comment" versus "lands a commit". Test: `outbound-console.test.ts`.
+// about "posts a comment" versus "lands a commit". Test: `settings-console.test.ts`.
 //
 // One thing that is NOT shared: the danger tone. The Inspector's live mode publishes a
 // comment; YOLO mode writes to a default branch and nothing here can take it back. The
@@ -46,12 +53,12 @@ export function ConsoleCard({
   children: ReactNode;
 }): React.JSX.Element {
   return (
-    <section className="oc-card" data-anchor={anchor}>
-      <div className="oc-card-head">
-        <h3 className="oc-card-title">{title}</h3>
+    <section className="sc-card" data-anchor={anchor}>
+      <div className="sc-card-head">
+        <h3 className="sc-card-title">{title}</h3>
         {action}
       </div>
-      <div className="oc-card-body">{children}</div>
+      <div className="sc-card-body">{children}</div>
     </section>
   );
 }
@@ -85,14 +92,14 @@ export function ConsoleSwitch({
 }): React.JSX.Element {
   return (
     <Tooltip label={tooltip}>
-      <label className={`oc-switch oc-switch-${tone}`}>
+      <label className={`sc-switch sc-switch-${tone}`}>
         <input
           type="checkbox"
           checked={checked}
           disabled={disabled}
           onChange={(e) => onChange(e.target.checked)}
         />
-        <span className="oc-switch-track" aria-hidden="true" />
+        <span className="sc-switch-track" aria-hidden="true" />
         <span className="sr-only">{label}</span>
       </label>
     </Tooltip>
@@ -114,8 +121,8 @@ export function ConsoleState({
   children: ReactNode;
 }): React.JSX.Element {
   return (
-    <p className={`oc-state oc-state-${tone}`}>
-      <span className={`oc-dot oc-dot-${tone}`} aria-hidden="true" />
+    <p className={`sc-state sc-state-${tone}`}>
+      <span className={`sc-dot sc-dot-${tone}`} aria-hidden="true" />
       {children}
     </p>
   );
@@ -149,12 +156,12 @@ export function ConsoleStrip({
   onPick: (id: string | null) => void;
 }): React.JSX.Element {
   return (
-    <div className="oc-strip">
+    <div className="sc-strip">
       {stats.map((s) => (
         <Tooltip key={s.id} label={s.hint}>
           <button
             type="button"
-            className={`oc-stat oc-stat-${s.tone ?? "plain"}${active === s.id ? " is-active" : ""}`}
+            className={`sc-stat sc-stat-${s.tone ?? "plain"}${active === s.id ? " is-active" : ""}`}
             aria-pressed={active === s.id}
             onClick={() => onPick(active === s.id ? null : s.id)}
           >
@@ -188,7 +195,7 @@ export function PrLink({
 }): React.JSX.Element {
   return (
     <Tooltip label={tooltip}>
-      <a className="oc-pr" href={url} target="_blank" rel="noreferrer">
+      <a className="sc-pr" href={url} target="_blank" rel="noreferrer">
         {repo}#{number}
       </a>
     </Tooltip>

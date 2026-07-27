@@ -15,7 +15,7 @@ import {
   ConsoleSwitch,
   PrLink,
   type ConsoleStat,
-} from "./outbound-console.tsx";
+} from "./settings-console.tsx";
 
 // The Inspector's settings category.
 //
@@ -29,7 +29,7 @@ import {
 // The knobs are set once. The ledger is the whole readout of a dry run, and the only
 // place an operator can see what the Inspector would have said before letting it speak;
 // as a 12px list under a vertical form it was the least legible thing on the page and the
-// most important. See `outbound-console.tsx` for the shape, which Shipping shares.
+// most important. See `settings-console.tsx` for the shape, which Shipping shares.
 
 const MODE_LABEL: Record<"dry-run" | "live", string> = {
   "dry-run": "Dry run - review and record findings, post nothing",
@@ -155,7 +155,7 @@ export function inspectorHealth(rows: readonly InspectorInspection[]): {
  * real ledger that is 49 rows of 50: the strip read "1 with findings, 0, 0, 0" over a
  * table of fifty, which does not say "one thing needs you", it says "this panel cannot
  * count". A strip that accounts for every row can be trusted the day one tile is the only
- * one that matters. Pinned by `outbound-console.test.ts`.
+ * one that matters. Pinned by `settings-console.test.ts`.
  */
 const STRIP: readonly { id: InspectionBucket; label: string; tone: ConsoleStat["tone"]; hint: string }[] =
   [
@@ -221,16 +221,16 @@ export function InspectorSettingsPanel({
   const rows = active === null ? inspections : inspections.filter((r) => inspectionBucket(r) === active.id);
 
   return (
-    <section className="settings-section oc-section">
-      <p className="settings-hint oc-lede">
+    <section className="settings-section sc-section">
+      <p className="settings-hint sc-lede">
         Reviews the pull requests Mission Control opened - and only those - against the
         repository's <code>INSPECTOR.md</code>. It comments on what it finds, answers replies in
         its own threads, re-reviews on every push, and closes its own threads once a push
         fixes them.
       </p>
 
-      <div className="oc-split">
-        <div className="oc-controls">
+      <div className="sc-split">
+        <div className="sc-controls">
           <ConsoleCard
             title="Inspector"
             anchor="inspector/enabled"
@@ -280,12 +280,12 @@ export function InspectorSettingsPanel({
               </p>
             )}
 
-            <fieldset className="oc-field oc-seg" data-anchor="inspector/mode">
-              <legend className="oc-field-label">Mode</legend>
-              <div className="oc-seg-row">
+            <fieldset className="sc-field sc-seg" data-anchor="inspector/mode">
+              <legend className="sc-field-label">Mode</legend>
+              <div className="sc-seg-row">
                 {(["dry-run", "live"] as const).map((m) => (
                   <Tooltip key={m} label={MODE_LABEL[m]}>
-                    <label className={`oc-seg-opt${mode === m ? " is-on" : ""}`}>
+                    <label className={`sc-seg-opt${mode === m ? " is-on" : ""}`}>
                       <input
                         type="radio"
                         name="inspector-mode"
@@ -301,14 +301,14 @@ export function InspectorSettingsPanel({
               <p className="settings-hint">{MODE_LABEL[mode]}.</p>
             </fieldset>
 
-            <div className="oc-field" data-anchor="inspector/provider">
-              <label className="oc-field-label" htmlFor="inspector-provider">
+            <div className="sc-field" data-anchor="inspector/provider">
+              <label className="sc-field-label" htmlFor="inspector-provider">
                 Provider
               </label>
               <Tooltip label="Which model provider the Inspector's review call is spawned with">
                 <select
                   id="inspector-provider"
-                  className="field-input oc-input"
+                  className="field-input sc-input"
                   value={config?.runner ?? "claude"}
                   disabled={!config}
                   onChange={(e) =>
@@ -337,7 +337,7 @@ export function InspectorSettingsPanel({
                 `<select>` over `modelChoicesFor` that Foreman, Models and the Persona
                 editor use, so an off-catalog id set by another build stays selectable
                 instead of silently reading as "no model chosen". */}
-            <div className="oc-field oc-model">
+            <div className="sc-field sc-model">
               <ModelSuggestions providerLabel={AGENT_IDENTITY[config?.runner ?? "claude"].label} />
               <ModelField
                 anchor="inspector/model"
@@ -376,20 +376,20 @@ export function InspectorSettingsPanel({
               health card that says it again in two more lines is noise. */}
           {inspections.length > 0 && (
             <ConsoleCard title="Health">
-              <p className="oc-health-row">
+              <p className="sc-health-row">
                 <span>Last completed review</span>
-                <span className="oc-health-value">{ago(health.lastSweep, now)}</span>
+                <span className="sc-health-value">{ago(health.lastSweep, now)}</span>
               </p>
-              <p className="oc-health-row">
+              <p className="sc-health-row">
                 <span>Last failure</span>
                 {health.failed ? (
                   <Tooltip label={health.failed.lastError ?? ""}>
-                    <span className="oc-health-value oc-health-bad">
+                    <span className="sc-health-value sc-health-bad">
                       {health.failed.repo}#{health.failed.number}
                     </span>
                   </Tooltip>
                 ) : (
-                  <span className="oc-health-value">none</span>
+                  <span className="sc-health-value">none</span>
                 )}
               </p>
             </ConsoleCard>
@@ -399,31 +399,31 @@ export function InspectorSettingsPanel({
         {/* Without this, dry run is indistinguishable from broken: it reviews, finds things,
             posts nothing, and says nothing anywhere. This is where you read what it WOULD
             have said before you let it speak. */}
-        <div className="oc-ledger" data-anchor="inspector/recent">
+        <div className="sc-ledger" data-anchor="inspector/recent">
           <ConsoleStrip
             stats={STRIP.map((s) => ({ ...s, count: tallies[s.id] }))}
             active={filter}
             onPick={setFilter}
           />
-          <div className="oc-table oc-table-inspector">
-            <div className="oc-head">
+          <div className="sc-table sc-table-inspector">
+            <div className="sc-head">
               <h3>Inspections</h3>
               {active && (
                 <Tooltip label="Show every adopted pull request again">
-                  <button type="button" className="oc-clear" onClick={() => setFilter(null)}>
+                  <button type="button" className="sc-clear" onClick={() => setFilter(null)}>
                     {active.label} only - show all
                   </button>
                 </Tooltip>
               )}
             </div>
-            <div className="oc-row oc-row-head" aria-hidden="true">
+            <div className="sc-row sc-row-head" aria-hidden="true">
               <span>Pull request</span>
               <span>Verdict</span>
               <span>Fixed</span>
-              <span className="oc-when">Reviewed</span>
+              <span className="sc-when">Reviewed</span>
             </div>
             {rows.length === 0 ? (
-              <p className="settings-hint oc-empty">
+              <p className="settings-hint sc-empty">
                 {inspections.length === 0
                   ? "Nothing yet. A pull request appears here once Mission Control opens one."
                   : EMPTY_FILTER[active!.id]}
@@ -433,7 +433,7 @@ export function InspectorSettingsPanel({
                 const bucket = inspectionBucket(row);
                 return (
                   <div
-                    className={`oc-row${bucket === "retired" ? " is-retired" : ""}`}
+                    className={`sc-row${bucket === "retired" ? " is-retired" : ""}`}
                     key={row.key}
                   >
                     <PrLink
@@ -442,22 +442,22 @@ export function InspectorSettingsPanel({
                       url={row.url}
                       tooltip={row.lastError ?? `Open ${row.repo}#${row.number} on GitHub`}
                     />
-                    <span className={`oc-verdict oc-verdict-${bucket}`}>
+                    <span className={`sc-verdict sc-verdict-${bucket}`}>
                       {inspectionSummary(row)}
                     </span>
                     {/* The Inspector's own evidence that it was worth running, and the one
                         tally nothing else in the app shows. Blank rather than "0", so the
                         column reads as a list of wins instead of a column of zeroes. */}
-                    <span className="oc-fixed">
+                    <span className="sc-fixed">
                       {row.resolvedFindings > 0 ? `${row.resolvedFindings} fixed` : ""}
                     </span>
-                    <span className="oc-when">{ago(row.lastReviewedAt, now)}</span>
+                    <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
                   </div>
                 );
               })
             )}
           </div>
-          <p className="settings-hint oc-foot">
+          <p className="settings-hint sc-foot">
             In dry run this table is the only place the Inspector's findings exist - nothing is
             posted, and nothing else in the app shows them.
           </p>

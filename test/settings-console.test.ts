@@ -21,8 +21,8 @@ import type { InspectorState } from "../src/web/useInspector.ts";
 import type { ShippingState } from "../src/web/useShipping.ts";
 import type { InspectorInspection } from "../src/shared/types.ts";
 
-// What is at stake: the two OUTBOUND panels are the only settings whose writes leave this
-// machine, and they are now drawn from one set of pieces (`outbound-console.tsx`). Two
+// What is at stake: the settings panels that own a LEDGER are drawn from one set of pieces
+// (`settings-console.tsx`), and Inspector and Shipping are the two this file covers. Two
 // things have to stay true, and neither is visible in a diff of one file.
 //
 //  1. The count strip is also the filter. A tile that says "3 blocked" and then shows two
@@ -238,12 +238,12 @@ function shippingHtml(): string {
   );
 }
 
-test("both outbound panels are drawn from the same console pieces", () => {
+test("both outbound panels are drawn from the same settings-console pieces", () => {
   for (const [name, html] of [
     ["inspector", inspectorHtml()],
     ["shipping", shippingHtml()],
   ] as const) {
-    for (const cls of ["oc-split", "oc-card", "oc-switch", "oc-state", "oc-strip", "oc-table"]) {
+    for (const cls of ["sc-split", "sc-card", "sc-switch", "sc-state", "sc-strip", "sc-table"]) {
       assert.match(html, new RegExp(cls), `${name} is missing ${cls}`);
     }
   }
@@ -261,7 +261,7 @@ test("the master switch is a real checkbox with an accessible name", () => {
 // The mode and method controls LOOK like segmented buttons and are still radios, so the
 // arrow keys walk the group and the legend names it.
 test("the segmented controls are radio groups in a fieldset, not buttons", () => {
-  assert.match(inspectorHtml(), /<fieldset class="oc-field oc-seg"[^>]*>\s*<legend/);
+  assert.match(inspectorHtml(), /<fieldset class="sc-field sc-seg"[^>]*>\s*<legend/);
   assert.match(inspectorHtml(), /<input type="radio"[^>]*name="inspector-mode"/);
   assert.match(shippingHtml(), /<input type="radio"[^>]*name="shipping-method"/);
 });

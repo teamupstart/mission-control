@@ -194,10 +194,11 @@ export const StatusLineIngestSchema = z.object({
   /**
    * The subscription's rate-limit windows, lifted from `payload.rate_limits`.
    *
-   * The ONLY local source of a real subscription's limits - OpenTelemetry has no quota
-   * metric, which is why the statusLine wrapper is still in the cost design at all.
-   * Cost is pointedly NOT taken from here even though the payload carries it: OTel owns
-   * cost, and one source per fact is what keeps two numbers from disagreeing on screen.
+   * This is the terminal transport for a real subscription's limits; an embedded Claude
+   * session can report the same account-global windows through its SDK driver. OpenTelemetry
+   * has no quota metric. Cost is pointedly NOT taken from here even though the payload
+   * carries it: OTel owns cost, and one source per fact is what keeps two numbers from
+   * disagreeing on screen.
    *
    * Every level is optional because every level is genuinely absent for someone: an
    * API-key user has no `rate_limits` at all, a session that has not yet had an API

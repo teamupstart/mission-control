@@ -506,7 +506,7 @@ export class Registry extends EventEmitter {
   private inspections = new Map<string, InspectorInspection>();
   private lastQueuePrune = 0;
   /**
-   * The last rate-limit reading any session's statusLine reported.
+   * The last rate-limit reading either Claude live transport reported.
    *
    * ONE value for the whole registry, not one per session, because that is what the fact
    * is: a five-hour window is a property of the ACCOUNT, and every session on the machine

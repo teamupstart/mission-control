@@ -628,8 +628,8 @@ yourself or on one the app merely discovered.
 
 ### Status line (optional)
 
-Claude Code runs your `statusLine` command on every render and pipes it a payload the
-hooks never carry: the live model, thinking level, context window, and your
+Claude Code runs your `statusLine` command on every terminal render and pipes it a payload
+the hooks never carry: the live model, thinking level, context window, and your
 subscription's rate-limit windows. Wrapping that command lets the daemon read it too:
 
 ```sh
@@ -644,8 +644,9 @@ you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 `statusLine` untouched.
 
 It makes the model / thinking / context figures on the cards exact (without it they come
-from a passive transcript read), and it is the only source of the
-[cost telemetry](#cost-telemetry) plan meters.
+from a passive transcript read), and supplies the [cost telemetry](#cost-telemetry) plan
+meters for terminal Claude sessions. Embedded Claude SDK sessions have no terminal status
+line; they fetch the same account windows through the SDK instead.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
@@ -926,21 +927,27 @@ sessions reads as calm for a while.
 Folding the row away keeps today's estimate visible beside the toggle, and the choice
 persists per machine like the layout.
 
-Three sources, each used for the one thing only it can do:
+Four transports feed the strip, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
 | **OpenTelemetry** | Claude Code's locally calculated `claude_code.cost.usage` estimate and `claude_code.token.usage` by tier, per session, model, and `query_source` |
-| **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of those, since OTel has no quota metric |
+| **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
+| **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
 
-The Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
-(`npm run install-statusline`); the estimated-cost figures don't, and Codex's windows need neither -
-they ride in a file the daemon is already reading for the model and context figures. They are two separate opt-ins
-because they are two different asks of your config - one adds an `env` block, the other
-rewrites the command that draws your terminal line. Only `--telemetry` adds the block and
-only `--uninstall` removes it: re-running `npm run setup` or any other installer leaves an
-existing block exactly as it found it, so **Settings → Cost** stays the one switch.
+Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
+(`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.
+That SDK lookup is optional live enrichment: a failure neither interrupts the session nor
+clears the last valid account gauge, and it never writes cost - OpenTelemetry remains Claude's
+one cost ledger. The estimated-cost figures don't need the wrapper, and Codex's windows need
+neither - they ride in the exact rollout file reported by app-server and read by the same
+runtime metadata poller that supplies model and context figures. Telemetry and the terminal
+wrapper remain separate opt-ins because they are two different asks of your config - one adds
+an `env` block, the other rewrites the command that draws your terminal line. Only `--telemetry`
+adds the block and only `--uninstall` removes it: re-running `npm run setup` or any other
+installer leaves an existing block exactly as it found it, so **Settings → Cost** stays the one
+switch.
 
 A plan meter disappears once its window resets rather than holding the last percentage -
 a quota that has already rolled over is not a figure worth showing, and the same rule
@@ -4223,7 +4230,7 @@ npm test               # unit tests (detection, correlation, hook mapping, dispa
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
-npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
+npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)

@@ -5,6 +5,7 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
 import { parseClients, parsePanes, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
+import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
 
 // What is at stake: the things the two backends disagree about, which used to be resolved at
@@ -186,18 +187,19 @@ test("a body beginning with a dash is typed, not parsed as flags", async () => {
   assert.equal(wez.calls[0]!.input, body);
   assert.ok(!wez.calls[0]!.args.includes(body), "the body must not be a wezterm argument");
 
-  // The terminator is still load-bearing everywhere a value genuinely IS an argument, and
-  // those are the cases a caller cannot move to stdin: the agent binary is a trailing
-  // argument of `new-session`, and a session name is what `rename-session` takes.
+  // The terminator is still load-bearing everywhere a value genuinely IS an argument. The
+  // shell-encoded agent command is one trailing argument of `new-session`, and a session
+  // name is what `rename-session` takes.
   const spawn = recorder();
   const mux = tmuxMultiplexer(spawn.exec);
+  const launchArgv = ["claude", "--model", "opus"];
   await mux.sessions!.spawnDetached({
     name: "api",
     cwd: "/w/api",
-    argv: ["claude", "--model", "opus"],
+    argv: launchArgv,
     sidePane: false,
   });
-  assert.deepEqual(spawn.calls[0]!.args.slice(-4), ["--", "claude", "--model", "opus"]);
+  assert.deepEqual(spawn.calls[0]!.args.slice(-2), ["--", shellCommand(launchArgv)]);
 
   await mux.sessions!.rename("api", "-wip");
   assert.deepEqual(spawn.calls.at(-1)!.args.slice(-2), ["--", "-wip"]);
@@ -263,14 +265,16 @@ test("a detached session gets its shell pane, and the session survives a failed 
     stubRun({ stdout: "", stderr: "", code: 0 }),
     stubRun({ stdout: "", stderr: "no room", code: 1 }),
   ]);
+  const argv = ["pi", "--session-id", "pi-id", "it's $HOME; $(printf injected)\nnext"];
   const res = await tmuxMultiplexer(exec).sessions!.spawnDetached({
     name: "api",
     cwd: "/w/api",
-    argv: ["claude", "--model", "opus"],
+    argv,
     sidePane: true,
   });
 
   // The split is a convenience; the session is what was asked for.
+  // One shell-encoded command preserves argv boundaries on tmux before and after 3.3.
   assert.equal(res.ok, true);
   assert.deepEqual(calls[0]!.args, [
     "new-session",
@@ -280,9 +284,7 @@ test("a detached session gets its shell pane, and the session survives a failed 
     "-c",
     "/w/api",
     "--",
-    "claude",
-    "--model",
-    "opus",
+    shellCommand(argv),
   ]);
   assert.equal(calls[1]!.args[0], "split-window");
 });

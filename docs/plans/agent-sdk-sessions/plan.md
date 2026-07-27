@@ -1,9 +1,11 @@
 # Agent SDK sessions
 
-Dispatched sessions today are driven by typing into terminal panes: bracketed paste, a
-measured settle window, an Enter that may or may not land, and a screen-scrape parser that
-reads permission prompts and `AskUserQuestion` menus off a pane capture so a cursor walk
-can answer them. This plan migrates dispatched Claude and Codex sessions to their vendors'
+The terminal mechanism this plan set out to replace drove sessions by typing into panes:
+bracketed paste, a measured settle window, an Enter that may or may not land, and a
+screen-scrape parser that reads permission prompts and `AskUserQuestion` menus off a pane
+capture so a cursor walk can answer them. The
+[README](../../../README.md#dispatch-an-agent) owns the current runtime-specific dispatch
+contract. This plan migrates dispatched Claude and Codex sessions to their vendors'
 programmatic interfaces - the Claude Agent SDK and Codex's `app-server` protocol - behind a
 shared abstraction, selected by a settings toggle, without adding new agent ids and without
 touching sessions an operator starts themselves.
@@ -16,7 +18,7 @@ The plan answers three questions:
 3. **How do we cut over and deprecate?** Toggle-gated phases that leave the terminal path
    intact for operator-started sessions (section: Phases).
 
-## Where the terminal path is today
+## Terminal-path baseline for this plan
 
 Four choke points carry every write to a session, and one parser carries every structured
 read:
@@ -148,7 +150,7 @@ The direct answer to "is there any current functionality we'd lose?".
 - **True interrupt, live mode/model changes** (`interrupt()`, `setPermissionMode`,
   `setModel`, `turn/steer`) instead of TUI walks that read footers which dialogs hide.
 - **Exact usage**: per-turn tokens and cost on the event stream, rather than inferred.
-- **Dispatch verification collapses**: `awaitReady`'s 20s hook wait, pi's session-file
+- **Dispatch verification collapses**: `awaitReady`'s hook wait, prompt acceptance
   polling, and `waitForSessionAtCwd` all become "the SDK reported init".
 
 ### Unchanged by design

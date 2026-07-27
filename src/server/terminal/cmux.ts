@@ -2,6 +2,7 @@ import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
+import { shellCommand } from "./shell.ts";
 import type {
   BinSpec,
   DetachedSessionSpec,
@@ -483,10 +484,8 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
        * documented and were verified end to end, by reading the bytes the spawned process
        * received. Paying a ref for that is the right trade; it is used once, immediately.
        *
-       * `argv` is joined with spaces and handed to cmux as one `--command` string, which
-       * cmux runs through a shell - the same delivery tmux gives it, and the same caveat: a
-       * value carrying a quote, a glob or a `;` is interpreted. Callers constrain their argv
-       * upstream (`ModelIdSchema`).
+       * cmux accepts one `--command` string and runs it through a shell, so the argv is
+       * encoded as shell words before it crosses that boundary.
        */
       async spawnDetached(spec: DetachedSessionSpec) {
         // `--` is NOT used, and that is not an oversight: cmux parses the trailing operand
@@ -500,7 +499,7 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
             "--cwd",
             spec.cwd,
             "--command",
-            spec.argv.join(" "),
+            shellCommand(spec.argv),
             "--focus",
             "false",
           ],

@@ -1275,7 +1275,7 @@ export interface Task {
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
-  /** The full task prompt injected as the agent's first message. */
+  /** The full task prompt delivered as the agent's first message. */
   intent: string;
   kind: TaskKind;
   agent: AgentType;

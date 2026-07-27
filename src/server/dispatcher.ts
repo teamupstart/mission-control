@@ -32,12 +32,7 @@ import { run } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
-import {
-  piPromptBaseline,
-  preparePiLaunch,
-  waitForPiLaunchReady,
-  waitForPiPromptAccepted,
-} from "./harness/pi/launch.ts";
+import { preparePiLaunch } from "./harness/pi/launch.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -111,9 +106,9 @@ export function dispatchPermissionModeArgs(agent: AgentType): string[] {
 }
 
 /**
- * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached terminal home there, wait for passive discovery and readiness to
- * bind that exact live session, then inject the task as its first prompt.
+ * Turns a task into a live agent: provision an isolated worktree, launch the agent through
+ * its selected runtime, bind that exact live session, then deliver the task as turn one
+ * through the harness's native launch or pane-input path.
  *
  * Every step patches the task through the registry so progress streams to the UI
  * over SSE. `dispatch` never throws - a failure lands the task in `failed` with a
@@ -125,8 +120,7 @@ export class Dispatcher {
     private teardown: typeof teardownWorktree = teardownWorktree,
     private deps: {
       inject?: typeof injectPrompt;
-      waitForPiReady?: typeof waitForPiLaunchReady;
-      waitForPiAcceptance?: typeof waitForPiPromptAccepted;
+      sleep?: typeof sleep;
       /**
        * The owner of embedded sessions, when the daemon constructed one.
        *
@@ -191,7 +185,7 @@ export class Dispatcher {
       // than the next restart. Everything above this line is identical on both paths -
       // provisioning a worktree is not a runtime question. After the SDK return, EVERYTHING
       // below is terminal-branch-only: the argv and ask-channel redirect, terminal home,
-      // `waitForSessionAtCwd`, `awaitReady` (including pi acceptance polling), and
+      // `waitForSessionAtCwd`, `awaitReady`, and
       // `deliverIntent` exist because pane launch and delivery cannot be acknowledged.
       if ((this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent) === "sdk") {
         await this.dispatchEmbedded(taskId, task, wt, model, effort, options.missionMcp ?? null);
@@ -221,7 +215,7 @@ export class Dispatcher {
         ? await prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch, missionMcp)
         : { args: [] as string[], instrumented: true, missionMcp: false };
       const piLaunch = task.agent === "pi"
-        ? preparePiLaunch()
+        ? preparePiLaunch(task.intent)
         : { args: [] as string[], sessionId: null };
       const askArgs = await askChannelArgs(task.agent, missionMcp);
       const agentArgs = [
@@ -262,19 +256,18 @@ export class Dispatcher {
       this.patch(taskId, { terminalResourceId: innermostTerminalResourceId(discovered) });
       if (await this.abortIfSettled(taskId)) return;
 
-      // Discovery only proves the process exists. Wait for the agent to prove it can
-      // READ before typing at it - see `awaitReady`.
+      // Discovery only proves the process exists. Hooked agents prove they can READ before
+      // we type; launch-prompt agents such as Pi only need to survive the settle window.
       const ready = await this.awaitReady(
         wt.path,
         discovered,
         codexLaunch.instrumented,
-        piLaunch.sessionId,
       );
       const session = piLaunch.sessionId
         ? this.registry.bindLaunchedAgentSession(ready.session.id, task.agent, piLaunch.sessionId)
         : ready.session;
       if (!session) throw new Error("agent session changed before its launch identity was recorded");
-      const { instrumented, piTranscriptPath } = ready;
+      const { instrumented } = ready;
       const readyResourceId = innermostTerminalResourceId(session);
       if (readyResourceId) this.patch(taskId, { terminalResourceId: readyResourceId });
       if (await this.abortIfSettled(taskId)) return;
@@ -284,13 +277,12 @@ export class Dispatcher {
       // race the process exiting or a launch-time dialog to read it off. Re-read the
       // session at the send boundary so a lingered exited snapshot cannot lend its pane.
       const deliverySession = this.requireLiveSession(session.id);
-      await this.deliverIntent(
-        deliverySession.id,
-        task.intent,
-        wt.path,
-        instrumented,
-        piTranscriptPath,
-      );
+      // Pi received turn one through its positional launch message. That native path calls
+      // `session.prompt()` only after the TUI is initialized, so injecting it here would run
+      // the task twice. Other terminal harnesses still need the pane delivery below.
+      if (!piLaunch.sessionId) {
+        await this.deliverIntent(deliverySession.id, task.intent, wt.path, instrumented);
+      }
 
       if (await this.abortIfSettled(taskId)) return;
       // First set for a dispatched task: `Task.sessionId` means "currently executing on"
@@ -427,10 +419,9 @@ export class Dispatcher {
    * Wait for the agent to be able to READ the prompt we're about to type.
    *
    * Discovery is a `ps` sweep: it fires when the binary is exec'd, seconds before any
-   * TUI exists. A hook-capable launch proves readiness with its first hook. A pi launch
-   * proves it when the file for its injected session id appears. The result keeps hook
-   * instrumentation separate from pi's transcript path because prompt acceptance uses
-   * different evidence after the send.
+   * TUI exists. A hook-capable launch proves readiness with its first hook. Pi needs no
+   * pane-write readiness signal because its initial prompt rides on the launch argv and is
+   * submitted by Pi after its own TUI initialization.
    *
    * The fallback is deliberate. An agent whose hooks aren't installed will never satisfy
    * this, and refusing to dispatch to it would be a regression, so a timeout degrades
@@ -440,57 +431,31 @@ export class Dispatcher {
    * "Aren't installed" and "don't exist" are different, though, and only the first is
    * worth waiting out. A harness that declares no `hooks` and no launch-scoped readiness
    * signal takes the fallback immediately. Ask the registry rather than the session for
-   * hook capability; pi's exact file is launch data supplied separately.
+   * hook capability.
    */
   private async awaitReady(
     cwd: string,
     discovered: Session,
     hooksPrepared = true,
-    piSessionId: string | null = null,
-  ): Promise<{ session: Session; instrumented: boolean; piTranscriptPath: string | null }> {
-    if (piSessionId) {
-      this.requireLiveSession(discovered.id);
-      const path = await (this.deps.waitForPiReady ?? waitForPiLaunchReady)(
-        cwd,
-        piSessionId,
-        HOOK_READY_MS,
-        SETTLE_MS,
-        {
-          isLive: () => {
-            const current = this.registry.getSession(discovered.id);
-            return !!current && current.state !== "exited";
-          },
-        },
-      );
-      if (!path) {
-        this.requireLiveSession(discovered.id);
-        throw new Error("pi session file never appeared before the initial prompt");
-      }
-      return {
-        session: this.requireLiveSession(discovered.id),
-        instrumented: false,
-        piTranscriptPath: path,
-      };
-    }
+  ): Promise<{ session: Session; instrumented: boolean }> {
     if (hooksPrepared && hooksFor(discovered.agent)) {
       const ready = await this.registry.waitForReadySessionAtCwd(
         cwd,
         discovered.id,
         HOOK_READY_MS,
       );
-      if (ready) return { session: ready, instrumented: true, piTranscriptPath: null };
+      if (ready) return { session: ready, instrumented: true };
     }
     // A null readiness result means either hook silence or an observed exit. Preserve
     // the fallback settle only for a live-but-silent session; an exited one has no TUI
     // left to settle and must fail immediately.
     this.requireLiveSession(discovered.id);
-    await sleep(SETTLE_MS);
+    await (this.deps.sleep ?? sleep)(SETTLE_MS);
     // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
     // been filled in since. Typing needs the freshest pane we have.
     return {
       session: this.requireLiveSession(discovered.id),
       instrumented: false,
-      piTranscriptPath: null,
     };
   }
 
@@ -512,16 +477,14 @@ export class Dispatcher {
    * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
    * it is what let a task sit `running` for 13 minutes against a session whose first
    * prompt was pasted 647ms before its TUI existed. Hooked sessions wait for the
-   * `working` transition only `UserPromptSubmit` can produce; pi waits for a user turn
-   * appended after the transcript byte boundary captured before delivery.
+   * `working` transition only `UserPromptSubmit` can produce.
    *
-   * The retry is gated on positive evidence: a hooked session is STILL idle, or pi's
-   * exact transcript still has no new user turn. It is not free: if the paste reached
-   * the input box but the Enter did not, a second paste concatenates onto the first and
-   * the agent reads its intent twice over. That is the accepted cost - a
-   * garbled-but-visible prompt a human can fix beats a session that sits empty and calls
-   * itself `running`, and if neither attempt takes, the task now FAILS loudly instead of
-   * lying.
+   * The retry is gated on positive evidence: a hooked session is STILL idle. It is not
+   * free: if the paste reached the input box but the Enter did not, a second paste
+   * concatenates onto the first and the agent reads its intent twice over. That is the
+   * accepted cost - a garbled-but-visible prompt a human can fix beats a session that sits
+   * empty and calls itself `running`, and if neither attempt takes, the task now FAILS
+   * loudly instead of lying.
    *
    * None of this transfers to the wrap-up, whose instruction pushes: there a second
    * delivery is a second PR, so it never retries. See queue-apply's `auto-wrapup`.
@@ -534,21 +497,15 @@ export class Dispatcher {
     intent: string,
     cwd: string,
     instrumented: boolean,
-    piTranscriptPath: string | null = null,
   ): Promise<void> {
-    const piOffset = piTranscriptPath ? piPromptBaseline(piTranscriptPath) : null;
-    if (piTranscriptPath && piOffset === null) {
-      throw new Error("pi transcript disappeared before the initial prompt could be sent");
-    }
-
     for (let attempt = 1; ; attempt++) {
       // Preflight before subscribing. If the process already exited, there will be no
       // prompt acknowledgement and no reason to retain a listener until its timeout.
       const session = this.requireLiveSession(sessionId);
 
       // Listen BEFORE typing - the hook can land before the next line runs.
-      const acceptanceAbort = instrumented && !piTranscriptPath ? new AbortController() : null;
-      const accepted = instrumented && !piTranscriptPath
+      const acceptanceAbort = instrumented ? new AbortController() : null;
+      const accepted = instrumented
         ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS, acceptanceAbort?.signal)
         : null;
 
@@ -567,24 +524,6 @@ export class Dispatcher {
       if (!sent.ok) {
         acceptanceAbort?.abort();
         throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
-      }
-      if (piTranscriptPath) {
-        const piAccepted = await (
-          this.deps.waitForPiAcceptance ?? waitForPiPromptAccepted
-        )(piTranscriptPath, piOffset!, ACCEPT_MS, {
-          isLive: () => {
-            const current = this.registry.getSession(sessionId);
-            return !!current && current.state !== "exited";
-          },
-        });
-        if (piAccepted) return;
-        this.requireLiveSession(sessionId);
-        if (attempt >= 2) {
-          throw new Error(
-            "the agent never acknowledged the initial prompt (it was typed but not ingested)",
-          );
-        }
-        continue;
       }
       if (!accepted) return;
       if (await accepted) return;

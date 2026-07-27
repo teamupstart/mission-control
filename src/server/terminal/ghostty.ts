@@ -1,6 +1,7 @@
 import { GHOSTTY_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
+import { shellCommand } from "./shell.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
@@ -314,9 +315,6 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
 
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
-        // `command` is a shell string, not an argv - the same divergence `TabSpec.argv`
-        // documents for tmux, and callers constrain these values upstream.
-        //
         // `initial working directory` is set whenever a cwd is asked for, and NOT quietly
         // skipped when it is absent from the dictionary, because `TabSpec.cwd` says an
         // emulator that cannot honour one must fail rather than open the tab elsewhere: a
@@ -326,7 +324,7 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
         const script =
           `tell application id "${BUNDLE_ID}"\n` +
           `set cfg to new surface configuration\n` +
-          `set command of cfg to ${asQuote(spec.argv.join(" "))}\n` +
+          `set command of cfg to ${asQuote(shellCommand(spec.argv))}\n` +
           (spec.cwd ? `set initial working directory of cfg to ${asQuote(spec.cwd)}\n` : "") +
           `set w to new window with configuration cfg\n` +
           `return id of (first terminal of (first tab of w)) & "${US}" & id of (first tab of w)\n` +

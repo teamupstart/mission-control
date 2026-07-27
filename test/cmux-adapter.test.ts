@@ -11,6 +11,7 @@ import {
   windowRefs,
 } from "../src/server/terminal/cmux.ts";
 import { bindPane, MULTIPLEXERS } from "../src/server/terminal/registry.ts";
+import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
 import { correlate } from "../src/server/discovery/correlate.ts";
 import { muxHandle, paneToken } from "../src/shared/pane.ts";
@@ -348,10 +349,11 @@ test("cmux name rules are cmux's, not tmux's", () => {
 
 test("spawnDetached runs the agent, unfocused, and does not split", async () => {
   const rec = recorder();
+  const argv = ["pi", "--session-id", "pi-id", "it's $HOME; $(printf injected)\nnext"];
   await cmuxMultiplexer(rec.exec).sessions!.spawnDetached({
     name: "api-worktree",
     cwd: "/repo",
-    argv: ["claude", "--model", "opus"],
+    argv,
     sidePane: true,
   });
 
@@ -366,10 +368,14 @@ test("spawnDetached runs the agent, unfocused, and does not split", async () => 
     "--cwd",
     "/repo",
     "--command",
-    "claude --model opus",
+    shellCommand(argv),
     "--focus",
     "false",
   ]);
+  assert.equal(
+    shellCommand(["two words", "it's", "$HOME;"]),
+    `'two words' 'it'"'"'s' '$HOME;'`,
+  );
 
   // `sidePane` is asked for and deliberately not delivered. cmux can split, but a second
   // terminal surface is exactly what triggers the tty mis-attribution above - so the

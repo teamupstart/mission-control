@@ -87,10 +87,12 @@
     The plan answers three questions: <strong>what would we lose</strong> (Tradeoffs),
     <strong>what is the abstraction</strong> (Architecture), and <strong>how do we cut
     over and deprecate</strong> (Phases). All five open choices were decided from the
-    Mission Control dashboard on 2026-07-24 - see Resolved decisions.
+    Mission Control dashboard on 2026-07-24 - see Resolved decisions. The
+    <a href="../../../README.md#dispatch-an-agent">README</a> owns the current
+    runtime-specific dispatch contract.
   </div>
 
-  <h2>Where the terminal path is today</h2>
+  <h2>Terminal-path baseline for this plan</h2>
   <p>Four choke points carry every write to a session, and one parser carries every
   structured read:</p>
   <ul>

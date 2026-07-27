@@ -2,6 +2,7 @@ import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
+import { shellCommand } from "./shell.ts";
 import type {
   DetachedSessionSpec,
   Key,
@@ -397,16 +398,12 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 
     sessions: {
       async spawnDetached(spec: DetachedSessionSpec) {
-        // tmux joins the trailing arguments with spaces and runs the result through a
-        // shell rather than exec'ing the argv, so anything carrying a quote or a glob is
-        // interpreted rather than passed. Callers constrain their argv upstream
-        // (`ModelIdSchema`); this comment is here so the next one knows to.
-        //
-        // `--` for the same reason as `send-keys`: the shell command is a trailing
-        // argument, so a binary or flag-first argv beginning with a dash would be parsed as
-        // a flag of `new-session` itself.
+        // tmux 3.3+ preserves multiple trailing argv elements, but older supported versions
+        // join them into shell text. Encode one command for both paths so a prompt remains
+        // one literal argument everywhere. `--` keeps a binary or flag-first command out of
+        // `new-session`'s own parser.
         const created = await cmd(
-          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", ...spec.argv],
+          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", shellCommand(spec.argv)],
           "tmux new-session failed",
           { timeoutMs: SESSION_TIMEOUT_MS },
         );

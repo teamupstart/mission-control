@@ -1099,12 +1099,14 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    one is installed (tmux adds a second **shell pane split beside it** for ad-hoc
    git/build/inspection), or a terminal tab in that worktree when no multiplexer is
    available. It waits for that exact discovered session to become ready, verifies it is
-   still live, and injects your task as its first prompt. A dispatched Pi proves startup
-   when its injected-id session file appears, then proves delivery only when that exact
-   file appends a new user turn. Metadata changes and generic `working` state do not
-   count. **Agent SDK** (Claude and Codex today) instead starts the embedded driver with
-   the task as turn one. It creates no terminal home and needs no discovery, readiness wait, paste,
-   or delivery retry; the driver's binding is the readiness signal.
+   still live, and injects your task as its first prompt. Pi instead receives both a
+   generated session ID and the task through its native positional launch message, which Pi
+   submits after initializing its TUI. Mission Control binds that generated ID for later
+   transcript attribution without waiting for Pi's lazily-created session file or injecting
+   the prompt into the pane a second time. **Agent SDK** (Claude and Codex today) instead
+   starts the embedded driver with the task as turn one. It creates no terminal home and
+   needs no discovery, readiness wait, paste, or delivery retry; the driver's binding is the
+   readiness signal.
 
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.
@@ -4207,8 +4209,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: settle delay before injecting the first prompt. Used after Pi's exact session file appears, after a hook wait times out, or immediately when no readiness signal exists; an observed exit fails instead. Agent SDK dispatch does not use a settle delay |
-| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the exact discovered session's readiness signal: the first hook for a hook-capable launch, or the injected-id session file for Pi. A missing Pi file fails the dispatch rather than allowing unverified input; hook silence falls back to the settle above if the session is still live. An observed exit ends either wait immediately. The hook wait is skipped when this particular launch could never produce one, including a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
+| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | terminal-runtime dispatch: how long to wait for the exact discovered session's first hook when that launch can produce one. Hook silence falls back to the settle above if the session is still live; an observed exit ends the wait immediately. The wait is skipped for hookless harnesses such as Pi and when a particular Codex launch could not install its [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): compacts one Preview submission's preserved raw evidence, with one fresh 45-second attempt after an unparsable reply and deterministic fallback on failure. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
 | `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): runs a fresh, tool-less Persona review. A Persona's own model override wins, then this variable, then the selected provider's balanced default |

@@ -30,9 +30,11 @@ is a permanent surface, smaller, not gone); pi (phase 6).
 Inherits C1-C10. What is actually retire-able is narrow, because the terminal runtime
 remains selectable per harness and operator sessions keep the whole pane stack:
 
-- `awaitReady` / `deliverIntent` / `waitForSessionAtCwd` / pi acceptance polling: still
-  live for terminal-runtime dispatches - NOT removable; verify the sdk branch never
-  reaches them and mark them terminal-branch-only in comments.
+- `waitForSessionAtCwd`, plus `awaitReady` / `deliverIntent` where a terminal launch still
+  needs them, remain live and are NOT removable; verify the sdk branch never reaches
+  them and mark them terminal-branch-only in comments. Pi's terminal launch now carries
+  turn one natively; the current contract is owned by the
+  [README](../../../README.md#dispatch-an-agent).
 - The ask-channel AskUserQuestion redirect (`askChannelArgs`): still live for
   terminal-runtime Claude dispatches - NOT removable; phase 2 already scoped it.
 - Phase 2's interim SDK-queue refusal: removed by phase 3 - verify no trace remains.

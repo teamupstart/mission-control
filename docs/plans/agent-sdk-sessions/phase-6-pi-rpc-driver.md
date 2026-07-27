@@ -45,8 +45,9 @@ Inherits C1-C9 (and C11 is owned here). Findings:
 - **pi today in this repo**: `hooks: null`, `tui: null`, `workQueue: null`,
   `permissionModes: null`, transcript non-null with messages, launch-scoped
   `--session-id` identity (`preparePiLaunch`, `bindLaunchedAgentSession`) - the pattern
-  the whole SDK design generalized. The RPC launch replaces that polling arm for
-  SDK-runtime dispatches; terminal pi dispatches keep it.
+  the whole SDK design generalized. The current terminal launch contract is owned by the
+  [README](../../../README.md#dispatch-an-agent); the RPC launch replaces that terminal
+  arm for SDK-runtime dispatches.
 - **Sessions**: `~/.pi/agent/sessions/--<cwd>--/<ts>_<uuid>.jsonl`; RPC mode still
   writes them, so `piTranscript.locate` works once `bound` supplies the session id
   (C5's read-path guarantee). Resume: `--session <path|id>`; interactive takeover uses
@@ -91,8 +92,9 @@ Inherits C1-C9 (and C11 is owned here). Findings:
 3. **Handoff**: implement `Harness.resume.argv(agentSessionId)` as
    `["--session", agentSessionId]`; the phase 2 route prepends `resolveAgentBin("pi")`
    without a pi-specific branch.
-4. **Dispatcher**: nothing pi-specific to add - the phase 2 branch covers it; verify the
-   terminal pi arm (`preparePiLaunch` + acceptance polling) is untouched for toggle-off.
+4. **Dispatcher**: nothing pi-specific to add - the phase 2 branch covers it; preserve
+   the terminal Pi launch contract documented in the
+   [README](../../../README.md#dispatch-an-agent) when the toggle is off.
 5. **Tests**: `pi-sdk-adapter.test.ts` on scripted JSONL frames (LF framing incl. a
    U+2028-in-content case, ui request/response matching, timeout resolution,
    new_session rotation, resume argv), capability/contract updates, queue authorization
@@ -100,8 +102,8 @@ Inherits C1-C9 (and C11 is owned here). Findings:
 
 ## Data and compatibility
 
-No schema changes. Terminal pi dispatch (toggle off) byte-identical, including the
-`--session-id` launch identity.
+No schema changes. Terminal Pi dispatch (toggle off) remains byte-identical to the
+contract documented in the [README](../../../README.md#dispatch-an-agent).
 
 ## Verification
 

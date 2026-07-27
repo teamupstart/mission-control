@@ -16,6 +16,7 @@ import type {
   PersonaSnapshot,
   WorkflowBinding,
   WorkflowNodeAttempt,
+  WorkflowJson,
   WorkflowRunDetail,
   WorkflowSubmission,
   WorkflowVersion,
@@ -1018,4 +1019,99 @@ test("binding selection reuses only the requested immutable version", () => {
     workflowBindingSelection([pausedOther], session, "version-one"),
     { existing: undefined, conflict: undefined },
   );
+});
+
+// ---- Check attempts ----
+//
+// A check carries a synthetic verdict so the Join, the repair packet and the engine need no
+// special case. That is exactly why the READER needs one: drawn as a Persona verdict, an
+// exit-code gate renders under "Missing persona" with a meta line offering "cost unavailable"
+// about a subprocess, and the exit code - the one fact a reader wants first - appears
+// nowhere. All of that renders cleanly and is simply wrong.
+
+const CHECK_NODE = "8a1f0b4e-1111-4000-8000-00000000000c";
+
+/** The same running run, with one check attempt in its latest round. */
+function detailWithCheck(output: WorkflowJson): WorkflowRunDetail {
+  const detail = runningDetail();
+  const latest = detail.submissions[detail.submissions.length - 1]!;
+  return {
+    ...detail,
+    attempts: [
+      ...detail.attempts,
+      attempt("attempt-check", latest.id, CHECK_NODE, snapshot("unused", "unused"), {
+        // A check attempt records no Persona, runner or model - it is not a model call.
+        persona: null,
+        runner: null,
+        model: null,
+        output,
+        verdict: {
+          verdict: "pass",
+          summary: "`npm test` passed.",
+          approvalDetails: { reason: "`npm test` passed.", evidence: [] },
+          confidence: 1,
+        },
+      }),
+    ],
+  } as WorkflowRunDetail;
+}
+
+test("a check attempt renders its slot, exit code and bounded output, not a Persona card", () => {
+  const html = render(detailWithCheck({
+    status: "failed",
+    slot: "typecheck",
+    command: ["npm", "run", "typecheck"],
+    exitCode: 2,
+    output: "src/thing.ts(4,1): error TS2345",
+    truncatedBytes: 1_200,
+    note: "`npm run typecheck` exited 2.",
+  }));
+  assert.match(html, /Check · typecheck/);
+  assert.match(html, /exit 2/);
+  assert.match(html, /error TS2345/);
+  assert.match(html, /npm run typecheck/);
+  // The omitted count is STATED, so nobody reads a bounded log as the whole one.
+  assert.match(html, /Earlier 1200 bytes of output were omitted\./);
+  // And none of the Persona card's vocabulary, which would be a lie about this attempt.
+  assert.doesNotMatch(html, /Missing persona/);
+  assert.doesNotMatch(html, /cost unavailable/);
+  assertNoGraphIds(html);
+});
+
+test("the three passing check statuses each say something different about why", () => {
+  const base = {
+    slot: "test" as const,
+    command: null,
+    exitCode: null,
+    output: "",
+    truncatedBytes: 0,
+  };
+  const skipped = render(detailWithCheck({
+    ...base,
+    status: "skipped",
+    note: "No test command is configured for this repository, so this gate was skipped.",
+  }));
+  assert.match(skipped, /Skipped/);
+  assert.match(skipped, /No command is configured for this slot here/);
+  assert.match(skipped, /no command configured/);
+
+  const unavailable = render(detailWithCheck({
+    ...base,
+    status: "unavailable",
+    note: "Workflow checks are switched off, so no command was run.",
+  }));
+  assert.match(unavailable, /Not run/);
+  assert.match(unavailable, /switched off/);
+
+  const passed = render(detailWithCheck({
+    status: "passed",
+    slot: "test",
+    command: ["npm", "test"],
+    exitCode: 0,
+    output: "",
+    truncatedBytes: 0,
+    note: "`npm test` passed.",
+  }));
+  assert.match(passed, /Passed/);
+  assert.match(passed, /ran in this repository and exited zero/);
 });

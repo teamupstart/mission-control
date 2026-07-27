@@ -140,6 +140,50 @@ export async function resolveRepoRoot(p: string): Promise<string | null> {
   }
 }
 
+/**
+ * The repository a path belongs to, AND the canonical form of the path itself.
+ *
+ * Two answers because resolving to a repository is lossy in one direction that a caller
+ * may need back: `/repo/packages/web` resolves to `/repo`, and a caller configuring a
+ * per-package command has no way to recover the package from the root alone. Callers that
+ * only want the repository keep using `resolveRepoRoot`.
+ *
+ * `path` is canonical (symlinks followed) so it can be compared against `repoRoot` by
+ * prefix, which is what makes "is this inside that repository" answerable at all.
+ */
+export async function resolveRepoPath(
+  p: string,
+): Promise<{ repoRoot: string; path: string } | null> {
+  const repoRoot = await resolveRepoRoot(p);
+  if (!repoRoot) return null;
+  // `path` is expressed against `repoRoot`, NOT against whichever tree the caller happened
+  // to be standing in. That distinction is the whole difficulty here: `resolveRepoRoot`
+  // walks a linked worktree back to the repository that owns it, so for a path inside
+  // `~/.treehouse/…/repo/packages/web` the root is the MAIN checkout and a bare realpath
+  // would answer with a path that is not inside it at all. A caller comparing the two by
+  // prefix would conclude "outside the repository" and discard a perfectly good
+  // subdirectory - which is the same lost-subdirectory bug one level down.
+  //
+  // So: take the subpath within the tree the caller named, then re-root it onto the
+  // repository. Sessions normally run in pooled worktrees, so this is the common case, not
+  // an exotic one.
+  const top = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
+  const toplevel = top.code === 0 ? top.stdout.trim() : "";
+  const canonical = (dir: string): string => {
+    try {
+      return realpathSync(dir);
+    } catch {
+      return dir;
+    }
+  };
+  const here = canonical(p);
+  const tree = toplevel ? canonical(toplevel) : "";
+  const sub = tree && here !== tree && here.startsWith(`${tree}/`)
+    ? here.slice(tree.length + 1)
+    : "";
+  return { repoRoot, path: sub ? join(repoRoot, sub) : repoRoot };
+}
+
 /** A resolved repo root a task may be filed against, or the sentence refusing it. */
 export type TaskRepoRoot = { ok: true; repoRoot: string } | { ok: false; error: string };
 

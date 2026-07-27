@@ -626,6 +626,27 @@
 
 .wf-run-verdict.is-pass { border-left-color: var(--idle); }
 .wf-run-verdict.is-fail { border-left-color: var(--danger); }
+/* A check card carries the same left rail, with a third tone: the two non-failing statuses
+   that never ran are neither a pass to celebrate nor a failure to act on. */
+.wf-run-check.is-passed { border-left-color: var(--idle); }
+.wf-run-check.is-failed { border-left-color: var(--danger); }
+.wf-run-check.is-skipped,
+.wf-run-check.is-unavailable { border-left-color: var(--muted); }
+.wf-run-check-sentence { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+.wf-run-check-output {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
 .wf-run-delivery.is-delivered { border-left-color: var(--idle); }
 .wf-run-delivery.is-uncertain,
 .wf-run-delivery.is-refused { border-left-color: var(--danger); }
@@ -1938,7 +1959,7 @@ body {
   border-color: color-mix(in oklab, currentColor 48%, var(--border-soft));
 }
 .rt-think-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--working);
   outline-offset: 1px;
 }
 .rt-think-glyph {
@@ -2952,7 +2973,7 @@ body {
   border-color: color-mix(in oklab, currentColor 38%, transparent);
 }
 .mode-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--working);
   outline-offset: 1px;
 }
 .mode-caret {
@@ -3060,7 +3081,7 @@ body {
   margin-left: auto;
   flex: none;
   font-size: 11px;
-  color: var(--accent);
+  color: var(--working);
 }
 .mode-opt-spin {
   margin-left: auto;
@@ -3068,7 +3089,7 @@ body {
   width: 10px;
   height: 10px;
   border: 1.5px solid color-mix(in oklab, var(--fg) 25%, transparent);
-  border-top-color: var(--accent);
+  border-top-color: var(--working);
   border-radius: 50%;
   animation: mode-spin 0.7s linear infinite;
 }
@@ -5972,7 +5993,7 @@ select:not([multiple]) option {
 }
 .complete-outcome:focus {
   outline: none;
-  border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+  border-color: color-mix(in oklab, var(--working) 60%, var(--border));
 }
 .complete-satisfy {
   display: flex;
@@ -9066,6 +9087,12 @@ select.ensemble-judge-persona {
 .workflow-node-session { border-color: color-mix(in oklab, #4a9eff 65%, var(--border)); }
 .workflow-node-persona { border-color: color-mix(in oklab, var(--working) 60%, var(--border)); }
 .workflow-node-all_pass { border-style: double; }
+/* Dashed, so a deterministic gate is distinguishable from a judging one at a glance and
+   without relying on hue alone. */
+.workflow-node-check {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--attention) 55%, var(--border));
+}
 .workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
 .workflow-node-kind {
   font: 700 9px var(--mono);
@@ -11172,6 +11199,72 @@ select.foreman-model-input {
   margin: 4px 0 0;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.wf-settings-checks { margin-top: 14px; }
+.wf-settings-checks-table { margin-top: 12px; }
+.wf-settings-check-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+/* Two lines, not four columns. A repository root and an argv are both long and neither
+   truncates usefully, so side-by-side columns squeezed each into a four-line wrap. The
+   identity (slot plus root) reads across the top and the command sits under it, which is
+   also the order the sentence above describes them in. */
+.wf-settings-check-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+}
+.wf-settings-check-slot {
+  font: 700 9.5px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.wf-settings-check-root {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* The command spans the full row on its own line: it is the thing that will actually run,
+   so it gets the width rather than sharing it with the path. Both rows are placed
+   EXPLICITLY - a full-width child breaks auto-placement, which otherwise pushed Remove down
+   to a third line of its own. */
+.wf-settings-check-argv {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.wf-settings-check-list li button {
+  grid-row: 1;
+  grid-column: 3;
+  align-self: start;
+}
+/* Wrapping, with a floor under each field: three inputs and a button on one line is
+   unreadable at the panel's width, and the path box is the one that needs room. */
+.wf-settings-check-add { flex-wrap: wrap; }
+.wf-settings-check-add > .field-input { min-width: 180px; flex: 1 1 180px; }
+.wf-settings-check-add select { flex: 0 0 auto; }
+/* The parsed argv, echoed back. Monospace and tabular so the operator counts arguments
+   rather than trusting a split they cannot see. */
+.wf-settings-check-preview {
+  font-family: var(--mono);
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 
@@ -14712,7 +14805,7 @@ select.sc-input {
   margin: 0 0 12px;
   font-size: 13.5px;
   line-height: 1.55;
-  color: var(--text);
+  color: var(--fg);
 }
 /* The deterministic tier. Sits under the prose as the thing you can always trust,
    so it reads as a subheading rather than competing with the narrative. */
@@ -14731,7 +14824,7 @@ select.sc-input {
   text-transform: none;
   letter-spacing: normal;
   font-weight: 500;
-  color: var(--text);
+  color: var(--fg);
 }
 .away-digest-list {
   margin: 0;

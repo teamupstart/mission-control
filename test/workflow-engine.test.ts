@@ -15,8 +15,10 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 
 function persona(
   id: string,
@@ -752,4 +754,305 @@ test("cancelling during an invalid Persona reply prevents a fresh parse-retry ca
     `SELECT COUNT(*) AS total FROM workflow_llm_calls WHERE run_id = 'run-cancel-retry'`,
   ).get() as { total: number };
   assert.equal(llmCalls.total, 1);
+});
+
+// ---- Check nodes ----
+//
+// What is at stake: a Check writes a SYNTHETIC verdict so the Join, the repair packet and
+// run detail need no special case. If any of that stopped being true the failure is silent -
+// the run advances, the card renders, and a failing build simply never reaches the agent.
+//
+// The other half is the budget. `pump()` wraps a whole attempt in ONE limiter, so the kind
+// has to be resolved before either is acquired. An inner check limiter would leave every
+// waiting and running check occupying one of the three tool-less model-review slots, which
+// is exactly what a separate budget exists to prevent, and nothing about the run would look
+// wrong while it happened.
+
+/** Session → p1 (Persona) and gate (Check) → Join → End, with the usual repair route. */
+const checkGraph: PublishedWorkflowGraph = {
+  nodes: [
+    { id: "session", kind: "session", position: { x: 0, y: 0 } },
+    { id: "p1", kind: "persona", persona: persona("p1", "Claude reviewer", "claude", "PASS_PERSONA"), position: { x: 200, y: 0 } },
+    { id: "gate", kind: "check", slot: "test", position: { x: 200, y: 200 } },
+    { id: "join", kind: "all_pass", position: { x: 450, y: 100 } },
+    { id: "end", kind: "end", outcome: "Complete", position: { x: 700, y: 0 } },
+  ],
+  edges: [
+    { id: "s-p1", source: "session", sourcePort: "submitted", target: "p1", targetPort: "activate" },
+    { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+    { id: "p1-pass", source: "p1", sourcePort: "pass", target: "join", targetPort: "result" },
+    { id: "p1-fail", source: "p1", sourcePort: "fail", target: "join", targetPort: "result" },
+    { id: "gate-pass", source: "gate", sourcePort: "pass", target: "join", targetPort: "result" },
+    { id: "gate-fail", source: "gate", sourcePort: "fail", target: "join", targetPort: "result" },
+    { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+    { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+  ],
+};
+
+const passingRunner = (id: LlmRunnerId): LlmRunner => ({
+  id,
+  label: id,
+  runInThread: null,
+  sandbox: null,
+  litter: null,
+  killLiveRuns() {},
+  async run() {
+    return JSON.stringify({
+      verdict: "pass",
+      summary: "Approved",
+      approvalDetails: { reason: "Intent is met", evidence: [] },
+      confidence: 0.9,
+    });
+  },
+});
+
+const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string | null }): PersonaExecutionView => ({
+  runner: { id: snapshot.runner ?? "claude", source: "config", unknown: null },
+  model: { id: snapshot.model ?? "fake-model", source: "config" },
+});
+
+const checkConfig = (over: Record<string, unknown> = {}) => ({
+  liveEnabled: false,
+  repoAllowlist: ["/repo"],
+  retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+  checksEnabled: true,
+  checkCommands: [{ repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] }],
+  ...over,
+});
+
+test("a passing check advances the graph and reaches the End through the Join", async () => {
+  const store = seedSubmission("check-pass", checkGraph);
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    checkDeps: {
+      execute: async () => ({ kind: "exited", exitCode: 0, output: "42 passing\n", truncatedBytes: 0 }),
+    },
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-pass");
+  await waitFor(() => store.getRun("run-check-pass")?.status === "completed");
+  await engine.stop();
+
+  const attempt = store.listAttempts("submission-check-pass").find((item) => item.nodeId === "gate");
+  assert.ok(attempt);
+  assert.equal(attempt.state, "completed");
+  // No runner and no model: a check is not a model call, and stamping it with a provider it
+  // never used would put a fiction in front of whoever reads the run.
+  assert.equal(attempt.runner, null);
+  assert.equal(attempt.model, null);
+  assert.equal(attempt.persona, null);
+  // The RAW outcome in output_json, so run detail prints an exit code rather than parsing
+  // one back out of prose.
+  const outcome = attempt.output as Record<string, unknown>;
+  assert.equal(outcome.status, "passed");
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.slot, "test");
+  assert.deepEqual(outcome.command, ["npm", "test"]);
+  // And a synthetic verdict beside it, which is what the Join actually reads.
+  assert.equal((attempt.verdict as Record<string, unknown>).verdict, "pass");
+  const receipts = store.listReceipts("submission-check-pass");
+  assert.equal(receipts.filter((receipt) => receipt.edgeId === "gate-pass").length, 1);
+  assert.equal(receipts.filter((receipt) => receipt.edgeId === "gate-fail").length, 0);
+  assert.equal(store.getRun("run-check-pass")?.currentPhase, "complete");
+});
+
+test("a failing check returns a repair packet to the Session, citing its own output", async () => {
+  const store = seedSubmission("check-fail", checkGraph);
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowConfig: () => checkConfig(),
+      checkDeps: {
+        execute: async () => ({
+          kind: "exited",
+          exitCode: 1,
+          output: "src/thing.ts(4,1): error TS2345: nope\n",
+          truncatedBytes: 0,
+        }),
+      },
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-check-fail");
+  await waitFor(() => store.getRun("run-check-fail")?.status === "waiting_for_session");
+  await waitFor(() => store.listDeliveries("run-check-fail").length === 1);
+  await manager.stop();
+
+  const attempt = store.listAttempts("submission-check-fail").find((item) => item.nodeId === "gate")!;
+  const verdict = attempt.verdict as {
+    verdict: string;
+    requestedChanges: Array<{ title: string; rationale: string; evidence: Array<{ kind: string; quote: string }> }>;
+  };
+  assert.equal(verdict.verdict, "fail");
+  assert.equal(verdict.requestedChanges.length, 1);
+  assert.match(verdict.requestedChanges[0]!.rationale, /TS2345/);
+  // A requested change must cite something. This phase answers that by ADDING an evidence
+  // kind rather than exempting check-authored changes: the rule exists so a human can trace
+  // a claim to its source, and a command's own output is exactly that source.
+  assert.deepEqual(verdict.requestedChanges[0]!.evidence.map((item) => item.kind), ["check"]);
+  assert.match(verdict.requestedChanges[0]!.evidence[0]!.quote, /TS2345/);
+  // The Join saw a fail and routed the round back to the Session.
+  assert.equal(store.getRun("run-check-fail")?.currentPhase, "persona_feedback");
+  assert.equal(store.getSubmission("submission-check-fail")?.status, "waiting_for_session");
+  const delivery = store.listDeliveries("run-check-fail")[0]!;
+  assert.equal(delivery.kind, "persona_feedback");
+  assert.equal(delivery.state, "prepared");
+  assert.match(delivery.payload, /## Check · test/);
+  assert.match(delivery.payload, /TS2345/);
+});
+
+test("startup recovery retries a persisted Check infrastructure error", async () => {
+  const recoveryGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("check-recovery", recoveryGraph);
+  const inactive = new WorkflowEngine(store);
+  inactive.activateSubmission("submission-check-recovery");
+  const first = store.latestAttemptForNode("submission-check-recovery", "gate")!;
+  store.finishAttempt(first.id, { state: "error", error: "lease interrupted" }, 10);
+
+  const recovered = new WorkflowEngine(store);
+  recovered.start();
+  const attempts = store.listAttempts("submission-check-recovery")
+    .filter((attempt) => attempt.nodeId === "gate")
+    .sort((a, b) => a.attempt - b.attempt);
+  assert.deepEqual(attempts.map((attempt) => [attempt.attempt, attempt.state]), [
+    [1, "error"],
+    [2, "retry_wait"],
+  ]);
+  assert.equal(attempts[1]?.persona, null);
+  await recovered.stop();
+  store.cancelRun("run-check-recovery", "test_cleanup", 11);
+});
+
+test("an unconfigured slot passes without the executor ever being asked", async () => {
+  // The contract a shipped workflow with check gates rests on, asserted end to end rather
+  // than only at the unit boundary: a fresh install has configured nothing.
+  const store = seedSubmission("check-skip", checkGraph);
+  let asked = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig({ checkCommands: [] }),
+    checkDeps: {
+      execute: async () => {
+        asked += 1;
+        return { kind: "exited", exitCode: 1, output: "should never run", truncatedBytes: 0 };
+      },
+    },
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-skip");
+  await waitFor(() => store.getRun("run-check-skip")?.status === "completed");
+  await engine.stop();
+
+  assert.equal(asked, 0);
+  const attempt = store.listAttempts("submission-check-skip").find((item) => item.nodeId === "gate")!;
+  assert.equal((attempt.output as Record<string, unknown>).status, "skipped");
+  assert.equal((attempt.verdict as Record<string, unknown>).verdict, "pass");
+});
+
+test("a check that could not run is an infrastructure retry, never a fail verdict", async () => {
+  const store = seedSubmission("check-infra", checkGraph);
+  let calls = 0;
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    checkDeps: {
+      execute: async () => {
+        calls += 1;
+        return { kind: "infrastructure", reason: "timed out after 600000ms" };
+      },
+    },
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-infra");
+  await waitFor(() => store.getRun("run-check-infra")?.status === "blocked");
+  await engine.stop();
+
+  // Three attempts and then blocked, exactly as a Persona's infrastructure path does.
+  assert.equal(calls, 3);
+  const attempts = store.listAttempts("submission-check-infra").filter((item) => item.nodeId === "gate");
+  assert.equal(attempts.length, 3);
+  assert.ok(attempts.every((item) => item.state === "error"));
+  // The load-bearing assertion: no fail receipt anywhere, so nothing accused the change of
+  // breaking a build that never finished running.
+  const receipts = store.listReceipts("submission-check-infra");
+  assert.equal(receipts.filter((receipt) => receipt.edgeId.startsWith("gate-")).length, 0);
+  assert.equal(store.getRun("run-check-infra")?.currentPhase, "infrastructure_error");
+});
+
+test("a check does not spend a review slot, and a review does not spend a check slot", async () => {
+  // Both directions, because getting the routing wrong in either produces a stall nobody
+  // can see: a shared budget just looks like a slow daemon.
+  const held: Array<() => void> = [];
+  const holdOne = () => new Promise<void>((resolve) => held.push(resolve));
+
+  const store = seedSubmission("check-budget", checkGraph);
+  // A review scheduler already saturated at its ceiling, and a check limiter already
+  // saturated at its own.
+  const reviewBusy = { active: 0 };
+  const checkBusy = { active: 0 };
+  const engine = new WorkflowEngine(store, () => {}, {
+    retryBaseMs: 1,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    workflowConfig: () => checkConfig(),
+    schedule: async (fn) => {
+      reviewBusy.active += 1;
+      try {
+        return await fn();
+      } finally {
+        reviewBusy.active -= 1;
+      }
+    },
+    checkSchedule: async (fn) => {
+      checkBusy.active += 1;
+      try {
+        return await fn();
+      } finally {
+        checkBusy.active -= 1;
+      }
+    },
+    checkDeps: {
+      execute: async () => {
+        // While the check runs, no review slot may be held by it.
+        assert.equal(reviewBusy.active, 0, "a check must not occupy a review slot");
+        await holdOne();
+        return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
+      },
+    },
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-budget");
+  await waitFor(() => checkBusy.active === 1);
+  // The Persona review runs to completion while the check is still held, so it plainly did
+  // not queue behind the check's budget.
+  await waitFor(() =>
+    store.listAttempts("submission-check-budget")
+      .some((item) => item.nodeId === "p1" && item.state === "completed"));
+  for (const release of held) release();
+  await waitFor(() => store.getRun("run-check-budget")?.status === "completed");
+  await engine.stop();
 });

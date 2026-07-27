@@ -17,19 +17,45 @@ export interface WorkflowGraphValidationInput {
   completionPolicy?: WorkflowCompletionPolicy;
 }
 
-const sourcePorts: Record<WorkflowDraftNode["kind"], readonly WorkflowSourcePort[]> = {
+export const WORKFLOW_NODE_SOURCE_PORTS: Record<
+  WorkflowDraftNode["kind"],
+  readonly WorkflowSourcePort[]
+> = {
   session: ["submitted"],
   persona: ["pass", "fail"],
   all_pass: ["pass", "fail"],
+  check: ["pass", "fail"],
   end: [],
 };
 
-const targetPorts: Record<WorkflowDraftNode["kind"], readonly WorkflowTargetPort[]> = {
+export const WORKFLOW_NODE_TARGET_PORTS: Record<
+  WorkflowDraftNode["kind"],
+  readonly WorkflowTargetPort[]
+> = {
   session: ["return_for_changes"],
   persona: ["activate"],
   all_pass: ["result"],
+  check: ["activate"],
   end: ["terminal"],
 };
+
+/**
+ * How each kind is spoken to a human in a diagnostic.
+ *
+ * A lookup rather than the two-way ternary this replaced: that ternary said "Persona" for
+ * everything that was not a Join, so the third kind to route through it would have been
+ * diagnosed under another kind's name.
+ */
+const NODE_LABELS: Record<WorkflowDraftNode["kind"], string> = {
+  session: "Session",
+  persona: "Persona",
+  all_pass: "Join",
+  check: "Check",
+  end: "End",
+};
+
+/** Kinds that decide an outcome, so both routes off them have to exist. */
+const OUTCOME_KINDS: readonly WorkflowDraftNode["kind"][] = ["persona", "all_pass", "check"];
 
 const diagnostic = (
   code: WorkflowDiagnostic["code"],
@@ -151,11 +177,11 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       continue;
     }
     let valid = true;
-    if (!sourcePorts[source.kind].includes(edge.sourcePort)) {
+    if (!WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(edge.sourcePort)) {
       diagnostics.push(diagnostic("invalid_source_port", `${source.kind} cannot emit “${edge.sourcePort}”.`, { edgeId: edge.id, nodeId: source.id }));
       valid = false;
     }
-    if (!targetPorts[target.kind].includes(edge.targetPort)) {
+    if (!WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(edge.targetPort)) {
       diagnostics.push(diagnostic("invalid_target_port", `${target.kind} cannot receive “${edge.targetPort}”.`, { edgeId: edge.id, nodeId: target.id }));
       valid = false;
     }
@@ -177,13 +203,13 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
     }
   }
   for (const node of graph.nodes) {
-    if (node.kind !== "persona" && node.kind !== "all_pass") continue;
+    if (!OUTCOME_KINDS.includes(node.kind)) continue;
     const outgoing = outgoingEdges(node.id);
     if (!outgoing.some((edge) => edge.sourcePort === "pass")) {
-      diagnostics.push(diagnostic("missing_pass_route", `${node.kind === "persona" ? "Persona" : "Join"} needs a pass route.`, { nodeId: node.id }));
+      diagnostics.push(diagnostic("missing_pass_route", `${NODE_LABELS[node.kind]} needs a pass route.`, { nodeId: node.id }));
     }
     if (!outgoing.some((edge) => edge.sourcePort === "fail")) {
-      diagnostics.push(diagnostic("missing_fail_route", `${node.kind === "persona" ? "Persona" : "Join"} needs a fail route.`, { nodeId: node.id }));
+      diagnostics.push(diagnostic("missing_fail_route", `${NODE_LABELS[node.kind]} needs a fail route.`, { nodeId: node.id }));
     }
   }
 
@@ -195,8 +221,11 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
     }
     for (const predecessorId of predecessorIds) {
       const predecessor = nodes.get(predecessorId)!;
-      if (predecessor.kind !== "persona" && predecessor.kind !== "all_pass") {
-        diagnostics.push(diagnostic("join_predecessor_kind", "A Join predecessor must be a Persona or another Join.", { nodeId: join.id }));
+      // Anything that decides a pass/fail outcome may feed a Join, which is now three kinds.
+      // Session and End are still refused: one produces a submission rather than a verdict,
+      // and the other consumes one.
+      if (!OUTCOME_KINDS.includes(predecessor.kind)) {
+        diagnostics.push(diagnostic("join_predecessor_kind", "A Join predecessor must be a Persona, a Check, or another Join.", { nodeId: join.id }));
       }
       for (const port of ["pass", "fail"] as const) {
         const count = incoming.filter((edge) => edge.source === predecessorId && edge.sourcePort === port).length;
@@ -271,7 +300,7 @@ export function connectionAllowed(
   target: WorkflowDraftNode,
   targetPort: WorkflowTargetPort,
 ): boolean {
-  return sourcePorts[source.kind].includes(sourcePort) &&
-    targetPorts[target.kind].includes(targetPort) &&
+  return WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(sourcePort) &&
+    WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(targetPort) &&
     (target.kind !== "session" || (sourcePort === "fail" && targetPort === "return_for_changes"));
 }

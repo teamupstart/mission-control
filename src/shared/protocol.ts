@@ -13,8 +13,11 @@ import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_CONFIG,
+  EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
   WORKFLOW_BINDING_STATES,
+  WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_CHECK_STATUSES,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
@@ -2141,6 +2144,12 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
     id: WorkflowNodeIdSchema,
+    kind: z.literal("check"),
+    slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
+  z.object({
+    id: WorkflowNodeIdSchema,
     kind: z.literal("end"),
     outcome: WorkflowOutcomeSchema,
     position: WorkflowPointSchema,
@@ -2156,6 +2165,14 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     position: WorkflowPointSchema,
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
+  // Identical to the draft arm: a Check snapshots nothing, because its command is
+  // deliberately not part of the version.
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("check"),
+    slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
   z.object({
     id: WorkflowNodeIdSchema,
     kind: z.literal("end"),
@@ -2218,7 +2235,7 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson> = z.lazy(() =>
 
 const WorkflowVerdictTextSchema = z.string().trim().min(1);
 export const WorkflowEvidenceRefSchema = z.object({
-  kind: z.enum(["diff", "transcript", "standard", "goal", "decision"]),
+  kind: z.enum(EVIDENCE_REF_KINDS),
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
@@ -2469,6 +2486,36 @@ export const WorkflowInspectorGateStateSchema = z.object({
     .max(INSPECTOR_LIMITS.maxFindingFingerprints),
 });
 
+/**
+ * One repository's command for one slot.
+ *
+ * `command` is bounded three ways because it is a durable blob an operator types: element
+ * count, per-element length, and joined length. An unbounded argv is a blob nobody bounded,
+ * and the joined bound is the one that matters - 32 arguments of 1,000 characters each is
+ * an argv no `execve` will take anyway.
+ */
+export const WorkflowCheckCommandSchema = z.object({
+  repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
+  slot: z.enum(WORKFLOW_CHECK_SLOTS),
+  command: z
+    .array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg))
+    .min(1)
+    .max(WORKFLOW_LIMITS.checkCommandArgs)
+    .refine(
+      (argv) => argv.join(" ").length <= WORKFLOW_LIMITS.checkCommandLength,
+      { message: `Check command exceeds ${WORKFLOW_LIMITS.checkCommandLength} characters` },
+    ),
+});
+
+/**
+ * The STRICT schema, and the one the PUT route parses.
+ *
+ * No `.catch()` anywhere in it, deliberately: this is a write path, and `.catch()` on a
+ * write turns an invalid value from the panel into a silent no-op - the field reverts on
+ * the next poll and nothing says why - where a 400 is a refusal an operator can read. Read
+ * tolerance is `StoredWorkflowConfigSchema` below, which is a different question asked of
+ * the same shape.
+ */
 export const WorkflowConfigSchema = z.object({
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
@@ -2480,8 +2527,56 @@ export const WorkflowConfigSchema = z.object({
     maxCompletedRuns: z.number().int().min(100).max(10_000)
       .default(DEFAULT_WORKFLOW_CONFIG.retention.maxCompletedRuns),
   }).default(DEFAULT_WORKFLOW_CONFIG.retention),
+  checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.checksEnabled),
+  checkCommands: z
+    .array(WorkflowCheckCommandSchema)
+    .max(WORKFLOW_LIMITS.checkCommands)
+    // `(repoRoot, slot)` is the KEY `checkCommandFor` resolves by, so two entries sharing
+    // one are two commands an operator can see and only one that can ever run - which of
+    // them depends on array order, a thing no surface displays. The panel already replaces
+    // rather than appends on a repeat; this is the same rule for a direct API write, which
+    // otherwise stores a config the panel could not have produced.
+    //
+    // REFUSED, not silently deduplicated, for the reason this schema carries no `.catch()`:
+    // a write that quietly dropped one of two commands is a caller who sent two and is
+    // never told which survived.
+    .refine(
+      (commands) =>
+        new Set(commands.map((entry) => `${entry.repoRoot} ${entry.slot}`)).size
+          === commands.length,
+      { message: "Each repository may configure a slot only once" },
+    )
+    .default([]),
 });
 export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
+
+/**
+ * The same shape read back off `app_config`, where a value this build cannot parse must not
+ * throw.
+ *
+ * `.default()` already covers an UPGRADE - a blob written before a field existed simply
+ * lacks it - so this outer `.catch()` is only for a blob that is present and unreadable: a
+ * downgrade from a newer build, or a hand-edited row. `getWorkflowConfig` is on the path of
+ * every workflow read, every binding gate and the retention sweep, so a throw there takes
+ * all of them down over a preference.
+ *
+ * It falls back to the COMPLETE default rather than field by field, and that is the honest
+ * reading: the two consent fields are what an unreadable config would otherwise be trusted
+ * to grant, and defaulting them off is the only safe direction. An operator whose config
+ * cannot be read sees the panel showing defaults, which is a state they can fix.
+ */
+export const StoredWorkflowConfigSchema = WorkflowConfigSchema.catch(DEFAULT_WORKFLOW_CONFIG);
+
+/** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
+export const WorkflowCheckOutcomeSchema = z.object({
+  status: z.enum(WORKFLOW_CHECK_STATUSES),
+  slot: z.enum(WORKFLOW_CHECK_SLOTS),
+  command: z.array(z.string()).nullable(),
+  exitCode: z.number().int().nullable(),
+  output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
+  truncatedBytes: z.number().int().min(0),
+  note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+});
 
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),

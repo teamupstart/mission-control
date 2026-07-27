@@ -1,5 +1,7 @@
 import type {
   PersonaVerdict,
+  WorkflowCheckOutcome,
+  WorkflowCheckStatus,
   WorkflowContextSnapshot,
   WorkflowDeliveryState,
   WorkflowGateSummary,
@@ -12,6 +14,7 @@ import type {
   WorkflowRunStatus,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
+import { WorkflowCheckOutcomeSchema } from "@shared/protocol.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import { WorkflowApiError } from "./workflowApi.ts";
 
@@ -350,6 +353,54 @@ const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {
 
 export function attemptStateLabel(state: WorkflowNodeAttemptState): string {
   return ATTEMPT_STATE_LABELS[state];
+}
+
+/**
+ * What each check status MEANS, as the sentence a reader gets under the outcome.
+ *
+ * A `Record` over the durable enum, so a fifth status added to `WORKFLOW_CHECK_STATUSES`
+ * fails typecheck here until somebody says what it means to a human - which is the whole
+ * reason vocabulary lives in this file rather than inline in the component.
+ *
+ * Three of the four are passes, and each says so differently on purpose: a reader has to be
+ * able to tell a gate that ran and was satisfied from one that never ran at all, and the
+ * two ways of never running need different things done about them.
+ */
+const CHECK_STATUS_SENTENCES: Record<WorkflowCheckStatus, { label: string; sentence: string }> = {
+  passed: {
+    label: "Passed",
+    sentence: "The configured command ran in this repository and exited zero.",
+  },
+  failed: {
+    label: "Failed",
+    sentence: "The configured command ran and exited non-zero. Its output is below.",
+  },
+  skipped: {
+    label: "Skipped",
+    sentence: "No command is configured for this slot here, so the gate passed without running.",
+  },
+  unavailable: {
+    label: "Not run",
+    sentence: "The gate could not run and passed rather than blocking. The note says why.",
+  },
+};
+
+export function checkStatusView(status: WorkflowCheckStatus): { label: string; sentence: string } {
+  return CHECK_STATUS_SENTENCES[status];
+}
+
+/**
+ * The check outcome an attempt recorded, or null when this attempt is not a check.
+ *
+ * Read from `output_json` rather than re-derived from the synthetic verdict's prose: the
+ * exit code and the omitted-byte count are facts the runner measured, and parsing them back
+ * out of a sentence is how a display and a gate come to disagree.
+ */
+export function checkOutcomeOf(
+  attempt: Pick<WorkflowNodeAttempt, "output">,
+): WorkflowCheckOutcome | null {
+  const parsed = WorkflowCheckOutcomeSchema.safeParse(attempt.output);
+  return parsed.success ? parsed.data : null;
 }
 
 export interface ErrorView {

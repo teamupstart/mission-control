@@ -43,7 +43,12 @@ import type {
   WorkflowTriggerSource,
   WorkflowInspectorGateState,
 } from "@shared/workflow.ts";
-import { WORKFLOW_EXTERNAL_SOURCE_KINDS, normalizeWorkflowName } from "@shared/workflow.ts";
+import {
+  WORKFLOW_EXTERNAL_SOURCE_KINDS,
+  isVerdictNode,
+  normalizeWorkflowName,
+  verdictAuthor,
+} from "@shared/workflow.ts";
 import {
   PersonaVerdictSchema,
   WorkflowCaptureExpectationSchema,
@@ -66,6 +71,7 @@ import {
   createReviewScheduler,
   type ReviewScheduler,
 } from "../llm/review-scheduler.ts";
+import type { CheckScheduler } from "./checks.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
@@ -176,6 +182,13 @@ export interface WorkflowManagerOptions {
    * alike. Constructed here only so a test or a second embedder still gets a real ceiling.
    */
   reviewScheduler?: ReviewScheduler;
+  /**
+   * The daemon's ceiling on check commands, which is a DIFFERENT budget from the review one
+   * and must stay that way: a three-minute test suite spending a review slot would starve
+   * the Persona reviews that budget exists to pace. Unlike `reviewScheduler` this one has a
+   * single spender, so it is passed straight through rather than held here.
+   */
+  checkScheduler?: CheckScheduler;
   /**
    * Whether an external orchestrator may claim this session right now.
    *
@@ -310,6 +323,9 @@ export class WorkflowManager {
       {
         ...options.engine,
         schedule: this.schedule,
+        // After the spread, for `schedule`'s reason: a caller must not be able to hand the
+        // engine a second check budget alongside the daemon's.
+        ...(options.checkScheduler ? { checkSchedule: options.checkScheduler } : {}),
         onSubmissionWaiting: (submissionId) => {
           this.scheduleWaitingDelivery(submissionId);
           configuredWaiting?.(submissionId);
@@ -2918,14 +2934,20 @@ export class WorkflowManager {
   }
 
   private priorFeedback(runId: string): PersonaFeedbackSummary[] {
+    const run = this.store.getRun(runId);
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const nodes = new Map(
+      (version?.graph.nodes ?? []).filter(isVerdictNode).map((node) => [node.id, node]),
+    );
     const submissions = this.store.listSubmissions(runId);
     return submissions.flatMap((submission) =>
       this.store.listAttempts(submission.id).flatMap((attempt) => {
         const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
-        if (!parsed.success || parsed.data.verdict !== "fail" || !attempt.persona) return [];
+        const node = nodes.get(attempt.nodeId);
+        if (!parsed.success || parsed.data.verdict !== "fail" || !node) return [];
         const verdict: PersonaVerdict = parsed.data;
         return [{
-          personaName: attempt.persona.name,
+          personaName: verdictAuthor(node),
           summary: verdict.summary,
           requestedChanges: verdict.requestedChanges.map((item) => item.title),
         }];

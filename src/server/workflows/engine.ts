@@ -10,9 +10,18 @@ import type {
   WorkflowEdge,
   WorkflowJson,
   WorkflowNodeAttempt,
+  WorkflowRun,
   WorkflowSubmission,
   WorkflowVersion,
   PersonaExecutionView,
+  WorkflowCheckOutcome,
+  WorkflowConfig,
+} from "@shared/workflow.ts";
+import {
+  WORKFLOW_EXECUTION_LIMITS,
+  checkOutcomePasses,
+  isVerdictNode,
+  verdictAuthor,
 } from "@shared/workflow.ts";
 import { llmRunner } from "../llm/index.ts";
 import { runStructured } from "../llm/structured.ts";
@@ -22,8 +31,17 @@ import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
-import { parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
+import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
+import { getWorkflowConfig } from "./config.ts";
+import {
+  DEFAULT_CHECK_CONCURRENCY,
+  createCheckScheduler,
+  runCheck,
+  tailBounded,
+  type CheckRunDeps,
+  type CheckScheduler,
+} from "./checks.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 const PERSONA_TIMEOUT_MS = 120_000;
@@ -45,10 +63,28 @@ export interface WorkflowEngineOptions {
   onSubmissionWaiting?: (submissionId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
+  /**
+   * The daemon's ceiling on check commands, which is NOT the review budget.
+   *
+   * Injected from `src/server/index.ts` beside the review scheduler for the same reason that
+   * one is: a subsystem reaching for a private limiter is a subsystem whose "two" quietly
+   * becomes four.
+   */
+  checkSchedule?: CheckScheduler;
+  /** Only consulted when no check scheduler is injected. */
+  checkConcurrency?: number;
+  /** The execution runtime a Check reaches, absent in a build that ships none. */
+  checkDeps?: CheckRunDeps;
+  /** Read per attempt, never cached, so a Settings edit lands on the next check. */
+  workflowConfig?: () => WorkflowConfig;
 }
 
 function isPersona(node: PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "persona" }> {
   return node.kind === "persona";
+}
+
+function isCheck(node: PublishedWorkflowNode): node is Extract<PublishedWorkflowNode, { kind: "check" }> {
+  return node.kind === "check";
 }
 
 function jsonValue(value: unknown): WorkflowJson {
@@ -75,6 +111,53 @@ function edgesFrom(graph: PublishedWorkflowGraph, nodeId: string, port: "submitt
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
 }
 
+/**
+ * A check outcome as a verdict the rest of the engine already understands.
+ *
+ * `confidence: 1` is the honest figure and not a flourish: an exit code is not a judgement
+ * a model might have got wrong, and a check that reported 0.8 would invite a reader to
+ * discount it.
+ *
+ * The failing arm cites `kind: "check"`. A requested change must carry at least one
+ * `EvidenceRef` (`verdict.ts`), and this phase answers that by ADDING a kind rather than
+ * exempting check-authored changes: the requirement exists so a human can trace a claim to
+ * its source, and a command's own output is exactly that source. Exempting the one author
+ * whose evidence is machine-produced would have weakened the rule for its strongest case.
+ *
+ * Routed through `normalizePersonaVerdict` rather than trusted: it clips every field to the
+ * same bounds a model's verdict is held to, and returns null if the result is still not
+ * valid - which the caller turns into an infrastructure failure rather than a fail verdict.
+ * A build log with an empty tail would otherwise produce an empty `rationale`, which the
+ * strict schema refuses.
+ */
+function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
+  const summary = outcome.note;
+  if (checkOutcomePasses(outcome)) {
+    return normalizePersonaVerdict({
+      verdict: "pass",
+      summary,
+      approvalDetails: { reason: summary, evidence: [] },
+      confidence: 1,
+    });
+  }
+  const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
+  const quote = tail.text.trim() || "The command printed nothing before it failed.";
+  const dropped = tail.droppedBytes + outcome.truncatedBytes;
+  const rationale = dropped > 0
+    ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
+    : quote;
+  return normalizePersonaVerdict({
+    verdict: "fail",
+    summary,
+    requestedChanges: [{
+      title: `Fix the failing ${outcome.slot} check`,
+      rationale,
+      evidence: [{ kind: "check", quote }],
+    }],
+    confidence: 1,
+  });
+}
+
 export class WorkflowEngine {
   private readonly limit: ReviewScheduler;
   private readonly now: () => number;
@@ -83,6 +166,9 @@ export class WorkflowEngine {
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
+  private readonly checkLimit: CheckScheduler;
+  private readonly checkDeps: CheckRunDeps;
+  private readonly workflowConfig: () => WorkflowConfig;
   private stopped = true;
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,6 +188,10 @@ export class WorkflowEngine {
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
+    this.checkLimit = options.checkSchedule
+      ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
+    this.checkDeps = options.checkDeps ?? {};
+    this.workflowConfig = options.workflowConfig ?? getWorkflowConfig;
   }
 
   start(): void {
@@ -183,21 +273,21 @@ export class WorkflowEngine {
         }, this.now())) changed = true;
       }
 
-      // A completed Persona verdict and its matching receipts normally commit together.
+      // A completed verdict and its matching receipts normally commit together.
       // Reasserting the receipts makes recovery safe for databases stopped between older
       // Phase 3 development builds that did not yet make that transaction atomic.
-      for (const personaNode of graph.nodes.filter(isPersona)) {
-        const completed = this.store.latestAttemptForNode(submission.id, personaNode.id);
+      for (const verdictNode of graph.nodes.filter(isVerdictNode)) {
+        const completed = this.store.latestAttemptForNode(submission.id, verdictNode.id);
         const parsed = PersonaVerdictSchema.safeParse(completed?.verdict);
         if (!completed || completed.state !== "completed" || !parsed.success) continue;
         const verdict: PersonaVerdict = parsed.data;
         const packet = jsonValue({
           outcome: verdict.verdict,
-          persona: personaNode.persona.name,
+          persona: verdictAuthor(verdictNode),
           verdict,
           requestedChanges: verdictRequestedChanges(verdict).map((item) => item.title),
         });
-        for (const edge of edgesFrom(graph, personaNode.id, verdict.verdict)) {
+        for (const edge of edgesFrom(graph, verdictNode.id, verdict.verdict)) {
           if (this.store.addReceipt(submission.id, edge.id, completed.id, packet, this.now())) {
             changed = true;
           }
@@ -210,7 +300,10 @@ export class WorkflowEngine {
         if (!receipt) continue;
         const target = graph.nodes.find((node) => node.id === edge.target);
         if (!target) continue;
-        if (target.kind === "persona") {
+        // One arm for both runnable kinds: they differ only in whether the attempt row
+        // carries a Persona snapshot. A Check has none, because its command is not part of
+        // the version and there is nothing about it to freeze.
+        if (target.kind === "persona" || target.kind === "check") {
           const latest = this.store.latestAttemptForNode(submission.id, target.id);
           if (!latest || latest.state === "cancelled") {
             this.store.insertAttempt({
@@ -219,7 +312,7 @@ export class WorkflowEngine {
               nodeId: target.id,
               attempt: (latest?.attempt ?? 0) + 1,
               state: "queued",
-              persona: target.persona,
+              persona: target.kind === "persona" ? target.persona : null,
               inputFingerprint: `${submission.evidenceFingerprint}:${target.id}`,
               now: this.now(),
             });
@@ -402,7 +495,13 @@ export class WorkflowEngine {
       for (const attempt of ready) {
         if (this.scheduledAttempts.has(attempt.id)) continue;
         this.scheduledAttempts.add(attempt.id);
-        const promise = this.limit(() => this.runAttempt(attempt))
+        // The limiter is chosen HERE, from the node kind, before either is acquired - not
+        // inside `runAttempt`. This gate wraps the whole attempt, so an inner check limiter
+        // would still have made every waiting and running check occupy one of the three
+        // tool-less model-review slots, which is exactly what a separate budget is for.
+        const target = this.targetNode(attempt);
+        const gate = target?.kind === "check" ? this.checkLimit : this.limit;
+        const promise = gate(() => this.runAttempt(attempt))
           .catch((error) => workflowLog("error", {
             event: "attempt_failed",
             call: attempt.id,
@@ -428,12 +527,40 @@ export class WorkflowEngine {
     }
   }
 
-  private async runAttempt(initial: WorkflowNodeAttempt): Promise<void> {
-    const submission = this.store.getSubmission(initial.submissionId);
+  /**
+   * The node an attempt belongs to, resolved through its submission, run and pinned version.
+   *
+   * Always the version the run PINNED, never the workflow's current draft: a check that
+   * looked up its slot in a graph an operator has since edited would run a different gate
+   * from the one this submission was reviewed against.
+   */
+  private resolveAttempt(attempt: WorkflowNodeAttempt): {
+    submission: WorkflowSubmission;
+    run: WorkflowRun;
+    version: WorkflowVersion;
+    node: PublishedWorkflowNode;
+  } | null {
+    const submission = this.store.getSubmission(attempt.submissionId);
     const run = submission ? this.store.getRun(submission.runId) : null;
     const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
-    const node = version?.graph.nodes.find((candidate) => candidate.id === initial.nodeId);
-    if (!submission || !run || !version || !node || !isPersona(node)) return;
+    const node = version?.graph.nodes.find((candidate) => candidate.id === attempt.nodeId);
+    if (!submission || !run || !version || !node) return null;
+    return { submission, run, version, node };
+  }
+
+  private targetNode(attempt: WorkflowNodeAttempt): PublishedWorkflowNode | null {
+    return this.resolveAttempt(attempt)?.node ?? null;
+  }
+
+  private async runAttempt(initial: WorkflowNodeAttempt): Promise<void> {
+    const resolved = this.resolveAttempt(initial);
+    if (!resolved) return;
+    const { submission, run, version, node } = resolved;
+    if (isCheck(node)) {
+      await this.runCheckAttempt(initial, submission, run, version, node);
+      return;
+    }
+    if (!isPersona(node)) return;
     const execution = this.resolveExecution(node.persona);
     const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
     if (!claimed) return;
@@ -542,6 +669,106 @@ export class WorkflowEngine {
       nodeId: node.id,
       persona: node.persona.name,
       verdict: verdict.verdict,
+    }, this.now());
+    this.advanceStructure(submission, version);
+    this.onRunChanged(run.id);
+  }
+
+  /**
+   * Run one Check node and write its outcome as an ordinary verdict.
+   *
+   * A SYNTHETIC `PersonaVerdict`, deliberately, rather than a second verdict shape: the
+   * Join reads outcomes, the repair packet reads requested changes, and run detail reads
+   * both. Giving a check its own shape would mean teaching all three about it, and the
+   * first one anybody forgot would be a gate whose failure silently never reached the
+   * Session. The raw `WorkflowCheckOutcome` goes to `output_json` beside it, so run detail
+   * can print an exit code without parsing it back out of prose.
+   */
+  private async runCheckAttempt(
+    initial: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: Extract<PublishedWorkflowNode, { kind: "check" }>,
+  ): Promise<void> {
+    // Null runner and model: a check is not a model call, and stamping it with a provider it
+    // never used would put a fiction in front of whoever reads the run.
+    const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
+    if (!claimed) return;
+
+    const binding = this.store.getBinding(run.bindingId);
+    if (!binding) {
+      this.handleInfrastructureFailure(claimed, run.id, "This run's binding no longer exists");
+      return;
+    }
+    const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!context.success) {
+      this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
+      return;
+    }
+
+    let result: Awaited<ReturnType<typeof runCheck>>;
+    try {
+      result = await runCheck({
+        slot: node.slot,
+        config: this.workflowConfig(),
+        cwd: binding.sessionCwd,
+        repoRoot: binding.sessionRepoRoot,
+        headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+      }, this.checkDeps);
+    } catch (error) {
+      // A throw out of the runner is infrastructure by definition: nothing about the change
+      // under review can be concluded from a gate that could not be asked.
+      this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (result.kind === "infrastructure") {
+      this.handleInfrastructureFailure(claimed, run.id, result.reason);
+      return;
+    }
+
+    const { outcome: checkOutcome } = result;
+    const verdict = checkVerdict(checkOutcome);
+    if (!verdict) {
+      this.handleInfrastructureFailure(
+        claimed,
+        run.id,
+        `The ${node.slot} check produced an outcome that is not a valid verdict`,
+      );
+      return;
+    }
+    const author = verdictAuthor(node);
+    const packet = requestedChangePacket(verdict, author);
+    const latestRun = this.store.getRun(run.id);
+    const latestSubmission = this.store.getSubmission(submission.id);
+    if (latestRun?.status !== "running" || latestSubmission?.status !== "running") {
+      this.store.finishAttempt(claimed.id, {
+        state: "cancelled",
+        verdict: jsonValue(verdict),
+        output: jsonValue(checkOutcome),
+        error: "Audit-only result after the submission stopped",
+      }, this.now());
+      this.onRunChanged(run.id);
+      return;
+    }
+    const receiptPayload = jsonValue({
+      outcome: verdict.verdict,
+      persona: author,
+      verdict,
+    });
+    this.store.finishAttemptWithReceipts(claimed.id, {
+      verdict: jsonValue(verdict),
+      output: jsonValue(checkOutcome),
+      receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
+        edgeId: edge.id,
+        payload: receiptPayload,
+      })),
+    }, this.now());
+    this.store.appendEvent(run.id, "check_outcome", {
+      nodeId: node.id,
+      slot: node.slot,
+      status: checkOutcome.status,
+      exitCode: checkOutcome.exitCode,
     }, this.now());
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);
@@ -671,7 +898,7 @@ export class WorkflowEngine {
         if (currentSubmission?.status !== "running" || currentRun?.status !== "running") {
           continue;
         }
-        const errored = version.graph.nodes.filter(isPersona).flatMap((node) => {
+        const errored = version.graph.nodes.filter(isVerdictNode).flatMap((node) => {
           const attempt = this.store.latestAttemptForNode(submission.id, node.id);
           return attempt?.state === "error" ? [attempt] : [];
         });

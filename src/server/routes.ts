@@ -184,7 +184,7 @@ import {
 import { driverClearFor, resetSession } from "./reset.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
-import { listRepos, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
+import { listRepos, resolveRepoPath, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import {
   listSessionFiles,
@@ -1301,9 +1301,12 @@ export function buildApp(
   app.post("/api/repos/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveRepoSchema);
     if (!parsed.ok) return parsed.res;
-    const repoRoot = await resolveRepoRoot(parsed.data.path);
-    if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.path}` }, 400);
-    return c.json({ repoRoot });
+    // Both the repository AND the canonical path asked about: a caller configuring a
+    // per-package check command needs the subdirectory back, which `repoRoot` alone has
+    // already discarded. Existing callers read `repoRoot` and ignore the rest.
+    const resolved = await resolveRepoPath(parsed.data.path);
+    if (!resolved) return c.json({ error: `not a git repository: ${parsed.data.path}` }, 400);
+    return c.json(resolved);
   });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.

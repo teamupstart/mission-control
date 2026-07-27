@@ -5,9 +5,11 @@ Index: `docs/plans/builtin-workflows/phased-plan.md`
 
 ## Outcome and value
 
-A workflow can gate on a deterministic command. An operator configures what `test` or `lint`
-runs for a repository, drops a Check node into a graph, and a submission that does not compile
-fails on an exit code instead of spending four model calls to reach the same conclusion.
+Phase 2 defines a workflow gate on a deterministic command. Its first implementation unit
+adds the Check graph and configuration contract; the dependency-linked execution-runtime unit
+makes that gate operational against a captured submission. An operator configures what `test`
+or `lint` runs for a repository, and the completed pair can fail a submission on an exit code
+instead of spending four model calls to reach the same conclusion.
 
 This is the primitive the earlier mapping plan decided against and this plan's decision 4
 reverses. Every other no-mistakes gate already has a home; this is the last one.
@@ -38,6 +40,14 @@ graph, configuration, and presentation slice, plus a crash-safe check execution 
 runtime must be designed and estimated explicitly during implementation. If it is materially
 larger than the rest of Phase 2, split it into its own dependency-linked implementation unit
 before coding rather than hiding that scope inside this phase.
+
+**Split recorded:** that escape hatch was taken. The first implementation unit lands the
+graph, configuration, validation, presentation, scheduler boundary, and a tested execution
+seam. Its production executor is deliberately `null`: no command is spawned, and a configured,
+authorized Check records `unavailable` and passes with a sentence. The pooled lease, process
+supervisor, durable lease table, pool pins, environment scrubbing, and startup recovery
+specified below are the dependency-linked execution-runtime unit. The runtime-specific tests,
+manual checks, and exit criteria below apply to that follow-up rather than to the first unit.
 
 Explicit non-goals:
 

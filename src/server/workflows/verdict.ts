@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import {
+  EVIDENCE_REF_KINDS,
   WORKFLOW_EXECUTION_LIMITS,
   type EvidenceRef,
   type PersonaVerdict,
@@ -12,7 +13,7 @@ import { parseModelJson } from "../llm/structured.ts";
 // Structural errors stay parse failures so infrastructure trouble can never turn into a
 // Persona fail verdict.
 const EvidenceInputSchema = z.object({
-  kind: z.enum(["diff", "transcript", "standard", "goal", "decision"]),
+  kind: z.enum(EVIDENCE_REF_KINDS),
   quote: z.string(),
   path: z.string().optional(),
   line: z.number().finite().optional(),

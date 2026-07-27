@@ -127,11 +127,17 @@ test("every category has at least one control indexed", () => {
 // delivery is the local member of the same class - it is what lets Mission Control type a
 // repair packet into somebody's running agent session, and the sentence saying so lives in
 // the panel it jumps to.
-test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, and Live delivery", () => {
+//
+// Workflow check commands are the newest member, and the clearest case for the rule: the
+// switch authorizes running a command that loads scripts and source from the branch under
+// review, with the daemon's own filesystem authority. Flipping that from a one-line search
+// row would grant it without the paragraph that explains what was granted ever being read.
+test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, and Workflow's two", () => {
   const risky = SETTINGS_CONTROLS.filter((c) => c.risky).map((c) => c.id).sort();
   assert.deepEqual(risky, [
     "inspector-enabled",
     "inspector-mode",
+    "workflow-checks",
     "workflow-live-delivery",
     "yolo",
   ]);

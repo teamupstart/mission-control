@@ -352,3 +352,50 @@ test("names come from Personas and stages, and never from an id", () => {
   const ids = new Set(draft.nodes.map((node) => node.id));
   for (const node of draft.nodes) assert.equal(ids.has(nodeLabel(draft, node, personas)), false);
 });
+
+// ---- Check nodes are legal graph, and not yet pipeline ----
+//
+// This is a DELIBERATE, temporary narrowing, and it is checked here rather than left to fall
+// out of the walk. `StageMember` is `{ nodeId, personaId }`, so a check has nowhere to sit;
+// routing such a graph to the Graph view is an existing tested path, not a dead surface.
+// What is at stake is the SENTENCE: without an explicit blocker a check between two stages
+// reports "routes to Check · test, which is not a reviewer" and one off to the side reports
+// "is not part of the pipeline", and neither tells the operator it is the node KIND that
+// keeps them in Graph view rather than how they wired it.
+
+test("a graph containing a Check is not stage-expressible, and says why", () => {
+  const draft = freshDraft();
+  draft.nodes.push({ id: "gate", kind: "check", slot: "typecheck", position: { x: 220, y: 60 } });
+  draft.edges.push(
+    { id: "a", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+    { id: "b", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+    { id: "c", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+  );
+  // The graph itself is perfectly legal - this is not a validation failure.
+  assert.deepEqual(validation(draft), { valid: true, diagnostics: [] });
+
+  assert.equal(stageExpressible(draft), false);
+  assert.equal(projectStages(draft), null);
+  const blockers = stageBlockers(draft, personas);
+  assert.equal(blockers.length, 1, "one reason, naming the node kind");
+  assert.match(blockers[0]!, /Check node/);
+  assert.match(blockers[0]!, /Check · typecheck/);
+  assert.match(blockers[0]!, /Graph view/);
+});
+
+test("a Check parked off to the side blocks for the same stated reason", () => {
+  // An unwired check would otherwise be reported as "is not part of the pipeline", which is
+  // true of any stray node and says nothing about why this one can never be part of it.
+  const draft = freshDraft();
+  draft.nodes.push({ id: "gate", kind: "check", slot: "lint", position: { x: 220, y: 220 } });
+  assert.match(stageBlockers(draft, personas)[0]!, /Check node/);
+});
+
+test("a Check node is labelled by its slot everywhere a name is printed", () => {
+  const draft = freshDraft();
+  const gate = { id: "gate", kind: "check" as const, slot: "build" as const, position: { x: 220, y: 60 } };
+  draft.nodes.push(gate);
+  // Never "Missing persona", which is what the persona fall-through returned before the
+  // label switch grew a check arm.
+  assert.equal(nodeLabel(draft, gate, personas), "Check · build");
+});

@@ -56,3 +56,31 @@ test("the loopback guard applies here too", async () => {
   });
   assert.equal(res.status, 403);
 });
+
+test("a subdirectory resolves to the repository AND back to itself", async () => {
+  // The route answers two questions, because resolving to a repository throws away the
+  // subdirectory - and a caller configuring a per-package check command needs it back.
+  // Without `path`, `/repo/packages/web` typed into Settings is stored as `/repo` and the
+  // documented subdirectory override is unreachable from the UI.
+  const repoDir = fileURLToPath(new URL("..", import.meta.url));
+  const subDir = fileURLToPath(new URL("../src/shared", import.meta.url)).replace(/\/$/, "");
+  const res = await resolve(subDir);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { repoRoot: string; path: string };
+  // The repository is the same one the root resolves to...
+  const rootRes = await resolve(repoDir);
+  const rootBody = (await rootRes.json()) as { repoRoot: string; path: string };
+  assert.equal(body.repoRoot, rootBody.repoRoot);
+  // ...and the path is the subdirectory, expressed AGAINST that repository rather than
+  // against whichever tree the caller stood in. That distinction is what this assertion is
+  // really for: this suite often runs from a linked worktree under `~/.treehouse/`, where a
+  // bare realpath answers with a path that is not inside the resolved main root at all, and
+  // a caller comparing the two by prefix would discard the subdirectory as "outside".
+  assert.ok(body.path.endsWith("/src/shared"), `expected a src/shared path, got ${body.path}`);
+  assert.ok(
+    body.path.startsWith(`${body.repoRoot}/`),
+    `${body.path} should sit inside ${body.repoRoot}`,
+  );
+  // The root's own canonical path is the root, so an entry typed there stays repo-wide.
+  assert.equal(rootBody.path, rootBody.repoRoot);
+});

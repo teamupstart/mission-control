@@ -3,6 +3,7 @@ import type {
   PersonaId,
   PublishedWorkflowNode,
   WorkflowDraftGraph,
+  WorkflowCheckSlot,
   WorkflowDraftNode,
   WorkflowEdge,
 } from "./workflow.ts";
@@ -90,7 +91,16 @@ function baseLabel(graph: StageGraph, node: StageNode, personas: StagePersonaNam
   if (node.kind === "session") return "Session";
   if (node.kind === "end") return node.outcome;
   if (node.kind === "all_pass") return joinLabel(graph, node);
+  if (node.kind === "check") return checkLabel(node.slot);
   return personaName(node, personas);
+}
+
+/**
+ * A Check names its slot and nothing else, so its label is the slot with the word that says
+ * what kind of thing it is - "test" alone next to a Persona's name reads as a reviewer.
+ */
+export function checkLabel(slot: WorkflowCheckSlot): string {
+  return `Check · ${slot}`;
 }
 
 /** Published snapshots win over the live list, which is empty for a published graph anyway. */
@@ -166,6 +176,22 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
     structural.push("This graph has routes with duplicate identities; every pipeline route needs a unique identity.");
   }
   if (structural.length > 0) return { pipeline: null, blockers: structural };
+
+  // A Check is a legal graph node and not yet a pipeline member: `StageMember` is
+  // `{ nodeId, personaId }`, so the editor has nowhere to put one. Refused HERE, before the
+  // walk, rather than left to fall out of it - a check between two stages would otherwise be
+  // reported as "routes to Check · test, which is not a reviewer" and one parked off to the
+  // side as "is not part of the pipeline", and neither tells the operator that the Graph
+  // view is showing because of the node kind rather than because of how they wired it.
+  //
+  // Deliberately temporary. Widening `StageMember` is a later phase's work, and a union
+  // half-widened across two phases is a second source of truth for what a stage contains.
+  const checks = graph.nodes.filter(isKind("check"));
+  if (checks.length > 0) {
+    return blocked(
+      `The Pipeline editor cannot show a Check node yet, so ${checkLabel(checks[0]!.slot)} keeps this workflow in Graph view.`,
+    );
+  }
 
   const session = sessions[0]!;
   const end = ends[0]!;

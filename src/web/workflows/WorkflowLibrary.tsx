@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   normalizeWorkflowName,
   personasForDisplay,
+  WORKFLOW_CHECK_SLOTS,
   WORKFLOW_LIMITS,
   type PersonaView,
+  type WorkflowCheckSlot,
   type WorkflowDraftNode,
   type WorkflowEdge,
   type WorkflowSourcePort,
@@ -11,7 +13,12 @@ import {
   type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
-import { connectionAllowed, validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import {
+  WORKFLOW_NODE_SOURCE_PORTS,
+  WORKFLOW_NODE_TARGET_PORTS,
+  connectionAllowed,
+  validateWorkflowGraph,
+} from "@shared/workflow-graph.ts";
 import {
   nodeLabel,
   projectStages,
@@ -31,6 +38,7 @@ import {
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
+import { NEW_NODE_MIME, type NewWorkflowNode } from "./new-node.ts";
 import {
   useWorkflowDraft,
   workflowArchiveBlocked,
@@ -276,6 +284,7 @@ export function WorkflowLibrary({
   const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
+  const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
   const connectTrigger = useRef<HTMLButtonElement | null>(null);
   const [connectSource, setConnectSource] = useState<string | null>(null);
@@ -447,9 +456,9 @@ export function WorkflowLibrary({
     });
   };
 
-  const addNode = (kind: "persona" | "all_pass" | "end", personaId = palettePersona, at?: { x: number; y: number }): void => {
+  const addNode = (spec: NewWorkflowNode, at?: { x: number; y: number }): void => {
     if (!workflow || readOnly) return;
-    if (kind === "persona" && !personaId) return;
+    if (spec.kind === "persona" && !spec.personaId) return;
     const offset = workflow.draft.nodes.length * 26;
     const id = crypto.randomUUID();
     const center = canvasRef.current?.viewportCenter();
@@ -464,9 +473,13 @@ export function WorkflowLibrary({
         Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, requestedPosition.y),
       ),
     };
-    const node: WorkflowDraftNode = kind === "persona"
-      ? { id, kind, personaId, position }
-      : kind === "all_pass" ? { id, kind, position } : { id, kind, outcome: "Complete", position };
+    const node: WorkflowDraftNode = spec.kind === "persona"
+      ? { id, kind: "persona", personaId: spec.personaId, position }
+      : spec.kind === "all_pass"
+        ? { id, kind: "all_pass", position }
+        : spec.kind === "check"
+          ? { id, kind: "check", slot: spec.slot, position }
+          : { id, kind: "end", outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
     setAnnouncement(
@@ -553,28 +566,19 @@ export function WorkflowLibrary({
     if (!source) return;
     const node = workflow?.draft.nodes.find((candidate) => candidate.id === source);
     if (!node || node.kind === "end") return;
-    const sourcePort: WorkflowSourcePort = node.kind === "session" ? "submitted" : "pass";
+    const sourcePort = WORKFLOW_NODE_SOURCE_PORTS[node.kind][0];
+    if (!sourcePort) return;
     const target = workflow?.draft.nodes.find((candidate) => {
       if (candidate.id === source) return false;
-      const targetPort: WorkflowTargetPort = candidate.kind === "session"
-        ? "return_for_changes"
-        : candidate.kind === "persona"
-          ? "activate"
-          : candidate.kind === "all_pass"
-            ? "result"
-            : "terminal";
-      return connectionAllowed(node, sourcePort, candidate, targetPort);
+      return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((targetPort) =>
+        connectionAllowed(node, sourcePort, candidate, targetPort));
     });
     setConnectSource(source);
     setConnectSourcePort(sourcePort);
     setConnectTarget(target?.id ?? "");
-    setConnectTargetPort(target?.kind === "session"
-      ? "return_for_changes"
-      : target?.kind === "all_pass"
-        ? "result"
-        : target?.kind === "end"
-          ? "terminal"
-          : "activate");
+    setConnectTargetPort(
+      target ? WORKFLOW_NODE_TARGET_PORTS[target.kind][0] ?? "activate" : "activate",
+    );
     window.setTimeout(() => {
       document.querySelector<HTMLSelectElement>("#workflow-connect-source")?.focus();
     });
@@ -605,31 +609,16 @@ export function WorkflowLibrary({
 
   const sourceNode = workflow?.draft.nodes.find((node) => node.id === connectSource) ?? null;
   const targetNode = workflow?.draft.nodes.find((node) => node.id === connectTarget) ?? null;
-  const sourcePortOptions: WorkflowSourcePort[] = sourceNode?.kind === "session"
-    ? ["submitted"]
-    : sourceNode?.kind === "persona" || sourceNode?.kind === "all_pass"
-      ? ["pass", "fail"]
-      : [];
-  const targetPortOptions: WorkflowTargetPort[] = targetNode?.kind === "session"
-    ? ["return_for_changes"]
-    : targetNode?.kind === "persona"
-      ? ["activate"]
-      : targetNode?.kind === "all_pass"
-        ? ["result"]
-        : targetNode?.kind === "end"
-          ? ["terminal"]
-          : [];
+  const sourcePortOptions: WorkflowSourcePort[] = sourceNode
+    ? [...WORKFLOW_NODE_SOURCE_PORTS[sourceNode.kind]]
+    : [];
+  const targetPortOptions: WorkflowTargetPort[] = targetNode
+    ? [...WORKFLOW_NODE_TARGET_PORTS[targetNode.kind]]
+    : [];
   const connectTargets = sourceNode
     ? workflow?.draft.nodes.filter((candidate) => {
         if (candidate.id === sourceNode.id) return false;
-        const candidatePorts: WorkflowTargetPort[] = candidate.kind === "session"
-          ? ["return_for_changes"]
-          : candidate.kind === "persona"
-            ? ["activate"]
-            : candidate.kind === "all_pass"
-              ? ["result"]
-              : ["terminal"];
-        return candidatePorts.some((port) =>
+        return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((port) =>
           connectionAllowed(sourceNode, connectSourcePort, candidate, port));
       }) ?? []
     : [];
@@ -708,13 +697,21 @@ export function WorkflowLibrary({
               </select>
             </Tooltip>
             <Tooltip label={palettePersona ? "Add a review node running the chosen Persona - or drag it onto the canvas" : "Choose a Persona above first"}>
-              <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
+              <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode({ kind: "persona", personaId: palettePersona })}>＋ Persona</button>
             </Tooltip>
             <Tooltip label="Add a join that waits for every incoming branch to pass - or drag it onto the canvas">
-              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode({ kind: "all_pass" })}>＋ All-pass Join</button>
+            </Tooltip>
+            <Tooltip label="Which deterministic gate a new check node runs">
+              <select aria-label="Slot for new check node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
+                {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+              </select>
+            </Tooltip>
+            <Tooltip label="Add a gate on the command this repository configures for that slot - or drag it onto the canvas">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Check</button>
             </Tooltip>
             <Tooltip label="Add a terminal outcome node - or drag it onto the canvas">
-              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "end" }))} onClick={() => addNode({ kind: "end" })}>＋ End</button>
             </Tooltip>
           </section>
         )}
@@ -775,7 +772,7 @@ export function WorkflowLibrary({
                 </Tooltip>
                 {mode === "graph" && (
                   <>
-                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, Join, or End nodes" : "Select a Persona, Join, or End node first"}>
+                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Check, or End nodes" : "Select a Persona, All-pass Join, Check, or End node first"}>
                       <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
                         Duplicate nodes
                       </button>
@@ -922,33 +919,20 @@ export function WorkflowLibrary({
                         const port = event.target.value as WorkflowSourcePort;
                         setConnectSourcePort(port);
                         if (!sourceNode || !targetNode) return;
-                        const nextTargetPort: WorkflowTargetPort = targetNode.kind === "session"
-                          ? "return_for_changes"
-                          : targetNode.kind === "persona"
-                            ? "activate"
-                            : targetNode.kind === "all_pass"
-                              ? "result"
-                              : "terminal";
+                        const nextTargetPort = WORKFLOW_NODE_TARGET_PORTS[targetNode.kind][0];
+                        if (!nextTargetPort) return;
                         if (!connectionAllowed(sourceNode, port, targetNode, nextTargetPort)) {
                           const nextTarget = workflow.draft.nodes.find((candidate) => {
                             if (candidate.id === sourceNode.id) return false;
-                            const candidatePort: WorkflowTargetPort = candidate.kind === "session"
-                              ? "return_for_changes"
-                              : candidate.kind === "persona"
-                                ? "activate"
-                                : candidate.kind === "all_pass"
-                                  ? "result"
-                                  : "terminal";
-                            return connectionAllowed(sourceNode, port, candidate, candidatePort);
+                            return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((candidatePort) =>
+                              connectionAllowed(sourceNode, port, candidate, candidatePort));
                           });
                           setConnectTarget(nextTarget?.id ?? "");
-                          setConnectTargetPort(nextTarget?.kind === "session"
-                            ? "return_for_changes"
-                            : nextTarget?.kind === "all_pass"
-                              ? "result"
-                              : nextTarget?.kind === "end"
-                                ? "terminal"
-                                : "activate");
+                          setConnectTargetPort(
+                            nextTarget
+                              ? WORKFLOW_NODE_TARGET_PORTS[nextTarget.kind][0] ?? "activate"
+                              : "activate",
+                          );
                         }
                       }}
                     >
@@ -966,13 +950,9 @@ export function WorkflowLibrary({
                         const id = event.target.value;
                         const target = workflow.draft.nodes.find((node) => node.id === id);
                         setConnectTarget(id);
-                        setConnectTargetPort(target?.kind === "session"
-                          ? "return_for_changes"
-                          : target?.kind === "all_pass"
-                            ? "result"
-                            : target?.kind === "end"
-                              ? "terminal"
-                              : "activate");
+                        setConnectTargetPort(
+                          target ? WORKFLOW_NODE_TARGET_PORTS[target.kind][0] ?? "activate" : "activate",
+                        );
                       }}
                     >
                       {connectTargets.map((node) => (
@@ -1031,7 +1011,7 @@ export function WorkflowLibrary({
                 readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onSelection={setSelection}
-                onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
+                onDropNode={(spec, position) => addNode(spec, position)}
                 onDeleteSelection={removeCanvasSelection}
                 onKeyboardConnect={startKeyboardConnect}
                 onAnnounce={setAnnouncement}

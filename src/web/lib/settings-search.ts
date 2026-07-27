@@ -213,6 +213,27 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "workflow-checks",
+    label: "Enable workflow check commands",
+    description: "Whether a Check node may run a configured command, executing branch-authored code.",
+    category: "workflows",
+    anchor: "workflows/checks",
+    keywords: ["check", "command", "test", "lint", "typecheck", "build", "gate", "exit code"],
+    kind: "toggle",
+    // Risky for the same reason Live delivery is, and more so: this one authorizes running
+    // code the reviewed branch supplies, with the daemon's filesystem authority.
+    risky: true,
+  },
+  {
+    id: "workflow-check-commands",
+    label: "Workflow check commands",
+    description: "What each repository runs for the test, lint, typecheck and build slots.",
+    category: "workflows",
+    anchor: "workflows/check-commands",
+    keywords: ["check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "repo"],
+    kind: "jump",
+  },
+  {
     id: "workflow-retention",
     label: "Workflow run retention",
     description: "How long raw evidence and finished run history are kept before a sweep prunes them.",

@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import type { WorkflowConfig } from "@shared/workflow.ts";
+import type { WorkflowCheckSlot, WorkflowConfig } from "@shared/workflow.ts";
+import {
+  WORKFLOW_CHECK_SLOTS,
+  checkCommandRoot,
+  formatCheckCommand,
+  parseCheckCommand,
+} from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { resolveRepo } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -110,6 +116,9 @@ export function WorkflowSettingsPanel({
   const { config, status, update, error } = state;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [path, setPath] = useState("");
+  const [checkPath, setCheckPath] = useState("");
+  const [checkSlot, setCheckSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const [checkCommand, setCheckCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [retention, setRetention] = useState<RetentionDraft>({
@@ -130,6 +139,8 @@ export function WorkflowSettingsPanel({
 
   const liveEnabled = config?.liveEnabled ?? false;
   const allowlist = config?.repoAllowlist ?? [];
+  const checksEnabled = config?.checksEnabled ?? false;
+  const parsedCheckCommand = parseCheckCommand(checkCommand);
 
   const save = async (next: WorkflowConfig): Promise<void> => {
     setBusy(true);
@@ -176,6 +187,69 @@ export function WorkflowSettingsPanel({
       }
       setPath("");
       await update({ ...config, repoAllowlist: [...config.repoAllowlist, resolved.repoRoot] });
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "Could not resolve repository");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleChecks = (enabled: boolean): void => {
+    if (!config) return;
+    if (!enabled) {
+      void save({ ...config, checksEnabled: false });
+      return;
+    }
+    // The confirm copy names what is actually being authorized, which is not "running a
+    // command" but running THIS BRANCH's code. The argv is the operator's; everything that
+    // argv loads belongs to whoever wrote the change under review.
+    setConfirm({
+      title: "Enable workflow check commands",
+      body:
+        "A Check node runs the command you configure, in a checkout of the repository under " +
+        "review, with this daemon's filesystem authority. That command loads scripts, " +
+        "dependencies and source from the branch being reviewed, so enabling this executes " +
+        "branch-authored code. It is not a sandbox. Only allowlisted repositories are reached.",
+      confirmLabel: "Enable check commands",
+      confirmHint: "Allow branch-authored code to run with the daemon's filesystem authority",
+      danger: true,
+      onConfirm: () => void save({ ...config, checksEnabled: true }),
+    });
+  };
+
+  const addCheckCommand = async (): Promise<void> => {
+    const trimmedPath = checkPath.trim();
+    if (!config || !trimmedPath || busy) return;
+    const parsed = parseCheckCommand(checkCommand);
+    if (!parsed.ok) {
+      setLocalError(parsed.error);
+      return;
+    }
+    setBusy(true);
+    setLocalError(null);
+    try {
+      const resolved = await resolveRepo(trimmedPath);
+      if (!resolved.ok) {
+        setLocalError(resolved.error);
+        return;
+      }
+      // The TYPED path when it is inside the repository, not the resolved root. Resolving
+      // is lossy in exactly the direction that matters here - `/repo/packages/web` resolves
+      // to `/repo` - so storing the root alone made the documented subdirectory override
+      // impossible to configure from this panel.
+      const root = checkCommandRoot(resolved.repoRoot, resolved.path);
+      // Replace rather than append on a repeat: (root, slot) is the identity a check
+      // resolves by, so two rows for one pair would make which command runs depend on list
+      // order, which the operator cannot see.
+      const rest = config.checkCommands.filter(
+        (item) => !(item.repoRoot === root && item.slot === checkSlot),
+      );
+      setCheckPath("");
+      setCheckCommand("");
+      await update({
+        ...config,
+        checkCommands: [...rest, { repoRoot: root, slot: checkSlot, command: parsed.argv }],
+      });
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : "Could not resolve repository");
     } finally {
@@ -309,6 +383,121 @@ export function WorkflowSettingsPanel({
             </button>
           </Tooltip>
         </div>
+      </div>
+
+      <Tooltip label="Allow workflow Check nodes to run the commands configured below">
+        <label className="alert-row wf-settings-checks" data-anchor="workflows/checks">
+          <input
+            type="checkbox"
+            checked={checksEnabled}
+            disabled={!config || busy}
+            onChange={(event) => toggleChecks(event.target.checked)}
+          />
+          <span>Enable workflow check commands</span>
+        </label>
+      </Tooltip>
+
+      {checksEnabled && (
+        <p className="settings-warn wf-settings-checks-warn">
+          A check runs a command in the repository under review, which executes code written
+          on the branch being reviewed with this daemon's own filesystem authority. Its
+          scripts, dependencies and build steps all come from that branch. This is not a
+          sandbox. Only the repositories allowlisted above can run one.
+        </p>
+      )}
+
+      <div className="wf-settings-checks-table" data-anchor="workflows/check-commands">
+        <p className="settings-group-label">Check commands</p>
+        {/* Why the node names a slot and this table names the command, said where an
+            operator is looking for the box to type it into. Without it, "why is my check
+            skipping" and "why does the workflow not say npm test" are both mysteries. */}
+        <p className="settings-hint">
+          A workflow's Check node names a slot, never a command, so the same workflow can
+          run on any repository. This is where each repository says what its slots run. A
+          slot with no command here passes with a note rather than failing, and so does one
+          in a repository that is not allowlisted. Give a <strong>subdirectory</strong> to
+          override a repository-wide command for one package; the command then runs there.
+        </p>
+        {!config ? null : config.checkCommands.length === 0 ? (
+          <p className="settings-hint wf-settings-empty">
+            No commands yet - every Check node will skip and pass.
+          </p>
+        ) : (
+          <ul className="wf-settings-check-list">
+            {config.checkCommands.map((entry) => (
+              <li key={`${entry.repoRoot}:${entry.slot}`}>
+                <span className="wf-settings-check-slot">{entry.slot}</span>
+                <code className="wf-settings-check-root">{entry.repoRoot}</code>
+                <code className="wf-settings-check-argv">{formatCheckCommand(entry.command)}</code>
+                <Tooltip label={`Stop running a ${entry.slot} check in ${entry.repoRoot}`}>
+                  <button
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    onClick={() => void save({
+                      ...config,
+                      checkCommands: config.checkCommands.filter(
+                        (item) => !(item.repoRoot === entry.repoRoot && item.slot === entry.slot),
+                      ),
+                    })}
+                  >
+                    Remove
+                  </button>
+                </Tooltip>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="wf-settings-add wf-settings-check-add">
+          <label className="sr-only" htmlFor="workflow-check-path">Repository path</label>
+          <input
+            id="workflow-check-path"
+            className="field-input"
+            value={checkPath}
+            disabled={!config || busy}
+            placeholder="/path/to/repository (or a subdirectory)"
+            onChange={(event) => setCheckPath(event.target.value)}
+          />
+          <label className="sr-only" htmlFor="workflow-check-slot">Slot</label>
+          <Tooltip label="Which slot a workflow's Check node has to name to run this command">
+            <select
+              id="workflow-check-slot"
+              value={checkSlot}
+              disabled={!config || busy}
+              onChange={(event) => setCheckSlot(event.target.value as WorkflowCheckSlot)}
+            >
+              {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+            </select>
+          </Tooltip>
+          <label className="sr-only" htmlFor="workflow-check-command">Command to run</label>
+          <input
+            id="workflow-check-command"
+            className="field-input"
+            value={checkCommand}
+            disabled={!config || busy}
+            placeholder="npm test"
+            onChange={(event) => setCheckCommand(event.target.value)}
+          />
+          <Tooltip label="Run this command for that slot in that repository">
+            <button
+              className="btn"
+              disabled={!config || busy || !checkPath.trim() || !checkCommand.trim()}
+              onClick={() => void addCheckCommand()}
+            >
+              Add command
+            </button>
+          </Tooltip>
+        </div>
+        {/* The parsed argv, shown back. There is no shell anywhere in this path, so the
+            split is ours and an operator has to be able to SEE it rather than trust it -
+            `npm run test -- --grep "a b"` is four arguments or six depending on a rule
+            nobody can read off the box they typed into. */}
+        <p className="settings-hint wf-settings-check-preview">
+          {checkCommand.trim() === ""
+            ? "Type a command to see exactly how it will be split."
+            : parsedCheckCommand.ok
+              ? `Runs as: ${parsedCheckCommand.argv.map((arg, index) => `${index + 1}. ${arg}`).join("   ")}`
+              : parsedCheckCommand.error}
+        </p>
       </div>
 
       <div className="wf-settings-retention" data-anchor="workflows/retention">

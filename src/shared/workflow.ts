@@ -3,6 +3,7 @@ import type { InspectorPosture } from "./inspector.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
+import { repoAllowlisted } from "./allowlist.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -35,6 +36,11 @@ export const WORKFLOW_LIMITS = {
   externalSourceId: 200,
   externalSourceSegment: 200,
   externalSourceKey: 1_000,
+  checkRepoRoot: 4_096,
+  checkCommands: 200,
+  checkCommandArgs: 32,
+  checkCommandArg: 1_000,
+  checkCommandLength: 4_000,
 } as const;
 
 export const WORKFLOW_EXECUTION_LIMITS = {
@@ -46,6 +52,18 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   verdictEvidence: 30,
   verdictPath: 1_000,
   verdictLine: 10_000_000,
+  /**
+   * How much of a check command's output is retained, and how much of that reaches its
+   * synthetic verdict.
+   *
+   * Two numbers because they answer to two budgets. `checkOutput` is what run detail shows
+   * and lives in `output_json`, whose ceiling is `contextJsonBytes`. `checkVerdictOutput` is
+   * what the same failure quotes into `requestedChanges`, and a verdict as a whole must fit
+   * `verdictJsonBytes` - the rationale and its evidence quote both carry that text, so the
+   * verdict's share has to be under half the outcome's.
+   */
+  checkOutput: 4_000,
+  checkVerdictOutput: 2_000,
 } as const;
 
 export const WORKFLOW_PERSONA_MODEL_ENV = "WORKFLOW_PERSONA_MODEL";
@@ -219,10 +237,26 @@ export const WORKFLOW_TARGET_PORTS = [
 ] as const;
 export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
 
+/**
+ * The deterministic gates a Check node can name.
+ *
+ * APPEND-ONLY: a slot id reaches durable published graphs, so renaming one orphans every
+ * version naming the old spelling - the node stops matching a configured command and
+ * silently skips forever, which is indistinguishable from a repository nobody configured.
+ *
+ * A node names a SLOT and never a command. A published version carrying an argv would be
+ * executable content reachable through the version export route, and a built-in workflow
+ * hard-coding `npm test` would be wrong on every repository that is not the one it was
+ * written in. The operator describes the machine; the version describes the gate.
+ */
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build"] as const;
+export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
+
 export type WorkflowDraftNode =
   | { id: string; kind: "session"; position: Point }
   | { id: string; kind: "persona"; personaId: PersonaId; position: Point }
   | { id: string; kind: "all_pass"; position: Point }
+  | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
   | { id: string; kind: "end"; outcome: string; position: Point };
 
 export interface WorkflowEdge {
@@ -257,9 +291,25 @@ export function personaSnapshotIsOutdated(
   return snapshot.sourceRevision !== current.revision;
 }
 
+/**
+ * Persona is the only kind whose published form differs, so every other kind - including
+ * `check` - is carried through by the `Exclude`. A check node is byte-identical in draft
+ * and published form because it snapshots nothing: its command is deliberately not part of
+ * the version, which is the whole point of naming a slot.
+ */
 export type PublishedWorkflowNode =
   | Exclude<WorkflowDraftNode, { kind: "persona" }>
   | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point };
+
+export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>;
+
+export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
+  return node.kind === "persona" || node.kind === "check";
+}
+
+export function verdictAuthor(node: WorkflowVerdictNode): string {
+  return node.kind === "persona" ? node.persona.name : `Check · ${node.slot}`;
+}
 
 export interface PublishedWorkflowGraph {
   nodes: PublishedWorkflowNode[];
@@ -508,10 +558,34 @@ export interface WorkflowCaptureExpectation {
   requireCleanWorktree: true;
 }
 
+/** What one repository runs for one slot. */
+export interface WorkflowCheckCommand {
+  repoRoot: string;
+  slot: WorkflowCheckSlot;
+  /**
+   * An argv, not a shell string. The execution seam accepts this array directly and its
+   * runtime must spawn it without a shell; this build intentionally supplies no runtime.
+   * `parseCheckCommand` is the one place a typed line becomes this array.
+   */
+  command: string[];
+}
+
 export interface WorkflowConfig {
   liveEnabled: boolean;
   repoAllowlist: string[];
   retention: WorkflowRetentionConfig;
+  /**
+   * Machine-wide consent for running a configured command from a workflow. Off by default,
+   * matching `liveEnabled`, and it is only half the gate: `repoAllowlist` is the other, and
+   * `checkBlockedReason` is the one place both are asked.
+   */
+  checksEnabled: boolean;
+  /**
+   * A LIST rather than a `Record<repoRoot, …>` for `repoAllowlist`'s reason: repository
+   * roots are absolute paths and make poor object keys, and the flat shape is how this
+   * config already stores roots.
+   */
+  checkCommands: WorkflowCheckCommand[];
 }
 
 export interface WorkflowRetentionConfig {
@@ -531,7 +605,319 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
     completedRunDays: 180,
     maxCompletedRuns: 1_000,
   },
+  checksEnabled: false,
+  checkCommands: [],
 };
+
+/**
+ * The argv configured for this checkout and slot, or null when nobody configured one.
+ *
+ * Shared so the daemon and the settings panel resolve identically: a panel that showed a
+ * command the daemon would not pick is a gate an operator believes they configured.
+ *
+ * `cwd` and `repoRoot` are BOTH consulted, through the same `repoAllowlisted` boundary the
+ * consent gate uses, because a session normally stands in a pooled worktree under
+ * `~/.treehouse/` while its `repoRoot` names the shared main repository. Matching on either
+ * is what makes an entry naming the project reach a worktree of that project.
+ *
+ * The LONGEST matching root wins, so a monorepo subdirectory can override the entry that
+ * covers the whole tree. Two entries sharing a root and slot cannot occur, and that is
+ * ENFORCED at the write boundary rather than assumed here: `WorkflowConfigSchema` refuses
+ * a duplicate `(repoRoot, slot)` pair. It has to be enforced somewhere, because this
+ * function silently keeps the first of a tie - which would make the command that runs
+ * depend on array order, a thing no surface shows the operator.
+ *
+ * A nested entry has a THIRD way to match, and it is the one that carries the common case.
+ * Absolute containment alone selects `/repo/packages/web` only for a session standing under
+ * that literal path - but a dispatched session stands in a pooled worktree under
+ * `~/.treehouse/`, whose `cwd` is outside `/repo` entirely while its `repoRoot` still names
+ * `/repo`. Containment therefore falls through to the repository-wide entry, so the package
+ * override would work for a plain checkout and silently never for a dispatched one. A
+ * worktree mirrors its repository's layout, so the entry's repository-relative subpath is
+ * matched against `location.checkoutSubpath` - the session's position within its OWN
+ * checkout, compared by whole path components.
+ */
+export function checkCommandFor(
+  config: Pick<WorkflowConfig, "checkCommands">,
+  location: CheckLocation,
+  slot: WorkflowCheckSlot,
+): WorkflowCheckCommand | null {
+  let best: WorkflowCheckCommand | null = null;
+  for (const entry of config.checkCommands) {
+    if (entry.slot !== slot) continue;
+    if (!checkCommandApplies(entry.repoRoot, location)) continue;
+    if (!best || entry.repoRoot.length > best.repoRoot.length) best = entry;
+  }
+  // The whole ENTRY, not just its argv. The matched root is not decoration: when a nested
+  // entry wins, it is also the directory that command has to run in, and a caller handed
+  // only the argv has no way to know that - it would run the package's command at the top
+  // of the repository and report the answer as the package's.
+  return best ? { ...best, command: [...best.command] } : null;
+}
+
+/** Drop a single trailing separator so `/repo/` and `/repo` compare equal. */
+function trimSlash(p: string): string {
+  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
+}
+
+/**
+ * Where a session stands, in the three vocabularies resolution needs.
+ *
+ * `checkoutSubpath` is the session's directory relative to its OWN checkout root, derived
+ * by whoever can ask git - `null` when nobody did. It exists because the other two cannot
+ * answer the question for a dispatched session: `cwd` is an absolute path inside a pooled
+ * worktree, `repoRoot` names the main checkout, and nothing about either says which
+ * directory OF THE REPOSITORY the session is in.
+ */
+export interface CheckLocation {
+  cwd: string | null;
+  repoRoot: string | null;
+  checkoutSubpath: string | null;
+}
+
+/** Whether `inner` is `outer` or sits beneath it, compared by whole path components. */
+function subpathWithin(inner: string, outer: string): boolean {
+  return inner === outer || inner.startsWith(`${outer}/`);
+}
+
+/**
+ * Whether one configured entry applies to a session, by any of the three routes.
+ *
+ * Split out so the third route is stated once and can be tested directly: the other two are
+ * containment tests, and this one is the only place resolution can pick the wrong package.
+ */
+function checkCommandApplies(entryRoot: string, location: CheckLocation): boolean {
+  // The two containment routes: the session stands inside the entry, or the entry covers
+  // the session's whole repository.
+  if (repoAllowlisted(location.cwd, location.repoRoot, [entryRoot])) return true;
+  // The worktree route, for an entry nested inside THIS session's repository.
+  //
+  // Compared as a COMPONENT PATH against the session's checkout-relative directory, not as
+  // a trailing substring of its absolute one. A substring match reads
+  // `<worktree>/examples/packages/web` as `packages/web`, then runs the command in
+  // `packages/web` of the leased checkout - silently testing a different package from the
+  // one the submission was written in, and reporting that as the submission's answer. A
+  // repository containing both `examples/packages/web` and `packages/web` is ordinary, so
+  // "the same trailing path means the same directory" is simply not true.
+  //
+  // `null` declines rather than falling back to the looser rule: an unknown position is not
+  // evidence of a match, and the repository-wide entry is the correct thing to land on.
+  if (!location.repoRoot || location.checkoutSubpath === null) return false;
+  const entrySubpath = checkCommandSubpath(location.repoRoot, entryRoot);
+  if (!entrySubpath) return false;
+  return subpathWithin(trimSlash(location.checkoutSubpath), entrySubpath);
+}
+
+/**
+ * Where a matched command runs, as a path RELATIVE to the repository's checkout.
+ *
+ * Relative, never absolute, and that is the load-bearing part. The execution runtime does
+ * not run in the operator's own directory: it leases a pooled worktree of `repoRoot` and
+ * pins it to the submission's captured commit, so the configured `/repo/packages/web` has
+ * to become `packages/web` and be joined onto whatever tree was leased. Handing an absolute
+ * path down would run the check against the operator's live checkout instead of the
+ * reviewed commit.
+ *
+ * `""` means the checkout root, and it is the answer for every shape except a genuinely
+ * nested entry - including an entry that sits ABOVE the repository (a broad rule covering
+ * several projects says nothing about which subdirectory to stand in) and one matched
+ * through `cwd` from outside the repository tree. Degrading those to the root is the safe
+ * direction: the root is where a repository-wide command expects to be.
+ */
+/**
+ * Which path a settings entry should STORE, given the repository a typed path resolved to
+ * and the canonical form of the path itself.
+ *
+ * The inverse of `checkCommandSubpath`, and it exists because resolving a typed path to its
+ * repository is lossy in exactly the direction that matters: `/repo/packages/web` resolves
+ * to `/repo`, so storing the resolved root alone makes the subdirectory override
+ * unconfigurable from Settings - a documented capability with no way to reach it.
+ *
+ * Keeps the typed path when it is the repository or strictly inside it, and falls back to
+ * the repository otherwise. That fallback is not defensive noise: a path canonicalizing
+ * outside the repository it resolved to is a symlinked or relocated checkout, and storing
+ * a root the matcher can never match would be an entry that silently never applies.
+ */
+export function checkCommandRoot(repoRoot: string, requestedPath: string): string {
+  const root = trimSlash(repoRoot);
+  const path = trimSlash(requestedPath);
+  return path === root || path.startsWith(`${root}/`) ? path : root;
+}
+
+export function checkCommandSubpath(
+  repoRoot: string | null,
+  entryRoot: string,
+): string {
+  if (!repoRoot) return "";
+  const root = trimSlash(repoRoot);
+  const entry = trimSlash(entryRoot);
+  if (entry === root) return "";
+  // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
+  return entry.startsWith(`${root}/`) ? entry.slice(root.length + 1) : "";
+}
+
+/**
+ * Why a check may not run against this checkout, or null when it may.
+ *
+ * A SENTENCE and never a boolean, for `workQueueBlockedReason`'s reason: the two ways to be
+ * unauthorized need different things from the operator - one is a switch in Settings, the
+ * other is adding this repository - and a boolean makes the surface guess which.
+ */
+export function checkBlockedReason(
+  config: Pick<WorkflowConfig, "checksEnabled" | "repoAllowlist">,
+  cwd: string | null,
+  repoRoot: string | null,
+): string | null {
+  if (!config.checksEnabled) {
+    return "Workflow checks are switched off, so no command was run.";
+  }
+  if (!repoAllowlisted(cwd, repoRoot, config.repoAllowlist)) {
+    return "This repository is not on the workflow allowlist, so no command was run.";
+  }
+  return null;
+}
+
+/**
+ * What a check command DID, once it was allowed to try.
+ *
+ * APPEND-ONLY: a status reaches durable `output_json`, which run detail reads back.
+ *
+ * Three of the four PASS. `skipped` and `unavailable` are the difference between "nobody
+ * configured this" and "somebody has to authorize it", and both carry a note rather than
+ * silently letting the graph through - a shipped workflow with check gates has to be safe
+ * on a machine that configured none of them, and an operator has to be able to tell a gate
+ * that passed from a gate that never ran.
+ */
+export const WORKFLOW_CHECK_STATUSES = ["passed", "failed", "skipped", "unavailable"] as const;
+export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
+
+export interface WorkflowCheckOutcome {
+  status: WorkflowCheckStatus;
+  slot: WorkflowCheckSlot;
+  /** Null whenever no command was resolved, which is every `skipped` outcome. */
+  command: string[] | null;
+  exitCode: number | null;
+  /** Bounded and tail-biased: a failure's last lines are the useful ones. */
+  output: string;
+  /** Bytes of streamed output dropped to honour that bound, or 0 when nothing was. */
+  truncatedBytes: number;
+  /** Always a complete sentence, including on a pass. */
+  note: string;
+}
+
+/** Whether this outcome lets the graph advance. Only `failed` does not. */
+export function checkOutcomePasses(outcome: Pick<WorkflowCheckOutcome, "status">): boolean {
+  return outcome.status !== "failed";
+}
+
+/**
+ * Split a typed command line into an argv the way the settings field promises to.
+ *
+ * The panel displays what this returns, so an operator sees what will actually run rather
+ * than trusting a split they cannot inspect. Deliberately NOT a shell grammar: there are no
+ * variables, globs, pipes, redirections or operators, because nothing downstream has a
+ * shell to interpret them and a split that accepted `a && b` would produce an argv whose
+ * second half is silently an argument to the first.
+ *
+ * The exact rules:
+ *  - Tokens are separated by unquoted whitespace, and runs of it collapse.
+ *  - `'…'` is literal to the next `'`, with no escapes inside - the sh rule, so a Windows
+ *    path or a regex can be pasted without doubling anything.
+ *  - `"…"` is literal to the next `"`, except `\"` and `\\`, which produce `"` and `\`. Any
+ *    other backslash inside double quotes stays as both characters, again as sh does, so
+ *    `"C:\tmp"` is not silently given a tab.
+ *  - Outside quotes a backslash escapes exactly the next character, including whitespace
+ *    and quotes.
+ *  - Adjacent runs concatenate into ONE token, so `--filter="a b"` is one argument.
+ *  - An unterminated quote or a trailing backslash is an ERROR, never a token: a line the
+ *    operator has not finished typing must not resolve to something that would run.
+ *  - An empty token is an ERROR. `''` means an empty argument in sh, but every element here
+ *    is bounded non-empty at the zod boundary, so accepting it would show the operator a
+ *    parse the daemon then refuses.
+ */
+export function parseCheckCommand(
+  line: string,
+): { ok: true; argv: string[] } | { ok: false; error: string } {
+  const argv: string[] = [];
+  let token: string | null = null;
+  const push = (text: string): void => {
+    token = (token ?? "") + text;
+  };
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]!;
+    if (/\s/.test(char)) {
+      if (token !== null) {
+        argv.push(token);
+        token = null;
+      }
+      continue;
+    }
+    if (char === "'") {
+      const close = line.indexOf("'", i + 1);
+      if (close === -1) return { ok: false, error: "This line has an unclosed ' quote." };
+      push(line.slice(i + 1, close));
+      i = close;
+      continue;
+    }
+    if (char === '"') {
+      let text = "";
+      let j = i + 1;
+      let closed = false;
+      for (; j < line.length; j += 1) {
+        const inner = line[j]!;
+        if (inner === '"') {
+          closed = true;
+          break;
+        }
+        if (inner === "\\" && (line[j + 1] === '"' || line[j + 1] === "\\")) {
+          text += line[j + 1]!;
+          j += 1;
+          continue;
+        }
+        text += inner;
+      }
+      if (!closed) return { ok: false, error: 'This line has an unclosed " quote.' };
+      push(text);
+      i = j;
+      continue;
+    }
+    if (char === "\\") {
+      const next = line[i + 1];
+      if (next === undefined) return { ok: false, error: "This line ends in a lone backslash." };
+      push(next);
+      i += 1;
+      continue;
+    }
+    push(char);
+  }
+  if (token !== null) argv.push(token);
+  if (argv.length === 0) return { ok: false, error: "Type the command to run." };
+  if (argv.some((arg) => arg === "")) {
+    return { ok: false, error: "An empty argument cannot be part of a command." };
+  }
+  return { ok: true, argv };
+}
+
+/**
+ * How the panel and run detail print an argv back, so both quote the same things.
+ *
+ * The escaping is `parseCheckCommand`'s OWN, not JSON's, and that is the whole contract:
+ * whatever this prints must re-parse to the argv it was given. `JSON.stringify` looked
+ * right and was not - it escapes a tab as the two characters `\t`, which this parser reads
+ * literally as a backslash and a `t` (its double-quote rule honours `\"` and `\\` and
+ * nothing else, deliberately, so that `"C:\tmp"` is a path and not a tab). An argument
+ * carrying a control character therefore displayed as an argv that would run differently
+ * from the one configured.
+ *
+ * A raw control character inside double quotes round-trips exactly, because the parser
+ * copies everything up to the closing quote verbatim - so the fix is to escape LESS, not
+ * more: only the two characters that would end or escape the quoted run.
+ */
+export function formatCheckCommand(argv: readonly string[]): string {
+  return argv
+    .map((arg) => (/[\s'"\\]/.test(arg) ? `"${arg.replace(/[\\"]/g, "\\$&")}"` : arg))
+    .join(" ");
+}
 
 export interface WorkflowCompletionClaim {
   completionKind: WorkflowCompletionKind;
@@ -828,8 +1214,36 @@ export interface WorkflowContextSnapshot {
   };
 }
 
+/**
+ * Where a claim in a verdict came from, so a human can trace it to its source.
+ *
+ * APPEND-ONLY: a kind reaches durable `verdict_json`, and a build that cannot read one
+ * fails the whole verdict at its zod boundary rather than dropping a citation.
+ *
+ * Declared here rather than spelled out at each of the three schemas that used to carry
+ * their own copy of the list (`WorkflowEvidenceRefSchema`, `EvidenceInputSchema`, and this
+ * type), because the model-facing schema and the strict one have to admit exactly the same
+ * set - a kind added to one and not the other is a citation the model may produce and the
+ * normalizer then rejects as an infrastructure parse failure.
+ *
+ * `check` is the Check node's, and it is a real kind rather than a relaxation of the
+ * "every requested change cites something" rule. That rule exists so a human can trace a
+ * claim to its source, and a command's own output IS that source - exempting the one
+ * author whose evidence is machine-produced and exact would weaken the rule for the
+ * strongest citation in the system.
+ */
+export const EVIDENCE_REF_KINDS = [
+  "diff",
+  "transcript",
+  "standard",
+  "goal",
+  "decision",
+  "check",
+] as const;
+export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
+
 export interface EvidenceRef {
-  kind: "diff" | "transcript" | "standard" | "goal" | "decision";
+  kind: EvidenceRefKind;
   quote: string;
   path?: string;
   line?: number;

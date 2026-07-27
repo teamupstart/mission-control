@@ -68,7 +68,7 @@ and get your decision back.
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
 - **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
-  Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
+  Markdown Personas, then arrange Session, Persona, all-pass Join, Check, and End nodes on a
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
   run concurrent, read-only Persona reviews against one immutable evidence snapshot. A
@@ -2166,19 +2166,70 @@ Announcements and labels name Personas and stages; no surface prints a node id. 
 is derived, not stored: one reviewer names its own stage, and a parallel stage reads "Stage N".
 
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
-**All-pass Join** and End nodes from the left palette, then connect the directional handles:
-Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may return to
-Session for changes. Session needs at least one `submitted` route and may fan out to several.
-A Join needs both outcomes from at least two distinct predecessors, waits for one result from
-each, and passes only when all passed. Cycles are legal only when they include Session.
-Persona-only cycles are rejected because they could spend repeatedly against unchanged work.
-There is no checkpoint node and Inspector is not a graph node.
+**All-pass Join**, **Check** and End nodes from the left palette, then connect the directional
+handles: Session emits `submitted`; a Persona, Check or Join emits `pass` and `fail`; failures
+may return to Session for changes. Session needs at least one `submitted` route and may fan
+out to several. A Join needs both outcomes from at least two distinct predecessors, waits for
+one result from each, and passes only when all passed; a predecessor may be a Persona, a Check
+or another Join. Cycles are legal only when they include Session. Persona-only cycles are
+rejected because they could spend repeatedly against unchanged work. There is no checkpoint
+node and Inspector is not a graph node.
 
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
 of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
 fail routed somewhere other than Session, a Join fed from two different stages - opens in
-Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
-so a draft moves between them freely and existing workflows need no migration.
+Graph with a banner naming each reason in a sentence. A graph containing a Check node also
+opens in Graph, with a banner saying so; the Pipeline editor cannot show one yet. Both views
+write ordinary draft graphs, so a draft moves between them freely and existing workflows need
+no migration.
+
+### Check nodes (gating on a command)
+
+A **Check** represents a deterministic command gate instead of a model review. This build
+ships the graph node, configuration, validation, and run-detail contract, but not the
+crash-safe execution runtime: **it does not spawn configured check commands yet**. An
+authorized, configured Check is recorded as **Not run** and passes with a note explaining
+that the runtime is unavailable. Command execution is a separate implementation unit because
+it must run against a pooled worktree pinned to the captured commit and recover its process
+and lease safely after a daemon crash.
+
+**A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
+`build`. The command assigned to each slot is configured per repository under **Settings →
+Workflows**, keeping the exportable published version machine-neutral and free of argv. The
+execution contract accepts an **argv**, not a shell string, so `&&`, `|` and `$HOME` are
+ordinary arguments. The settings field splits a typed line quote-aware (`'…'` literal, `"…"`
+honouring `\"` and `\\`, a backslash escaping the next character outside quotes, adjacent
+runs joining into one token) and **shows the parsed argv back**, so you see what the
+execution runtime will receive.
+
+Each repository may configure a slot **once**; a second entry for the same pair is refused
+rather than silently ignored. A **subdirectory** entry beats the repository-wide one, which
+is how a monorepo gives one package its own command - and the command then runs *in that
+subdirectory*, not at the top of the tree. Worktrees of a configured repository count too,
+wherever they live on disk: a dispatched session usually stands in a pooled checkout under
+`~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
+checkout's `packages/web` resolves the command configured for the repository's
+`packages/web`. That match is on the exact directory, component by component - a session in
+`examples/packages/web` gets the repository-wide command, not the one configured for
+`packages/web`.
+
+**An unrun gate passes, with a note saying why.** A slot with no command configured for this
+repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,
+because a workflow that failed on every unconfigured machine would be broken by default, and
+both say which of the two happened so it is never mistaken for a gate that ran. In this build,
+the missing execution runtime is a third *not run* outcome that also passes with its own note.
+
+**Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
+(`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
+and **Check commands**, the table of repository root, slot and argv. The switch alone is not
+enough - the repository must also be on the same Workflow allowlist Live delivery uses.
+Enabling it authorizes running code the reviewed branch supplies - its scripts, dependencies
+and build steps - with the daemon's own filesystem authority. This is not a sandbox. Checks run
+through their own small attempt budget, separate from the review budget; enabling consent does
+not override this build's missing execution runtime.
+
+Run detail draws a check as its own card. In this build it shows the slot, configured argv,
+and the reason the command was skipped or not run.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2344,7 +2395,9 @@ Live workflow delivery is separately off by default. Open **Settings → Workflo
 (`#/settings/workflows`), enable Live after its explicit warning, and add canonical repository
 roots to the Workflow allowlist. A Live binding can be saved only while its current session is in an allowlisted
 checkout. Removing consent keeps the binding choice visible but refuses the next delivery;
-it is never silently changed to Preview.
+it is never silently changed to Preview. The same panel holds the second, independent switch
+for [Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and grants
+something different: running branch-authored code, not typing into a pane.
 
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the
@@ -2460,7 +2513,7 @@ The canvas snaps to its visible grid and includes zoom in, zoom out, fit, 100% r
 pannable minimap. **Auto-layout** changes positions only, then fits once. Local draft undo and redo
 hold the last 50 meaningful edits and use <kbd>⌘/Ctrl</kbd><kbd>Z</kbd> and
 <kbd>⌘/Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd>. Autosave does not consume history entries.
-Duplicate applies to Persona, Join, and End nodes, never Session.
+Duplicate applies to Persona, Check, Join, and End nodes, never Session.
 
 Tab enters the graph through one roving node focus. Selected nodes move one grid unit with an Arrow
 key and ten grid units with Shift+Arrow. Press <kbd>C</kbd> on one selected non-terminal node, or choose

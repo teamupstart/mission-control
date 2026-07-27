@@ -15,8 +15,10 @@ process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { openDb } = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 
 function persona(
   id: string,
@@ -860,25 +862,28 @@ test("a passing check advances the graph and reaches the End through the Join", 
 
 test("a failing check returns a repair packet to the Session, citing its own output", async () => {
   const store = seedSubmission("check-fail", checkGraph);
-  const engine = new WorkflowEngine(store, () => {}, {
-    concurrency: 3,
-    runnerFor: passingRunner,
-    resolveExecution: passingExecution,
-    retryBaseMs: 1,
-    workflowConfig: () => checkConfig(),
-    checkDeps: {
-      execute: async () => ({
-        kind: "exited",
-        exitCode: 1,
-        output: "src/thing.ts(4,1): error TS2345: nope\n",
-        truncatedBytes: 0,
-      }),
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowConfig: () => checkConfig(),
+      checkDeps: {
+        execute: async () => ({
+          kind: "exited",
+          exitCode: 1,
+          output: "src/thing.ts(4,1): error TS2345: nope\n",
+          truncatedBytes: 0,
+        }),
+      },
     },
   });
-  engine.start();
-  engine.activateSubmission("submission-check-fail");
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-check-fail");
   await waitFor(() => store.getRun("run-check-fail")?.status === "waiting_for_session");
-  await engine.stop();
+  await waitFor(() => store.listDeliveries("run-check-fail").length === 1);
+  await manager.stop();
 
   const attempt = store.listAttempts("submission-check-fail").find((item) => item.nodeId === "gate")!;
   const verdict = attempt.verdict as {
@@ -896,6 +901,44 @@ test("a failing check returns a repair packet to the Session, citing its own out
   // The Join saw a fail and routed the round back to the Session.
   assert.equal(store.getRun("run-check-fail")?.currentPhase, "persona_feedback");
   assert.equal(store.getSubmission("submission-check-fail")?.status, "waiting_for_session");
+  const delivery = store.listDeliveries("run-check-fail")[0]!;
+  assert.equal(delivery.kind, "persona_feedback");
+  assert.equal(delivery.state, "prepared");
+  assert.match(delivery.payload, /## Check · test/);
+  assert.match(delivery.payload, /TS2345/);
+});
+
+test("startup recovery retries a persisted Check infrastructure error", async () => {
+  const recoveryGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("check-recovery", recoveryGraph);
+  const inactive = new WorkflowEngine(store);
+  inactive.activateSubmission("submission-check-recovery");
+  const first = store.latestAttemptForNode("submission-check-recovery", "gate")!;
+  store.finishAttempt(first.id, { state: "error", error: "lease interrupted" }, 10);
+
+  const recovered = new WorkflowEngine(store);
+  recovered.start();
+  const attempts = store.listAttempts("submission-check-recovery")
+    .filter((attempt) => attempt.nodeId === "gate")
+    .sort((a, b) => a.attempt - b.attempt);
+  assert.deepEqual(attempts.map((attempt) => [attempt.attempt, attempt.state]), [
+    [1, "error"],
+    [2, "retry_wait"],
+  ]);
+  assert.equal(attempts[1]?.persona, null);
+  await recovered.stop();
+  store.cancelRun("run-check-recovery", "test_cleanup", 11);
 });
 
 test("an unconfigured slot passes without the executor ever being asked", async () => {

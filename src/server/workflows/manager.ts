@@ -43,7 +43,12 @@ import type {
   WorkflowTriggerSource,
   WorkflowInspectorGateState,
 } from "@shared/workflow.ts";
-import { WORKFLOW_EXTERNAL_SOURCE_KINDS, normalizeWorkflowName } from "@shared/workflow.ts";
+import {
+  WORKFLOW_EXTERNAL_SOURCE_KINDS,
+  isVerdictNode,
+  normalizeWorkflowName,
+  verdictAuthor,
+} from "@shared/workflow.ts";
 import {
   PersonaVerdictSchema,
   WorkflowCaptureExpectationSchema,
@@ -2929,14 +2934,20 @@ export class WorkflowManager {
   }
 
   private priorFeedback(runId: string): PersonaFeedbackSummary[] {
+    const run = this.store.getRun(runId);
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const nodes = new Map(
+      (version?.graph.nodes ?? []).filter(isVerdictNode).map((node) => [node.id, node]),
+    );
     const submissions = this.store.listSubmissions(runId);
     return submissions.flatMap((submission) =>
       this.store.listAttempts(submission.id).flatMap((attempt) => {
         const parsed = PersonaVerdictSchema.safeParse(attempt.verdict);
-        if (!parsed.success || parsed.data.verdict !== "fail" || !attempt.persona) return [];
+        const node = nodes.get(attempt.nodeId);
+        if (!parsed.success || parsed.data.verdict !== "fail" || !node) return [];
         const verdict: PersonaVerdict = parsed.data;
         return [{
-          personaName: attempt.persona.name,
+          personaName: verdictAuthor(node),
           summary: verdict.summary,
           requestedChanges: verdict.requestedChanges.map((item) => item.title),
         }];

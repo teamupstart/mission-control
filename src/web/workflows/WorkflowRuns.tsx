@@ -12,7 +12,7 @@ import type {
   WorkflowEventPage,
   WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
-import { formatCheckCommand } from "@shared/workflow.ts";
+import { formatCheckCommand, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -215,7 +215,7 @@ function CheckCard({
           <pre className="wf-run-check-output">{outcome.output}</pre>
           {outcome.truncatedBytes > 0 && (
             <p className="wf-run-meta">
-              Earlier {outcome.truncatedBytes} characters of output were omitted.
+              Earlier {outcome.truncatedBytes} bytes of output were omitted.
             </p>
           )}
         </div>
@@ -1330,12 +1330,14 @@ export function WorkflowRuns({
       .find((delivery) => delivery.payload.length > 0)?.payload;
     const text = deliveryPayload ?? detail.attempts.flatMap((attempt) => {
       const verdict = attempt.verdict as unknown as PersonaVerdict | null;
-      if (!verdict || !attempt.persona) return [];
+      const node = detail.version?.graph.nodes.find((candidate) => candidate.id === attempt.nodeId);
+      if (!verdict || !node || !isVerdictNode(node)) return [];
+      const author = verdictAuthor(node);
       if (verdict.verdict === "pass") {
-        return [`${attempt.persona.name}: PASS\n${verdict.summary}\n${verdict.approvalDetails.reason}`];
+        return [`${author}: PASS\n${verdict.summary}\n${verdict.approvalDetails.reason}`];
       }
       return [([
-        `${attempt.persona.name}: FAIL`,
+        `${author}: FAIL`,
         verdict.summary,
         ...verdict.requestedChanges.map((change) => `- ${change.title}: ${change.rationale}`),
       ].join("\n"))];

@@ -105,6 +105,7 @@ export function createCheckScheduler(
 /** The sentence a build with no execution runtime gives, in one place so tests can name it. */
 export const CHECK_RUNTIME_UNAVAILABLE_NOTE =
   "This build cannot run check commands yet, so the gate was recorded and passed.";
+const encoder = new TextEncoder();
 
 function outcome(
   slot: WorkflowCheckSlot,
@@ -128,14 +129,39 @@ function outcome(
 }
 
 /**
- * Keep the LAST `max` characters, because a failing build's useful lines are its last ones.
+ * Keep the LAST `maxBytes` UTF-8 bytes, because a failing build's useful lines are its last ones.
  *
  * A compiler prints its summary at the end and a test runner prints its failures there; a
- * head-biased clip of a 40,000-line build log is 4,000 characters of dependency resolution.
+ * head-biased clip of a 40,000-line build log is 4,000 bytes of dependency resolution.
  */
-export function tailBounded(text: string, max: number): { text: string; dropped: number } {
-  if (text.length <= max) return { text, dropped: 0 };
-  return { text: text.slice(text.length - max), dropped: text.length - max };
+export function tailBounded(
+  text: string,
+  maxBytes: number,
+): { text: string; droppedBytes: number } {
+  const totalBytes = encoder.encode(text).byteLength;
+  if (totalBytes <= maxBytes) return { text, droppedBytes: 0 };
+  const kept: string[] = [];
+  let keptBytes = 0;
+  for (const scalar of [...text].reverse()) {
+    const scalarBytes = encoder.encode(scalar).byteLength;
+    if (keptBytes + scalarBytes > maxBytes) break;
+    kept.push(scalar);
+    keptBytes += scalarBytes;
+  }
+  return {
+    text: kept.reverse().join(""),
+    droppedBytes: totalBytes - keptBytes,
+  };
+}
+
+function checkOutcomeNote(command: readonly string[], suffix: string): string {
+  const printed = formatCheckCommand(command);
+  const commandLimit = WORKFLOW_EXECUTION_LIMITS.verdictSummary - suffix.length - 2;
+  if (printed.length <= commandLimit) return `\`${printed}\`${suffix}`;
+  let prefix = printed.slice(0, Math.max(0, commandLimit - 1));
+  const last = prefix.charCodeAt(prefix.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) prefix = prefix.slice(0, -1);
+  return `\`${prefix}…\`${suffix}`;
 }
 
 /**
@@ -202,16 +228,15 @@ export async function runCheck(
   // The runtime counts the bytes it dropped while streaming; this only adds what the final
   // clip dropped on top. Summing rather than overwriting is what keeps the figure exact
   // instead of reporting the last truncation as if it were the only one.
-  const truncatedBytes = result.truncatedBytes + bounded.dropped;
-  const printed = formatCheckCommand(command);
+  const truncatedBytes = result.truncatedBytes + bounded.droppedBytes;
   return result.exitCode === 0
-    ? outcome(slot, "passed", `\`${printed}\` passed.`, {
+    ? outcome(slot, "passed", checkOutcomeNote(command, " passed."), {
         command,
         exitCode: 0,
         output: bounded.text,
         truncatedBytes,
       })
-    : outcome(slot, "failed", `\`${printed}\` exited ${result.exitCode}.`, {
+    : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.`), {
         command,
         exitCode: result.exitCode,
         output: bounded.text,

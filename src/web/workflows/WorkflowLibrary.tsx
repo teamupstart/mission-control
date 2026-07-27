@@ -13,7 +13,12 @@ import {
   type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
-import { connectionAllowed, validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import {
+  WORKFLOW_NODE_SOURCE_PORTS,
+  WORKFLOW_NODE_TARGET_PORTS,
+  connectionAllowed,
+  validateWorkflowGraph,
+} from "@shared/workflow-graph.ts";
 import {
   nodeLabel,
   projectStages,
@@ -561,28 +566,19 @@ export function WorkflowLibrary({
     if (!source) return;
     const node = workflow?.draft.nodes.find((candidate) => candidate.id === source);
     if (!node || node.kind === "end") return;
-    const sourcePort: WorkflowSourcePort = node.kind === "session" ? "submitted" : "pass";
+    const sourcePort = WORKFLOW_NODE_SOURCE_PORTS[node.kind][0];
+    if (!sourcePort) return;
     const target = workflow?.draft.nodes.find((candidate) => {
       if (candidate.id === source) return false;
-      const targetPort: WorkflowTargetPort = candidate.kind === "session"
-        ? "return_for_changes"
-        : candidate.kind === "persona"
-          ? "activate"
-          : candidate.kind === "all_pass"
-            ? "result"
-            : "terminal";
-      return connectionAllowed(node, sourcePort, candidate, targetPort);
+      return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((targetPort) =>
+        connectionAllowed(node, sourcePort, candidate, targetPort));
     });
     setConnectSource(source);
     setConnectSourcePort(sourcePort);
     setConnectTarget(target?.id ?? "");
-    setConnectTargetPort(target?.kind === "session"
-      ? "return_for_changes"
-      : target?.kind === "all_pass"
-        ? "result"
-        : target?.kind === "end"
-          ? "terminal"
-          : "activate");
+    setConnectTargetPort(
+      target ? WORKFLOW_NODE_TARGET_PORTS[target.kind][0] ?? "activate" : "activate",
+    );
     window.setTimeout(() => {
       document.querySelector<HTMLSelectElement>("#workflow-connect-source")?.focus();
     });
@@ -613,31 +609,16 @@ export function WorkflowLibrary({
 
   const sourceNode = workflow?.draft.nodes.find((node) => node.id === connectSource) ?? null;
   const targetNode = workflow?.draft.nodes.find((node) => node.id === connectTarget) ?? null;
-  const sourcePortOptions: WorkflowSourcePort[] = sourceNode?.kind === "session"
-    ? ["submitted"]
-    : sourceNode?.kind === "persona" || sourceNode?.kind === "all_pass"
-      ? ["pass", "fail"]
-      : [];
-  const targetPortOptions: WorkflowTargetPort[] = targetNode?.kind === "session"
-    ? ["return_for_changes"]
-    : targetNode?.kind === "persona"
-      ? ["activate"]
-      : targetNode?.kind === "all_pass"
-        ? ["result"]
-        : targetNode?.kind === "end"
-          ? ["terminal"]
-          : [];
+  const sourcePortOptions: WorkflowSourcePort[] = sourceNode
+    ? [...WORKFLOW_NODE_SOURCE_PORTS[sourceNode.kind]]
+    : [];
+  const targetPortOptions: WorkflowTargetPort[] = targetNode
+    ? [...WORKFLOW_NODE_TARGET_PORTS[targetNode.kind]]
+    : [];
   const connectTargets = sourceNode
     ? workflow?.draft.nodes.filter((candidate) => {
         if (candidate.id === sourceNode.id) return false;
-        const candidatePorts: WorkflowTargetPort[] = candidate.kind === "session"
-          ? ["return_for_changes"]
-          : candidate.kind === "persona"
-            ? ["activate"]
-            : candidate.kind === "all_pass"
-              ? ["result"]
-              : ["terminal"];
-        return candidatePorts.some((port) =>
+        return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((port) =>
           connectionAllowed(sourceNode, connectSourcePort, candidate, port));
       }) ?? []
     : [];
@@ -938,33 +919,20 @@ export function WorkflowLibrary({
                         const port = event.target.value as WorkflowSourcePort;
                         setConnectSourcePort(port);
                         if (!sourceNode || !targetNode) return;
-                        const nextTargetPort: WorkflowTargetPort = targetNode.kind === "session"
-                          ? "return_for_changes"
-                          : targetNode.kind === "persona"
-                            ? "activate"
-                            : targetNode.kind === "all_pass"
-                              ? "result"
-                              : "terminal";
+                        const nextTargetPort = WORKFLOW_NODE_TARGET_PORTS[targetNode.kind][0];
+                        if (!nextTargetPort) return;
                         if (!connectionAllowed(sourceNode, port, targetNode, nextTargetPort)) {
                           const nextTarget = workflow.draft.nodes.find((candidate) => {
                             if (candidate.id === sourceNode.id) return false;
-                            const candidatePort: WorkflowTargetPort = candidate.kind === "session"
-                              ? "return_for_changes"
-                              : candidate.kind === "persona"
-                                ? "activate"
-                                : candidate.kind === "all_pass"
-                                  ? "result"
-                                  : "terminal";
-                            return connectionAllowed(sourceNode, port, candidate, candidatePort);
+                            return WORKFLOW_NODE_TARGET_PORTS[candidate.kind].some((candidatePort) =>
+                              connectionAllowed(sourceNode, port, candidate, candidatePort));
                           });
                           setConnectTarget(nextTarget?.id ?? "");
-                          setConnectTargetPort(nextTarget?.kind === "session"
-                            ? "return_for_changes"
-                            : nextTarget?.kind === "all_pass"
-                              ? "result"
-                              : nextTarget?.kind === "end"
-                                ? "terminal"
-                                : "activate");
+                          setConnectTargetPort(
+                            nextTarget
+                              ? WORKFLOW_NODE_TARGET_PORTS[nextTarget.kind][0] ?? "activate"
+                              : "activate",
+                          );
                         }
                       }}
                     >
@@ -982,13 +950,9 @@ export function WorkflowLibrary({
                         const id = event.target.value;
                         const target = workflow.draft.nodes.find((node) => node.id === id);
                         setConnectTarget(id);
-                        setConnectTargetPort(target?.kind === "session"
-                          ? "return_for_changes"
-                          : target?.kind === "all_pass"
-                            ? "result"
-                            : target?.kind === "end"
-                              ? "terminal"
-                              : "activate");
+                        setConnectTargetPort(
+                          target ? WORKFLOW_NODE_TARGET_PORTS[target.kind][0] ?? "activate" : "activate",
+                        );
                       }}
                     >
                       {connectTargets.map((node) => (

@@ -4,6 +4,7 @@ import {
   DEFAULT_WORKFLOW_CONFIG,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_LIMITS,
   checkBlockedReason,
   checkCommandFor,
   formatCheckCommand,
@@ -20,6 +21,7 @@ import {
   type CheckExecutionRequest,
   type CheckExecutionResult,
 } from "../src/server/workflows/checks.ts";
+import { WorkflowCheckOutcomeSchema } from "../src/shared/protocol.ts";
 
 // What is at stake: three of a check's four outcomes PASS, and the ones that pass are the
 // ones nobody will look at until a shipped workflow carrying check gates lands on a machine
@@ -200,12 +202,13 @@ test("a command that died without answering is infrastructure, NEVER a fail verd
 });
 
 test("output is kept tail-first, and the omitted count sums every truncation", async () => {
-  const head = "x".repeat(WORKFLOW_EXECUTION_LIMITS.checkOutput);
+  const head = "é".repeat(WORKFLOW_EXECUTION_LIMITS.checkOutput / 2);
+  const failure = "THE ACTUAL FAILURE";
   const result = await runCheck(at(READY), {
     execute: executorReturning({
       kind: "exited",
       exitCode: 1,
-      output: `${head}THE ACTUAL FAILURE`,
+      output: `${head}${failure}`,
       // The runner already dropped this much while streaming; the final clip adds to it
       // rather than replacing it, or a doubly-truncated log under-reports what was lost.
       truncatedBytes: 5_000,
@@ -214,18 +217,43 @@ test("output is kept tail-first, and the omitted count sums every truncation", a
   assert.equal(result.kind, "outcome");
   const outcome = result.kind === "outcome" ? result.outcome : null;
   assert.ok(outcome);
-  assert.equal(outcome.output.length, WORKFLOW_EXECUTION_LIMITS.checkOutput);
+  assert.equal(Buffer.byteLength(outcome.output), WORKFLOW_EXECUTION_LIMITS.checkOutput);
   assert.ok(
-    outcome.output.endsWith("THE ACTUAL FAILURE"),
+    outcome.output.endsWith(failure),
     "a build prints its failure last, so the tail is the part worth keeping",
   );
-  assert.equal(outcome.truncatedBytes, 5_000 + "THE ACTUAL FAILURE".length);
+  assert.equal(outcome.truncatedBytes, 5_000 + Buffer.byteLength(failure));
 });
 
 test("tailBounded keeps the end and reports exactly what it dropped", () => {
-  assert.deepEqual(tailBounded("abc", 10), { text: "abc", dropped: 0 });
-  assert.deepEqual(tailBounded("abcdef", 3), { text: "def", dropped: 3 });
-  assert.deepEqual(tailBounded("abc", 3), { text: "abc", dropped: 0 });
+  assert.deepEqual(tailBounded("abc", 10), { text: "abc", droppedBytes: 0 });
+  assert.deepEqual(tailBounded("abcdef", 3), { text: "def", droppedBytes: 3 });
+  assert.deepEqual(tailBounded("abc", 3), { text: "abc", droppedBytes: 0 });
+  assert.deepEqual(tailBounded("ééabc", 5), { text: "éabc", droppedBytes: 2 });
+});
+
+test("a maximum-length argv still produces a schema-valid outcome note", async () => {
+  const command = Array.from({ length: 4 }, () => "x".repeat(999));
+  const config = configWith({
+    checksEnabled: true,
+    repoAllowlist: [REPO],
+    checkCommands: [{ repoRoot: REPO, slot: "test", command }],
+  });
+  assert.equal(command.join(" ").length, WORKFLOW_LIMITS.checkCommandLength - 1);
+  const result = await runCheck(at(config), {
+    execute: executorReturning({
+      kind: "exited",
+      exitCode: 1,
+      output: "failed\n",
+      truncatedBytes: 0,
+    }).execute,
+  });
+  assert.equal(result.kind, "outcome");
+  const outcome = result.kind === "outcome" ? result.outcome : null;
+  assert.ok(outcome);
+  assert.equal(WorkflowCheckOutcomeSchema.safeParse(outcome).success, true);
+  assert.ok(outcome.note.length <= WORKFLOW_EXECUTION_LIMITS.verdictSummary);
+  assert.match(outcome.note, /…` exited 1\.$/);
 });
 
 test("command resolution matches a worktree of a configured repository, longest root first", () => {

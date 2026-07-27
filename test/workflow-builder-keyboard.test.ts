@@ -6,6 +6,10 @@ import {
   nextRovingNodeId,
 } from "../src/web/workflows/WorkflowCanvas.tsx";
 import type { WorkflowDraftGraph } from "../src/shared/workflow.ts";
+import {
+  WORKFLOW_NODE_SOURCE_PORTS,
+  WORKFLOW_NODE_TARGET_PORTS,
+} from "../src/shared/workflow-graph.ts";
 
 const canvasSource = readFileSync(
   new URL("../src/web/workflows/WorkflowCanvas.tsx", import.meta.url),
@@ -68,6 +72,10 @@ test("keyboard editing covers move, connect, confirmed delete, undo, redo, and d
   assert.match(librarySource, /value=\{connectSourcePort\}/);
   assert.match(canvasSource, /setFocusNodeId\(selection\.id\)/);
   assert.match(librarySource, /value=\{connectTargetPort\}/);
+  assert.deepEqual(WORKFLOW_NODE_SOURCE_PORTS.check, ["pass", "fail"]);
+  assert.deepEqual(WORKFLOW_NODE_TARGET_PORTS.check, ["activate"]);
+  assert.match(librarySource, /WORKFLOW_NODE_SOURCE_PORTS\[sourceNode\.kind\]/);
+  assert.match(librarySource, /WORKFLOW_NODE_TARGET_PORTS\[targetNode\.kind\]/);
   // Delete on the canvas still confirms - through the registered overlay now, so the
   // fleet's key handler stands down while the question is on screen.
   assert.match(librarySource, /setConfirm\(\{/);

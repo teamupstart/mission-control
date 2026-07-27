@@ -17,7 +17,12 @@ import type {
   WorkflowCheckOutcome,
   WorkflowConfig,
 } from "@shared/workflow.ts";
-import { WORKFLOW_EXECUTION_LIMITS, checkOutcomePasses } from "@shared/workflow.ts";
+import {
+  WORKFLOW_EXECUTION_LIMITS,
+  checkOutcomePasses,
+  isVerdictNode,
+  verdictAuthor,
+} from "@shared/workflow.ts";
 import { llmRunner } from "../llm/index.ts";
 import { runStructured } from "../llm/structured.ts";
 import type { StructuredAttemptObserver } from "../llm/structured.ts";
@@ -82,24 +87,6 @@ function isCheck(node: PublishedWorkflowNode): node is Extract<PublishedWorkflow
   return node.kind === "check";
 }
 
-/**
- * The nodes that produce a verdict, so recovery re-asserts their receipts.
- *
- * Was a Persona-only filter. A Check writes the same verdict-plus-receipts transaction and
- * needs the same idempotent re-assertion, or a daemon stopped between the two would leave a
- * completed check whose successors never activate.
- */
-function isVerdictNode(
-  node: PublishedWorkflowNode,
-): node is Extract<PublishedWorkflowNode, { kind: "persona" | "check" }> {
-  return isPersona(node) || isCheck(node);
-}
-
-/** The human name of a node that authored a verdict, for a receipt payload and a packet. */
-function verdictAuthor(node: Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>): string {
-  return isPersona(node) ? node.persona.name : `Check · ${node.slot}`;
-}
-
 function jsonValue(value: unknown): WorkflowJson {
   return workflowJson(value);
 }
@@ -153,11 +140,11 @@ function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
       confidence: 1,
     });
   }
-  const tail = tailBounded(outcome.output.trim(), WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
+  const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
-  const dropped = tail.dropped + outcome.truncatedBytes;
+  const dropped = tail.droppedBytes + outcome.truncatedBytes;
   const rationale = dropped > 0
-    ? `${quote}\n\n(${dropped} earlier characters of output omitted.)`
+    ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
     : quote;
   return normalizePersonaVerdict({
     verdict: "fail",
@@ -911,7 +898,7 @@ export class WorkflowEngine {
         if (currentSubmission?.status !== "running" || currentRun?.status !== "running") {
           continue;
         }
-        const errored = version.graph.nodes.filter(isPersona).flatMap((node) => {
+        const errored = version.graph.nodes.filter(isVerdictNode).flatMap((node) => {
           const attempt = this.store.latestAttemptForNode(submission.id, node.id);
           return attempt?.state === "error" ? [attempt] : [];
         });

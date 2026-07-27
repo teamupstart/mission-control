@@ -1071,7 +1071,7 @@ test("a check attempt renders its slot, exit code and bounded output, not a Pers
   assert.match(html, /error TS2345/);
   assert.match(html, /npm run typecheck/);
   // The omitted count is STATED, so nobody reads a bounded log as the whole one.
-  assert.match(html, /Earlier 1200 characters of output were omitted\./);
+  assert.match(html, /Earlier 1200 bytes of output were omitted\./);
   // And none of the Persona card's vocabulary, which would be a lie about this attempt.
   assert.doesNotMatch(html, /Missing persona/);
   assert.doesNotMatch(html, /cost unavailable/);

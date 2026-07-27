@@ -17,7 +17,10 @@ export interface WorkflowGraphValidationInput {
   completionPolicy?: WorkflowCompletionPolicy;
 }
 
-const sourcePorts: Record<WorkflowDraftNode["kind"], readonly WorkflowSourcePort[]> = {
+export const WORKFLOW_NODE_SOURCE_PORTS: Record<
+  WorkflowDraftNode["kind"],
+  readonly WorkflowSourcePort[]
+> = {
   session: ["submitted"],
   persona: ["pass", "fail"],
   all_pass: ["pass", "fail"],
@@ -25,7 +28,10 @@ const sourcePorts: Record<WorkflowDraftNode["kind"], readonly WorkflowSourcePort
   end: [],
 };
 
-const targetPorts: Record<WorkflowDraftNode["kind"], readonly WorkflowTargetPort[]> = {
+export const WORKFLOW_NODE_TARGET_PORTS: Record<
+  WorkflowDraftNode["kind"],
+  readonly WorkflowTargetPort[]
+> = {
   session: ["return_for_changes"],
   persona: ["activate"],
   all_pass: ["result"],
@@ -171,11 +177,11 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       continue;
     }
     let valid = true;
-    if (!sourcePorts[source.kind].includes(edge.sourcePort)) {
+    if (!WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(edge.sourcePort)) {
       diagnostics.push(diagnostic("invalid_source_port", `${source.kind} cannot emit “${edge.sourcePort}”.`, { edgeId: edge.id, nodeId: source.id }));
       valid = false;
     }
-    if (!targetPorts[target.kind].includes(edge.targetPort)) {
+    if (!WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(edge.targetPort)) {
       diagnostics.push(diagnostic("invalid_target_port", `${target.kind} cannot receive “${edge.targetPort}”.`, { edgeId: edge.id, nodeId: target.id }));
       valid = false;
     }
@@ -294,7 +300,7 @@ export function connectionAllowed(
   target: WorkflowDraftNode,
   targetPort: WorkflowTargetPort,
 ): boolean {
-  return sourcePorts[source.kind].includes(sourcePort) &&
-    targetPorts[target.kind].includes(targetPort) &&
+  return WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(sourcePort) &&
+    WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(targetPort) &&
     (target.kind !== "session" || (sourcePort === "fail" && targetPort === "return_for_changes"));
 }

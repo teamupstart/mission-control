@@ -301,6 +301,16 @@ export type PublishedWorkflowNode =
   | Exclude<WorkflowDraftNode, { kind: "persona" }>
   | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point };
 
+export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>;
+
+export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
+  return node.kind === "persona" || node.kind === "check";
+}
+
+export function verdictAuthor(node: WorkflowVerdictNode): string {
+  return node.kind === "persona" ? node.persona.name : `Check · ${node.slot}`;
+}
+
 export interface PublishedWorkflowGraph {
   nodes: PublishedWorkflowNode[];
   edges: WorkflowEdge[];

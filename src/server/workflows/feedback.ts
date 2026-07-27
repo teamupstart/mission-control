@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { PersonaVerdictSchema, WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
-import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { WORKFLOW_LIMITS, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import type {
   EvidenceRef,
   PersonaVerdict,
@@ -118,7 +118,7 @@ function finalizePacket(body: string, truncated: boolean, finalInstruction: stri
   };
 }
 
-/** Render one immutable Persona-failure packet. Model output supplies facts, never structure. */
+/** Render one immutable verdict-failure packet. Verdict output supplies facts, never structure. */
 export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWorkflowFeedback {
   const context = WorkflowContextSnapshotSchema.parse(input.submission.context);
   const byNode = latestAttempts(input.attempts);
@@ -131,13 +131,13 @@ export function renderWorkflowFeedback(input: WorkflowFeedbackInput): RenderedWo
   const blocks: string[] = [];
 
   for (const node of input.version.graph.nodes) {
-    if (node.kind !== "persona") continue;
+    if (!isVerdictNode(node)) continue;
     const attempt = byNode.get(node.id);
     const parsed = PersonaVerdictSchema.safeParse(attempt?.verdict);
     if (!parsed.success || parsed.data.verdict !== "fail") continue;
     const verdict: Extract<PersonaVerdict, { verdict: "fail" }> = parsed.data;
     const lines = [
-      `## ${bounded(node.persona.name)}`,
+      `## ${bounded(verdictAuthor(node))}`,
       bounded(verdict.summary),
       "",
       "Requested changes:",

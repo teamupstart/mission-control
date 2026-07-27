@@ -600,6 +600,45 @@ test("exact filenames with spaces and quoted characters keep one section", async
   }
 });
 
+test("an unfiltered patch keeps the historical argv and environment", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("whole-patch-argv");
+  let patchOptions: Parameters<SnapshotDiffDeps["run"]>[2] | undefined;
+  const calls: string[][] = [];
+  const deps: SnapshotDiffDeps = {
+    run: (bin, args, opts) => {
+      calls.push(args);
+      if (!args.includes("--numstat")) patchOptions = opts;
+      return run(bin, args, opts);
+    },
+  };
+
+  const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha }, deps);
+
+  assert.deepEqual(calls[1], [
+    "-C", repo, "diff", "--find-renames", baseSha, snapshotSha,
+  ]);
+  assert.equal(patchOptions?.env, undefined);
+  assert.equal(whole.patchPaths, null);
+});
+
+test("a filtered patch forces canonical headers despite repository diff config", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("configured-prefixes");
+  git(repo, "config", "diff.noprefix", "true");
+  git(repo, "config", "diff.mnemonicPrefix", "true");
+  git(repo, "config", "color.diff", "always");
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha,
+    paths: ["keep.txt"],
+  });
+
+  assert.equal(patchSectionCount(cut.patch), 1);
+  assert.ok(cut.patch.startsWith("diff --git a/keep.txt b/keep.txt\n"));
+  assert.doesNotMatch(cut.patch, /\u001b\[/);
+});
+
 test("a filtered patch refuses any rendered diff header outside the requested file", async () => {
   const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("header-post-check");
   const deps: SnapshotDiffDeps = {
@@ -627,8 +666,13 @@ test("literal patch mode removes inherited conflicting pathspec modes", async ()
     for (const name of names) delete process.env[name];
     for (const name of names) {
       process.env[name] = "1";
-      const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
-      assert.ok(whole.patch.length > 0, `whole patch succeeds with inherited ${name}`);
+      const cut = await materializeSnapshotDiff({
+        repoPath: repo,
+        baseSha,
+        snapshotSha,
+        paths: ["keep.txt"],
+      });
+      assert.ok(cut.patch.length > 0, `filtered patch succeeds with inherited ${name}`);
       delete process.env[name];
     }
   } finally {

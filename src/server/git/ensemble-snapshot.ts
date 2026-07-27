@@ -493,16 +493,25 @@ export async function materializeSnapshotDiff(
     return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: filter };
   }
 
-  const patchEnv = { ...process.env };
-  delete patchEnv.GIT_GLOB_PATHSPECS;
-  delete patchEnv.GIT_NOGLOB_PATHSPECS;
-  delete patchEnv.GIT_ICASE_PATHSPECS;
-  patchEnv.GIT_LITERAL_PATHSPECS = "1";
+  const filtered = filter.length > 0;
+  const patchEnv = filtered ? { ...process.env } : undefined;
+  if (patchEnv !== undefined) {
+    delete patchEnv.GIT_GLOB_PATHSPECS;
+    delete patchEnv.GIT_NOGLOB_PATHSPECS;
+    delete patchEnv.GIT_ICASE_PATHSPECS;
+    patchEnv.GIT_LITERAL_PATHSPECS = "1";
+  }
 
   const patchRun = await deps.run(
     "git",
     [
-      "-C", input.repoPath, "-c", "core.quotePath=false", "diff", "--find-renames", baseSha, snapshotSha,
+      "-C", input.repoPath,
+      ...(filtered ? ["-c", "core.quotePath=false"] : []),
+      "diff",
+      ...(filtered
+        ? ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"]
+        : []),
+      "--find-renames", baseSha, snapshotSha,
       // `--` first, so a path can never be read as a flag or a revision: a tracked file
       // named `--exploit` is a legal filename and an illegal argument, and only the
       // separator tells the two apart.
@@ -519,7 +528,7 @@ export async function materializeSnapshotDiff(
       // invocation because it is the only one that ever carries a pathspec, and set
       // explicitly rather than inherited so an operator's exported value cannot decide it.
       // Git rejects literal pathspec mode when any other global pathspec mode is inherited.
-      env: patchEnv,
+      ...(patchEnv === undefined ? {} : { env: patchEnv }),
     },
   );
   if (patchRun.overflowed) {

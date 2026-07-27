@@ -69,8 +69,8 @@ prefix -> `sc-`, and `test/outbound-console.test.ts` -> `settings-console.test.t
 the three importers (`InspectorSettingsPanel`, `ShippingSettingsPanel`, and the test) and
 the `styles.css` section header, whose comment currently argues the "outbound" framing -
 rewrite it to argue the *shape* (a panel with a ledger), which is what is actually shared.
-Mechanical: 89 class occurrences in `.tsx`, 94 rules in `styles.css`. `npm test` must be
-green on this commit alone, with no visual change to either shipped panel.
+`npm test` must be green on this commit alone, with no visual change to either shipped
+panel.
 
 Generalize two leaves while you are there:
 
@@ -84,7 +84,7 @@ Generalize two leaves while you are there:
 
 - `recentEpisodes(limit = 100): ForemanEpisode[]` in `db.ts`, ordered `created_at DESC, id DESC`,
   reusing `episodesFor`'s row mapper (including its per-field `?? 0` defence).
-- **Add the index it needs**: `(created_at DESC)`. It goes in `migrate()`, not beside the
+- **Add the index it needs**: `(created_at DESC, id DESC)`. It goes in `migrate()`, not beside the
   `CREATE TABLE` - the create block runs before `migrate()`, and this is the rule
   `idx_tasks_schedule` exists to demonstrate. Test seeds a pre-feature database.
 - `GET /api/foreman/episodes` in `routes.ts`, beside the other `/api/foreman/*` routes,
@@ -103,7 +103,8 @@ Generalize two leaves while you are there:
   it after `log()`, and thread it into `episodeFromPlan` so the row carries
   `cheapAction` + `divergence`. The `log()` line stays - stdout is still useful - but it
   stops being the only sink.
-- `ForemanEpisode` gains `cheapAction: string | null` and `divergence: Divergence | null`.
+- `ForemanEpisode` gains `cheapAction: CheapAction | null` and
+  `divergence: Divergence | null`.
   `Divergence` moves to `@shared/` (it is currently in `src/server/foreman/triage.ts`) so
   the browser can name the values; the classifier itself stays server-side.
 - **Do not** change `tier` for shadow decisions. It honestly reports which tier produced the
@@ -141,8 +142,9 @@ Right column - the ledger, `data-anchor="foreman/episodes"` (a new anchor; add i
   two are different populations (historical vs live-sessions-only) and would visibly
   disagree.
 - Columns: session/`noteKey`, the ask (`askPreview`-style truncation, reuse what
-  `ForemanDrawer` uses), disposition, who decided (`resolvedBy`), tier, and `ago(createdAt)`.
-- When the cheap tier is not `off`, a **shadow column**: `divergence`, with
+  `ForemanDrawer` uses), disposition, a **Decided by** cell combining `resolvedBy` and tier,
+  and `ago(createdAt)`.
+- Only when the cheap tier is `shadow`, a **Cheap tier** column: `divergence`, with
   `cheap-over-eager` in the danger tone - the doc on `classifyDivergence` says it is *"the
   one that matters: the cheap tier would have auto-answered where Opus would not - that must
   stay near zero before flipping to `on`"*. Rows written before this phase, and rows from a

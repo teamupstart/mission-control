@@ -4579,6 +4579,10 @@ export class Registry extends EventEmitter {
       classification: e.classification ?? null,
       confidence: e.confidence ?? null,
       tier: e.tier ?? null,
+      // Absent on every posture but `shadow`, where the worker measured the cheap tier
+      // against the full review. Undefined and null are the same claim - not measured.
+      cheapAction: e.cheapAction ?? null,
+      divergence: e.divergence ?? null,
       disposition: e.disposition,
       lastAction: e.lastAction ?? null,
       sentText: e.sentText ?? null,

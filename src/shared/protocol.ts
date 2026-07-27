@@ -2,6 +2,7 @@ import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { CHEAP_ACTIONS, DIVERGENCE_KINDS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
@@ -785,6 +786,11 @@ export const RecordEpisodeSchema = z.object({
   classification: z.string().nullable().optional(),
   confidence: z.number().nullable().optional(),
   tier: z.number().nullable().optional(),
+  // The shadow measurement, written only under the `shadow` posture. Optional as well as
+  // nullable: the worker omits them entirely on the other two postures, and an omitted
+  // field and an explicit null mean the same thing here - nothing was measured.
+  cheapAction: z.enum(CHEAP_ACTIONS).nullable().optional(),
+  divergence: z.enum(DIVERGENCE_KINDS).nullable().optional(),
   disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
   lastAction: z.string().nullable().optional(),
   sentText: z.string().nullable().optional(),

@@ -182,6 +182,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "foreman-episodes",
+    label: "Foreman decisions",
+    description: "Every prompt Foreman has decided on, across every session, newest first.",
+    category: "foreman",
+    anchor: "foreman/episodes",
+    keywords: ["episode", "decision", "answered", "escalated", "shadow", "ledger", "history"],
+    kind: "jump",
+  },
+  {
     id: "workflow-live-delivery",
     label: "Enable Live workflow delivery",
     description: "Whether Persona repairs may be typed into agent sessions, or only previewed.",

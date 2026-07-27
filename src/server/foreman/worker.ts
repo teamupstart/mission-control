@@ -22,8 +22,9 @@ import {
   ReviewFailureTracker,
 } from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
-import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
+import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
+import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -1583,7 +1584,7 @@ async function processSession(
     queueItem,
   });
   if (!decision) return true;
-  const { verdict, tier } = decision;
+  const { verdict, tier, shadow } = decision;
 
   let plan = planFromVerdict(
     verdict,
@@ -1632,6 +1633,11 @@ async function processSession(
             pane,
             verdict,
             tier,
+            // Kept on the stale path too: the comparison was MADE - both calls ran and
+            // both answered - and what went stale is the session, not the measurement.
+            // Dropping it here would silently thin the shadow sample by exactly the
+            // decisions that took longest, which are the ones worth measuring.
+            shadow,
             plan: {
               note: {
                 ...plan.note,
@@ -1676,7 +1682,7 @@ async function processSession(
   // good. Everything else here could be reconstructed later; that cannot.
   await client.recordEpisode(
     session.id,
-    episodeFromPlan({ pending, ctx, pane, verdict, tier, plan }),
+    episodeFromPlan({ pending, ctx, pane, verdict, tier, shadow, plan }),
   );
 
   log(
@@ -1689,8 +1695,17 @@ async function processSession(
 /**
  * The verdict for one session + which tier produced it, or null when the outcome was already
  * fully handled (a transient failure that will retry, or a give-up note that was written).
+ *
+ * `shadow` is present on exactly one posture, and its absence elsewhere is meaningful
+ * rather than incidental: `off` never asks the cheap tier, and under `on` the cheap tier
+ * IS the decision, so in neither case is there a second opinion to compare against. The
+ * episode row records that as null - "not measured" - rather than as agreement.
  */
-type Decision = { verdict: Verdict; tier: 0 | 1 | 2 } | null;
+type Decision = {
+  verdict: Verdict;
+  tier: 0 | 1 | 2;
+  shadow?: { cheapAction: CheapAction; divergence: Divergence };
+} | null;
 
 /**
  * Resolve a verdict for one session through the tier ladder, honouring the `triage` config.
@@ -1735,8 +1750,18 @@ async function fullReviewOnly(
 }
 
 /**
- * `shadow`: run the cheap tier AND the full review, act on the full review, and log the
+ * `shadow`: run the cheap tier AND the full review, act on the full review, and RECORD the
  * divergence. Concurrent, so the cheap call adds no serial latency to the queue.
+ *
+ * The measurement used to end at `log()`. That made the posture the panel describes as
+ * "run the cheap tier alongside, measure it" a feature nobody could read: it spent a
+ * second model call per decision to produce a comparison, wrote it to stdout, and dropped
+ * it on the next line. It is now returned with the verdict and lands on the episode row,
+ * which is what makes "is the cheap tier safe to turn on?" answerable from the app rather
+ * than by grepping a worker's output. The `log()` stays - stdout is still useful while
+ * watching one session - but it is no longer the only sink. The recorded cheap outcome
+ * models what `on` would actually do after its delivery gate: an answer the cheap tier
+ * cannot deliver to a menu is a route-up, not an answer.
  */
 async function shadowBoth(
   client: ForemanClient,
@@ -1755,11 +1780,21 @@ async function shadowBoth(
     fullReview(client, cfg, session, pending, ctx, captured),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
+  const cheapUnderOn =
+    cheap.kind === "dispose" && menuBlocksAnswer(cheap.verdict, ctx)
+      ? ({ kind: "route-up", reason: "menu-needs-a-row" } as const)
+      : cheap;
+  const divergence = classifyDivergence(cheapUnderOn, r.verdict);
   log(
-    `${session.name}: shadow ${classifyDivergence(cheap, r.verdict)} ` +
+    `${session.name}: shadow ${divergence} ` +
       `(cheap=${describeCheap(cheap)} opus=${r.verdict.action}/${r.verdict.classification})`,
   );
-  return { verdict: r.verdict, tier: 2 };
+  return {
+    verdict: r.verdict,
+    // Still 2: the full review is what acted. See `episodeFromPlan`.
+    tier: 2,
+    shadow: { cheapAction: cheapActionOf(cheapUnderOn), divergence },
+  };
 }
 
 /** `on`: the cheap tier decides; the full review fires only on route-up. */

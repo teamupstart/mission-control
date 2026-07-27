@@ -8,6 +8,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { CheapAction, Divergence } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
@@ -722,6 +723,21 @@ export interface ForemanEpisode {
   confidence: number | null;
   /** Which tier produced the verdict (0 structural, 1 cheap, 2 full review). */
   tier: number | null;
+  /**
+   * What the cheap tier would have done, and how that compared - `shadow` posture only.
+   *
+   * Both null means NOT MEASURED, which is a different claim from `agree`: every row
+   * written before these columns existed, and every row written under `off` (no cheap
+   * call) or `on` (the cheap tier decided, so there is no second opinion to compare
+   * against), has no measurement rather than a favourable one.
+   *
+   * Deliberately NOT folded into `tier`. That field honestly reports which tier produced
+   * the verdict that was USED, and under shadow that is always 2 - the full review acts
+   * and the cheap tier only watches. Overwriting it to say 1 would make the record claim
+   * the cheap tier decided something it did not.
+   */
+  cheapAction: CheapAction | null;
+  divergence: Divergence | null;
   disposition: NoteDisposition;
   lastAction: string | null;
   /** What was actually delivered - null when nothing was sent. */
@@ -742,6 +758,43 @@ export interface ForemanEpisode {
    * Null while the episode is still waiting on someone.
    */
   resolvedBy: EpisodeAuthor | null;
+}
+
+/**
+ * One episode as the FLEET-WIDE ledger reads it - a strict subset, and deliberately so.
+ *
+ * `ForemanEpisode` above is the per-session drawer's shape: it carries the captured
+ * terminal screen, the menu rows, the reviewer's brief and recommendation, and the text
+ * that was delivered. All of that is the right payload for a surface you open on ONE
+ * decision and read in full. It is the wrong payload for a list of a hundred, polled
+ * every four seconds - measured on a real 631-episode database, `pane` alone was 50.6% of
+ * that response and the drawer-only fields came to 82KB per poll, roughly 72MB an hour
+ * with the Settings page open.
+ *
+ * So the ledger gets what it actually renders and nothing else. The one field that looks
+ * like a loss is the ask, and it is not: the daemon runs the same `askPreview` the drawer
+ * would have run and ships the one line it produces, so the two surfaces cannot disagree
+ * about what a decision was about while the screen capture stays where it is read.
+ *
+ * Adding a field here is adding it to every poll. Prefer the per-session read.
+ */
+export interface ForemanEpisodeSummary {
+  id: number;
+  /** Same key as the note, and what the ledger groups by. */
+  noteKey: string;
+  marker: string;
+  /** The ask, already reduced by `askPreview` server-side and clamped for the wire. */
+  ask: string;
+  /** Foreman's 1-2 sentence reading of what this decision was for; the row's tooltip. */
+  purpose: string | null;
+  /** Which tier produced the verdict that was used (0 structural, 1 cheap, 2 review). */
+  tier: number | null;
+  cheapAction: CheapAction | null;
+  divergence: Divergence | null;
+  disposition: NoteDisposition;
+  /** Who DECIDED it - not who sent the text. See `ForemanEpisode.resolvedBy`. */
+  resolvedBy: EpisodeAuthor | null;
+  createdAt: number;
 }
 
 /**

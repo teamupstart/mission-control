@@ -2694,14 +2694,57 @@ Pick the posture with the **Cheap tier** control in **Settings → Foreman**:
 
 | Cheap tier | What it does |
 |------|--------------|
-| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and logs every divergence - so its accuracy is measured before you trust it |
+| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and **records** every divergence - so its accuracy is measured before you trust it |
 | **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
 | **off** | every new prompt gets a full review (the pre-tier behavior) |
 
-The worker log is the audit surface for the rollout: every acted session logs the tier that
-decided it (`[tier 2] answer/access -> answered (sent)`), and shadow mode adds a divergence line
-per session (`shadow cheap-over-eager (cheap=… opus=…)`). `cheap-over-eager` - the cheap tier
-would have answered where Opus would not - is the one to watch before flipping to **on**.
+**Shadow's measurement is in the panel**, in the decisions ledger's *Cheap tier* column.
+The panel shows that column only while **shadow** is selected, because that is the only
+posture that takes a second measurement. Each measured row carries what the cheap tier
+would have done and how that compared, and `cheap-over-eager` - after applying the same
+delivery gate as **on**, the cheap tier would have answered where the full review would
+not - is called out in red. That is the number to watch before flipping to **on**, and it
+is the whole reason the posture exists. Within the column, **off** rows stay blank because
+they made no cheap call, **on** rows stay blank because the cheap tier was the decision
+rather than a second opinion, and rows recorded before this shipped stay blank because no
+measurement was persisted. None of those blanks is reported as agreement.
+
+The tier that produced the verdict is reported separately, and honestly: under shadow it
+is always the full review, because that is the verdict that acted.
+
+The worker log carries the same thing for anyone watching one session live: every acted
+session logs the tier that decided it (`[tier 2] answer/access -> answered (sent)`), and
+shadow mode adds a divergence line per session (`shadow cheap-over-eager (cheap=… opus=…)`).
+
+### What Foreman has been deciding
+
+**Settings → Foreman** carries the fleet-wide **decisions ledger**: every prompt Foreman
+has faced, across every session, newest first - the session it happened on, the ask, what
+came of it, who decided, which tier decided, and how long ago. Each of these was already
+being recorded; until now the only way to read any of it was one session at a time,
+through that session's Foreman drawer, so there was no answer anywhere to *what has this
+thing actually been doing* - which is the question you open its settings to ask before
+giving it more rope. The count strip above the table filters it: **escalated**,
+**drafted**, **answered**, **skipped**. The last 100 decisions are shown, and episodes are
+kept for 30 days.
+
+The ledger is a **summary**, not the stored record: the daemon reduces each ask to the one
+line the table shows and sends only that, so the captured terminal screens - by far the
+largest thing in the table - never ride the 4-second poll. Open a session's Foreman drawer
+for the full question, the screen it was asked on, the reviewer's brief, and what was sent
+back.
+
+The panel also states, in words, **whether Foreman is running at all**. A worker holds a
+lease and renews it; when nothing does, Foreman is enabled, set to whatever mode you chose,
+and nothing is executing it - a state that until now looked exactly like a quiet fleet.
+That reading outranks the mode in the posture line, because a mode nothing is running is
+not the fact you need first. The live figures beside it - sessions needing you, when the
+last decision was, the backlog autopilot's budget - are under **Right now**, and are
+deliberately a different population from the historical ledger above.
+
+Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar
+Foreman control: those are the things you reach for while watching the fleet, and the
+panel is the durable posture.
 
 ## Work queues (load a session up and walk away)
 
@@ -3167,15 +3210,23 @@ it gains by being here is everything a drawer could not have: a rail row, a scop
 link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
 session is findable by searching for what it does. The Workflows page header keeps a link to it.
 
-**Inspector and Shipping are consoles**, not forms: the controls sit in a narrow column
-and the per-pull-request ledger takes the wide one, under a strip of counts. That is the
-split those two panels needed and the other ten do not - their knobs are set once, while
-their ledgers are read repeatedly and answer the only questions either subsystem raises
-(*what did the review say*, *why has nothing merged*). As a 12px list at the foot of a
-vertical form, the ledger was the least legible thing on the page and the most important.
-**Every tile in the count strip is a filter**, and there is a tile for every state a row
-can be in, so the numbers always add up to the rows underneath - a strip that ignored the
-closed pull requests read "1 with findings, 0, 0, 0" over a table of fifty.
+**Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
+column and a per-item ledger takes the wide one, under a strip of counts. That is the
+split those three panels needed and the other nine do not - their knobs are set once,
+while their ledgers are read repeatedly and answer the only questions those subsystems
+raise (*what did the review say*, *why has nothing merged*, *what has Foreman been
+deciding*). As a 12px list at the foot of a vertical form, the ledger was the least
+legible thing on the page and the most important. **Every tile in the count strip is a
+filter**, and there is a tile for every state a row can be in, so the numbers always add
+up to the rows underneath - a strip that ignored the closed pull requests read "1 with
+findings, 0, 0, 0" over a table of fifty.
+
+Foreman's ledger is **fleet-wide**, which is the one thing no other surface shows: every
+decision it has faced across every session, newest first, where before this the record
+was readable only one session at a time through that session's drawer. Its strip is
+folded from those rows and not from the live-session counts in the topbar - the two are
+different populations by design, and a tile that disagreed with the rows under it would
+make every other number on the panel worth nothing.
 
 Deep links work for every category, and the whole list is stable enough to paste into an
 issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming

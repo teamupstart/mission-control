@@ -151,12 +151,12 @@ snapshot, so the mid-review safety net still applies.
   `ForemanClient.getConfig` now *parses* the daemon's response through the schema rather than
   casting it, so a daemon too old to serve `triage` yields the schema's own `shadow` default and a
   value outside the enum is rejected before it can reach the tier dispatch.
-- Telemetry: **structured worker log lines**, not a note/audit stamp - `[tier N]` on every acted
+- Telemetry: **structured worker log lines**, not a note stamp - `[tier N]` on every acted
   session, `tier N disposed -> action (reason)` / `routed up to full review (reason)` under `on`,
-  and `shadow <divergence> (cheap=… opus=…)` under `shadow`. *(The plan originally proposed
-  stamping the note. The log is the audit surface instead: a tier + reason is rollout telemetry
-  with a natural half-life, and threading it onto the note would mean a schema column and card UI
-  for a field that stops being interesting the moment `on` is trusted.)*
+  and `shadow <divergence> (cheap=… opus=…)` under `shadow`. The log remains the live view while
+  watching one session. Shadow comparisons are also persisted on the episode and exposed in the
+  fleet-wide Settings -> Foreman ledger; the operator-facing contract is documented in
+  [Foreman](../../../README.md#foreman-auto-responder).
 
 ## Step 0 (shipped in this PR): per-session evaluation debounce
 
@@ -183,10 +183,10 @@ make the cheap look so cheap the floor matters less.
 ## Rollout: shadow mode first
 
 This is Foreman's own dry-run→live trust ladder applied to the triage layer itself. In `shadow`
-mode, run **both** the cheap tier and the full review and log every divergence (cheap said skip,
-Opus would have answered, etc). Flip `triage: 'on'` only once the divergence rate on answerable
-cases is near zero. That turns "trust me, Haiku is good enough" into measured evidence before it
-short-circuits anything.
+mode, run **both** the cheap tier and the full review, persist every divergence, and log it for
+the live view (cheap said skip, Opus would have answered, etc). Flip `triage: 'on'` only once the
+divergence rate on answerable cases is near zero. That turns "trust me, Haiku is good enough"
+into measured evidence before it short-circuits anything.
 
 ## Expected savings
 

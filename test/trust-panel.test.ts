@@ -112,6 +112,7 @@ function foreman(over: Partial<{ repoAllowlist: string[]; config: null }> = {}):
     config: over.config === null ? null : ForemanConfigSchema.parse({ repoAllowlist: over.repoAllowlist ?? [] }),
     status: null,
     backlogPlan: null,
+    episodes: [],
     update: async () => true,
     error: null,
   };

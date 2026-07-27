@@ -181,9 +181,9 @@ test("retired rows are marked so a finished list cannot read as a backlog", () =
       ],
     }),
   );
-  assert.match(html, /oc-row is-retired/);
+  assert.match(html, /sc-row is-retired/);
   // The live one must NOT pick the marker up, or the distinction says nothing.
-  assert.match(html, /class="oc-row"/);
+  assert.match(html, /class="sc-row"/);
 });
 
 // The model control. Asserted as a `<select>` rather than by its value, because the shape

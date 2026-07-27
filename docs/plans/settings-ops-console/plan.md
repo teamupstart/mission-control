@@ -32,7 +32,7 @@ separable things**:
 
 | # | Piece | What it needs to be honest |
 |---|---|---|
-| 1 | **The shared leaves** - `ConsoleCard`, `ConsoleSwitch`, `ConsoleState`, the `oc-` class vocabulary | Nothing. Any settings panel can adopt these. |
+| 1 | **The shared leaves** - `ConsoleCard`, `ConsoleSwitch`, `ConsoleState`, the `sc-` class vocabulary | Nothing. Any settings panel can adopt these. |
 | 2 | **The count strip** - tiles that are also the filter | Rows to filter, and a `bucket()` function every row lands in exactly once, so the tiles sum to the rows. |
 | 3 | **The two-column split** - controls narrow, ledger wide | A ledger genuinely worth the width, that no other surface already owns. |
 
@@ -44,7 +44,7 @@ would be the layout imitating a shape rather than expressing one.
 
 On Inspector and Shipping the tiles are derived from the rows (`inspectionTallies` is a
 fold over `inspectionBucket`), which is what makes "3 blocked" and the three rows you get
-when you click it the same question asked once. `outbound-console.test.ts` pins that every
+when you click it the same question asked once. `settings-console.test.ts` pins that every
 bucket has a tile, after the first cut shipped a strip that ignored 49 rows out of 50.
 
 Workflows has no rows in this panel, and its numbers are fleet-wide SQL scalars from
@@ -56,12 +56,12 @@ wrong.
 
 ## Decisions
 
-**D1 - the vocabulary is renamed once, in Phase 1.** The module is `outbound-console.tsx`
-and its classes are `oc-`, justified in its own header as *"the two categories whose writes
-leave this machine"*. Foreman and Workflows are `machine`-scoped (`SETTINGS_CATEGORIES`), so
-that name stops being true the moment either adopts it. Rename to `settings-console.tsx` /
-`sc-` (89 occurrences across 3 `.tsx` files, 94 rules in `styles.css`, plus
-`test/outbound-console.test.ts`). Phase 1 owns it; Phase 2 must not do it again.
+**D1 - the vocabulary is renamed once, in Phase 1.** Before Phase 1 the module was
+`outbound-console.tsx` and its classes were `oc-`, justified in its own header as *"the two
+categories whose writes leave this machine"*. Foreman and Workflows are `machine`-scoped
+(`SETTINGS_CATEGORIES`), so that name stops being true the moment either adopts it. Phase 1
+renames the module to `settings-console.tsx`, the classes to `sc-`, and the test to
+`settings-console.test.ts`; Phase 2 must not repeat the rename.
 
 **D2 - Foreman's ledger gets one new read path, modelled on the Inspector's.**
 `recentEpisodes(limit)` in `db.ts` + `GET /api/foreman/episodes`, the direct analogue of
@@ -132,7 +132,7 @@ running app against the live daemon at 1500px and below 1080px - the two widths 
 split behaves differently. Static-markup tests (`renderToStaticMarkup`, no jsdom) are the
 house pattern for panels; the existing suites that must keep passing are
 `foreman-settings-render.test.ts`, `workflow-settings-panel.test.ts`,
-`settings-sidebar-render.test.ts`, `settings-search.test.ts` and `outbound-console.test.ts`
+`settings-sidebar-render.test.ts`, `settings-search.test.ts` and `settings-console.test.ts`
 (renamed with its module).
 
 **Verify against a real ledger, not a fixture.** Both defects found while building the
@@ -147,5 +147,5 @@ diff.
 - Putting Foreman on the SSE channel. `SettingsStatus` excludes it deliberately.
 - Touching the topbar Foreman popover, which owns the in-the-moment knobs (enable, mode,
   work queues, on-drain) while the panel owns the durable posture.
-- Retiring `.oc-`/`.sc-` in favour of a general design system. This is two panels adopting
+- Retiring `.sc-` in favour of a general design system. This is two panels adopting
   one existing shape, not a token overhaul.

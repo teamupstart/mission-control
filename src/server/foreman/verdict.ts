@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ForemanConfig, RecordEpisode, SetNote, SubmitOptions } from "@shared/protocol.ts";
 import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
+import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import { driverFormAnswer } from "../sdk/answer.ts";
@@ -374,9 +375,19 @@ export function episodeFromPlan(p: {
   pane: string | null;
   verdict: Verdict;
   tier: number;
+  /**
+   * What the cheap tier decided and how it compared, under `shadow` - absent otherwise.
+   *
+   * Threaded in from the decision rather than recomputed here, because the comparison
+   * needs BOTH verdicts and only one of them survives into the plan. Before this existed
+   * the cheap verdict was classified, written to stdout and dropped on the next line, so
+   * the mode whose entire stated purpose is measurement produced nothing anyone could
+   * read without tailing the worker.
+   */
+  shadow?: { cheapAction: CheapAction; divergence: Divergence } | null;
   plan: VerdictPlan;
 }): RecordEpisode {
-  const { pending, ctx, pane, verdict, tier, plan } = p;
+  const { pending, ctx, pane, verdict, tier, shadow, plan } = p;
   const send = plan.send;
   return {
     marker: pending.marker,
@@ -407,7 +418,12 @@ export function episodeFromPlan(p: {
     recommendation: plan.note.recommendation ?? null,
     classification: verdict.classification,
     confidence: verdict.confidence ?? null,
+    // `tier` stays the tier that produced the verdict that was USED - 2 under shadow,
+    // because the full review is what acted. The shadow pair below carries the other
+    // half; overwriting `tier` with 1 would make the row claim the cheap tier decided.
     tier,
+    cheapAction: shadow?.cheapAction ?? null,
+    divergence: shadow?.divergence ?? null,
     disposition: plan.note.disposition ?? "skipped",
     lastAction: plan.note.lastAction ?? null,
     // What actually reached the child. A menu send types NOTHING - the row's label is

@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ForemanEpisode } from "../src/shared/types.ts";
-import { askPreview, openEpisodeCount } from "../src/web/components/ForemanDrawer.tsx";
+import { openEpisodeCount } from "../src/web/components/ForemanDrawer.tsx";
+import { askPreview } from "../src/shared/foreman-ask.ts";
 import { ASK_USER_QUESTION, PERMISSION, TRUST, TRUST_QUESTION } from "./fixtures/claude-panes.ts";
 
 // What a drawer row leads with.
@@ -34,6 +35,8 @@ function ep(over: Partial<ForemanEpisode> = {}): ForemanEpisode {
     classification: null,
     confidence: null,
     tier: null,
+    cheapAction: null,
+    divergence: null,
     disposition: "escalated",
     lastAction: null,
     sentText: null,

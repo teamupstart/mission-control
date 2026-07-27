@@ -34,6 +34,7 @@ function mkState(over: Partial<ForemanConfig> = {}): ForemanState {
     config: { ...BASE, ...over },
     status: null,
     backlogPlan: null,
+    episodes: [],
     update: async () => true,
     error: null,
   };

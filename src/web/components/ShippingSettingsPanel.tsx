@@ -17,7 +17,7 @@ import {
   ConsoleSwitch,
   PrLink,
   type ConsoleStat,
-} from "./outbound-console.tsx";
+} from "./settings-console.tsx";
 
 // The Shipping category: YOLO mode, and the soak window that is its safety valve.
 //
@@ -26,7 +26,7 @@ import {
 // BRANCH. Unlike the Inspector's, it also has to say what YOLO mode will NOT do, because
 // every one of those gates is a reason an operator otherwise concludes it is broken.
 //
-// It shares the Inspector's console shape (`outbound-console.tsx`) because it is the same
+// It shares the Inspector's console shape (`settings-console.tsx`) because it is the same
 // panel about the other half of the same pipeline. The ledger earns the wide column here
 // for a sharper reason than next door: an auto-merger's failure mode is not merging the
 // wrong thing, it is merging NOTHING and never saying why, and the per-pull-request
@@ -190,16 +190,16 @@ export function ShippingSettingsPanel({
   const anyBlocker = inspectorOff || inspectorQuiet || someRepoUnreviewed;
 
   return (
-    <section className="settings-section oc-section">
-      <p className="settings-hint oc-lede">
+    <section className="settings-section sc-section">
+      <p className="settings-hint sc-lede">
         What lands without you. <strong>YOLO mode</strong> merges the pull requests Mission
         Control opened once the Inspector has reviewed the current push with nothing
         outstanding, CI is green, nobody has an unresolved thread on it, and it has been
         open for the soak window below.
       </p>
 
-      <div className="oc-split">
-        <div className="oc-controls">
+      <div className="sc-split">
+        <div className="sc-controls">
           <ConsoleCard
             title="YOLO mode"
             anchor="shipping/yolo"
@@ -241,14 +241,14 @@ export function ShippingSettingsPanel({
               </p>
             )}
 
-            <div className="oc-field" data-anchor="shipping/soak">
-              <span className="oc-field-label">Soak time</span>
+            <div className="sc-field" data-anchor="shipping/soak">
+              <span className="sc-field-label">Soak time</span>
               {/* Auto-saves only after a settled edit, and flushes on blur or unmount - see
                   `NumberSetting`. It matters more here than where it came from: clearing the
                   field to retype reads as `0`, which this schema ACCEPTS as "no soak at all",
                   so an immediate per-keystroke commit would silently disarm the safety valve
                   rather than be refused. */}
-              <div className="oc-number">
+              <div className="sc-number">
                 <NumberSetting
                   value={soakMinutes}
                   min={0}
@@ -264,12 +264,12 @@ export function ShippingSettingsPanel({
               </p>
             </div>
 
-            <fieldset className="oc-field oc-seg" data-anchor="shipping/method">
-              <legend className="oc-field-label">How to merge</legend>
-              <div className="oc-seg-row">
+            <fieldset className="sc-field sc-seg" data-anchor="shipping/method">
+              <legend className="sc-field-label">How to merge</legend>
+              <div className="sc-seg-row">
                 {(["squash", "merge", "rebase"] as const).map((m) => (
                   <Tooltip label={METHOD_LABEL[m]} key={m}>
-                    <label className={`oc-seg-opt${method === m ? " is-on" : ""}`}>
+                    <label className={`sc-seg-opt${method === m ? " is-on" : ""}`}>
                       <input
                         type="radio"
                         name="shipping-method"
@@ -302,8 +302,8 @@ export function ShippingSettingsPanel({
           {autoMerge && anyBlocker && (
             <ConsoleCard title="Prerequisites">
               {inspectorOff && (
-                <p className="oc-blocker">
-                  <span className="oc-dot oc-dot-attention" aria-hidden="true" />
+                <p className="sc-blocker">
+                  <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
                     The Inspector is switched off, so no pull request is being reviewed and none
                     will qualify.{" "}
@@ -321,8 +321,8 @@ export function ShippingSettingsPanel({
               )}
 
               {inspectorQuiet && (
-                <p className="oc-blocker">
-                  <span className="oc-dot oc-dot-attention" aria-hidden="true" />
+                <p className="sc-blocker">
+                  <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
                     The Inspector is in dry run, so it reviews but publishes nothing - and YOLO
                     mode will not merge on a review nobody can see.{" "}
@@ -344,8 +344,8 @@ export function ShippingSettingsPanel({
                   merges. It is fixed on the Trust matrix - grant the review, or revoke the
                   merge - so the link lands there rather than on the Inspector's panel. */}
               {someRepoUnreviewed && (
-                <p className="oc-blocker">
-                  <span className="oc-dot oc-dot-attention" aria-hidden="true" />
+                <p className="sc-blocker">
+                  <span className="sc-dot sc-dot-attention" aria-hidden="true" />
                   <span>
                     The Inspector is not allowed to review {untrustedByInspector.join(", ")}, so
                     nothing there will merge.{" "}
@@ -398,7 +398,7 @@ export function ShippingSettingsPanel({
               />
             }
           >
-            <p className="oc-after-merge">
+            <p className="sc-after-merge">
               Complete the task, then close its session - frees a slot for a new backlog task.
             </p>
             <p className="settings-hint">
@@ -416,30 +416,30 @@ export function ShippingSettingsPanel({
 
         {/* An auto-merger's failure mode is not merging the wrong thing - it is merging
             nothing and never saying why. This is where that is said, per pull request. */}
-        <div className="oc-ledger" data-anchor="shipping/pr-status">
+        <div className="sc-ledger" data-anchor="shipping/pr-status">
           <ConsoleStrip
             stats={STRIP.map((s) => ({ ...s, count: tallies[s.id] }))}
             active={filter}
             onPick={setFilter}
           />
-          <div className="oc-table oc-table-shipping">
-            <div className="oc-head">
+          <div className="sc-table sc-table-shipping">
+            <div className="sc-head">
               <h3>Merge queue</h3>
               {active && (
                 <Tooltip label="Show every adopted pull request again">
-                  <button type="button" className="oc-clear" onClick={() => setFilter(null)}>
+                  <button type="button" className="sc-clear" onClick={() => setFilter(null)}>
                     {active.label} only - show all
                   </button>
                 </Tooltip>
               )}
             </div>
-            <div className="oc-row oc-row-head" aria-hidden="true">
+            <div className="sc-row sc-row-head" aria-hidden="true">
               <span>Pull request</span>
               <span>Where it stands</span>
-              <span className="oc-when">Last event</span>
+              <span className="sc-when">Last event</span>
             </div>
             {rows.length === 0 ? (
-              <p className="settings-hint oc-empty">
+              <p className="settings-hint sc-empty">
                 {inspections.length === 0
                   ? "Nothing yet. A pull request appears here once Mission Control opens one."
                   : EMPTY_FILTER[active!.id]}
@@ -449,7 +449,7 @@ export function ShippingSettingsPanel({
                 const bucket = mergeBucket(row);
                 return (
                   <div
-                    className={`oc-row${bucket === "closed" ? " is-retired" : ""}`}
+                    className={`sc-row${bucket === "closed" ? " is-retired" : ""}`}
                     key={row.key}
                   >
                     <PrLink
@@ -458,14 +458,14 @@ export function ShippingSettingsPanel({
                       url={row.url}
                       tooltip={`Open ${row.repo}#${row.number} on GitHub`}
                     />
-                    <span className={`oc-standing oc-standing-${bucket}`}>{mergeStatus(row)}</span>
-                    <span className="oc-when">{when(row, now)}</span>
+                    <span className={`sc-standing sc-standing-${bucket}`}>{mergeStatus(row)}</span>
+                    <span className="sc-when">{when(row, now)}</span>
                   </div>
                 );
               })
             )}
           </div>
-          <p className="settings-hint oc-foot">
+          <p className="settings-hint sc-foot">
             Every row states its own reason, including a refusal <code>gh</code> gave us that this
             app cannot interpret - branch protection, or a required check we cannot see.
           </p>

@@ -156,16 +156,17 @@
 </div>
 <p class="cap">
   A line, not a fan: Phase 1 renames <code>outbound-console.tsx</code> to
-  <code>settings-console.tsx</code> (89 class occurrences, 94 CSS rules), a whole-file rewrite
-  of a module Phase 2 imports. Run them concurrently and they conflict.
+  <code>settings-console.tsx</code>, a whole-file rewrite of a module Phase 2 imports.
+  Run them concurrently and they conflict.
 </p>
 
 <h2>Decisions</h2>
 <ul>
-  <li><strong>D1 - the vocabulary is renamed once, in Phase 1.</strong> The module's own header
-    justifies <code>oc-</code> as <em>"the two categories whose writes leave this machine"</em>.
-    Foreman and Workflows are machine-scoped, so that stops being true the moment either adopts
-    it.</li>
+  <li><strong>D1 - the vocabulary is renamed once, in Phase 1.</strong> Before Phase 1 the
+    module's own header justified <code>oc-</code> as
+    <em>"the two categories whose writes leave this machine"</em>. Foreman and Workflows are
+    machine-scoped, so Phase 1 renames the module to <code>settings-console.tsx</code> and the
+    classes to <code>sc-</code>.</li>
   <li><strong>D2 - Foreman's ledger gets one new read path</strong>, <code>recentEpisodes(limit)</code>
     + <code>GET /api/foreman/episodes</code>, the direct analogue of
     <code>loadInspectorInspections(50)</code>. Not a new table, and not SSE - episodes carry pane

@@ -9624,7 +9624,7 @@ select.ensemble-judge-persona {
   line-height: 1.5;
   color: var(--dim);
 }
-/* The one link style for in-page settings navigation and in-place fixes: the outbound
+/* The one link style for in-page settings navigation and in-place fixes: the console
    panels' "Manage in Trust", Shipping's dependency warnings, and Trust's dagger fixes. A
    button, not an `<a>`, because these are `onNavigate` route changes and config writes, not
    hrefs; it wraps on its own so it never widens a warning past the pane. Reads as blue
@@ -10555,10 +10555,11 @@ select.ensemble-judge-persona {
   margin-top: 18px;
 }
 
-/* ---- Foreman settings category (the panel behind the rail) ---- */
-.foreman-settings-blurb {
-  margin: 0 0 14px;
-}
+/* ---- Foreman settings category (the panel behind the rail) ----
+   Most of this section's own classes went with the console rewrite: the panel is drawn
+   from `sc-` now, and `.foreman-settings-blurb` / `.foreman-repos` / `.foreman-repos-hint`
+   went with the vertical form they spaced. What remains is shared - `.foreman-models` is
+   still LlmSettingsPanel's group wrapper and `.foreman-model-*` are ModelField's own. */
 .foreman-models {
   margin-top: 20px;
 }
@@ -10614,12 +10615,6 @@ select.foreman-model-input {
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--dim);
-}
-.foreman-repos {
-  margin-top: 20px;
-}
-.foreman-repos-hint {
-  margin: 4px 0 10px;
 }
 /* The repo-list editor that lived here (`.foreman-repo-list/-row/-path/-empty`) moved to
    the Trust matrix; these three panels now summarize and deep-link. `.foreman-repo-remove`
@@ -10908,30 +10903,35 @@ select.foreman-model-input {
   overflow-wrap: anywhere;
 }
 
-/* ---- the outbound console (Inspector + Shipping) ----
-   The two categories whose writes leave this machine are drawn as one shape: a narrow
-   control column beside a wide per-pull-request ledger. They looked alike before this
-   section existed, in two parallel class vocabularies that had already drifted - which is
+/* ---- the settings console (Inspector + Shipping + Foreman) ----
+   A settings panel that owns a LEDGER is drawn as one shape: a narrow control column
+   beside a wide record of what the subsystem has decided. These panels looked alike before
+   this section existed, in parallel class vocabularies that had already drifted - which is
    how a chip restyled on one side and not the other ends up implying that "posts a
    comment" and "lands a commit on the default branch" work differently. One vocabulary,
-   `oc-`, and the panels differ only where the CONSEQUENCE differs (the danger tone).
+   `sc-`, and the panels differ only where the CONSEQUENCE differs (the danger tone).
 
-   Why the ledger got the wide column: it is what an operator opens either panel to read.
-   In dry run it is the only place the Inspector's findings exist at all, and on the
-   Shipping side it is the entire answer to "why has nothing merged" - which is an
-   auto-merger's real failure mode. It was a 12px list under a vertical form.
-   See `src/web/components/outbound-console.tsx`. */
-.settings-pane > .settings-section.oc-section {
+   Named for the SHAPE, not the subject. This was `oc-`, for "outbound" - the categories
+   whose writes leave the machine - and that stopped being true when Foreman, whose
+   decisions are entirely local, adopted the same layout.
+
+   Why the ledger got the wide column: it is what an operator opens the panel to read. In
+   dry run it is the only place the Inspector's findings exist at all, on the Shipping side
+   it is the entire answer to "why has nothing merged" - an auto-merger's real failure mode
+   - and on Foreman it is the only cross-session view of what it has been deciding. It was
+   a 12px list under a vertical form.
+   See `src/web/components/settings-console.tsx`. */
+.settings-pane > .settings-section.sc-section {
   /* The 900px reading column is right for a form and wrong for a form beside a table. */
   max-width: none;
 }
-.oc-lede {
+.sc-lede {
   margin: 0 0 14px;
   max-width: 84ch;
 }
-.oc-split {
+.sc-split {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 332px) minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -10939,28 +10939,28 @@ select.foreman-model-input {
    stack of wrapped cells. The controls lead, because on a narrow window you came here to
    change something. */
 @media (max-width: 1080px) {
-  .oc-split {
+  .sc-split {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.oc-controls {
+.sc-controls {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
 }
-.oc-ledger {
+.sc-ledger {
   min-width: 0;
 }
 
 /* ---- a control card ---- */
-.oc-card {
+.sc-card {
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--panel);
   overflow: hidden;
 }
-.oc-card-head {
+.sc-card-head {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -10968,7 +10968,7 @@ select.foreman-model-input {
   background: var(--panel-2);
   border-bottom: 1px solid var(--border-soft);
 }
-.oc-card-title {
+.sc-card-title {
   margin: 0;
   font-family: var(--mono);
   font-size: 9.5px;
@@ -10977,10 +10977,10 @@ select.foreman-model-input {
   text-transform: uppercase;
   color: var(--muted);
 }
-.oc-card-head .oc-switch {
+.sc-card-head .sc-switch {
   margin-left: auto;
 }
-.oc-card-body {
+.sc-card-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -10989,9 +10989,9 @@ select.foreman-model-input {
 /* The card body owns its own rhythm through `gap`, so anything that arrives carrying a
    margin from the flat-form layout (every `.settings-hint`, and the warnings) would add a
    second, uneven one on top of it. */
-.oc-card-body > .settings-warn,
-.oc-card-body > .settings-hint,
-.oc-card-body > p {
+.sc-card-body > .settings-warn,
+.sc-card-body > .settings-hint,
+.sc-card-body > p {
   margin: 0;
 }
 
@@ -11000,19 +11000,19 @@ select.foreman-model-input {
    that arms an unattended merge, and it has to be reachable from the keyboard and
    announce itself. The visible label is the card's title; the accessible name is the
    `.sr-only` span inside. */
-.oc-switch {
+.sc-switch {
   display: inline-flex;
   align-items: center;
   cursor: pointer;
 }
-.oc-switch input {
+.sc-switch input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
   pointer-events: none;
 }
-.oc-switch-track {
+.sc-switch-track {
   position: relative;
   display: block;
   width: 38px;
@@ -11024,7 +11024,7 @@ select.foreman-model-input {
     background 0.16s ease,
     border-color 0.16s ease;
 }
-.oc-switch-track::after {
+.sc-switch-track::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -11041,28 +11041,28 @@ select.foreman-model-input {
    or merge under the operator's GitHub account, green for one whose only effect is local
    (closing a finished session). A single accent for "on" would have made those read the
    same. */
-.oc-switch-danger input:checked + .oc-switch-track {
+.sc-switch-danger input:checked + .sc-switch-track {
   background: color-mix(in oklab, var(--danger) 26%, var(--panel-2));
   border-color: color-mix(in oklab, var(--danger) 55%, var(--border));
 }
-.oc-switch-danger input:checked + .oc-switch-track::after {
+.sc-switch-danger input:checked + .sc-switch-track::after {
   background: var(--danger);
 }
-.oc-switch-ok input:checked + .oc-switch-track {
+.sc-switch-ok input:checked + .sc-switch-track {
   background: color-mix(in oklab, var(--idle) 24%, var(--panel-2));
   border-color: color-mix(in oklab, var(--idle) 50%, var(--border));
 }
-.oc-switch-ok input:checked + .oc-switch-track::after {
+.sc-switch-ok input:checked + .sc-switch-track::after {
   background: var(--idle);
 }
-.oc-switch input:checked + .oc-switch-track::after {
+.sc-switch input:checked + .sc-switch-track::after {
   left: 18px;
 }
-.oc-switch input:focus-visible + .oc-switch-track {
+.sc-switch input:focus-visible + .sc-switch-track {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
-.oc-switch input:disabled + .oc-switch-track {
+.sc-switch input:disabled + .sc-switch-track {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -11070,7 +11070,7 @@ select.foreman-model-input {
 /* ---- the posture line ----
    Directly under the switch, in every state, because a checkbox cannot tell the four
    apart and three of them look like "on". */
-.oc-state {
+.sc-state {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -11082,43 +11082,43 @@ select.foreman-model-input {
   background: var(--panel-2);
   color: var(--muted);
 }
-.oc-state-danger {
+.sc-state-danger {
   color: color-mix(in oklab, var(--danger) 78%, var(--fg));
   background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
 }
-.oc-state-attention {
+.sc-state-attention {
   color: color-mix(in oklab, var(--attention) 80%, var(--fg));
   background: color-mix(in oklab, var(--attention) 9%, var(--panel-2));
 }
-.oc-state-ok {
+.sc-state-ok {
   color: color-mix(in oklab, var(--idle) 80%, var(--fg));
   background: color-mix(in oklab, var(--idle) 9%, var(--panel-2));
 }
-.oc-dot {
+.sc-dot {
   flex: none;
   width: 7px;
   height: 7px;
   border-radius: 999px;
   background: var(--exited);
 }
-.oc-dot-danger {
+.sc-dot-danger {
   background: var(--danger);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--danger) 16%, transparent);
 }
-.oc-dot-attention {
+.sc-dot-attention {
   background: var(--attention);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 16%, transparent);
 }
-.oc-dot-ok {
+.sc-dot-ok {
   background: var(--idle);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 16%, transparent);
 }
-.oc-dot-unknown {
+.sc-dot-unknown {
   background: var(--muted);
 }
 
 /* ---- a labelled control inside a card ---- */
-.oc-field {
+.sc-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -11127,44 +11127,44 @@ select.foreman-model-input {
   border: 0;
   min-width: 0;
 }
-.oc-field-label {
+.sc-field-label {
   display: block;
   padding: 0;
   font-size: 11.5px;
   font-weight: 580;
   color: var(--fg);
 }
-.oc-field > .settings-hint {
+.sc-field > .settings-hint {
   margin: 0;
 }
-select.oc-input {
+select.sc-input {
   max-width: 100%;
 }
 /* ModelField brings its own boxed row from the Foreman panel, which inside a card is a
    box in a box. Flatten it here rather than forking the component: the widget's guts -
    the provider-filtered `<select>`, the resolution note - are exactly what this panel
    wants, and a second copy would drift on the first bug fix. */
-.oc-model .foreman-model-row {
+.sc-model .foreman-model-row {
   margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
 }
-.oc-model .foreman-models-hint {
+.sc-model .foreman-models-hint {
   margin: 0 0 8px;
 }
-.oc-model select.foreman-model-input {
+.sc-model select.foreman-model-input {
   max-width: 100%;
 }
 /* The soak field. Sized to the value it holds - four digits at most - because a
    full-width box for "10" reads as a text field somebody forgot to constrain. */
-.oc-number .alert-row {
+.sc-number .alert-row {
   gap: 8px;
   margin: 0;
   color: var(--muted);
   cursor: default;
 }
-.oc-number input[type="number"] {
+.sc-number input[type="number"] {
   width: 76px;
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -11175,14 +11175,14 @@ select.oc-input {
   font-size: 12px;
   text-align: right;
 }
-.oc-number input[type="number"]:disabled {
+.sc-number input[type="number"]:disabled {
   opacity: 0.55;
 }
 
 /* ---- segmented radios (mode, merge method) ----
    Radios, still: the segmented look is `appearance: none` over real inputs, so arrow keys
    walk the group and the fieldset's legend names it. */
-.oc-seg-row {
+.sc-seg-row {
   display: inline-flex;
   padding: 3px;
   gap: 3px;
@@ -11190,7 +11190,7 @@ select.oc-input {
   border: 1px solid var(--border);
   border-radius: 9px;
 }
-.oc-seg-opt {
+.sc-seg-opt {
   position: relative;
   padding: 5px 12px;
   border-radius: 6px;
@@ -11200,7 +11200,7 @@ select.oc-input {
   cursor: pointer;
   white-space: nowrap;
 }
-.oc-seg-opt input {
+.sc-seg-opt input {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -11209,25 +11209,25 @@ select.oc-input {
   opacity: 0;
   cursor: pointer;
 }
-.oc-seg-opt:hover {
+.sc-seg-opt:hover {
   color: var(--fg);
 }
-.oc-seg-opt.is-on {
+.sc-seg-opt.is-on {
   background: var(--panel);
   color: var(--fg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
-.oc-seg-opt:has(input:focus-visible) {
+.sc-seg-opt:has(input:focus-visible) {
   outline: 2px solid var(--working);
   outline-offset: 1px;
 }
-.oc-seg-opt:has(input:disabled) {
+.sc-seg-opt:has(input:disabled) {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
 /* ---- an unmet prerequisite (Shipping's three gotchas) ---- */
-.oc-blocker {
+.sc-blocker {
   display: flex;
   align-items: baseline;
   gap: 9px;
@@ -11236,16 +11236,16 @@ select.oc-input {
   line-height: 1.55;
   color: color-mix(in oklab, var(--attention) 72%, var(--fg));
 }
-.oc-blocker .oc-dot {
+.sc-blocker .sc-dot {
   position: relative;
   top: -1px;
 }
-.oc-blocker .settings-link {
+.sc-blocker .settings-link {
   white-space: nowrap;
 }
 
 /* ---- the Inspector's health card ---- */
-.oc-health-row {
+.sc-health-row {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -11253,24 +11253,24 @@ select.oc-input {
   font-size: 11.5px;
   color: var(--muted);
 }
-.oc-health-value {
+.sc-health-value {
   margin-left: auto;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
-.oc-health-bad {
+.sc-health-bad {
   color: var(--danger);
   font-family: var(--mono);
   font-size: 11px;
 }
-.oc-after-merge {
+.sc-after-merge {
   margin: 0;
   font-size: 12px;
   color: var(--fg);
 }
 
 /* ---- the count strip: every tile is the filter that selects it ---- */
-.oc-strip {
+.sc-strip {
   display: grid;
   /* `auto-fit` rather than a fixed count: the strip has one tile per BUCKET, and how many
      buckets a panel has is the panel's business - hard-coding four here is how a fifth
@@ -11279,7 +11279,7 @@ select.oc-input {
   gap: 10px;
   margin-bottom: 12px;
 }
-.oc-stat {
+.sc-stat {
   display: block;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -11292,14 +11292,14 @@ select.oc-input {
     border-color 0.14s ease,
     background 0.14s ease;
 }
-.oc-stat:hover {
+.sc-stat:hover {
   border-color: var(--muted);
 }
-.oc-stat.is-active {
+.sc-stat.is-active {
   border-color: var(--working);
   background: color-mix(in oklab, var(--working) 10%, var(--panel));
 }
-.oc-stat b {
+.sc-stat b {
   display: block;
   font-size: 20px;
   font-weight: 640;
@@ -11308,7 +11308,7 @@ select.oc-input {
   font-variant-numeric: tabular-nums;
   color: var(--fg);
 }
-.oc-stat span {
+.sc-stat span {
   display: block;
   margin-top: 3px;
   font-family: var(--mono);
@@ -11318,27 +11318,27 @@ select.oc-input {
   text-transform: uppercase;
   color: var(--dim);
 }
-.oc-stat-attention b {
+.sc-stat-attention b {
   color: var(--attention);
 }
-.oc-stat-danger b {
+.sc-stat-danger b {
   color: var(--danger);
 }
-.oc-stat-ok b {
+.sc-stat-ok b {
   color: var(--idle);
 }
-.oc-stat-merged b {
+.sc-stat-merged b {
   color: var(--pr-merged);
 }
 
 /* ---- the ledger table ---- */
-.oc-table {
+.sc-table {
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--panel);
   overflow: hidden;
 }
-.oc-head {
+.sc-head {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -11346,12 +11346,12 @@ select.oc-input {
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
 }
-.oc-head h3 {
+.sc-head h3 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
 }
-.oc-clear {
+.sc-clear {
   margin-left: auto;
   padding: 3px 9px;
   border: 1px solid color-mix(in oklab, var(--working) 34%, var(--border));
@@ -11362,10 +11362,10 @@ select.oc-input {
   font-size: 10.5px;
   cursor: pointer;
 }
-.oc-clear:hover {
+.sc-clear:hover {
   border-color: var(--working);
 }
-.oc-row {
+.sc-row {
   display: grid;
   align-items: center;
   gap: 12px;
@@ -11373,53 +11373,115 @@ select.oc-input {
   border-top: 1px solid var(--border-soft);
   font-size: 12px;
 }
-.oc-table-inspector .oc-row {
+.sc-table-inspector .sc-row {
   grid-template-columns: minmax(0, 1fr) 148px 74px 104px;
 }
-.oc-table-shipping .oc-row {
+.sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
+}
+/* The ask takes the flexible track, because it is the only cell whose useful length is
+   unbounded - everything else is a word from a closed vocabulary or a timestamp. Every
+   fixed track here is measured against its longest real value rather than rounded up:
+   this table gets 716px at a 1500px window, so 20px of slack on a metadata column comes
+   straight out of the one cell that says what the decision was ABOUT. The first cut spent
+   458px on five such columns and left the ask 66px - about ten characters - which reads as
+   a table of "Claude n...". */
+.sc-table-foreman .sc-row {
+  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 62px;
+}
+/* The shadow column exists only while the cheap tier is MEASURING - see `showShadow`.
+   Under `on` no measurement is ever taken, so this would be a permanently empty 130px. */
+.sc-table-foreman.has-shadow .sc-row {
+  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 112px 62px;
 }
 /* Phone width: the row folds onto two lines rather than being cut in half.
    The fixed tracks above come to 326px plus gaps and padding, so below roughly 450px of
-   table the grid is wider than its container - and `.oc-table` clips rather than scrolls
+   table the grid is wider than its container - and `.sc-table` clips rather than scrolls
    (it has to, for the rounded corners), so what silently disappeared was the right-hand
    column: the one saying when any of this last happened. Placement is explicit because
    auto-flow would pair the wrong cells: identity and time on the first line, verdict on
    the second. The header row goes with it, because it names four columns that are no
    longer there - and at this width the pairing is self-describing. */
 @media (max-width: 620px) {
-  .oc-row-head {
+  .sc-row-head {
     display: none;
   }
-  .oc-table-inspector .oc-row,
-  .oc-table-shipping .oc-row {
+  .sc-table-inspector .sc-row,
+  .sc-table-shipping .sc-row {
     grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 3px;
   }
-  .oc-row > .oc-pr {
+  .sc-row > .sc-pr {
     grid-column: 1;
     grid-row: 1;
   }
-  .oc-row > .oc-when {
+  .sc-row > .sc-when {
     grid-column: 2;
     grid-row: 1;
   }
-  .oc-table-inspector .oc-row > .oc-verdict {
+  .sc-table-inspector .sc-row > .sc-verdict {
     grid-column: 1;
     grid-row: 2;
   }
-  .oc-table-inspector .oc-row > .oc-fixed {
+  .sc-table-inspector .sc-row > .sc-fixed {
     grid-column: 2;
     grid-row: 2;
     text-align: right;
   }
-  .oc-table-shipping .oc-row > .oc-standing {
+  .sc-table-shipping .sc-row > .sc-standing {
     grid-column: 1 / -1;
     grid-row: 2;
     white-space: normal;
   }
 }
-.oc-row-head {
+/* The Foreman row folds EARLIER than the other two, because it carries three more cells:
+   its fixed tracks alone come to ~550px before the ask gets any width at all, so it runs
+   out of room while Inspector and Shipping are still comfortable. Same failure if left
+   alone - `.sc-table` clips rather than scrolls (it has to, for the rounded corners), so
+   the right-hand column silently disappears, and here that is the timestamp AND the
+   divergence, which is the column the shadow posture exists to show.
+   Four lines, paired so each reads as a sentence: who and when, what was asked, what came
+   of it and who decided, then how the tiers compared. */
+@media (max-width: 780px) {
+  .sc-table-foreman .sc-row-head {
+    display: none;
+  }
+  /* The trailing track is explicit, not `auto`. An auto track sizes to its widest item's
+     max-content, and both cells in it clip - so it resolved to the width of "9m ago" and
+     squeezed "foreman · structural" into 39px. 112px is that longest real pairing. */
+  .sc-table-foreman .sc-row,
+  .sc-table-foreman.has-shadow .sc-row {
+    grid-template-columns: minmax(0, 1fr) 112px;
+    row-gap: 3px;
+  }
+  .sc-table-foreman .sc-row > .sc-ref {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .sc-table-foreman .sc-row > .sc-when {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .sc-table-foreman .sc-row > .sc-ask {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+  .sc-table-foreman .sc-row > .sc-verdict {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .sc-table-foreman .sc-row > .sc-decided {
+    grid-column: 2;
+    grid-row: 3;
+    text-align: right;
+  }
+  .sc-table-foreman .sc-row > .sc-shadow {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+}
+.sc-row-head {
   padding: 6px 13px;
   border-top: 0;
   background: var(--bg-2);
@@ -11430,16 +11492,16 @@ select.oc-input {
   text-transform: uppercase;
   color: var(--dim);
 }
-.oc-row:not(.oc-row-head):hover {
+.sc-row:not(.sc-row-head):hover {
   background: var(--panel-2);
 }
 /* A closed pull request is out of the sweep for good, so it reads as history rather than
    as work in hand. Without this the list is dominated by rows nothing will ever act on
    again, and the two or three PRs actually in the queue are invisible inside it. */
-.oc-row.is-retired {
+.sc-row.is-retired {
   opacity: 0.55;
 }
-.oc-pr {
+.sc-pr {
   color: var(--fg);
   text-decoration: none;
   font-variant-numeric: tabular-nums;
@@ -11447,58 +11509,135 @@ select.oc-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.oc-pr:hover {
+.sc-pr:hover {
   text-decoration: underline;
 }
-.oc-verdict,
-.oc-standing {
+.sc-verdict,
+.sc-standing {
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.oc-verdict-findings {
+.sc-verdict-findings {
   color: var(--attention);
 }
-.oc-verdict-clean {
+.sc-verdict-clean {
   color: var(--idle);
 }
-.oc-verdict-failed {
+.sc-verdict-failed {
   color: var(--danger);
 }
-.oc-standing-soaking {
+.sc-standing-soaking {
   color: var(--attention);
 }
-.oc-standing-blocked {
+.sc-standing-blocked {
   color: var(--danger);
 }
 /* The same token the PR chip uses for a merged pull request, so "merged" is one colour
    across the app rather than a green here and a purple on the card. */
-.oc-standing-merged {
+.sc-standing-merged {
   color: var(--pr-merged);
 }
-.oc-fixed {
+.sc-fixed {
   color: var(--dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.oc-when {
+
+/* ---- the Foreman ledger's own cells ----
+   Four dispositions, and the two that await you (`noteAwaitsYou`) are the two that carry
+   a colour with weight: an escalation is Foreman handing the decision over, a draft is one
+   it wants confirmed. Answered reads as settled, skipped as inert. */
+.sc-verdict-escalated {
+  color: var(--attention);
+}
+.sc-verdict-pending {
+  color: var(--working);
+}
+.sc-verdict-answered {
+  color: var(--idle);
+}
+.sc-verdict-skipped {
+  color: var(--dim);
+}
+/* The session handle. Mono because it is an identifier being scanned for repeats down a
+   column, not read as a word - the shape of `ttys004:41233` is the whole of its use. */
+.sc-ref {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-ask {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-decided {
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-shadow {
+  min-width: 0;
+}
+.sc-div {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: color-mix(in oklab, var(--neutral) 12%, transparent);
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The one divergence that decides whether the cheap tier may be promoted: it answered
+   where the full review would not have. Loud on purpose - it is the reason the shadow
+   posture exists, and reading it off a wall of grey chips was how it stayed unread. */
+.sc-div-cheap-over-eager {
+  background: color-mix(in oklab, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.sc-div-agree {
+  background: color-mix(in oklab, var(--idle) 12%, transparent);
+  color: var(--idle);
+}
+.sc-div-cheap-too-cautious {
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  color: var(--working);
+}
+/* A deferral is the cheap tier declining to decide - not a comparison at all, so it stays
+   the quietest thing in the column rather than reading as a result. */
+.sc-div-deferred {
+  background: transparent;
+  color: var(--dim);
+  padding-left: 0;
+}
+.sc-when {
   color: var(--dim);
   font-size: 11px;
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.oc-empty {
+.sc-empty {
   margin: 0;
   padding: 16px 13px;
 }
-.oc-foot {
+.sc-foot {
   margin: 9px 2px 0;
 }
 
-/* ---- warnings shared by both outbound panels ----
-   `settings-warn` is the app-wide attention block; the two panels differ below it only
+/* ---- settings warnings ----
+   `settings-warn` is the app-wide attention block; individual panels differ below it only
    where the consequence differs. */
 .settings-warn {
   margin: 10px 0 0;
@@ -11687,7 +11826,8 @@ select.oc-input {
 .trust-add-note {
   margin-top: 8px;
 }
-/* The grant-count summary that replaced the repo editors on the three outbound panels. */
+/* The grant-count summary that replaced the repo editors on the three panels that hold a
+   repository grant - Inspector, Shipping and Foreman. */
 .trust-summary {
   margin-top: 8px;
 }

@@ -46,6 +46,8 @@ function mkEpisode(over: Partial<EpisodeWrite> = {}): EpisodeWrite {
     classification: "design-fork",
     confidence: 0.41,
     tier: 2,
+    cheapAction: null,
+    divergence: null,
     disposition: "escalated",
     lastAction: "escalated for your decision",
     sentText: null,

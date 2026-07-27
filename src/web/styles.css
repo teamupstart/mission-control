@@ -3756,6 +3756,112 @@ body {
   margin: 8px 0 0;
 }
 
+/* ---- attention inbox (one queue for everything waiting on a person) ----
+
+   Sits beside the review modal because it reuses its chrome and, for reviews, its card - the
+   `.review` rules above are what draw a question inside `.inbox-reviews`. What is added here is
+   only the queue around them: a heading per kind of obligation, and one row shape shared by the
+   deep-link items so a decision, a parked menu, a stuck finalization and a gate scan as one
+   list rather than four widgets. Same viewport discipline as `.review-modal`: the head and its
+   close stay reachable while the body alone scrolls. */
+.attention-inbox {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.attention-inbox .modal-head {
+  flex: 0 0 auto;
+}
+.attention-inbox .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.inbox-section {
+  margin: 16px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.inbox-entry:first-child .inbox-section {
+  margin-top: 8px;
+}
+.inbox-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-2);
+}
+/* The two rows a person must act on lead with the accent the fleet already uses for
+   "needs you", so the eye lands on them before the reference rows below. */
+.inbox-decision,
+.inbox-reviews {
+  border-left: 3px solid var(--attention);
+}
+.inbox-parked {
+  border-left: 3px solid var(--danger);
+}
+/* Rows whose answer is a keystroke at a terminal somewhere else. A neutral rule rather than
+   the accent, so the eye lands first on the two that can be settled from this list. */
+.inbox-dialog,
+.inbox-gate {
+  border-left: 3px solid var(--border);
+}
+.inbox-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.inbox-spacer {
+  flex: 1 1 auto;
+}
+.inbox-glyph {
+  color: var(--muted);
+}
+.inbox-meta,
+.inbox-context {
+  font-size: 11px;
+  color: var(--muted);
+}
+/* The run context an answerer would otherwise have to go and find: this session is one
+   competitor of a comparison, and nudging it tilts the result. */
+.inbox-context {
+  padding: 1px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.inbox-line {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.inbox-error {
+  color: var(--danger);
+}
+.inbox-empty {
+  margin: 18px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* Inside a row the cards are already grouped by their session's own frame, so they need
+   less air than they take in the per-session modal - but the hairline BETWEEN two questions
+   stays: it is what says these are two things to answer, not one long one. */
+.inbox-reviews .review {
+  padding: 10px 0;
+}
+.inbox-reviews .review-head h3 {
+  font-size: 13px;
+}
+
 /* ---- plan decisions ---- */
 .decisions {
   display: flex;
@@ -7399,6 +7505,172 @@ select:not([multiple]) option {
   padding-left: 18px;
 }
 
+/* Decision dossier: what was at stake, one column per candidate, and the judges' matrix.
+
+   The columns are a GRID rather than the stacked list the scorecards were, because the whole
+   point of the section is comparing two candidates without holding one in your head - at 320px
+   minimum they fall back to one per row rather than shrinking a diffstat into an ellipsis. They
+   keep `.ensemble-scorecard` as their base so the recommended/contested treatments and the
+   header row above are declared once. */
+.dossier-at-stake {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--attention);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.dossier-at-stake h5 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dossier-intent {
+  margin: 0;
+  font-size: 13px;
+}
+.dossier-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 8px 0 0;
+}
+.dossier-facts dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.dossier-facts dd {
+  margin: 0;
+  font-size: 12px;
+}
+.dossier-cols {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+/* Stacked, not side by side, and NOT the two-column split the Members section makes: measured
+   at the real column width (320px on a 1600px window with three candidates), a claims/observed
+   pair puts a two-sentence summary into a ~120px ribbon six lines tall. The reported-vs-observed
+   distinction is carried by the two headings, which survive stacking; the ribbon does not. The
+   strengths/risks pair below is the same measurement and the same answer. */
+.dossier-claims {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+.dossier-col .ensemble-scorecard-cols {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.dossier-claims h6 {
+  margin: 0 0 4px;
+  color: var(--muted);
+}
+.dossier-cost {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.dossier-col-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* The evidence button is `margin-left: auto` where it sits in a header row; in the column's
+   own action row it leads, so the two buttons read as one group. */
+.dossier-col-actions .ensemble-evidence-btn {
+  margin-left: 0;
+}
+.dossier-matrix {
+  width: 100%;
+  margin-top: 14px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.dossier-matrix th,
+.dossier-matrix td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+}
+.dossier-matrix thead th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.dossier-matrix tbody th {
+  font-weight: 600;
+}
+/* A cell where a judge broke with the panel's own conclusion - the thing a matrix exists to
+   show, and the reason it is not just five rank strips side by side. */
+.dossier-cell.is-split {
+  color: var(--attention);
+  font-weight: 700;
+}
+/* An absence of judgement, which must not read as a low rank. */
+.dossier-cell.is-absent {
+  color: var(--dim);
+}
+.dossier-matrix-aggregate th,
+.dossier-matrix-aggregate td {
+  border-bottom: 0;
+  border-top: 1px solid var(--border);
+  color: var(--fg);
+  font-weight: 700;
+}
+.dossier-dissent {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--attention);
+  background: var(--bg-2);
+  border-radius: 0 8px 8px 0;
+}
+.dossier-dissent h5 {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dossier-dissent-line {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.dossier-record {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.dossier-record h4 {
+  margin: 0 0 6px;
+}
+.dossier-record-line {
+  margin: 0;
+  font-size: 13px;
+}
+.dossier-record-rationale {
+  margin: 8px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--fg);
+  font-size: 13px;
+}
+.dossier-record-note {
+  margin: 8px 0 0;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+/* Said before the click, not after a 409 - see the comment on the element. */
+.ensemble-decision-oneshot {
+  margin: 8px 0 0;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
 /* Consensus agreements + divergence cards */
 .ensemble-agreements {
   margin-top: 10px;
@@ -8216,9 +8488,9 @@ select.ensemble-judge-persona {
   color: var(--fg);
   background: color-mix(in oklab, var(--working) 16%, var(--panel-2));
 }
-/* How many runs need you, on the tab itself. Until the attention inbox lands this is the
-   only ambient indicator an ensemble has: `awaiting_decision` fires one toast, and a
-   decision nobody caught otherwise sits silently behind an unvisited tab. */
+/* How many runs need you, on the tab itself. `awaiting_decision` fires one toast, and a
+   decision nobody caught would otherwise sit silently behind an unvisited tab; this and the
+   topbar's attention inbox are the two ambient indicators an ensemble has. */
 .workflow-tab-badge {
   display: inline-flex;
   align-items: center;

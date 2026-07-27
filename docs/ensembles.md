@@ -38,8 +38,8 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
    tool-less comparison ranks the immutable submissions and parks the run at a durable human
    decision boundary. The comparison is anonymous (agent, model, ordinal, ref and worktree stripped)
    and **recommends** a winner - it never promotes one.
-7. You confirm one eligible submission (or declare **no consensus**). Only then does anything
-   destructive run.
+7. You confirm one eligible submission (or declare **no consensus**) from the run's
+   [decision dossier](#deciding-the-dossier). Only then does anything destructive run.
 
 ### Where the selected result lands
 
@@ -183,9 +183,68 @@ shared decision: `needs an answer` (attention-toned) beats everything, then the 
 `resultLabel` ("rank 1", "retained"), then the member status. *Submitted* is deliberately **not**
 attention-toned - the run is working on it and nothing is asked of anyone.
 
-**The Ensembles tab badge** counts runs whose `attention` the daemon raised. It is the only
-ambient indicator today: `awaiting_decision` fires one toast, and a decision nobody caught would
-otherwise sit silently behind an unvisited tab.
+**The Ensembles tab badge** counts runs whose `attention` the daemon raised, and the topbar's
+**to answer** count opens the **attention inbox**, where those runs are listed by name. Between
+them nothing depends on catching the single `awaiting_decision` toast.
+
+## Answering a member's question
+
+A member is an ordinary session, so it asks the ordinary way - `request_input` over the mission
+MCP becomes a review, and a TUI or driver prompt becomes a pane dialog. Both now reach the
+**attention inbox** as well as the member's own card.
+
+**Reviews are answered in the inbox**, on the same card the per-session review modal draws, under
+a header line carrying the run context: *Best of N "Fix the parser" - candidate 3 of 5*. That
+sentence is the point of listing them there. The answer surfaces say nothing about the run, so an
+operator answering a question could not tell they were steering **one competitor of a
+comparison** - which matters both for fairness (a nudge tilts the result) and for effort (is this
+question worth answering, or should the member be withdrawn?).
+
+**A pane dialog is listed but NOT answered there, deliberately.** A review is a durable row with
+an id and a resolve route; a pane dialog is a menu re-read off a terminal screen every poll,
+answered by keystrokes aimed at that exact pane, and a stale one is answered by a cursor that has
+since moved. They are two wire protocols, and unifying them behind one inbox button would mean
+deciding what a stale menu does to it. So the inbox says which member is parked and on what, and
+deep-links to the card that can answer it.
+
+## Deciding: the dossier
+
+At `awaiting_decision` the run detail's **Result** section becomes a decision dossier. The
+material was never missing, it was scattered: a candidate's claims lived under Members, its score
+under Result, its diff under Artifacts, so comparing two of five meant scrolling among three
+sections and holding the difference in your head - and then confirming a winner reset one checkout
+and reaped the others.
+
+- **At stake** leads: the run's own **intent** (which appeared nowhere on the page before), the one
+  commit every candidate started from - which is what makes them comparable at all - the elapsed
+  time, and the aggregate candidate spend. A member whose runner reported no cost stays *not
+  reported*; a partial total says how partial it is. Neither is ever coalesced into `$0.00`.
+- **One column per candidate** composes what that candidate **reported** (its summary and checks,
+  labelled as claims), what Mission Control **observed** (the diffstat we computed), what it cost,
+  and how it was ranked - score and confidence for Best of N, Borda points and mean score for Panel
+  vote, with the per-judge rank strip. **Evidence** opens that candidate's diff in the Artifacts
+  section below.
+- **Panel vote adds the judges' own reasoning**: a judges x candidates **rank matrix** whose cells
+  are marked wherever a judge broke with the panel's conclusion, and a **dissent** line quoting the
+  ballot that ranked the winner *worst*, in that judge's words. The full ballots stay below,
+  collapsible, unchanged. Understanding why the panel disagreed no longer means opening every one.
+- **The decision form is last**, after the evidence rather than beside it. It is one shared form
+  for both strategies (the strategies supply only the choices and how they word an override), and
+  it still requires a rationale, still confirms the destructive effect by hand, and still offers
+  **No consensus**. It now says *before* the click what the server has always enforced: a decision
+  is recorded **once**, and a second `decide` is refused on `expectedStatus` rather than applied.
+
+**After the decision the dossier persists, read-only.** The columns stay, and beside them the
+record: what was promoted, the operator's own rationale, and the statement that this is not
+revisable. Each **losing** column grows a **Restore** button - the same `restore_artifact` action
+the Artifacts section runs. That is where the least discoverable fact in the feature finally
+surfaces: every loser's snapshot ref was **kept**, so a change of mind is a checkout reset, not a
+second decision. A no-consensus run offers Restore on every column, because nothing was promoted.
+
+Two states are deliberately excluded. While a run is `finalizing` the answer is in flight, so the
+record is not yet drawn - offering Restore there would ask to reset a checkout the finalizer is at
+that moment resetting itself. And a decision stored in a vocabulary this build cannot read says
+that a decision was made and offers no Restore at all, rather than guessing which column lost.
 
 ## Artifacts and private refs
 

@@ -8,6 +8,7 @@ import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
+import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
@@ -43,6 +44,7 @@ import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { foldAttention } from "./lib/attention.ts";
 import {
   useKeybindingHints,
   useKeybindings,
@@ -156,6 +158,10 @@ export function App(): React.JSX.Element {
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
+  // target of its own - what it draws is `attention` below, folded from state App already has -
+  // so it cannot go stale behind an item that resolved while it was open.
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Which half of the Console holds the keyboard: the rail selector, or the open
   // conversation reader. Tab hands it right, Shift+Tab (and Escape) hands it back. It
@@ -616,15 +622,15 @@ export function App(): React.JSX.Element {
 
   const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
-  // What the topbar's review segment counts, deliberately NARROWER than `pendingReviews`.
+  // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
-  // The modal is keyed on a session (`modalSession`), so a review whose session is not in
-  // the list cannot be opened by anything - `openReviews` would set `reviewSessionId` to an
-  // id `sessions.find` never matches and the click would silently do nothing. The daemon
-  // settles those now (`ReviewManager`'s two eviction halves), which is the real fix; this
-  // is what keeps the count and the click answering the same question by construction,
-  // including in the seconds after a restart before the first discovery sweep has said
-  // which agents are still out there. `pendingReviews` itself stays whole: Foreman's
+  // An inbox row is a thing to act on, and a review whose session is gone has nothing left to
+  // answer: it used to leave the topbar counting a question whose only entry point set
+  // `reviewSessionId` to an id `sessions.find` never matched, so the click silently did
+  // nothing. The daemon settles those now (`ReviewManager`'s two eviction halves), which is the
+  // real fix; this is what keeps the count and what opens under it answering the same question
+  // by construction, including in the seconds after a restart before the first discovery sweep
+  // has said which agents are still out there. `pendingReviews` itself stays whole: Foreman's
   // draft-staleness check asks whether a review was RESOLVED, which is a different question
   // from whether its agent is still around to hear the answer.
   const answerableReviews = useMemo(() => {
@@ -656,6 +662,15 @@ export function App(): React.JSX.Element {
   const ensembleAttentionCount = useMemo(
     () => ensembleSummaries.filter((s) => s.attention).length,
     [ensembleSummaries],
+  );
+  // Everything waiting on a person, in one ordered queue: the inbox renders it and the topbar
+  // segment counts it, so the figure and what opens under it are the same fold rather than two
+  // questions that agree until they don't. Folded here because every input is already in this
+  // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
+  // an OS notification while you are away) and deliberately excludes reviews.
+  const attention = useMemo(
+    () => foldAttention({ sessions, reviews: answerableReviews, ensembles: ensembleSummaries, gateAlerts }),
+    [sessions, answerableReviews, ensembleSummaries, gateAlerts],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -740,9 +755,17 @@ export function App(): React.JSX.Element {
     ? sessions.find((s) => s.id === filePickerSessionId) ?? null
     : null;
 
-  function openReviews(): void {
-    const first = answerableReviews[0];
-    if (first) setReviewSessionId(first.sessionId);
+  /**
+   * Focus a session on the fleet, from wherever the operator was.
+   *
+   * The inbox's deep links are the callers: an item's home is a card, and a click that only
+   * selected it would leave the operator on the Workflows page wondering what happened.
+   */
+  function focusSession(sessionId: string): void {
+    navigate({ page: "fleet" });
+    setFilter("");
+    setSelectedId(sessionId);
+    if (layout === "board") setBoardOpen(true);
   }
 
   // Everything a layout needs, and nothing it could decide for itself. App stays the
@@ -1398,8 +1421,8 @@ export function App(): React.JSX.Element {
             sessions={sessions.length}
             attention={counts.attention}
             working={counts.working}
-            reviews={answerableReviews.length}
-            onOpenReviews={openReviews}
+            inbox={attention.total}
+            onOpenInbox={() => setInboxOpen(true)}
           />
           {launcherFocusError && (
             <span className="launch-flash is-error" role="status">
@@ -1796,6 +1819,17 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {inboxOpen && (
+                <AttentionInbox
+                  fold={attention}
+                  onClose={() => setInboxOpen(false)}
+                  onOpenEnsemble={(runId) =>
+                    navigate({ page: "workflows", tab: "ensembles", ensembleId: runId })
+                  }
+                  onOpenSession={focusSession}
+                />
+              )}
+
               {modalSession && modalReviews.length > 0 && (
                 <ReviewModal
                   session={modalSession}
@@ -2201,15 +2235,23 @@ function FleetPulse({
   sessions,
   attention,
   working,
-  reviews,
-  onOpenReviews,
+  inbox,
+  onOpenInbox,
 }: {
   connected: boolean;
   sessions: number;
   attention: number;
   working: number;
-  reviews: number;
-  onOpenReviews: () => void;
+  /**
+   * How many answers the operator owes - the attention fold's total, not a review count.
+   *
+   * A separate segment from `attention`, which counts SESSIONS in an attention tone: they
+   * overlap heavily but are different questions, and the one that must match what a click
+   * opens is this one. It reads "to answer" rather than borrowing "need you", because two
+   * segments carrying the same word in one readout is a figure nobody can attribute.
+   */
+  inbox: number;
+  onOpenInbox: () => void;
 }): React.JSX.Element {
   return (
     <div className={`pulse${connected ? "" : " is-down"}`}>
@@ -2246,13 +2288,13 @@ function FleetPulse({
           tip={`${working} session${working === 1 ? " is" : "s are"} working`}
         />
       )}
-      {reviews > 0 && (
+      {inbox > 0 && (
         <PulseStat
-          n={reviews}
-          label="reviews"
+          n={inbox}
+          label="to answer"
           tone="attention"
-          onClick={onOpenReviews}
-          tip={`${reviews} agent${reviews === 1 ? "" : "s"} waiting on your review - open the queue`}
+          onClick={onOpenInbox}
+          tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
         />
       )}
     </div>

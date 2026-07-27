@@ -11,6 +11,7 @@ import { fmtUsd } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
 import {
+  agentCostSummary,
   ensembleStatusLabel,
   ensembleStatusTone,
   fmtElapsed,
@@ -109,6 +110,7 @@ export function EnsembleDetail({
   // honestly separate from the evaluator's own model cost above. Unknown stays unknown: a member
   // whose runner reported no cost is counted as unreported, never as $0.
   const agentCost = aggregateEnsembleAgentCost(detail.attempts, detail.artifacts);
+  const agentCostLine = agentCostSummary(agentCost, fmtUsd);
   const budget = run.plan?.budget ?? null;
   const tone = ensembleStatusTone(run.status, run.unreadable);
   const actionBusy = actionPending !== null;
@@ -220,13 +222,14 @@ export function EnsembleDetail({
         {agentCost.known + agentCost.unknown > 0 && (
           <div>
             <dt>Candidate cost</dt>
+            {/* One spelling of the partial-cost sentence, shared with the dossier's header:
+                two surfaces printing the same figure had two chances to coalesce an unknown
+                into a $0.00 that reads as "this candidate was free". */}
             <dd>
-              {agentCost.known === 0 ? (
-                <span className="ensemble-muted">not reported</span>
-              ) : agentCost.unknown === 0 ? (
-                fmtUsd(agentCost.totalUsd)
+              {agentCostLine.reported ? (
+                agentCostLine.label
               ) : (
-                `${fmtUsd(agentCost.totalUsd)} · ${agentCost.known} of ${agentCost.known + agentCost.unknown} reported`
+                <span className="ensemble-muted">{agentCostLine.label}</span>
               )}
             </dd>
           </div>
@@ -240,6 +243,11 @@ export function EnsembleDetail({
             detail={detail}
             subjectLabel={subjectLabel}
             onOpenArtifact={(artifactId) => setOpenArtifactId(artifactId)}
+            // The SAME restore the Artifacts section runs, not a second path: it goes through
+            // `onAction`, so its "Restoring…" clears on the controller's own pending flag and a
+            // 409 lands where every other action's does.
+            onRestoreArtifact={restore}
+            restorePendingArtifactId={restorePendingId}
             decision={decision}
           />
         </section>

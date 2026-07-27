@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
-import type {
-  EnsembleEvaluation,
-  EnsembleSelectOneSelection,
-  EnsembleStageAttempt,
+import { useMemo } from "react";
+import {
+  ensembleIsTerminal,
+  type EnsembleEvaluation,
+  type EnsembleStageAttempt,
 } from "@shared/ensemble.ts";
 import {
   aggregatePanelVotes,
@@ -13,6 +13,15 @@ import {
 import { Tooltip } from "../../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "../types.ts";
 import type { EnsembleResultContext } from "./index.ts";
+import { DecisionPanel } from "./DecisionPanel.tsx";
+import {
+  AtStake,
+  CandidateColumn,
+  DecisionRecord,
+  DissentLines,
+  RankMatrix,
+  recordedDecision,
+} from "./dossier.tsx";
 
 /**
  * Panel vote's result presentation: the aggregate ranking, how much the judges disagreed, each
@@ -77,6 +86,17 @@ function disagreementWording(aggregate: PanelAggregate): string {
 export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element | null {
   const { verdicts, rows } = useMemo(() => ballots(ctx.detail), [ctx.detail]);
   const aggregate = useMemo(() => aggregatePanelVotes(verdicts), [verdicts]);
+  const record = useMemo(() => recordedDecision(ctx.detail.decisions), [ctx.detail.decisions]);
+  const artifactById = useMemo(
+    () => new Map(ctx.detail.artifacts.map((artifact) => [artifact.id, artifact])),
+    [ctx.detail.artifacts],
+  );
+  const status = ctx.detail.run.status;
+  // See the same gate in `BestOfN.tsx`: the settled record is a TERMINAL run's, so a
+  // finalization in flight is never presented as the last word.
+  const settled = status !== null && ensembleIsTerminal(status) && record !== null;
+  const dossier = ctx.decision !== null || settled;
+  const restorable = settled && record!.readable && Boolean(ctx.onRestoreArtifact);
 
   if (verdicts.length === 0) {
     return (
@@ -89,6 +109,8 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
 
   return (
     <div className="ensemble-result">
+      {/* Above the Panel header, for the reason `BestOfN.tsx` gives. */}
+      {dossier && <AtStake detail={ctx.detail} />}
       <header className="ensemble-result-head">
         <h4>Panel</h4>
         <small>
@@ -121,40 +143,39 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
         </p>
       )}
 
-      <ol className="ensemble-scorecards">
+      <ol className="ensemble-scorecards dossier-cols">
         {aggregate.entries.map((entry) => {
           const recommended = !aggregate.tied && entry.artifactId === aggregate.recommendedArtifactId;
           return (
-            <li
+            <CandidateColumn
               key={entry.artifactId}
-              className={`ensemble-scorecard${recommended ? " recommended" : ""}${entry.contested ? " contested" : ""}`}
+              artifact={artifactById.get(entry.artifactId) ?? null}
+              subjectLabel={ctx.subjectLabel(entry.artifactId)}
+              verdict={{
+                rank: entry.rank,
+                scoreLine: `${entry.points} point${entry.points === 1 ? "" : "s"} · mean score ${Math.round(entry.meanScore)}/100`,
+                // The panel has no single rationale - each judge wrote one, and they are the
+                // ballots below. The per-judge ranks stay ON the column, which is the strip
+                // this view has always carried.
+                rationale: "",
+                strengths: [],
+                risks: [],
+                recommended,
+                contested: entry.contested,
+                contestedTip: entry.contested
+                  ? `The judges placed this between rank ${Math.min(...entry.ranks.map((r) => r.rank))} and rank ${Math.max(...entry.ranks.map((r) => r.rank))}`
+                  : undefined,
+              }}
+              onOpenArtifact={
+                ctx.onOpenArtifact ? () => ctx.onOpenArtifact?.(entry.artifactId) : undefined
+              }
+              onRestore={
+                restorable && entry.artifactId !== record!.selectedArtifactId
+                  ? () => ctx.onRestoreArtifact?.(entry.artifactId)
+                  : undefined
+              }
+              restorePending={ctx.restorePendingArtifactId === entry.artifactId}
             >
-              <header>
-                <span className="ensemble-rank" aria-label={`Rank ${entry.rank}`}>
-                  #{entry.rank}
-                </span>
-                <span className="ensemble-subject">{ctx.subjectLabel(entry.artifactId)}</span>
-                {recommended && <span className="ensemble-recommended-tag">Recommended</span>}
-                {entry.contested && (
-                  <Tooltip label={`The judges placed this between rank ${Math.min(...entry.ranks.map((r) => r.rank))} and rank ${Math.max(...entry.ranks.map((r) => r.rank))}`}>
-                    <span className="ensemble-contested-tag">Contested</span>
-                  </Tooltip>
-                )}
-                <span className="ensemble-score">
-                  {entry.points} point{entry.points === 1 ? "" : "s"} · mean score{" "}
-                  {Math.round(entry.meanScore)}/100
-                </span>
-                {ctx.onOpenArtifact && (
-                  <Tooltip label="Open this candidate's diff and evidence">
-                    <button
-                      className="btn btn-ghost ensemble-evidence-btn"
-                      onClick={() => ctx.onOpenArtifact?.(entry.artifactId)}
-                    >
-                      Evidence
-                    </button>
-                  </Tooltip>
-                )}
-              </header>
               <ul className="ensemble-judge-ranks">
                 {entry.ranks.map((rank) => (
                   <li key={rank.judgeKey}>
@@ -164,10 +185,15 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
                   </li>
                 ))}
               </ul>
-            </li>
+            </CandidateColumn>
           );
         })}
       </ol>
+
+      {/* Judges down the side, candidates across - where the panel SPLIT, which the per-column
+          strips above cannot show, and the dissenting ballot in the dissenter's own words. */}
+      <RankMatrix aggregate={aggregate} subjectLabel={ctx.subjectLabel} />
+      <DissentLines aggregate={aggregate} verdicts={verdicts} subjectLabel={ctx.subjectLabel} />
 
       <div className="ensemble-ballots">
         <h5>Ballots</h5>
@@ -213,135 +239,28 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
         })}
       </div>
 
-      {ctx.decision && (
-        <PanelDecisionPanel aggregate={aggregate} subjectLabel={ctx.subjectLabel} decision={ctx.decision} />
-      )}
+      {ctx.decision ? (
+        <DecisionPanel
+          choices={aggregate.entries.map((entry) => ({
+            artifactId: entry.artifactId,
+            label: `#${entry.rank} ${ctx.subjectLabel(entry.artifactId)}${
+              !aggregate.tied && entry.artifactId === aggregate.recommendedArtifactId
+                ? " (recommended)"
+                : ""
+            }${entry.contested ? " - contested" : ""}`,
+            tip: `Select ${ctx.subjectLabel(entry.artifactId)} as the winner`,
+          }))}
+          // A tie recommends NOTHING, and that is the whole point of the state: the panel
+          // could not separate its top two, so nothing is preselected and no override warning
+          // fires against a recommendation that does not exist.
+          recommendedArtifactId={aggregate.tied ? null : aggregate.recommendedArtifactId}
+          intro="The panel recommends, it does not promote - and where the judges disagreed is above, deliberately, because that is the part only you can settle. Confirming a winner resets that member's checkout to its submitted snapshot and reaps every other worktree; the losers' snapshot refs are kept."
+          overrideWarning="You are overriding the panel's aggregate. That is allowed, and a split panel is a good reason to; the ballots are above."
+          decision={ctx.decision}
+        />
+      ) : settled ? (
+        <DecisionRecord record={record!} subjectLabel={ctx.subjectLabel} restorable={restorable} />
+      ) : null}
     </div>
-  );
-}
-
-function PanelDecisionPanel({
-  aggregate,
-  subjectLabel,
-  decision,
-}: {
-  aggregate: PanelAggregate;
-  subjectLabel: (artifactId: string) => string;
-  decision: NonNullable<EnsembleResultContext["decision"]>;
-}): React.JSX.Element {
-  const [mode, setMode] = useState<"select" | "no_consensus">("select");
-  const [artifactId, setArtifactId] = useState<string>(
-    aggregate.tied ? "" : (aggregate.recommendedArtifactId ?? ""),
-  );
-  const [reason, setReason] = useState("");
-  const [rationale, setRationale] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-
-  const selection: EnsembleSelectOneSelection =
-    mode === "select"
-      ? { kind: "selected", artifactId }
-      : { kind: "no_consensus", reason: reason.trim() };
-  const ready =
-    confirmed &&
-    !decision.busy &&
-    rationale.trim().length > 0 &&
-    (mode === "select" ? Boolean(artifactId) : reason.trim().length > 0);
-  const nonRecommended =
-    !aggregate.tied &&
-    mode === "select" &&
-    Boolean(artifactId) &&
-    artifactId !== aggregate.recommendedArtifactId;
-
-  return (
-    <form
-      className="ensemble-decision"
-      aria-label="Confirm a winner"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (ready) decision.onDecide(selection, rationale.trim());
-      }}
-    >
-      <h4>Confirm the outcome</h4>
-      <p className="ensemble-decision-intro">
-        The panel recommends, it does not promote - and where the judges disagreed is above,
-        deliberately, because that is the part only you can settle. Confirming a winner resets that
-        member's checkout to its submitted snapshot and reaps every other worktree; the losers'
-        snapshot refs are kept.
-      </p>
-      <fieldset className="ensemble-decision-choices">
-        <legend>Outcome</legend>
-        {aggregate.entries.map((entry) => (
-          <Tooltip key={entry.artifactId} label={`Select ${subjectLabel(entry.artifactId)} as the winner`}>
-            <label className="ensemble-decision-choice">
-              <input
-                type="radio"
-                name="ensemble-decision"
-                checked={mode === "select" && artifactId === entry.artifactId}
-                onChange={() => {
-                  setMode("select");
-                  setArtifactId(entry.artifactId);
-                }}
-              />
-              <span>
-                #{entry.rank} {subjectLabel(entry.artifactId)}
-                {!aggregate.tied && entry.artifactId === aggregate.recommendedArtifactId && " (recommended)"}
-                {entry.contested && " - contested"}
-              </span>
-            </label>
-          </Tooltip>
-        ))}
-        <Tooltip label="Promote none; keep every candidate's snapshot">
-          <label className="ensemble-decision-choice">
-            <input
-              type="radio"
-              name="ensemble-decision"
-              checked={mode === "no_consensus"}
-              onChange={() => setMode("no_consensus")}
-            />
-            <span>No consensus - keep every snapshot, promote none</span>
-          </label>
-        </Tooltip>
-      </fieldset>
-      {mode === "no_consensus" && (
-        <label className="ensemble-field">
-          <span>Why there is no winner</span>
-          <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} required />
-        </label>
-      )}
-      {nonRecommended && (
-        <p className="ensemble-warn" role="note">
-          You are overriding the panel's aggregate. That is allowed, and a split panel is a good
-          reason to; the ballots are above.
-        </p>
-      )}
-      <label className="ensemble-field">
-        <span>Rationale (required, recorded with the decision)</span>
-        <textarea value={rationale} onChange={(event) => setRationale(event.target.value)} rows={2} required />
-      </label>
-      <Tooltip label="Confirm you understand the destructive effect before deciding">
-        <label className="ensemble-confirm-line">
-          <input
-            type="checkbox"
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.target.checked)}
-          />
-          <span>
-            {mode === "select"
-              ? "I understand the other worktrees will be reaped."
-              : "I understand no member is promoted and all snapshots are retained."}
-          </span>
-        </label>
-      </Tooltip>
-      {decision.error && (
-        <p className="ensemble-error" role="alert">
-          {decision.error}
-        </p>
-      )}
-      <Tooltip label="Record this decision and begin finalization">
-        <button type="submit" className="btn btn-primary" disabled={!ready}>
-          {decision.pending ? "Recording…" : mode === "select" ? "Confirm winner" : "Record no consensus"}
-        </button>
-      </Tooltip>
-    </form>
   );
 }

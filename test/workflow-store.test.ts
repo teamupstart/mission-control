@@ -50,8 +50,10 @@ test("definitions use revision CAS, normalized-name uniqueness, summaries, and s
   assert.equal(summary.personaCount, 1);
   assert.equal(summary.errorCount, 0);
   assert.equal(store.archiveWorkflowCas("w1", 2, 5).ok, true);
-  assert.deepEqual(store.listWorkflows(), []);
-  assert.equal(store.listWorkflows(true)[0]?.archivedAt, 5);
+  // By id, not by emptiness: the shipped built-in catalog is merged into both listings, so
+  // "the archived row is gone from the active list" is the claim, not "nothing is listed".
+  assert.equal(store.listWorkflows().some((workflow) => workflow.id === "w1"), false);
+  assert.equal(store.listWorkflows(true).find((workflow) => workflow.id === "w1")?.archivedAt, 5);
 });
 
 test("Publish snapshots exact Persona bytes, is idempotent per draft, and never mutates old versions", () => {

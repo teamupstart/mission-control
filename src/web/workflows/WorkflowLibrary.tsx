@@ -31,7 +31,11 @@ import {
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
-import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
+import {
+  useWorkflowDraft,
+  workflowArchiveBlocked,
+  workflowPublishBlocked,
+} from "./useWorkflowDraft.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import {
   readLastWorkflowId,
@@ -148,6 +152,41 @@ export function workflowEditorMode(
   return expressible ? chosen ?? "pipeline" : "graph";
 }
 
+/**
+ * Why this workflow is read-only, in one sentence, or nothing.
+ *
+ * Built-in comes FIRST, following `PersonaEditor`: an operator reading "Archived" about a
+ * workflow they never archived would go looking for the wrong control. A built-in is never
+ * archived anyway, so the order only ever matters if that stops being true - which is exactly
+ * when getting it wrong would be hardest to spot.
+ */
+export function WorkflowStateNotice({
+  builtin,
+  archived,
+}: {
+  builtin: boolean;
+  archived: boolean;
+}): React.JSX.Element | null {
+  if (builtin) {
+    return (
+      <p className="wf-state builtin">
+        Built-in - this workflow ships with Mission Control, always carries the graph this
+        build was made from, and is already published. Duplicate it to make a copy you own and
+        can edit.
+      </p>
+    );
+  }
+  if (archived) {
+    return (
+      <p className="wf-state archived">
+        Archived - this workflow is read-only. Its published versions and past run history stay
+        readable, and you can restore it.
+      </p>
+    );
+  }
+  return null;
+}
+
 export function WorkflowLibrary({
   summaries,
   personas,
@@ -207,7 +246,11 @@ export function WorkflowLibrary({
   // asking the list alone offered Delete on a published workflow until that request landed.
   // Gating on it keeps the refusal out of the operator's way rather than letting them reach a
   // 409 that only tells them what they cannot do.
+  // `!builtin` is stated rather than left to the version checks: a built-in always names a
+  // current version, so those already answer false, but Delete is refused because it ships
+  // with the app and not because of how many versions it happens to have.
   const neverPublished = Boolean(workflow)
+    && !workflow?.builtin
     && workflow?.currentVersionId === null
     && draft.versions.length === 0;
   const activePersonas = useMemo(
@@ -227,6 +270,10 @@ export function WorkflowLibrary({
   );
   const [chosenMode, setChosenMode] = useState<"pipeline" | "graph" | null>(null);
   const mode = workflowEditorMode(chosenMode, blockers.length === 0);
+  // One expression, so the canvas, the pipeline, both properties rails and every graph-editing
+  // affordance answer "can this be changed?" identically. A built-in is app data: the daemon
+  // refuses the write, and offering the control anyway is a button that reports an error.
+  const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
@@ -401,7 +448,7 @@ export function WorkflowLibrary({
   };
 
   const addNode = (kind: "persona" | "all_pass" | "end", personaId = palettePersona, at?: { x: number; y: number }): void => {
-    if (!workflow || workflow.archivedAt !== null) return;
+    if (!workflow || readOnly) return;
     if (kind === "persona" && !personaId) return;
     const offset = workflow.draft.nodes.length * 26;
     const id = crypto.randomUUID();
@@ -434,7 +481,7 @@ export function WorkflowLibrary({
       : [];
 
   const removeCanvasSelection = (nodeIds: string[], edgeIds: string[]): void => {
-    if (!workflow) return;
+    if (!workflow || readOnly) return;
     const removable = new Set(nodeIds.filter((id) =>
       workflow.draft.nodes.find((node) => node.id === id)?.kind !== "session"));
     const touching = workflow.draft.edges.filter((edge) =>
@@ -469,7 +516,7 @@ export function WorkflowLibrary({
   };
 
   const duplicateNodes = (): void => {
-    if (!workflow) return;
+    if (!workflow || readOnly) return;
     const originals = workflow.draft.nodes.filter((node) =>
       selectedIds.includes(node.id) && node.kind !== "session");
     if (originals.length === 0) return;
@@ -636,16 +683,21 @@ export function WorkflowLibrary({
         <div className="workflow-library-list">
           {listed.length === 0 && <p>No workflow drafts yet.</p>}
           {listed.map((summary) => (
-            <Tooltip key={summary.id} label={`Open ${summary.name} in the builder`}>
+            <Tooltip
+              key={summary.id}
+              label={summary.builtin
+                ? `Open the built-in ${summary.name} - read-only, Duplicate to customize`
+                : `Open ${summary.name} in the builder`}
+            >
               <button disabled={transitioning} className={selectedId === summary.id ? "active" : ""} onClick={() => void select(summary.id)}>
-                <strong>{summary.name}</strong>
+                <strong>{summary.name}{summary.builtin && <em className="wf-list-tag">Built-in</em>}</strong>
                 <span>{summary.archivedAt !== null ? "Archived" : summary.errorCount ? `${summary.errorCount} errors` : "Draft valid"}{summary.publishedVersion ? ` · v${summary.publishedVersion}` : ""}</span>
               </button>
             </Tooltip>
           ))}
           {ordered.some((summary) => summary.archivedAt !== null) && <label className="workflow-show-archived"><Tooltip label="Include archived workflows in this list"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /></Tooltip> Show archived</label>}
         </div>
-        {workflow && workflow.archivedAt === null && mode === "graph" && (
+        {workflow && !readOnly && mode === "graph" && (
           <section className="workflow-palette">
             <h4>Node palette</h4>
             <p>Session is fixed. Add review and terminal nodes.</p>
@@ -680,7 +732,7 @@ export function WorkflowLibrary({
                 leaves the draft. Archive used to sit filled-red beside Publish, which is one
                 mis-click between "ship this" and "retire this". */}
             <header className="workflow-builder-toolbar">
-              <div><p className="workflow-eyebrow">Draft revision {workflow.draftRevision}</p><h3>{workflow.name}</h3></div>
+              <div><p className="workflow-eyebrow">{workflow.builtin ? "Built-in workflow" : `Draft revision ${workflow.draftRevision}`}</p><h3>{workflow.name}</h3></div>
               <span className={draft.saving || transitioning ? "is-saving" : draft.dirty ? "is-dirty" : "is-saved"}>{transitioning ? "Working…" : draft.saving ? "Saving…" : draft.dirty ? "Unsaved changes" : "Saved"}</span>
               <div className="wf-view-toggle" role="group" aria-label="Editing surface">
                 <Tooltip label={blockers.length === 0
@@ -716,7 +768,9 @@ export function WorkflowLibrary({
                     Redo
                   </button>
                 </Tooltip>
-                <Tooltip label="Copy this workflow into a new draft">
+                <Tooltip label={workflow.builtin
+                  ? "Start an editable copy of this built-in workflow - this is how you customize it"
+                  : "Copy this workflow into a new draft"}>
                   <button className="btn btn-ghost" disabled={transitioning} onClick={() => void duplicate()}>Duplicate</button>
                 </Tooltip>
                 {mode === "graph" && (
@@ -776,8 +830,13 @@ export function WorkflowLibrary({
                   // refuses with `active_binding`), and what survives one is the published
                   // versions. Saying only the second, as these did, offered reassurance for a
                   // case the guard never lets happen.
-                  <Tooltip label="Archive this workflow - blocked while a binding is active; published versions stay readable">
-                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                  // A built-in is never archived, so it always lands in this branch. It gets
+                  // the Archive button disabled with its OWN reason: "blocked while a binding
+                  // is active" would send the operator hunting for a binding to release.
+                  <Tooltip label={workflow.builtin
+                    ? "Built-in workflows cannot be archived - Duplicate one to own a copy you can retire"
+                    : "Archive this workflow - blocked while a binding is active; published versions stay readable"}>
+                    <button className="btn btn-danger-ghost" disabled={workflowArchiveBlocked({ transitioning, archived: false, builtin: workflow.builtin })} onClick={() => setConfirm({
                       title: "Archive workflow",
                       body: `Archive ${workflow.name}? Archiving is blocked while any binding is still active. Published versions and past run history stay readable, and you can restore it later.`,
                       confirmLabel: "Archive",
@@ -805,11 +864,15 @@ export function WorkflowLibrary({
                     })}>Restore</button>
                   </Tooltip>
                 )}
-                <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
-                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
+                <Tooltip label={workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null, builtin: workflow.builtin })} onClick={() => void draft.publish()}>Publish</button>
                 </Tooltip>
               </div>
             </header>
+            <WorkflowStateNotice
+              builtin={workflow.builtin}
+              archived={workflow.archivedAt !== null}
+            />
             {mode === "graph" && blockers.length > 0 && (
               <div className="wf-pipeline-blockers" role="status">
                 <p>Pipeline view unavailable:</p>
@@ -953,7 +1016,7 @@ export function WorkflowLibrary({
                 key={workflow.id}
                 graph={workflow.draft}
                 personas={personas}
-                readOnly={transitioning || workflow.archivedAt !== null}
+                readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onConfirm={setConfirm}
                 onAnnounce={setAnnouncement}
@@ -965,7 +1028,7 @@ export function WorkflowLibrary({
                 graph={workflow.draft}
                 personas={personas}
                 labelFor={labelFor}
-                readOnly={transitioning || workflow.archivedAt !== null}
+                readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onSelection={setSelection}
                 onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
@@ -987,7 +1050,7 @@ export function WorkflowLibrary({
               workflow={workflow}
               diagnostics={validation.diagnostics}
               stageCount={pipeline?.stages.length ?? 0}
-              readOnly={transitioning || workflow.archivedAt !== null}
+              readOnly={transitioning || readOnly}
               onUpdate={draft.update}
             />
           ) : (
@@ -996,7 +1059,7 @@ export function WorkflowLibrary({
               personas={personas}
               diagnostics={validation.diagnostics}
               selection={selection}
-              readOnly={transitioning || workflow.archivedAt !== null}
+              readOnly={transitioning || readOnly}
               onUpdate={draft.update}
               onConfirm={setConfirm}
             />
@@ -1005,6 +1068,7 @@ export function WorkflowLibrary({
             workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
+            builtin={workflow.builtin}
             onBindVersion={workflow.archivedAt === null ? onBindVersion : undefined}
           />
           {/* Archived is checked here as well as on the version-history binding above,

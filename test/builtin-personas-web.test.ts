@@ -75,6 +75,7 @@ const workflow: WorkflowDefinition = {
   archivedAt: null,
   createdAt: 1,
   updatedAt: 1,
+  builtin: false,
 };
 
 test("shadowed built-ins resolve while Persona pickers show the operator row", () => {
@@ -92,6 +93,7 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
     conflicted: false,
     valid: validation.valid,
     alreadyPublished: false,
+    builtin: false,
     archived: false,
   }), false);
 

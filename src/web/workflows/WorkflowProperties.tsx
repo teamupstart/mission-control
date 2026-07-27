@@ -105,6 +105,17 @@ export function pipelineValidationSentences(
   return [...new Set(errors.map((item) => item.message))];
 }
 
+/**
+ * The sentence a clean draft gets.
+ *
+ * A built-in cannot be published - it already was, by the build - so the usual "Ready to
+ * publish" would name an action beside a Publish button that is deliberately off, which reads
+ * as a broken control rather than as a shipped workflow.
+ */
+export function workflowValidSentence(builtin: boolean): string {
+  return builtin ? "Published with this build." : "Ready to publish.";
+}
+
 function DiagnosticList({
   diagnostics,
 }: {
@@ -148,7 +159,7 @@ export function WorkflowPipelineProperties({
       <section className="workflow-validation">
         <h4>Validation</h4>
         {sentences.length === 0
-          ? <p className="workflow-valid">Ready to publish.</p>
+          ? <p className="workflow-valid">{workflowValidSentence(workflow.builtin)}</p>
           : <ul>{sentences.map((sentence) => <li key={sentence}>{sentence}</li>)}</ul>}
       </section>
     </aside>
@@ -325,7 +336,7 @@ export function WorkflowProperties({
       <section className="workflow-validation">
         <h4>Validation · {errorCount} error{errorCount === 1 ? "" : "s"}</h4>
         {diagnostics.length === 0
-          ? <p className="workflow-valid">Ready to publish.</p>
+          ? <p className="workflow-valid">{workflowValidSentence(workflow.builtin)}</p>
           : <DiagnosticList diagnostics={scoped.length ? scoped : diagnostics} />}
       </section>
     </aside>

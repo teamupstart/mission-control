@@ -675,13 +675,23 @@ export function buildApp(
     }
     const current = result.current;
     const currentSummary = current && workflows ? workflows.store.summary(current) : null;
-    return c.json({
+    const body = {
       error: result.reason.replaceAll("_", " "),
       code: `workflow_${result.reason}`,
       expectedRevision: expectedRevision ?? null,
       currentRevision: current?.draftRevision ?? null,
       current: currentSummary,
-    }, 409);
+    };
+    // A built-in refusal is not a conflict a retry can clear, so it names the way forward
+    // rather than the state: the operator wants a copy they own, and Duplicate makes one.
+    if (result.reason === "builtin") {
+      return c.json({
+        ...body,
+        error: "this workflow ships with Mission Control: it cannot be edited, published, "
+          + "archived, restored, or deleted. Duplicate it to make a copy you own.",
+      }, 409);
+    }
+    return c.json(body, 409);
   };
 
   app.get("/api/workflows", (c) => {

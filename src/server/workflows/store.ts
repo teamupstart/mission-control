@@ -30,6 +30,7 @@ import {
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_TRIGGER_MODES,
   personasForDisplay,
+  workflowsForDisplay,
   type WorkflowTriggerSource,
   type WorkflowGateSummary,
   type WorkflowInspectorGateState,
@@ -65,6 +66,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
+import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
@@ -292,6 +294,8 @@ export function parseWorkflowDefinitionRow(value: unknown): WorkflowDefinition {
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // A row is by definition operator data. Built-ins never round-trip through SQLite.
+    builtin: false,
   };
 }
 
@@ -829,13 +833,15 @@ export type WorkflowStoreWrite =
   | { ok: true; workflow: WorkflowDefinition }
   | {
       ok: false;
+      /** `builtin` is "this workflow ships with the app", the one refusal a retry cannot clear. */
       reason:
         | "not_found"
         | "revision_conflict"
         | "name_conflict"
         | "archived"
         | "not_archived"
-        | "active_binding";
+        | "active_binding"
+        | "builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -849,8 +855,8 @@ export type WorkflowDeleteWrite =
   | { ok: true; workflow: WorkflowDefinition }
   | {
       ok: false;
-      /** `published` is the one refusal a retry can never clear. */
-      reason: "not_found" | "revision_conflict" | "published";
+      /** `published` and `builtin` are the two refusals a retry can never clear. */
+      reason: "not_found" | "revision_conflict" | "published" | "builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -858,7 +864,7 @@ export type WorkflowPublishWrite =
   | { ok: true; workflow: WorkflowDefinition; version: WorkflowVersion; idempotent: boolean }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "archived" | "validation";
+      reason: "not_found" | "revision_conflict" | "archived" | "validation" | "builtin";
       current: WorkflowDefinition | null;
       diagnostics?: WorkflowDiagnostic[];
     };
@@ -988,6 +994,9 @@ export class WorkflowStore {
   constructor(
     private readonly db: DatabaseSync = openDb(),
     private readonly builtins: readonly Persona[] = BUILTIN_PERSONAS,
+    /** Injectable for the same reason `builtins` is: the merge rules are provable on a
+     * fabricated catalog, so they do not depend on what the shipped graph happens to say. */
+    private readonly builtinWorkflows: readonly BuiltinWorkflow[] = BUILTIN_WORKFLOWS,
   ) {}
 
   /**
@@ -1212,6 +1221,38 @@ export class WorkflowStore {
     return persona;
   }
 
+  /**
+   * The shipped workflows, in the same shape a row parses into.
+   *
+   * Read through a method rather than a field so a caller cannot accidentally hold the
+   * definition of a version list it did not also consult.
+   */
+  private builtinWorkflowDefinitions(): WorkflowDefinition[] {
+    return this.builtinWorkflows.map((builtin) => builtin.definition);
+  }
+
+  private sortWorkflows(workflows: WorkflowDefinition[]): WorkflowDefinition[] {
+    return workflows.sort((a, b) =>
+      a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+  }
+
+  private builtinWorkflowById(id: string): BuiltinWorkflow | null {
+    return this.builtinWorkflows.find((builtin) => builtin.definition.id === id) ?? null;
+  }
+
+  private builtinWorkflowNamed(normalizedName: string): WorkflowDefinition | null {
+    return this.builtinWorkflows
+      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition ?? null;
+  }
+
+  private builtinWorkflowVersion(id: string): WorkflowVersion | null {
+    for (const builtin of this.builtinWorkflows) {
+      const version = builtin.versions.find((candidate) => candidate.id === id);
+      if (version) return version;
+    }
+    return null;
+  }
+
   listWorkflows(includeArchived = false): WorkflowDefinition[] {
     const rows = this.db
       .prepare(
@@ -1228,12 +1269,38 @@ export class WorkflowStore {
         diagnose(error);
       }
     }
-    return out;
+    // Built-ins are never archived, so they belong in both listings - which is what keeps the
+    // archived listing, the one the SSE snapshot is built from, a superset of the active one.
+    return this.sortWorkflows(
+      workflowsForDisplay(out.concat(this.builtinWorkflowDefinitions())),
+    );
+  }
+
+  /**
+   * Every workflow a durable binding or run may address.
+   *
+   * Unlike `listWorkflows`, this catalog never applies live-row name shadowing. Shadowing is
+   * a display rule only: a binding pinned to a built-in version has to keep resolving even
+   * while an operator's same-named workflow is what the library shows under that name.
+   */
+  workflowCatalog(): WorkflowDefinition[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM workflow_definitions ORDER BY normalized_name ASC, id ASC`)
+      .all() as unknown[];
+    const out: WorkflowDefinition[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseWorkflowDefinitionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return this.sortWorkflows(out.concat(this.builtinWorkflowDefinitions()));
   }
 
   getWorkflow(id: string): WorkflowDefinition | null {
     const row = this.db.prepare(`SELECT * FROM workflow_definitions WHERE id = ?`).get(id);
-    if (!row) return null;
+    if (!row) return this.builtinWorkflowById(id)?.definition ?? null;
     try {
       return parseWorkflowDefinitionRow(row);
     } catch (error) {
@@ -1244,6 +1311,10 @@ export class WorkflowStore {
 
   insertWorkflow(input: WorkflowInsert): WorkflowStoreWrite {
     return transaction(this.db, () => {
+      const shipped = this.builtinWorkflowById(input.id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
+      const named = this.builtinWorkflowNamed(input.normalizedName);
+      if (named) return { ok: false, reason: "name_conflict", current: named };
       const conflict = this.db
         .prepare(`SELECT * FROM workflow_definitions WHERE normalized_name = ?`)
         .get(input.normalizedName);
@@ -1280,6 +1351,8 @@ export class WorkflowStore {
     updatedAt = Date.now(),
   ): WorkflowStoreWrite {
     return transaction(this.db, () => {
+      const shipped = this.builtinWorkflowById(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const current = this.getWorkflowInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -1287,6 +1360,10 @@ export class WorkflowStore {
         return { ok: false, reason: "revision_conflict", current };
       }
       if (patch.normalizedName !== undefined) {
+        const named = this.builtinWorkflowNamed(patch.normalizedName);
+        if (named && named.normalizedName !== current.normalizedName) {
+          return { ok: false, reason: "name_conflict", current: named };
+        }
         const conflict = this.db
           .prepare(`SELECT id FROM workflow_definitions WHERE normalized_name = ? AND id <> ?`)
           .get(patch.normalizedName, id);
@@ -1319,6 +1396,11 @@ export class WorkflowStore {
 
   archiveWorkflowCas(id: string, expectedDraftRevision: number, archivedAt = Date.now()): WorkflowStoreWrite {
     return transaction(this.db, () => {
+      // Before the active-binding join below, and that ordering is load-bearing: a built-in
+      // has no version ROWS, so that join cannot see the bindings it holds and would report
+      // "no active binding" about a workflow an operator is running right now.
+      const shipped = this.builtinWorkflowById(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const current = this.getWorkflowInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
@@ -1354,6 +1436,10 @@ export class WorkflowStore {
    */
   unarchiveWorkflowCas(id: string, expectedDraftRevision: number, updatedAt = Date.now()): WorkflowStoreWrite {
     return transaction(this.db, () => {
+      // Before the row read, or a built-in - which owns no row - would be refused as
+      // `not_found`, which is a sentence about a workflow the operator is looking at.
+      const shipped = this.builtinWorkflowById(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const current = this.getWorkflowInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.archivedAt === null) return { ok: false, reason: "not_archived", current };
@@ -1392,6 +1478,12 @@ export class WorkflowStore {
    */
   deleteWorkflowCas(id: string, expectedDraftRevision: number): WorkflowDeleteWrite {
     return transaction(this.db, () => {
+      // Before the `published` guard below. That guard would refuse a built-in anyway, since
+      // one always names a current version - but it would say "publish once and this refuses
+      // for good" about a workflow the operator never published, which sends them looking for
+      // an archive they cannot take either.
+      const shipped = this.builtinWorkflowById(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const current = this.getWorkflowInTransaction(id);
       if (!current) return { ok: false, reason: "not_found", current: null };
       if (current.draftRevision !== expectedDraftRevision) {
@@ -1412,7 +1504,15 @@ export class WorkflowStore {
     });
   }
 
+  /** Newest first, matching the row query, so a caller cannot tell a built-in from a row. */
+  private builtinVersionsNewestFirst(workflowId: string): WorkflowVersion[] | null {
+    const builtin = this.builtinWorkflowById(workflowId);
+    return builtin ? [...builtin.versions].reverse() : null;
+  }
+
   listWorkflowVersions(workflowId: string): WorkflowVersion[] {
+    const shipped = this.builtinVersionsNewestFirst(workflowId);
+    if (shipped) return shipped;
     const rows = this.db.prepare(
       `SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
     ).all(workflowId) as unknown[];
@@ -1424,6 +1524,8 @@ export class WorkflowStore {
   }
 
   listWorkflowVersionMetadata(workflowId: string): WorkflowVersionMetadata[] {
+    const shipped = this.builtinVersionsNewestFirst(workflowId);
+    if (shipped) return shipped.map(({ graph: _graph, ...metadata }) => metadata);
     const rows = this.db.prepare(
       `SELECT id, workflow_id, version, source_draft_revision,
               completion_policy_json, binding_defaults_json, published_at
@@ -1437,6 +1539,10 @@ export class WorkflowStore {
   }
 
   getWorkflowVersion(workflowId: string, version: number): WorkflowVersion | null {
+    const builtin = this.builtinWorkflowById(workflowId);
+    if (builtin) {
+      return builtin.versions.find((candidate) => candidate.version === version) ?? null;
+    }
     const row = this.db.prepare(
       `SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?`,
     ).get(workflowId, version);
@@ -1451,6 +1557,10 @@ export class WorkflowStore {
     publishedAt = Date.now(),
   ): WorkflowPublishWrite {
     return transaction(this.db, () => {
+      // A built-in arrives published. Refusing here rather than at the route is what stops a
+      // second caller from minting a row version against an id that owns no rows.
+      const shipped = this.builtinWorkflowById(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped.definition };
       const existing = this.db.prepare(
         `SELECT * FROM workflow_versions WHERE workflow_id = ? AND source_draft_revision = ?`,
       ).get(id, expectedDraftRevision);
@@ -1534,9 +1644,13 @@ export class WorkflowStore {
       personas: this.personaCatalog(),
       completionPolicy: workflow.completionPolicy,
     });
+    // A built-in owns no version rows, so the row lookup below would report it unpublished -
+    // which reads on the card as a shipped workflow nobody can bind.
     const current = workflow.currentVersionId === null
       ? null
-      : this.db.prepare(`SELECT version FROM workflow_versions WHERE id = ?`).get(workflow.currentVersionId) as { version: number } | undefined;
+      : workflow.builtin
+        ? this.builtinWorkflowVersion(workflow.currentVersionId) ?? undefined
+        : this.db.prepare(`SELECT version FROM workflow_versions WHERE id = ?`).get(workflow.currentVersionId) as { version: number } | undefined;
     return {
       id: workflow.id,
       name: workflow.name,
@@ -1550,12 +1664,20 @@ export class WorkflowStore {
       warningCount: validation.diagnostics.filter((item) => item.severity === "warning").length,
       nodeCount: workflow.draft.nodes.length,
       personaCount: workflow.draft.nodes.filter((node) => node.kind === "persona").length,
+      builtin: workflow.builtin,
     };
   }
 
+  /**
+   * The one resolver every binding and every run goes through.
+   *
+   * It consults the catalog with no shadowing applied, because a binding holding a built-in
+   * version id must resolve even when an operator's same-named workflow is hiding the
+   * built-in from the library listing.
+   */
   getWorkflowVersionById(id: string): WorkflowVersion | null {
     const row = this.db.prepare(`SELECT * FROM workflow_versions WHERE id = ?`).get(id);
-    if (!row) return null;
+    if (!row) return this.builtinWorkflowVersion(id);
     try { return parseWorkflowVersionRow(row); } catch (error) { diagnose(error); return null; }
   }
 
@@ -1777,8 +1899,20 @@ export class WorkflowStore {
       params.push(input.status);
     }
     if (input.workflowId) {
-      where.push(`d.id = ?`);
-      params.push(input.workflowId);
+      // A built-in owns no version rows, so `d.id` is NULL on every run it ever produced and
+      // filtering the join column would report the shipped workflow as having no history.
+      // Its runs are named by the synthetic version ids they pinned instead.
+      const shipped = this.builtinWorkflowById(input.workflowId);
+      if (shipped) {
+        const ids = shipped.versions.map((version) => version.id);
+        where.push(ids.length > 0
+          ? `r.workflow_version_id IN (${ids.map(() => "?").join(", ")})`
+          : "0");
+        params.push(...ids);
+      } else {
+        where.push(`d.id = ?`);
+        params.push(input.workflowId);
+      }
     }
     if (input.session) {
       where.push(`(b.session_id = ? OR b.note_key = ?)`);
@@ -1858,16 +1992,25 @@ export class WorkflowStore {
       const gatePrNumber = gateState?.prKey
         ? Number(gateState.prKey.match(/#(\d+)$/)?.[1] ?? NaN)
         : NaN;
+      // The joins above reach rows, and a built-in has none - so a run of the shipped
+      // workflow arrives here looking exactly like one whose version was deleted. Resolve it
+      // from the catalog before reading that absence as "Missing workflow version".
+      const shipped = typeof row.workflow_id === "string"
+        ? null
+        : this.builtinWorkflowVersion(run.workflowVersionId);
+      const shippedName = shipped
+        ? this.builtinWorkflowById(shipped.workflowId)?.definition.name ?? null
+        : null;
       return {
         id: run.id,
         bindingId: run.bindingId,
         workflowId: typeof row.workflow_id === "string"
           ? row.workflow_id
-          : `missing:${run.workflowVersionId}`,
+          : shipped?.workflowId ?? `missing:${run.workflowVersionId}`,
         workflowName: typeof row.workflow_name === "string"
           ? row.workflow_name
-          : "Missing workflow version",
-        workflowVersion: Number(row.workflow_version ?? 0),
+          : shippedName ?? "Missing workflow version",
+        workflowVersion: Number(row.workflow_version ?? shipped?.version ?? 0),
         sessionId: typeof row.session_id === "string" ? row.session_id : null,
         noteKey: String(row.note_key),
         status: run.status,

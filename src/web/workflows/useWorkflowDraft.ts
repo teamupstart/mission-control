@@ -85,8 +85,25 @@ export function workflowPublishBlocked(input: {
   valid: boolean;
   alreadyPublished: boolean;
   archived: boolean;
+  /** A built-in ARRIVES published, and the daemon owns its versions. There is nothing to mint. */
+  builtin: boolean;
 }): boolean {
-  return input.dirty || input.saving || input.conflicted || !input.valid || input.alreadyPublished || input.archived;
+  return input.dirty || input.saving || input.conflicted || !input.valid
+    || input.alreadyPublished || input.archived || input.builtin;
+}
+
+/**
+ * Archive's own guard, a pure sibling of `workflowPublishBlocked` for the same reason: the
+ * toolbar only exists once a draft has loaded, so a predicate is the only part of "Archive is
+ * off for a built-in" a test can reach without driving a browser.
+ */
+export function workflowArchiveBlocked(input: {
+  transitioning: boolean;
+  archived: boolean;
+  /** A built-in is not the operator's to retire. Duplicate produces a copy that is. */
+  builtin: boolean;
+}): boolean {
+  return input.transitioning || input.archived || input.builtin;
 }
 
 export type WorkflowSummaryAction = "ignore" | "reload" | "conflict";
@@ -117,7 +134,13 @@ export function workflowSavePreflight(
   savedFingerprint: string | null,
 ): "blocked" | "clean" | "save" {
   if (conflict) return "blocked";
-  if (!workflow || editableFingerprint(workflow) === savedFingerprint) return "clean";
+  // A built-in has nothing to save: the daemon refuses the write. Answering "clean" here
+  // rather than relying on every editing surface having been passed `readOnly` makes "a
+  // built-in never PATCHes" true of the state machine itself, so one missed prop is a control
+  // that does nothing rather than a read-only workflow raising a save error banner.
+  if (!workflow || workflow.builtin || editableFingerprint(workflow) === savedFingerprint) {
+    return "clean";
+  }
   return "save";
 }
 

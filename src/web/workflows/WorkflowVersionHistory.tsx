@@ -67,11 +67,18 @@ export function WorkflowVersionHistory({
   workflowId,
   versions,
   personas,
+  builtin = false,
   onBindVersion,
 }: {
   workflowId?: string;
   versions: WorkflowVersionMetadata[];
   personas: PersonaView[];
+  /**
+   * A shipped version was not published on this machine, so it carries `publishedAt: 0`.
+   * Printing that instant renders 1970 beside the flagship workflow; say what it is instead,
+   * the way every other surface prints "Built-in" where it would print a row's dates.
+   */
+  builtin?: boolean;
   onBindVersion?: (version: WorkflowVersion) => void;
 }): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -122,7 +129,9 @@ export function WorkflowVersionHistory({
           <Tooltip key={version.id} label={selectedId === version.id ? `Hide version ${version.version}` : `Show what version ${version.version} contains`}>
             <button className={selectedId === version.id ? "active" : ""} onClick={() => setSelectedId(selectedId === version.id ? null : version.id)}>
               <strong>Version {version.version}</strong>
-              <span>Draft r{version.sourceDraftRevision} · {new Date(version.publishedAt).toLocaleString()}</span>
+              <span>{builtin
+                ? "Built-in · ships with this build"
+                : `Draft r${version.sourceDraftRevision} · ${new Date(version.publishedAt).toLocaleString()}`}</span>
             </button>
           </Tooltip>
         ))}

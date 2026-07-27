@@ -21,7 +21,7 @@ const workflow = (description: string, revision = 1): WorkflowDefinition => ({
   draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 0 } }], edges: [] },
   completionPolicy: { kind: "none" },
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
-  draftRevision: revision, currentVersionId: null, archivedAt: null, createdAt: 1, updatedAt: revision,
+  draftRevision: revision, currentVersionId: null, archivedAt: null, createdAt: 1, updatedAt: revision, builtin: false,
 });
 
 test("save reconciliation preserves edits made while the request is in flight", () => {
@@ -51,8 +51,10 @@ test("undo snapshots preserve the newest server CAS metadata after autosave", ()
   assert.equal(restored.updatedAt, 20);
 });
 
-test("Publish guards cover dirty, saving, conflict, invalid, duplicate-revision, and archive states", () => {
-  const ready = { dirty: false, saving: false, conflicted: false, valid: true, alreadyPublished: false, archived: false };
+test("Publish guards cover dirty, saving, conflict, invalid, duplicate-revision, archive, and built-in states", () => {
+  // The loop below folds over every key, so a guard added to the input is covered by adding
+  // it here and nowhere else - which is what stops a new refusal from shipping untested.
+  const ready = { dirty: false, saving: false, conflicted: false, valid: true, alreadyPublished: false, archived: false, builtin: false };
   assert.equal(workflowPublishBlocked(ready), false);
   for (const field of Object.keys(ready) as Array<keyof typeof ready>) {
     if (field === "valid") assert.equal(workflowPublishBlocked({ ...ready, valid: false }), true);
@@ -81,7 +83,7 @@ test("a completed failed detail load is retryable instead of permanently loading
 const summary = (revision: number, currentVersionId: string | null = null): WorkflowSummary => ({
   id: "w", name: "Review", description: "", draftRevision: revision,
   currentVersionId, publishedVersion: currentVersionId ? 1 : null, archivedAt: null,
-  updatedAt: revision, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+  updatedAt: revision, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0, builtin: false,
 });
 
 test("a conflict blocks every save-backed workflow transition", () => {

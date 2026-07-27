@@ -148,6 +148,31 @@ export function personaChoiceLabel(
 export const normalizeWorkflowName = normalizePersonaName;
 
 /**
+ * The workflows a human is offered, with a live operator row SHADOWING a same-named built-in.
+ *
+ * Deliberately the same rule and the same narrow cause as `personasForDisplay`: an operator
+ * who authored a workflow under a shipped name before it shipped keeps that name, because
+ * their bindings and published versions already point at it. `create` and rename refuse a
+ * built-in's name, so no new shadow can appear, and the shadowed built-in stays addressable
+ * by id through the store's catalog projection - which is what keeps a binding pinned to its
+ * version resolving while the library is showing somebody else's workflow under that name.
+ *
+ * Only a LIVE row shadows, so the archived listing stays a superset of the active one.
+ */
+export function workflowsForDisplay<
+  T extends Pick<WorkflowDefinition, "archivedAt" | "builtin" | "normalizedName">,
+>(workflows: readonly T[]): T[] {
+  const liveOperatorNames = new Set(
+    workflows
+      .filter((workflow) => !workflow.builtin && workflow.archivedAt === null)
+      .map((workflow) => workflow.normalizedName),
+  );
+  return workflows.filter(
+    (workflow) => !workflow.builtin || !liveOperatorNames.has(workflow.normalizedName),
+  );
+}
+
+/**
  * The name a Persona Markdown document carries: its first level-one heading.
  *
  * One rule for both readers of authored Markdown - the built-ins compiled into the build and
@@ -554,6 +579,14 @@ export interface WorkflowDefinition {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Shipped with the application rather than authored here.
+   *
+   * A built-in workflow is app data, not operator data: it is not a row, it arrives already
+   * published, and it can be neither edited, archived, nor published again. Duplicate is the
+   * path to a customized copy, and that copy is an ordinary workflow like any other.
+   */
+  builtin: boolean;
 }
 
 export interface WorkflowVersion {
@@ -583,6 +616,8 @@ export interface WorkflowSummary {
   warningCount: number;
   nodeCount: number;
   personaCount: number;
+  /** Mirrors `WorkflowDefinition.builtin` so the library row can say so without a detail fetch. */
+  builtin: boolean;
 }
 
 export interface WorkflowDetail {

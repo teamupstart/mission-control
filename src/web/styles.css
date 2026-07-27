@@ -8360,9 +8360,12 @@ select.ensemble-judge-persona {
 .persona-list-name > span {
   min-width: 0;
 }
-/* Provenance, not state: this Persona came with the app, so the editor will open read-only.
-   Muted rather than toned, because it is never something to act on. */
-.persona-list-tag {
+/* Provenance, not state: this Persona or workflow came with the app, so its editor will open
+   read-only. Muted rather than toned, because it is never something to act on. Two selectors
+   rather than one class used everywhere, for `.persona-error` / `.wf-error`'s reason: a
+   retune of either name should change exactly what it is named after. */
+.persona-list-tag,
+.wf-list-tag {
   flex: none;
   margin-top: 2px;
   padding: 1px 5px;
@@ -8370,6 +8373,8 @@ select.ensemble-judge-persona {
   font-style: normal;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  /* The workflow row's name line is a <strong>, so say the weight rather than inherit it. */
+  font-weight: 400;
   color: var(--dim);
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -8417,7 +8422,11 @@ select.ensemble-judge-persona {
   flex-wrap: wrap;
   gap: 7px;
 }
-.persona-state {
+/* One boxed read-only sentence. `.wf-state` is the workflow builder's own name for the same
+   shape, for `.persona-error` / `.wf-error`'s reason: sharing the Persona class outright would
+   make a retune of the Persona editor silently restyle a surface that is not about Personas. */
+.persona-state,
+.wf-state {
   margin: 0;
   padding: 8px 10px;
   font-size: 11.5px;
@@ -8429,7 +8438,9 @@ select.ensemble-judge-persona {
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
 .persona-state.archived,
-.persona-state.builtin {
+.persona-state.builtin,
+.wf-state.archived,
+.wf-state.builtin {
   color: var(--muted);
   background: var(--panel-2);
 }
@@ -8662,6 +8673,13 @@ select.ensemble-judge-persona {
 }
 .workflow-library-list span,
 .workflow-version-list span { font-size: 10px; color: var(--dim); }
+/* The name line becomes a row of its own once a provenance tag rides beside it. */
+.workflow-library-list strong {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
 .workflow-library-list > .tt-anchor,
 .workflow-version-list > .tt-anchor { font: inherit; color: inherit; }
 .workflow-show-archived { display: flex; align-items: center; gap: 6px; padding: 7px 9px; font-size: 10.5px; color: var(--dim); }

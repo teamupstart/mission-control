@@ -11083,19 +11083,14 @@ select.foreman-model-input {
 /* ---- Workflows settings category (Live delivery, its repos, retention, health) ----
 
    Was a floating drawer over the Workflows page header, with its own absolute positioning,
-   shadow and desktop no-drag exemption. As a settings panel it needs none of that: the
-   groups below borrow the neighbouring categories' shapes (`.settings-group-label`,
-   `.settings-hint`, `.alert-row`) and only add the two grids and the repo list that have no
-   equivalent there. */
-.wf-settings-live {
-  /* A master toggle directly under a blurb otherwise touches the text. */
-  margin-top: 12px;
-}
-.wf-settings-repos,
-.wf-settings-retention,
-.wf-settings-health {
-  margin-top: 18px;
-}
+   shadow and desktop no-drag exemption; then a flat stack of a checkbox, a repo editor,
+   three number boxes and a twelve-row `<dl>`. It is now drawn with the settings console's
+   cards (`.sc-*`), so almost everything that used to be here has gone - the group labels,
+   the toggle row's spacing and the health grid are all the shared vocabulary's job now.
+
+   What remains is the shapes the console has no equivalent for: the repository list and its
+   add row, the retention grid, and the retention readout. See `.sc-solo` for why this panel
+   keeps ONE column while its neighbours split. */
 .wf-settings-empty {
   color: var(--dim);
 }
@@ -11174,32 +11169,31 @@ select.foreman-model-input {
   border: 1px solid var(--border);
   border-radius: 7px;
 }
-/* Wide enough for a locale timestamp, which is the longest thing in here and the one that
-   decides the track: sized off the counters instead, the last-sweep cells wrap mid-date. */
-.wf-settings-health-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(0, 210px));
-  gap: 8px;
-  margin: 10px 0 0;
-}
-.wf-settings-health-grid div {
-  min-width: 0;
-  padding: 8px 10px;
+/* The measurement the three limits above are set against, ruled off from them: the boxes
+   are what you change and this is what tells you whether changing them would do anything.
+   Bordered rather than merely spaced, because a bare pair of rows under a Save button reads
+   as more of the form. */
+.wf-settings-readout {
+  padding: 10px 12px;
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
   border-radius: 8px;
 }
-.wf-settings-health-grid dt {
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--muted);
+.wf-settings-readout .sc-health-row + .sc-health-row {
+  margin-top: 6px;
 }
-.wf-settings-health-grid dd {
-  margin: 4px 0 0;
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+/* A card body is a flex column, so a bare button in one stretches edge to edge and reads as
+   the panel's primary action rather than as this card's Save. */
+.wf-settings-apply {
+  display: flex;
+}
+/* The health strip and the card it summarises, closer together than the column's own 12px
+   rhythm so the tiles read as that card's headline rather than as something adrift between
+   two cards. */
+.wf-settings-health-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .wf-settings-checks { margin-top: 14px; }
 .wf-settings-checks-table { margin-top: 12px; }
@@ -11268,7 +11262,7 @@ select.foreman-model-input {
   overflow-wrap: anywhere;
 }
 
-/* ---- the settings console (Inspector + Shipping + Foreman) ----
+/* ---- the settings console (Inspector + Shipping + Foreman + Workflows) ----
    A settings panel that owns a LEDGER is drawn as one shape: a narrow control column
    beside a wide record of what the subsystem has decided. These panels looked alike before
    this section existed, in parallel class vocabularies that had already drifted - which is
@@ -11307,6 +11301,16 @@ select.foreman-model-input {
   .sc-split {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+/* A console panel with NO ledger, which is Workflows: it takes the leaves and the strip and
+   not the split, because `WorkflowRuns.tsx` already owns the run list and a second one here
+   would be a worse copy that disagrees with it. So this stays a reading column at the width
+   the rest of the settings page uses - the `max-width: none` above is for a form beside a
+   table, and a lone column of cards stretched to 1500px is a card title with a metre of
+   empty panel after it. Cards at `.sc-controls`' own width, and nothing pretending a second
+   column is coming. */
+.settings-pane > .settings-section.sc-section.sc-solo {
+  max-width: 760px;
 }
 .sc-controls {
   display: flex;
@@ -11694,6 +11698,28 @@ select.sc-input {
 }
 .sc-stat-merged b {
   color: var(--pr-merged);
+}
+/* ---- the strip that NAVIGATES (Workflows) ----
+   Same tiles, different promise: these count fleet-wide scalars and open the real run list
+   rather than filtering rows on this screen, so there is no `.is-active` state to style and
+   no total for them to add up to. See `ConsoleLinkStrip`'s comment.
+
+   Its own margin, because this strip is grouped with the card it summarises
+   (`.wf-settings-health-group`) and that group's `gap` already spaces the two - the ledger
+   strip's `margin-bottom` would land on top of it and reopen exactly the hole the group
+   exists to close. */
+.sc-strip-links {
+  margin-bottom: 0;
+}
+.sc-stat-link {
+  color: inherit;
+  text-decoration: none;
+}
+/* Anchors are not focusable-by-default in the way the button tiles are styled through, and
+   a keyboard user tabbing this strip has to see where they are. */
+.sc-stat-link:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 
 /* ---- the ledger table ---- */

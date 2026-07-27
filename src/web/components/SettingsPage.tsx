@@ -14,6 +14,7 @@ import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
+import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { SettingsSearch } from "./SettingsSearch.tsx";
@@ -127,6 +128,7 @@ function RailDot({
 export function SettingsPage({
   category,
   onNavigate,
+  onOpenRuns,
   onLeave,
   foreman,
   cost,
@@ -141,6 +143,16 @@ export function SettingsPage({
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
   onNavigate: (category: SettingsCategoryId) => void;
+  /**
+   * Leave the settings page for the Workflows run list, pre-filtered. Only the Workflows
+   * panel's health tiles use it.
+   *
+   * Deliberately NOT part of `onNavigate`: that one is typed to `SettingsCategoryId`,
+   * because every other navigation this page performs stays inside it. Widening it to carry
+   * a destination that is not a settings category would make the type stop describing what
+   * the rail can reach, so this is a second, honestly-typed prop instead.
+   */
+  onOpenRuns?: (filters: WorkflowRunFilters) => void;
   /** Escape, and the page's own way back. App points this at the fleet route. */
   onLeave: () => void;
   /**
@@ -375,7 +387,7 @@ export function SettingsPage({
       case "foreman":
         return <ForemanSettingsPanel state={foreman} onNavigate={navigateWithAnchor} />;
       case "workflows":
-        return <WorkflowSettingsPanel state={workflowSettings} />;
+        return <WorkflowSettingsPanel state={workflowSettings} onOpenRuns={onOpenRuns} />;
       case "cost":
         return <CostSettingsPanel state={cost} />;
       case "inspector":

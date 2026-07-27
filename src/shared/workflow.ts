@@ -1358,7 +1358,23 @@ export interface WorkflowStatus {
   lastRecoveryAt: number | null;
   lastRetentionAt: number | null;
   lastRetentionError: string | null;
+  /** EVERY run row, of any status. Not the population any retention limit caps. */
   retainedRunCount: number;
+  /**
+   * The runs `retention.maxCompletedRuns` actually caps: finished (completed or cancelled)
+   * families with a completion time and no uncertain delivery holding them back.
+   *
+   * A separate field rather than a nicer reading of `retainedRunCount`, because the two
+   * answer different questions and the difference is the whole point of showing it. A limit
+   * of 1000 rendered against a count that includes every active, blocked and failed run is
+   * a gauge that moves for reasons the limit beside it cannot cause.
+   */
+  completedRunCount: number;
+  /**
+   * Deliveries confirmed typed into a session, all time - the only fleet-wide evidence that
+   * Live delivery has ever done the thing it is enabled for.
+   */
+  deliveredDeliveries: number;
   lastRetentionCompacted: number;
   lastRetentionDeleted: number;
 }

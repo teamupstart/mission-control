@@ -2164,6 +2164,8 @@ subdirectory*, not at the top of the tree. Worktrees of a configured repository 
 wherever they live on disk: a dispatched session usually stands in a pooled checkout under
 `~/.treehouse/`, and because a worktree mirrors its repository's layout, a session in that
 checkout's `packages/web` resolves the command configured for the repository's
+`packages/web`. That match is on the exact directory, component by component - a session in
+`examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
 **An unrun gate passes, with a note saying why.** A slot with no command configured for this

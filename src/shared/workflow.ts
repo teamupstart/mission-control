@@ -631,26 +631,21 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
  * Absolute containment alone selects `/repo/packages/web` only for a session standing under
  * that literal path - but a dispatched session stands in a pooled worktree under
  * `~/.treehouse/`, whose `cwd` is outside `/repo` entirely while its `repoRoot` still names
- * `/repo`. Containment therefore fell through to the repository-wide entry, so the package
- * override worked for a plain checkout and silently never for a dispatched one. A worktree
- * MIRRORS its repository's layout, so the entry's repository-relative subpath is matched
- * against the tail of the session's directory instead.
- *
- * That tail match is deliberately narrow: it applies only to an entry that is inside THIS
- * session's repository, so a same-named package in an unrelated project cannot be reached
- * by it. Within one repository two directories sharing a trailing path are the same
- * directory in different checkouts, which is exactly what this is trying to identify.
+ * `/repo`. Containment therefore falls through to the repository-wide entry, so the package
+ * override would work for a plain checkout and silently never for a dispatched one. A
+ * worktree mirrors its repository's layout, so the entry's repository-relative subpath is
+ * matched against `location.checkoutSubpath` - the session's position within its OWN
+ * checkout, compared by whole path components.
  */
 export function checkCommandFor(
   config: Pick<WorkflowConfig, "checkCommands">,
-  cwd: string | null,
-  repoRoot: string | null,
+  location: CheckLocation,
   slot: WorkflowCheckSlot,
 ): WorkflowCheckCommand | null {
   let best: WorkflowCheckCommand | null = null;
   for (const entry of config.checkCommands) {
     if (entry.slot !== slot) continue;
-    if (!checkCommandApplies(entry.repoRoot, cwd, repoRoot)) continue;
+    if (!checkCommandApplies(entry.repoRoot, location)) continue;
     if (!best || entry.repoRoot.length > best.repoRoot.length) best = entry;
   }
   // The whole ENTRY, not just its argv. The matched root is not decoration: when a nested
@@ -666,27 +661,51 @@ function trimSlash(p: string): string {
 }
 
 /**
+ * Where a session stands, in the three vocabularies resolution needs.
+ *
+ * `checkoutSubpath` is the session's directory relative to its OWN checkout root, derived
+ * by whoever can ask git - `null` when nobody did. It exists because the other two cannot
+ * answer the question for a dispatched session: `cwd` is an absolute path inside a pooled
+ * worktree, `repoRoot` names the main checkout, and nothing about either says which
+ * directory OF THE REPOSITORY the session is in.
+ */
+export interface CheckLocation {
+  cwd: string | null;
+  repoRoot: string | null;
+  checkoutSubpath: string | null;
+}
+
+/** Whether `inner` is `outer` or sits beneath it, compared by whole path components. */
+function subpathWithin(inner: string, outer: string): boolean {
+  return inner === outer || inner.startsWith(`${outer}/`);
+}
+
+/**
  * Whether one configured entry applies to a session, by any of the three routes.
  *
- * Split out so the tail rule is stated once and can be tested directly: it is the only part
- * of resolution that is a heuristic rather than a containment test, and a heuristic nobody
- * can point at is one nobody checks.
+ * Split out so the third route is stated once and can be tested directly: the other two are
+ * containment tests, and this one is the only place resolution can pick the wrong package.
  */
-function checkCommandApplies(
-  entryRoot: string,
-  cwd: string | null,
-  repoRoot: string | null,
-): boolean {
+function checkCommandApplies(entryRoot: string, location: CheckLocation): boolean {
   // The two containment routes: the session stands inside the entry, or the entry covers
   // the session's whole repository.
-  if (repoAllowlisted(cwd, repoRoot, [entryRoot])) return true;
-  // The worktree route. Only for an entry nested inside THIS session's repository, and only
-  // when we have a directory to compare against.
-  if (!repoRoot || !cwd) return false;
-  const subpath = checkCommandSubpath(repoRoot, entryRoot);
-  if (!subpath) return false;
-  const dir = trimSlash(cwd);
-  return dir.endsWith(`/${subpath}`) || dir.includes(`/${subpath}/`);
+  if (repoAllowlisted(location.cwd, location.repoRoot, [entryRoot])) return true;
+  // The worktree route, for an entry nested inside THIS session's repository.
+  //
+  // Compared as a COMPONENT PATH against the session's checkout-relative directory, not as
+  // a trailing substring of its absolute one. A substring match reads
+  // `<worktree>/examples/packages/web` as `packages/web`, then runs the command in
+  // `packages/web` of the leased checkout - silently testing a different package from the
+  // one the submission was written in, and reporting that as the submission's answer. A
+  // repository containing both `examples/packages/web` and `packages/web` is ordinary, so
+  // "the same trailing path means the same directory" is simply not true.
+  //
+  // `null` declines rather than falling back to the looser rule: an unknown position is not
+  // evidence of a match, and the repository-wide entry is the correct thing to land on.
+  if (!location.repoRoot || location.checkoutSubpath === null) return false;
+  const entrySubpath = checkCommandSubpath(location.repoRoot, entryRoot);
+  if (!entrySubpath) return false;
+  return subpathWithin(trimSlash(location.checkoutSubpath), entrySubpath);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { createLimiter } from "../llm/structured.ts";
+import { resolveRepoPath } from "../repos.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
   checkBlockedReason,
@@ -78,7 +79,21 @@ export type CheckExecutionResult =
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
+/**
+ * Where the session's directory sits inside its own checkout, or null when git cannot say.
+ *
+ * A dependency rather than a direct call because it is the one part of resolution that
+ * leaves the process, and because a test asserting which package was selected should not
+ * need a real monorepo on disk.
+ */
+export type CheckoutSubpathResolver = (
+  cwd: string,
+  repoRoot: string,
+) => Promise<string | null>;
+
 export interface CheckRunDeps {
+  /** Defaults to asking git. Null is a legitimate answer and declines nested matching. */
+  checkoutSubpath?: CheckoutSubpathResolver;
   /**
    * The execution runtime, or null when this build has none.
    *
@@ -180,6 +195,26 @@ function checkOutcomeNote(command: readonly string[], suffix: string): string {
 }
 
 /**
+ * The session's directory relative to the root of the checkout it is standing in.
+ *
+ * `resolveRepoPath` already expresses a path against the repository that owns its tree -
+ * which is exactly this question for a pooled worktree, whose own root is not the
+ * repository. Reused rather than reimplemented so Settings and resolution agree about what
+ * "inside the repository" means; they were two answers to one question before.
+ */
+async function defaultCheckoutSubpath(cwd: string, repoRoot: string): Promise<string | null> {
+  const resolved = await resolveRepoPath(cwd);
+  if (!resolved) return null;
+  // A cwd whose repository is not this session's says nothing about this session.
+  if (trimTrailingSlash(resolved.repoRoot) !== trimTrailingSlash(repoRoot)) return null;
+  return checkCommandSubpath(resolved.repoRoot, resolved.path);
+}
+
+function trimTrailingSlash(p: string): string {
+  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
+}
+
+/**
  * Decide one Check node.
  *
  * `cwd` and `repoRoot` are both taken because a binding records both and they answer
@@ -200,7 +235,18 @@ export async function runCheck(
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is
   // not a repository the operator failed to authorize, and telling them to switch checks on
   // would send them to a setting that would change nothing.
-  const entry = checkCommandFor(config, input.cwd, input.repoRoot, slot);
+  // Derived BEFORE resolution, because a nested entry can only be chosen by comparing the
+  // session's position inside its own checkout - see `checkCommandFor`'s third route. Null
+  // (no cwd, no repository, or git could not say) declines nested matching and lands on the
+  // repository-wide entry, which is the safe direction.
+  const checkoutSubpath = input.cwd && input.repoRoot
+    ? await (deps.checkoutSubpath ?? defaultCheckoutSubpath)(input.cwd, input.repoRoot)
+    : null;
+  const entry = checkCommandFor(
+    config,
+    { cwd: input.cwd, repoRoot: input.repoRoot, checkoutSubpath },
+    slot,
+  );
   if (!entry) {
     return outcome(
       slot,

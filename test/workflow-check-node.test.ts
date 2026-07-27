@@ -190,7 +190,12 @@ test("a nested command reaches the executor with the directory it was configured
     cwd: `${REPO}/packages/web`,
     repoRoot: REPO,
     headSha: "b".repeat(40),
-  }, { execute: stub.execute });
+  }, {
+    execute: stub.execute,
+    // Stubbed rather than shelling out to git: this asserts which package was selected and
+    // where it will run, not how the daemon asks where a session is.
+    checkoutSubpath: async () => "packages/web",
+  });
 
   assert.equal(stub.seen.length, 1);
   assert.deepEqual(stub.seen[0]!.command, ["pnpm", "-C", ".", "test"], "the nested argv won");
@@ -301,7 +306,7 @@ test("command resolution matches a worktree of a configured repository, longest 
     ],
   });
   const argv = (cwd: string | null, root: string | null, slot: WorkflowCheckSlot) =>
-    checkCommandFor(config, cwd, root, slot)?.command ?? null;
+    checkCommandFor(config, { cwd, repoRoot: root, checkoutSubpath: null }, slot)?.command ?? null;
   // The MOST SPECIFIC entry wins, so a monorepo subdirectory can override the tree-wide one.
   assert.deepEqual(argv(null, "/repos/thing", "test"), ["narrow"]);
   assert.deepEqual(argv(null, "/repos/other", "test"), ["broad"]);
@@ -317,50 +322,50 @@ test("command resolution matches a worktree of a configured repository, longest 
   // The MATCHED ROOT comes back too, because when a nested entry wins it is also the
   // directory that command has to run in. Returning only the argv is what let a package's
   // command be handed to the runtime with nothing but the parent repository.
-  assert.equal(checkCommandFor(config, null, "/repos/thing", "test")?.repoRoot, "/repos/thing");
-  assert.equal(checkCommandFor(config, null, "/repos/other", "test")?.repoRoot, "/repos");
+  const at_ = (root: string) => ({ cwd: null, repoRoot: root, checkoutSubpath: null });
+  assert.equal(checkCommandFor(config, at_("/repos/thing"), "test")?.repoRoot, "/repos/thing");
+  assert.equal(checkCommandFor(config, at_("/repos/other"), "test")?.repoRoot, "/repos");
 });
 
-test("a nested command reaches a DISPATCHED session, which stands in a pooled worktree", () => {
-  // The case that carries the feature. A dispatched session's cwd is under `~/.treehouse/`,
-  // outside the repository entirely, while its repoRoot still names the main checkout - so
-  // absolute containment selects only the repository-wide entry and the package override
-  // worked for a plain checkout and silently never for a dispatched one. A worktree mirrors
-  // its repository's layout, so the entry's repo-relative subpath is matched against the
-  // tail of the session's directory.
+test("a nested command is chosen by the session's EXACT position in its checkout", () => {
+  // The case that carries the feature, and the one place resolution can pick the wrong
+  // package. A dispatched session's cwd is under `~/.treehouse/`, outside the repository
+  // entirely, while its repoRoot names the main checkout - so absolute containment selects
+  // only the repository-wide entry. The nested entry is reached by comparing where the
+  // session sits INSIDE its own checkout, component by component.
   const config = configWith({
     checkCommands: [
       { repoRoot: "/repo", slot: "test", command: ["repo-wide"] },
       { repoRoot: "/repo/packages/web", slot: "test", command: ["package"] },
     ],
   });
-  const pick = (cwd: string | null, root: string | null) =>
-    checkCommandFor(config, cwd, root, "test")?.command ?? null;
+  const pick = (checkoutSubpath: string | null, cwd = "/home/u/.treehouse/r/1/repo") =>
+    checkCommandFor(config, { cwd, repoRoot: "/repo", checkoutSubpath }, "test")?.command ?? null;
 
-  // A pooled worktree standing in the package.
-  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/web", "/repo"), ["package"]);
-  // ...and deeper inside it.
-  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/web/src", "/repo"), ["package"]);
-  // A pooled worktree at the top of the repository still gets the repository-wide entry.
-  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo", "/repo"), ["repo-wide"]);
-  // A pooled worktree in a DIFFERENT package likewise.
-  assert.deepEqual(pick("/home/u/.treehouse/repo-abc/1/repo/packages/api", "/repo"), ["repo-wide"]);
-  // The plain-checkout case keeps working through ordinary containment.
-  assert.deepEqual(pick("/repo/packages/web", "/repo"), ["package"]);
-  assert.deepEqual(pick("/repo", "/repo"), ["repo-wide"]);
+  // In the package, and deeper inside it.
+  assert.deepEqual(pick("packages/web"), ["package"]);
+  assert.deepEqual(pick("packages/web/src"), ["package"]);
+  // At the top of the checkout, and in a different package.
+  assert.deepEqual(pick(""), ["repo-wide"]);
+  assert.deepEqual(pick("packages/api"), ["repo-wide"]);
 
-  // The tail rule is scoped to entries inside THIS session's repository, so a same-named
-  // package in an unrelated project cannot be reached by it.
-  const other = configWith({
-    checkCommands: [{ repoRoot: "/other/packages/web", slot: "test", command: ["stranger"] }],
-  });
-  assert.equal(
-    checkCommandFor(other, "/home/u/.treehouse/repo-abc/1/repo/packages/web", "/repo", "test"),
-    null,
+  // THE COUNTER-EXAMPLE. A trailing-substring match read `examples/packages/web` as
+  // `packages/web` and would then have run the command in the leased checkout's
+  // `packages/web` - silently testing a different package from the one the submission was
+  // written in. A repository containing both directories is ordinary.
+  assert.deepEqual(pick("examples/packages/web"), ["repo-wide"]);
+  // Nor does a partial component match: `web-legacy` is not `web`.
+  assert.deepEqual(pick("packages/web-legacy"), ["repo-wide"]);
+
+  // An unknown position declines nested matching rather than falling back to something
+  // looser - not knowing where a session is is not evidence that it is in the package.
+  assert.deepEqual(pick(null), ["repo-wide"]);
+
+  // The plain-checkout case still resolves through ordinary containment, with no subpath.
+  assert.deepEqual(
+    checkCommandFor(config, { cwd: "/repo/packages/web", repoRoot: "/repo", checkoutSubpath: null }, "test")?.command,
+    ["package"],
   );
-  // And with no cwd at all there is nothing to compare a tail against, so it declines
-  // rather than guessing.
-  assert.deepEqual(pick(null, "/repo"), ["repo-wide"]);
 });
 
 test("a nested command's execution directory is relative to the checkout, not absolute", () => {
@@ -404,7 +409,7 @@ test("the resolved argv is a copy, so a caller cannot edit the stored config", (
   const config = configWith({
     checkCommands: [{ repoRoot: REPO, slot: "test", command: ["npm", "test"] }],
   });
-  const resolved = checkCommandFor(config, null, REPO, "test");
+  const resolved = checkCommandFor(config, { cwd: null, repoRoot: REPO, checkoutSubpath: null }, "test");
   resolved!.command.push("--bail");
   assert.deepEqual(config.checkCommands[0]!.command, ["npm", "test"]);
 });

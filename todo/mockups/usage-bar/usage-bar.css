@@ -1,7 +1,7 @@
 /* Usage-bar mockups - shared stylesheet.
    Tokens are lifted verbatim from src/web/styles.css :root so these read as the product
-   rather than as a sketch. Agent accents are literal values (AGENT_IDENTITY), never a
-   token, matching the rule in the real stylesheet. */
+   rather than as a sketch. Agent accents arrive as literal values through one
+   --agent-accent property, never a per-agent token, matching the rule in the real stylesheet. */
 
 :root {
   color-scheme: dark;
@@ -23,9 +23,6 @@
   --neutral: #8b94a3;
   --purple: #a371f7;
   --cost: var(--purple);
-
-  --claude: #d97757;
-  --codex: #10a37f;
 
   --radius: 13px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -323,8 +320,8 @@ body {
   background: var(--agent-accent, var(--neutral));
   flex: none;
 }
-.a-claude { --agent-accent: var(--claude); }
-.a-codex { --agent-accent: var(--codex); }
+.a-claude { --agent-accent: #d97757; }
+.a-codex { --agent-accent: #10a37f; }
 
 /* ============================================================
    CURRENT - what ships today, for comparison

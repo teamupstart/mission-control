@@ -9076,7 +9076,11 @@ select.ensemble-judge-persona {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 150px;
+  /* React Flow measures this element to size the positioned node wrapper. A minimum lets
+     the wrapper retain its earlier, narrower measurement, which then gives the text a
+     character-wide line box. The node's width is part of its canvas geometry, not merely a
+     preferred visual size, so make it definite before that first measurement. */
+  width: 180px;
   padding: 11px 14px;
   color: var(--fg);
   border: 1px solid var(--border);

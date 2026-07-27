@@ -206,7 +206,9 @@ export interface ConsoleLink {
  *
  * These tiles sum to nothing, and must not be made to look as though they should. They are
  * independent fleet-wide SQL scalars over different populations - runs in one, deliveries
- * in another, all-time in a third - so adding them up is not a smaller number of anything.
+ * in another, and delivered rows among retained run families in a third. Compaction keeps
+ * their state, while deleting a run family removes its deliveries from this count, so adding
+ * the tiles up is not a smaller number of anything.
  * There is also no ledger on the screen for them to be a filter over: the Workflows panel
  * deliberately has no run list, because `WorkflowRuns.tsx` already is one, with paging, SSE
  * reconciliation and per-run actions. A second, worse copy of it here would disagree with

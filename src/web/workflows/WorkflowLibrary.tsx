@@ -701,7 +701,7 @@ export function WorkflowLibrary({
                   <Tooltip label="Archive this workflow - published versions stay readable">
                     <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
                       title: "Archive workflow",
-                      body: `Archive ${workflow.name}? Published versions remain readable, and runs already bound to them keep working. You can restore it later.`,
+                      body: `Archive ${workflow.name}? Archiving is refused while a binding is still active; published versions and past run history stay readable. You can restore it later.`,
                       confirmLabel: "Archive",
                       confirmHint: "Archives the workflow - its published versions stay readable",
                       danger: true,

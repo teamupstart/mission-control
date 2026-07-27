@@ -31,7 +31,7 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
-import type { SessionViewProps } from "./types.ts";
+import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -248,6 +248,7 @@ export function ConsoleDetail({
         />
         <EnsembleChip
           link={ensembleLink}
+          summary={ensembleSummaryFor(view, session)}
           onOpen={ensembleLink ? () => view.onOpenEnsemble?.(ensembleLink.runId) : undefined}
         />
         {!workflowRun && view.onBindWorkflow && (

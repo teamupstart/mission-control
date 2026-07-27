@@ -42,7 +42,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
-import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
+import { orderSessions } from "./lib/fleet-order.ts";
 import {
   useKeybindingHints,
   useKeybindings,
@@ -588,22 +588,20 @@ export function App(): React.JSX.Element {
     return bySession;
   }, [workflowRuns]);
 
-  const sorted = useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      const ta = TONE_ORDER[stateDisplay(a, gateAlerts.has(a.id)).tone];
-      const tb = TONE_ORDER[stateDisplay(b, gateAlerts.has(b.id)).tone];
-      return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
-    });
-  }, [sessions, gateAlerts]);
-
-  // Nav-bar filter: live substring match over each card's title, status, and
-  // agent. Empty filter shows everything; keyboard nav and the grid both read
-  // this list so they stay in lockstep with what's on screen.
-  const visible = useMemo(() => {
+  // Nav-bar filter: live substring match over each card's title, status, and agent. Empty
+  // filter shows everything.
+  //
+  // Ordered AFTER filtering, not before: `orderSessions` pulls an ensemble's siblings adjacent
+  // and anchors the cluster at its first member, so a filter that hides that member has to be
+  // applied first or the surviving siblings would sit at a position decided by a row nobody can
+  // see. Keyboard nav and all three layouts read the result, so they stay in lockstep with
+  // what's on screen.
+  const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return sorted;
-    return sorted.filter((s) => matchesFilter(s, q, gateAlerts.has(s.id)));
-  }, [sorted, filter, gateAlerts]);
+    const matched = q ? sessions.filter((s) => matchesFilter(s, q, gateAlerts.has(s.id))) : sessions;
+    return orderSessions(matched, gateAlerts);
+  }, [sessions, filter, gateAlerts]);
+  const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the
   // operator is looking at, so the one filter box has to narrow it too - it used to
@@ -642,6 +640,23 @@ export function App(): React.JSX.Element {
     for (const schedule of schedules) map.set(schedule.id, schedule.name);
     return map;
   }, [schedules]);
+  // Live ensemble runs by id, so a cluster header, a chip's progress suffix and a tile flag's
+  // hover copy all read the same summary. Keyed by RUN, not by session: a cluster header is
+  // drawn once for several sessions, so a per-session join (the shape `workflowRunBySession`
+  // takes) would answer a question nothing here is asking.
+  const ensembleSummaryByRun = useMemo(() => {
+    const map = new Map<string, (typeof ensembleSummaries)[number]>();
+    for (const summary of ensembleSummaries) map.set(summary.id, summary);
+    return map;
+  }, [ensembleSummaries]);
+  // The Ensembles tab badge: runs the DAEMON flagged as needing attention (a parked decision,
+  // a failure, an unreadable row, or a member sitting on your answer). Counted here, never
+  // recomputed - `ensembleNeedsAttention` is the server's derivation and the run list's dot,
+  // the away digest and this badge must not invent competing thresholds.
+  const ensembleAttentionCount = useMemo(
+    () => ensembleSummaries.filter((s) => s.attention).length,
+    [ensembleSummaries],
+  );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
   const scheduleAttentionCount = useMemo(
@@ -672,12 +687,12 @@ export function App(): React.JSX.Element {
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
-  // The board's columns as ids, so the arrow keys can cross between them. Derived from
-  // the same `groupByTone` the board renders, so navigation can't disagree with what's
-  // on screen.
+  // The board's columns as ids, so the arrow keys can cross between them. Read off the same
+  // `orderSessions` result the board renders - not a second grouping pass - so navigation
+  // can't disagree with what's on screen, cluster reordering included.
   const boardColumns = useMemo(
-    () => groupByTone(visible, gateAlerts).map((g) => g.sessions.map((s) => s.id)),
-    [visible, gateAlerts],
+    () => fleet.groups.map((g) => g.sessions.map((s) => s.id)),
+    [fleet],
   );
 
   // What "expanded" means depends on the layout, so App resolves it once here rather
@@ -788,6 +803,7 @@ export function App(): React.JSX.Element {
     onOpenSchedule,
     scheduleNameById,
     onOpenEnsemble: (runId) => navigate({ page: "workflows", tab: "ensembles", ensembleId: runId }),
+    ensembleSummaryByRun,
   };
 
   /**
@@ -1550,6 +1566,7 @@ export function App(): React.JSX.Element {
                   : undefined
               }
               ensembleSummaries={ensembleSummaries}
+              ensembleAttentionCount={ensembleAttentionCount}
               hasSnapshot={hasSnapshot}
               selectedEnsembleId={
                 route.page === "workflows" && route.tab === "ensembles"

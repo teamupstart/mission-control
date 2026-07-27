@@ -18,7 +18,7 @@ import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { EffortPicker } from "./EffortPicker.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
-import type { TaskEnsembleLink } from "@shared/ensemble.ts";
+import { ensembleStageWord, type EnsembleSummary, type TaskEnsembleLink } from "@shared/ensemble.ts";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -241,9 +241,21 @@ export function WorkflowRailMark({
 // rides on `session.task.ensemble` (a `TaskEnsembleLink`), so - unlike Workflow, which joins a
 // run to a session in App - these read it straight off the session, the way the Inspector marks
 // read `session.inspector`, while taking a Workflow-style open handler for the click.
-export type EnsembleMemberTone = "running" | "waiting" | "kept" | "out";
+export type EnsembleMemberTone = "running" | "waiting" | "blocked" | "kept" | "out";
 
+/**
+ * `blocked` is its own tone rather than a reuse of `waiting`, and the distinction is the
+ * whole point of the mark: `waiting` is "this candidate has submitted and the RUN is working
+ * on it", which needs nothing from anyone, while `blocked` is "this candidate is waiting on
+ * YOU". Both painted the same colour is exactly the disagreement between a red card and a chip
+ * reading "working" that the wire signal was added to close.
+ *
+ * It is read off `TaskEnsembleLink.needsInput` - the server's own derivation - never re-derived
+ * from `session.pendingReviews` here, so the chip and the run row's count cannot answer
+ * differently (Phase 1's handoff).
+ */
 export function ensembleMemberTone(link: TaskEnsembleLink): EnsembleMemberTone {
+  if (link.needsInput) return "blocked";
   switch (link.status) {
     case "retained":
     case "advanced":
@@ -262,11 +274,17 @@ export function ensembleMemberTone(link: TaskEnsembleLink): EnsembleMemberTone {
 }
 
 /**
- * A short human phrase for this member's current standing. Prefers the server-derived
- * `resultLabel` ("rank 1", "advanced", "retained") when it exists; components render that string
- * and never interpret strategy-specific JSON to derive one of their own.
+ * A short human phrase for this member's current standing.
+ *
+ * "needs an answer" wins over everything, including the server-derived `resultLabel`: a member
+ * holding an unanswered question is the one state the operator can act on, and a chip reading
+ * "submitted" over a session that is parked on a dialog is the same lie the tone above removes.
+ * Otherwise it prefers `resultLabel` ("rank 1", "advanced", "retained") when it exists;
+ * components render that string and never interpret strategy-specific JSON to derive one of
+ * their own.
  */
 export function ensembleMemberStateLabel(link: TaskEnsembleLink): string {
+  if (link.needsInput) return "needs an answer";
   if (link.resultLabel) return link.resultLabel;
   switch (link.status) {
     case "retained":
@@ -294,23 +312,46 @@ export function ensembleMemberStateLabel(link: TaskEnsembleLink): string {
   }
 }
 
-function ensembleMemberTooltip(link: TaskEnsembleLink): string {
-  return `${link.strategyLabel}: candidate ${link.ordinal} of ${link.launchedMembers} - ${ensembleMemberStateLabel(link)}`;
+/**
+ * The ONE hover sentence every ensemble mark shows, so the four session drawings cannot drift
+ * on what a member's standing is or how it is explained (`session-leaf-parity.test.ts`).
+ *
+ * The denominator is `maxMembers`, the roster the operator chose, not `launchedMembers`, which
+ * climbs wave by wave - "candidate 3 of 3" on a five-lane run that has launched three is a
+ * sentence that changes meaning while nothing about the member did. The run clause is appended
+ * only where a summary is reachable; it is the same `ensembleStageWord` the run detail, the run
+ * list and the cluster headers use.
+ */
+function ensembleMemberTooltip(link: TaskEnsembleLink, summary?: EnsembleSummary | null): string {
+  const head = `${link.strategyLabel}: candidate ${link.ordinal} of ${link.maxMembers} - ${ensembleMemberStateLabel(link)}`;
+  const blocked = link.needsInput ? " (this candidate is waiting on your answer)" : "";
+  const run = summary
+    ? ` · run: ${ensembleStageWord(summary)}, ${summary.membersReady} of ${summary.maxMembers} in`
+    : "";
+  return `${head}${blocked}${run}`;
 }
 
 export function EnsembleChip({
   link,
+  summary = null,
   onOpen,
 }: {
   link: TaskEnsembleLink | null;
+  /**
+   * The run this member belongs to, when the surface can reach it. Optional because the link
+   * alone is enough to draw the member's own standing; the summary only adds the RUN's progress
+   * suffix, which is a fact about the group rather than about this session.
+   */
+  summary?: EnsembleSummary | null;
   onOpen?: () => void;
 }): React.JSX.Element | null {
   if (!link) return null;
+  const label = ensembleMemberTooltip(link, summary);
   return (
-    <Tooltip label={ensembleMemberTooltip(link)}>
+    <Tooltip label={label}>
       <button
         className={`ensemble-chip ensemble-${ensembleMemberTone(link)}`}
-        aria-label={ensembleMemberTooltip(link)}
+        aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.();
@@ -318,6 +359,12 @@ export function EnsembleChip({
       >
         <span aria-hidden>⧉</span>
         {link.strategyLabel} · {ensembleMemberStateLabel(link)}
+        {summary && (
+          <span className="ensemble-chip-progress">
+            {" "}
+            · {summary.membersReady}/{summary.maxMembers} in
+          </span>
+        )}
       </button>
     </Tooltip>
   );
@@ -325,23 +372,27 @@ export function EnsembleChip({
 
 export function EnsembleTileFlag({
   link,
+  summary = null,
   onOpen,
 }: {
   link: TaskEnsembleLink | null;
+  summary?: EnsembleSummary | null;
   onOpen?: () => void;
 }): React.JSX.Element | null {
   if (!link) return null;
+  const label = ensembleMemberTooltip(link, summary);
   return (
-    <Tooltip label={ensembleMemberTooltip(link)}>
+    <Tooltip label={label}>
       <button
         className={`tile-flag tf-ensemble ensemble-${ensembleMemberTone(link)}`}
-        aria-label={ensembleMemberTooltip(link)}
+        aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.();
         }}
       >
-        <span aria-hidden>E</span> {link.ordinal} · {ensembleMemberStateLabel(link)}
+        <span aria-hidden>E</span> {link.ordinal}/{link.maxMembers} ·{" "}
+        {ensembleMemberStateLabel(link)}
       </button>
     </Tooltip>
   );
@@ -349,30 +400,345 @@ export function EnsembleTileFlag({
 
 export function EnsembleRailMark({
   link,
+  summary = null,
   onOpen,
 }: {
   link: TaskEnsembleLink | null;
+  summary?: EnsembleSummary | null;
   onOpen?: () => void;
 }): React.JSX.Element | null {
   if (!link) return null;
+  const label = ensembleMemberTooltip(link, summary);
   // A span, not a button: the whole rail row is already a button, and a button inside a button
   // is invalid. This matches `WorkflowRailMark`; the row stays the keyboard-focusable element and
   // the aria-label names what the click opens.
+  //
+  // The tone class is the rail's whole share of the state signal - it has one line of room and a
+  // name to fit in it - so a blocked member's `E` goes attention-coloured where the tile grows a
+  // phrase. Same decision, three densities.
   return (
-    <Tooltip label={ensembleMemberTooltip(link)}>
+    <Tooltip label={label}>
       <span
         className={`rail-ensemble ensemble-${ensembleMemberTone(link)}`}
-        aria-label={ensembleMemberTooltip(link)}
+        aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
           onOpen?.();
         }}
       >
         <span aria-hidden>E</span>
-        {link.resultLabel && <span className="rail-ensemble-label">{link.resultLabel}</span>}
+        {link.needsInput ? (
+          <span className="rail-ensemble-label">needs you</span>
+        ) : (
+          link.resultLabel && <span className="rail-ensemble-label">{link.resultLabel}</span>
+        )}
       </span>
     </Tooltip>
   );
+}
+
+/** One member's disposition in the dot row, in the order the dots are drawn. */
+const ENSEMBLE_DOT_KINDS = ["blocked", "done", "working", "out", "pending"] as const;
+
+type EnsembleDotKind = (typeof ENSEMBLE_DOT_KINDS)[number];
+
+/**
+ * How many dots of each disposition one run draws, from the summary's member counts.
+ *
+ * Phase 1 made `membersOut` / `membersNeedingInput` / `membersReady` PAIRWISE DISJOINT at the
+ * source - a submitted member sitting on an unanswered question is counted blocked, not ready -
+ * so "working" is the remainder this consumer computes and the total is `maxMembers` by
+ * construction. `membersReady`, never `readyArtifacts`: the latter counts ARTIFACTS, and a
+ * member that submitted twice would draw two dots for one agent.
+ *
+ * The clamping is defensive rather than load-bearing. It exists so a summary written by a build
+ * with a different idea of these counts draws a short row instead of a row longer than the
+ * roster; the exclusivity that makes it unnecessary lives on the wire.
+ */
+export function ensembleDotCounts(
+  summary: Pick<
+    EnsembleSummary,
+    "launchedMembers" | "maxMembers" | "membersOut" | "membersNeedingInput" | "membersReady"
+  >,
+): Record<EnsembleDotKind, number> {
+  const whole = (n: number): number => (Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0);
+  const cap = whole(summary.maxMembers);
+  const blocked = whole(summary.membersNeedingInput);
+  const done = whole(summary.membersReady);
+  const out = whole(summary.membersOut);
+  const working = Math.max(0, whole(summary.launchedMembers) - (blocked + done + out));
+
+  const counts = { blocked: 0, done: 0, working: 0, out: 0, pending: 0 } as Record<
+    EnsembleDotKind,
+    number
+  >;
+  let room = cap;
+  for (const [kind, want] of [
+    ["blocked", blocked],
+    ["done", done],
+    ["working", working],
+    ["out", out],
+  ] as const) {
+    const take = Math.min(want, room);
+    counts[kind] = take;
+    room -= take;
+  }
+  counts.pending = room;
+  return counts;
+}
+
+/**
+ * A run's progress as one dot per member of the roster.
+ *
+ * The ONE progress rendering (Phase 3's handoff): the board cluster header, the console rail's
+ * cluster header and the Ensembles list row all mount this, so "how far along is this run" is
+ * answered identically wherever it is asked. A second dot row somewhere else is the thing not
+ * to write.
+ *
+ * The dots are AGGREGATES, not an ordered roster: they say how many members are in each
+ * disposition and deliberately never claim which ordinal is which - the summary carries counts,
+ * and inventing positions from them would be a picture the wire cannot support. The label says
+ * so, so a reader cannot take the third square for candidate 3.
+ */
+type EnsembleDotInput = Pick<
+  EnsembleSummary,
+  "launchedMembers" | "maxMembers" | "membersOut" | "membersNeedingInput" | "membersReady"
+>;
+
+/**
+ * The dot row said in words: "1 waiting on you, 2 submitted, 1 working, 1 not started".
+ *
+ * Shared because the dots are drawn in two ACCESSIBILITY situations, not one. In the Ensembles
+ * list row the dot span is an ordinary descendant, so its own `role="img"` name is announced.
+ * Inside a cluster header it is not: that header is a native `<button>` carrying an `aria-label`,
+ * and an element's label REPLACES its subtree in the accessibility tree - so the dots' own name
+ * is dropped and every state they draw goes with it. The header therefore folds this sentence
+ * into its own name (`ensembleClusterHeadline`) rather than relying on the nested element, and
+ * both readings come from here so they cannot describe the same dots differently.
+ *
+ * Empty string when there is nothing to say, so a caller can `filter(Boolean)` it into a list.
+ */
+export function ensembleDotSummary(summary: EnsembleDotInput | null): string {
+  if (!summary) return "";
+  const counts = ensembleDotCounts(summary);
+  const said: string[] = [];
+  if (counts.blocked > 0) said.push(`${counts.blocked} waiting on you`);
+  if (counts.done > 0) said.push(`${counts.done} submitted`);
+  if (counts.working > 0) said.push(`${counts.working} working`);
+  if (counts.out > 0) said.push(`${counts.out} out`);
+  if (counts.pending > 0) said.push(`${counts.pending} not started`);
+  return said.join(", ");
+}
+
+export function EnsembleProgressDots({
+  summary,
+}: {
+  summary: EnsembleDotInput | null;
+}): React.JSX.Element | null {
+  const said = ensembleDotSummary(summary);
+  if (!summary || !said) return null;
+  const counts = ensembleDotCounts(summary);
+  // The caveat rides on the DOTS and not on the header's sentence: a row of squares invites
+  // "the third one is candidate 3", where a spoken list of counts cannot be misread that way.
+  const label = `${said} - counts, not positions: a dot names no candidate`;
+
+  return (
+    <Tooltip label={label}>
+      <span className="ens-dots" role="img" aria-label={label}>
+        {ENSEMBLE_DOT_KINDS.flatMap((kind) =>
+          Array.from({ length: counts[kind] }, (_, i) => (
+            <span key={`${kind}-${i}`} className={`ens-dot ens-dot-${kind}`} aria-hidden />
+          )),
+        )}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * What a cluster header SAYS about its run, decided once for both densities.
+ *
+ * The board's frame and the rail's header are two vocabularies of the same header - the same
+ * split the chip / tile flag / rail mark family makes - so the sentence a hover shows comes
+ * from here and only the rendering differs.
+ *
+ * `fallbackLabel` is what the header is called before that run's SSE summary has arrived (the
+ * member link's strategy label). A cluster exists the moment two sibling sessions do, which can
+ * be a tick ahead of the summary; a header that rendered nothing until then would flicker a
+ * frame in and out around tiles that never moved.
+ *
+ * It is also the header's ACCESSIBLE NAME - both densities pass it as `aria-label`, which
+ * REPLACES their subtree for assistive tech - so it has to state everything the header shows,
+ * including what its nested children would otherwise have said for themselves. Three things
+ * used to fall out of it:
+ *
+ *  - the run's name, because the no-summary branch said only "Open this ensemble run" while the
+ *    header visibly read "Best of N";
+ *  - the attention count, read off the summary alone, so during that same SSE gap a screen
+ *    reader missed a "1 needs you" badge that was on screen - it comes from `blockedHere` now,
+ *    which is derived from member links and known whether or not the summary has landed;
+ *  - every dot state but "submitted". The progress dots carry their own `role="img"` name, and
+ *    that name is dropped inside a labelled button, so a run with working, out or pending
+ *    members lost them entirely. The roster clause is `ensembleDotSummary`, the same sentence
+ *    the dots use, so the two readings of one row cannot drift.
+ *
+ * The attention clause distinguishes HERE from ELSEWHERE for the reason the badges do: a header
+ * is repeated in every tone column its members landed in, and "1 waiting on your answer" said in
+ * the column that holds none of them is a sentence pointing at the wrong tiles. It states
+ * LOCATION rather than repeating the count the roster clause already gave.
+ */
+export function ensembleClusterHeadline(
+  summary: EnsembleSummary | null,
+  fallbackLabel: string,
+  blockedHere = 0,
+): { title: string; tooltip: string } {
+  const title = summary?.title ?? fallbackLabel;
+  const { here, elsewhere } = ensembleAttentionInFrame(summary, blockedHere);
+  const roster = ensembleDotSummary(summary);
+  const where = [
+    here > 0 ? `${here} in this column` : "",
+    elsewhere > 0 ? `${elsewhere} in another column` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const sentences = [
+    summary ? `Open ${title} - ${summary.strategyLabel}, ${ensembleStageWord(summary)}` : `Open ${title}`,
+    roster ? `Roster of ${summary!.maxMembers}: ${roster}` : "",
+    where ? `Waiting on your answer: ${where}` : "",
+  ].filter(Boolean);
+  return { title, tooltip: `${sentences.join(". ")}.` };
+}
+
+function ensembleAttentionInFrame(
+  summary: EnsembleSummary | null,
+  blockedHere: number,
+): { here: number; elsewhere: number } {
+  return {
+    here: blockedHere,
+    elsewhere: Math.max(0, (summary?.membersNeedingInput ?? 0) - blockedHere),
+  };
+}
+
+/**
+ * The header a cluster of sibling members wears, in the rail's density.
+ *
+ * Shared by the console rail and the board's drilled-in column for the reason `RailRow` itself
+ * is: those two ARE the same rail, and a header written twice is the one that stops matching.
+ * A `<button>` rather than a row, because unlike `RailRow` it is not nested inside one - the
+ * deep link into the run is reachable from the keyboard here. It is NOT a session row: rail
+ * navigation walks session ids (`layoutNav.ts`), so an arrow key steps straight past it.
+ * Phase 3 step 6 deliberately omits the strategy label at this density; member rows retain it.
+ */
+export function EnsembleRailGroup({
+  summary,
+  fallbackLabel,
+  blockedHere,
+  onOpen,
+}: {
+  summary: EnsembleSummary | null;
+  fallbackLabel: string;
+  /** Members of this cluster, in THIS column, waiting on the operator. See `EnsembleClusterHead`. */
+  blockedHere: number;
+  onOpen?: () => void;
+}): React.JSX.Element {
+  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel, blockedHere);
+  const attention = ensembleAttentionInFrame(summary, blockedHere);
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        className={`rail-ensemble-group${attention.here > 0 ? " needs-you" : ""}`}
+        aria-label={tooltip}
+        onClick={onOpen}
+      >
+        <span className="reg-glyph" aria-hidden>
+          ⧉
+        </span>
+        <span className="reg-title">{title}</span>
+        {summary && <span className="reg-stage">{ensembleStageWord(summary)}</span>}
+        <EnsembleProgressDots summary={summary} />
+        {attention.here > 0 && <span className="reg-needs">!{attention.here}</span>}
+        {attention.elsewhere > 0 && (
+          <span className="reg-needs is-elsewhere">!{attention.elsewhere}</span>
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * The header the board's cluster frame wears: the run, where it is, and what it wants.
+ *
+ * The board has room the rail does not, so this is the one surface that spells the attention
+ * rollup out rather than leaving it to a tone - and it spells TWO of them, because a cluster is
+ * repeated in every tone column its members landed in and one badge would say the wrong thing in
+ * all but one of them. "1 needs you" means a member in THIS frame is holding a question and the
+ * tiles below it are what to click; "1 needs you elsewhere" means the run has one and it is in
+ * another column, which is a pointer rather than an instruction. Painting both the same is how
+ * the "gone" column ends up wearing an amber badge over a failed candidate.
+ *
+ * Two EXPLICIT lines, not one wrapping row: a board column is 250px by default, so
+ * title-strategy-stage-dots-badge on one flex row reflowed differently every time a word changed
+ * length and could start line two on a bare separator. Two lines rather than one grid, because a
+ * grid track shared by the dots and the badge is sized by the wider of them - which is how the
+ * elsewhere badge ended up squeezing the run title down to "Fix the ...".
+ */
+export function EnsembleClusterHead({
+  summary,
+  fallbackLabel,
+  blockedHere,
+  onOpen,
+}: {
+  summary: EnsembleSummary | null;
+  fallbackLabel: string;
+  /**
+   * How many members of THIS frame are waiting on the operator - not the run's total, which the
+   * summary carries. The two differ in exactly the case the tone-boundary rule creates.
+   */
+  blockedHere: number;
+  onOpen?: () => void;
+}): React.JSX.Element {
+  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel, blockedHere);
+  const attention = ensembleAttentionInFrame(summary, blockedHere);
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        className={`board-cluster-head${attention.here > 0 ? " needs-you" : ""}`}
+        aria-label={tooltip}
+        onClick={onOpen}
+      >
+        <span className="bch-line">
+          <span className="bch-glyph" aria-hidden>
+            ⧉
+          </span>
+          <span className="bch-title">{title}</span>
+          <EnsembleProgressDots summary={summary} />
+        </span>
+        {(summary || attention.here > 0 || attention.elsewhere > 0) && (
+          <span className="bch-line">
+            {summary && (
+              <span className="bch-meta">
+                {summary.strategyLabel} · {ensembleStageWord(summary)}
+              </span>
+            )}
+            {attention.here > 0 ? (
+              <span className="bch-needs">
+                {attention.here} need{attention.here === 1 ? "s" : ""} you
+              </span>
+            ) : (
+              attention.elsewhere > 0 && (
+                <span className="bch-needs is-elsewhere">{attention.elsewhere} elsewhere</span>
+              )
+            )}
+          </span>
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+/** How many of these sessions are members waiting on the operator, per their own link. */
+export function blockedMembersIn(sessions: readonly Session[]): number {
+  return sessions.filter((s) => s.task?.ensemble?.needsInput).length;
 }
 
 /**

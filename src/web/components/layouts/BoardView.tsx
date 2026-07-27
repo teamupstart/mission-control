@@ -1,14 +1,20 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
-import { boardColumnModes, groupByTone } from "../../lib/tone.ts";
+import { boardColumnModes } from "../../lib/tone.ts";
+import { clusterFallbackLabel, fleetBlocks, orderSessions } from "../../lib/fleet-order.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
-import type { SessionViewProps } from "./types.ts";
-import { ColumnWidthToggle } from "../session-bits.tsx";
+import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
+import {
+  blockedMembersIn,
+  ColumnWidthToggle,
+  EnsembleClusterHead,
+  EnsembleRailGroup,
+} from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
@@ -76,7 +82,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   const [wideCol, setWideCol] = useState<string | null>(null);
   const toggleWide = (id: string): void => setWideCol((prev) => (prev === id ? null : id));
 
-  const groups = groupByTone(props.sessions, props.gateAlerts);
+  // The SAME ordering App derived the arrow-key column arrays from, recomputed here rather
+  // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
+  // already ordered returns that order, and both sides stay one fact. (This is exactly the
+  // `groupByTone` arrangement it replaces, now with the cluster spans the frames need.)
+  const groups = orderSessions(props.sessions, props.gateAlerts).groups;
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -98,6 +108,48 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
   const modes = boardColumnModes(groups, revealed, focusedTone != null);
   const stashed = groups.filter((g) => modes.get(g.tone) === "stashed");
+
+  // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
+  // beside it are the SAME element with the same props - the frame is a wrapper, never a
+  // second rendering.
+  const tile = (s: Session): React.JSX.Element => (
+    <SessionTile
+      key={s.id}
+      session={s}
+      selected={s.id === props.selectedId}
+      gateNeedsYou={props.gateAlerts.has(s.id)}
+      onOpen={() => props.onSelect(s.id)}
+      registerEl={props.registerEl}
+      draggingRepo={draggingRepo}
+      onDropped={() => setDraggingRepo(null)}
+      onDropError={setDropError}
+      onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
+      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+      onOpenWorkflowRun={props.onOpenWorkflowRun}
+      onOpenSchedule={props.onOpenSchedule}
+      scheduleNameById={props.scheduleNameById}
+      onOpenEnsemble={props.onOpenEnsemble}
+      ensembleSummary={ensembleSummaryFor(props, s)}
+    />
+  );
+  const railRow = (s: Session): React.JSX.Element => (
+    <RailRow
+      key={s.id}
+      session={s}
+      selected={s.id === props.selectedId}
+      gateNeedsYou={props.gateAlerts.has(s.id)}
+      onSelect={() => props.onSelect(s.id)}
+      // Register the element like the console rail does, so Shift+Tab/Escape out of the
+      // reader can land focus back on the selected row here.
+      registerEl={props.registerEl}
+      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
+      onOpenWorkflowRun={props.onOpenWorkflowRun}
+      onOpenSchedule={props.onOpenSchedule}
+      scheduleNameById={props.scheduleNameById}
+      onOpenEnsemble={props.onOpenEnsemble}
+      ensembleSummary={ensembleSummaryFor(props, s)}
+    />
+  );
 
   return (
     <main
@@ -210,45 +262,49 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 ) : g.sessions.length === 0 ? (
                   <p className="board-col-empty">Nothing here</p>
                 ) : isRail ? (
-                  // The clicked column, now a console rail: the same RailRow the console
-                  // uses, so opening a column and switching to the console read alike.
-                  g.sessions.map((s) => (
-                    <RailRow
-                      key={s.id}
-                      session={s}
-                      selected={s.id === props.selectedId}
-                      gateNeedsYou={props.gateAlerts.has(s.id)}
-                      onSelect={() => props.onSelect(s.id)}
-                      // Register the element like the console rail does, so Shift+Tab/Escape
-                      // out of the reader can land focus back on the selected row here.
-                      registerEl={props.registerEl}
-                      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
-                      onOpenWorkflowRun={props.onOpenWorkflowRun}
-                      onOpenSchedule={props.onOpenSchedule}
-                      scheduleNameById={props.scheduleNameById}
-                      onOpenEnsemble={props.onOpenEnsemble}
-                    />
-                  ))
+                  // The clicked column, now a console rail: the same RailRow (and the same
+                  // cluster header) the console uses, so opening a column and switching to
+                  // the console read alike.
+                  fleetBlocks(g).map((block) =>
+                    block.kind === "session" ? (
+                      railRow(block.session)
+                    ) : (
+                      <div className="rail-cluster" key={`cluster-${block.runId}`}>
+                        <EnsembleRailGroup
+                          summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+                          fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+                          blockedHere={blockedMembersIn(block.sessions)}
+                          onOpen={() => props.onOpenEnsemble?.(block.runId)}
+                        />
+                        {block.sessions.map(railRow)}
+                      </div>
+                    ),
+                  )
                 ) : (
-                  g.sessions.map((s) => (
-                    <SessionTile
-                      key={s.id}
-                      session={s}
-                      selected={s.id === props.selectedId}
-                      gateNeedsYou={props.gateAlerts.has(s.id)}
-                      onOpen={() => props.onSelect(s.id)}
-                      registerEl={props.registerEl}
-                      draggingRepo={draggingRepo}
-                      onDropped={() => setDraggingRepo(null)}
-                      onDropError={setDropError}
-                      onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
-                      workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
-                      onOpenWorkflowRun={props.onOpenWorkflowRun}
-                      onOpenSchedule={props.onOpenSchedule}
-                      scheduleNameById={props.scheduleNameById}
-                      onOpenEnsemble={props.onOpenEnsemble}
-                    />
-                  ))
+                  // Sibling members of one run render inside a frame, in the SAME order the
+                  // arrow keys walk (`orderSessions` decided both). The frame is presentational
+                  // only: it carries no drag handlers, so a dragover started on a tile inside it
+                  // bubbles exactly as it did when the tiles were loose children.
+                  fleetBlocks(g).map((block) =>
+                    block.kind === "session" ? (
+                      tile(block.session)
+                    ) : (
+                      <div
+                        className={`board-cluster${
+                          blockedMembersIn(block.sessions) > 0 ? " needs-you" : ""
+                        }`}
+                        key={`cluster-${block.runId}`}
+                      >
+                        <EnsembleClusterHead
+                          summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
+                          fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
+                          blockedHere={blockedMembersIn(block.sessions)}
+                          onOpen={() => props.onOpenEnsemble?.(block.runId)}
+                        />
+                        {block.sessions.map(tile)}
+                      </div>
+                    ),
+                  )
                 )}
               </div>
             </section>

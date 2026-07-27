@@ -3,6 +3,7 @@ import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ENSEMBLE_STATUSES, type EnsembleSummary } from "@shared/ensemble.ts";
 import { relativeTime } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { EnsembleProgressDots } from "../components/session-bits.tsx";
 import {
   deleteEnsemble,
   ensembleAction,
@@ -292,6 +293,29 @@ export function EnsembleRuns({
                     </span>{" "}
                     · {relativeTime(summary.updatedAt)}
                   </small>
+                  {/* The counts the SSE summary has always carried and no surface rendered.
+                      `membersReady` (members that submitted and are neither out nor blocked)
+                      over `maxMembers` - the same numerator and the same denominator the dots
+                      beside it and the session chip use, because a third progress vocabulary
+                      is a third answer to "how far along is this". `launchedMembers` is named
+                      only while it is short of the roster, which is the one time the two
+                      denominators differ and the operator would otherwise wonder where the
+                      missing lanes went. */}
+                  <span className="ensemble-run-progress">
+                    <EnsembleProgressDots summary={summary} />
+                    <span className="ensemble-run-counts">
+                      {summary.membersReady}/{summary.maxMembers} in
+                      {summary.launchedMembers < summary.maxMembers
+                        ? ` · ${summary.launchedMembers} launched`
+                        : ""}
+                    </span>
+                    {summary.membersNeedingInput > 0 && (
+                      <span className="ensemble-run-needs">
+                        {summary.membersNeedingInput} need
+                        {summary.membersNeedingInput === 1 ? "s" : ""} you
+                      </span>
+                    )}
+                  </span>
                 </button>
                 </Tooltip>
               </li>

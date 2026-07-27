@@ -220,6 +220,21 @@ test("the generic detail renders the header, members with reported-vs-observed, 
   assert.match(html, /comparative_review/);
 });
 
+test("the Active stage fact leads with the operator word and demotes the stage id", () => {
+  // It used to be the raw `decide` in a `<code>` and nothing else - the run describing its own
+  // schema. `ensembleStageWord` is the ONE vocabulary the cluster headers, chips and list rows
+  // read, so an `awaiting_decision` run says the same thing here as it does on a board tile. The
+  // id stays beside it because the timeline below names stages by it.
+  const html = renderDetail();
+  assert.match(
+    html,
+    /<dt>Active stage<\/dt><dd>waiting on you <code class="ensemble-stage-id">decide<\/code><\/dd>/,
+  );
+  // And a build that cannot name the persisted status says so rather than picking a near match.
+  const unknown = renderDetail({ run: { ...run, status: null } });
+  assert.match(unknown, /<dd>unreadable <code class="ensemble-stage-id">decide<\/code><\/dd>/);
+});
+
 test("an active member without a session offers Task focus and manual submission", () => {
   const activeMember = member({ id: "m-3", ordinal: 3, status: "active", taskId: "task-3" });
   const activeAttempt = attempt({ id: "at-3", memberId: "m-3", sessionId: null, status: "running" });

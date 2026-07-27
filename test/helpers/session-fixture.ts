@@ -1,5 +1,12 @@
-import type { NmRunSummary, Session, SessionMeta, Task } from "../../src/shared/types.ts";
+import type {
+  NmRunSummary,
+  Session,
+  SessionMeta,
+  Task,
+  TaskSummary,
+} from "../../src/shared/types.ts";
 import type { EmulatorHandle, MuxHandle } from "../../src/shared/terminal.ts";
+import type { EnsembleSummary, TaskEnsembleLink } from "../../src/shared/ensemble.ts";
 
 /**
  * A representative session for the board's render tests, and the one place a required
@@ -180,6 +187,100 @@ export function mkTask(over: Partial<Task> = {}): Task {
     createdAt: now,
     updatedAt: now,
     dispatchedAt: null,
+    completedAt: null,
+    ...over,
+  };
+}
+
+/**
+ * One ensemble member's projection, as it rides on `Session.task.ensemble`.
+ *
+ * Shared rather than re-literal'd per test for `mkSession`'s reason: `TaskEnsembleLink`
+ * gained `needsInput` in the phase before this one, and a copy per file is a copy per file
+ * to fix the next time it grows.
+ */
+export function mkEnsembleLink(over: Partial<TaskEnsembleLink> = {}): TaskEnsembleLink {
+  return {
+    runId: "run-1",
+    strategyId: "best_of_n",
+    strategyLabel: "Best of N",
+    memberId: "m-1",
+    ordinal: 1,
+    wave: 1,
+    role: "candidate",
+    launchedMembers: 3,
+    maxMembers: 3,
+    status: "active",
+    resultLabel: null,
+    needsInput: false,
+    ...over,
+  };
+}
+
+/** The nested task summary a session card reads, defaulting to ordinary dispatched work. */
+export function mkTaskSummary(over: Partial<TaskSummary> = {}): TaskSummary {
+  return {
+    id: "task-1",
+    title: "Fix the parser",
+    kind: "ship",
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+    ensemble: null,
+    ...over,
+  };
+}
+
+/** A session that is member `ordinal` of an ensemble run - the fixture clusters are built from. */
+export function mkMemberSession(
+  over: Partial<Session> & { link?: Partial<TaskEnsembleLink> } = {},
+): Session {
+  const { link, ...rest } = over;
+  const ensemble = mkEnsembleLink(link);
+  return mkSession({
+    id: `s-${ensemble.runId}-${ensemble.ordinal}`,
+    name: `${ensemble.runId} candidate ${ensemble.ordinal}`,
+    pid: 100 + ensemble.ordinal,
+    task: mkTaskSummary({ id: `task-${ensemble.memberId}`, ensemble }),
+    ...rest,
+  });
+}
+
+/**
+ * A run's bounded SSE summary, defaulting to three launched members and nothing amiss.
+ *
+ * Every member count is overridable because the whole of Phase 3's progress rendering is a
+ * fold over them, and the states worth pinning (a blocked member, a casualty, a roster only
+ * half launched) are exactly the ones a live dashboard does not happen to be showing.
+ */
+export function mkEnsembleSummary(over: Partial<EnsembleSummary> = {}): EnsembleSummary {
+  return {
+    id: "run-1",
+    title: "Fix the parser",
+    repoRoot: "/repo",
+    strategyId: "best_of_n",
+    strategyKey: "best_of_n@1",
+    strategyLabel: "Best of N",
+    strategyVersion: 1,
+    status: "running",
+    activeStageId: "stage-1-work",
+    memberCount: 3,
+    launchedMembers: 3,
+    maxMembers: 3,
+    readyArtifacts: 0,
+    membersOut: 0,
+    membersNeedingInput: 0,
+    membersReady: 0,
+    selectedMemberId: null,
+    outcomeKind: null,
+    unreadable: null,
+    attention: false,
+    error: null,
+    createdAt: 1000,
+    updatedAt: 2000,
     completedAt: null,
     ...over,
   };

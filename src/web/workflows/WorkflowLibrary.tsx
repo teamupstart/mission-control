@@ -698,12 +698,17 @@ export function WorkflowLibrary({
                   </Tooltip>
                 )}
                 {workflow.archivedAt === null ? (
-                  <Tooltip label="Archive this workflow - published versions stay readable">
+                  // All three strings state the same two facts, because each is read on its
+                  // own: an ACTIVE binding blocks the archive outright (`archiveWorkflowCas`
+                  // refuses with `active_binding`), and what survives one is the published
+                  // versions. Saying only the second, as these did, offered reassurance for a
+                  // case the guard never lets happen.
+                  <Tooltip label="Archive this workflow - blocked while a binding is active; published versions stay readable">
                     <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
                       title: "Archive workflow",
-                      body: `Archive ${workflow.name}? Archiving is refused while a binding is still active; published versions and past run history stay readable. You can restore it later.`,
+                      body: `Archive ${workflow.name}? Archiving is blocked while any binding is still active. Published versions and past run history stay readable, and you can restore it later.`,
                       confirmLabel: "Archive",
-                      confirmHint: "Archives the workflow - its published versions stay readable",
+                      confirmHint: "Archives the workflow unless a binding is still active - its published versions stay readable",
                       danger: true,
                       onConfirm: () => void runTransition(async () => {
                         if (!(await draft.saveNow())) return;

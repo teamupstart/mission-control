@@ -245,6 +245,23 @@ test("delete is offered only before the first publish, and restore only when arc
   assert.doesNotMatch(buttonFor(source, "Restore"), /setConfirm/);
 });
 
+test("archive copy states the active-binding block, not just what survives", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // `archiveWorkflowCas` refuses with `active_binding`, so an archive is not something the
+  // operator can always complete. All three archive strings are read independently - a
+  // hovered tooltip, the dialog body, the confirm button's own tooltip - so each has to carry
+  // the block as well as the reassurance. These said only "published versions stay readable",
+  // which promised continuity for runs in a case the guard never permits.
+  const archiveCopy = [
+    /label="Archive this workflow - blocked while a binding is active; published versions stay readable"/,
+    /body: `Archive \$\{workflow\.name\}\? Archiving is blocked while any binding is still active\./,
+    /confirmHint: "Archives the workflow unless a binding is still active - its published versions stay readable"/,
+  ];
+  for (const pattern of archiveCopy) assert.match(source, pattern);
+  // The retired wording, which the daemon has never been able to honour.
+  assert.doesNotMatch(source, /runs already bound to them keep working/);
+});
+
 test("generated create and duplicate names honor normalized durable uniqueness", () => {
   const summaries: WorkflowSummary[] = [
     { id: "1", name: "Ｕｎｔｉｔｌｅｄ   Workflow", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },

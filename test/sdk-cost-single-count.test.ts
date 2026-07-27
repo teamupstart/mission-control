@@ -57,6 +57,7 @@ test("a driver's turn usage never reaches the ledger", () => {
     kind: "bound",
     agentSessionId: AGENT_SESSION,
     transcriptPath: null,
+    modelId: "claude-opus-4-8[1m]",
     pid: null,
   });
 
@@ -97,6 +98,7 @@ test("the OTel ingest is the one writer, and an embedded session's cost reaches 
     kind: "bound",
     agentSessionId: noteKey,
     transcriptPath: null,
+    modelId: "claude-opus-4-8[1m]",
     pid: null,
   });
   upsertUsageCell(

@@ -294,6 +294,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly turns = new TurnStream();
   private query: ClaudeSdkQuery | null = null;
   private agentSessionId: string | null = null;
+  /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
+  private modelId: string | null = null;
   /**
    * Tool ids whose Bash input opened a pull request, awaiting the URL its output prints.
    *
@@ -454,6 +456,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   setModel = async (model: string): Promise<void> => {
     await this.requireQuery().setModel(model);
+    this.modelId = model;
   };
 
   /**
@@ -708,6 +711,17 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    // The init frame is the one authoritative answer to "which model did this launch
+    // actually bind?" It is especially important on resume: the durable launch request may
+    // be null ("use Claude's default"), and an idle resumed transcript may contain no fresh
+    // usage record for the passive poller to learn from.
+    if (
+      message.type === "system" &&
+      message.subtype === "init" &&
+      typeof message.model === "string"
+    ) {
+      this.modelId = message.model || null;
+    }
     // Every message carries the session id, `init` first and then every frame after it -
     // and `/clear` is the case that makes the second half matter: the CLI mints a NEW id
     // and reports it on an ordinary message rather than on a second `init`. Re-binding
@@ -734,6 +748,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       kind: "bound",
       agentSessionId,
       transcriptPath: claudeSdkTranscriptPath(this.cwd, agentSessionId),
+      modelId: this.modelId,
       // The SDK owns its subprocess and reports no pid; the registry keeps 0, which is the
       // sentinel `signalProcess` already refuses.
       pid: null,

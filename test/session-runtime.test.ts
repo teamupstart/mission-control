@@ -180,6 +180,7 @@ test("adoption refusals do not create or overwrite durable rows", async () => {
     kind: "bound",
     agentSessionId: "agent-original",
     transcriptPath: "/transcripts/agent-original.jsonl",
+    modelId: null,
     pid: null,
   });
   await settle();
@@ -238,6 +239,7 @@ test("bound fills the identity the read path needs and confirms instrumentation"
     kind: "bound",
     agentSessionId: "agent-abc",
     transcriptPath: "/transcripts/agent-abc.jsonl",
+    modelId: "claude-opus-5",
     pid: 4321,
   });
   await settle();
@@ -245,6 +247,9 @@ test("bound fills the identity the read path needs and confirms instrumentation"
   assert.equal(s.agentSessionId, "agent-abc");
   assert.equal(s.transcriptPath, "/transcripts/agent-abc.jsonl");
   assert.equal(s.pid, 4321);
+  assert.equal(s.meta?.modelId, "claude-opus-5");
+  assert.equal(s.meta?.model, "Opus 5");
+  assert.equal(s.meta?.source, "driver");
   // All three, and each buys something: `hooksSeen` is what the work queue refuses on,
   // `stateConfirmed` is what the report buckets trust, `instrumented` is the live badge.
   // An embedded session is instrumented BY CONSTRUCTION - the handle IS the push channel.
@@ -259,6 +264,7 @@ test("bound fills the identity the read path needs and confirms instrumentation"
     kind: "bound",
     agentSessionId: "agent-def",
     transcriptPath: "/transcripts/agent-def.jsonl",
+    modelId: "claude-opus-5",
     pid: null,
   });
   await settle();
@@ -560,6 +566,7 @@ test("a driver event about a pane-backed session is refused", async () => {
     kind: "bound",
     agentSessionId: "not-ours",
     transcriptPath: "/nope.jsonl",
+    modelId: "claude-opus-5",
     pid: 9999,
   });
   // Same shape of refusal `applyHook` makes for a harness that declares no hooks: a card we

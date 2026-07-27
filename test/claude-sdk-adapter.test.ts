@@ -133,6 +133,7 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
   type: "system",
   subtype: "init",
   session_id: sessionId,
+  model: "claude-opus-5",
 });
 
 function launchOpts(over: Record<string, unknown> = {}) {
@@ -166,6 +167,7 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   const events = await collect(handle.events, (e) => e.kind === "bound");
   const bound = events.find((e) => e.kind === "bound");
   assert.equal(bound?.kind === "bound" && bound.agentSessionId, "agent-1");
+  assert.equal(bound?.kind === "bound" && bound.modelId, "claude-opus-5");
   // No separate process to name: the SDK owns its subprocess, and 0 is the sentinel
   // `signalProcess` refuses.
   assert.equal(bound?.kind === "bound" && bound.pid, null);

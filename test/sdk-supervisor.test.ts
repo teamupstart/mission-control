@@ -132,7 +132,7 @@ test("start persists a row, registers the card, and records the binding", async 
   try {
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry);
-    const session = await supervisor.start({ ...START, taskId: "task-1", model: "m" });
+    const session = await supervisor.start({ ...START, taskId: "task-1" });
 
     assert.ok(session.id.startsWith("sdk:"), "ids are minted, never derived from a pid");
     assert.equal(session.runtime, "sdk");
@@ -141,14 +141,22 @@ test("start persists a row, registers the card, and records the binding", async 
     const row = getSdkSession(session.id)!;
     assert.equal(row.status, "starting");
     assert.equal(row.taskId, "task-1");
-    assert.equal(row.model, "m");
+    assert.equal(row.model, null, "the launch followed Claude's default");
     assert.equal(row.agentSessionId, null);
 
-    handle.push({ kind: "bound", agentSessionId: "agent-7", transcriptPath: null, pid: null });
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-7",
+      transcriptPath: null,
+      modelId: "actual-model",
+      pid: null,
+    });
     await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-7");
     assert.equal(getSdkSession(session.id)?.status, "running");
+    assert.equal(getSdkSession(session.id)?.model, "actual-model");
     // And the card learned the identity the whole file-based read path keys on.
     assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
+    assert.equal(registry.getSession(session.id)?.meta?.modelId, "actual-model");
     assert.equal(registry.getSession(session.id)?.hooksSeen, true);
   } finally {
     fake.restore();
@@ -308,7 +316,13 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
     });
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start(START);
-    handle.push({ kind: "bound", agentSessionId: "agent-5", transcriptPath: null, pid: null });
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-5",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
     await waitFor(() => getSdkSession(session.id)?.status === "running");
 
     await supervisor.stopAll();
@@ -504,7 +518,13 @@ test("a control accepted while idle is re-asserted after a restart", async () =>
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start({ ...START, model: "old-model", effort: "low" });
     // A binding is what makes the row resumable at all.
-    first.push({ kind: "bound", agentSessionId: "agent-x", transcriptPath: null, pid: null });
+    first.push({
+      kind: "bound",
+      agentSessionId: "agent-x",
+      transcriptPath: null,
+      modelId: "old-model",
+      pid: null,
+    });
     await new Promise((r) => setTimeout(r, 5));
 
     await supervisor.setPermissionMode(session.id, "acceptEdits");

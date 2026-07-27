@@ -553,7 +553,9 @@ export class SdkSupervisor {
     let outcome: SdkSessionStatus = "exited";
     try {
       for await (const evt of handle.events) {
-        if (evt.kind === "bound") recordSdkSessionBinding(id, evt.agentSessionId);
+        if (evt.kind === "bound") {
+          recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
+        }
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.

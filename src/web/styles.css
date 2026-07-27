@@ -1959,7 +1959,7 @@ body {
   border-color: color-mix(in oklab, currentColor 48%, var(--border-soft));
 }
 .rt-think-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--working);
   outline-offset: 1px;
 }
 .rt-think-glyph {
@@ -2973,7 +2973,7 @@ body {
   border-color: color-mix(in oklab, currentColor 38%, transparent);
 }
 .mode-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--working);
   outline-offset: 1px;
 }
 .mode-caret {
@@ -3081,7 +3081,7 @@ body {
   margin-left: auto;
   flex: none;
   font-size: 11px;
-  color: var(--accent);
+  color: var(--working);
 }
 .mode-opt-spin {
   margin-left: auto;
@@ -3089,7 +3089,7 @@ body {
   width: 10px;
   height: 10px;
   border: 1.5px solid color-mix(in oklab, var(--fg) 25%, transparent);
-  border-top-color: var(--accent);
+  border-top-color: var(--working);
   border-radius: 50%;
   animation: mode-spin 0.7s linear infinite;
 }
@@ -5887,7 +5887,7 @@ select:not([multiple]) option {
 }
 .complete-outcome:focus {
   outline: none;
-  border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+  border-color: color-mix(in oklab, var(--working) 60%, var(--border));
 }
 .complete-satisfy {
   display: flex;
@@ -8819,7 +8819,7 @@ select.ensemble-judge-persona {
    without relying on hue alone. */
 .workflow-node-check {
   border-style: dashed;
-  border-color: color-mix(in oklab, var(--warn) 55%, var(--border));
+  border-color: color-mix(in oklab, var(--attention) 55%, var(--border));
 }
 .workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
 .workflow-node-kind {
@@ -14393,7 +14393,7 @@ select.oc-input {
   margin: 0 0 12px;
   font-size: 13.5px;
   line-height: 1.55;
-  color: var(--text);
+  color: var(--fg);
 }
 /* The deterministic tier. Sits under the prose as the thing you can always trust,
    so it reads as a subheading rather than competing with the narrative. */
@@ -14412,7 +14412,7 @@ select.oc-input {
   text-transform: none;
   letter-spacing: normal;
   font-weight: 500;
-  color: var(--text);
+  color: var(--fg);
 }
 .away-digest-list {
   margin: 0;

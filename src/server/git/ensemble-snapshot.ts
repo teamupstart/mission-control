@@ -250,6 +250,14 @@ export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
  * repository's own vocabulary), a `..` segment (walks out of the tree the artifact is a
  * picture of), a `.` segment, and an empty segment.
  *
+ * "Absolute" is taken to mean absolute ANYWHERE, not absolute here: `/x`, a drive-letter
+ * `C:\x`, a current-drive-rooted `\x` and a UNC `\\server\share\x` are all refused on every
+ * platform. Doing it per-platform would make the same request a refusal on one machine and a
+ * 200 with an empty patch on another - and that empty patch is the failure, not the refusal,
+ * because it reads as "this candidate did not touch that file". The cost is stated rather than
+ * hidden: a POSIX file whose name genuinely begins with a backslash cannot be asked for
+ * per-file. That is a loud 400 about an exotic name, against a quiet wrong answer.
+ *
  * Those last two are the difference between two spellings of one file, and the reason they are
  * refused rather than normalized is what happens when they are not. `files` spells a path
  * exactly as git's `--numstat` does, so `./a.txt` matches no entry and reads as "not in this
@@ -273,7 +281,7 @@ export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
 export function snapshotPathRefusal(path: string): string | null {
   if (path === "") return "a patch path must name a file, not the empty string";
   if (path.includes("\0")) return "a patch path must not contain a NUL byte";
-  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) {
+  if (path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path)) {
     return `a patch path must be repository-relative, got "${path}"`;
   }
   if (path.split(/[\\/]/).includes("..")) {

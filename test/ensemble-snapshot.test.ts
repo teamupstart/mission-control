@@ -868,6 +868,12 @@ test("an unusable patch path is refused rather than repaired", async () => {
 
   for (const bad of [
     "/etc/passwd",
+    // Absolute anywhere is absolute here: a drive letter, a current-drive-rooted path and a
+    // UNC share are refused on this platform too, because the same request must not be a
+    // refusal on one machine and a 200 with an empty patch on another.
+    "C:\\Windows\\win.ini",
+    "\\Windows\\win.ini",
+    "\\\\server\\share\\file.txt",
     "../outside.txt",
     "src/../../etc/passwd",
     "",

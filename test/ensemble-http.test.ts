@@ -356,7 +356,17 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   }
 
   // A path nobody can honour is the caller's mistake, so 400 rather than a 500 out of git.
-  for (const bad of ["/etc/passwd", "../outside.txt", "nul\0path"]) {
+  // Absolute in any platform's vocabulary counts, including the Windows rooted and UNC forms:
+  // answering those with an empty patch would report an untouched file to a caller whose
+  // request never named one.
+  for (const bad of [
+    "/etc/passwd",
+    "C:\\Windows\\win.ini",
+    "\\Windows\\win.ini",
+    "\\\\server\\share\\file.txt",
+    "../outside.txt",
+    "nul\0path",
+  ]) {
     const refused = await req(app, `${url}?path=${encodeURIComponent(bad)}`, undefined, "GET");
     assert.equal(refused.status, 400, `should refuse ${bad}`);
     assert.match(((await refused.json()) as { error: string }).error, /patch path/);

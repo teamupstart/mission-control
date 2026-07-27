@@ -50,7 +50,8 @@ test("snapshot, upsert, archive, and reconnect produce one equivalent Persona ca
   assert.equal(events.every((event) => event.type === "persona_upsert"), true);
   assert.deepEqual(
     events
-      .filter((event) => event.type === "persona_upsert" && !event.persona.builtin)
+      .filter((event) => event.type === "persona_upsert")
+      .filter((event) => !event.persona.builtin)
       .map((event) => event.persona.id),
     [created.persona.id, created.persona.id],
   );

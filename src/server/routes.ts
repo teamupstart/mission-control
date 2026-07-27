@@ -225,7 +225,7 @@ import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
 // The one statement of which patch paths are usable, imported rather than restated: a route
 // that spelled the rule itself would drift from the invocation that has to survive it.
-import { snapshotPathRefusal } from "./git/ensemble-snapshot.ts";
+import { SnapshotPathRefused, snapshotPathRefusal } from "./git/ensemble-snapshot.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -1641,9 +1641,10 @@ export function buildApp(
     const adapter = artifactAdapterFor(artifact.kind);
     if (!adapter) return c.json({ error: `no adapter for ${artifact.kind} artifacts` }, 409);
     // Two cheaper questions than "the whole patch", both narrowing the patch text alone:
-    // `?path=` is one file's hunks, `?filesOnly=1` is the file list with no patch body at all.
-    // The statistics come back complete either way, so `files` - never an empty patch - is what
-    // says whether a file was touched.
+    // `?path=` is one exact file's hunks: a directory is refused, an absent file is an empty
+    // patch, and either end of a rename selects that same one-file rename diff.
+    // `?filesOnly=1` is the file list with no patch body at all. The statistics come back
+    // complete either way, so `files` - never an empty patch - says whether a file was touched.
     //
     // ONE path per request, and a repeated key is refused rather than quietly reduced to the
     // first. The `/api/sessions/:id/standards` route above is the precedent for why there is no
@@ -1664,13 +1665,18 @@ export function buildApp(
     // Materialized on demand from the immutable commit, never stored - the ref lives in the shared
     // git dir, so the run's repo root can read it. The cap is explicit and its truncation honest.
     const maxBytes = boundedLimit(c.req.query("maxBytes"), 400 * 1024, 4 * 1024 * 1024);
-    const material = await adapter.materialize(artifact.locator, {
-      repoPath: detail.run.repoRoot,
-      maxPatchBytes: maxBytes,
-      paths: path === undefined ? undefined : [path],
-      patch: !filesOnly,
-    });
-    return c.json(material);
+    try {
+      const material = await adapter.materialize(artifact.locator, {
+        repoPath: detail.run.repoRoot,
+        maxPatchBytes: maxBytes,
+        paths: path === undefined ? undefined : [path],
+        patch: !filesOnly,
+      });
+      return c.json(material);
+    } catch (error) {
+      if (error instanceof SnapshotPathRefused) return c.json({ error: error.message }, 400);
+      throw error;
+    }
   });
 
   app.post("/api/ensembles/:id/members/:memberId/submit", async (c) => {

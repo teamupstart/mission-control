@@ -489,6 +489,98 @@ test("a magic-looking path that names no file returns an empty patch, never an e
   assert.deepEqual(cut.patchPaths, [":(glob)**"]);
 });
 
+test("a directory path is refused before rendering, including for files-only cuts", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("directory-refusal");
+  mkdirSync(join(member, "src"), { recursive: true });
+  writeFileSync(join(member, "src", "a.ts"), "changed below a directory\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  for (const patch of [true, false]) {
+    const { calls, deps } = recordingDeps();
+    await assert.rejects(
+      materializeSnapshotDiff(
+        { repoPath: repo, baseSha, snapshotSha: captured.snapshotSha, paths: ["src"], patch },
+        deps,
+      ),
+      /must name exactly one file.*"src" is a directory/,
+    );
+    assert.equal(calls.length, 1, "identity comes from the already-fetched complete file list");
+  }
+});
+
+test("either side of a rename selects exactly that one rename diff", async () => {
+  const { repo, member, baseSha } = mkRepoWithMember("rename-filter");
+  git(member, "mv", "moves.txt", "moved.txt");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const fromOld = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["moves.txt"],
+  });
+  const fromNew = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["moved.txt"],
+  });
+
+  assert.equal(fromOld.patch, fromNew.patch);
+  assert.match(fromOld.patch, /^diff --git a\/moves\.txt b\/moved\.txt$/m);
+  assert.equal(patchFiles(fromOld.patch).length, 1);
+  assert.deepEqual(fromOld.patchPaths, ["moves.txt"]);
+  assert.deepEqual(fromNew.patchPaths, ["moved.txt"]);
+});
+
+test("a filtered patch refuses any rendered diff header outside the requested file", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("header-post-check");
+  const deps: SnapshotDiffDeps = {
+    run: async (bin, args, opts) => {
+      const result = await run(bin, args, opts);
+      if (args.includes("--numstat")) return result;
+      return {
+        ...result,
+        stdout: `${result.stdout}\ndiff --git a/not-requested.txt b/not-requested.txt\n`,
+      };
+    },
+  };
+
+  await assert.rejects(
+    materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["keep.txt"] }, deps),
+    /must contain only the requested file/,
+  );
+});
+
+test("literal patch mode removes inherited conflicting pathspec modes", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("pathspec-env");
+  const names = ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    for (const name of names) {
+      process.env[name] = "1";
+      const whole = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha });
+      assert.ok(whole.patch.length > 0, `whole patch succeeds with inherited ${name}`);
+      delete process.env[name];
+    }
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("a filtered patch that overruns its budget still reports what it left out", async () => {
   const { repo, member, baseSha } = mkRepoWithMember("filtered-truncation");
   writeFileSync(join(member, "big.txt"), Array.from({ length: 4000 }, (_, i) => `line ${i}\n`).join(""));
@@ -545,10 +637,10 @@ test("asking for the file list alone runs one git invocation and renders no patc
   assert.equal(filesOnly.filesChanged, withPatch.filesChanged);
 });
 
-test("a patch path that is absolute, escaping or empty is refused rather than repaired", async () => {
+test("an unusable patch path is refused rather than repaired", async () => {
   const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("path-refusal");
 
-  for (const bad of ["/etc/passwd", "../outside.txt", "src/../../etc/passwd", ""]) {
+  for (const bad of ["/etc/passwd", "../outside.txt", "src/../../etc/passwd", "", "nul\0path"]) {
     assert.ok(snapshotPathRefusal(bad), `the rule should refuse: ${JSON.stringify(bad)}`);
     await assert.rejects(
       materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [bad] }),

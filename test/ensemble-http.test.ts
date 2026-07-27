@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -222,6 +222,8 @@ async function runWithRealArtifact(store: InstanceType<typeof EnsembleStore>, so
   const { path: repo, baseSha } = gitRepo();
   writeFileSync(join(repo, "a.txt"), "first candidate file\n");
   writeFileSync(join(repo, "b.txt"), "second candidate file\n");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src", "nested.ts"), "nested candidate file\n");
   const snapshot = await captureWorktreeSnapshot({
     worktreePath: repo,
     ensembleId: randomUUID(),
@@ -264,8 +266,8 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   assert.equal(whole.status, 200);
   const wholeBody = (await whole.json()) as { patch: string; patchPaths: string[] | null; files: Array<{ path: string }> };
   assert.equal(wholeBody.patchPaths, null);
-  assert.deepEqual(filesIn(wholeBody.patch).sort(), ["a.txt", "b.txt"]);
-  assert.equal(wholeBody.files.length, 2);
+  assert.deepEqual(filesIn(wholeBody.patch).sort(), ["a.txt", "b.txt", "src/nested.ts"]);
+  assert.equal(wholeBody.files.length, 3);
 
   // One path: one file's hunks, and the complete file list beside them.
   const single = await req(app, `${url}?path=a.txt`, undefined, "GET");
@@ -273,8 +275,8 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   const singleBody = (await single.json()) as { patch: string; patchPaths: string[]; files: Array<{ path: string }> };
   assert.deepEqual(singleBody.patchPaths, ["a.txt"]);
   assert.deepEqual(filesIn(singleBody.patch), ["a.txt"]);
-  assert.equal(singleBody.files.length, 2, "the file list is never narrowed by a path filter");
-  assert.deepEqual(singleBody.files.map((f) => f.path).sort(), ["a.txt", "b.txt"]);
+  assert.equal(singleBody.files.length, 3, "the file list is never narrowed by a path filter");
+  assert.deepEqual(singleBody.files.map((f) => f.path).sort(), ["a.txt", "b.txt", "src/nested.ts"]);
 
   // A path this artifact never touched is an empty patch, not an error - and `files` is what
   // says so. Inferring "untouched" from the absent hunks alone would read the same for a file
@@ -284,7 +286,14 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   const absentBody = (await absent.json()) as { patch: string; patchPaths: string[]; files: Array<{ path: string }> };
   assert.equal(absentBody.patch, "");
   assert.deepEqual(absentBody.patchPaths, ["never-touched.txt"]);
-  assert.equal(absentBody.files.length, 2);
+  assert.equal(absentBody.files.length, 3);
+
+  const directory = await req(app, `${url}?path=src`, undefined, "GET");
+  assert.equal(directory.status, 400);
+  assert.match(
+    ((await directory.json()) as { error: string }).error,
+    /must name exactly one file.*"src" is a directory/,
+  );
 
   // A repeated key is refused rather than reduced to the first: a caller that meant to batch
   // would otherwise get one file's diff labelled as the whole set, and never find out.
@@ -293,7 +302,7 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   assert.match(((await repeated.json()) as { error: string }).error, /one path per request/);
 
   // A path nobody can honour is the caller's mistake, so 400 rather than a 500 out of git.
-  for (const bad of ["/etc/passwd", "../outside.txt"]) {
+  for (const bad of ["/etc/passwd", "../outside.txt", "nul\0path"]) {
     const refused = await req(app, `${url}?path=${encodeURIComponent(bad)}`, undefined, "GET");
     assert.equal(refused.status, 400, `should refuse ${bad}`);
     assert.match(((await refused.json()) as { error: string }).error, /patch path/);
@@ -311,9 +320,9 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   };
   assert.equal(filesOnlyBody.patch, "");
   assert.deepEqual(filesOnlyBody.patchPaths, [], "empty says no patch was rendered at all");
-  assert.equal(filesOnlyBody.filesChanged, 2);
+  assert.equal(filesOnlyBody.filesChanged, 3);
   assert.deepEqual(filesOnlyBody.files, wholeBody.files, "the same complete file list, for one git call");
-  assert.equal(filesOnlyBody.insertions, 2);
+  assert.equal(filesOnlyBody.insertions, 3);
 });
 
 test("GET .../patch still refuses an artifact that is not ready, whatever it was asked for", async () => {

@@ -245,9 +245,10 @@ export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
  *
  * The rule is REFUSAL, never sanitization: a path that has been quietly rewritten still
  * returns a patch, and a caller comparing "the diff of src/a.ts" against a diff of something
- * else has no way to notice. Three things are refused - an empty path (names nothing), an
- * absolute path (names something outside the repository's own vocabulary), and a `..` segment
- * (walks out of the tree the artifact is a picture of).
+ * else has no way to notice. Four things are refused - an empty path (names nothing), a NUL
+ * byte (cannot be passed as an argv entry), an absolute path (names something outside the
+ * repository's own vocabulary), and a `..` segment (walks out of the tree the artifact is a
+ * picture of).
  *
  * Pathspec MAGIC (`:(glob)**`, `:!x`, `:/`) is deliberately NOT refused here: the invocation
  * that consumes these runs with `GIT_LITERAL_PATHSPECS=1`, so `:(glob)**` names a file called
@@ -257,6 +258,7 @@ export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
  */
 export function snapshotPathRefusal(path: string): string | null {
   if (path === "") return "a patch path must name a file, not the empty string";
+  if (path.includes("\0")) return "a patch path must not contain a NUL byte";
   if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) {
     return `a patch path must be repository-relative, got "${path}"`;
   }
@@ -288,6 +290,95 @@ function requirePatchPath(path: string): string {
   return path;
 }
 
+function fileStatPaths(file: SnapshotFileStat): string[] {
+  return file.oldPath === null ? [file.path] : [file.oldPath, file.path];
+}
+
+function exactPatchPaths(paths: string[], files: SnapshotFileStat[]): string[] {
+  const changedPaths = files.flatMap(fileStatPaths);
+  const exact: string[] = [];
+  for (const path of paths) {
+    const file = files.find((candidate) => fileStatPaths(candidate).includes(path));
+    if (file !== undefined) {
+      exact.push(...fileStatPaths(file));
+      continue;
+    }
+    const directory = path.replace(/\/+$/, "");
+    const prefix = directory === "." ? "" : `${directory}/`;
+    const nested = changedPaths.find((candidate) => prefix === "" || candidate.startsWith(prefix));
+    if (nested !== undefined) {
+      throw new SnapshotPathRefused(
+        path,
+        `a per-file patch path must name exactly one file; "${path}" is a directory containing "${nested}"`,
+      );
+    }
+  }
+  return [...new Set(exact)];
+}
+
+function decodeDiffPathToken(token: string): string | null {
+  if (!token.startsWith("\"")) return token;
+  if (!token.endsWith("\"")) return null;
+  const bytes: number[] = [];
+  for (let i = 1; i < token.length - 1; i++) {
+    const codePoint = token.codePointAt(i);
+    if (codePoint === undefined) return null;
+    const char = String.fromCodePoint(codePoint);
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char));
+      i += char.length - 1;
+      continue;
+    }
+    const escaped = token[++i];
+    if (escaped === undefined) return null;
+    const simple: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      "\"": 0x22,
+      "\\": 0x5c,
+    };
+    const simpleByte = simple[escaped];
+    if (simpleByte !== undefined) {
+      bytes.push(simpleByte);
+      continue;
+    }
+    if (/[0-7]/.test(escaped)) {
+      let octal = escaped;
+      while (octal.length < 3 && /[0-7]/.test(token[i + 1] ?? "")) octal += token[++i];
+      bytes.push(Number.parseInt(octal, 8));
+      continue;
+    }
+    return null;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+function requireExactPatchHeaders(patch: string, paths: string[]): void {
+  const requested = new Set(paths);
+  for (const line of patch.split("\n")) {
+    if (!line.startsWith("diff --git ")) continue;
+    const header = /^diff --git ("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|\S+)$/.exec(line);
+    const oldToken = header?.[1];
+    const newToken = header?.[2];
+    const oldPath = oldToken === undefined ? null : decodeDiffPathToken(oldToken);
+    const newPath = newToken === undefined ? null : decodeDiffPathToken(newToken);
+    const oldFile = oldPath?.startsWith("a/") ? oldPath.slice(2) : null;
+    const newFile = newPath?.startsWith("b/") ? newPath.slice(2) : null;
+    if ((oldFile !== null && requested.has(oldFile)) || (newFile !== null && requested.has(newFile))) {
+      continue;
+    }
+    throw new SnapshotPathRefused(
+      paths[0]!,
+      `a per-file patch must contain only the requested file; the rendered diff included "${line}"`,
+    );
+  }
+}
+
 /**
  * The exact difference between the pinned base and one artifact.
  *
@@ -314,8 +405,11 @@ export async function materializeSnapshotDiff(
     snapshotSha: string;
     maxPatchBytes?: number;
     /**
-     * Restrict the PATCH to these repository-relative paths. Absent or empty is the whole
-     * patch. Each is validated by `snapshotPathRefusal` and taken LITERALLY - see below.
+     * Restrict the PATCH to these exact repository-relative files. Absent or empty is the
+     * whole patch; a directory is refused, while a file absent from the difference yields an
+     * empty patch. A rename is one file, so either its old or new path selects the same rename
+     * diff and `patchPaths` echoes the path the caller requested. Each path is validated by
+     * `snapshotPathRefusal` and taken LITERALLY - see below.
      */
     paths?: string[];
     /**
@@ -347,6 +441,7 @@ export async function materializeSnapshotDiff(
   );
   requireOk("git diff --numstat", numstat);
   const files = parseNumstatZ(numstat.stdout);
+  const pathsInDifference = exactPatchPaths(filter, files);
 
   const stats = {
     baseSha,
@@ -363,6 +458,16 @@ export async function materializeSnapshotDiff(
     return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: [] };
   }
 
+  if (filter.length > 0 && pathsInDifference.length === 0) {
+    return { ...stats, patch: "", truncated: false, omittedBytes: 0, patchPaths: filter };
+  }
+
+  const patchEnv = { ...process.env };
+  delete patchEnv.GIT_GLOB_PATHSPECS;
+  delete patchEnv.GIT_NOGLOB_PATHSPECS;
+  delete patchEnv.GIT_ICASE_PATHSPECS;
+  patchEnv.GIT_LITERAL_PATHSPECS = "1";
+
   const patchRun = await deps.run(
     "git",
     [
@@ -370,7 +475,7 @@ export async function materializeSnapshotDiff(
       // `--` first, so a path can never be read as a flag or a revision: a tracked file
       // named `--exploit` is a legal filename and an illegal argument, and only the
       // separator tells the two apart.
-      ...(filter.length > 0 ? ["--", ...filter] : []),
+      ...(pathsInDifference.length > 0 ? ["--", ...pathsInDifference] : []),
     ],
     {
       timeoutMs: 60_000,
@@ -382,7 +487,8 @@ export async function materializeSnapshotDiff(
       // path name a file, including the one whose name looks like magic. Set on this
       // invocation because it is the only one that ever carries a pathspec, and set
       // explicitly rather than inherited so an operator's exported value cannot decide it.
-      env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" },
+      // Git rejects literal pathspec mode when any other global pathspec mode is inherited.
+      env: patchEnv,
     },
   );
   if (patchRun.overflowed) {
@@ -393,6 +499,7 @@ export async function materializeSnapshotDiff(
     );
   }
   requireOk("git diff", patchRun);
+  if (filter.length > 0) requireExactPatchHeaders(patchRun.stdout, filter);
 
   const { patch, truncated, omittedBytes } = capPatch(patchRun.stdout, budget);
 

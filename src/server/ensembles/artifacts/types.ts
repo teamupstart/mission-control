@@ -93,9 +93,10 @@ export interface ArtifactAdapter {
    *
    * `paths` and `patch` are the two CHEAPER questions than "the whole patch", and both narrow
    * the patch alone: the statistics stay complete so no answer here can be mistaken for a
-   * smaller change than the artifact holds. Paths are repository-relative, and an adapter
-   * refuses one it cannot honour (absolute, escaping, empty) rather than sanitizing it into a
-   * different path and answering confidently about the wrong file.
+   * smaller change than the artifact holds. Each path names one exact repository-relative
+   * file; a directory is refused and an absent file yields an empty patch. Either side of a
+   * rename selects that one rename diff. An adapter refuses a path it cannot honour rather
+   * than sanitizing it into a different path and answering confidently about the wrong file.
    */
   materialize(
     locator: ArtifactLocator,

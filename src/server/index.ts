@@ -48,6 +48,7 @@ import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
 import { createFinalizeDeps, resolveEnsembleWorkflowVersion } from "./ensembles/finalize-deps.ts";
 import { createReviewScheduler } from "./llm/review-scheduler.ts";
+import { createCheckScheduler } from "./workflows/checks.ts";
 
 openDb();
 ensureToken();
@@ -85,6 +86,12 @@ const personas = new PersonaManager(registry);
 // share it today. The Foreman is a separate process and unrelated background jobs keep
 // their own limits on purpose - see llm/review-scheduler.ts.
 const reviewScheduler = createReviewScheduler();
+// The SECOND ceiling, and deliberately not the first one. A Workflow check runs a build,
+// not a tool-less model call, so it is not a member of the budget above by that budget's own
+// definition - and a three-minute test suite holding one of its three slots would starve the
+// Persona reviews it exists to pace. Constructed here and injected for the same reason: a
+// subsystem reaching for its own limiter is a subsystem whose "two" quietly becomes four.
+const checkScheduler = createCheckScheduler();
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
@@ -94,6 +101,7 @@ let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
+  checkScheduler,
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });

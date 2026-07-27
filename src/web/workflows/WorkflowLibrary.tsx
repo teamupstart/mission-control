@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   normalizeWorkflowName,
   personasForDisplay,
+  WORKFLOW_CHECK_SLOTS,
   WORKFLOW_LIMITS,
   type PersonaView,
+  type WorkflowCheckSlot,
   type WorkflowDraftNode,
   type WorkflowEdge,
   type WorkflowSourcePort,
@@ -31,6 +33,7 @@ import {
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
+import { NEW_NODE_MIME, type NewWorkflowNode } from "./new-node.ts";
 import {
   useWorkflowDraft,
   workflowArchiveBlocked,
@@ -276,6 +279,7 @@ export function WorkflowLibrary({
   const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
+  const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
   const connectTrigger = useRef<HTMLButtonElement | null>(null);
   const [connectSource, setConnectSource] = useState<string | null>(null);
@@ -447,9 +451,9 @@ export function WorkflowLibrary({
     });
   };
 
-  const addNode = (kind: "persona" | "all_pass" | "end", personaId = palettePersona, at?: { x: number; y: number }): void => {
+  const addNode = (spec: NewWorkflowNode, at?: { x: number; y: number }): void => {
     if (!workflow || readOnly) return;
-    if (kind === "persona" && !personaId) return;
+    if (spec.kind === "persona" && !spec.personaId) return;
     const offset = workflow.draft.nodes.length * 26;
     const id = crypto.randomUUID();
     const center = canvasRef.current?.viewportCenter();
@@ -464,9 +468,13 @@ export function WorkflowLibrary({
         Math.min(WORKFLOW_LIMITS.canvasCoordinateAbs, requestedPosition.y),
       ),
     };
-    const node: WorkflowDraftNode = kind === "persona"
-      ? { id, kind, personaId, position }
-      : kind === "all_pass" ? { id, kind, position } : { id, kind, outcome: "Complete", position };
+    const node: WorkflowDraftNode = spec.kind === "persona"
+      ? { id, kind: "persona", personaId: spec.personaId, position }
+      : spec.kind === "all_pass"
+        ? { id, kind: "all_pass", position }
+        : spec.kind === "check"
+          ? { id, kind: "check", slot: spec.slot, position }
+          : { id, kind: "end", outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
     setAnnouncement(
@@ -708,13 +716,21 @@ export function WorkflowLibrary({
               </select>
             </Tooltip>
             <Tooltip label={palettePersona ? "Add a review node running the chosen Persona - or drag it onto the canvas" : "Choose a Persona above first"}>
-              <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode("persona")}>＋ Persona</button>
+              <button disabled={transitioning || !palettePersona} draggable={!transitioning && Boolean(palettePersona)} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "persona", personaId: palettePersona }))} onClick={() => addNode({ kind: "persona", personaId: palettePersona })}>＋ Persona</button>
             </Tooltip>
             <Tooltip label="Add a join that waits for every incoming branch to pass - or drag it onto the canvas">
-              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode("all_pass")}>＋ All-pass Join</button>
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "all_pass" }))} onClick={() => addNode({ kind: "all_pass" })}>＋ All-pass Join</button>
+            </Tooltip>
+            <Tooltip label="Which deterministic gate a new check node runs">
+              <select aria-label="Slot for new check node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
+                {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+              </select>
+            </Tooltip>
+            <Tooltip label="Add a gate on the command this repository configures for that slot - or drag it onto the canvas">
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Check</button>
             </Tooltip>
             <Tooltip label="Add a terminal outcome node - or drag it onto the canvas">
-              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData("application/mission-workflow-node", JSON.stringify({ kind: "end" }))} onClick={() => addNode("end")}>＋ End</button>
+              <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "end" }))} onClick={() => addNode({ kind: "end" })}>＋ End</button>
             </Tooltip>
           </section>
         )}
@@ -1031,7 +1047,7 @@ export function WorkflowLibrary({
                 readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onSelection={setSelection}
-                onDropNode={(kind, personaId, position) => addNode(kind, personaId ?? "", position)}
+                onDropNode={(spec, position) => addNode(spec, position)}
                 onDeleteSelection={removeCanvasSelection}
                 onKeyboardConnect={startKeyboardConnect}
                 onAnnounce={setAnnouncement}

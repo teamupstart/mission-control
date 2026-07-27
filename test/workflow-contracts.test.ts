@@ -53,6 +53,14 @@ test("workflow limits are finite front-door contracts", () => {
     externalSourceId: 200,
     externalSourceSegment: 200,
     externalSourceKey: 1_000,
+    // A check command is a durable blob an operator types, so it is bounded three ways:
+    // how many arguments, how long each is, and how long the whole argv is. The last is the
+    // one that matters - 32 arguments of 1,000 characters is an argv no execve would take.
+    checkRepoRoot: 4_096,
+    checkCommands: 200,
+    checkCommandArgs: 32,
+    checkCommandArg: 1_000,
+    checkCommandLength: 4_000,
   });
 });
 

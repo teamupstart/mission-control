@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   EvidenceRef,
   PersonaVerdict,
+  WorkflowCheckOutcome,
   WorkflowExternalSource,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
@@ -11,6 +12,7 @@ import type {
   WorkflowEventPage,
   WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
+import { formatCheckCommand } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -25,6 +27,8 @@ import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
   attemptStateLabel,
+  checkOutcomeOf,
+  checkStatusView,
   endStatus,
   errorView,
   eventLine,
@@ -164,6 +168,60 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * A Check node's own card.
+ *
+ * Separate from `VerdictCard` because a check answers different questions. It has no
+ * Persona, so that card's `attempt.persona?.name ?? "Missing persona"` would accuse an
+ * exit-code gate of pointing at a deleted reviewer; it has no runner, model or cost, so
+ * three quarters of that meta line would read "cost unavailable" about a subprocess; and
+ * the fact a reader wants first is the exit code, which a verdict only ever paraphrases.
+ *
+ * The four statuses reach the screen as sentences from `run-model.ts`, never as their
+ * durable spellings.
+ */
+function CheckCard({
+  attempt,
+  outcome,
+}: {
+  attempt: WorkflowNodeAttempt;
+  outcome: WorkflowCheckOutcome;
+}): React.JSX.Element {
+  const view = checkStatusView(outcome.status);
+  const parts = [
+    outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
+    outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
+    `attempt ${attempt.attempt}`,
+  ].filter((part): part is string => part !== null);
+  return (
+    <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
+      <header className="wf-run-card-head">
+        <span className={`workflow-chip workflow-${outcome.status === "failed" ? "failed" : "passed"}`}>
+          {view.label}
+        </span>
+        <strong>Check · {outcome.slot}</strong>
+      </header>
+      <p className="wf-run-summary">{outcome.note}</p>
+      <p className="wf-run-check-sentence">{view.sentence}</p>
+      {outcome.output && (
+        <div className="wf-run-card-body">
+          <h5>Command output</h5>
+          {/* The TAIL, which is what the runner kept: a build prints its failure last. The
+              omitted count is stated rather than implied by an ellipsis, so nobody reads a
+              bounded log as the whole one. */}
+          <pre className="wf-run-check-output">{outcome.output}</pre>
+          {outcome.truncatedBytes > 0 && (
+            <p className="wf-run-meta">
+              Earlier {outcome.truncatedBytes} characters of output were omitted.
+            </p>
+          )}
+        </div>
+      )}
+      <p className="wf-run-meta">{parts.join(" · ")}</p>
+    </article>
   );
 }
 
@@ -628,6 +686,11 @@ export function WorkflowRunView({
         ) : (
           <div className="wf-run-cards">
             {roundAttempts.flatMap((attempt) => {
+              // A check is asked FIRST, because it also carries a verdict - a synthetic one,
+              // so the Join and the repair packet need no special case. Asking the verdict
+              // first would draw every check as a Persona card with no Persona in it.
+              const check = checkOutcomeOf(attempt);
+              if (check) return [(<CheckCard key={attempt.id} attempt={attempt} outcome={check} />)];
               const verdict = verdictOf(attempt);
               return verdict
                 ? [(
@@ -640,7 +703,7 @@ export function WorkflowRunView({
                   )]
                 : [];
             })}
-            {roundAttempts.filter((attempt) => !verdictOf(attempt)).map((attempt) => (
+            {roundAttempts.filter((attempt) => !verdictOf(attempt) && !checkOutcomeOf(attempt)).map((attempt) => (
               <article className="wf-run-card wf-run-attempt" key={`attempt:${attempt.id}`}>
                 <header className="wf-run-card-head">
                   <strong>{attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer"}</strong>

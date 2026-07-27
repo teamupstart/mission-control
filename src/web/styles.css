@@ -626,6 +626,27 @@
 
 .wf-run-verdict.is-pass { border-left-color: var(--idle); }
 .wf-run-verdict.is-fail { border-left-color: var(--danger); }
+/* A check card carries the same left rail, with a third tone: the two non-failing statuses
+   that never ran are neither a pass to celebrate nor a failure to act on. */
+.wf-run-check.is-passed { border-left-color: var(--idle); }
+.wf-run-check.is-failed { border-left-color: var(--danger); }
+.wf-run-check.is-skipped,
+.wf-run-check.is-unavailable { border-left-color: var(--muted); }
+.wf-run-check-sentence { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+.wf-run-check-output {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
 .wf-run-delivery.is-delivered { border-left-color: var(--idle); }
 .wf-run-delivery.is-uncertain,
 .wf-run-delivery.is-refused { border-left-color: var(--danger); }
@@ -8794,6 +8815,12 @@ select.ensemble-judge-persona {
 .workflow-node-session { border-color: color-mix(in oklab, #4a9eff 65%, var(--border)); }
 .workflow-node-persona { border-color: color-mix(in oklab, var(--working) 60%, var(--border)); }
 .workflow-node-all_pass { border-style: double; }
+/* Dashed, so a deterministic gate is distinguishable from a judging one at a glance and
+   without relying on hue alone. */
+.workflow-node-check {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--warn) 55%, var(--border));
+}
 .workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
 .workflow-node-kind {
   font: 700 9px var(--mono);
@@ -10905,6 +10932,45 @@ select.foreman-model-input {
   margin: 4px 0 0;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.wf-settings-checks { margin-top: 14px; }
+.wf-settings-checks-table { margin-top: 12px; }
+.wf-settings-check-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+.wf-settings-check-list li {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+}
+.wf-settings-check-slot {
+  font: 700 9.5px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
+.wf-settings-check-root,
+.wf-settings-check-argv {
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.wf-settings-check-argv { color: var(--fg); }
+.wf-settings-check-add { flex-wrap: wrap; }
+/* The parsed argv, echoed back. Monospace and tabular so the operator counts arguments
+   rather than trusting a split they cannot see. */
+.wf-settings-check-preview {
+  font-family: var(--mono);
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 

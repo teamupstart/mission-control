@@ -2121,19 +2121,59 @@ Announcements and labels name Personas and stages; no surface prints a node id. 
 is derived, not stored: one reviewer names its own stage, and a parallel stage reads "Stage N".
 
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
-**All-pass Join** and End nodes from the left palette, then connect the directional handles:
-Session emits `submitted`; a Persona or Join emits `pass` and `fail`; failures may return to
-Session for changes. Session needs at least one `submitted` route and may fan out to several.
-A Join needs both outcomes from at least two distinct predecessors, waits for one result from
-each, and passes only when all passed. Cycles are legal only when they include Session.
-Persona-only cycles are rejected because they could spend repeatedly against unchanged work.
-There is no checkpoint node and Inspector is not a graph node.
+**All-pass Join**, **Check** and End nodes from the left palette, then connect the directional
+handles: Session emits `submitted`; a Persona, Check or Join emits `pass` and `fail`; failures
+may return to Session for changes. Session needs at least one `submitted` route and may fan
+out to several. A Join needs both outcomes from at least two distinct predecessors, waits for
+one result from each, and passes only when all passed; a predecessor may be a Persona, a Check
+or another Join. Cycles are legal only when they include Session. Persona-only cycles are
+rejected because they could spend repeatedly against unchanged work. There is no checkpoint
+node and Inspector is not a graph node.
 
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
 of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
 fail routed somewhere other than Session, a Join fed from two different stages - opens in
-Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
-so a draft moves between them freely and existing workflows need no migration.
+Graph with a banner naming each reason in a sentence. A graph containing a Check node also
+opens in Graph, with a banner saying so; the Pipeline editor cannot show one yet. Both views
+write ordinary draft graphs, so a draft moves between them freely and existing workflows need
+no migration.
+
+### Check nodes (gating on a command)
+
+A **Check** gates on a deterministic command instead of a model. A submission that does not
+compile fails on an exit code rather than spending four model calls to reach the same
+conclusion. Exit 0 passes, non-zero fails, and a failure returns the command's output to the
+session through the same repair packet a Persona fail produces - cited as `check` evidence, so
+the claim traces back to the output that made it.
+
+**A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
+`build`. What each slot actually runs is configured per repository under **Settings →
+Workflows**, so the same workflow runs correctly on any checkout, and a published version -
+which is exportable - never carries an argv. The command is an **argv**, not a shell string:
+there is no shell anywhere in this path, so `&&`, `|` and `$HOME` are ordinary arguments. The
+settings field splits a typed line quote-aware (`'…'` literal, `"…"` honouring `\"` and `\\`,
+a backslash escaping the next character outside quotes, adjacent runs joining into one token)
+and **shows the parsed argv back**, so you see what will actually run.
+
+**An unrun gate passes, with a note saying why.** A slot with no command configured for this
+repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,
+because a workflow that failed on every unconfigured machine would be broken by default, and
+both say which of the two happened so it is never mistaken for a gate that ran. A command that
+times out or is killed is an infrastructure failure on the existing retry-then-block path -
+never a fail verdict, because nothing about the change under review follows from a build that
+did not finish.
+
+**Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
+(`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
+and **Check commands**, the table of repository root, slot and argv. The switch alone is not
+enough - the repository must also be on the same Workflow allowlist Live delivery uses.
+Enabling it authorizes running code the reviewed branch supplies - its scripts, dependencies
+and build steps - with the daemon's own filesystem authority. This is not a sandbox. Checks run
+on their own small concurrency budget, separate from the review budget, so a long test suite
+cannot starve Persona reviews.
+
+Run detail draws a check as its own card: the slot, the argv, the exit code, and the tail of
+the output with the number of omitted characters stated rather than implied.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2299,7 +2339,9 @@ Live workflow delivery is separately off by default. Open **Settings → Workflo
 (`#/settings/workflows`), enable Live after its explicit warning, and add canonical repository
 roots to the Workflow allowlist. A Live binding can be saved only while its current session is in an allowlisted
 checkout. Removing consent keeps the binding choice visible but refuses the next delivery;
-it is never silently changed to Preview.
+it is never silently changed to Preview. The same panel holds the second, independent switch
+for [Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and grants
+something different: running branch-authored code, not typing into a pane.
 
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the

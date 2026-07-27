@@ -98,3 +98,50 @@ test("missing and archived Personas cannot enter a new version", () => {
   const archived = personas.map((persona) => persona.id === "code" ? { ...persona, archivedAt: 2 } : persona);
   assert.ok(validateWorkflowGraph({ graph: graph(), personas: archived, completionPolicy: { kind: "none" } }).diagnostics.some((item) => item.code === "archived_persona"));
 });
+
+// ---- Check nodes ----
+//
+// A Check decides a pass/fail outcome exactly as a Persona does, so every rule that is
+// really about "a node that decides an outcome" has to reach it. Each of the three below was
+// written as a two-way persona-or-join test, and the failure mode of getting one wrong is
+// quiet: a Check with no fail route publishes, then dead-ends a submission at runtime.
+
+/** The same graph with `design` replaced by a Check, so the Join has mixed predecessors. */
+const withCheck = (): WorkflowDraftGraph => {
+  const candidate = graph();
+  candidate.nodes = candidate.nodes.map((node) =>
+    node.id === "design" ? { id: "design", kind: "check", slot: "test", position: { x: 400, y: 100 } } : node);
+  return candidate;
+};
+
+test("a Check activates, emits pass and fail, and may feed a Join", () => {
+  assert.deepEqual(
+    validateWorkflowGraph({ graph: withCheck(), personas, completionPolicy: { kind: "none" } }),
+    { valid: true, diagnostics: [] },
+  );
+});
+
+test("a Check missing either route is diagnosed, and named as a Check", () => {
+  for (const [port, code] of [["pass", "missing_pass_route"], ["fail", "missing_fail_route"]] as const) {
+    const candidate = withCheck();
+    candidate.edges = candidate.edges.filter((edge) => !(edge.source === "design" && edge.sourcePort === port));
+    const found = validateWorkflowGraph({ graph: candidate, personas, completionPolicy: { kind: "none" } });
+    const diagnostic = found.diagnostics.find((item) => item.code === code && item.nodeId === "design");
+    assert.ok(diagnostic, `expected ${code} for the check`);
+    // The message used to be a two-way ternary that said "Persona" for anything that was
+    // not a Join, so a third kind would have been diagnosed under another kind's name.
+    assert.match(diagnostic.message, /^Check needs a/);
+  }
+});
+
+test("a Check may not receive a Join's result, or emit into a Session that did not fail", () => {
+  const candidate = withCheck();
+  candidate.edges.push({ id: "e11", source: "join", sourcePort: "pass", target: "design", targetPort: "result" });
+  assert.ok(codes(candidate).includes("invalid_target_port"));
+});
+
+test("Session and End are still refused as Join predecessors", () => {
+  const candidate = withCheck();
+  candidate.edges.push({ id: "e11", source: "s", sourcePort: "submitted", target: "join", targetPort: "result" });
+  assert.ok(codes(candidate).includes("join_predecessor_kind"));
+});

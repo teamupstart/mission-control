@@ -9,13 +9,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WORKFLOW_GATE_WAIT_REASONS } from "../src/shared/workflow.ts";
+import { WORKFLOW_CHECK_STATUSES, WORKFLOW_GATE_WAIT_REASONS } from "../src/shared/workflow.ts";
 import type {
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
+  checkOutcomeOf,
+  checkStatusView,
   endStatus,
   errorView,
   eventLine,
@@ -328,4 +330,53 @@ test("timeline events are phrased in names and carry their round forward", () =>
   const prepared = eventLine(grouped.get(1)![1]!, names, 1);
   assert.equal(prepared.title, "Delivery prepared");
   assert.equal(prepared.detail, "");
+});
+
+// ---- Check outcomes ----
+//
+// Vocabulary lives in this module so a new durable enum value fails typecheck until somebody
+// says what it means to a human. The reason a check needs its own entry rather than borrowing
+// the verdict's two words is that three of its four statuses PASS, and they are not the same
+// kind of pass: "the command ran and was satisfied", "nobody configured one", and "nobody
+// authorized one" send an operator to three different places.
+
+test("every check status has a distinct label and sentence", () => {
+  const seen = new Map<string, string>();
+  for (const status of WORKFLOW_CHECK_STATUSES) {
+    const view = checkStatusView(status);
+    assert.ok(view.label.length > 0, `${status} has no label`);
+    assert.match(view.sentence, /\.$/, `${status}'s sentence is not a sentence`);
+    assert.ok(!seen.has(view.sentence), `${status} reuses ${seen.get(view.sentence)}'s sentence`);
+    seen.set(view.sentence, status);
+    // The durable spelling never reaches the screen as itself.
+    assert.notEqual(view.label, status);
+  }
+});
+
+test("a check outcome is read from output_json, and a Persona attempt is not mistaken for one", () => {
+  const outcome = {
+    status: "failed",
+    slot: "typecheck",
+    command: ["npm", "run", "typecheck"],
+    exitCode: 2,
+    output: "error TS2345",
+    truncatedBytes: 0,
+    note: "`npm run typecheck` exited 2.",
+  };
+  assert.deepEqual(checkOutcomeOf(attempt("a", "s", "gate", { output: outcome })), outcome);
+  // A Persona attempt's `output_json` is a feedback packet, and reading it as a check would
+  // draw an exit-code card over a reviewer's verdict.
+  assert.equal(
+    checkOutcomeOf(attempt("b", "s", "p1", {
+      output: { personaName: "Reviewer", summary: "Needs work", requestedChanges: ["Fix it"] },
+    })),
+    null,
+  );
+  assert.equal(checkOutcomeOf(attempt("c", "s", "gate", { output: null })), null);
+  // A status a newer build wrote is not a check this build can draw, so it declines rather
+  // than rendering an outcome it cannot describe.
+  assert.equal(
+    checkOutcomeOf(attempt("d", "s", "gate", { output: { ...outcome, status: "flaky" } })),
+    null,
+  );
 });

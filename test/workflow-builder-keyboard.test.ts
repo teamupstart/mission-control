@@ -45,7 +45,7 @@ test("auto-layout changes positions only and keeps the single Session semantic i
 });
 
 test("keyboard editing covers move, connect, confirmed delete, undo, redo, and duplicate", () => {
-  assert.match(librarySource, /onClick=\{\(\) => addNode\("persona"\)\}/);
+  assert.match(librarySource, /onClick=\{\(\) => addNode\(\{ kind: "persona", personaId: palettePersona \}\)\}/);
   assert.match(canvasSource, /focusable: node\.id === focusNodeId/);
   assert.match(canvasSource, /onFocusCapture/);
   assert.match(canvasSource, /event\.key === "Tab"/);

@@ -2739,10 +2739,18 @@ export class WorkflowStore {
     return row?.retry_at ?? null;
   }
 
+  /**
+   * Take an attempt from queued to running, atomically, so two pumps cannot both run it.
+   *
+   * `runner` and `model` are NULLABLE because not every node kind is a model call: a Check
+   * runs a command the operator configured, and stamping it with a provider it never used
+   * would put a fiction in front of whoever reads the run. The columns were already
+   * nullable; only this signature insisted otherwise.
+   */
   claimAttempt(
     id: string,
-    runner: LlmRunnerId,
-    model: string,
+    runner: LlmRunnerId | null,
+    model: string | null,
     now = Date.now(),
   ): WorkflowNodeAttempt | null {
     const result = this.db.prepare(

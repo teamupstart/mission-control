@@ -37,8 +37,10 @@ import type {
   WorkflowTargetPort,
 } from "@shared/workflow.ts";
 import { connectionAllowed } from "@shared/workflow-graph.ts";
+import { checkLabel } from "@shared/workflow-stages.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
+import { NEW_NODE_MIME, parseDroppedNode, type NewWorkflowNode } from "./new-node.ts";
 
 export type WorkflowSelection =
   | { kind: "node" | "edge"; id: string }
@@ -150,6 +152,7 @@ const NODE_KIND_WORDS: Record<WorkflowDraftNode["kind"], string> = {
   session: "Session",
   persona: "Reviewer",
   all_pass: "All-pass join",
+  check: "Check",
   end: "End",
 };
 
@@ -189,6 +192,12 @@ function canvasNodes(
     } else if (node.kind === "all_pass") {
       fallbackLabel = "All pass";
       subtitle = `${incoming.get(node.id)?.size ?? 0} predecessor${incoming.get(node.id)?.size === 1 ? "" : "s"}`;
+    } else if (node.kind === "check") {
+      // The slot, never a command: the node names the gate and the machine names what runs.
+      // A subtitle quoting the operator's configured argv would put a machine-local fact on
+      // a canvas that also draws published versions, where it is not part of the version.
+      fallbackLabel = checkLabel(node.slot);
+      subtitle = "Configured in Settings › Workflows";
     } else if (node.kind === "end") {
       fallbackLabel = node.outcome;
       subtitle = "Terminal outcome";
@@ -306,7 +315,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   readOnly?: boolean;
   onChange?: (graph: WorkflowDraftGraph) => void;
   onSelection?: (selection: WorkflowSelection) => void;
-  onDropNode?: (kind: "persona" | "all_pass" | "end", personaId: string | null, position: { x: number; y: number }) => void;
+  onDropNode?: (spec: NewWorkflowNode, position: { x: number; y: number }) => void;
   onDeleteSelection?: (nodeIds: string[], edgeIds: string[]) => void;
   onKeyboardConnect?: (sourceNodeId: string) => void;
   onAnnounce?: (message: string) => void;
@@ -632,15 +641,12 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
         onDrop={(event) => {
           if (readOnly || !onDropNode || !instance.current) return;
           event.preventDefault();
-          try {
-            const dropped = JSON.parse(event.dataTransfer.getData("application/mission-workflow-node")) as { kind?: string; personaId?: string };
-            if (dropped.kind !== "persona" && dropped.kind !== "all_pass" && dropped.kind !== "end") return;
-            onDropNode(
-              dropped.kind,
-              dropped.kind === "persona" ? dropped.personaId ?? null : null,
-              instance.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
-            );
-          } catch {}
+          const dropped = parseDroppedNode(event.dataTransfer.getData(NEW_NODE_MIME));
+          if (!dropped) return;
+          onDropNode(
+            dropped,
+            instance.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+          );
         }}
       >
         {/* React Flow's free-tier license requires its generated attribution link. */}

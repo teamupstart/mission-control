@@ -311,3 +311,75 @@ test("a poll that has been overtaken is dropped, however late it lands", () => {
   // A poll cannot apply twice - the same id is no longer newer than itself.
   assert.equal(pollIsLatest(3, 3), false);
 });
+
+// ---- Check commands ----
+//
+// What is at stake: the argv split. There is no shell anywhere in this path, so the rule
+// that turns a typed line into an argv is ours alone - and an operator can only trust it if
+// the panel shows the result back. `npm test -- --grep "a b"` is five arguments or six
+// depending on a rule nobody can read off the box they typed into.
+//
+// The consent copy is the other half. This switch authorizes running code the reviewed
+// BRANCH supplies, with the daemon's filesystem authority, and the panel must say so in
+// those terms rather than calling it a sandbox it is not.
+
+test("the check switch and command table render, with their anchors", () => {
+  const html = render(ANSWERED);
+  for (const anchor of ["workflows/checks", "workflows/check-commands"]) {
+    assert.ok(html.includes(`data-anchor="${anchor}"`), `panel is missing ${anchor}`);
+  }
+  // Pre-poll too, on the panel's existing rule: the controls are present behind the
+  // "unknown" banner, so a search result can still jump to them.
+  const empty = render();
+  for (const anchor of ["workflows/checks", "workflows/check-commands"]) {
+    assert.ok(empty.includes(`data-anchor="${anchor}"`), `pre-poll panel is missing ${anchor}`);
+  }
+});
+
+test("the checks warning names branch-authored code and refuses to claim a sandbox", () => {
+  const html = render({
+    config: { ...DEFAULT_WORKFLOW_CONFIG, checksEnabled: true, repoAllowlist: ["/repo"] },
+    status: STATUS,
+  });
+  assert.match(html, /branch being reviewed/);
+  assert.match(html, /filesystem authority/);
+  assert.match(html, /not a sandbox/i);
+  // Off, the warning is absent: an operator who has not granted this must not be shown a
+  // paragraph about what it does as though they had.
+  assert.doesNotMatch(render(ANSWERED), /not a sandbox/i);
+});
+
+test("a configured command is listed by root, slot and the argv that will run", () => {
+  const html = render({
+    config: {
+      ...DEFAULT_WORKFLOW_CONFIG,
+      checksEnabled: true,
+      repoAllowlist: ["/src/mission-control"],
+      checkCommands: [
+        { repoRoot: "/src/mission-control", slot: "test", command: ["npm", "test", "--filter=a b"] },
+      ],
+    },
+    status: STATUS,
+  });
+  assert.ok(html.includes("/src/mission-control"));
+  assert.ok(html.includes("test"));
+  // Printed back the way the parser reads it, so what is listed re-parses to what runs.
+  assert.ok(
+    html.includes("npm test &quot;--filter=a b&quot;"),
+    "a listed argv must be printed so it re-parses to the same arguments",
+  );
+});
+
+test("with no commands the panel says every Check will skip, rather than showing nothing", () => {
+  const html = render(ANSWERED);
+  assert.match(html, /No commands yet - every Check node will skip and pass\./);
+});
+
+test("the argv preview shows the split, and refuses an unfinished line", () => {
+  // Static render, so the preview is at its empty-state. What is pinned here is that the
+  // preview EXISTS and prompts for a command; the split itself is exercised directly
+  // against `parseCheckCommand` in workflow-check-node.test.ts.
+  const html = render(ANSWERED);
+  assert.match(html, /Type a command to see exactly how it will be split\./);
+  assert.ok(html.includes('class="settings-hint wf-settings-check-preview"'));
+});

@@ -1,10 +1,12 @@
 import type {
   PersonaView,
+  WorkflowCheckSlot,
   WorkflowDefinition,
   WorkflowDiagnostic,
   WorkflowDraftGraph,
 } from "@shared/workflow.ts";
 import {
+  WORKFLOW_CHECK_SLOTS,
   personaChoiceLabel,
   personaChoicesForDisplay,
 } from "@shared/workflow.ts";
@@ -279,6 +281,25 @@ export function WorkflowProperties({
             <label>Outcome
               <input disabled={readOnly} value={selectedNode.outcome} onChange={(event) => replaceNode({ ...selectedNode, outcome: event.target.value })} />
             </label>
+          )}
+          {selectedNode.kind === "check" && (
+            <>
+              <label>Slot
+                <Tooltip label="Which deterministic gate this node runs">
+                  <select disabled={readOnly} value={selectedNode.slot} onChange={(event) => replaceNode({ ...selectedNode, slot: event.target.value as WorkflowCheckSlot })}>
+                    {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+                  </select>
+                </Tooltip>
+              </label>
+              {/* The node names the slot; the machine names the command. Said here because
+                  this is the panel where an operator would otherwise go looking for a field
+                  to type `npm test` into. */}
+              <p>
+                Runs whatever this repository configures for <code>{selectedNode.slot}</code> under
+                Settings › Workflows. A repository with no command configured passes with a note,
+                so a workflow carrying this gate is safe everywhere.
+              </p>
+            </>
           )}
           {selectedNode.kind === "session" && <p>Session is the one submission and repair boundary. It cannot be deleted.</p>}
           {selectedNode.kind === "all_pass" && <p>Waits for one pass/fail receipt from every predecessor.</p>}

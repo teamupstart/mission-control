@@ -70,7 +70,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         </p>
       )}
 
-      <fieldset className="inspector-modes llm-runners" data-anchor="models/provider">
+      <fieldset className="settings-radios llm-runners" data-anchor="models/provider">
         <legend>Provider</legend>
         {runners.length === 0 ? (
           <p className="settings-hint">

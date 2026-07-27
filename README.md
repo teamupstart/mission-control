@@ -3126,6 +3126,16 @@ it gains by being here is everything a drawer could not have: a rail row, a scop
 link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
 session is findable by searching for what it does. The Workflows page header keeps a link to it.
 
+**Inspector and Shipping are consoles**, not forms: the controls sit in a narrow column
+and the per-pull-request ledger takes the wide one, under a strip of counts. That is the
+split those two panels needed and the other ten do not - their knobs are set once, while
+their ledgers are read repeatedly and answer the only questions either subsystem raises
+(*what did the review say*, *why has nothing merged*). As a 12px list at the foot of a
+vertical form, the ledger was the least legible thing on the page and the most important.
+**Every tile in the count strip is a filter**, and there is a tile for every state a row
+can be in, so the numbers always add up to the rows underneath - a strip that ignored the
+closed pull requests read "1 with findings, 0, 0, 0" over a table of fifty.
+
 Deep links work for every category, and the whole list is stable enough to paste into an
 issue: `#/settings/shipping`, `#/settings/task-sources`, `#/settings/models`. A link naming
 a category this build does not have falls back to Display rather than a blank pane - the one
@@ -3608,15 +3618,23 @@ Opus and 272s on Sonnet: the cheaper model read more files to reach the same ver
 ### Dry run
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
-them, then records them instead of publishing. **Settings → Inspector → Recent
-inspections** is where you read what it would have said. Run it there on a few of your own
-PRs before you let it speak.
+them, then records them instead of publishing. **Settings → Inspector → Inspections** is
+where you read what it would have said. Run it there on a few of your own PRs before you
+let it speak.
 
 Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
-last round errored - hover the link for why), a finding count, or `clean`. A PR that has
-since closed reads `merged` or `closed` and is dimmed: it left the sweep for good, so it is
-history rather than a queue. A closed PR that *was* reviewed keeps its findings, because
-what the Inspector said about something that landed is the more useful fact.
+last round errored - hover the link for why), a finding count, or `clean`, beside a count
+of the findings a later push has since fixed. A PR that has since closed reads `merged` or
+`closed` and is dimmed: it left the sweep for good, so it is history rather than a queue. A
+closed PR that *was* reviewed keeps its findings, because what the Inspector said about
+something that landed is the more useful fact.
+
+The count strip above the table tallies those same states and filters to one when you click
+it - on a ledger that is mostly landed work, *with findings* is how you get to the two rows
+that need you. The **Health** card beside it reports the last completed review and the last
+failure, which is the difference between an Inspector that is quiet and one that has been
+erroring for three hours; in the list those look identical, because every row simply keeps
+its last verdict.
 
 ## Shipping (YOLO mode)
 
@@ -3675,9 +3693,11 @@ never published is not a review anything may act on:
 The middle two are worth stating plainly because they are not obvious: dry run still
 *reviews*, and it advances the reviewed head exactly as a live round does. Only the
 publishing stops. So "the Inspector reviewed this push" is true in dry run, and it is not
-sufficient - **dry run means dry for the merge too**. The Shipping panel names whichever
-of the three is in the way while YOLO mode is armed, and each reason appears per pull
-request under *Where each pull request stands*.
+sufficient - **dry run means dry for the merge too**. While YOLO mode is armed, Shipping's
+**Prerequisites** card names whichever of the three is in the way and links to the control
+that fixes it; each reason also appears per pull request in the *Merge queue*. The card
+says so only while something is genuinely unmet - a checklist of green ticks is one nobody
+reads on the day a tick turns red.
 
 Switching from dry run to live does not promote the review that already ran. The reviewed
 head records the Inspector posture that produced it; once live, the Inspector reviews that
@@ -3694,8 +3714,10 @@ columns and flags the one dangerous combination - merge granted, review not - in
 ### Why it did not merge
 
 An auto-merger's failure mode is merging nothing and never saying why, so **Settings →
-Shipping → Where each pull request stands** carries the current reason per PR: soaking, CI
-still running, three open findings, not on the allowlist. When GitHub refuses the merge
+Shipping → Merge queue** carries the current reason per PR: soaking, CI still running,
+three open findings, not on the allowlist. *Soaking* is its own tile in the strip rather
+than part of *held at a gate*, because it is the one block that clears itself - counting it
+as an obstruction is how the safety valve ends up turned down to zero. When GitHub refuses the merge
 outright - a branch protection rule this app cannot see - its own message is shown there
 verbatim, because that is the only account you get of a rule nothing here can read.
 

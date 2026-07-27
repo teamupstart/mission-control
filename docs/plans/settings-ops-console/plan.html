@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Extending the settings console to Foreman and Workflows</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2024; --muted: #5b6470; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --warn: #b4690e; --ok: #1a7f37; --bad: #cf222e;
+    --box: #ffffff; --box-stroke: #c7ccd3; --box-bad: #fbeaea; --box-good: #e9f5ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa4b2; --rule: #262c34;
+      --card: #161b22; --accent: #6ea8fe; --warn: #e0a955; --ok: #57ab5a; --bad: #f85149;
+      --box: #1b2129; --box-stroke: #3a434f; --box-bad: #3a2224; --box-good: #1f3326;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 22px 96px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--rule); letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  .lede { color: var(--muted); font-size: 17px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 5px; padding: 0.05em 0.35em; }
+  a { color: var(--accent); }
+  ul, ol { padding-left: 1.2em; }
+  li { margin: 6px 0; }
+  strong { font-weight: 650; }
+  .scroll { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; }
+  .callout { margin: 18px 0; padding: 13px 15px; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 8px 8px 0; }
+  .callout.req { border-left-color: var(--warn); }
+  .callout.bad { border-left-color: var(--bad); }
+  .callout.ok { border-left-color: var(--ok); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+    font-weight: 700; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--rule);
+    color: var(--muted); background: var(--card); vertical-align: 2px; }
+  .tag.bad { color: var(--bad); border-color: var(--bad); }
+  .tag.ok { color: var(--ok); border-color: var(--ok); }
+  .fig { margin: 20px 0 6px; padding: 16px; background: var(--card); border: 1px solid var(--rule);
+    border-radius: 10px; overflow-x: auto; }
+  .fig svg { display: block; min-width: 620px; width: 100%; height: auto; }
+  .cap { color: var(--muted); font-size: 13px; margin: 6px 2px 0; }
+  .files { font-size: 14px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Extending the settings console to Foreman and Workflows</h1>
+<p class="lede">
+  The Inspector and Shipping panels were redrawn as an ops console - controls in a narrow
+  column, a per-item ledger in a wide one, under a strip of counts whose tiles are the
+  filters. This plan takes that shape to the two remaining subsystem panels, and it is
+  deliberately not "apply the same layout twice".
+</p>
+<p class="files">
+  Source of truth: <code>docs/plans/settings-ops-console/plan.md</code> &middot;
+  phases: <code>phase-1-foreman.md</code>, <code>phase-2-workflows.md</code>
+</p>
+
+<h2>What the investigation changed</h2>
+<p>One finding per panel, each of which changes what the work is:</p>
+
+<div class="callout bad">
+  <p><span class="tag bad">Foreman</span> <strong>Shadow mode measures nothing you can read.</strong>
+  The panel offers <em>"Shadow - run the cheap tier alongside, measure it"</em>. The worker
+  computes a typed <code>Divergence</code> and the entire sink is <code>console.log</code>.
+  It is not persisted, not routable, and cannot be inferred from the stored episode, because
+  <code>shadowBoth</code> returns <code>tier: 2</code> for every shadow decision. This is
+  strictly worse than the Inspector's dry run was: that at least <em>stored</em> its findings
+  and merely rendered them badly.</p>
+</div>
+
+<div class="callout req">
+  <p><span class="tag">Foreman</span> <strong>The ledger data exists and is unreachable.</strong>
+  <code>foreman_episodes</code> holds an append-only row per decision - disposition, author,
+  tier, confidence, classification, latency - and the only read path is
+  <code>GET /api/sessions/:id/foreman-episodes</code>, one session at a time. Nothing in
+  <code>db.ts</code> selects across <code>note_key</code>.</p>
+</div>
+
+<div class="callout ok">
+  <p><span class="tag ok">Workflows</span> <strong>Must NOT get a ledger.</strong>
+  <code>WorkflowRuns.tsx</code> (~1,560 lines) is already a run list with paging, SSE
+  reconciliation, per-run actions and status filter chips, and the Workflows page header
+  already links into these settings. A run table here would be a second, worse copy that
+  disagrees with the real one the first time either changes.</p>
+</div>
+
+<h2>The shape is three separable things</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>#</th><th>Piece</th><th>What it needs to be honest</th><th>Foreman</th><th>Workflows</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Shared leaves - <code>ConsoleCard</code>, <code>ConsoleSwitch</code>, <code>ConsoleState</code></td><td>Nothing. Any settings panel can adopt these.</td><td>yes</td><td>yes</td></tr>
+    <tr><td>2</td><td>The count strip - tiles that are also the filter</td><td>Rows, and a <code>bucket()</code> every row lands in exactly once, so tiles sum to rows.</td><td>yes</td><td>variant</td></tr>
+    <tr><td>3</td><td>The two-column split</td><td>A ledger worth the width that no other surface owns.</td><td>yes</td><td><strong>no</strong></td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  A panel with no ledger keeps its single column. Giving it a wide empty half to look like
+  its neighbours would be the layout imitating a shape rather than expressing one.
+</p>
+
+<h3>The one place the strip's contract is deliberately broken</h3>
+<p>
+  On Inspector and Shipping the tiles are folded out of the rows, which is what makes
+  "3 blocked" and the three rows you get when you click it the same question asked once.
+  Workflows has no rows here - its numbers are fleet-wide SQL scalars - so its tiles
+  <strong>navigate</strong> to the run list instead of filtering in place, and claim to sum
+  to nothing. That difference lives in a separate component, not a boolean on the existing
+  one, or the next person to touch it will "fix" the missing tally and be wrong.
+</p>
+
+<h2>Dependency graph</h2>
+<div class="fig">
+<svg viewBox="0 0 640 132" role="img" aria-label="PR 283 precedes Phase 1 Foreman, which precedes Phase 2 Workflows">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.5" color="#8b94a3">
+    <line x1="150" y1="56" x2="228" y2="56" marker-end="url(#a)"/>
+    <line x1="410" y1="56" x2="488" y2="56" marker-end="url(#a)"/>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="8" y="26" width="140" height="60" rx="9" fill="#e9f5ec" stroke="#57ab5a"/>
+    <text x="78" y="52" text-anchor="middle" font-size="13" font-weight="650" fill="#1c2024">PR #283</text>
+    <text x="78" y="70" text-anchor="middle" font-size="11" fill="#5b6470">console shipped</text>
+
+    <rect x="230" y="18" width="180" height="76" rx="9" fill="#ffffff" stroke="#c7ccd3"/>
+    <text x="320" y="44" text-anchor="middle" font-size="13" font-weight="650" fill="#1c2024">Phase 1 - Foreman</text>
+    <text x="320" y="62" text-anchor="middle" font-size="11" fill="#5b6470">ledger + shadow measurement</text>
+    <text x="320" y="78" text-anchor="middle" font-size="11" fill="#b4690e">owns the rename</text>
+
+    <rect x="490" y="18" width="142" height="76" rx="9" fill="#ffffff" stroke="#c7ccd3"/>
+    <text x="561" y="44" text-anchor="middle" font-size="13" font-weight="650" fill="#1c2024">Phase 2</text>
+    <text x="561" y="62" text-anchor="middle" font-size="11" fill="#5b6470">Workflows leaves</text>
+    <text x="561" y="78" text-anchor="middle" font-size="11" fill="#5b6470">+ health strip</text>
+  </g>
+</svg>
+</div>
+<p class="cap">
+  A line, not a fan: Phase 1 renames <code>outbound-console.tsx</code> to
+  <code>settings-console.tsx</code> (89 class occurrences, 94 CSS rules), a whole-file rewrite
+  of a module Phase 2 imports. Run them concurrently and they conflict.
+</p>
+
+<h2>Decisions</h2>
+<ul>
+  <li><strong>D1 - the vocabulary is renamed once, in Phase 1.</strong> The module's own header
+    justifies <code>oc-</code> as <em>"the two categories whose writes leave this machine"</em>.
+    Foreman and Workflows are machine-scoped, so that stops being true the moment either adopts
+    it.</li>
+  <li><strong>D2 - Foreman's ledger gets one new read path</strong>, <code>recentEpisodes(limit)</code>
+    + <code>GET /api/foreman/episodes</code>, the direct analogue of
+    <code>loadInspectorInspections(50)</code>. Not a new table, and not SSE - episodes carry pane
+    captures and stay off the live channel deliberately.</li>
+  <li><strong>D3 - the shadow measurement is persisted</strong>, in Phase 1. Two nullable columns
+    and the three lines in <code>shadowBoth</code> that stop discarding the cheap verdict. This is
+    the seam to cut on if Phase 1 must be smaller - but then <code>shadow</code> keeps promising a
+    measurement it does not take.</li>
+  <li><strong>D4 - Workflows depends on Foreman</strong>, for the rename, not the subject matter.</li>
+</ul>
+
+<h2>Constraints both phases inherit</h2>
+<ul>
+  <li><strong>Anchors are a public contract.</strong> <code>settings-search.ts</code> points at six
+    of them and <code>settings-sidebar-render.test.ts</code> fails on a duplicate or an unknown
+    prefix. <code>ConsoleCard</code> takes an <code>anchor</code> prop for exactly this.</li>
+  <li><strong><code>null</code> config is "unknown", never "off".</strong> Disabled inputs are not a
+    statement about what is running.</li>
+  <li><strong>The daemon reports resolutions the browser cannot see</strong> - Foreman's provider is
+    <code>config?.runner ?? status?.runner ?? "claude"</code> because of an env layer the browser
+    has no access to. Do not simplify it.</li>
+  <li><strong>README in the same change</strong>, and grep <code>styles.css</code> for any
+    <code>className</code> you remove. There is no unused-CSS check.</li>
+</ul>
+
+<div class="callout req">
+  <p><strong>Verify against a real ledger, not a fixture.</strong> Both defects found while
+  building the first two panels - a strip that ignored 49 of 50 rows, and an empty state reading
+  "No pull request is findings right now" - were invisible in tests and obvious the moment the
+  panel was pointed at the daemon's actual data. Neither phase is done on the strength of its
+  diff.</p>
+</div>
+
+<h2>Non-goals</h2>
+<ul>
+  <li>A run table in the Workflows settings panel. <code>WorkflowRuns.tsx</code> owns that.</li>
+  <li>Putting Foreman on the SSE channel. <code>SettingsStatus</code> excludes it deliberately.</li>
+  <li>The topbar Foreman popover, which owns the in-the-moment knobs while the panel owns the
+    durable posture.</li>
+  <li>A general design-system pass. This is two panels adopting one existing shape.</li>
+</ul>
+
+</div>
+</body>
+</html>

@@ -9,6 +9,7 @@ import {
   captureWorktreeSnapshot,
   ensembleSnapshotRef,
   materializeSnapshotDiff,
+  quoteGitDiffPath,
   resetWorktreeToCommit,
   resolveEnsembleRef,
   restoreSnapshotIntoWorktree,
@@ -399,6 +400,10 @@ function patchFiles(patch: string): string[] {
   return [...patch.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]!);
 }
 
+function patchSectionCount(patch: string): number {
+  return patch.match(/^diff --git /gm)?.length ?? 0;
+}
+
 /** The exec seam, wrapping the REAL `run` so the invocations are counted, never faked. */
 function recordingDeps(): { calls: string[][]; deps: SnapshotDiffDeps } {
   const calls: string[][] = [];
@@ -415,6 +420,9 @@ async function capturedWithNastyNames(name: string) {
   writeFileSync(join(member, "keep.txt"), "edited by the member\n");
   writeFileSync(join(member, "--exploit"), "a filename that is also a flag\n");
   writeFileSync(join(member, ":(glob)**"), "a filename that is also pathspec magic\n");
+  writeFileSync(join(member, "space name.txt"), "a filename containing a space\n");
+  writeFileSync(join(member, "quote\"name.txt"), "a filename containing a quote\n");
+  writeFileSync(join(member, "café.txt"), "a filename containing non-ASCII text\n");
   const captured = await captureWorktreeSnapshot({
     worktreePath: member,
     ensembleId: randomUUID(),
@@ -541,6 +549,57 @@ test("either side of a rename selects exactly that one rename diff", async () =>
   assert.deepEqual(fromNew.patchPaths, ["moved.txt"]);
 });
 
+test("a file-to-directory collision returns only the exact file section", async () => {
+  const repo = join(tmp, "file-directory-collision");
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  git(repo, "config", "user.email", "t@test");
+  git(repo, "config", "user.name", "t");
+  writeFileSync(join(repo, "src"), "the blob that will be deleted\n");
+  git(repo, "add", "src");
+  git(repo, "commit", "-qm", "base");
+  const baseSha = git(repo, "rev-parse", "HEAD");
+  const member = join(tmp, "file-directory-collision-member");
+  git(repo, "worktree", "add", "-q", "-b", "member/file-directory-collision", member, baseSha);
+  rmSync(join(member, "src"));
+  mkdirSync(join(member, "src"));
+  writeFileSync(join(member, "src", "a.ts"), "");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const cut = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["src"],
+  });
+
+  assert.equal(patchSectionCount(cut.patch), 1);
+  assert.match(cut.patch, /^diff --git a\/src b\/src$/m);
+  assert.doesNotMatch(cut.patch, /src\/a\.ts/);
+  assert.deepEqual(cut.files.map((file) => file.path).sort(), ["src", "src/a.ts"]);
+  assert.deepEqual(cut.patchPaths, ["src"]);
+});
+
+test("exact filenames with spaces and quoted characters keep one section", async () => {
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("quoted-paths");
+  assert.equal(quoteGitDiffPath("a/space name.txt"), "a/space name.txt");
+  assert.equal(quoteGitDiffPath("a/café.txt"), "a/café.txt");
+  assert.equal(quoteGitDiffPath("a/quote\"name.txt"), "\"a/quote\\\"name.txt\"");
+  assert.equal(quoteGitDiffPath("a/control\u0001.txt"), "\"a/control\\001.txt\"");
+
+  for (const path of ["space name.txt", "quote\"name.txt", "café.txt"]) {
+    const cut = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [path] });
+    const header = `diff --git ${quoteGitDiffPath(`a/${path}`)} ${quoteGitDiffPath(`b/${path}`)}`;
+    assert.equal(patchSectionCount(cut.patch), 1, path);
+    assert.ok(cut.patch.startsWith(`${header}\n`), path);
+    assert.deepEqual(cut.patchPaths, [path]);
+  }
+});
+
 test("a filtered patch refuses any rendered diff header outside the requested file", async () => {
   const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("header-post-check");
   const deps: SnapshotDiffDeps = {
@@ -556,7 +615,7 @@ test("a filtered patch refuses any rendered diff header outside the requested fi
 
   await assert.rejects(
     materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["keep.txt"] }, deps),
-    /must contain only the requested file/,
+    /unattributable diff header/,
   );
 });
 

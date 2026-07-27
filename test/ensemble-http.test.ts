@@ -1,5 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -218,12 +219,27 @@ test("POST /api/ensembles/:id/actions decides through the manager and reaches co
  * path - route, adapter, `git diff` - which is also the only way `?path=` can be shown to cut
  * an actual patch rather than a fixture that agreed to look cut.
  */
-async function runWithRealArtifact(store: InstanceType<typeof EnsembleStore>, sourceKey: string) {
-  const { path: repo, baseSha } = gitRepo();
-  writeFileSync(join(repo, "a.txt"), "first candidate file\n");
-  writeFileSync(join(repo, "b.txt"), "second candidate file\n");
-  mkdirSync(join(repo, "src"), { recursive: true });
-  writeFileSync(join(repo, "src", "nested.ts"), "nested candidate file\n");
+async function runWithRealArtifact(
+  store: InstanceType<typeof EnsembleStore>,
+  sourceKey: string,
+  fileDirectoryCollision = false,
+) {
+  const { path: repo, baseSha: initialBaseSha } = gitRepo();
+  let baseSha = initialBaseSha;
+  if (fileDirectoryCollision) {
+    writeFileSync(join(repo, "src"), "blob replaced by a directory\n");
+    execFileSync("git", ["-C", repo, "add", "src"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "collision base"]);
+    baseSha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    rmSync(join(repo, "src"));
+    mkdirSync(join(repo, "src"));
+    writeFileSync(join(repo, "src", "nested.ts"), "");
+  } else {
+    writeFileSync(join(repo, "a.txt"), "first candidate file\n");
+    writeFileSync(join(repo, "b.txt"), "second candidate file\n");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "nested.ts"), "nested candidate file\n");
+  }
   const snapshot = await captureWorktreeSnapshot({
     worktreePath: repo,
     ensembleId: randomUUID(),
@@ -323,6 +339,25 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   assert.equal(filesOnlyBody.filesChanged, 3);
   assert.deepEqual(filesOnlyBody.files, wholeBody.files, "the same complete file list, for one git call");
   assert.equal(filesOnlyBody.insertions, 3);
+});
+
+test("GET .../patch slices a file-to-directory collision to the exact file", async () => {
+  const { store, app } = build();
+  const { runId, artifactId } = await runWithRealArtifact(store, "patch-collision", true);
+  const url = `/api/ensembles/${runId}/artifacts/${artifactId}/patch?path=src`;
+
+  const response = await req(app, url, undefined, "GET");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    patch: string;
+    patchPaths: string[];
+    files: Array<{ path: string }>;
+  };
+  assert.equal(body.patch.match(/^diff --git /gm)?.length, 1);
+  assert.match(body.patch, /^diff --git a\/src b\/src$/m);
+  assert.doesNotMatch(body.patch, /src\/nested\.ts/);
+  assert.deepEqual(body.patchPaths, ["src"]);
+  assert.deepEqual(body.files.map((file) => file.path).sort(), ["src", "src/nested.ts"]);
 });
 
 test("GET .../patch still refuses an artifact that is not ready, whatever it was asked for", async () => {

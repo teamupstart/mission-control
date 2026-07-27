@@ -294,13 +294,13 @@ function fileStatPaths(file: SnapshotFileStat): string[] {
   return file.oldPath === null ? [file.path] : [file.oldPath, file.path];
 }
 
-function exactPatchPaths(paths: string[], files: SnapshotFileStat[]): string[] {
+function exactPatchFiles(paths: string[], files: SnapshotFileStat[]): SnapshotFileStat[] {
   const changedPaths = files.flatMap(fileStatPaths);
-  const exact: string[] = [];
+  const exact: SnapshotFileStat[] = [];
   for (const path of paths) {
     const file = files.find((candidate) => fileStatPaths(candidate).includes(path));
     if (file !== undefined) {
-      exact.push(...fileStatPaths(file));
+      if (!exact.includes(file)) exact.push(file);
       continue;
     }
     const directory = path.replace(/\/+$/, "");
@@ -313,70 +313,100 @@ function exactPatchPaths(paths: string[], files: SnapshotFileStat[]): string[] {
       );
     }
   }
-  return [...new Set(exact)];
+  return exact;
 }
 
-function decodeDiffPathToken(token: string): string | null {
-  if (!token.startsWith("\"")) return token;
-  if (!token.endsWith("\"")) return null;
-  const bytes: number[] = [];
-  for (let i = 1; i < token.length - 1; i++) {
-    const codePoint = token.codePointAt(i);
-    if (codePoint === undefined) return null;
-    const char = String.fromCodePoint(codePoint);
-    if (char !== "\\") {
-      bytes.push(...Buffer.from(char));
-      i += char.length - 1;
-      continue;
+const GIT_C_ESCAPES = new Map<number, string>([
+  [0x07, "\\a"],
+  [0x08, "\\b"],
+  [0x09, "\\t"],
+  [0x0a, "\\n"],
+  [0x0b, "\\v"],
+  [0x0c, "\\f"],
+  [0x0d, "\\r"],
+  [0x22, "\\\""],
+  [0x5c, "\\\\"],
+]);
+
+export function quoteGitDiffPath(path: string): string {
+  let quoted = false;
+  let rendered = "";
+  for (const char of path) {
+    const codePoint = char.codePointAt(0)!;
+    const escaped = GIT_C_ESCAPES.get(codePoint);
+    if (escaped !== undefined) {
+      quoted = true;
+      rendered += escaped;
+    } else if (codePoint < 0x20 || codePoint === 0x7f) {
+      quoted = true;
+      rendered += `\\${codePoint.toString(8).padStart(3, "0")}`;
+    } else {
+      rendered += char;
     }
-    const escaped = token[++i];
-    if (escaped === undefined) return null;
-    const simple: Record<string, number> = {
-      a: 0x07,
-      b: 0x08,
-      t: 0x09,
-      n: 0x0a,
-      v: 0x0b,
-      f: 0x0c,
-      r: 0x0d,
-      "\"": 0x22,
-      "\\": 0x5c,
-    };
-    const simpleByte = simple[escaped];
-    if (simpleByte !== undefined) {
-      bytes.push(simpleByte);
-      continue;
-    }
-    if (/[0-7]/.test(escaped)) {
-      let octal = escaped;
-      while (octal.length < 3 && /[0-7]/.test(token[i + 1] ?? "")) octal += token[++i];
-      bytes.push(Number.parseInt(octal, 8));
-      continue;
-    }
-    return null;
   }
-  return Buffer.from(bytes).toString("utf8");
+  return quoted ? `"${rendered}"` : rendered;
 }
 
-function requireExactPatchHeaders(patch: string, paths: string[]): void {
-  const requested = new Set(paths);
-  for (const line of patch.split("\n")) {
-    if (!line.startsWith("diff --git ")) continue;
-    const header = /^diff --git ("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|\S+)$/.exec(line);
-    const oldToken = header?.[1];
-    const newToken = header?.[2];
-    const oldPath = oldToken === undefined ? null : decodeDiffPathToken(oldToken);
-    const newPath = newToken === undefined ? null : decodeDiffPathToken(newToken);
-    const oldFile = oldPath?.startsWith("a/") ? oldPath.slice(2) : null;
-    const newFile = newPath?.startsWith("b/") ? newPath.slice(2) : null;
-    if ((oldFile !== null && requested.has(oldFile)) || (newFile !== null && requested.has(newFile))) {
-      continue;
-    }
-    throw new SnapshotPathRefused(
-      paths[0]!,
-      `a per-file patch must contain only the requested file; the rendered diff included "${line}"`,
-    );
+function diffHeaderFor(file: SnapshotFileStat): string {
+  const oldPath = file.oldPath ?? file.path;
+  return `diff --git ${quoteGitDiffPath(`a/${oldPath}`)} ${quoteGitDiffPath(`b/${file.path}`)}`;
+}
+
+function findDiffHeader(patch: string, from: number): number {
+  const marker = "diff --git ";
+  let index = patch.indexOf(marker, from);
+  while (index !== -1 && index !== 0 && patch[index - 1] !== "\n") {
+    index = patch.indexOf(marker, index + marker.length);
   }
+  return index;
+}
+
+function sliceExactPatch(
+  patch: string,
+  files: SnapshotFileStat[],
+  selectedFiles: SnapshotFileStat[],
+  refusalPath: string,
+): string {
+  const filesByHeader = new Map<string, SnapshotFileStat[]>();
+  for (const file of files) {
+    const header = diffHeaderFor(file);
+    const candidates = filesByHeader.get(header);
+    if (candidates === undefined) filesByHeader.set(header, [file]);
+    else candidates.push(file);
+  }
+  const selected = new Set(selectedFiles);
+  const sections: string[] = [];
+  let start = findDiffHeader(patch, 0);
+  if (start === -1) {
+    if (patch === "") return "";
+    throw new SnapshotPathRefused(refusalPath, "a per-file patch contained no attributable diff header");
+  }
+  if (start !== 0) {
+    throw new SnapshotPathRefused(refusalPath, "a per-file patch contained content before its first diff header");
+  }
+  while (start !== -1) {
+    const lineEnd = patch.indexOf("\n", start);
+    const headerEnd = lineEnd === -1 ? patch.length : lineEnd;
+    const header = patch.slice(start, headerEnd);
+    const candidates = filesByHeader.get(header);
+    if (candidates === undefined) {
+      throw new SnapshotPathRefused(
+        refusalPath,
+        `a per-file patch contained an unattributable diff header: "${header}"`,
+      );
+    }
+    const selectedCount = candidates.reduce((count, file) => count + Number(selected.has(file)), 0);
+    if (selectedCount > 0 && selectedCount !== candidates.length) {
+      throw new SnapshotPathRefused(
+        refusalPath,
+        `a per-file patch contained an ambiguous diff header: "${header}"`,
+      );
+    }
+    const next = findDiffHeader(patch, headerEnd);
+    if (selectedCount > 0) sections.push(patch.slice(start, next === -1 ? patch.length : next));
+    start = next;
+  }
+  return sections.join("");
 }
 
 /**
@@ -441,7 +471,8 @@ export async function materializeSnapshotDiff(
   );
   requireOk("git diff --numstat", numstat);
   const files = parseNumstatZ(numstat.stdout);
-  const pathsInDifference = exactPatchPaths(filter, files);
+  const selectedFiles = exactPatchFiles(filter, files);
+  const pathsInDifference = [...new Set(selectedFiles.flatMap(fileStatPaths))];
 
   const stats = {
     baseSha,
@@ -471,7 +502,7 @@ export async function materializeSnapshotDiff(
   const patchRun = await deps.run(
     "git",
     [
-      "-C", input.repoPath, "diff", "--find-renames", baseSha, snapshotSha,
+      "-C", input.repoPath, "-c", "core.quotePath=false", "diff", "--find-renames", baseSha, snapshotSha,
       // `--` first, so a path can never be read as a flag or a revision: a tracked file
       // named `--exploit` is a legal filename and an illegal argument, and only the
       // separator tells the two apart.
@@ -484,7 +515,7 @@ export async function materializeSnapshotDiff(
       // different readings of the same word. `:(glob)**`, `:!src` and `:/` are all magic
       // after the separator, so a "one file" request could quietly return hunks for many -
       // exactly the expansion a per-file cut exists to avoid. Literal pathspecs make every
-      // path name a file, including the one whose name looks like magic. Set on this
+      // path name literal, including the one whose name looks like magic. Set on this
       // invocation because it is the only one that ever carries a pathspec, and set
       // explicitly rather than inherited so an operator's exported value cannot decide it.
       // Git rejects literal pathspec mode when any other global pathspec mode is inherited.
@@ -499,9 +530,11 @@ export async function materializeSnapshotDiff(
     );
   }
   requireOk("git diff", patchRun);
-  if (filter.length > 0) requireExactPatchHeaders(patchRun.stdout, filter);
+  const renderedPatch = filter.length > 0
+    ? sliceExactPatch(patchRun.stdout, files, selectedFiles, filter[0]!)
+    : patchRun.stdout;
 
-  const { patch, truncated, omittedBytes } = capPatch(patchRun.stdout, budget);
+  const { patch, truncated, omittedBytes } = capPatch(renderedPatch, budget);
 
   return {
     ...stats,

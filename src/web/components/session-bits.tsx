@@ -562,6 +562,16 @@ export function ensembleClusterHeadline(
   };
 }
 
+function ensembleAttentionInFrame(
+  summary: EnsembleSummary | null,
+  blockedHere: number,
+): { here: number; elsewhere: number } {
+  return {
+    here: blockedHere,
+    elsewhere: Math.max(0, (summary?.membersNeedingInput ?? 0) - blockedHere),
+  };
+}
+
 /**
  * The header a cluster of sibling members wears, in the rail's density.
  *
@@ -570,6 +580,7 @@ export function ensembleClusterHeadline(
  * A `<button>` rather than a row, because unlike `RailRow` it is not nested inside one - the
  * deep link into the run is reachable from the keyboard here. It is NOT a session row: rail
  * navigation walks session ids (`layoutNav.ts`), so an arrow key steps straight past it.
+ * Phase 3 step 6 deliberately omits the strategy label at this density; member rows retain it.
  */
 export function EnsembleRailGroup({
   summary,
@@ -584,10 +595,11 @@ export function EnsembleRailGroup({
   onOpen?: () => void;
 }): React.JSX.Element {
   const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel);
+  const attention = ensembleAttentionInFrame(summary, blockedHere);
   return (
     <Tooltip label={tooltip}>
       <button
-        className={`rail-ensemble-group${blockedHere > 0 ? " needs-you" : ""}`}
+        className={`rail-ensemble-group${attention.here > 0 ? " needs-you" : ""}`}
         aria-label={tooltip}
         onClick={onOpen}
       >
@@ -597,6 +609,10 @@ export function EnsembleRailGroup({
         <span className="reg-title">{title}</span>
         {summary && <span className="reg-stage">{ensembleStageWord(summary)}</span>}
         <EnsembleProgressDots summary={summary} />
+        {attention.here > 0 && <span className="reg-needs">!{attention.here}</span>}
+        {attention.elsewhere > 0 && (
+          <span className="reg-needs is-elsewhere">!{attention.elsewhere}</span>
+        )}
       </button>
     </Tooltip>
   );
@@ -635,12 +651,11 @@ export function EnsembleClusterHead({
   onOpen?: () => void;
 }): React.JSX.Element {
   const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel);
-  const blockedRun = summary ? summary.membersNeedingInput : 0;
-  const elsewhere = Math.max(0, blockedRun - blockedHere);
+  const attention = ensembleAttentionInFrame(summary, blockedHere);
   return (
     <Tooltip label={tooltip}>
       <button
-        className={`board-cluster-head${blockedHere > 0 ? " needs-you" : ""}`}
+        className={`board-cluster-head${attention.here > 0 ? " needs-you" : ""}`}
         aria-label={tooltip}
         onClick={onOpen}
       >
@@ -651,20 +666,20 @@ export function EnsembleClusterHead({
           <span className="bch-title">{title}</span>
           <EnsembleProgressDots summary={summary} />
         </span>
-        {(summary || elsewhere > 0) && (
+        {(summary || attention.here > 0 || attention.elsewhere > 0) && (
           <span className="bch-line">
             {summary && (
               <span className="bch-meta">
                 {summary.strategyLabel} · {ensembleStageWord(summary)}
               </span>
             )}
-            {blockedHere > 0 ? (
+            {attention.here > 0 ? (
               <span className="bch-needs">
-                {blockedHere} need{blockedHere === 1 ? "s" : ""} you
+                {attention.here} need{attention.here === 1 ? "s" : ""} you
               </span>
             ) : (
-              elsewhere > 0 && (
-                <span className="bch-needs is-elsewhere">{elsewhere} elsewhere</span>
+              attention.elsewhere > 0 && (
+                <span className="bch-needs is-elsewhere">{attention.elsewhere} elsewhere</span>
               )
             )}
           </span>

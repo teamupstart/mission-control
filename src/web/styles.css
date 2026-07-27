@@ -11927,6 +11927,27 @@ select.foreman-model-input {
   flex: none;
   color: var(--dim);
 }
+.reg-needs {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  color: var(--bg);
+  background: var(--attention);
+}
+.reg-title + .reg-needs {
+  margin-left: auto;
+}
+.reg-needs.is-elsewhere {
+  color: var(--attention);
+  background: none;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attention) 55%, transparent);
+  font-weight: 600;
+}
 .rail-row {
   position: relative;
   display: grid;

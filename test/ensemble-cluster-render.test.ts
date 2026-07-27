@@ -194,6 +194,13 @@ test("a cluster renders before its run summary arrives, named from the member li
   assert.doesNotMatch(html, /bch-stage/);
 });
 
+test("a blocked cluster header needs no run summary to show its actionable count", () => {
+  const html = board({ sessions: [member(1), blockedMember(2)] });
+  assert.match(html, /bch-needs">1 needs you</);
+  assert.doesNotMatch(html, /bch-meta/);
+  assert.doesNotMatch(html, /is-elsewhere/);
+});
+
 test("the console rail heads each cluster with a row that is not a session row", () => {
   // Rail navigation walks session ids (`layoutNav.ts`), so the header must not be a `.rail-row`
   // - an arrow key has to step over it rather than select a header.
@@ -209,6 +216,31 @@ test("the console rail heads each cluster with a row that is not a session row",
   // Two members, two rail rows, one header.
   assert.equal(html.match(/class="rail-row[^"]*"/g)?.length, 2);
   assert.equal(html.match(/class="rail-ensemble-group"/g)?.length, 1);
+});
+
+test("rail cluster headers distinguish attention here from attention elsewhere", () => {
+  const summary = mkEnsembleSummary({
+    membersNeedingInput: 1,
+    attention: true,
+  });
+  const html = consoleRail({
+    sessions: [member(1), blockedMember(2), member(3)],
+    ensembleSummaryByRun: new Map([[summary.id, summary]]),
+  });
+  assert.equal(html.match(/class="reg-needs">!1</g)?.length, 1);
+  assert.equal(html.match(/class="reg-needs is-elsewhere">!1</g)?.length, 1);
+});
+
+test("calm cluster headers render no attention mark", () => {
+  const sessions = [member(1), member(2)];
+  assert.doesNotMatch(
+    board({ sessions, ensembleSummaryByRun: SUMMARIES }),
+    /(?:bch-needs|reg-needs)/,
+  );
+  assert.doesNotMatch(
+    consoleRail({ sessions, ensembleSummaryByRun: SUMMARIES }),
+    /(?:bch-needs|reg-needs)/,
+  );
 });
 
 test("the board's drilled-in column uses the SAME rail header the console does", () => {

@@ -20,17 +20,24 @@ import { sleep } from "./util/timers.ts";
 const POLL_MS = 900;
 /** Idle comment ping so the SSE connection survives proxies. */
 const HEARTBEAT_MS = 15000;
+/**
+ * Most a `?from=` resume will carry before the stream re-seeds instead.
+ *
+ * A reconnect is normally seconds of missed turns, so this is not a performance dial - it
+ * is where "I missed a moment" stops being a fair description. Past it the reader is told
+ * to start from a fresh window rather than handed one enormous catch-up frame.
+ */
+const RESUME_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
- * Credit the turns Foreman and the dashboard typed to them, so the log doesn't read as
- * the human having asked for work they never asked for.
+ * SSE handler for `GET /api/sessions/:id/transcript/stream`.
  *
- * Deliberately not inside the harness's line parser: that's a pure parse of a file, this
- * is a fact only the running daemon holds (see injections.ts). Only the SSE stream is
- * annotated for the dashboard's live stream and backward pages. The one-shot reviewer
- * window stays unattributed because it is reading for what the AGENT did.
+ * Turns are credited to whoever typed them via `attributeTranscript`, which lives beside
+ * this rather than inside a harness's line parser: that is a pure parse of a file, this is
+ * a fact only the running daemon holds (see injections.ts). It reaches the dashboard's
+ * live stream and its backward pages; the one-shot reviewer window stays unattributed,
+ * because that reader is asking what the AGENT did.
  */
-/** SSE handler for `GET /api/sessions/:id/transcript/stream`. */
 export function transcriptStreamHandler(registry: Registry) {
   return (c: Context) =>
     streamSSE(c, async (stream) => {
@@ -57,15 +64,53 @@ export function transcriptStreamHandler(registry: Registry) {
       const { read, path } = source;
 
       let pos = 0;
+      // `?from=<byte>` is a reader saying "I still have everything up to here, just tell
+      // me what is new". Honouring it is what keeps a dropped connection from costing the
+      // reader their scrollback: an `init` is anchored at the CURRENT end of the file, so
+      // on a session that is actively working the anchor has already moved and the pages
+      // above it no longer join onto anything.
+      //
+      // Refused, deliberately, in the two cases where continuing would be a guess: an
+      // offset past EOF means the file was cleared or rotated and the anchor names a byte
+      // that no longer exists, and a gap wider than `RESUME_MAX_BYTES` is more than a
+      // reconnect can honestly be said to have missed. Both fall through to `init`, which
+      // is correct rather than cheap - the reader is told to start over instead of being
+      // handed a continuation with a hole in it.
+      const resumeFrom = (): number | null => {
+        const raw = c.req.query("from");
+        if (raw === undefined || raw === "") return null;
+        const from = Number(raw);
+        if (!Number.isSafeInteger(from) || from < 0) return null;
+        try {
+          const size = statSync(path).size;
+          if (from > size || size - from > RESUME_MAX_BYTES) return null;
+        } catch {
+          return null;
+        }
+        return from;
+      };
+
       try {
-        const init = read.initial(path);
-        pos = init.pos;
-        await send({
-          type: "init",
-          messages: attributeTranscript(id, init.messages),
-          start: init.start,
-          atStart: init.atStart,
-        });
+        const from = resumeFrom();
+        if (from !== null) {
+          const resumed = read.appended(path, from);
+          pos = resumed.pos;
+          await send({
+            type: "resume",
+            messages: attributeTranscript(id, resumed.messages),
+            pos,
+          });
+        } else {
+          const init = read.initial(path);
+          pos = init.pos;
+          await send({
+            type: "init",
+            messages: attributeTranscript(id, init.messages),
+            start: init.start,
+            atStart: init.atStart,
+            pos,
+          });
+        }
       } catch {
         await send({ type: "unavailable", reason: "Could not read the transcript file." });
         return;
@@ -81,7 +126,7 @@ export function transcriptStreamHandler(registry: Registry) {
           const { messages, pos: next } = read.appended(path, pos);
           pos = next;
           if (messages.length > 0) {
-            await send({ type: "append", messages: attributeTranscript(id, messages) });
+            await send({ type: "append", messages: attributeTranscript(id, messages), pos });
             sinceHeartbeat = 0;
             continue;
           }

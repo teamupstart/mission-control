@@ -51,6 +51,15 @@ export interface SessionHistory {
   tailStart: number;
   /** The live window: the stream's opening turns plus everything appended since. */
   tail: TranscriptMessage[];
+  /**
+   * Byte offset the live window has been read up to.
+   *
+   * What a reconnect hands back as `?from=`, so the stream continues this history instead
+   * of re-anchoring a fresh window at the current end of the file. Without it a reconnect
+   * had to re-seed, and re-seeding drops the scrollback whenever the agent wrote anything
+   * meanwhile - which, on a session that is working, is always.
+   */
+  tailEnd: number;
   /** True when the oldest page held is as far back as the file goes. */
   atStart: boolean;
 }
@@ -105,21 +114,29 @@ export function backAnchor(h: SessionHistory | null): number | null {
  * Take a fresh `init` window from the stream, keeping scroll-back that still fits above
  * it.
  *
- * Called on connect AND on every reconnect, which is the case that matters: the stream
- * re-states its tail from scratch, and replacing the whole view with it is what used to
- * throw away a long session's history on a blip.
+ * This is the START-OVER path, not the reconnect path. A reconnect hands the stream
+ * `?from=` and gets a `resume`, which leaves the anchor and every held page exactly where
+ * they were - see `resumeTail`. Re-seeding through here happens on a first connect, after
+ * a reset, and when the server REFUSES to resume: the file was cleared or rotated, or
+ * more was written than a reconnect can honestly claim to have missed.
  *
- * A held page survives only when it still abuts the new window exactly. The tail anchor
- * only ever moves FORWARD (the file is append-only, so the "last N turns" boundary
- * advances), so held pages are never too new - they are either flush against the new
- * window or separated from it by turns written while we were away. That gap is the one
- * thing this cannot paper over: rendering across it would put two non-adjacent turns
- * side by side and show nothing to say so. Dropping is recoverable and silently lying is
- * not, and scrolling up re-reads the dropped span anyway.
+ * That refusal is what makes the strict test below the right one. A held page survives
+ * only when it still abuts the new window exactly; the tail anchor only ever moves
+ * FORWARD (the file is append-only, so the "last N turns" boundary advances), so held
+ * pages are never too new - they are either flush against the new window or separated
+ * from it by turns written while we were away. That gap is the one thing this cannot
+ * paper over: rendering across it would put two non-adjacent turns side by side and show
+ * nothing to say so. Dropping is recoverable and silently lying is not, and scrolling up
+ * re-reads the dropped span anyway.
+ *
+ * Before `resume` existed this ran on every reconnect, and the strictness was a bug
+ * rather than a safeguard: a single turn written during a blip slid `init.start` forward
+ * and cost the reader every page they had scrolled back to, with no gap that could not
+ * have been bridged.
  */
 export function seedTail(
   sessionId: string,
-  init: { messages: TranscriptMessage[]; start: number; atStart: boolean },
+  init: { messages: TranscriptMessage[]; start: number; atStart: boolean; pos: number },
 ): SessionHistory {
   const prev = histories.get(sessionId);
   const newest = prev?.older[prev.older.length - 1];
@@ -133,6 +150,7 @@ export function seedTail(
       older: prev.older,
       tailStart: init.start,
       tail: init.messages,
+      tailEnd: init.pos,
       // `atStart` describes the OLDEST page held, which this window is not when pages
       // survived above it - taking the stream's answer here would claim the file starts
       // at a turn the reader has already scrolled past.
@@ -143,7 +161,42 @@ export function seedTail(
     older: [],
     tailStart: init.start,
     tail: init.messages,
+    tailEnd: init.pos,
     atStart: init.atStart,
+  });
+}
+
+/**
+ * The offset a reconnect should ask the stream to continue from, or null when there is
+ * nothing to continue.
+ */
+export function resumeAnchor(sessionId: string): number | null {
+  const held = histories.get(sessionId);
+  return held ? held.tailEnd : null;
+}
+
+/**
+ * Extend the live window with the turns a reconnect reported as missed.
+ *
+ * The counterpart to `seedTail`, and the reason a dropped connection is now free: the
+ * reader keeps every page it had, the anchor does not move, and only genuinely new turns
+ * arrive. Returns null when nothing is held for this session, which is the caller's cue
+ * that the stream should have been asked for a fresh window instead.
+ */
+export function resumeTail(
+  sessionId: string,
+  resumed: { messages: TranscriptMessage[]; pos: number },
+): SessionHistory | null {
+  const prev = histories.get(sessionId);
+  if (!prev) return null;
+  const seen = new Set(prev.tail.map((m) => m.id));
+  const add = resumed.messages.filter((m) => !seen.has(m.id));
+  return store(sessionId, {
+    ...prev,
+    tail: add.length ? [...prev.tail, ...add] : prev.tail,
+    // Advance even when nothing new parsed: the bytes were still consumed, and leaving
+    // the anchor behind would make the next reconnect re-request a range already read.
+    tailEnd: Math.max(prev.tailEnd, resumed.pos),
   });
 }
 
@@ -165,21 +218,29 @@ export function prependPage(sessionId: string, page: HistoryPage & { atStart: bo
   // dropped. Dropping it would leave the anchor where it was and the next scroll would
   // ask the same question forever.
   return store(sessionId, {
+    ...prev,
     older: [{ start: page.start, end: page.end, messages: page.messages }, ...prev.older],
-    tailStart: prev.tailStart,
-    tail: prev.tail,
     atStart: page.atStart,
   });
 }
 
 /** Extend the live window with turns the stream just appended. */
-export function appendLive(sessionId: string, messages: TranscriptMessage[]): SessionHistory | null {
+export function appendLive(
+  sessionId: string,
+  messages: TranscriptMessage[],
+  pos?: number,
+): SessionHistory | null {
   const prev = histories.get(sessionId);
-  if (!prev || messages.length === 0) return prev ?? null;
+  if (!prev) return null;
   const seen = new Set(prev.tail.map((m) => m.id));
   const add = messages.filter((m) => !seen.has(m.id));
-  if (add.length === 0) return prev;
-  return store(sessionId, { ...prev, tail: [...prev.tail, ...add] });
+  const tailEnd = pos === undefined ? prev.tailEnd : Math.max(prev.tailEnd, pos);
+  if (add.length === 0 && tailEnd === prev.tailEnd) return prev;
+  return store(sessionId, {
+    ...prev,
+    tail: add.length ? [...prev.tail, ...add] : prev.tail,
+    tailEnd,
+  });
 }
 
 /**

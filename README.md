@@ -799,11 +799,16 @@ short session shows no control at all.
 
 What you have scrolled back to is kept for recently viewed sessions, so switching to the
 Diff tab and back, collapsing a card, or moving between sessions usually returns you to
-the history you had - not to the tail again. It survives a dropped connection and a
-daemon restart too, unless the agent wrote more while the dashboard was away than the
-reconnect's window covers; then the panel starts from the recent turns again and
-scrolling up re-reads the rest. The cache lasts for the browser tab; an evicted entry can
-always be fetched again by scrolling up.
+the history you had - not to the tail again. The cache lasts for the browser tab; an
+evicted entry can always be fetched again by scrolling up.
+
+A dropped connection or a daemon restart costs you nothing either: the panel reconnects
+by telling the daemon how far it already has, and gets back only the turns written while
+it was away. Your place in the conversation does not move. It starts over from the recent
+turns in two cases only - the transcript was cleared or replaced under it (a `/clear`), or
+the agent wrote more than a reconnect can honestly be said to have missed. Both are the
+honest answer rather than a continuation with an invisible hole in it, and scrolling up
+re-reads whatever was dropped.
 
 ### Shadow reading: Claude's own session state
 

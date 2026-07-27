@@ -17,6 +17,8 @@ import {
   flattenHistory,
   prependPage,
   readHistory,
+  resumeAnchor,
+  resumeTail,
   seedTail,
 } from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
@@ -43,6 +45,17 @@ const ORIGIN_LABEL: Record<TurnOrigin, string> = {
   harness: "mission control",
   workflow: "workflow",
 };
+
+/**
+ * Reconnect backoff for the transcript stream, which this panel drives itself rather than
+ * leaving to `EventSource` (see the stream effect for why).
+ *
+ * The floor is short because the common drop is a daemon restart and the reader is
+ * watching the log while it happens; the ceiling keeps a session whose transcript has gone
+ * for good from retrying in a tight loop for as long as the card stays open.
+ */
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 8000;
 
 /**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's
@@ -236,36 +249,79 @@ export function TranscriptPanel({
     setOlderError(null);
     setStatus("connecting");
     setNote("");
-    const es = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`);
-    es.onmessage = (ev) => {
-      let msg: TranscriptStreamMsg;
-      try {
-        msg = JSON.parse(ev.data) as TranscriptStreamMsg;
-      } catch {
-        return;
-      }
-      if (msg.type === "init") {
-        // `init` arrives on every reconnect, so this is the moment a long session used to
-        // lose its history: the stream re-states its bounded tail, and taking it as the
-        // whole conversation discarded everything above. `seedTail` keeps the pages that
-        // still abut it and reports what survived.
-        const next = seedTail(sessionId, msg);
-        setMessages(flattenHistory(next));
-        setCanLoadOlder(backAnchor(next) !== null);
-        setStatus("live");
-      } else if (msg.type === "append") {
-        const next = appendLive(sessionId, msg.messages);
-        if (next) setMessages(flattenHistory(next));
-        else setMessages((prev) => mergeById(prev, msg.messages));
-      } else if (msg.type === "unavailable") {
-        setStatus("unavailable");
-        setNote(msg.reason);
-      }
+    // The reconnect is OURS, not the browser's.
+    //
+    // `EventSource` retries the URL it was constructed with, which would pin `?from=` to
+    // whatever offset this mount started at - so a reconnect an hour in would ask the
+    // server to replay an hour of turns it already has. Reconnecting by hand is what lets
+    // each attempt carry the offset the reader has actually reached, which is the whole
+    // point of resuming: the anchor never moves, so the pages scrolled back to survive.
+    let es: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let delay = RECONNECT_MIN_MS;
+    let closed = false;
+
+    const connect = (): void => {
+      if (closed) return;
+      const from = resumeAnchor(sessionId);
+      const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
+      es = new EventSource(from === null ? base : `${base}?from=${encodeURIComponent(String(from))}`);
+      es.onopen = () => {
+        delay = RECONNECT_MIN_MS;
+      };
+      es.onmessage = (ev) => {
+        let msg: TranscriptStreamMsg;
+        try {
+          msg = JSON.parse(ev.data) as TranscriptStreamMsg;
+        } catch {
+          return;
+        }
+        if (msg.type === "init") {
+          // The start-over path: a first connect, or a resume the server refused because
+          // the file moved or too much was written to bridge. `seedTail` keeps whatever
+          // pages still abut this window and reports what survived.
+          const next = seedTail(sessionId, msg);
+          setMessages(flattenHistory(next));
+          setCanLoadOlder(backAnchor(next) !== null);
+          setStatus("live");
+        } else if (msg.type === "resume") {
+          // The reconnect path: the reader keeps every page and the anchor stays put, so
+          // only genuinely missed turns arrive. A cache that has since been dropped (a
+          // reset, an eviction) leaves nothing to continue, so fall back to seeding.
+          const next = resumeTail(sessionId, msg);
+          if (next) {
+            setMessages(flattenHistory(next));
+            setCanLoadOlder(backAnchor(next) !== null);
+          } else {
+            setMessages((prev) => mergeById(prev, msg.messages));
+          }
+          setStatus("live");
+        } else if (msg.type === "append") {
+          const next = appendLive(sessionId, msg.messages, msg.pos);
+          if (next) setMessages(flattenHistory(next));
+          else setMessages((prev) => mergeById(prev, msg.messages));
+        } else if (msg.type === "unavailable") {
+          setStatus("unavailable");
+          setNote(msg.reason);
+        }
+      };
+      es.onerror = () => {
+        // Close before retrying: left open, the browser starts its own reconnect against
+        // the stale URL and we would have two streams on one session.
+        es?.close();
+        es = null;
+        if (closed) return;
+        retry = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, RECONNECT_MAX_MS);
+      };
     };
-    // EventSource auto-reconnects on transient errors; keep the last view.
+    connect();
+
     return () => {
+      closed = true;
       historyEpoch.current += 1;
-      es.close();
+      if (retry) clearTimeout(retry);
+      es?.close();
     };
   }, [resetNonce, sessionId]);
 

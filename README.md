@@ -1759,12 +1759,12 @@ response and a retry return the same run, never a second fleet. Every candidate 
 standing is - `E 3/5 · working`, or an attention-toned **needs an answer** the moment that
 candidate is waiting on you. Siblings are drawn *together*: Cards sorts them adjacent, and the
 Board and the Console rail group them under a header carrying the run's title, its stage word,
-one dot per member of the roster and a **N need you** rollup - see
+one dot per member of the roster and an **N needs you** rollup - see
 [Layout](#layout-cards-console-or-board). The **Ensembles** tab beside Workflows, Personas and
 Runs is the monitoring, evidence, decision, recovery and history surface: it wears a badge
-counting the runs that need you (a parked decision, a failure, or a member on an unanswered
-question), lists runs attention-first from the one live SSE stream with their progress dots and
-`submitted/launched` counts,
+counting the runs the daemon marks as needing attention, and lists runs attention-first from the
+one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
+launched count while a wave is still opening),
 and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
 diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's scorecards,
 Consensus's agreements and divergence cards, Panel vote's aggregate and ballots), and the decision

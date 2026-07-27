@@ -327,18 +327,25 @@ export const deleteEnsemble = (id: string, confirmId: string) =>
  */
 export async function resolveRepo(
   path: string,
-): Promise<{ ok: true; repoRoot: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; repoRoot: string; path: string } | { ok: false; error: string }> {
   try {
     const res = await fetch("/api/repos/resolve", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path }),
     });
-    const data = (await res.json().catch(() => ({}))) as { repoRoot?: string; error?: string };
+    const data = (await res.json().catch(() => ({}))) as {
+      repoRoot?: string;
+      path?: string;
+      error?: string;
+    };
     if (!res.ok || !data.repoRoot) {
       return { ok: false, error: data.error ?? `HTTP ${res.status}` };
     }
-    return { ok: true, repoRoot: data.repoRoot };
+    // `path` is the CANONICAL form of what was asked about, which a caller needs when the
+    // subdirectory matters. An older daemon does not send it; falling back to the root
+    // reproduces the previous behaviour rather than failing the lookup.
+    return { ok: true, repoRoot: data.repoRoot, path: data.path ?? data.repoRoot };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

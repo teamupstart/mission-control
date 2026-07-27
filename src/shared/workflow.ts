@@ -662,6 +662,28 @@ export function checkCommandFor(
  * through `cwd` from outside the repository tree. Degrading those to the root is the safe
  * direction: the root is where a repository-wide command expects to be.
  */
+/**
+ * Which path a settings entry should STORE, given the repository a typed path resolved to
+ * and the canonical form of the path itself.
+ *
+ * The inverse of `checkCommandSubpath`, and it exists because resolving a typed path to its
+ * repository is lossy in exactly the direction that matters: `/repo/packages/web` resolves
+ * to `/repo`, so storing the resolved root alone makes the subdirectory override
+ * unconfigurable from Settings - a documented capability with no way to reach it.
+ *
+ * Keeps the typed path when it is the repository or strictly inside it, and falls back to
+ * the repository otherwise. That fallback is not defensive noise: a path canonicalizing
+ * outside the repository it resolved to is a symlinked or relocated checkout, and storing
+ * a root the matcher can never match would be an entry that silently never applies.
+ */
+export function checkCommandRoot(repoRoot: string, requestedPath: string): string {
+  const root = repoRoot.length > 1 && repoRoot.endsWith("/") ? repoRoot.slice(0, -1) : repoRoot;
+  const path = requestedPath.length > 1 && requestedPath.endsWith("/")
+    ? requestedPath.slice(0, -1)
+    : requestedPath;
+  return path === root || path.startsWith(`${root}/`) ? path : root;
+}
+
 export function checkCommandSubpath(
   repoRoot: string | null,
   entryRoot: string,

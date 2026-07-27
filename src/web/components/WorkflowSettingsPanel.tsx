@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { WorkflowCheckSlot, WorkflowConfig } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
+  checkCommandRoot,
   formatCheckCommand,
   parseCheckCommand,
 } from "@shared/workflow.ts";
@@ -232,17 +233,22 @@ export function WorkflowSettingsPanel({
         setLocalError(resolved.error);
         return;
       }
+      // The TYPED path when it is inside the repository, not the resolved root. Resolving
+      // is lossy in exactly the direction that matters here - `/repo/packages/web` resolves
+      // to `/repo` - so storing the root alone made the documented subdirectory override
+      // impossible to configure from this panel.
+      const root = checkCommandRoot(resolved.repoRoot, resolved.path);
       // Replace rather than append on a repeat: (root, slot) is the identity a check
       // resolves by, so two rows for one pair would make which command runs depend on list
       // order, which the operator cannot see.
       const rest = config.checkCommands.filter(
-        (item) => !(item.repoRoot === resolved.repoRoot && item.slot === checkSlot),
+        (item) => !(item.repoRoot === root && item.slot === checkSlot),
       );
       setCheckPath("");
       setCheckCommand("");
       await update({
         ...config,
-        checkCommands: [...rest, { repoRoot: resolved.repoRoot, slot: checkSlot, command: parsed.argv }],
+        checkCommands: [...rest, { repoRoot: root, slot: checkSlot, command: parsed.argv }],
       });
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : "Could not resolve repository");
@@ -409,7 +415,8 @@ export function WorkflowSettingsPanel({
           A workflow's Check node names a slot, never a command, so the same workflow can
           run on any repository. This is where each repository says what its slots run. A
           slot with no command here passes with a note rather than failing, and so does one
-          in a repository that is not allowlisted.
+          in a repository that is not allowlisted. Give a <strong>subdirectory</strong> to
+          override a repository-wide command for one package; the command then runs there.
         </p>
         {!config ? null : config.checkCommands.length === 0 ? (
           <p className="settings-hint wf-settings-empty">
@@ -447,7 +454,7 @@ export function WorkflowSettingsPanel({
             className="field-input"
             value={checkPath}
             disabled={!config || busy}
-            placeholder="/path/to/repository"
+            placeholder="/path/to/repository (or a subdirectory)"
             onChange={(event) => setCheckPath(event.target.value)}
           />
           <label className="sr-only" htmlFor="workflow-check-slot">Slot</label>

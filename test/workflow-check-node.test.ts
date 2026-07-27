@@ -7,6 +7,7 @@ import {
   WORKFLOW_LIMITS,
   checkBlockedReason,
   checkCommandFor,
+  checkCommandRoot,
   checkCommandSubpath,
   formatCheckCommand,
   parseCheckCommand,
@@ -338,6 +339,23 @@ test("a nested command's execution directory is relative to the checkout, not ab
   // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
   assert.equal(checkCommandSubpath("/repo", "/repo-backup/pkg"), "");
   assert.equal(checkCommandSubpath(null, "/repo/pkg"), "");
+});
+
+test("a typed subdirectory survives being resolved to its repository", () => {
+  // Resolving a path to its repository is lossy in exactly the direction that matters:
+  // /repo/packages/web resolves to /repo. Storing the root alone made the subdirectory
+  // override - documented, and wired all the way to the executor - impossible to configure
+  // from Settings, which is a capability that exists only for whoever calls the API by hand.
+  assert.equal(checkCommandRoot("/repo", "/repo/packages/web"), "/repo/packages/web");
+  assert.equal(checkCommandRoot("/repo", "/repo"), "/repo");
+  assert.equal(checkCommandRoot("/repo/", "/repo/packages/web/"), "/repo/packages/web");
+  // Outside the repository it resolved to - a symlinked or relocated checkout. Storing that
+  // would be an entry the matcher can never match, so it falls back to the repository.
+  assert.equal(checkCommandRoot("/repo", "/elsewhere/pkg"), "/repo");
+  assert.equal(checkCommandRoot("/repo", "/repo-backup/pkg"), "/repo");
+  // And it round-trips with the reader: what Settings stores is what resolution takes apart.
+  const stored = checkCommandRoot("/repo", "/repo/packages/web");
+  assert.equal(checkCommandSubpath("/repo", stored), "packages/web");
 });
 
 test("the resolved argv is a copy, so a caller cannot edit the stored config", () => {

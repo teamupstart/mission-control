@@ -110,9 +110,10 @@ export function KeyboardPanel(): React.JSX.Element {
         <span className="settings-toggle-text">
           <span className="settings-toggle-label">Show keybindings on buttons</span>
           <span className="settings-toggle-desc">
-            Buttons a shortcut also drives - Send, Focus, Conversation, Queue, Diff,
-            Files, Reset, Complete, Kill, Dispatch, Workflows - carry its key on their
-            face. Small icon buttons and the command bar are unaffected.
+            Buttons a shortcut also drives - Terminal, Codex / Claude, Send, Focus,
+            Conversation, Queue, Diff, Files, Reset, Complete, Kill, Dispatch, Workflows
+            - carry its key on their face. Small icon buttons and the command bar are
+            unaffected.
           </span>
         </span>
       </label>

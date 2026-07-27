@@ -161,6 +161,7 @@ function seed(registry: Registry_, request: SessionRequest | null, id = "sdk:one
     kind: "bound",
     agentSessionId: "agent-1",
     transcriptPath: null,
+    modelId: null,
     pid: null,
   });
   if (request) registry.applyDriverEvent(id, { kind: "request", request });
@@ -543,6 +544,7 @@ test("scheduled Codex controls wait for rollout observation before changing the 
     kind: "bound",
     agentSessionId: "thread-1",
     transcriptPath: rolloutPath,
+    modelId: "gpt-5.6-sol",
     pid: 123,
   });
   registry.applyRuntimeMeta(
@@ -628,6 +630,7 @@ test("a turn reaches the driver through /send, and the Send button is not a lie"
   const supervisor = {
     async send(id: string, turn: { text: string }) {
       sent.push({ id, text: turn.text });
+      return "queued" as const;
     },
   } as unknown as SdkSupervisor;
   const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:send/send", {
@@ -640,6 +643,7 @@ test("a turn reaches the driver through /send, and the Send button is not a lie"
   // button that always fails, which is worse than no button.
   assert.equal(res.status, 200);
   assert.deepEqual(sent, [{ id: "sdk:send", text: "carry on" }]);
+  assert.equal(((await res.json()) as { delivery: string }).delivery, "queued");
 });
 
 test("/inject reports a driver refusal as positive evidence that nothing landed", async () => {
@@ -668,14 +672,28 @@ test("/inject reports a driver refusal as positive evidence that nothing landed"
 test("a delivered turn is verified, because the harness said so", async () => {
   const registry = new Registry();
   seed(registry, null, "sdk:ok");
-  const supervisor = { async send() {} } as unknown as SdkSupervisor;
+  const supervisor = {
+    async send() {
+      return "started" as const;
+    },
+  } as unknown as SdkSupervisor;
   const res = await mkApp(registry, supervisor).request("/api/sessions/sdk:ok/inject", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ text: "go", origin: "foreman" }),
   });
-  const body = (await res.json()) as { ok: boolean; pasted: boolean; submitVerified: boolean };
-  assert.deepEqual(body, { ...body, ok: true, pasted: true, submitVerified: true });
+  const body = (await res.json()) as {
+    ok: boolean;
+    pasted: boolean;
+    submitVerified: boolean;
+    delivery: string;
+  };
+  assert.deepEqual(body, {
+    ok: true,
+    pasted: true,
+    submitVerified: true,
+    delivery: "started",
+  });
 });
 
 test("a handoff that stops the driver and cannot open a terminal settles its task", async () => {

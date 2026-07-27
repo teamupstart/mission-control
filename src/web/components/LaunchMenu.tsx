@@ -1,11 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { agentLaunchAction, agentLaunchBlockedReason, shellLaunchBlockedReason } from "@shared/session-launch.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { api } from "../lib/api.ts";
+import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+
+interface LauncherHandle {
+  trigger: () => void;
+  close: () => void;
+}
+
+export interface SessionLaunchersHandle {
+  openTerminal: () => void;
+  openAgent: () => void;
+}
 
 /**
  * The conversation pane's two launchers: a terminal on this session's worktree, and this
@@ -77,22 +88,37 @@ export function LaunchList({
 function Launcher({
   label,
   glyph,
+  action,
   blocked,
   heading,
   verb,
   onChoose,
+  ref,
 }: {
   label: string;
   glyph: string;
+  action: "terminal" | "agent";
   /** Why this cannot be used, as a sentence, or null when it can. */
   blocked: string | null;
   heading: string;
   verb: string;
   onChoose: (backend: TerminalBackendId) => void;
+  ref?: React.Ref<LauncherHandle>;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   const { targets, failed } = useTerminalTargets();
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      trigger: () => {
+        if (!blocked) setOpen((value) => !value);
+      },
+      close: () => setOpen(false),
+    }),
+    [blocked],
+  );
 
   useEffect(() => {
     if (blocked && open) setOpen(false);
@@ -172,6 +198,7 @@ function Launcher({
           onClick={() => setOpen((value) => !value)}
         >
           <span className="launch-glyph-lead" aria-hidden>{glyph}</span>
+          <Keycap action={action} />
           {label}
           <span className="launch-caret" aria-hidden>▾</span>
         </button>
@@ -205,8 +232,16 @@ function Launcher({
  * the expanded card, the console detail and the board drill-in from one mount rather than
  * from three placements kept in step by hand.
  */
-export function SessionLaunchers({ session }: { session: Session }): React.JSX.Element {
+export function SessionLaunchers({
+  session,
+  registerLaunchers,
+}: {
+  session: Session;
+  registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
+}): React.JSX.Element {
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
+  const terminalRef = useRef<LauncherHandle>(null);
+  const agentRef = useRef<LauncherHandle>(null);
   const agentLabel = AGENT_IDENTITY[session.agent].label;
   const action = agentLaunchAction(session);
   const agentBlocked = agentLaunchBlockedReason(session);
@@ -233,6 +268,33 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
     if (!result.ok) setFlash({ text: result.error ?? "could not focus", error: true });
   }
 
+  // App drives these same controls for the customizable `t` / `a` shortcuts. Registering
+  // the pair from the conversation pane is what lets a collapsed Card or Board tile reveal
+  // this pane first, then trigger the exact menu the visible button owns.
+  const latest = useRef({ action, agentBlocked, focusPane });
+  latest.current = { action, agentBlocked, focusPane };
+  useEffect(() => {
+    if (!registerLaunchers) return;
+    const handle: SessionLaunchersHandle = {
+      openTerminal: () => {
+        agentRef.current?.close();
+        terminalRef.current?.trigger();
+      },
+      openAgent: () => {
+        const current = latest.current;
+        if (current.agentBlocked) return;
+        terminalRef.current?.close();
+        if (current.action === "focus") {
+          void current.focusPane();
+        } else {
+          agentRef.current?.trigger();
+        }
+      },
+    };
+    registerLaunchers(session.id, handle);
+    return () => registerLaunchers(session.id, null);
+  }, [session.id, registerLaunchers]);
+
   return (
     <div className="conv-launch">
       <span className="conv-launch-where">
@@ -251,8 +313,10 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
         <span className={`launch-flash${flash.error ? " is-error" : ""}`}>{flash.text}</span>
       )}
       <Launcher
+        ref={terminalRef}
         label="Terminal"
         glyph="❯_"
+        action="terminal"
         blocked={noCheckout}
         heading="Open a shell in the worktree with"
         verb="Open a shell in"
@@ -264,13 +328,16 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
         <Tooltip label={`Go to the terminal ${agentLabel} is running in`}>
           <button type="button" className="launch-btn launch-agent" onClick={() => void focusPane()}>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
+            <Keycap action="agent" />
             {agentLabel}
           </button>
         </Tooltip>
       ) : action === "handoff" || action === "resume" ? (
         <Launcher
+          ref={agentRef}
           label={agentLabel}
           glyph="◆"
+          action="agent"
           blocked={null}
           heading={`${agentLabel} · resume this conversation in`}
           verb="Resume this conversation in"
@@ -280,6 +347,7 @@ export function SessionLaunchers({ session }: { session: Session }): React.JSX.E
         <Tooltip label={agentBlocked ?? "this session is unavailable"}>
           <button type="button" className="launch-btn launch-agent" disabled>
             <span className="launch-glyph-lead" aria-hidden>◆</span>
+            <Keycap action="agent" />
             {agentLabel}
           </button>
         </Tooltip>

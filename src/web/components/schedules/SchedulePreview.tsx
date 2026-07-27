@@ -243,7 +243,12 @@ export function SchedulePreview({
           const collisions = collisionsByInstant.get(instant.at);
           return (
             <li className="rm-occurrence" key={instant.at}>
-              <time className="rm-occurrence-time">
+              {/* The schedule's own zone leads, at the top of the text ramp. It used to be
+                  the smallest, dimmest thing in the row - 10px --dim - with the UTC
+                  restatement brighter and larger beside it, which is backwards: the wall
+                  clock is the only spelling a human reasons in, and UTC is the audit value
+                  (which now rides `dateTime`, where a machine can read it). */}
+              <time className="rm-occurrence-time" dateTime={new Date(instant.at).toISOString()}>
                 {formatInstant(instant.at, definition.timezone, {
                   weekday: "short",
                   month: "short",
@@ -257,7 +262,7 @@ export function SchedulePreview({
               </span>
               <div className="rm-occurrence-main">
                 <div className="rm-occurrence-meta">
-                  <span className="rm-mono">{formatInstantUtc(instant.at)} UTC</span>
+                  <span className="rm-dim rm-mono">{formatInstantUtc(instant.at)} UTC</span>
                   <span className="rm-dim">{offsetLabel(instant)}</span>
                   {instant.dstShift && (
                     <Tooltip label="The UTC offset changed here: a daylight-saving transition. The wall-clock time stays fixed; the UTC instant moves.">

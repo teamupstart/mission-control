@@ -201,13 +201,16 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
 export function recordSdkSessionBinding(
   id: string,
   agentSessionId: string,
+  modelId: string | null,
   now = Date.now(),
 ): void {
   openDb()
     .prepare(
-      `UPDATE sdk_sessions SET agent_session_id = ?, status = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE sdk_sessions
+          SET agent_session_id = ?, model = COALESCE(?, model), status = ?, updated_at = ?
+        WHERE id = ?`,
     )
-    .run(agentSessionId, "running" satisfies SdkSessionStatus, now, id);
+    .run(agentSessionId, modelId, "running" satisfies SdkSessionStatus, now, id);
 }
 
 export function setSdkSessionStatus(

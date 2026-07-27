@@ -91,6 +91,16 @@ export const SESSION_RUNTIMES = ["terminal", "sdk"] as const;
 export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 
 /**
+ * What an embedded driver's acknowledgement means for the submitted message.
+ *
+ * A busy Claude stream accepts a follow-up into its FIFO for the next turn, while Codex
+ * can steer input into the turn already running. Both are successful sends, but collapsing
+ * them into a bare `ok` leaves the operator unable to tell a queued message from one the
+ * active turn is already processing.
+ */
+export type SdkSendDisposition = "started" | "steered" | "queued";
+
+/**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
  * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
  * dispatch pickers need the same values as the wire schemas and launch adapters.
@@ -120,12 +130,14 @@ export const PERMISSION_MODES = [
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
- * Where a session's runtime metadata came from, in descending authority:
- * `statusline` is Claude's own live accounting (exact), `transcript` is our
- * passive read of the JSONL (approximate), `codex-rollout` is Codex's session
- * file. The daemon never lets a lower-authority read clobber a fresh statusLine.
+ * Where a session's runtime metadata came from. `statusline` is Claude's own live
+ * accounting (exact), `driver` is the model an embedded runtime reports when it
+ * binds, `transcript` is our passive read of Claude's JSONL (approximate), and
+ * `codex-rollout` is Codex's session file. The daemon never lets either passive
+ * file source clobber a fresh statusLine; a driver reading seeds the model until
+ * its file source supplies the rest of the row.
  */
-export type MetaSource = "statusline" | "transcript" | "codex-rollout";
+export type MetaSource = "statusline" | "driver" | "transcript" | "codex-rollout";
 
 /**
  * Live runtime facts about a session's model, thinking level, and context usage -

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type {
   PaneOption,
   PermissionMode,
+  SdkSendDisposition,
   SessionRequestQuestion,
   ThinkingLevel,
 } from "@shared/types.ts";
@@ -233,8 +234,9 @@ function turnContent(turn: SdkTurn): unknown {
  *
  * `query()` takes an `AsyncIterable`, and a session that accepts follow-up turns is one
  * whose iterable never ends until we end it. This is that iterable - a mailbox, not a
- * generator over a fixed list - and its `push` resolving is what makes `send()` an ACK
- * rather than a hope.
+ * generator over a fixed list - and `push` accepting the message without throwing is what
+ * makes `send()` an ACK rather than a hope. Acceptance while a turn is active means FIFO
+ * queueing, which `send()` now reports instead of pretending it is already a transcript turn.
  */
 class TurnStream {
   private queued: ClaudeSdkUserMessage[] = [];
@@ -292,6 +294,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly turns = new TurnStream();
   private query: ClaudeSdkQuery | null = null;
   private agentSessionId: string | null = null;
+  /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
+  private modelId: string | null = null;
   /**
    * Tool ids whose Bash input opened a pull request, awaiting the URL its output prints.
    *
@@ -303,6 +307,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly prPending = new Set<string>();
   /** Armed by `clearContext`, spent by the next `bind` - see both for why it must exist. */
   private clearing = false;
+  /** Accepted user turns that have not yet produced a result, including FIFO follow-ups. */
+  private uncompletedTurns = 0;
   private stopped = false;
 
   constructor(private readonly cwd: string) {}
@@ -311,18 +317,21 @@ class ClaudeSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
-  async send(turn: SdkTurn): Promise<void> {
+  async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     if (this.stopped) throw new Error("this session's driver has stopped");
+    const disposition: SdkSendDisposition = this.uncompletedTurns > 0 ? "queued" : "started";
     this.turns.push({
       type: "user",
       message: { role: "user", content: turnContent(turn) },
       parent_tool_use_id: null,
       ...(this.agentSessionId ? { session_id: this.agentSessionId } : {}),
     });
+    this.uncompletedTurns += 1;
     // Accepting a turn IS the transition to working, and saying so here rather than waiting
     // for the first assistant frame is what keeps the card honest during the seconds a
     // model spends thinking before it emits anything. `turn_done` is the other end.
     this.out.emit({ kind: "state", state: "working", activity: null });
+    return disposition;
   }
 
   async interrupt(): Promise<void> {
@@ -447,6 +456,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   setModel = async (model: string): Promise<void> => {
     await this.requireQuery().setModel(model);
+    this.modelId = model;
   };
 
   /**
@@ -509,6 +519,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       message: { role: "user", content: prompt },
       parent_tool_use_id: null,
     });
+    this.uncompletedTurns += 1;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }
 
@@ -700,6 +711,17 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    // The init frame is the one authoritative answer to "which model did this launch
+    // actually bind?" It is especially important on resume: the durable launch request may
+    // be null ("use Claude's default"), and an idle resumed transcript may contain no fresh
+    // usage record for the passive poller to learn from.
+    if (
+      message.type === "system" &&
+      message.subtype === "init" &&
+      typeof message.model === "string"
+    ) {
+      this.modelId = message.model || null;
+    }
     // Every message carries the session id, `init` first and then every frame after it -
     // and `/clear` is the case that makes the second half matter: the CLI mints a NEW id
     // and reports it on an ordinary message rather than on a second `init`. Re-binding
@@ -711,6 +733,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       return;
     }
     if (message.type === "result") {
+      this.uncompletedTurns = Math.max(0, this.uncompletedTurns - 1);
       this.out.emit({ kind: "turn_done", usage: null });
       return;
     }
@@ -725,6 +748,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       kind: "bound",
       agentSessionId,
       transcriptPath: claudeSdkTranscriptPath(this.cwd, agentSessionId),
+      modelId: this.modelId,
       // The SDK owns its subprocess and reports no pid; the registry keeps 0, which is the
       // sentinel `signalProcess` already refuses.
       pid: null,

@@ -179,7 +179,7 @@ export function DispatchLayer({
   /** Live Workflow summaries, for the optional post-selection handoff placement. */
   workflowSummaries?: WorkflowSummary[];
   onClose: () => void;
-  /** Open the Scheduled Catalog from a generated task's read-only provenance in edit mode. */
+  /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
@@ -430,7 +430,7 @@ function DispatchModal({
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
-  /** Open the Scheduled Catalog from a scheduled task's read-only provenance. */
+  /** Open Recurring Missions from a scheduled task's read-only provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Single vs Ensemble. Only meaningful for a new dispatch; an edit is always Single. */
   launchMode?: "single" | "ensemble";

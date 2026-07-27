@@ -3551,6 +3551,9 @@ body {
   color: var(--exited);
   width: 100%;
 }
+.action-flash.is-ok {
+  color: var(--idle);
+}
 
 /* ---- review modal ---- */
 .modal-backdrop {
@@ -3592,6 +3595,25 @@ body {
   padding: 8px 18px 18px;
   max-height: 74vh;
   overflow: auto;
+}
+/* Reviews can contain an arbitrary number of questions. Constrain the whole panel to the
+   available viewport, then make only its content region scroll so the session heading and
+   close action remain reachable. The generic `.modal-body` limit is not sufficient here:
+   its 74vh plus the header can exceed a short viewport. */
+.review-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.review-modal .modal-head {
+  flex: 0 0 auto;
+}
+.review-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .review {
@@ -14389,6 +14411,15 @@ select.foreman-model-input {
   font-size: 17px;
   font-weight: 640;
 }
+/* The heading takes programmatic focus on every screen change so an assistive-tech cursor
+   lands on the new screen's name. It carries tabindex="-1", so no keyboard user can ever
+   reach it by tabbing - but Chrome still matched :focus-visible and painted the UA's auto
+   ring, which on a block-level h2 is a blue rectangle the full width of the panel, on every
+   single open. Suppressed here and nowhere wider: this is not a control losing its ring. */
+.rm-topline-titles h2:focus,
+.rm-topline-titles h2:focus-visible {
+  outline: none;
+}
 .rm-topline-actions {
   display: flex;
   align-items: center;
@@ -14559,10 +14590,15 @@ select.foreman-model-input {
   color: var(--neutral);
 }
 
-/* Catalog list + detail split. Collapses to a single column on a narrow overlay. */
+/* Catalog rail + detail. Collapses to a single column on a narrow overlay.
+   The rail used to be the WIDER half at 1.15fr against the detail's 0.85fr, which was
+   backwards at every fleet size a single operator has: a row holds a name and two short
+   lines, while the detail holds the mission's instructions and its whole time axis. It is
+   a fixed rail now rather than a fraction, so the detail takes every pixel the overlay
+   gains instead of giving 54% of them to a list that cannot use them. */
 .rm-catalog-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -14626,16 +14662,18 @@ select.foreman-model-input {
   background: color-mix(in oklab, var(--purple) 16%, var(--panel-2));
 }
 .rm-catalog-rows {
-  max-height: min(62vh, 640px);
+  max-height: min(66vh, 660px);
   overflow: auto;
+  margin: 0;
   padding: 8px;
+  list-style: none;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .rm-row {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
   gap: 9px;
   align-items: center;
   width: 100%;
@@ -14685,18 +14723,34 @@ select.foreman-model-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rm-row-cadence,
-.rm-row-next {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  font-size: 11px;
+/* A bare state dot. A text-less `.rm-pill` was reading as a toggle switch in a rail this
+   narrow - the rounded chrome around a lone dot is exactly what a switch looks like. */
+.rm-row-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--neutral);
 }
-.rm-row-cadence > span,
-.rm-row-next {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.rm-dot-healthy {
+  background: var(--idle);
+}
+.rm-dot-paused {
+  background: transparent;
+  border: 1.5px solid var(--exited);
+}
+.rm-dot-attention {
+  background: var(--attention);
+}
+/* Shown only when a mission's execution mode was written by a newer build. In V1 every
+   mission runs the same mode, so printing it on every row was noise that truncated
+   mid-word; the case worth flagging is the one this build cannot read. */
+.rm-row-flag {
+  padding: 1px 6px;
+  color: var(--attention);
+  border: 1px solid color-mix(in oklab, var(--attention) 34%, var(--border));
+  border-radius: 5px;
+  font-size: 9.5px;
   white-space: nowrap;
 }
 
@@ -14707,29 +14761,99 @@ select.foreman-model-input {
   flex-direction: column;
   gap: 12px;
 }
-.rm-detail .rm-panel-head,
-.rm-catalog .rm-panel-head {
-  padding: 12px;
-  margin-bottom: 0;
-}
-.rm-detail-title {
+/* Identity strip. What the mission IS, before anything about when it runs. */
+.rm-detail-id {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border-soft);
 }
-.rm-detail-title h3 {
+.rm-detail-name {
+  min-width: 0;
+}
+.rm-detail-name h3 {
   margin: 0;
   color: var(--fg);
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 660;
 }
-.rm-detail-title p {
-  margin: 3px 0 0;
-  font-size: 10.5px;
+.rm-detail-cadence {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.rm-detail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+.rm-chip {
+  padding: 2px 7px;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 .rm-detail-actions {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 6px;
+  flex: none;
+}
+.rm-detail-standalone {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+/* The task every run files. It used to be a `dd` weighing exactly as much as a derived
+   UTC restatement; it is the mission, so it reads as prose. */
+.rm-brief {
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.rm-brief-title {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg);
+  font-size: 13.5px;
+  font-weight: 640;
+}
+.rm-brief-intent {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* The exact stored configuration: an audit view, so it sits behind a disclosure. */
+.rm-config {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.rm-config > summary {
+  padding: 9px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  list-style-position: inside;
+}
+.rm-config > summary::marker {
+  color: var(--dim);
+}
+.rm-config[open] > summary {
+  border-bottom: 1px solid var(--border-soft);
+}
+.rm-config .rm-kv {
+  padding: 11px 12px;
 }
 .rm-detail-empty {
   display: grid;
@@ -14742,22 +14866,6 @@ select.foreman-model-input {
   color: var(--attention);
   font-size: 11px;
   line-height: 1.5;
-}
-.rm-next-run {
-  padding: 12px;
-  border: 1px solid color-mix(in oklab, var(--purple) 26%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in oklab, var(--purple) 6%, var(--bg-2));
-}
-.rm-next-time {
-  color: var(--fg);
-  font-size: 16px;
-  font-weight: 660;
-}
-.rm-next-run p {
-  margin: 5px 0 0;
-  font-size: 10.5px;
-  line-height: 1.45;
 }
 .rm-kv {
   display: grid;
@@ -14807,11 +14915,244 @@ select.foreman-model-input {
   color: var(--attention);
   background: color-mix(in oklab, var(--attention) 12%, var(--panel));
 }
-.rm-last-run {
+/* ---- the spine ----
+   One time axis per mission: history above, NOW, then the enumerated future. The rail is a
+   real 1px line drawn by each row's axis cell, so a gap is a REAL break in it rather than a
+   badge claiming there was one. Time reads downward, the same direction the transcript
+   does. */
+.rm-spine {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
+  gap: 2px;
+}
+.rm-spine-cap {
+  display: flex;
+  padding-left: 92px;
+  min-height: 22px;
+  align-items: center;
+}
+.rm-sp-more {
+  padding: 3px 9px;
+  font-size: 10.5px;
+}
+.rm-spine-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rm-sp-row {
+  display: grid;
+  grid-template-columns: 74px 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.rm-sp-when {
+  padding-top: 1px;
+  color: var(--dim);
+  font: 10.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.rm-sp-when b {
+  display: block;
+  color: var(--muted);
+  font-weight: 600;
+}
+.rm-sp-axis {
+  position: relative;
+  align-self: stretch;
+  justify-self: center;
+  width: 18px;
+}
+.rm-sp-axis::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  /* One step above --border: at #232a33 on --panel-2 the rail was invisible, and a rail you
+     cannot see is one whose BREAK carries no meaning. */
+  background: #2f3742;
+}
+/* The signature. Where an instant sat unclaimed the rail is not continuous. */
+.rm-sp-axis-gap::before {
+  width: 0;
+  background: none;
+  border-left: 1px dashed color-mix(in oklab, var(--attention) 55%, var(--border));
+}
+.rm-sp-axis-stop::before {
+  bottom: 50%;
+}
+.rm-sp-node {
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px var(--panel-2);
+}
+.rm-sp-node-healthy {
+  background: var(--idle);
+}
+.rm-sp-node-attention {
+  background: var(--attention);
+}
+.rm-sp-node-paused {
+  background: var(--exited);
+}
+.rm-sp-node-neutral {
+  background: var(--neutral);
+}
+.rm-sp-node-stop {
+  background: transparent;
+  border: 1.5px solid var(--border);
+}
+.rm-sp-node-future {
+  background: transparent;
+  border: 1.5px solid color-mix(in oklab, var(--purple) 60%, var(--border));
+}
+.rm-sp-node-future.is-next {
+  background: var(--purple);
+  border-color: var(--purple);
+  box-shadow:
+    0 0 0 3px var(--panel-2),
+    0 0 10px color-mix(in oklab, var(--purple) 60%, transparent);
+}
+.rm-sp-moon {
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  border-radius: 50%;
+  color: var(--attention);
+  background: var(--panel-2);
+  border: 1px dashed color-mix(in oklab, var(--attention) 55%, var(--border));
+  font-size: 9px;
+}
+.rm-sp-what {
+  min-width: 0;
+  padding-bottom: 14px;
+}
+.rm-sp-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+/* A future rung behind the next one: the gutter's date is the content, so the line recedes
+   to a countdown rather than competing with it. */
+.rm-sp-line-quiet {
+  min-height: 15px;
+  font-size: 10.5px;
+}
+.rm-sp-row:has(.rm-sp-line-quiet) .rm-sp-what {
+  padding-bottom: 9px;
+}
+.rm-sp-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.rm-sp-next {
+  color: var(--purple);
+  font-weight: 640;
+}
+.rm-sp-gap-line {
+  color: var(--attention);
+}
+.rm-sp-unloaded .rm-sp-more {
+  margin-top: 6px;
+}
+.rm-sp-missed {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* The occurrence's own outcome, and the toggle into everything the ledger persisted. */
+.rm-sp-toggle {
+  padding: 0;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+}
+.rm-sp-toggle:hover {
+  text-decoration: underline;
+}
+.rm-sp-row.is-open .rm-sp-toggle {
+  font-weight: 640;
+}
+.rm-sp-audit {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+.rm-sp-audit .rm-kv {
+  margin-bottom: 8px;
+}
+.rm-sp-now {
+  display: grid;
+  grid-template-columns: 74px 18px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 1px 0 12px;
+}
+.rm-sp-now .rm-sp-when {
+  color: var(--working);
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.rm-sp-now-bar {
+  grid-column: 2 / 4;
+  position: relative;
+  height: 1px;
+  background: linear-gradient(90deg, var(--working), transparent 92%);
+}
+.rm-sp-now-bar::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--working);
+}
+.rm-sp-now-time {
+  color: var(--working);
+  font: 10.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.rm-spine-foot {
+  margin: 6px 0 0;
+  padding-left: 92px;
 }
 .rm-detail-foot {
   display: flex;
@@ -14840,6 +15181,9 @@ select.foreman-model-input {
   padding: 0;
   border: 0;
 }
+.rm-editor-preview .rm-preview {
+  min-width: 0;
+}
 .rm-editor-preview {
   grid-area: preview;
   min-width: 0;
@@ -14858,7 +15202,10 @@ select.foreman-model-input {
   flex-wrap: wrap;
   padding: 12px;
   border-top: 1px solid var(--border);
-  background: color-mix(in oklab, var(--panel) 92%, transparent);
+  /* OPAQUE. At 92% the form scrolled behind this sticky bar and ghosted through it - the
+     Repeats select and the time input were legible underneath the footer's own text. A
+     sticky bar over scrolling content has no backdrop to blend with. */
+  background: var(--panel);
   position: sticky;
   bottom: -24px;
 }
@@ -14964,12 +15311,18 @@ select.foreman-model-input {
   min-height: 26px;
   padding: 3px 6px;
 }
+/* The scroll region says so. It used to clip an occurrence mid-row with no affordance at
+   all, which reads as a rendering fault rather than "there is more below": a hairline and a
+   fading edge are the difference between the two. */
 .rm-occurrence-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 0 4px;
   max-height: 320px;
   overflow: auto;
+  overscroll-behavior: contain;
+  border-bottom: 1px solid var(--border-soft);
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 18px), transparent 100%);
 }
 .rm-occurrence {
   display: grid;
@@ -14982,9 +15335,12 @@ select.foreman-model-input {
 .rm-occurrence:last-child {
   border-bottom: 0;
 }
+/* The wall-clock instant in the schedule's own zone: the primary reading, not the footnote
+   it used to be underneath a brighter UTC restatement. */
 .rm-occurrence-time {
-  color: var(--dim);
-  font: 10px var(--mono);
+  color: var(--fg);
+  font: 11px var(--mono);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .rm-occurrence-node {
@@ -15055,92 +15411,6 @@ select.foreman-model-input {
   align-items: center;
   gap: 8px;
   font-size: 10.5px;
-}
-
-/* History */
-.rm-history {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr);
-  gap: 14px;
-  align-items: start;
-}
-.rm-history-list,
-.rm-history-detail {
-  min-width: 0;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-  padding: 12px;
-}
-.rm-table-wrap {
-  overflow-x: auto;
-}
-.rm-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 10.5px;
-}
-.rm-table th {
-  padding: 7px 8px;
-  color: var(--dim);
-  font-weight: 600;
-  text-align: left;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--border);
-}
-.rm-table td {
-  padding: 8px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border-soft);
-  vertical-align: middle;
-}
-.rm-table tbody tr:hover,
-.rm-table tbody tr.is-selected {
-  background: color-mix(in oklab, var(--purple) 7%, transparent);
-}
-/* The row's selection control: a button styled as the leftmost timestamp cell, so the
-   whole time reads as clickable while staying a real, focusable, tooltip-wrapped button. */
-.rm-history-select {
-  display: block;
-  width: 100%;
-  padding: 0;
-  color: var(--working);
-  background: none;
-  border: 0;
-  cursor: pointer;
-  font: inherit;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  text-align: left;
-}
-.rm-history-select:hover {
-  text-decoration: underline;
-}
-.rm-history-select[aria-pressed="true"] {
-  color: var(--fg);
-  font-weight: 600;
-}
-.rm-history-local {
-  display: block;
-  margin-top: 2px;
-}
-.rm-load-older {
-  margin-top: 10px;
-}
-.rm-occurrence-detail .rm-panel-head {
-  align-items: flex-start;
-}
-.rm-occurrence-detail h3 {
-  margin: 0;
-  font-size: 13px;
-}
-.rm-occurrence-detail .rm-kv {
-  margin-bottom: 12px;
-}
-
-.rm-preview-screen,
-.rm-editor-preview .rm-preview {
-  min-width: 0;
 }
 
 /* Discard confirmation, rendered inside the panel rather than a nested overlay. */
@@ -15224,8 +15494,7 @@ select.foreman-model-input {
 }
 
 @media (max-width: 1080px) {
-  .rm-catalog-layout,
-  .rm-history {
+  .rm-catalog-layout {
     grid-template-columns: 1fr;
   }
   .rm-editor {

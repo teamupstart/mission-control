@@ -2,7 +2,7 @@
 
 This is the operator checklist for proving the one thing automated tests cannot: that a real
 daemon restart and a real laptop **sleep/wake** produce exactly one late catch-up occurrence,
-with the actual delay visible in history.
+with the actual delay visible on the mission's spine.
 
 The deterministic correctness of catch-up - restarts, forward/backward clock jumps, DST
 transitions, coalescing, the create-all cap, and both crash-recovery windows - is already
@@ -17,7 +17,7 @@ timers pausing and resuming; a hand-set clock proves nothing about standby.
 ## What "durable local catch-up" promises, and does not
 
 - **Guarantee:** if Mission Control runs again, every due instant is accounted for exactly
-  once, and the catalog shows how late it was.
+  once, and the mission's spine shows how late it was.
 - **Non-guarantee:** no work runs while the machine is asleep or powered off. The task is
   created *late*, on resume. There is no wall-clock promise; that needs an always-on runner,
   which is a separate project.
@@ -34,10 +34,10 @@ late run costs nothing if it fires.
    make the next occurrence skip. Click **Save paused**. Confirm it appears in the catalog as
    **paused** with no next run.
 
-2. **Preview the expected instants.** Select it → **Preview**. Confirm the next occurrences
-   list local time, UTC, and any DST shift, and that they match what you intended. Optionally
-   enter a sleep window in **Simulate standby** and confirm the missed-run policy's decision
-   (coalesce / create-all / skip) reads the way you expect.
+2. **Preview the expected instants.** Select it → **Edit**. Confirm the preview lists the next
+   occurrences in local time, retains UTC as the audit value, flags any DST shift, and matches
+   what you intended. Optionally enter a sleep window in **Simulate standby** and confirm the
+   missed-run policy's decision (coalesce / create-all / skip) reads the way you expect.
 
 3. **Enable a low-risk scout schedule.** Either **Save & enable** from the editor (it
    re-previews first) or **Resume** from the detail. Confirm health goes **healthy** and a
@@ -45,17 +45,17 @@ late run costs nothing if it fires.
 
 4. **Verify a normal occurrence.** Wait for one due instant while the machine is awake.
    Confirm exactly one backlog task is filed with its schedule provenance mark, and that
-   History shows one `created` occurrence with an on-time (≤1m) delay.
+   the spine shows one **Filed a backlog task** occurrence with an on-time (≤1m) delay.
 
 5. **Restart the daemon across a due instant.** Stop Mission Control (`make stop-all`) a
    little before a due instant; start it again (`make start` / `make restart`) a little
-   after. Confirm the overdue timer fires on startup, files exactly one task, and History
+   after. Confirm the overdue timer fires on startup, files exactly one task, and the spine
    records the occurrence with the real delay. No duplicate appears on the next tick.
 
 6. **Sleep the laptop across a due instant.** Close the lid (or `pmset sleepnow`) before a due
-   instant and wake it after. On resume, confirm one catch-up task is filed and History shows
-   the occurrence with the actual `claimedAt - scheduledFor` delay (e.g. `2h 14m late`).
-   Record the delay you observed here: `__________`.
+   instant and wake it after. On resume, confirm one catch-up task is filed and the spine
+   shows the occurrence with the actual `claimedAt - scheduledFor` delay (e.g. `2h 14m
+   late`). Record the delay you observed here: `__________`.
 
 7. **Confirm one task / one occurrence.** For each of steps 4-6, confirm there is exactly one
    backlog task and one terminal occurrence per due instant - never two - even after several
@@ -64,7 +64,7 @@ late run costs nothing if it fires.
 
 8. **Pause / archive cleanup.** **Pause** the schedule (or **Archive** it, which keeps its
    history). Confirm an archived schedule leaves the catalog but its generated tasks and its
-   History remain reachable via the provenance deep link on any generated task.
+   standalone spine remain reachable via the provenance deep link on any generated task.
 
 9. **Capture failures honestly.** If a run fails (e.g. the repo was renamed at fire time),
    confirm the occurrence is recorded `failed` with the reason, the schedule shows

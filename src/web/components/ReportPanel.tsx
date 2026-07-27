@@ -189,7 +189,7 @@ export function ReportPanel({
   onOpenReviews: (sessionId: string) => void;
   /** Close this panel and reopen the dispatch modal over a backlog task. */
   onEditTask: (taskId: string) => void;
-  /** Close this panel and open the Scheduled Catalog from a generated task's provenance. */
+  /** Close this panel and open Recurring Missions from a generated task's provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for provenance copy on backlog and recent rows. */
   scheduleNameById?: ReadonlyMap<string, string>;

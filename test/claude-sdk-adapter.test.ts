@@ -133,6 +133,7 @@ const INIT = (sessionId: string): ClaudeSdkMessage => ({
   type: "system",
   subtype: "init",
   session_id: sessionId,
+  model: "claude-opus-5",
 });
 
 function launchOpts(over: Record<string, unknown> = {}) {
@@ -166,6 +167,7 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   const events = await collect(handle.events, (e) => e.kind === "bound");
   const bound = events.find((e) => e.kind === "bound");
   assert.equal(bound?.kind === "bound" && bound.agentSessionId, "agent-1");
+  assert.equal(bound?.kind === "bound" && bound.modelId, "claude-opus-5");
   // No separate process to name: the SDK owns its subprocess, and 0 is the sentinel
   // `signalProcess` refuses.
   assert.equal(bound?.kind === "bound" && bound.pid, null);
@@ -176,6 +178,29 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal((turns[0]!.message.content as string), "do the thing");
   // And delivery is the transition to working, said before any assistant frame arrives.
   assert.ok(events.some((e) => e.kind === "state" && e.state === "working"));
+});
+
+test("a follow-up reports whether Claude queued it behind an active turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+
+  // Turn one was seeded at launch, so the SDK accepts this message but will not present it
+  // as a new transcript turn until the current result arrives.
+  assert.equal(await handle.send({ text: "after that, run the tests" }), "queued");
+
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await collect(handle.events, (e) => e.kind === "turn_done");
+  assert.equal(
+    await handle.send({ text: "one more thing" }),
+    "queued",
+    "the first queued follow-up still owns the next turn",
+  );
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await handle.send({ text: "now idle" }), "started");
+  query.end();
 });
 
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {

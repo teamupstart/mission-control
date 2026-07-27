@@ -36,7 +36,7 @@ export function ReviewModal({
   }, [reviews.length, onClose]);
 
   return (
-    <Overlay id={OVERLAY_IDS.reviews} onClose={onClose} className="modal">
+    <Overlay id={OVERLAY_IDS.reviews} onClose={onClose} className="modal review-modal">
       <header className="modal-head">
         <div>
           <AgentDot agent={session.agent} />

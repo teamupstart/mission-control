@@ -14,6 +14,7 @@ import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
+import type { SessionLaunchersHandle } from "./LaunchMenu.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
@@ -99,6 +100,7 @@ export function SessionCard({
   onToggleExpand,
   registerEl,
   registerActions,
+  registerLaunchers,
   renaming = false,
   onRenameStart,
   onRenameClose,
@@ -142,6 +144,7 @@ export function SessionCard({
   onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+  registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
   /** Whether this card's title is currently in its rename editor (App owns the id). */
   renaming?: boolean;
   /** Enter rename mode for this card (click the title, or the rename shortcut). */
@@ -162,7 +165,7 @@ export function SessionCard({
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;
-  /** Open the Scheduled Catalog from this card's generated-task provenance mark. */
+  /** Open Recurring Missions from this card's generated-task provenance mark. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the provenance mark's "Scheduled by <name>" copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
@@ -458,6 +461,7 @@ export function SessionCard({
               dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}
               onOpenFile={onOpenFile}
+              registerLaunchers={registerLaunchers}
               resetNonce={resetNonce}
             />
           )}

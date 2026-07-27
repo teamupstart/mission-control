@@ -23,7 +23,7 @@ import {
 import { mkSchedule, mkScheduleTemplate } from "./helpers/schedule-fixture.ts";
 
 /**
- * The Scheduled Catalog's presentation helpers, and the boundary they must not cross.
+ * The Recurring Missions presentation helpers, and the boundary they must not cross.
  *
  * These decide how a daemon-computed answer is SPELLED - a cadence label, a delay, a
  * status tone, a search match - and nothing about WHEN anything runs. The recurrence math,

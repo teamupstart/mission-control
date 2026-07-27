@@ -412,6 +412,7 @@ export function ConsoleDetail({
               episodes={episodes}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
+              registerLaunchers={view.registerLaunchers}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>

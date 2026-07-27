@@ -5,6 +5,7 @@ import type {
   PaneDialog,
   PaneOption,
   PermissionMode,
+  SdkSendDisposition,
   Session,
   SessionRequestQuestion,
   SessionState,
@@ -636,9 +637,12 @@ export interface SdkSessionHandle {
    *
    * That ack is the thing `injectPrompt` never had: no settle window, no paste
    * placeholder to read back, no Enter that a mention popup may have eaten. A driver that
-   * cannot ack must reject - "probably landed" is the failure mode this replaces.
+   * cannot ack must reject - "probably landed" is the failure mode this replaces. The
+   * disposition keeps "accepted into a busy driver's FIFO" distinct from "started" and
+   * "steered into the active turn", because those can look identical in the transcript
+   * until the current turn finishes.
    */
-  send(turn: SdkTurn): Promise<void>;
+  send(turn: SdkTurn): Promise<SdkSendDisposition>;
   interrupt(): Promise<void>;
   /** Resolve a pending `SessionRequest` (permission, question, plan, approval). */
   answer(requestId: string, answer: SessionRequestAnswer): Promise<void>;
@@ -734,6 +738,13 @@ export type SdkEvent =
       kind: "bound";
       agentSessionId: string;
       transcriptPath: string | null;
+      /**
+       * The model the harness actually bound, not merely the launch-time request.
+       *
+       * Required even when unknown so a new driver cannot accidentally leave an idle or
+       * resumed card blank while waiting for a transcript record that may never arrive.
+       */
+      modelId: string | null;
       /**
        * The subprocess the driver spawned, or null when there is no separate process to
        * name. This is the ONE place a pid can arrive for a driver-run session.

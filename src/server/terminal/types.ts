@@ -286,12 +286,9 @@ export interface DetachedSessionSpec {
   /**
    * The agent binary and its arguments. The agent must land in the pane discovery binds to.
    *
-   * NOT guaranteed to be exec'd as an argv, and callers must constrain the values upstream
-   * (as `ModelIdSchema` does) rather than rely on quoting here. How it is delivered is
-   * backend-dependent and that is a real divergence, not an implementation detail: tmux
-   * joins the trailing arguments with spaces and runs the result through a SHELL, so a
-   * value carrying a quote, a glob or a `;` is interpreted; a zellij adapter would exec the
-   * argv directly and pass the same value through untouched.
+   * Backends must preserve these boundaries. A backend whose launch API accepts only a shell
+   * command must encode each element before handing it over; one with an argv-native API
+   * passes the elements directly.
    */
   argv: readonly string[];
   /**

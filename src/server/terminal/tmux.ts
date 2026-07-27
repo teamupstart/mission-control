@@ -397,14 +397,8 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 
     sessions: {
       async spawnDetached(spec: DetachedSessionSpec) {
-        // tmux joins the trailing arguments with spaces and runs the result through a
-        // shell rather than exec'ing the argv, so anything carrying a quote or a glob is
-        // interpreted rather than passed. Callers constrain their argv upstream
-        // (`ModelIdSchema`); this comment is here so the next one knows to.
-        //
-        // `--` for the same reason as `send-keys`: the shell command is a trailing
-        // argument, so a binary or flag-first argv beginning with a dash would be parsed as
-        // a flag of `new-session` itself.
+        // With multiple trailing arguments tmux execs the argv directly. `--` keeps a
+        // binary or flag-first argv beginning with a dash out of `new-session`'s own parser.
         const created = await cmd(
           ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", ...spec.argv],
           "tmux new-session failed",

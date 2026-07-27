@@ -145,9 +145,9 @@ test("preparePiLaunch gives pi turn one with one exact session id", () => {
   );
 });
 
-test("preparePiLaunch keeps a leading-dash task positional", () => {
-  const prepared = preparePiLaunch("--fix the parser");
-  assert.equal(prepared.args[2], "\n--fix the parser");
+test("preparePiLaunch keeps parser-reserved task prefixes positional", () => {
+  assert.equal(preparePiLaunch("--fix the parser").args[2], "\n--fix the parser");
+  assert.equal(preparePiLaunch("@src/main.ts is relevant").args[2], "\n@src/main.ts is relevant");
 });
 
 test("a hookless session declines transcript attribution", () => {

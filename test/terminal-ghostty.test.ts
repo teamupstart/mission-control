@@ -250,13 +250,17 @@ test("a spawn asked for a cwd roots the surface there, never somewhere else", as
   // what this pins is that it is actually sent rather than silently omitted.
   const { calls, exec } = recorder([stubRun({ stdout: `UUID-A${US}tab-A`, stderr: "", code: 0 })]);
   await ghosttyEmulator(exec).spawn!.tab({
-    argv: ["/bin/zsh", "-l"],
+    argv: ["/bin/zsh", "-l", "it's $HOME; $(printf injected)\nnext"],
     title: "t",
     cwd: "/w/alpha",
   });
   const script = onlyScript(calls);
   assert.ok(script.includes('set initial working directory of cfg to "/w/alpha"'));
-  assert.ok(script.includes('set command of cfg to "/bin/zsh -l"'));
+  assert.ok(
+    script.includes(
+      `set command of cfg to "'/bin/zsh' '-l' 'it'\\"'\\"'s $HOME; $(printf injected)\\nnext'"`,
+    ),
+  );
 
   // And no cwd asked for means the key is absent entirely, not set to an empty string -
   // which Ghostty would read as a directory and refuse.

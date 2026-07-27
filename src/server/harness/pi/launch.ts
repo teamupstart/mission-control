@@ -15,11 +15,12 @@ export interface PiLaunchPreparation {
  * also a stronger delivery boundary than guessing when the pane is ready for keystrokes.
  *
  * Pi has no `--` end-of-options marker. A task beginning with `-` would otherwise be parsed
- * as a flag, so prefix just that case with a newline; it is semantically whitespace to the
- * model while making the argument unambiguously positional to Pi's parser.
+ * as a flag, and one beginning with `@` as a file operand, so prefix either case with a
+ * newline. It is semantically whitespace to the model while making the argument
+ * unambiguously positional to Pi's parser.
  */
 export function preparePiLaunch(prompt: string): PiLaunchPreparation {
   const sessionId = randomUUID();
-  const initialMessage = prompt.startsWith("-") ? `\n${prompt}` : prompt;
+  const initialMessage = prompt.startsWith("-") || prompt.startsWith("@") ? `\n${prompt}` : prompt;
   return { args: ["--session-id", sessionId, initialMessage], sessionId };
 }

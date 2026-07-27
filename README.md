@@ -1099,12 +1099,14 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    one is installed (tmux adds a second **shell pane split beside it** for ad-hoc
    git/build/inspection), or a terminal tab in that worktree when no multiplexer is
    available. It waits for that exact discovered session to become ready, verifies it is
-   still live, and injects your task as its first prompt. A dispatched Pi proves startup
-   when its injected-id session file appears, then proves delivery only when that exact
-   file appends a new user turn. Metadata changes and generic `working` state do not
-   count. **Agent SDK** (Claude and Codex today) instead starts the embedded driver with
-   the task as turn one. It creates no terminal home and needs no discovery, readiness wait, paste,
-   or delivery retry; the driver's binding is the readiness signal.
+   still live, and injects your task as its first prompt. Pi instead receives both a
+   generated session ID and the task through its native positional launch message, which Pi
+   submits after initializing its TUI. Mission Control binds that generated ID for later
+   transcript attribution without waiting for Pi's lazily-created session file or injecting
+   the prompt into the pane a second time. **Agent SDK** (Claude and Codex today) instead
+   starts the embedded driver with the task as turn one. It creates no terminal home and
+   needs no discovery, readiness wait, paste, or delivery retry; the driver's binding is the
+   readiness signal.
 
 If either launch path cannot prove it started as requested, dispatch fails instead of
 calling an unverified task running.

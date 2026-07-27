@@ -840,7 +840,7 @@ h1 {
             <span class="dot"></span>
             <span class="reach-text">
               <span class="reach-title" data-reach-title>You're reachable</span>
-              <span class="reach-sub" data-reach-sub>Desktop and sound · everything interrupts</span>
+              <span class="reach-sub" data-reach-sub>Everything reaches you via desktop and sound as it happens.</span>
             </span>
           </div>
           <button class="row" data-toggle="b1" data-reach-input="desktop">
@@ -885,27 +885,25 @@ h1 {
         <span class="tb-glyph tb-bell">🌙</span>
       </div>
       <div class="stage-body">
-        <div class="pop pop-wide">
+        <div class="pop pop-wide" data-reach-group="c">
           <span class="sec-label">How you're reached</span>
-          <button class="row" data-toggle="c1">
+          <button class="row" data-toggle="c1" data-reach-input="desktop">
             <span class="row-ico">▣</span>
             <span class="row-text"><span class="row-label">Desktop notifications</span></span>
             <span class="sw" id="c1" data-on="true"></span>
           </button>
-          <button class="row" data-toggle="c2">
+          <button class="row" data-toggle="c2" data-reach-input="sound">
             <span class="row-ico">♪</span>
             <span class="row-text"><span class="row-label">Sound</span></span>
             <span class="sw" id="c2" data-on="true"></span>
           </button>
-          <div class="card" data-on="true" id="c-card">
+          <div class="card" data-on="true" id="c-card" data-reach-input="away">
             <div class="card-head">
               <span class="row-ico">☾</span>
               <span class="card-title">Away mode</span>
               <span class="sw" id="c3" data-tone="purple" data-on="true" data-toggle-self data-card="c-card" data-details="c-away-meta"></span>
             </div>
-            <p class="hint" data-state-copy
-              data-on-copy="Only things blocked on you get through. Everything else is waiting."
-              data-off-copy="Away mode is off. Alerts arrive through the channels above.">Only things blocked on you get through. Everything else is waiting.</p>
+            <p class="hint" data-reach-copy>Away 1h 04m. Blockers interrupt via desktop and sound; everything else waits in the digest (7 waiting).</p>
             <div class="meta-strip" id="c-away-meta">
               <span class="meta-fig">away 1h 04m</span>
               <span class="meta-fig">· 7 buffered</span>
@@ -936,23 +934,23 @@ h1 {
         <span class="tb-glyph tb-bell">🌙</span>
       </div>
       <div class="stage-body">
-        <div class="pop" data-seg-group="d">
+        <div class="pop" data-seg-group="d" data-reach-group="d">
           <div class="seg">
             <button data-seg="desk" aria-pressed="false">
               <span class="glyph">🔔</span>
               At the desk
             </button>
-            <button data-seg="away" data-tone="away" aria-pressed="true">
+            <button data-seg="away" data-tone="away" data-reach-input="away" aria-pressed="true">
               <span class="glyph">🌙</span>
               Away
             </button>
           </div>
-          <p class="hint" data-seg-hint>Blockers still interrupt. Everything else lands in the digest - <b style="color:var(--muted)">7 waiting</b>, away 1h 04m.</p>
+          <p class="hint" data-reach-copy>Away 1h 04m. Blockers interrupt via desktop and sound; everything else waits in the digest (7 waiting).</p>
           <div class="sep"></div>
           <span class="sec-label">Interrupt via</span>
           <div class="chips">
-            <button class="chip" data-chip="d1" data-on="true"><span class="tick">✓</span> Desktop</button>
-            <button class="chip" data-chip="d2" data-on="true"><span class="tick">✓</span> Sound</button>
+            <button class="chip" data-chip="d1" data-reach-input="desktop" data-on="true"><span class="tick">✓</span> Desktop</button>
+            <button class="chip" data-chip="d2" data-reach-input="sound" data-on="true"><span class="tick">✓</span> Sound</button>
           </div>
         </div>
       </div>
@@ -1159,11 +1157,7 @@ function syncToggleState(el) {
   const on = el.dataset.on === "true";
   if (el.dataset.card) {
     const card = document.getElementById(el.dataset.card);
-    if (card) {
-      card.dataset.on = String(on);
-      const copy = card.querySelector("[data-state-copy]");
-      if (copy) copy.textContent = on ? copy.dataset.onCopy : copy.dataset.offCopy;
-    }
+    if (card) card.dataset.on = String(on);
   }
   if (el.dataset.details) {
     const details = document.getElementById(el.dataset.details);
@@ -1187,10 +1181,15 @@ document.addEventListener("click", (e) => {
   const self = e.target.closest("[data-toggle-self]");
   if (self) {
     flip(self);
+    syncReach();
     return;
   }
   const chip = e.target.closest("[data-chip]");
-  if (chip) { flip(chip); return; }
+  if (chip) {
+    flip(chip);
+    syncReach();
+    return;
+  }
   const box = e.target.closest("[data-box]");
   if (box) { flip(box); return; }
   const seg = e.target.closest("[data-seg]");
@@ -1199,42 +1198,57 @@ document.addEventListener("click", (e) => {
     group.querySelectorAll("[data-seg]").forEach((b) => {
       b.setAttribute("aria-pressed", String(b === seg));
     });
-    const away = seg.dataset.seg === "away";
-    group.querySelector("[data-seg-hint]").innerHTML = away
-      ? 'Blockers still interrupt. Everything else lands in the digest - <b style="color:var(--muted)">7 waiting</b>, away 1h 04m.'
-      : 'Everything reaches you as it happens.';
+    syncReach();
     return;
   }
 });
 
 document.querySelectorAll("[data-on]").forEach(syncToggleState);
 
-// B: the status strip is derived, never typed - the same three-way the component's
-// hint text already computes.
+function reachability(desktop, sound, away) {
+  const channels = [desktop && "desktop", sound && "sound"].filter(Boolean).join(" and ");
+  if (!channels) {
+    return {
+      tone: "muted",
+      title: "Nothing can reach you",
+      sentence: away
+        ? "Both channels are off - you'll only get the digest when you return."
+        : "Both channels are off - the dashboard is the only signal.",
+    };
+  }
+  if (away) {
+    return {
+      tone: "away",
+      title: "Away 1h 04m",
+      sentence: "Blockers interrupt via " + channels + "; everything else waits in the digest (7 waiting).",
+    };
+  }
+  return {
+    tone: "ok",
+    title: "You're reachable",
+    sentence: "Everything reaches you via " + channels + " as it happens.",
+  };
+}
+
 function syncReach() {
   document.querySelectorAll("[data-reach-group]").forEach((group) => {
-    const val = (k) => group.querySelector('[data-reach-input="' + k + '"] .sw').dataset.on === "true";
-    const desktop = val("desktop"), sound = val("sound"), away = val("away");
+    const val = (key) => {
+      const input = group.querySelector('[data-reach-input="' + key + '"]');
+      const control = input.matches("[data-on]") ? input : input.querySelector("[data-on]");
+      return control
+        ? control.dataset.on === "true"
+        : input.getAttribute("aria-pressed") === "true";
+    };
+    const state = reachability(val("desktop"), val("sound"), val("away"));
     const strip = group.querySelector("[data-reach-strip]");
     const title = group.querySelector("[data-reach-title]");
     const sub = group.querySelector("[data-reach-sub]");
-    const channels = [desktop && "desktop", sound && "sound"].filter(Boolean).join(" and ");
-
-    if (!desktop && !sound) {
-      strip.dataset.tone = "muted";
-      title.textContent = "Nothing can reach you";
-      sub.textContent = away
-        ? "Both channels off - you'll only get the digest"
-        : "Both channels off - the dashboard is the only signal";
-    } else if (away) {
-      strip.dataset.tone = "away";
-      title.textContent = "Away · 1h 04m";
-      sub.textContent = "Blockers via " + channels + " · 7 waiting in the digest";
-    } else {
-      strip.dataset.tone = "ok";
-      title.textContent = "You're reachable";
-      sub.textContent = channels.charAt(0).toUpperCase() + channels.slice(1) + " · everything interrupts";
-    }
+    const copy = group.querySelector("[data-reach-copy]");
+    group.dataset.reachTone = state.tone;
+    if (strip) strip.dataset.tone = state.tone;
+    if (title) title.textContent = state.title;
+    if (sub) sub.textContent = state.sentence;
+    if (copy) copy.textContent = state.title + ". " + state.sentence;
   });
 }
 syncReach();

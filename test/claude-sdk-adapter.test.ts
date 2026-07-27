@@ -242,7 +242,7 @@ test("SDK usage repopulates both Claude plan windows on init and refreshes after
   assert.equal(query.usageCalls, 2, "each completed turn refreshes the live gauge");
 });
 
-test("SDK usage refuses unavailable or incomplete plan windows", () => {
+test("SDK usage refuses unavailable, incomplete, or out-of-range plan windows", () => {
   assert.equal(claudeSdkRateLimits({
     rate_limits_available: false,
     rate_limits: null,
@@ -254,6 +254,27 @@ test("SDK usage refuses unavailable or incomplete plan windows", () => {
       seven_day: { utilization: 10, resets_at: null },
     },
   }), null);
+  assert.equal(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 101, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }), null);
+  assert.deepEqual(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }, 123), {
+    fiveHour: null,
+    sevenDay: {
+      usedPercentage: 100,
+      resetsAt: Date.parse("2026-08-02T04:00:00.000Z") / 1000,
+    },
+    updatedAt: 123,
+  });
 });
 
 test("a follow-up reports whether Claude queued it behind an active turn", async () => {

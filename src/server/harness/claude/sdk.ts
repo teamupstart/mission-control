@@ -92,6 +92,8 @@ function sdkUsageWindow(window: ClaudeSdkUsageWindow | null | undefined): RateLi
     !window ||
     typeof window.utilization !== "number" ||
     !Number.isFinite(window.utilization) ||
+    window.utilization < 0 ||
+    window.utilization > 100 ||
     typeof window.resets_at !== "string"
   ) return null;
   const resetMs = Date.parse(window.resets_at);

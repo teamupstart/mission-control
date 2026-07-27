@@ -2140,28 +2140,28 @@ no migration.
 
 ### Check nodes (gating on a command)
 
-A **Check** gates on a deterministic command instead of a model. A submission that does not
-compile fails on an exit code rather than spending four model calls to reach the same
-conclusion. Exit 0 passes, non-zero fails, and a failure returns the command's output to the
-session through the same repair packet a Persona fail produces - cited as `check` evidence, so
-the claim traces back to the output that made it.
+A **Check** represents a deterministic command gate instead of a model review. This build
+ships the graph node, configuration, validation, and run-detail contract, but not the
+crash-safe execution runtime: **it does not spawn configured check commands yet**. An
+authorized, configured Check is recorded as **Not run** and passes with a note explaining
+that the runtime is unavailable. Command execution is a separate implementation unit because
+it must run against a pooled worktree pinned to the captured commit and recover its process
+and lease safely after a daemon crash.
 
 **A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
-`build`. What each slot actually runs is configured per repository under **Settings →
-Workflows**, so the same workflow runs correctly on any checkout, and a published version -
-which is exportable - never carries an argv. The command is an **argv**, not a shell string:
-there is no shell anywhere in this path, so `&&`, `|` and `$HOME` are ordinary arguments. The
-settings field splits a typed line quote-aware (`'…'` literal, `"…"` honouring `\"` and `\\`,
-a backslash escaping the next character outside quotes, adjacent runs joining into one token)
-and **shows the parsed argv back**, so you see what will actually run.
+`build`. The command assigned to each slot is configured per repository under **Settings →
+Workflows**, keeping the exportable published version machine-neutral and free of argv. The
+execution contract accepts an **argv**, not a shell string, so `&&`, `|` and `$HOME` are
+ordinary arguments. The settings field splits a typed line quote-aware (`'…'` literal, `"…"`
+honouring `\"` and `\\`, a backslash escaping the next character outside quotes, adjacent
+runs joining into one token) and **shows the parsed argv back**, so you see what the
+execution runtime will receive.
 
 **An unrun gate passes, with a note saying why.** A slot with no command configured for this
 repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,
 because a workflow that failed on every unconfigured machine would be broken by default, and
-both say which of the two happened so it is never mistaken for a gate that ran. A command that
-times out or is killed is an infrastructure failure on the existing retry-then-block path -
-never a fail verdict, because nothing about the change under review follows from a build that
-did not finish.
+both say which of the two happened so it is never mistaken for a gate that ran. In this build,
+the missing execution runtime is a third *not run* outcome that also passes with its own note.
 
 **Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
 (`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
@@ -2169,11 +2169,11 @@ and **Check commands**, the table of repository root, slot and argv. The switch 
 enough - the repository must also be on the same Workflow allowlist Live delivery uses.
 Enabling it authorizes running code the reviewed branch supplies - its scripts, dependencies
 and build steps - with the daemon's own filesystem authority. This is not a sandbox. Checks run
-on their own small concurrency budget, separate from the review budget, so a long test suite
-cannot starve Persona reviews.
+through their own small attempt budget, separate from the review budget; enabling consent does
+not override this build's missing execution runtime.
 
-Run detail draws a check as its own card: the slot, the argv, the exit code, and the tail of
-the output with the number of omitted characters stated rather than implied.
+Run detail draws a check as its own card. In this build it shows the slot, configured argv,
+and the reason the command was skipped or not run.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2457,7 +2457,7 @@ The canvas snaps to its visible grid and includes zoom in, zoom out, fit, 100% r
 pannable minimap. **Auto-layout** changes positions only, then fits once. Local draft undo and redo
 hold the last 50 meaningful edits and use <kbd>⌘/Ctrl</kbd><kbd>Z</kbd> and
 <kbd>⌘/Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd>. Autosave does not consume history entries.
-Duplicate applies to Persona, Join, and End nodes, never Session.
+Duplicate applies to Persona, Check, Join, and End nodes, never Session.
 
 Tab enters the graph through one roving node focus. Selected nodes move one grid unit with an Arrow
 key and ten grid units with Shift+Arrow. Press <kbd>C</kbd> on one selected non-terminal node, or choose

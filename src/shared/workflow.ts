@@ -563,9 +563,9 @@ export interface WorkflowCheckCommand {
   repoRoot: string;
   slot: WorkflowCheckSlot;
   /**
-   * An argv, not a shell string: the check runner spawns it directly with no shell, which
-   * removes shell injection as a category rather than mitigating it. `parseCheckCommand`
-   * is the one place a typed line becomes this array.
+   * An argv, not a shell string. The execution seam accepts this array directly and its
+   * runtime must spawn it without a shell; this build intentionally supplies no runtime.
+   * `parseCheckCommand` is the one place a typed line becomes this array.
    */
   command: string[];
 }

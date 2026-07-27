@@ -237,7 +237,9 @@ Foreman configuration and are not Persona content.</li>
 <p>Operator-authored workflow Personas gain the same immutable version history. A workflow stage
 pins the active Persona version when the stage is added or explicitly upgraded. Later Persona
 activation cannot rewrite an existing workflow draft, published workflow, binding, or run.
-Built-in workflow Personas remain app-owned, read-only catalog entries and do not gain database
+Ensemble evaluator requests also identify the exact active version selected by the operator and
+snapshot it into the durable compiled plan before any member launches.
+Built-in review Personas remain app-owned, read-only catalog entries and do not gain database
 version rows.</p>
 <h2>Why this is a domain correction, not a Foreman text editor</h2>
 <p>The repository already contains most of the individual mechanisms, but their ownership is
@@ -265,6 +267,11 @@ split in a way that makes the requested behavior difficult:</p>
 <td>Workflow publish embeds exact Persona snapshots</td>
 <td><code>WorkflowStore.publishWorkflow</code></td>
 <td>Published history is safe, but an unpublished stage refers only to <code>personaId</code> and can change when that row is edited.</td>
+</tr>
+<tr>
+<td>Ensemble evaluator configs persist <code>personaId</code> plus mutable-row <code>personaRevision</code>, and <code>EnsembleManager.compileContext</code> snapshots the resolved guidance</td>
+<td><code>src/shared/ensemble-strategies/*</code>, <code>src/server/ensembles/manager.ts</code>, <code>src/web/ensembles/dispatch/EnsembleDispatch.tsx</code></td>
+<td>Redefining <code>revision</code> as metadata CAS would make an ensemble request ambiguous unless it pins and resolves an immutable Persona version.</td>
 </tr>
 <tr>
 <td>Foreman's effective standing instructions are one string in <code>app_config</code>, seeded by <code>FOREMAN.md</code></td>
@@ -298,7 +305,7 @@ adding a second, Foreman-only version store.</p>
 <li>opaque id;</li>
 <li>name, normalized name, and description;</li>
 <li>provenance: built-in, operator-authored, or system;</li>
-<li>whether it is eligible for a workflow stage;</li>
+<li>whether it is stage-eligible, shared by workflow stages and ensemble evaluator selection;</li>
 <li>optional system key (<code>foreman</code> is the first);</li>
 <li>active version id, when the active source is a saved version;</li>
 <li>CAS resource revision;</li>
@@ -315,9 +322,10 @@ adding a second, Foreman-only version store.</p>
 </ul>
 <p>Name is stable identity rather than version payload. Rename remains a CAS metadata edit.
 Everything that changes model behavior is immutable once saved.</p>
-<p>Creating a normal operator Persona writes version 1 and activates it in one transaction because
-a new resource needs a usable version. Every later <strong>Save new version</strong> only appends. A separate
-<strong>Activate</strong> action moves the pointer with CAS.</p>
+<p>Creating a normal operator Persona writes only its stable definition. <strong>Save new version</strong> appends
+version 1 without activating it, and a separate CAS-protected <strong>Activate</strong> action makes it usable
+in workflow and ensemble pickers. Every later save follows the same two-step rule; no save route
+moves the active pointer.</p>
 <h3>2. Built-ins stay immutable and unversioned</h3>
 <p>The four generated review Personas keep their current design:</p>
 <ul>
@@ -326,6 +334,7 @@ a new resource needs a usable version. Every later <strong>Save new version</str
 <li>exact content comes from the current build;</li>
 <li>Duplicate creates an operator-owned Persona with version 1;</li>
 <li>workflow publish still embeds their exact Markdown.</li>
+<li>ensemble compilation snapshots their exact current-build bytes into the durable run plan.</li>
 </ul>
 <p>This preserves the upgrade behavior already documented in <code>README.md</code>: a changed built-in can
 make a published snapshot read as outdated, while the published snapshot itself never changes.</p>
@@ -343,8 +352,10 @@ default. A saved empty-string version remains distinct and means &quot;no standi
 <li>zero or more operator-authored saved versions;</li>
 <li>one active source, either Built-in default or a saved version.</li>
 </ul>
-<p>The workflow builder filters by stage eligibility, not by a hard-coded id. Foreman therefore
-cannot appear in the stage picker, graph palette, pipeline editor, or validation catalog.</p>
+<p>The workflow builder and ensemble evaluator selectors filter by stage eligibility, not by a
+hard-coded id. Foreman therefore cannot appear in a stage picker, graph palette, pipeline editor,
+validation catalog, Best-of-N or Consensus evaluator picker, or Panel Vote judge picker. The
+server repeats the eligibility check for every evaluator reference.</p>
 <p>Only the standing Markdown belongs to this Persona. These remain outside every version:</p>
 <ul>
 <li>enabled, dry-run, semi-auto, and live posture;</li>
@@ -373,13 +384,38 @@ version rows. Their exact bytes are frozen at workflow publish, as they are toda
 <p>Published workflow graphs continue embedding full Persona snapshots. New snapshots add
 <code>sourcePersonaVersionId</code> and <code>sourceVersion</code>; legacy snapshots with only <code>sourceRevision</code> remain
 readable. Runs continue using only the published snapshot, never a live Persona lookup.</p>
+<h3>5. Ensemble evaluators pin versions at creation</h3>
+<p>Every ensemble evaluator Persona selection is another consumer of the same domain. Replace
+<code>personaRevision</code> in Best-of-N, Consensus, and every Panel Vote judge config with
+<code>personaVersionId</code>. When an operator selects a versioned Persona, the picker writes both its
+stable <code>personaId</code> and its then-active <code>personaVersionId</code>.</p>
+<p>Preview and create accept only an exact version that:</p>
+<ul>
+<li>belongs to the named Persona;</li>
+<li>is still that Persona's active version when the request is validated;</li>
+<li>is readable and stage-eligible;</li>
+<li>is not the system Foreman Persona.</li>
+</ul>
+<p>If activation moved after the picker built the request, or the exact version is missing or
+unreadable, creation is refused as stale rather than substituting either the new active version or
+another saved version. <code>EnsembleManager.compileContext</code> resolves that exact immutable row and the
+strategy compiler snapshots its exact guidance, runner, model, <code>sourcePersonaVersionId</code>, and
+source version number into <code>CompiledEnsemblePlan</code>. Recovery and retries execute only those durable
+bytes.</p>
+<p>Built-in review Personas remain unversioned: their request reference has no
+<code>personaVersionId</code>, and creation snapshots their current build-owned bytes as it does today.
+Existing durable ensemble runs and compiled guidance that carry <code>revision</code> remain readable and
+execute their already-snapshotted plans; they are not rewritten.</p>
+<p>All ensemble picker and evaluator paths use the same stage-eligibility predicate as workflows.
+The UI filters Best-of-N, Consensus, and Panel Vote choices, and the manager repeats the check so a
+forged request cannot use Foreman as an evaluator.</p>
 <h2>Target flow</h2>
 
 <figure class="diagram">
   <div class="diagram-scroll">
-    <svg viewBox="0 0 1080 510" width="1080" height="510" role="img" aria-labelledby="target-flow-title target-flow-desc">
+    <svg viewBox="0 0 1080 700" width="1080" height="700" role="img" aria-labelledby="target-flow-title target-flow-desc">
       <title id="target-flow-title">Target Persona authoring and consumption flow</title>
-      <desc id="target-flow-desc">Settings saves and activates immutable Persona versions through the daemon. Workflow stages pin versions while Foreman reads the active version once per evaluation.</desc>
+      <desc id="target-flow-desc">Settings saves and activates immutable Persona versions through the daemon. Workflow stages pin versions, ensemble requests compile an exact selected version, and Foreman reads the active version once per evaluation.</desc>
       <defs>
   <marker id="target-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
     <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-muted)"/>
@@ -413,7 +449,7 @@ readable. Runs continue using only the published snapshot, never a live Persona 
       <path d="M520 128 L604 128" class="flow" marker-end="url(#target-arrow)"/>
       <path d="M816 128 L878 128" class="flow" marker-end="url(#target-arrow)"/>
 
-      <text x="34" y="262" class="lane-title">TWO CONSUMPTION MODES</text>
+      <text x="34" y="262" class="lane-title">THREE CONSUMPTION MODES</text>
       <rect x="28" y="280" width="500" height="198" rx="18" class="lane workflow-lane"/>
       <text x="52" y="310" class="lane-tag violet-text">WORKFLOW - PINNED</text>
       <rect x="58" y="340" width="126" height="70" rx="12" class="box blue-box"/>
@@ -443,16 +479,36 @@ readable. Runs continue using only the published snapshot, never a live Persona 
       <path d="M712 375 L754 375" class="flow green-flow" marker-end="url(#target-green)"/>
       <path d="M884 375 L926 375" class="flow green-flow" marker-end="url(#target-green)"/>
       <text x="802" y="447" text-anchor="middle" class="caption-text">The next evaluation observes a new activation.</text>
+
+      <rect x="28" y="510" width="1024" height="156" rx="18" class="lane workflow-lane"/>
+      <text x="52" y="540" class="lane-tag violet-text">ENSEMBLE - EXACT VERSION AT CREATION</text>
+      <rect x="58" y="566" width="210" height="70" rx="12" class="box blue-box"/>
+      <text x="163" y="595" text-anchor="middle" class="box-title">Evaluator picker</text>
+      <text x="163" y="618" text-anchor="middle" class="box-note">stage-eligible active v3</text>
+      <rect x="352" y="566" width="210" height="70" rx="12" class="box violet-box"/>
+      <text x="457" y="595" text-anchor="middle" class="box-title">Create request</text>
+      <text x="457" y="618" text-anchor="middle" class="box-note">pins version id</text>
+      <rect x="646" y="566" width="210" height="70" rx="12" class="box store-box"/>
+      <text x="751" y="595" text-anchor="middle" class="box-title">compileContext</text>
+      <text x="751" y="618" text-anchor="middle" class="box-note">resolves exact row</text>
+      <rect x="900" y="566" width="122" height="70" rx="12" class="box green-box"/>
+      <text x="961" y="595" text-anchor="middle" class="box-title">Run plan</text>
+      <text x="961" y="618" text-anchor="middle" class="box-note">bytes + source</text>
+      <path d="M268 601 L352 601" class="flow violet-flow" marker-end="url(#target-purple)"/>
+      <path d="M562 601 L646 601" class="flow violet-flow" marker-end="url(#target-purple)"/>
+      <path d="M856 601 L900 601" class="flow violet-flow" marker-end="url(#target-purple)"/>
     </svg>
   </div>
-  <figcaption>One authoring domain, with a pinned workflow consumer and an active Foreman consumer.</figcaption>
+  <figcaption>One authoring domain, with pinned workflow and ensemble consumers plus an active Foreman consumer.</figcaption>
 </figure>
-<p>The two consumers use the same version store differently:</p>
+<p>The three consumers use the same version store differently:</p>
 <ul>
 <li>a workflow stage pins a version as authored input;</li>
+<li>an ensemble request pins the selected active version and compiles its immutable bytes into the
+run plan;</li>
 <li>Foreman follows the active pointer at the start of each evaluation.</li>
 </ul>
-<p>There is no flow from Foreman into the workflow graph.</p>
+<p>There is no flow from Foreman into either workflow or ensemble selection.</p>
 <h2>Persistence and migration</h2>
 <h3>Tables and columns</h3>
 <p>Add one new table:</p>
@@ -492,7 +548,10 @@ system row use the visible name <strong>Foreman</strong> independently.</p>
 <p>Keep the current database ownership model: do not add <code>REFERENCES</code> clauses to this family.
 Store methods validate the active version belongs to the Persona inside the same transaction.</p>
 <h3>Data migration</h3>
-<p>Run one idempotent transaction after the new columns and table exist:</p>
+<p>Before the migration transaction runs, extend the shared <code>WorkflowDraftNode</code> type and Zod graph
+schema to accept <code>personaVersionId</code> on mutable-Persona nodes, and update every draft
+parse/serialize boundary to preserve it. Then run one idempotent transaction after the new
+columns and table exist:</p>
 <ol>
 <li>For every existing operator Persona without a version, insert version 1 from its current
 exact Markdown, runner, and model, then set it active.</li>
@@ -512,7 +571,8 @@ backfilled version id. Built-in nodes remain id-only.</li>
 </ol>
 <p>Migration tests must seed a pre-feature database. Fresh-database tests cannot prove that the
 new columns, partial indexes, legacy empty-string behavior, or graph rewrite work on an
-operator's existing state.</p>
+operator's existing state. They must also parse the rewritten graph through the new shared schema
+inside the transaction test so a schema that strips the pin cannot pass.</p>
 <h2>Server architecture</h2>
 <h3>Extract a Persona domain</h3>
 <p>Personas currently live inside workflow modules. Move the reusable contracts and persistence
@@ -525,9 +585,10 @@ and built-in merging;</li>
 <li><code>src/server/personas/builtins.ts</code> plus the generated source for immutable review Personas
 and the Foreman default descriptor.</li>
 </ul>
-<p><code>src/shared/workflow.ts</code> and <code>src/server/workflows/*</code> become consumers. This is the code-level
-change that makes &quot;a Persona may be used by a workflow&quot; true instead of leaving Persona storage
-owned by <code>WorkflowStore</code>.</p>
+<p><code>src/shared/workflow.ts</code>, <code>src/server/workflows/*</code>, the ensemble strategy contracts, and
+<code>EnsembleManager</code> become consumers. This is the code-level change that makes &quot;a Persona may be
+used by a workflow or ensemble&quot; true instead of leaving Persona storage owned by
+<code>WorkflowStore</code>.</p>
 <p>The Foreman worker remains a separate HTTP-only process. It never imports the Persona store and
 never touches SQLite.</p>
 <h3>API</h3>
@@ -542,6 +603,8 @@ GET    /api/personas/:id/versions?beforeVersion=&amp;limit=
 POST   /api/personas/:id/versions
 PUT    /api/personas/:id/active-version
 </code></pre>
+<p><code>POST /api/personas</code> creates only the stable definition. It does not create or activate a
+version; those remain two explicit calls to the version-creation and activation routes above.</p>
 <p>Every mutating route gets a shared Zod schema in <code>src/shared/protocol.ts</code> and goes through
 <code>parseBody</code>. Version creation and activation accept <code>expectedRevision</code>. A stale tab receives
 409 plus the current summary; its local Markdown remains untouched.</p>
@@ -554,7 +617,10 @@ PUT    /api/personas/:id/active-version
 <li>system Foreman versions allow exact empty Markdown;</li>
 <li>stage-eligible Persona versions require non-empty Markdown and may carry runner/model;</li>
 <li>Foreman versions must not carry runner/model overrides;</li>
-<li>stage pickers and graph validation accept only <code>stageEligible</code>.</li>
+<li>workflow and ensemble pickers accept only <code>stageEligible</code> Personas with a readable active
+source;</li>
+<li>ensemble preview/create validates the named exact version is readable, belongs to the Persona,
+and is still active before compiling it.</li>
 </ul>
 <p>Keep <code>GET /api/foreman/instructions</code> as the worker-facing projection, but return:</p>
 <pre><code class="language-ts">{
@@ -566,9 +632,14 @@ PUT    /api/personas/:id/active-version
   contentSha256: string;
 }
 </code></pre>
-<p>For one compatibility release, translate legacy <code>PUT /api/foreman/instructions</code> into
-&quot;append and activate&quot; and translate <code>reset: true</code> into &quot;activate Built-in default.&quot; New UI
-uses the Persona routes so save and activation remain separate.</p>
+<p>Remove <code>PUT /api/foreman/instructions</code>; there is no mutating compatibility adapter. Keep only the
+worker-facing <code>GET</code> projection. Every caller that saves Foreman text must create an immutable
+version through <code>POST /api/personas/:id/versions</code>, then activate it in a separate
+CAS-protected <code>PUT /api/personas/:id/active-version</code> request. Activating Built-in default uses the
+same activation route with a null version id.</p>
+<p>Ensemble create and preview keep their existing routes, but their Best-of-N, Consensus, and Panel
+Vote schemas replace <code>personaRevision</code> with <code>personaVersionId</code>. The manager resolves the exact
+version before compilation and never reconstructs it from the definition-level CAS revision.</p>
 <h3>Live state</h3>
 <p>Keep the existing top-level <code>personas</code> SSE collection and <code>persona_upsert</code> event, but make the
 payload a compact summary:</p>
@@ -579,9 +650,9 @@ payload a compact summary:</p>
 <li>effective runner/model summary where applicable;</li>
 <li>no version history and no Markdown body.</li>
 </ul>
-<p>Settings fetches the selected body over HTTP. Workflow pickers need only summary data. This
-prevents a version history of 100 KB Markdown documents from turning every SSE reconnect into a
-large document transfer.</p>
+<p>Settings fetches the selected body over HTTP. Workflow and ensemble pickers need only summary
+data. This prevents a version history of 100 KB Markdown documents from turning every SSE
+reconnect into a large document transfer.</p>
 <p>No new top-level SSE collection is needed, but the changed type still requires coordinated
 updates to <code>ServerEvent</code>, <code>registry.snapshot()</code>, <code>MissionState</code>, <code>useEventStream.ts</code>, and every
 consumer currently typed as <code>PersonaView</code>.</p>
@@ -642,6 +713,14 @@ and ensembles.</p>
 <li>Existing pinned versions remain readable in node properties.</li>
 <li>Upgrade is explicit per node; there is no &quot;update all silently&quot; path.</li>
 </ul>
+<h3>Ensemble surface</h3>
+<ul>
+<li>Best-of-N, Consensus, and every Panel Vote judge picker show only stage-eligible Personas.</li>
+<li>Selecting an operator Persona stores its exact active <code>personaVersionId</code> in the request draft.</li>
+<li>A stale selection remains visible with a validation error and must be explicitly reselected; it
+never advances to a newer active version silently.</li>
+<li>Foreman is absent from every picker, and preview/create rejects a forged Foreman id.</li>
+</ul>
 <h3>Foreman settings</h3>
 <p>Settings - Foreman keeps operational posture and model controls. Add one compact <strong>Persona</strong>
 section showing the active source and a link to <code>Settings - Personas - Foreman</code>.</p>
@@ -653,7 +732,7 @@ version history, and one activation path.</p>
   <div class="diagram-scroll">
     <svg viewBox="0 0 1080 430" width="1080" height="430" role="img" aria-labelledby="before-after-title before-after-desc">
       <title id="before-after-title">Persona architecture before and after</title>
-      <desc id="before-after-desc">Before, workflow Personas are mutable workflow-owned rows and Foreman uses an unrelated string. After, one independent Persona domain supplies pinned workflow versions and the active Foreman profile.</desc>
+      <desc id="before-after-desc">Before, workflow and ensemble Personas resolve mutable workflow-owned rows while Foreman uses an unrelated string. After, one independent Persona domain supplies pinned workflow and ensemble versions plus the active Foreman profile.</desc>
       <defs>
   <marker id="ba-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
     <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-muted)"/>
@@ -678,8 +757,8 @@ version history, and one activation path.</p>
       <text x="389" y="146" text-anchor="middle" class="box-note">revision overwrites</text>
       <path d="M228 130 L302 130" class="flow amber-flow" marker-end="url(#ba-warn)"/>
       <rect x="302" y="202" width="174" height="72" rx="12" class="box green-box"/>
-      <text x="389" y="231" text-anchor="middle" class="box-title">Publish</text>
-      <text x="389" y="254" text-anchor="middle" class="box-note">safe snapshot</text>
+      <text x="389" y="231" text-anchor="middle" class="box-title">Publish / compile</text>
+      <text x="389" y="254" text-anchor="middle" class="box-note">workflow + ensemble</text>
       <path d="M389 166 L389 202" class="flow" marker-end="url(#ba-arrow)"/>
       <rect x="58" y="306" width="170" height="60" rx="12" class="box amber-box"/>
       <text x="143" y="331" text-anchor="middle" class="box-title">FOREMAN.md</text>
@@ -704,6 +783,11 @@ version history, and one activation path.</p>
       <text x="684" y="270" text-anchor="middle" class="box-note">pins exact version</text>
       <path d="M904 166 C880 194 826 226 772 246" class="flow violet-flow" marker-end="url(#ba-violet)"/>
 
+      <rect x="596" y="306" width="176" height="60" rx="12" class="box violet-box"/>
+      <text x="684" y="331" text-anchor="middle" class="box-title">Ensemble plan</text>
+      <text x="684" y="351" text-anchor="middle" class="box-note">snapshots exact version</text>
+      <path d="M884 166 C842 220 804 300 772 328" class="flow violet-flow" marker-end="url(#ba-violet)"/>
+
       <rect x="846" y="306" width="176" height="60" rx="12" class="box green-box"/>
       <text x="934" y="331" text-anchor="middle" class="box-title">Foreman worker</text>
       <text x="934" y="351" text-anchor="middle" class="box-note">captures active source</text>
@@ -712,30 +796,38 @@ version history, and one activation path.</p>
       <path d="M772 254 C808 254 808 336 846 336" class="no-flow"/>
     </svg>
   </div>
-  <figcaption>The change removes workflow ownership from Persona authoring without making Foreman a workflow stage.</figcaption>
+  <figcaption>The change removes workflow ownership from Persona authoring while keeping Foreman out of workflow and ensemble selection.</figcaption>
 </figure>
-<p>The after-state has one authoring domain and two explicit consumption modes. Workflow publication
-still owns run immutability; Foreman activation owns the operator's current standing judgment.</p>
+<p>The after-state has one authoring domain and three explicit consumption modes. Workflow
+publication and ensemble compilation own their run-time immutability; Foreman activation owns the
+operator's current standing judgment.</p>
 <h2>Delivery phases</h2>
 <h3>Phase 1 - Persona contracts and additive persistence</h3>
 <ul>
 <li>Extract shared Persona types without changing consumer behavior.</li>
 <li>Add the version table and <code>personas</code> columns.</li>
 <li>Implement row parsing, exact-Markdown storage, version append, activation, and CAS.</li>
+<li>Extend the shared workflow draft node schema and every graph parse/serialize boundary with
+<code>personaVersionId</code> before any stored graph is rewritten.</li>
 <li>Backfill existing Personas and legacy Foreman instructions.</li>
-<li>Add migration tests for unset, empty, custom, archived, and conflicted names.</li>
+<li>Rewrite existing mutable-Persona draft nodes to the backfilled version in the same idempotent
+transaction.</li>
+<li>Add migration tests for unset, empty, custom, archived, conflicted names, and schema-preserved
+draft pins.</li>
 </ul>
 <p>Exit: every current operator Persona and Foreman instruction value has an equivalent active source
-after restart, with no workflow version or run changed.</p>
-<h3>Phase 2 - Version API, compact live catalog, and compatibility adapters</h3>
+after restart, every existing mutable-Persona draft has a preserved version pin, and no published
+workflow version or run changed.</p>
+<h3>Phase 2 - Version API and compact live catalog</h3>
 <ul>
 <li>Add shared schemas and Persona routes.</li>
 <li>Change Registry/SSE to summaries and move bodies/history to bounded HTTP reads.</li>
 <li>Preserve the worker-facing Foreman instructions route with source metadata.</li>
-<li>Keep the legacy PUT adapter for one release.</li>
+<li>Remove the mutating Foreman instructions route and migrate every in-repository caller to
+separate version-creation and CAS-protected activation requests.</li>
 </ul>
 <p>Exit: a caller can append, list, and activate versions with CAS, and two tabs cannot overwrite or
-activate across each other.</p>
+activate across each other; no route combines saving and activation.</p>
 <h3>Phase 3 - Independent Persona settings UI</h3>
 <ul>
 <li>Add the Settings category and search entries.</li>
@@ -746,16 +838,23 @@ interactions.</li>
 </ul>
 <p>Exit: every Persona can be viewed from Settings, mutable Personas can create and activate versions,
 and built-ins remain visibly immutable.</p>
-<h3>Phase 4 - Workflow version pinning</h3>
+<h3>Phase 4 - Workflow and ensemble version consumption</h3>
 <ul>
-<li>Extend draft Persona nodes with a version id for mutable Personas.</li>
-<li>Backfill existing drafts and update shared graph validation.</li>
-<li>Pin active version on add, retain the pin across activation, and add explicit Upgrade.</li>
+<li>Use the Phase 1 draft contract and migrated pins in builder behavior and shared graph
+validation.</li>
+<li>Pin the active workflow version on add, retain the pin across activation, and add explicit
+Upgrade.</li>
 <li>Publish from the pinned version and add source-version metadata to snapshots.</li>
+<li>Replace ensemble <code>personaRevision</code> request fields with <code>personaVersionId</code> across Best-of-N,
+Consensus, Panel Vote, preview, and create.</li>
+<li>Filter ensemble choices by stage eligibility, refuse stale or unreadable exact versions, and
+snapshot exact bytes plus source version metadata into the compiled plan.</li>
 <li>Keep legacy published snapshots and run execution readable without rewriting them.</li>
+<li>Keep legacy durable ensemble configs and compiled plans readable without rewriting them.</li>
 </ul>
 <p>Exit: activating a Persona version cannot change an existing draft node, published version,
-binding, or run.</p>
+binding, or run, and a new ensemble cannot silently compile a different Persona version from the
+one selected.</p>
 <h3>Phase 5 - Foreman capture and audit provenance</h3>
 <ul>
 <li>Return the active source object from the daemon route.</li>
@@ -772,8 +871,8 @@ version, and both tiers always judge the same captured text.</p>
 <li>Update <code>README.md</code> sections for Workflows, Personas, Foreman instructions, routes, and env
 fallback behavior.</li>
 <li>Update generated Persona tooling paths if the server module moves.</li>
-<li>Run focused store, migration, route, SSE, UI, workflow, and Foreman suites, then the normal
-repository validation pipeline when implementation is complete.</li>
+<li>Run focused store, migration, route, SSE, UI, workflow, ensemble, and Foreman suites, then the
+normal repository validation pipeline when implementation is complete.</li>
 </ul>
 <p>Exit: documentation and code describe one Persona model, with no UI or worker path still treating
 Foreman instructions as an unversioned string.</p>
@@ -782,12 +881,14 @@ Foreman instructions as an unversioned string.</p>
 <ul>
 <li>existing Persona becomes active version 1 with byte-identical Markdown;</li>
 <li>prior CAS revision is preserved but not presented as invented version history;</li>
-<li>creating v2 does not activate it;</li>
+<li>creating v1 or any later version does not activate it;</li>
 <li>activating v2 or rolling back to v1 is atomic and CAS-protected;</li>
 <li>empty Foreman version is distinct from Built-in default;</li>
 <li>legacy unset, null, empty, and custom app-config values migrate correctly and idempotently;</li>
 <li>system Foreman coexists with an operator Persona named Foreman;</li>
 <li>indexes are created only after dependent columns exist;</li>
+<li>the Phase 1 graph schema preserves <code>personaVersionId</code> while the same transaction rewrites
+pre-feature drafts;</li>
 <li>legacy workflow versions and runs remain readable.</li>
 </ul>
 <h3>Workflow behavior</h3>
@@ -800,6 +901,21 @@ Foreman instructions as an unversioned string.</p>
 <li>run attempts use only the published snapshot;</li>
 <li>archived Personas remain in history but block unpublished drafts as today;</li>
 <li>Foreman is absent from every workflow picker and palette.</li>
+</ul>
+<h3>Ensemble behavior</h3>
+<ul>
+<li>Best-of-N, Consensus, and every Panel Vote judge request pins the selected active
+<code>personaVersionId</code>;</li>
+<li>activation between selection and preview/create makes the request stale and is refused;</li>
+<li>an exact version that is missing, unreadable, foreign to the Persona, archived, or not
+stage-eligible is refused without fallback;</li>
+<li><code>compileContext</code> snapshots exact guidance, runner, model, <code>sourcePersonaVersionId</code>, and source
+version number into the durable compiled plan;</li>
+<li>retries and recovery use the compiled snapshot without a live Persona lookup;</li>
+<li>built-in evaluator Personas remain unversioned and snapshot current build-owned bytes;</li>
+<li>Foreman is absent from every ensemble picker and a forged Foreman request is refused;</li>
+<li>legacy durable runs carrying revision-era config remain readable and execute their compiled
+guidance.</li>
 </ul>
 <h3>Foreman behavior</h3>
 <ul>
@@ -819,6 +935,7 @@ Foreman instructions as an unversioned string.</p>
 <li>dirty edits survive conflict and are guarded on navigation;</li>
 <li>built-ins expose Duplicate but no Save/Activate/Archive;</li>
 <li>Foreman exposes Save version and Activate but no workflow eligibility;</li>
+<li>workflow and ensemble pickers share stage-eligibility filtering;</li>
 <li>active and pinned version labels are accessible without relying on color.</li>
 </ul>
 <h2>Risks and mitigations</h2>
@@ -839,6 +956,14 @@ Foreman instructions as an unversioned string.</p>
 <td>Pin version id in each mutable-Persona draft node and require explicit Upgrade.</td>
 </tr>
 <tr>
+<td>A stale ensemble request silently snapshots a newer active Persona</td>
+<td>Persist <code>personaVersionId</code>, require it still be active at validation, and compile only that exact immutable row.</td>
+</tr>
+<tr>
+<td>Foreman leaks into a generic Persona picker or forged evaluator request</td>
+<td>Filter on <code>stageEligible</code> in every workflow and ensemble picker and enforce the same policy in the manager.</td>
+</tr>
+<tr>
 <td>Foreman version text accidentally grants authority</td>
 <td>Keep every operational/consent field in <code>ForemanConfig</code>; reuse the existing prompt ratchet unchanged.</td>
 </tr>
@@ -849,6 +974,10 @@ Foreman instructions as an unversioned string.</p>
 <tr>
 <td>Migration invents history that never existed</td>
 <td>Backfill exactly one v1 from current bytes and state plainly that overwritten revisions are unrecoverable.</td>
+</tr>
+<tr>
+<td>Draft migration writes pins that the current schema strips</td>
+<td>Land the draft type and Zod support in Phase 1 before the transactional rewrite and parse migrated graphs in tests.</td>
 </tr>
 <tr>
 <td>Empty instructions collapse to default</td>
@@ -867,6 +996,7 @@ Foreman instructions as an unversioned string.</p>
 <h2>Non-goals</h2>
 <ul>
 <li>Making Foreman schedulable as a workflow stage.</li>
+<li>Making Foreman selectable as an ensemble evaluator or panel judge.</li>
 <li>Turning workflow Personas into interactive agents, terminal sessions, or tool-using workers.</li>
 <li>Versioning Foreman authority, allowlists, operational mode, queue policy, or model-role choices.</li>
 <li>Reconstructing Persona revisions that were overwritten before this feature.</li>

@@ -10943,12 +10943,17 @@ select.foreman-model-input {
   display: grid;
   gap: 4px;
 }
+/* Two lines, not four columns. A repository root and an argv are both long and neither
+   truncates usefully, so side-by-side columns squeezed each into a four-line wrap. The
+   identity (slot plus root) reads across the top and the command sits under it, which is
+   also the order the sentence above describes them in. */
 .wf-settings-check-list li {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1.2fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 3px;
+  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--panel);
@@ -10958,14 +10963,36 @@ select.foreman-model-input {
   text-transform: uppercase;
   letter-spacing: .06em;
   color: var(--muted);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }
-.wf-settings-check-root,
-.wf-settings-check-argv {
+.wf-settings-check-root {
   font-size: 11.5px;
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
-.wf-settings-check-argv { color: var(--fg); }
+/* The command spans the full row on its own line: it is the thing that will actually run,
+   so it gets the width rather than sharing it with the path. Both rows are placed
+   EXPLICITLY - a full-width child breaks auto-placement, which otherwise pushed Remove down
+   to a third line of its own. */
+.wf-settings-check-argv {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.wf-settings-check-list li button {
+  grid-row: 1;
+  grid-column: 3;
+  align-self: start;
+}
+/* Wrapping, with a floor under each field: three inputs and a button on one line is
+   unreadable at the panel's width, and the path box is the one that needs room. */
 .wf-settings-check-add { flex-wrap: wrap; }
+.wf-settings-check-add > .field-input { min-width: 180px; flex: 1 1 180px; }
+.wf-settings-check-add select { flex: 0 0 auto; }
 /* The parsed argv, echoed back. Monospace and tabular so the operator counts arguments
    rather than trusting a split they cannot see. */
 .wf-settings-check-preview {

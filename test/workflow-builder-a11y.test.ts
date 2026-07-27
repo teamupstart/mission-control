@@ -91,3 +91,13 @@ test("workflow meaning is not color-only and reduced motion is honored", () => {
   assert.match(styles, /\.workflow-port-label/);
   assert.match(styles, /\.workflow-node:focus-within/);
 });
+
+test("canvas nodes have a definite measured width for readable labels", () => {
+  // React Flow positions its wrapper using the node's first measured box. A min-width can
+  // leave that wrapper character-wide when a read-only graph is mounted, even while the
+  // visible shell overflows it. Keep the canvas geometry definite so title and subtitle use
+  // the same readable line width as the shell.
+  const workflowNodeStyles = styles.match(/\.workflow-node\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(workflowNodeStyles, /width: 180px;/);
+  assert.doesNotMatch(workflowNodeStyles, /min-width: 150px;/);
+});

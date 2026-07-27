@@ -3593,6 +3593,25 @@ body {
   max-height: 74vh;
   overflow: auto;
 }
+/* Reviews can contain an arbitrary number of questions. Constrain the whole panel to the
+   available viewport, then make only its content region scroll so the session heading and
+   close action remain reachable. The generic `.modal-body` limit is not sufficient here:
+   its 74vh plus the header can exceed a short viewport. */
+.review-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 96px);
+}
+.review-modal .modal-head {
+  flex: 0 0 auto;
+}
+.review-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 
 .review {
   padding: 16px 0;

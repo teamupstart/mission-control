@@ -10555,10 +10555,11 @@ select.ensemble-judge-persona {
   margin-top: 18px;
 }
 
-/* ---- Foreman settings category (the panel behind the rail) ---- */
-.foreman-settings-blurb {
-  margin: 0 0 14px;
-}
+/* ---- Foreman settings category (the panel behind the rail) ----
+   Most of this section's own classes went with the console rewrite: the panel is drawn
+   from `sc-` now, and `.foreman-settings-blurb` / `.foreman-repos` / `.foreman-repos-hint`
+   went with the vertical form they spaced. What remains is shared - `.foreman-models` is
+   still LlmSettingsPanel's group wrapper and `.foreman-model-*` are ModelField's own. */
 .foreman-models {
   margin-top: 20px;
 }
@@ -10614,12 +10615,6 @@ select.foreman-model-input {
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--dim);
-}
-.foreman-repos {
-  margin-top: 20px;
-}
-.foreman-repos-hint {
-  margin: 4px 0 10px;
 }
 /* The repo-list editor that lived here (`.foreman-repo-list/-row/-path/-empty`) moved to
    the Trust matrix; these three panels now summarize and deep-link. `.foreman-repo-remove`
@@ -11384,6 +11379,17 @@ select.sc-input {
 .sc-table-shipping .sc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
 }
+/* The ask takes the flexible track, because it is the only cell whose useful length is
+   unbounded - everything else is a word from a closed vocabulary or a timestamp. */
+.sc-table-foreman .sc-row {
+  grid-template-columns: 104px minmax(0, 1fr) 88px 58px 72px 96px;
+}
+/* The shadow column exists only while the cheap tier is measuring; the posture, not the
+   data, decides (see `showShadow`), so flipping to Shadow shows an empty column that is
+   about to fill rather than nothing at all. */
+.sc-table-foreman.has-shadow .sc-row {
+  grid-template-columns: 104px minmax(0, 1fr) 88px 58px 72px 132px 96px;
+}
 /* Phone width: the row folds onto two lines rather than being cut in half.
    The fixed tracks above come to 326px plus gaps and padding, so below roughly 450px of
    table the grid is wider than its container - and `.sc-table` clips rather than scrolls
@@ -11422,6 +11428,55 @@ select.sc-input {
     grid-column: 1 / -1;
     grid-row: 2;
     white-space: normal;
+  }
+}
+/* The Foreman row folds EARLIER than the other two, because it carries three more cells:
+   its fixed tracks alone come to ~550px before the ask gets any width at all, so it runs
+   out of room while Inspector and Shipping are still comfortable. Same failure if left
+   alone - `.sc-table` clips rather than scrolls (it has to, for the rounded corners), so
+   the right-hand column silently disappears, and here that is the timestamp AND the
+   divergence, which is the column the shadow posture exists to show.
+   Four lines, paired so each reads as a sentence: who and when, what was asked, what came
+   of it and who decided, then how the tiers compared. */
+@media (max-width: 780px) {
+  .sc-table-foreman .sc-row-head {
+    display: none;
+  }
+  .sc-table-foreman .sc-row,
+  .sc-table-foreman.has-shadow .sc-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 3px;
+  }
+  .sc-table-foreman .sc-row > .sc-ref {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .sc-table-foreman .sc-row > .sc-when {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .sc-table-foreman .sc-row > .sc-ask {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+  .sc-table-foreman .sc-row > .sc-verdict {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .sc-table-foreman .sc-row > .sc-by {
+    grid-column: 2;
+    grid-row: 3;
+    text-align: right;
+  }
+  .sc-table-foreman .sc-row > .sc-tier {
+    grid-column: 1;
+    grid-row: 4;
+  }
+  .sc-table-foreman .sc-row > .sc-shadow {
+    grid-column: 2;
+    grid-row: 4;
+    text-align: right;
   }
 }
 .sc-row-head {
@@ -11486,6 +11541,82 @@ select.sc-input {
   color: var(--dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- the Foreman ledger's own cells ----
+   Four dispositions, and the two that await you (`noteAwaitsYou`) are the two that carry
+   a colour with weight: an escalation is Foreman handing the decision over, a draft is one
+   it wants confirmed. Answered reads as settled, skipped as inert. */
+.sc-verdict-escalated {
+  color: var(--attention);
+}
+.sc-verdict-pending {
+  color: var(--working);
+}
+.sc-verdict-answered {
+  color: var(--idle);
+}
+.sc-verdict-skipped {
+  color: var(--dim);
+}
+/* The session handle. Mono because it is an identifier being scanned for repeats down a
+   column, not read as a word - the shape of `ttys004:41233` is the whole of its use. */
+.sc-ref {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-ask {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-by,
+.sc-tier {
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.sc-shadow {
+  min-width: 0;
+}
+.sc-div {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: color-mix(in oklab, var(--neutral) 12%, transparent);
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The one divergence that decides whether the cheap tier may be promoted: it answered
+   where the full review would not have. Loud on purpose - it is the reason the shadow
+   posture exists, and reading it off a wall of grey chips was how it stayed unread. */
+.sc-div-cheap-over-eager {
+  background: color-mix(in oklab, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.sc-div-agree {
+  background: color-mix(in oklab, var(--idle) 12%, transparent);
+  color: var(--idle);
+}
+.sc-div-cheap-too-cautious {
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  color: var(--working);
+}
+/* A deferral is the cheap tier declining to decide - not a comparison at all, so it stays
+   the quietest thing in the column rather than reading as a result. */
+.sc-div-deferred {
+  background: transparent;
+  color: var(--dim);
+  padding-left: 0;
 }
 .sc-when {
   color: var(--dim);

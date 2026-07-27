@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
-import type { BacklogPlan, ForemanStatus } from "@shared/types.ts";
-import { api, fetchBacklogPlan, fetchForemanConfig, fetchForemanStatus } from "./lib/api.ts";
+import type { BacklogPlan, ForemanEpisode, ForemanStatus } from "@shared/types.ts";
+import {
+  api,
+  fetchBacklogPlan,
+  fetchForemanConfig,
+  fetchForemanEpisodes,
+  fetchForemanStatus,
+} from "./lib/api.ts";
 
 // Foreman config + live status for the topbar control and the per-card notes.
 // Config is edited rarely (a control-panel poll is plenty); status carries the
@@ -32,6 +38,21 @@ export interface ForemanState {
    */
   backlogPlan: BacklogPlan | null;
   /**
+   * Every decision Foreman has faced across the fleet, newest first - the settings
+   * panel's ledger.
+   *
+   * Rides this hook's existing tick rather than a timer of its own, which is what keeps
+   * the panel's strip, its health card and its rows one consistent reading: three fetches
+   * on three schedules would let a tile disagree with the rows under it for a few seconds
+   * at a time, on a screen whose whole claim is that the number and the list are the same
+   * question.
+   *
+   * `[]` before the first answer, not null: the panel distinguishes "nothing yet" from
+   * "the daemon has not answered" through `config`, which is the same signal every other
+   * control on it already reads.
+   */
+  episodes: ForemanEpisode[];
+  /**
    * Apply a patch, resolving to whether the daemon accepted it. Callers that only edit a
    * field ignore the boolean (`void update(...)`); a caller that must chain a SECOND write
    * on this one succeeding - Trust retiring a staged repo once its first grant lands - waits
@@ -46,6 +67,7 @@ export function useForeman(): ForemanState {
   const [config, setConfigState] = useState<ForemanConfig | null>(null);
   const [status, setStatus] = useState<ForemanStatus | null>(null);
   const [backlogPlan, setBacklogPlan] = useState<BacklogPlan | null>(null);
+  const [episodes, setEpisodes] = useState<ForemanEpisode[]>([]);
   const [error, setError] = useState<string | null>(null);
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
@@ -59,14 +81,21 @@ export function useForeman(): ForemanState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
-      const [c, s, p] = await Promise.all([
+      const [c, s, p, e] = await Promise.all([
         fetchForemanConfig(),
         fetchForemanStatus(),
         fetchBacklogPlan(),
+        fetchForemanEpisodes(),
       ]);
       if (!alive) return;
       if (c) setConfig(c);
       if (s) setStatus(s);
+      // Held on a failed read, like the config and status above and unlike the plan
+      // below: an empty ledger is a claim ("Foreman has decided nothing"), and blanking a
+      // table of fifty rows because one poll missed would say that falsely once every
+      // time the daemon is busy. The rows are append-only, so a stale copy is merely old,
+      // never wrong.
+      if (e) setEpisodes(e);
       // Written unconditionally, unlike the two above: null is a MEANING here ("Foreman
       // has no reading of the backlog"), not merely a failed read, and a plan that stuck
       // on screen after the backlog was cleared would keep blaming a dependency that no
@@ -119,5 +148,5 @@ export function useForeman(): ForemanState {
     [setConfig],
   );
 
-  return { config, status, backlogPlan, update, error };
+  return { config, status, backlogPlan, episodes, update, error };
 }

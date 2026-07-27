@@ -31,6 +31,8 @@ function ep(id: number, createdAt: number): ForemanEpisode {
     classification: null,
     confidence: null,
     tier: null,
+    cheapAction: null,
+    divergence: null,
     disposition: "escalated",
     lastAction: null,
     sentText: null,

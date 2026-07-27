@@ -8,6 +8,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { CheapAction, Divergence } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
@@ -722,6 +723,21 @@ export interface ForemanEpisode {
   confidence: number | null;
   /** Which tier produced the verdict (0 structural, 1 cheap, 2 full review). */
   tier: number | null;
+  /**
+   * What the cheap tier would have done, and how that compared - `shadow` posture only.
+   *
+   * Both null means NOT MEASURED, which is a different claim from `agree`: every row
+   * written before these columns existed, and every row written under `off` (no cheap
+   * call) or `on` (the cheap tier decided, so there is no second opinion to compare
+   * against), has no measurement rather than a favourable one.
+   *
+   * Deliberately NOT folded into `tier`. That field honestly reports which tier produced
+   * the verdict that was USED, and under shadow that is always 2 - the full review acts
+   * and the cheap tier only watches. Overwriting it to say 1 would make the record claim
+   * the cheap tier decided something it did not.
+   */
+  cheapAction: CheapAction | null;
+  divergence: Divergence | null;
   disposition: NoteDisposition;
   lastAction: string | null;
   /** What was actually delivered - null when nothing was sent. */

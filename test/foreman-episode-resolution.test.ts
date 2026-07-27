@@ -30,6 +30,8 @@ function ep(over: Partial<ForemanEpisode> = {}): ForemanEpisode {
     classification: null,
     confidence: null,
     tier: null,
+    cheapAction: null,
+    divergence: null,
     disposition: "escalated",
     lastAction: null,
     sentText: null,

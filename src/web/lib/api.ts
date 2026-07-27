@@ -107,6 +107,15 @@ async function fetchJson<T>(path: string): Promise<T | null> {
 export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/config");
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
 /**
+ * The fleet-wide episode ledger - every decision Foreman has faced, newest first.
+ *
+ * Fetched rather than streamed for the reason the route states: an episode carries the
+ * child's screen at decision time. Rides `useForeman`'s existing 4s tick, so the panel
+ * that shows it costs no second timer.
+ */
+export const fetchForemanEpisodes = () =>
+  fetchJson<ForemanEpisode[]>("/api/foreman/episodes");
+/**
  * Foreman's reading of the backlog - what waits on what, and in what order.
  *
  * Polled beside the config rather than streamed: it changes only when the backlog

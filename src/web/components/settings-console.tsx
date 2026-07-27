@@ -201,3 +201,24 @@ export function PrLink({
     </Tooltip>
   );
 }
+
+/**
+ * Which session a ledger row happened on, as a short handle.
+ *
+ * A sibling of `PrLink` rather than a widening of it: a pull request has a canonical
+ * name and a URL, and an episode has neither. Giving `PrLink` a discriminated union
+ * would make one leaf answer two questions that share only their position in a row.
+ *
+ * It is a handle and NOT a link, because there is nowhere honest to send the click.
+ * The episode's `sessionId` is synthetic (tty + pid + start) and re-mints on restart,
+ * so most rows in a fleet-wide ledger name a session that no longer exists - and a
+ * link that silently does nothing on the majority of rows is worse than plain text.
+ * The full key rides along in the tooltip for anyone correlating with a drawer.
+ */
+export function SessionRef({ handle, tooltip }: { handle: string; tooltip: string }): React.JSX.Element {
+  return (
+    <Tooltip label={tooltip}>
+      <span className="sc-ref">{handle}</span>
+    </Tooltip>
+  );
+}

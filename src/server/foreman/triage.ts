@@ -9,6 +9,7 @@ import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
+import type { CheapAction, Divergence } from "@shared/foreman.ts";
 
 // The cheap tier that sits in front of Foreman's full `claude -p` reviewer (see
 // docs/plans/foreman-watcher/plan.md). It disposes the structurally-determined and
@@ -662,9 +663,10 @@ export async function triageSession(
  * to compare). `cheap-over-eager` is the one that matters: the cheap tier would have
  * auto-answered where Opus would not - that must stay near zero before flipping to `on`.
  * Pure.
+ *
+ * The `Divergence` vocabulary itself lives in `@shared/foreman.ts`, because the panel that
+ * renders these has to name them; only the classifier is server-side.
  */
-export type Divergence = "deferred" | "agree" | "cheap-over-eager" | "cheap-too-cautious" | "minor";
-
 export function classifyDivergence(cheap: TriageOutcome, opus: Verdict): Divergence {
   if (cheap.kind === "route-up") return "deferred";
   const a = cheap.verdict.action;
@@ -673,4 +675,17 @@ export function classifyDivergence(cheap: TriageOutcome, opus: Verdict): Diverge
   if (a === "answer" && b !== "answer") return "cheap-over-eager";
   if (a !== "answer" && b === "answer") return "cheap-too-cautious";
   return "minor";
+}
+
+/**
+ * What the cheap tier itself decided, as the one word that gets persisted.
+ *
+ * Stored alongside the divergence rather than derived from it, because the divergence is
+ * a COMPARISON and throws away which side did what: `minor` says the two disagreed
+ * without saying whether tier 1 wanted to escalate or to skip, and `deferred` says only
+ * that it declined. An operator deciding whether to trust the cheap tier is reading its
+ * behaviour, not just its agreement rate, so the record keeps both halves. Pure.
+ */
+export function cheapActionOf(cheap: TriageOutcome): CheapAction {
+  return cheap.kind === "route-up" ? "route-up" : cheap.verdict.action;
 }

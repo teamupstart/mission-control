@@ -36,6 +36,8 @@ import type {
   WorktreeProvider,
 } from "@shared/types.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
+import { readCheapAction, readDivergence } from "@shared/foreman.ts";
+import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 
 /**
@@ -294,6 +296,13 @@ export function openDb(): DatabaseSync {
       classification TEXT,
       confidence     REAL,
       tier           INTEGER,
+      -- The shadow measurement: what the cheap tier would have done, and how that compared
+      -- with the full review that actually acted. Written only under the shadow posture,
+      -- and NULL everywhere else - which is "not measured", not "agreed". Deliberately
+      -- separate from tier, which keeps reporting the tier whose verdict was USED (2 under
+      -- shadow). Also ALTERed in migrate(), for a db that predates them.
+      cheap_action   TEXT,           -- answer | escalate | skip | route-up
+      divergence     TEXT,           -- deferred | agree | cheap-over-eager | cheap-too-cautious | minor
       disposition    TEXT NOT NULL,
       last_action    TEXT,
       sent_text      TEXT,           -- what was actually delivered
@@ -1362,6 +1371,33 @@ function migrate(d: DatabaseSync): void {
   // only honest answer: its `sent_by` cannot say whether a human dismissed it.
   addColumn(d, "foreman_episodes", "resolved_by", "TEXT");
 
+  // `cheap_action` / `divergence`: what the cheap tier decided under `shadow`, and how it
+  // compared with the full review. Same exposure as `resolved_by` above - the INSERT names
+  // both columns, so without these every episode write on an existing db would fail.
+  //
+  // Nullable with no default, and null is a CLAIM here rather than a gap: "not measured".
+  // Every row written before this shipped has no answer, and neither does any row written
+  // under `off` (no cheap call is made) or `on` (the cheap tier decided, so there is no
+  // second opinion to compare it against). Defaulting either to 'agree' would manufacture
+  // evidence for the one question this measurement exists to answer.
+  addColumn(d, "foreman_episodes", "cheap_action", "TEXT");
+  addColumn(d, "foreman_episodes", "divergence", "TEXT");
+
+  // The index `recentEpisodes` needs: the fleet-wide read has no `note_key` predicate, so
+  // `idx_foreman_episodes_key` cannot serve it and the query is a full scan plus a sort.
+  //
+  // It lives HERE, under the ALTERs, and NOT beside the CREATE TABLE, which is the rule
+  // `idx_tasks_schedule` exists to demonstrate: the CREATE block runs in full before
+  // `migrate()` does. An index there naming a column an ALTER has not added yet throws in
+  // `openDb()` on first start - for every existing operator, and never on the fresh install
+  // it was tested against. This one indexes `created_at` only, which the CREATE block does
+  // define, so it would have survived that ordering by luck; it sits here with the columns
+  // it was added for so the next person moves the pair together. Test: `foreman-episodes-db.test.ts`.
+  d.exec(
+    `CREATE INDEX IF NOT EXISTS idx_foreman_episodes_recent
+       ON foreman_episodes(created_at DESC, id DESC)`,
+  );
+
   // `model`: the per-task model override, added to `tasks` after it shipped - so on an
   // upgraded db this ALTER is the only way the column arrives, and without it EVERY
   // task write would fail (the INSERT names the column). Nullable with no default, and
@@ -1822,6 +1858,9 @@ export interface EpisodeWrite {
   classification: string | null;
   confidence: number | null;
   tier: number | null;
+  /** The shadow measurement. Both null unless the posture was `shadow`. */
+  cheapAction: CheapAction | null;
+  divergence: Divergence | null;
   disposition: NoteDisposition;
   lastAction: string | null;
   sentText: string | null;
@@ -1861,9 +1900,10 @@ export function recordEpisode(e: EpisodeWrite): number {
     .prepare(
       `INSERT INTO foreman_episodes
          (note_key, session_id, marker, situation, surface, question, pane, menu, review_id,
-          purpose, brief, recommendation, classification, confidence, tier, disposition,
+          purpose, brief, recommendation, classification, confidence, tier, cheap_action,
+          divergence, disposition,
           last_action, sent_text, sent_option, sent_by, created_at, resolved_at, resolved_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key, marker) DO UPDATE SET
          session_id     = excluded.session_id,
          situation      = excluded.situation,
@@ -1878,6 +1918,16 @@ export function recordEpisode(e: EpisodeWrite): number {
          classification = excluded.classification,
          confidence     = excluded.confidence,
          tier           = excluded.tier,
+         -- Overwritten wholesale, NOT coalesced like pane/menu above, and the split is
+         -- deliberate. Those two are the captured ASK, which a later write may simply not
+         -- have re-read - so keeping the earlier copy is keeping evidence. These two are
+         -- part of the ANSWER, beside classification/confidence/tier: they describe the
+         -- verdict this row now stores. Coalescing them would leave a measurement taken
+         -- under shadow attached to a decision later re-made under off, which reads as
+         -- a divergence nobody measured. (No backticks in here: this is a template
+         -- literal, and one would end it mid-statement.)
+         cheap_action   = excluded.cheap_action,
+         divergence     = excluded.divergence,
          disposition    = excluded.disposition,
          last_action    = excluded.last_action,
          sent_text      = excluded.sent_text,
@@ -1902,6 +1952,8 @@ export function recordEpisode(e: EpisodeWrite): number {
       e.classification,
       e.confidence,
       e.tier,
+      e.cheapAction,
+      e.divergence,
       e.disposition,
       episodeText(e.lastAction),
       episodeText(e.sentText),
@@ -1958,45 +2010,91 @@ export function resolveEpisode(p: {
     );
 }
 
+/** The columns both episode reads select, so the two cannot drift apart. */
+const EPISODE_COLUMNS = `id, note_key, session_id, marker, situation, surface, question, pane,
+        menu, review_id, purpose, brief, recommendation, classification, confidence, tier,
+        cheap_action, divergence, disposition, last_action, sent_text, sent_option, sent_by,
+        created_at, resolved_at, resolved_by`;
+
+/**
+ * One stored row back to the wire shape.
+ *
+ * Shared by `episodesFor` and `recentEpisodes` rather than written twice: the per-field
+ * `?? 0` / `typeof` defence below is the point of it. These rows outlive the daemon that
+ * wrote them, so every field is read as "whatever is actually there" rather than trusted,
+ * and a second copy of that reasoning would be a second place for it to be got wrong.
+ */
+function episodeFromRow(r: Record<string, unknown>): ForemanEpisode {
+  return {
+    id: Number(r.id ?? 0),
+    noteKey: String(r.note_key ?? ""),
+    sessionId: String(r.session_id ?? ""),
+    marker: String(r.marker ?? ""),
+    situation: String(r.situation ?? ""),
+    surface: r.surface === "input-review" ? "input-review" : "terminal",
+    question: String(r.question ?? ""),
+    pane: typeof r.pane === "string" ? r.pane : null,
+    menu: parseMenu(r.menu),
+    reviewId: typeof r.review_id === "string" ? r.review_id : null,
+    purpose: typeof r.purpose === "string" ? r.purpose : null,
+    brief: typeof r.brief === "string" ? r.brief : null,
+    recommendation: typeof r.recommendation === "string" ? r.recommendation : null,
+    classification: typeof r.classification === "string" ? r.classification : null,
+    confidence: typeof r.confidence === "number" ? r.confidence : null,
+    tier: typeof r.tier === "number" ? r.tier : null,
+    // Unknown reads as null - "not measured" - never as a nearest match. A row written by
+    // a newer build with a divergence kind this one has no word for must render blank
+    // rather than be rounded to `agree`, which is the one reading that would flatter the
+    // cheap tier on exactly the evidence an operator is using to decide whether to trust it.
+    cheapAction: readCheapAction(r.cheap_action),
+    divergence: readDivergence(r.divergence),
+    disposition: episodeDisposition(r.disposition),
+    lastAction: typeof r.last_action === "string" ? r.last_action : null,
+    sentText: typeof r.sent_text === "string" ? r.sent_text : null,
+    sentOption: parseSentOption(r.sent_option),
+    sentBy: r.sent_by === "foreman" || r.sent_by === "you" ? r.sent_by : null,
+    createdAt: Number(r.created_at ?? 0),
+    resolvedAt: typeof r.resolved_at === "number" ? r.resolved_at : null,
+    resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
+  };
+}
+
 /** Every episode recorded for one session key, newest first. */
 export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
   const rows = openDb()
     .prepare(
-      `SELECT id, note_key, session_id, marker, situation, surface, question, pane, menu,
-              review_id, purpose, brief, recommendation, classification, confidence, tier,
-              disposition, last_action, sent_text, sent_option, sent_by, created_at,
-              resolved_at, resolved_by
+      `SELECT ${EPISODE_COLUMNS}
          FROM foreman_episodes WHERE note_key = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
     .all(noteKey, limit) as unknown as Array<Record<string, unknown>>;
-  return rows.map(
-    (r): ForemanEpisode => ({
-      id: Number(r.id ?? 0),
-      noteKey: String(r.note_key ?? ""),
-      sessionId: String(r.session_id ?? ""),
-      marker: String(r.marker ?? ""),
-      situation: String(r.situation ?? ""),
-      surface: r.surface === "input-review" ? "input-review" : "terminal",
-      question: String(r.question ?? ""),
-      pane: typeof r.pane === "string" ? r.pane : null,
-      menu: parseMenu(r.menu),
-      reviewId: typeof r.review_id === "string" ? r.review_id : null,
-      purpose: typeof r.purpose === "string" ? r.purpose : null,
-      brief: typeof r.brief === "string" ? r.brief : null,
-      recommendation: typeof r.recommendation === "string" ? r.recommendation : null,
-      classification: typeof r.classification === "string" ? r.classification : null,
-      confidence: typeof r.confidence === "number" ? r.confidence : null,
-      tier: typeof r.tier === "number" ? r.tier : null,
-      disposition: episodeDisposition(r.disposition),
-      lastAction: typeof r.last_action === "string" ? r.last_action : null,
-      sentText: typeof r.sent_text === "string" ? r.sent_text : null,
-      sentOption: parseSentOption(r.sent_option),
-      sentBy: r.sent_by === "foreman" || r.sent_by === "you" ? r.sent_by : null,
-      createdAt: Number(r.created_at ?? 0),
-      resolvedAt: typeof r.resolved_at === "number" ? r.resolved_at : null,
-      resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
-    }),
-  );
+  return rows.map(episodeFromRow);
+}
+
+/**
+ * The newest episodes ACROSS every session, for the Foreman settings ledger.
+ *
+ * The cross-session counterpart to `episodesFor`, and the direct analogue of
+ * `loadInspectorInspections`. Until this existed the table could only be read one
+ * `note_key` at a time, so the richest record in the app - what Foreman was asked, what it
+ * concluded, and what reached the child - was visible only by opening one session's drawer
+ * at a time, and the fleet-wide question ("what has Foreman been doing?") had no answer.
+ *
+ * Ordered `created_at DESC, id DESC`, matching `episodesFor`: `created_at` is preserved
+ * across the upsert, so two episodes recorded in the same millisecond still come back in
+ * the order they were written rather than in whatever order the scan happens to reach them.
+ *
+ * Not on the SSE channel, deliberately - see `Registry.recordEpisode`. A row carries a
+ * screen capture, and a fleet-wide list of them belongs in a fetch the panel that shows it
+ * makes, not in every frame every client receives.
+ */
+export function recentEpisodes(limit = 100): ForemanEpisode[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT ${EPISODE_COLUMNS}
+         FROM foreman_episodes ORDER BY created_at DESC, id DESC LIMIT ?`,
+    )
+    .all(limit) as unknown as Array<Record<string, unknown>>;
+  return rows.map(episodeFromRow);
 }
 
 /**

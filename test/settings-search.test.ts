@@ -40,6 +40,7 @@ const FOREMAN: ForemanState = {
   config: null,
   status: null,
   backlogPlan: null,
+  episodes: [],
   update: async () => true,
   error: null,
 };

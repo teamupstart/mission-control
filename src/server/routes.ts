@@ -161,7 +161,9 @@ import {
   getSkillsAcks,
   loadInspectorInspections,
   logGateReply,
+  recentEpisodes,
 } from "./db.ts";
+import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -2508,6 +2510,16 @@ export function buildApp(
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+  // The fleet-wide episode ledger, newest first - the cross-session counterpart to
+  // `/api/sessions/:id/foreman-episodes`, and the direct analogue of `/api/inspector/prs`
+  // above. Capped because it is a display; nothing else reads it.
+  //
+  // A plain fetch rather than an SSE collection, deliberately: an episode carries the
+  // child's screen at decision time, so putting the fleet's worth of them on the live
+  // channel would ship a screen capture to every client on every frame - the reasoning
+  // `Registry.recordEpisode` already states for the per-session list, and it holds just
+  // as well for a 4s poll.
+  app.get("/api/foreman/episodes", (c) => c.json(recentEpisodes(FOREMAN_EPISODE_LEDGER)));
 
   // --- backlog autopilot: Foreman's reading of the backlog (localhost only) ---
   //

@@ -8,6 +8,7 @@ import {
   fetchForemanEpisodes,
   fetchForemanStatus,
 } from "./lib/api.ts";
+import { createSequencer } from "./lib/latest.ts";
 
 // Foreman config + live status for the topbar control and the per-card notes.
 // Config is edited rarely (a control-panel poll is plenty); status carries the
@@ -72,6 +73,25 @@ export function useForeman(): ForemanState {
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
   const configRef = useRef<ForemanConfig | null>(null);
+  /**
+   * Which read is the newest one anybody has STARTED. Ticks overlap, so this is what
+   * decides whose answer is allowed to land.
+   *
+   * `setInterval` fires every `POLL_MS` whether or not the previous tick finished, so two
+   * reads are routinely in flight against a busy daemon - and nothing about `Promise.all`
+   * makes them resolve in the order they were issued. Without this guard a slow tick can
+   * settle AFTER a newer one and overwrite it with its older snapshot: a decision Foreman
+   * has just recorded vanishes from the ledger, and from the count strip above it, until
+   * the next poll happens to succeed. On the one screen whose whole claim is that the
+   * number and the list are the same question, a row that appears and then un-appears is
+   * worse than a slow one.
+   *
+   * `update` bumps it too, for the same reason stated the other way round: a read issued
+   * before a write must never be allowed to repaint the control with the value that write
+   * just replaced. That is exactly the "showing a value that isn't in force" failure this
+   * hook's optimistic revert exists to prevent.
+   */
+  const readSeq = useRef(createSequencer());
 
   const setConfig = useCallback((c: ForemanConfig | null): void => {
     configRef.current = c;
@@ -81,6 +101,7 @@ export function useForeman(): ForemanState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
+      const token = readSeq.current.begin();
       const [c, s, p, e] = await Promise.all([
         fetchForemanConfig(),
         fetchForemanStatus(),
@@ -88,6 +109,12 @@ export function useForeman(): ForemanState {
         fetchForemanEpisodes(),
       ]);
       if (!alive) return;
+      // Superseded while we were waiting - a newer read has already landed, so every
+      // value below is stale. Dropping the whole tick rather than merging field by field
+      // is deliberate: these four are one consistent reading of the same instant, and
+      // letting half of an old snapshot through is how a strip comes to disagree with the
+      // rows beneath it.
+      if (!readSeq.current.isCurrent(token)) return;
       if (c) setConfig(c);
       if (s) setStatus(s);
       // Held on a failed read, like the config and status above and unlike the plan
@@ -141,8 +168,12 @@ export function useForeman(): ForemanState {
         return false;
       }
       setError(null);
+      // Retires every poll already in flight before re-reading: one of them was issued
+      // before this write and would otherwise land afterwards, repainting the control
+      // with the value we just replaced. See `readSeq`.
+      const token = readSeq.current.begin();
       const c = await fetchForemanConfig();
-      if (c) setConfig(c);
+      if (c && readSeq.current.isCurrent(token)) setConfig(c);
       return true;
     },
     [setConfig],

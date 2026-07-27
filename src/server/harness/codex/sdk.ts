@@ -506,7 +506,7 @@ class CodexSdkSession implements SdkSessionHandle {
     this.retireThread(retiring);
     this.activeTurnId = null;
     this.lastUsage = null;
-    this.bind(started);
+    this.bind(started, true);
   };
 
   async stop(): Promise<void> {
@@ -632,7 +632,7 @@ class CodexSdkSession implements SdkSessionHandle {
   // ---- wiring, called only by `launch` -----------------------------------------------
 
   /** Record the thread we are driving and tell the daemon who it is. */
-  bind(thread: ThreadStartResponse | ThreadResumeResponse): void {
+  bind(thread: ThreadStartResponse | ThreadResumeResponse, cleared = false): void {
     const activeTurn = [...thread.thread.turns]
       .reverse()
       .find((turn) => turn.status === "inProgress");
@@ -653,6 +653,7 @@ class CodexSdkSession implements SdkSessionHandle {
       transcriptPath: thread.thread.path,
       modelId: this.modelId,
       pid: this.client.pid,
+      ...(cleared ? { cleared: true as const } : {}),
     });
     this.publishThreadStatus(thread.thread.status);
   }

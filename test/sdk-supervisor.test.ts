@@ -125,6 +125,20 @@ function withFakeDriver(
   return { restore: () => (HARNESSES.claude.sdk = real), calls };
 }
 
+function withFakeCodexDriver(
+  launch: (opts: LaunchOptions) => Promise<Handle>,
+): { restore: () => void; calls: LaunchOptions[] } {
+  const calls: LaunchOptions[] = [];
+  const real = HARNESSES.codex.sdk;
+  HARNESSES.codex.sdk = {
+    launch: (opts) => {
+      calls.push(opts);
+      return launch(opts);
+    },
+  };
+  return { restore: () => (HARNESSES.codex.sdk = real), calls };
+}
+
 const START = {
   agent: "claude" as const,
   name: "Add a toggle",
@@ -566,7 +580,7 @@ test("live controls reach the handle and persist what restart will reuse", async
   }
 });
 
-test("a cleared replacement conversation is durably idle", async () => {
+test("a cleared Codex replacement conversation is durably idle", async () => {
   const handle = fakeHandle();
   handle.clearContext = async () => {
     handle.push({
@@ -577,13 +591,14 @@ test("a cleared replacement conversation is durably idle", async () => {
       pid: null,
       cleared: true,
     });
+    handle.push({ kind: "state", state: "idle", activity: null });
   };
   const restored = fakeHandle();
   const handles = [handle, restored];
-  const fake = withFakeDriver(async () => handles.shift()!);
+  const fake = withFakeCodexDriver(async () => handles.shift()!);
   try {
     const supervisor = new SdkSupervisor(new Registry());
-    const session = await supervisor.start(START);
+    const session = await supervisor.start({ ...START, agent: "codex" });
     handle.push({
       kind: "bound",
       agentSessionId: "agent-original",
@@ -591,6 +606,7 @@ test("a cleared replacement conversation is durably idle", async () => {
       modelId: null,
       pid: null,
     });
+    handle.push({ kind: "state", state: "working", activity: null });
     await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-original");
 
     assert.equal(await supervisor.clearContext(session.id), true);

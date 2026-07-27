@@ -53,7 +53,8 @@ lifecycle events:
 - Set it after `handle.send()` acknowledges a normal or recovery turn.
 - Also set it on driver `state: working` events as a backstop for harness-originated
   activity.
-- Clear it only on `turn_done`, the structured evidence that the active turn completed.
+- Clear completed work on `turn_done`; a confirmed successful context reset is the
+  intentional exception that clears all outstanding work for the idle replacement.
 - Do not clear it when shutdown interrupts the driver or when a request was pending. A
   permission or user-input request was part of the unfinished turn and must be asked
   again after recovery.
@@ -71,7 +72,8 @@ Keep the existing startup ordering and conversation resume:
 3. Adopt the handle and register the card.
 4. If `row.turnInProgress` is true, send one recovery turn through the existing
    per-session serialized `SdkSupervisor.send()` path.
-5. Leave `turn_in_progress` true until the driver emits `turn_done`.
+5. Leave `turn_in_progress` true until the driver emits the final `turn_done` or confirms a
+   successful context reset onto an idle replacement.
 
 Use a recovery prompt along these lines:
 
@@ -84,10 +86,10 @@ For Codex, `send()` already chooses the correct transport: it steers a turn that
 `thread/resume` reports as active, or starts a new turn if the restored thread is idle.
 No harness-specific branch belongs in the supervisor.
 
-If the app restarts again before `turn_done`, the flag remains set and the same cautious
-recovery turn is sent again. That is preferable to silently stranding the session, and
-the prompt explicitly tells the agent to inspect current state and avoid repeating
-completed work.
+If the app restarts again before the final `turn_done` or a confirmed context reset, the
+flag remains set and the same cautious recovery turn is sent again. That is preferable to
+silently stranding the session, and the prompt explicitly tells the agent to inspect current
+state and avoid repeating completed work.
 
 ### 4. Keep failure and task reconciliation semantics unchanged
 
@@ -114,6 +116,8 @@ flowchart LR
     I --> J[Agent continues from checkout and transcript]
     J --> K[turn_done]
     K --> L[Persist turn_in_progress = 0]
+    J --> M[Confirmed context reset]
+    M --> L
 ```
 
 ## Files that move together
@@ -145,6 +149,8 @@ Add coverage for these cases:
    does not.
 9. A failed conversation resume still follows the existing eviction and task-settlement
    path.
+10. Clearing an active Codex thread confirms an idle replacement, persists `0`, and a
+    restart sends no continuation.
 
 Run the focused SDK/database tests, then the repository typecheck and full test suite.
 

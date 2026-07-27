@@ -50,8 +50,9 @@ issues, resolve merge any conflicts, push the code, monitor the CI / PR for new 
   merely interrupted. **`taskLiveness` answers from the ROW, not the handle map**, because
   it is consulted during startup reconciliation, which runs before `restore()` has
   relaunched anything. **Interrupted work is a ROW fact too**: `turn_in_progress` is set
-  when the driver accepts work (with `state: working` as a backstop), cleared only by
-  `turn_done`, and preserved through `suspended`. Restore first reattaches the SAME
+  when the driver accepts work (with `state: working` as a backstop), cleared as work emits
+  `turn_done` or when a confirmed successful context reset establishes an idle replacement,
+  and preserved through `suspended`. Restore first reattaches the SAME
   conversation with an empty launch prompt, then sends the cautious continuation through
   the ordinary serialized handle only for a row carrying that bit. Do not infer it from
   `status === "running"` - idle handles have that status too - and do not nudge every

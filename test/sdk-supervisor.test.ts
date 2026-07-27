@@ -204,6 +204,14 @@ test("start persists a row, registers the card, and records the binding", async 
 
 test("a completed turn preserves durability while an accepted follow-up remains", async () => {
   const handle = fakeHandle();
+  const intermediateUsage = {
+    input: 12,
+    output: 3,
+    cacheRead: 4,
+    cacheWrite: 0,
+    modelId: "claude-test",
+    costUsd: null,
+  };
   handle.send = async (turn) => {
     handle.sent.push(turn);
     return "queued";
@@ -211,16 +219,27 @@ test("a completed turn preserves durability while an accepted follow-up remains"
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
+    const observedCompletions: SdkEvent[] = [];
+    const applyDriverEvent = registry.applyDriverEvent.bind(registry);
+    registry.applyDriverEvent = (id, event, options) => {
+      if (event.kind === "turn_done") observedCompletions.push(event);
+      applyDriverEvent(id, event, options);
+    };
     const supervisor = new SdkSupervisor(registry);
     const session = await supervisor.start(START);
 
     handle.push({ kind: "state", state: "working", activity: null });
     await waitFor(() => registry.getSession(session.id)?.state === "working");
     assert.equal(await supervisor.send(session.id, { text: "follow up" }), "queued");
-    handle.push({ kind: "turn_done", usage: null });
+    handle.push({ kind: "turn_done", usage: intermediateUsage });
     await drain();
     assert.equal(getSdkSession(session.id)?.turnInProgress, true);
     assert.equal(registry.getSession(session.id)?.state, "working");
+    assert.deepEqual(
+      observedCompletions.map((event) => event.kind === "turn_done" && event.usage),
+      [intermediateUsage],
+      "the intermediate completion reaches every non-idle registry projection",
+    );
 
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);

@@ -653,7 +653,7 @@ export class SdkSupervisor {
     let outcome: SdkSessionStatus = "exited";
     try {
       for await (const evt of handle.events) {
-        let applyToRegistry = true;
+        let deferIdle = false;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
           if (evt.cleared) {
@@ -671,13 +671,15 @@ export class SdkSupervisor {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
           this.unfinishedTurns.set(id, remaining);
           this.recordTurnInProgress(id, remaining > 0);
-          applyToRegistry = remaining === 0;
+          deferIdle = remaining > 0;
         }
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        if (!this.shuttingDown && applyToRegistry) this.registry.applyDriverEvent(id, evt);
+        if (!this.shuttingDown) {
+          this.registry.applyDriverEvent(id, evt, { deferIdle });
+        }
         if (evt.kind === "exited") break;
       }
     } catch (err) {

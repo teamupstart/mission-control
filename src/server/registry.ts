@@ -1257,7 +1257,11 @@ export class Registry extends EventEmitter {
    * refusal `applyHook` makes for a harness that declares no hooks: a card we reach by
    * typing must not have its state written by something claiming to hold its handle.
    */
-  applyDriverEvent(id: string, evt: SdkEvent): void {
+  applyDriverEvent(
+    id: string,
+    evt: SdkEvent,
+    options: { deferIdle?: boolean } = {},
+  ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
     const now = Date.now();
@@ -1269,13 +1273,16 @@ export class Registry extends EventEmitter {
         this.applyDriverState(s, evt.state, evt.activity, now);
         return;
       case "turn_done":
-        // The turn ended, so the session is idle - the same fact a `Stop` hook carries.
+        // The turn ended, so the session is idle - the same fact a `Stop` hook carries -
+        // unless the supervisor still holds an accepted queued turn. The event still comes
+        // through in that case so every non-idle projection stays observable; only the
+        // transient idle transition is withheld.
         // `usage` is deliberately NOT applied: the usage ledger has one writer per harness
         // (OTel for Claude, the rollout reader for Codex) and both still see an SDK
         // session's own files, so spending this figure here would double-count. It stays on
         // the event as display enrichment for the phase that verifies that (see the plan's
         // Automation parity section).
-        this.applyDriverState(s, "idle", null, now);
+        if (!options.deferIdle) this.applyDriverState(s, "idle", null, now);
         return;
       case "rate_limits":
         this.recordRateLimits(evt.rateLimits);

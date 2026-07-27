@@ -25,8 +25,9 @@ In scope:
 - `check` node kind in the draft and published graph types, and their zod schemas.
 - `WORKFLOW_CHECK_SLOTS`, append-only.
 - Slot-to-command configuration in `WorkflowConfig`, edited in Settings, plus a consent switch.
-- Execution: bounded, timed, in a temporary detached worktree at the captured commit, on its
-  own concurrency limit, with teardown on completion and daemon restart.
+- Execution: bounded, timed, in a pooled worktree leased and pinned to the captured commit,
+  on its own concurrency limit, with process-group teardown and lease return on completion
+  and daemon restart.
 - A scrubbed child environment, repository allowlisting, and consent copy that names the
   filesystem authority granted to branch-authored code.
 - Validation, Graph-view rendering, run-detail presentation, README, tests.
@@ -44,6 +45,9 @@ Explicit non-goals:
   packet a Persona fail produces.
 - **No full execution sandbox.** Environment scrubbing reduces credential exposure, but the
   command still has the daemon's filesystem authority. A full sandbox is a named follow-up.
+- **No plain-worktree fallback.** A configured check requires a pooled worktree because the
+  pool carries ignored warm dependencies. Lease or pin failure is infrastructure, not a
+  verdict against the submission.
 
 ## Repository findings this phase depends on
 
@@ -51,11 +55,28 @@ Explicit non-goals:
   `execFile`, buffers from the start, and kills the child when `maxBuffer` is exceeded. It
   cannot preserve the useful tail or report an exact omitted-byte count. Checks need a
   streaming `spawn` adapter with a bounded byte ring; `run()` remains suitable for the
-  bounded git worktree setup and teardown commands.
+  bounded pool lease, pin-support, and return commands.
 - **The streaming adapter uses `spawn` with `shell: false`.** A command is an argv, not a
   string. This removes shell injection as a category rather than mitigating it.
-- **`onPath(bin)` (`exec.ts:17`) answers "is this command even there" from the filesystem**,
-  without spawning. It is the cheap pre-check for a misconfigured slot.
+- **`onPath(bin)` (`exec.ts:17`) is not safe for check commands.** For a name containing
+  `/`, it calls `existsSync` relative to the daemon cwd, not the leased checkout.
+  `./scripts/check` and `node_modules/.bin/tsc` can therefore exist and still be reported
+  unavailable. The streaming spawn is the single authority: its `ENOENT` result means the
+  configured executable is unavailable.
+- **Pinned pooled worktrees already have one owner.** `pinLeasedWorktree`
+  (`dispatcher.ts:706`) proves the lease belongs to the requested repository and delegates
+  to `resetWorktreeToCommit` (`git/ensemble-snapshot.ts:346`). That reset hard-resets and
+  runs `git clean -fd`, never `-fdx`, specifically so ignored `node_modules`, virtual
+  environments, and warm caches survive. Checks reuse this mechanism rather than creating a
+  second pinning path.
+- **The existing pinned-dispatch path unwinds a live lease before throwing.**
+  `provisionWorktree` returns the pool lease when pinning or verification fails
+  (`dispatcher.ts:788-802`), and `teardownWorktree` uses the same return path for ordinary
+  completion. Check setup and recovery inherit that ownership rule.
+- **Detached children need group teardown.** The headless LLM runners already spawn with
+  `detached: true` and signal the negative child pid on POSIX so descendants do not outlive
+  the owner. A check command needs the same process-group boundary plus cancellation owned
+  by `WorkflowEngine.stop()`.
 - **`workflow_node_attempts` needs no migration.** `persona_snapshot_json`, `runner_id`,
   `model_id` and `verdict_json` are all nullable (`db.ts:461-478`), and `insertAttempt`
   already writes `input.persona === null ? null : ...` (`store.ts:2443`). This corrects the
@@ -166,8 +187,7 @@ New `src/server/workflows/checks.ts`:
 ```ts
 export interface CheckRunDeps {
   spawn?: CheckSpawn;        // the PaneDeps.pane seam, so a test drives the real adapter
-  onPath?: typeof onPath;
-  worktrees?: CheckWorkspaceDeps;
+  leases?: CheckLeaseDeps;
 }
 
 export interface CheckOutcome {
@@ -196,27 +216,48 @@ Rules, each of which has a stated failure it prevents:
 - **Consent absent (`checksEnabled` false, or the repo root not allowlisted): `unavailable`,
   which passes with the sentence from `checkBlockedReason`.** A gate the operator never
   authorized must not block their work, and it must say why rather than silently passing.
-- **Binary not on PATH (`onPath` false): `unavailable`.** A typo in settings is a
-  configuration problem, not a defect in the change under review.
+- **Streaming spawn reports `ENOENT`: `unavailable`.** A missing bare binary or
+  repository-relative executable is a configuration problem, not a defect in the change
+  under review. There is no separate precheck that can disagree with the real cwd.
 - **`outcomeUnknown` true (timeout, OOM, killed): infrastructure failure.** Return it to
   `handleInfrastructureFailure` for retry and eventual block. It is never a `fail` verdict,
   matching the rule the engine already enforces for Personas.
 - **Exit 0: `passed`. Non-zero: `failed`**, with tail-biased bounded output.
 
-Execution context: create a per-attempt directory under a dedicated check-worktrees state
-directory and materialize it with `git worktree add --detach <path> <captured-head-sha>`.
-Run the command with that directory as `cwd`. Never use `sessionRepoRoot` or `sessionCwd` as
-the execution directory. The former identifies the shared main repository for a linked
-worktree, while the latter remains mutable after evidence capture. Sessions normally run in
-pooled worktrees under `~/.treehouse/`, so choosing `sessionRepoRoot` would execute against
-an unrelated checkout in the common case.
+Execution context: lease a pre-warmed tree from the repository's treehouse pool, resolve and
+verify the captured head as the full 40-character `baseSha` the pinned-worktree contract
+requires, and call `pinLeasedWorktree(repoRoot, leasePath, baseSha)`. Run the command with
+`leasePath` as `cwd`. Never use `sessionRepoRoot` or `sessionCwd` as the execution directory.
+The former identifies the shared main repository for a linked worktree, while the latter
+remains mutable after evidence capture. Sessions normally run in pooled worktrees under
+`~/.treehouse/`, so choosing `sessionRepoRoot` would execute against an unrelated checkout
+in the common case.
 
-Use `sessionRepoRoot` only as repository identity for the git worktree operation. Reject a
-missing or invalid captured commit as infrastructure failure. Remove the temporary worktree
-in `finally` after every success or failure. Before scheduling attempts on startup, reap
-leftover check worktrees from interrupted runs through `git worktree remove --force`.
-The concurrency ceiling therefore also bounds disk use: at most one extra checkout per
-running check, plus restart leftovers until the startup reaper runs.
+The lease and return commands have one shared adapter used by Dispatcher and checks; do not
+copy their argv into `checks.ts`. There is deliberately no fallback to `git worktree add`.
+The pool is what preserves ignored dependencies while `pinLeasedWorktree` removes tracked
+and nonignored residue and proves HEAD equals the captured commit. A missing pool, dry lease,
+invalid commit, ownership refusal, reset failure, or return failure is infrastructure and
+takes `handleInfrastructureFailure`; none becomes a `failed` check verdict.
+
+Lease ownership is durable before execution starts. `output_json` becomes a typed check
+lifecycle union: a `leased` variant records `leasePath` after acquisition and before pin or
+spawn; a `running` variant adds the process-group id immediately after spawn; the final
+variant carries `CheckOutcome`. Startup recovery can therefore finish teardown without a
+schema migration. Return the lease in `finally` after pass, fail, spawn refusal, timeout, or
+cancellation. On daemon startup, reconcile every unfinished check before `pump()` schedules
+work: terminate any recorded process group, wait for it to stop, return the recorded lease,
+clear the lifecycle state, and only then make the attempt runnable. The concurrency ceiling
+bounds resource use to one pre-warmed pool slot per running check. It creates no extra
+checkout, but repositories need enough configured pool capacity for the chosen check
+concurrency.
+
+The streaming runner spawns the command in its own process group. Timeout, cancellation, and
+daemon shutdown signal the whole group, wait for descendant termination, and escalate to a
+hard kill after a bounded grace period. Process teardown must finish before lease return.
+Returning a reusable tree while a descendant can still write into it would corrupt the next
+lessee. `WorkflowEngine.stop()` therefore cancels live check groups before awaiting its
+in-flight attempts instead of merely waiting for their command timeout.
 
 Build the child environment through one pure scrubber. It removes the daemon auth token and
 the `MISSION_HOME` / `FLEET_HOME` / `HARNESS_HOME` aliases that locate it, plus variables
@@ -277,9 +318,9 @@ test suite would starve Persona reviews.
 
 Extend the node vocabulary in `#workflows-and-personas` with Check: what it gates on, that it
 names a slot rather than a command and why, that an unconfigured slot passes with a note, and
-that it needs consent. Document the detached checkout, environment scrubbing, remaining
-filesystem authority, and deferred full sandbox. Add the two Settings rows under
-Configuration.
+that it needs consent. Document the pinned pooled lease, preserved warm dependencies,
+process-group teardown, environment scrubbing, remaining filesystem authority, and deferred
+full sandbox. Add the two Settings rows under Configuration.
 
 ## Data, API and compatibility
 
@@ -305,12 +346,19 @@ Configuration.
 - No configured command produces `skipped` and a pass. **This is the contract Phase 3 depends
   on and is asserted explicitly.**
 - Consent absent produces `unavailable` and a pass carrying the sentence.
-- A binary absent from PATH produces `unavailable` without spawning.
-- The command is passed to the streaming adapter as argv with `cwd` set to a detached
-  worktree at the captured commit, never the binding's main repository or mutable session
+- A bare or repository-relative executable that produces `ENOENT` from the real spawn is
+  `unavailable`; no `onPath` precheck runs.
+- The command is passed to the streaming adapter as argv with `cwd` set to a pooled lease
+  pinned to the captured commit, never the binding's main repository or mutable session
   checkout.
-- Temporary worktrees are removed after pass, fail, timeout, and spawn failure. The startup
-  reaper removes a simulated leftover before attempts resume.
+- Pinning preserves an ignored warm dependency while removing a nonignored leftover and
+  proving HEAD equals the full captured commit.
+- Lease acquisition, pin, and other setup failures take the infrastructure retry path and
+  never produce a fail verdict.
+- The lease is returned after pass, fail, spawn refusal, timeout, and cancellation. Startup
+  recovery returns a simulated recorded lease before attempts resume.
+- A test command spawns a descendant; timeout, explicit cancellation, and daemon shutdown
+  each terminate the full process group before the lease-return stub is called.
 - The scrubbed environment drops auth and credential-shaped variables while retaining the
   ordinary process settings the runner needs.
 
@@ -344,8 +392,10 @@ detail. Confirm on your own Vite port.
 - An unconfigured, unauthorized, or missing-binary slot passes with a sentence and never
   blocks.
 - A timeout is an infrastructure failure, not a fail verdict.
-- Every command runs in a detached checkout at the captured commit, and temporary worktrees
-  are reclaimed after completion and restart.
+- Every command runs in a pooled lease pinned to the captured commit, warm ignored
+  dependencies survive the pin, and the lease is returned after completion and restart.
+- Timeout, cancellation, and shutdown terminate the command's process group before returning
+  its reusable lease.
 - The child environment contains no daemon auth token or credential-shaped variables, and
   the consent UI names the remaining filesystem authority.
 - No shell is invoked anywhere in the path.

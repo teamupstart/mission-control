@@ -87,8 +87,16 @@ Verified against `HEAD` at `0f5d045b`.
 - **The binding paths are identities, not a frozen execution directory.**
   `sessionRepoRoot` names the shared main repository for linked worktrees, while
   `sessionCwd` is the live mutable checkout. This is the normal dispatch shape because
-  sessions run under `~/.treehouse/`. Phase 2 materializes a detached temporary worktree at
-  the captured commit and owns cleanup after completion and restart.
+  sessions run under `~/.treehouse/`. Phase 2 leases a pre-warmed pooled tree and reuses
+  `pinLeasedWorktree` to reset it to the captured commit without deleting ignored
+  dependencies. Setup failures are infrastructure, and the lease is returned after every
+  exit path and restart.
+- **`onPath` resolves slash-containing commands against the daemon cwd.** Phase 2 removes
+  that precheck and classifies the real streaming spawn's `ENOENT`, so
+  `./scripts/check` and `node_modules/.bin/tsc` resolve from the pinned lease.
+- **A direct-child kill does not stop test workers.** Phase 2 gives each command its own
+  process group and terminates all descendants on timeout, cancellation, shutdown, and
+  startup recovery before returning the reusable lease.
 - **A trusted argv does not make branch code trusted.** Commands such as `npm test` load
   scripts and source from the reviewed branch. Phase 2 requires repository allowlisting,
   scrubs auth and credential-shaped environment variables, and makes the consent UI name the

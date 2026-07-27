@@ -268,19 +268,26 @@ check node in an unauthorized repository refuses with a sentence, in the same sh
 
 ### Execution
 
-The engine materializes a detached checkout for each check with `git worktree add --detach`
-at the submission's captured commit SHA, then runs the configured argv there. It never uses
-`sessionRepoRoot` or `sessionCwd` as the execution directory. This distinction is routine,
-not an edge case: dispatched sessions normally work in pooled checkouts under
-`~/.treehouse/`, while `sessionRepoRoot` names the shared main repository and `sessionCwd`
-continues changing after capture.
+The engine leases a pre-warmed pooled worktree for each check and pins it to the submission's
+captured commit with the existing `pinLeasedWorktree` mechanism. That path hard-resets and
+cleans with `-fd`, never `-fdx`, so ignored `node_modules`, virtual environments, and warmed
+build caches survive. The command runs in the pinned lease, never in `sessionRepoRoot` or
+`sessionCwd`. This distinction is routine, not an edge case: dispatched sessions normally
+work in pooled checkouts under `~/.treehouse/`, while `sessionRepoRoot` names the shared main
+repository and `sessionCwd` continues changing after capture.
 
-The detached worktree is temporary disk state owned by the check attempt. It is removed after
-success or failure, and a startup reaper removes leftovers from an interrupted daemon before
-attempt scheduling resumes. This costs one additional checkout per concurrent check. Output
-is bounded, execution is timed, and the result is recorded on the existing
-`workflow_node_attempts` row, whose nullable Persona-specific columns already accommodate a
-check without a migration.
+The check owns one pool slot while it runs. The lease is returned after every result and
+failure, and startup recovery returns any lease recorded by an interrupted daemon before
+scheduling resumes. Pool acquisition, pinning, or other setup failure is infrastructure and
+never a fail verdict against the submission. Repositories need enough warm pool capacity for
+the configured check concurrency, but checks create no additional checkout.
+
+Each command runs in its own process group. Timeout, cancellation, daemon shutdown, and
+startup recovery terminate the group and wait for descendants before returning the reusable
+lease. Output is bounded, execution is timed, and durable lease lifecycle plus the final
+result fit the existing `workflow_node_attempts.output_json`, so no migration is needed. A
+missing executable is classified from the streaming spawn's `ENOENT`, not an `onPath`
+precheck that would resolve repository-relative paths against the daemon cwd.
 
 The slot indirection trusts the command, not the code it executes. A command such as
 `npm test` still loads scripts and source from the branch under review. Checks therefore

@@ -112,6 +112,23 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showFlash(next: { text: string; ok: boolean }, duration: number): void {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setFlash(next);
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null;
+      setFlash(null);
+    }, duration);
+  }
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+    },
+    [],
+  );
 
   // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
   // session, which a driver-run one answers yes to without holding a pane.
@@ -141,8 +158,7 @@ export function ActionBar({
     const r = await fn();
     setBusy(null);
     if (!r.ok) {
-      setFlash({ text: r.error ?? "failed", ok: false });
-      setTimeout(() => setFlash(null), 3500);
+      showFlash({ text: r.error ?? "failed", ok: false }, 3500);
     }
     return r;
   }
@@ -154,8 +170,7 @@ export function ActionBar({
     if (r.ok) {
       const confirmation = sdkDeliveryConfirmation(r.delivery);
       if (confirmation) {
-        setFlash({ text: confirmation, ok: true });
-        setTimeout(() => setFlash(null), 5000);
+        showFlash({ text: confirmation, ok: true }, 5000);
       }
       // Sent, so the draft is spent. On failure it stays: `run` has already put the
       // reason on screen next to the text it's about.

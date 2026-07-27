@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode, gateParked } from "@shared/session.ts";
+import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -1214,10 +1215,19 @@ export function App(): React.JSX.Element {
       }
       const launcher = LAUNCHER_ACTIONS.find(([id]) => chord === bindings[id]);
       if (launcher) {
-        if (!selectedId) return;
+        const sel = selectedId ? visible.find((session) => session.id === selectedId) : null;
+        if (!sel) return;
         e.preventDefault();
         const run = launcher[1];
-        const mounted = launcherHandles.current.get(selectedId);
+        if (run === "openAgent") {
+          const action = agentLaunchAction(sel);
+          if (!action) return;
+          if (action === "focus") {
+            void api.focus(sel.id);
+            return;
+          }
+        }
+        const mounted = launcherHandles.current.get(sel.id);
         if (mounted) {
           mounted[run]();
           return;
@@ -1228,13 +1238,13 @@ export function App(): React.JSX.Element {
         // tab. Reveal Conversation in the appropriate vocabulary, then registration runs
         // the exact button action rather than choosing a terminal backend on the user's
         // behalf.
-        pendingLauncherAction.current = { id: selectedId, run };
+        pendingLauncherAction.current = { id: sel.id, run };
         if (layout === "grid") {
-          if (expandedId !== selectedId) toggleExpand(selectedId);
+          if (expandedId !== sel.id) toggleExpand(sel.id);
         } else if (layout === "board" && !boardOpen) {
           setBoardOpen(true);
         } else {
-          requestConversationTab(selectedId);
+          requestConversationTab(sel.id);
         }
         return;
       }

@@ -78,16 +78,26 @@ test("a selection chord on the board's overview drills in and then runs", () => 
   assert.match(app, /if \(!pending \|\| pending\.id !== boardOpenId\) return;/);
 });
 
-test("launcher chords reveal Conversation before triggering its real buttons", () => {
+test("launcher chords focus directly or reveal Conversation for a chooser", () => {
   const table = app.slice(
     app.indexOf("const LAUNCHER_ACTIONS"),
     app.indexOf("function gearDotPhrase"),
   );
   assert.match(table, /\["terminal", "openTerminal"\]/);
   assert.match(table, /\["agent", "openAgent"\]/);
+  const launcherBlock = app.slice(
+    app.indexOf("const launcher = LAUNCHER_ACTIONS.find"),
+    app.indexOf("const bar = BAR_ACTIONS.find"),
+  );
+  const focus = launcherBlock.indexOf('action === "focus"');
+  const reveal = launcherBlock.indexOf("pendingLauncherAction.current");
+  assert.notEqual(focus, -1);
+  assert.ok(focus < reveal);
+  assert.match(launcherBlock.slice(focus, reveal), /api\.focus\(sel\.id\)/);
+  assert.match(launcherBlock.slice(focus, reveal), /return;/);
   assert.match(
-    app,
-    /pendingLauncherAction\.current = \{ id: selectedId, run \};[\s\S]*?requestConversationTab\(selectedId\)/,
+    launcherBlock,
+    /pendingLauncherAction\.current = \{ id: sel\.id, run \};[\s\S]*?requestConversationTab\(sel\.id\)/,
   );
   assert.match(app, /handle\[pending\.run\]\(\)/);
 });

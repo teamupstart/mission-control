@@ -160,6 +160,7 @@ export function TranscriptPanel({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const atBottom = useRef(true);
   const historyEpoch = useRef(0);
   /**
@@ -178,6 +179,22 @@ export function TranscriptPanel({
   // take newlines or images. So: mounted panel, reply box - reported as such.
   const notifyRef = useRef(onReplyBox);
   notifyRef.current = onReplyBox;
+
+  function showFlash(next: { text: string; ok: boolean }, duration: number): void {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setFlash(next);
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null;
+      setFlash(null);
+    }, duration);
+  }
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+    },
+    [],
+  );
   useEffect(() => {
     notifyRef.current?.(true);
     // Retract on unmount without depending on the callback identity - a card whose
@@ -432,8 +449,7 @@ export function TranscriptPanel({
     if (r.ok) {
       const confirmation = sdkDeliveryConfirmation(r.delivery);
       if (confirmation) {
-        setFlash({ text: confirmation, ok: true });
-        setTimeout(() => setFlash(null), 5000);
+        showFlash({ text: confirmation, ok: true }, 5000);
       }
       // Delivered - so this is the one path that forgets the draft. A failed send
       // leaves it be: the text is all the human has, and it's about to be retried.
@@ -442,8 +458,7 @@ export function TranscriptPanel({
       revokeAttachments(attachments);
       setAttachments([]);
     } else {
-      setFlash({ text: r.error ?? "send failed", ok: false });
-      setTimeout(() => setFlash(null), 3500);
+      showFlash({ text: r.error ?? "send failed", ok: false }, 3500);
     }
   }
 

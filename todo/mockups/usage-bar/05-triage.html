@@ -43,7 +43,7 @@
               <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
               <div class="sub">
                 <span class="meter" data-tone="high"><i style="width:91%"></i></span>
-                <span>91% used</span><span>resets in 3d 4h</span><span>at $5.61/hr</span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
               </div>
             </div>
           </div>
@@ -113,8 +113,8 @@
     rule (promote both, or promote the nearest and count the rest), and "which window is binding"
     becomes a shared predicate someone has to own.</p></div>
     <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a <code>bindingWindow()</code>
-    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, so the daemon's Away
-    watcher and this bar agree on which window is the problem.</p></div>
+    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, keeping the ranking
+    with the projection inputs instead of embedding it in the JSX.</p></div>
   </div>
 </section>
 
@@ -137,7 +137,7 @@
               <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
               <div class="sub">
                 <span class="meter" data-tone="high"><i style="width:91%"></i></span>
-                <span>91% used</span><span>resets in 3d 4h</span><span>at $5.61/hr</span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
               </div>
             </div>
           </div>

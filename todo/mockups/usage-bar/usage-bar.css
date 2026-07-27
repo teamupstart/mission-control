@@ -1,7 +1,8 @@
 /* Usage-bar mockups - shared stylesheet.
-   Tokens are lifted verbatim from src/web/styles.css :root so these read as the product
-   rather than as a sketch. Agent accents arrive as literal values through one
-   --agent-accent property, never a per-agent token, matching the rule in the real stylesheet. */
+   This temporary mockup intentionally copies the relevant :root tokens and current
+   FleetStrip rules from src/web/styles.css instead of importing them, so every page works
+   standalone from file://. Agent accents remain literal values supplied through one
+   --agent-accent property, never per-agent tokens, matching the real stylesheet. */
 
 :root {
   color-scheme: dark;
@@ -410,7 +411,6 @@ body {
   letter-spacing: -0.4px;
   color: var(--cost);
 }
-.u1-spark { align-self: center; flex: none; }
 .u1-sec {
   display: flex;
   align-items: baseline;
@@ -505,13 +505,6 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.55px;
   color: var(--dim);
-}
-.u2-hero .l em {
-  font-style: normal;
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 11.5px;
-  color: var(--muted);
 }
 .u2-mini { display: grid; gap: 6px; }
 .u2-mini div {
@@ -884,9 +877,3 @@ body {
 }
 .u5-spend .rest { display: flex; gap: 12px; font-size: 11.5px; color: var(--dim); }
 .u5-spend .rest b { color: var(--muted); font-weight: 650; font-variant-numeric: tabular-nums; }
-
-/* Sparkline shared by variants 1, 2 and 5. */
-.spark { display: block; }
-.spark path.line { fill: none; stroke: var(--cost); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.spark path.wash { fill: color-mix(in oklab, var(--cost) 16%, transparent); stroke: none; }
-.spark circle { fill: var(--cost); stroke: var(--panel); stroke-width: 2; }

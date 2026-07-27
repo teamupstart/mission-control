@@ -102,11 +102,6 @@
         <div class="u1">
           <div class="u1-spend">
             <span class="u1-lead">$552.23</span>
-            <svg class="spark u1-spark" width="66" height="20" viewBox="0 0 66 20" aria-hidden="true">
-              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
-              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
-              <circle cx="63" cy="5.8" r="2.6"/>
-            </svg>
             <span class="u1-sec">
               <span>today</span>
               <s>·</s><b>$5.61</b><span>/hr</span>
@@ -177,13 +172,8 @@
           <div class="u2-spend">
             <div class="u2-hero">
               <span class="n">$552.23</span>
-              <span class="l">estimated today <em>↑ 11% vs yesterday</em></span>
+              <span class="l">estimated today</span>
             </div>
-            <svg class="spark" width="99" height="30" viewBox="0 0 66 20" aria-hidden="true">
-              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
-              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
-              <circle cx="63" cy="5.8" r="2.6"/>
-            </svg>
             <div class="u2-mini">
               <div><b>$5.61</b> per hour</div>
               <div><b>856M</b> tokens</div>
@@ -326,7 +316,7 @@
     terracotta against Codex's green measures <b>ΔE 5.3 under tritanopia</b>, so the segment
     labels are load-bearing, not decoration: hue alone must never be the channel.</p></div>
     <div><h3>Code it touches</h3><p>Needs per-harness subtotals in <code>FleetCost</code> (the
-    usage ledger already has <code>query_source</code>) and a projected-percentage-at-reset from
+    usage ledger already records <code>agent</code>) and a projected-percentage-at-reset from
     <code>projectRunway</code>. The one variant with a server change.</p></div>
   </div>
 </section>
@@ -353,7 +343,7 @@
           <div class="u4-spend">
             <h4>Today</h4>
             <table>
-              <tr><td class="k">estimated cost</td><td class="v cost">$552.23</td><td class="aside">↑ 11%</td></tr>
+              <tr><td class="k">estimated cost</td><td class="v cost">$552.23</td><td class="aside">API equivalent</td></tr>
               <tr><td class="k">estimated rate</td><td class="v">$5.61/hr</td><td class="aside">last hour</td></tr>
               <tr><td class="k">tokens</td><td class="v">856M</td><td class="aside">all tiers</td></tr>
               <tr><td class="k">cost per PR</td><td class="v">$39.44</td><td class="aside">14 PRs</td></tr>
@@ -433,7 +423,7 @@
               <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
               <div class="sub">
                 <span class="meter" data-tone="high"><i style="width:91%"></i></span>
-                <span>91% used</span><span>resets in 3d 4h</span><span>at $5.61/hr</span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
               </div>
             </div>
           </div>
@@ -503,8 +493,8 @@
     rule (promote both, or promote the nearest and count the rest), and "which window is binding"
     becomes a shared predicate someone has to own.</p></div>
     <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a <code>bindingWindow()</code>
-    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, so the daemon's Away
-    watcher and this bar agree on which window is the problem.</p></div>
+    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, keeping the ranking
+    with the projection inputs instead of embedding it in the JSX.</p></div>
   </div>
 </section>
 

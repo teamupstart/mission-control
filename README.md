@@ -324,9 +324,11 @@ through a pane. That is a session's **runtime**, and there are two.
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A turn is a call that is *acknowledged*, and a permission prompt or an
-  approval arrives as data - what is being asked, and the exact rows to offer - which the
-  card renders directly.
+  There is no pane. A submitted message is *acknowledged* as a new turn, added to Codex's
+  current turn, or queued behind Claude's current turn. Both the conversation reply box and
+  the compact Send box show that disposition, so accepted input does not disappear while an
+  agent is busy. A permission prompt or an approval arrives as data - what is being asked,
+  and the exact rows to offer - which the card renders directly.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with

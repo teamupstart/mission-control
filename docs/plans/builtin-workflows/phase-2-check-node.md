@@ -531,7 +531,7 @@ Phase 3 **must** change:
   (different regions), `src/shared/protocol.ts` (Phase 1 touches none of it) and `README.md`
   (different subsections). Neither phase's tests import the other's modules. Confirmed
   mergeable in either order.
-- **Correction carried back into the index**: the source plan left open whether
+- **Correction carried back into the index**: an earlier source-plan draft left open whether
   `workflow_node_attempts` needs widening. The repository answers that outcomes fit without
   new attempt columns, while crash-safe cleanup needs a separate `workflow_check_leases`
   table. Recorded in `phased-plan.md` under investigated findings.

@@ -222,8 +222,8 @@ example workflow.
 New `test/builtin-workflows.test.ts`:
 
 - The shipped graph validates clean against `validateWorkflowGraph` with the real built-in
-  Persona catalog: zero errors, zero warnings. **Verified during planning**: the graph below
-  returns `valid: true` with `diagnostics: []` and 13 edges.
+  Persona catalog: zero errors, zero warnings. **Verified during planning**: the graph
+  specified above returns `valid: true` with `diagnostics: []` and 13 edges.
 - `projectStages(graph)` returns a pipeline (not `null`), so it renders in the Pipeline editor.
 - Round trip, stated precisely because the naive form fails: assert
   `projectStages(compileStages(p, graph)) === p` where **`p = projectStages(graph)`**, that is,

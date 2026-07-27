@@ -16,7 +16,7 @@ page `plan.html` beside it).
 
 Decision 4 supersedes adopted decision 2 of
 `docs/plans/no-mistakes-workflow-mapping/plan.md`; that file now records the supersession in
-both places it asserted the old answer.
+every place it asserted the old answer.
 
 ## Investigated findings (what the repository actually does)
 
@@ -127,11 +127,11 @@ Verified against `HEAD` at `0f5d045b`.
   "Built-in Personas" subsection at line 1980. The built-in workflow section belongs beside
   it; the check node extends the node vocabulary the same section describes.
 
-One discrepancy against the source plan, corrected here: the source plan says a check
-attempt "needs either widened columns or a synthetic verdict". The repository answers it -
-the existing row accommodates the final outcome without new columns. The crash-safe pooled
-execution contract adds `workflow_check_leases` as a new table, so Phase 2 has schema work
-even though it adds no `addColumn` call or dependent index.
+One discrepancy in an earlier source-plan draft was corrected before phasing: that draft said
+a check attempt "needs either widened columns or a synthetic verdict". The repository answers
+it - the existing row accommodates the final outcome without new columns. The crash-safe
+pooled execution contract adds `workflow_check_leases` as a new table, so Phase 2 has schema
+work even though it adds no `addColumn` call or dependent index.
 
 ## Phase table
 

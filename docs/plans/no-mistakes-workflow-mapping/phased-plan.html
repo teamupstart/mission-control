@@ -67,9 +67,9 @@
   <ol>
     <li><b>Persona set</b>: author all four - Intent Conformance Judge, Code Risk Reviewer,
       Test Evidence Auditor, Documentation Steward. Lint/Housekeeping not adopted.</li>
-    <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
-      them at the PR head; the Inspector final gate (phase 5 of the workflow-builder plan)
-      makes them binding. No check-node kind.</li>
+    <li><b>Deterministic test/lint command gates</b>: this phase left them outside the graph.
+      <b>Superseded 2026-07-26</b>; <code>docs/plans/builtin-workflows/plan.md</code> owns the
+      adopted check-node design.</li>
     <li><b>Ship tail</b>: as planned - graph success shows a missing-PR wait offering
       the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
       delivery nodes.</li>
@@ -78,10 +78,10 @@
       <b>Superseded 2026-07-26</b>; see the README's Built-in Personas section.</li>
     <li><b>Follow-up</b>: this phased implementation plan.</li>
   </ol>
-  <div class="note"><p>Decisions 2 and 3 are do-nothing decisions: they select the
-  already-planned workflow-builder phases (4-6) over new machinery and require no work here.
-  The implementable remainder is decision 1 + 4: author the four seed persona files, with
-  documentation and tests.</p></div>
+  <div class="note"><p>Decisions 2 and 3 required no work in this historical Persona phase.
+  Decision 2 was later superseded by the check-node plan linked above. The implementable
+  remainder here was decision 1 + 4: author the four seed persona files, with documentation
+  and tests.</p></div>
 
   <h2>Investigated findings (what the repository actually does)</h2>
   <ul>

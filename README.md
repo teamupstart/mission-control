@@ -3240,9 +3240,11 @@ earns two surfaces a card has nowhere to put:
   words ("reviewing", "waiting on you"), one dot per member of the roster, and an attention
   rollup - **N needs you** when a member *in that frame* is holding a question, or a quieter
   outlined **N elsewhere** when the run has one in another column. Click the header to open the
-  run. The **Console** rail (and the board's drill-in,
-  which is the same rail) gets a slimmer version of that header above the members' rows;
-  arrow keys walk straight past it, so navigation is unchanged. **Cards** sorts siblings next
+  run. The **Console** rail (and the board's drill-in, which is the same rail) gets a slimmer
+  version above the members' rows - the title, the stage word, the dots and a compact `!N`
+  attention count, but not the strategy, which at the rail's narrowest would cost the run's own
+  name the room it needs (it stays in the hover copy, and on every member row's chip). Arrow
+  keys walk straight past the header, so navigation is unchanged. **Cards** sorts siblings next
   to each other but grows no frame: its arrow keys are geometric against the live CSS grid
   tracks, and a header cell would silently break <kbd>↑</kbd>/<kbd>↓</kbd>.
   A cluster never crosses a Board column: if one member is waiting on your answer it sits in

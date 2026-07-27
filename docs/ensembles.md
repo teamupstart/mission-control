@@ -156,10 +156,16 @@ double-counts. They are **counts, not positions**: the third square does not mea
 the hover copy says so. The same row is drawn by the Board's cluster header, the Console rail's,
 and the Ensembles list row.
 
-**Clusters.** Sibling members are ordered adjacent in every layout. Board and the Console rail
-draw a header over them (title, strategy, stage word, dots, and the attention rollup) that opens
-the run; Cards sorts them together without a frame, because its arrow keys are geometric against
-live CSS grid tracks. A cluster **never crosses a Board tone column**: a member waiting on your
+**Clusters.** Sibling members are ordered adjacent in every layout, under a header that opens the
+run - at two densities, which carry deliberately different fields. The **Board** frame's header
+has room for all of them: title, strategy, stage word, dots, attention rollup. The **Console
+rail** (and the Board's drill-in, which is the same rail) carries title, stage word, dots and a
+compact attention count, and **deliberately drops the strategy label**; it is the one header field
+a reader can also get from any member row's own chip, and at the rail's 260px floor adding it cuts
+the run's own name to a handful of characters ("Stabilize parser rollout" becomes "Stabi…").
+The strategy stays in the header's hover copy. **Cards** sorts siblings together without a frame,
+because its arrow keys are geometric against live CSS grid tracks. A cluster
+**never crosses a Board tone column**: a member waiting on your
 answer sits in *needs you* with the run's header repeated there, and its working siblings stay in
 *working*. Moving them all would dilute the column whose whole job is "these are the things to act
 on"; the repeated header is what ties the halves back together.

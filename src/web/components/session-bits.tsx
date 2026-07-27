@@ -545,21 +545,37 @@ export function EnsembleProgressDots({
  * member link's strategy label). A cluster exists the moment two sibling sessions do, which can
  * be a tick ahead of the summary; a header that rendered nothing until then would flicker a
  * frame in and out around tiles that never moved.
+ *
+ * It is also the header's ACCESSIBLE NAME - both densities pass it as `aria-label`, which
+ * REPLACES their content for assistive tech - so it has to state everything the header shows.
+ * Two things used to fall out of it. The no-summary branch dropped the title it had just
+ * computed and said only "Open this ensemble run", while the header visibly read "Best of N";
+ * and the attention clause was read off the summary alone, so during that same SSE gap a screen
+ * reader missed a "1 needs you" badge that was on screen. Both are taken from `blockedHere`
+ * now, which comes from member links and is known whether or not the summary has landed.
+ *
+ * The attention clause distinguishes HERE from ELSEWHERE for the reason the badges do: a header
+ * is repeated in every tone column its members landed in, and "1 waiting on your answer" said in
+ * the column that holds none of them is a sentence pointing at the wrong tiles.
  */
 export function ensembleClusterHeadline(
   summary: EnsembleSummary | null,
   fallbackLabel: string,
+  blockedHere = 0,
 ): { title: string; tooltip: string } {
   const title = summary?.title ?? fallbackLabel;
-  if (!summary) return { title, tooltip: `Open this ensemble run` };
-  const blocked =
-    summary.membersNeedingInput > 0
-      ? `, ${summary.membersNeedingInput} waiting on your answer`
-      : "";
-  return {
-    title,
-    tooltip: `Open ${title} - ${summary.strategyLabel}, ${ensembleStageWord(summary)}, ${summary.membersReady} of ${summary.maxMembers} in${blocked}`,
-  };
+  const { here, elsewhere } = ensembleAttentionInFrame(summary, blockedHere);
+  const attention = [
+    here > 0 ? `${here} waiting on your answer here` : "",
+    elsewhere > 0 ? `${elsewhere} waiting on your answer in another column` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const facts = summary
+    ? `${summary.strategyLabel}, ${ensembleStageWord(summary)}, ${summary.membersReady} of ${summary.maxMembers} in`
+    : "";
+  const detail = [facts, attention].filter(Boolean).join(", ");
+  return { title, tooltip: detail ? `Open ${title} - ${detail}` : `Open ${title}` };
 }
 
 function ensembleAttentionInFrame(
@@ -594,7 +610,7 @@ export function EnsembleRailGroup({
   blockedHere: number;
   onOpen?: () => void;
 }): React.JSX.Element {
-  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel);
+  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel, blockedHere);
   const attention = ensembleAttentionInFrame(summary, blockedHere);
   return (
     <Tooltip label={tooltip}>
@@ -650,7 +666,7 @@ export function EnsembleClusterHead({
   blockedHere: number;
   onOpen?: () => void;
 }): React.JSX.Element {
-  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel);
+  const { title, tooltip } = ensembleClusterHeadline(summary, fallbackLabel, blockedHere);
   const attention = ensembleAttentionInFrame(summary, blockedHere);
   return (
     <Tooltip label={tooltip}>

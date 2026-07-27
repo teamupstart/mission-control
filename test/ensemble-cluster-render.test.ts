@@ -23,6 +23,7 @@ import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { EnsembleRuns } from "../src/web/workflows/EnsembleRuns.tsx";
 import {
   EnsembleProgressDots,
+  ensembleClusterHeadline,
   ensembleDotCounts,
 } from "../src/web/components/session-bits.tsx";
 import { mkEnsembleSummary, mkMemberSession, mkSession } from "./helpers/session-fixture.ts";
@@ -200,6 +201,40 @@ test("a blocked cluster header needs no run summary to show its actionable count
   assert.match(html, /bch-needs">1 needs you</);
   assert.doesNotMatch(html, /bch-meta/);
   assert.doesNotMatch(html, /is-elsewhere/);
+});
+
+test("a cluster header's accessible name states everything the header shows", () => {
+  // Both densities pass `ensembleClusterHeadline`'s sentence as `aria-label`, which REPLACES
+  // their content for assistive tech - so anything visible and missing from it is invisible to a
+  // screen reader. Two things used to fall out during the SSE gap: the run's name (the branch
+  // said only "Open this ensemble run" while the header read "Best of N") and the attention
+  // count, which was read off the summary although `blockedHere` comes from member links.
+  const gap = ensembleClusterHeadline(null, "Best of N", 1);
+  assert.equal(gap.title, "Best of N");
+  assert.match(gap.tooltip, /^Open Best of N - 1 waiting on your answer here$/);
+  assert.equal(ensembleClusterHeadline(null, "Best of N").tooltip, "Open Best of N");
+
+  // With a summary, the facts lead and the attention clause says WHICH column it is about - the
+  // header is repeated per tone column, so an unqualified count points at the wrong tiles.
+  const summary = mkEnsembleSummary({ title: "Fix the parser", status: "evaluating", membersNeedingInput: 2 });
+  assert.match(
+    ensembleClusterHeadline(summary, "Best of N", 1).tooltip,
+    /^Open Fix the parser - Best of N, reviewing, 0 of 3 in, 1 waiting on your answer here, 1 waiting on your answer in another column$/,
+  );
+  assert.match(
+    ensembleClusterHeadline(summary, "Best of N", 0).tooltip,
+    /2 waiting on your answer in another column$/,
+  );
+  assert.doesNotMatch(
+    ensembleClusterHeadline(mkEnsembleSummary({ title: "Calm" }), "Best of N", 0).tooltip,
+    /waiting on your answer/,
+  );
+
+  // And it reaches the rendered headers as their name, in both densities.
+  const html = board({ sessions: [member(1), blockedMember(2)] });
+  assert.match(html, /class="board-cluster-head[^"]*" aria-label="Open Best of N - 1 waiting on your answer here"/);
+  const rail = consoleRail({ sessions: [blockedMember(2)] });
+  assert.match(rail, /class="rail-ensemble-group[^"]*" aria-label="Open Best of N - 1 waiting on your answer here"/);
 });
 
 test("the console rail heads each cluster with a row that is not a session row", () => {

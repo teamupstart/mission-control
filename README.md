@@ -2511,9 +2511,9 @@ It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and
-delivered deliveries, Inspector gates, retained run count, recovery time, retention time, the
-last retention error code, and the last compacted and deleted counts. It contains no prompt,
-diff, transcript, Persona guidance, model output, or delivery payload.
+delivered deliveries among retained run families, Inspector gates, retained run count, recovery
+time, retention time, the last retention error code, and the last compacted and deleted counts.
+It contains no prompt, diff, transcript, Persona guidance, model output, or delivery payload.
 
 Five of those counters lead as a **strip of tiles, in escalation order** - *Needs you*
 (uncertain deliveries), *Waiting*, *Inspector gates*, *Running*, *Delivered* - and each tile
@@ -2522,8 +2522,11 @@ of what it counted. The rest stay as a plain list beneath it: they are throughpu
 bookkeeping, and rendering them in the same weight as "a repair may or may not have been typed
 into somebody's session" was what made the one counter that needs a human the least findable
 thing on the panel. **Delivered** is the fleet-wide count of deliveries confirmed typed into a
-session, all time; it survives compaction, because a compacted delivery keeps its state and
-loses only its content.
+session among run families retention still keeps. Compaction does not reduce it, because a
+compacted delivery keeps its state and loses only its content. Full run-family deletion does
+reduce it: once a finished family is older than `completedRunDays`, outside the newest
+`maxCompletedRuns`, and not pinned by an uncertain delivery, retention deletes its delivery
+rows too.
 
 For an offline backup, stop Mission Control and copy
 `$MISSION_HOME/harness.db` (by default `~/.mission-control/harness.db`) together with its `-wal`

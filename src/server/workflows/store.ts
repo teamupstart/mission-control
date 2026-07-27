@@ -3812,11 +3812,10 @@ export class WorkflowStore {
                WHERE d.run_id = r.id AND d.state = 'uncertain'
             )`,
       ),
-      // All time, and it survives retention: compaction blanks a delivered row's payload and
-      // coarsens its error but never its state, so this counts deliveries whose content is
-      // long gone. That is the point - it answers "has Live delivery ever typed anything in",
-      // which nothing in the app could answer before, and it answers it without reading one
-      // byte of what was typed.
+      // Among retained run families, compaction does not reduce this count: it blanks a
+      // delivered row's payload and coarsens its error but never its state. Full run-family
+      // deletion does reduce it because that stage removes the delivery rows too. The count
+      // therefore reports retained confirmation without reading one byte of what was typed.
       deliveredDeliveries: scalar(
         `SELECT COUNT(*) AS count FROM workflow_deliveries WHERE state = 'delivered'`,
       ),

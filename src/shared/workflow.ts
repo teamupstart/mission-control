@@ -1371,8 +1371,8 @@ export interface WorkflowStatus {
    */
   completedRunCount: number;
   /**
-   * Deliveries confirmed typed into a session, all time - the only fleet-wide evidence that
-   * Live delivery has ever done the thing it is enabled for.
+   * Deliveries confirmed typed into a session among retained run families. Compaction keeps
+   * their state, while deleting a run family removes its deliveries from this count.
    */
   deliveredDeliveries: number;
   lastRetentionCompacted: number;

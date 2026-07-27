@@ -12,11 +12,10 @@
  * here, because a count that quietly disagrees with the sweep it describes is a panel
  * confidently explaining a deletion that will not happen.
  *
- * `deliveredDeliveries` answers the question nothing in the app could answer: whether Live
- * delivery has ever actually typed anything into a session. The claim worth pinning is that
- * it SURVIVES retention - compaction blanks a delivered row's payload and coarsens its error
- * but never its state - so the count keeps working on a fleet whose delivery contents are
- * long gone, which is exactly the fleet that has been running longest.
+ * `deliveredDeliveries` answers how much retained run history confirms that Live delivery
+ * actually typed something into a session. The boundary worth pinning is that compaction
+ * blanks a delivered row's payload and coarsens its error but never its state, while deleting
+ * an aged run family removes its deliveries from the count.
  */
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
@@ -124,9 +123,8 @@ test("deliveredDeliveries counts confirmed deliveries and nothing else", () => {
   assert.equal(counts.uncertainDeliveries, 1);
 });
 
-// The all-time claim. Retention compacts a delivered row's payload away, and if the count
-// were derived from anything content-shaped it would silently fall to zero on exactly the
-// long-running fleet that has the most to report.
+// Compaction must not erase confirmation while the run family remains retained. A count
+// derived from content would silently fall even though retention still keeps the delivery.
 test("delivered deliveries still count after retention has compacted their payloads", () => {
   insertRun("old", "completed", 100);
   insertDelivery("old-delivery", "old", "delivered");
@@ -152,6 +150,26 @@ test("delivered deliveries still count after retention has compacted their paylo
     1,
     "the count reads state, which compaction never touches",
   );
+});
+
+// Full deletion is the other side of the retention boundary: keeping this delivery in the
+// headline after its aged run family is gone would recreate the false all-time promise.
+test("delivered deliveries leave the count when retention deletes their run family", () => {
+  insertRun("old", "completed", 100);
+  insertDelivery("old-delivery", "old", "delivered");
+  insertRun("newest", "completed", 200);
+  assert.equal(store.workflowStatusCounts().deliveredDeliveries, 1);
+
+  const result = store.runRetention({
+    rawEvidenceBefore: 0,
+    completedRunsBefore: 150,
+    maxCompletedRuns: 1,
+    now: 300,
+  });
+  assert.deepEqual(result.deletedRunIds, ["old"]);
+  assert.equal(store.getRun("old"), null);
+  assert.ok(store.getRun("newest"));
+  assert.equal(store.workflowStatusCounts().deliveredDeliveries, 0);
 });
 
 // An empty install answers zero rather than throwing or returning a null: the settings panel

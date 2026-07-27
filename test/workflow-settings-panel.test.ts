@@ -256,9 +256,9 @@ test("each health tile carries the scalar it claims", () => {
   assert.equal(byId.size, 5, "a tile added or dropped silently changes what the strip means");
 });
 
-// A zero is a reading, not an absence. "No delivery has ever gone out" is exactly what an
-// operator who has just enabled Live delivery is looking for, and a strip that hides its
-// zeroes answers that question by leaving the subsystem out of the picture.
+// A zero is a reading, not an absence. "No retained delivery is confirmed as sent" is
+// exactly what an operator who has just enabled Live delivery is looking for, and a strip
+// that hides its zeroes answers that question by leaving the subsystem out of the picture.
 test("a tile with a zero count still renders", () => {
   assert.equal(STATUS.inspectorGates, 0, "the fixture must keep a zero for this to test");
   const tiles = workflowStripLinks(STATUS);

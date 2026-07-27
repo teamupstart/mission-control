@@ -143,9 +143,10 @@ export function retentionShortens(
  * findable things on the panel.
  *
  * These counts do NOT sum, and no tile's count is the number of rows its link opens. They
- * are independent scalars over three populations - deliveries, runs, and all-time history -
- * and the destination is the nearest honest view of what the tile counted, not a
- * re-derivation of it. `hint` therefore says what clicking opens; see `ConsoleLinkStrip`.
+ * are independent scalars over three populations - in-flight or uncertain deliveries, runs,
+ * and delivered rows in retained run families - and the destination is the nearest honest
+ * view of what the tile counted, not a re-derivation of it. `hint` therefore says what
+ * clicking opens; see `ConsoleLinkStrip`.
  */
 const STRIP_TILES = [
   {
@@ -185,7 +186,8 @@ const STRIP_TILES = [
     id: "delivered",
     label: "Delivered",
     tone: "ok",
-    hint: "Deliveries confirmed typed into a session, all time. Opens the completed runs.",
+    hint: "Deliveries confirmed typed into a session among retained runs. "
+      + "Opens the completed runs.",
     filters: { status: "completed" },
     count: (s: WorkflowStatus) => s.deliveredDeliveries,
   },
@@ -215,8 +217,8 @@ function tileHref(filters: WorkflowRunFilters): string {
  * renders a plausible number and nothing on the panel contradicts it.
  *
  * A zero count still gets a tile. A missing tile reads as a missing subsystem, and "no
- * delivery has ever gone out" is a reading an operator who has just enabled Live delivery
- * specifically wants.
+ * retained delivery is confirmed as sent" is a reading an operator who has just enabled
+ * Live delivery specifically wants.
  */
 export function workflowStripLinks(status: WorkflowStatus): ConsoleLink[] {
   return STRIP_TILES.map((tile) => ({

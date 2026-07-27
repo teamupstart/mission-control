@@ -6,6 +6,7 @@ import {
   InspectorSettingsPanel,
   inspectionBucket,
   inspectionTallies,
+  inspectionSummary,
   inspectorHealth,
   INSPECTION_STRIP_BUCKETS,
 } from "../src/web/components/InspectorSettingsPanel.tsx";
@@ -99,6 +100,21 @@ test("a retired pull request is never counted as queued work", () => {
 // A failure outranks the row's other facts: it is the reason none of them are current.
 test("a failed attempt buckets as failed even on a row that has findings", () => {
   assert.equal(inspectionBucket(row({ round: 2, openFindings: 4, lastError: "boom" })), "failed");
+});
+
+// ...but CLOSED outranks the failure, and that order is the point. Raised by the Inspector
+// on this change: a pull request whose last review errored and which has since closed will
+// never be retried, because the sweep loads open rows only. Bucketing it as `failed` puts
+// something nobody can act on into the one tile that means "act on this", and it stays
+// there for good - the same defect, in a new vocabulary, as the "queued" one below it.
+test("a closed pull request is retired even when its last review failed", () => {
+  const closedAndFailed = row({ state: "closed", lastError: "gh: rate limit", round: 1 });
+  assert.equal(inspectionBucket(closedAndFailed), "retired");
+  assert.equal(inspectionTallies([closedAndFailed]).failed, 0);
+  // The error is not lost, it is just not counted as outstanding work: Health reads it off
+  // the rows directly, and the row still SAYS "failed".
+  assert.equal(inspectorHealth([closedAndFailed]).failed?.lastError, "gh: rate limit");
+  assert.equal(inspectionSummary(closedAndFailed), "failed");
 });
 
 test("every merge standing lands in exactly one bucket, and soaking is not 'blocked'", () => {

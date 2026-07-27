@@ -125,3 +125,22 @@ test("nothing is warned about while YOLO mode is off", () => {
   const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] }, disarmed);
   assert.doesNotMatch(html, /Inspector is switched off/);
 });
+
+// Raised by the Inspector on this change: the Prerequisites card was gated on
+// `anyBlocker || inspectorConfig !== null`, so a healthy armed install drew the card with a
+// green all-clear in it - while the comment directly above that line said the card exists
+// only for genuinely unmet prerequisites. The code and its own stated contract disagreed;
+// the contract won. A checklist of green ticks that is always on screen is one nobody reads
+// on the day a tick turns red.
+test("with every prerequisite met, the Prerequisites card is not drawn at all", () => {
+  const html = render({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+  assert.doesNotMatch(html, /Prerequisites/);
+  assert.doesNotMatch(html, /Everything this depends on is in place/);
+});
+
+// The other half of the same rule: it IS drawn the moment something is genuinely unmet.
+test("an unmet prerequisite still draws the card, with the fix beside it", () => {
+  const html = render({ enabled: false, mode: "dry-run", repoAllowlist: [] });
+  assert.match(html, /Prerequisites/);
+  assert.match(html, /class="settings-link"[^>]*>Turn it on in Inspector/);
+});

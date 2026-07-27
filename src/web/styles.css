@@ -11133,9 +11133,6 @@ select.oc-input {
   position: relative;
   top: -1px;
 }
-.oc-blocker.is-met {
-  color: var(--muted);
-}
 .oc-blocker .settings-link {
   white-space: nowrap;
 }
@@ -11274,6 +11271,46 @@ select.oc-input {
 }
 .oc-table-shipping .oc-row {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
+}
+/* Phone width: the row folds onto two lines rather than being cut in half.
+   The fixed tracks above come to 326px plus gaps and padding, so below roughly 450px of
+   table the grid is wider than its container - and `.oc-table` clips rather than scrolls
+   (it has to, for the rounded corners), so what silently disappeared was the right-hand
+   column: the one saying when any of this last happened. Placement is explicit because
+   auto-flow would pair the wrong cells: identity and time on the first line, verdict on
+   the second. The header row goes with it, because it names four columns that are no
+   longer there - and at this width the pairing is self-describing. */
+@media (max-width: 620px) {
+  .oc-row-head {
+    display: none;
+  }
+  .oc-table-inspector .oc-row,
+  .oc-table-shipping .oc-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 3px;
+  }
+  .oc-row > .oc-pr {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .oc-row > .oc-when {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .oc-table-inspector .oc-row > .oc-verdict {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .oc-table-inspector .oc-row > .oc-fixed {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: right;
+  }
+  .oc-table-shipping .oc-row > .oc-standing {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
 }
 .oc-row-head {
   padding: 6px 13px;

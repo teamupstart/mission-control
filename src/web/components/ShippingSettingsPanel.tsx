@@ -295,8 +295,11 @@ export function ShippingSettingsPanel({
 
               Rendered only while armed, and only while something is genuinely unmet: an
               always-present checklist of green ticks is a checklist nobody reads on the
-              day one of them turns red. */}
-          {autoMerge && (anyBlocker || inspectorConfig !== null) && (
+              day one of them turns red. The condition is `anyBlocker` alone for exactly
+              that reason - it was `anyBlocker || inspectorConfig !== null`, which drew the
+              card with a green all-clear on every healthy install, which is the thing the
+              sentence above says not to do. */}
+          {autoMerge && anyBlocker && (
             <ConsoleCard title="Prerequisites">
               {inspectorOff && (
                 <p className="oc-blocker">
@@ -359,15 +362,6 @@ export function ShippingSettingsPanel({
                 </p>
               )}
 
-              {!anyBlocker && (
-                <p className="oc-blocker is-met">
-                  <span className="oc-dot oc-dot-ok" aria-hidden="true" />
-                  <span>
-                    Everything this depends on is in place. A pull request that comes out clean
-                    will merge itself.
-                  </span>
-                </p>
-              )}
             </ConsoleCard>
           )}
 

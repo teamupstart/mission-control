@@ -67,8 +67,16 @@ export function ago(then: number | null, now: number): string {
 export type InspectionBucket = "failed" | "findings" | "queued" | "clean" | "retired";
 
 export function inspectionBucket(row: InspectorInspection): InspectionBucket {
-  if (row.lastError) return "failed";
+  // CLOSED outranks a stored error, and the order is the whole point. A row whose last
+  // attempt failed and whose pull request has since closed will never be retried - the
+  // sweep loads open rows only - so counting it under `failed` puts something nobody can
+  // act on into the one tile that means "act on this", and inflates it permanently. That
+  // is the same defect `inspectionSummary` shipped in its own vocabulary, one branch down.
+  // The error is not lost: `inspectorHealth` reads `lastError` off the rows directly, and
+  // the row still SAYS "failed", because what the Inspector last said about a pull request
+  // that has since closed is history worth keeping.
   if (row.state === "closed") return "retired";
+  if (row.lastError) return "failed";
   if (row.round === 0) return "queued";
   return row.openFindings > 0 ? "findings" : "clean";
 }

@@ -162,3 +162,26 @@ test("rate limits are recorded even when no session can be bound", () => {
   );
   assert.equal(registry.snapshot().fleetCost?.rateLimits?.fiveHour?.usedPercentage, 42.5);
 });
+
+test("a Claude SDK driver populates the same account-global runway as statusLine", () => {
+  const registry = new Registry();
+  const id = "sdk:claude-limits";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "embedded Claude",
+    cwd: "/repo/sdk",
+  });
+  registry.applyDriverEvent(id, {
+    kind: "rate_limits",
+    rateLimits: {
+      fiveHour: { usedPercentage: 61, resetsAt: nowSec + 2 * 3600 },
+      sevenDay: { usedPercentage: 72, resetsAt: nowSec + 4 * 86400 },
+      updatedAt: Date.now(),
+    },
+  });
+
+  const limits = registry.snapshot().fleetCost?.rateLimits;
+  assert.equal(limits?.fiveHour?.usedPercentage, 61);
+  assert.equal(limits?.sevenDay?.usedPercentage, 72);
+});

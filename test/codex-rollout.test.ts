@@ -13,6 +13,7 @@ import {
   parseSessionMeta,
   readRolloutPassive,
 } from "../src/server/harness/codex/rollout.ts";
+import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
 import type { Session } from "@shared/types.ts";
 
 // Records shaped like real Codex rollout JSONL lines.
@@ -131,6 +132,73 @@ test("Codex rate limits retain their declared duration and source", () => {
     source: "codex", updatedAt: Date.parse("2026-07-21T19:15:00.000Z"),
     windows: [{ id: "primary", label: "1-week", durationMinutes: 10080, usedPercentage: 9, resetsAt: 1785258595 }],
   });
+});
+
+test("a pane-less Codex SDK session reads runway from its reported rollout path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-sdk-limits-"));
+  process.env.MISSION_HOME = join(root, "state");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { startRuntimeMetaPoller } = await import("../src/server/runtime-meta.ts");
+  const path = join(root, "rollout.jsonl");
+  const limitRecord = JSON.stringify({
+    timestamp: "2026-07-27T12:00:00.000Z",
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {},
+      rate_limits: {
+        primary: { used_percent: 32, window_minutes: 10080, resets_at: 1785614958 },
+        secondary: null,
+      },
+    },
+  });
+  writeFileSync(path, [
+    JSON.stringify({
+      timestamp: "2026-07-27T11:59:00.000Z",
+      type: "session_meta",
+      payload: {
+        id: "codex-sdk-thread",
+        timestamp: "2026-07-27T11:59:00.000Z",
+        cwd: "/repo/sdk",
+        source: "app-server",
+        thread_source: "user",
+      },
+    }),
+    limitRecord,
+  ].join("\n") + "\n");
+  const session = codexSession({
+    id: "sdk:codex-limits",
+    runtime: "sdk",
+    cwd: "/repo/sdk",
+    agentSessionId: "codex-sdk-thread",
+    transcriptPath: path,
+    tty: null,
+    terminals: [],
+  });
+
+  assert.equal(codexTranscript.locate(session), path);
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: session.id,
+    agent: "codex",
+    name: "embedded Codex",
+    cwd: session.cwd!,
+  });
+  registry.applyDriverEvent(session.id, {
+    kind: "bound",
+    agentSessionId: session.agentSessionId!,
+    transcriptPath: path,
+    modelId: null,
+    pid: null,
+  });
+  const stop = startRuntimeMetaPoller(registry);
+  stop();
+  assert.equal(
+    registry.snapshot().fleetCost?.rateLimitSources?.find((source) => source.source === "codex")
+      ?.windows[0]?.usedPercentage,
+    32,
+    "the generic runtime poller reads the driver's exact rollout path for SDK sessions",
+  );
 });
 
 test("parseRolloutMeta normalizes effort variants and handles emptiness", () => {

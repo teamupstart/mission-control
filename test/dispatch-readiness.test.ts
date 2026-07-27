@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -93,18 +93,16 @@ test("a dispatched pi launch binds its injected native session id", () => {
   assert.equal(registry.getSession("pi-launched")?.agentSessionId, bound?.agentSessionId);
 });
 
-test("the dispatcher treats the dispatched pi session file as readiness", async () => {
+test("the dispatcher does not wait for pi's lazily-created transcript", async () => {
   const registry = new Registry();
   registry.applyDiscovery([
     mkDiscovered({ syntheticId: "pi-ready", agent: "pi", cwd: "/wt/pi-ready" }),
   ]);
   const discovered = registry.getSession("pi-ready") as Session;
-  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  let observed: [string, string, number, number] | null = null;
+  const settles: number[] = [];
   const dispatcher = new Dispatcher(registry, undefined, {
-    waitForPiReady: async (cwd, id, timeoutMs, settleMs) => {
-      observed = [cwd, id, timeoutMs, settleMs];
-      return "/tmp/pi-ready.jsonl";
+    sleep: async (ms) => {
+      settles.push(ms);
     },
   });
   const awaitReady = (
@@ -113,211 +111,17 @@ test("the dispatcher treats the dispatched pi session file as readiness", async 
         cwd: string,
         session: Session,
         prepared: boolean,
-        piSessionId: string,
       ): Promise<{
         session: Session;
         instrumented: boolean;
-        piTranscriptPath: string | null;
       }>;
     }
   ).awaitReady.bind(dispatcher);
 
-  const ready = await awaitReady("/wt/pi-ready", discovered, true, sessionId);
-  assert.deepEqual(
-    (observed as [string, string, number, number] | null)?.slice(0, 2),
-    ["/wt/pi-ready", sessionId],
-  );
+  const ready = await awaitReady("/wt/pi-ready", discovered, true);
   assert.equal(ready.session.id, "pi-ready");
   assert.equal(ready.instrumented, false);
-  assert.equal(ready.piTranscriptPath, "/tmp/pi-ready.jsonl");
-});
-
-test("the dispatcher declines a pi launch whose session file never appears", async () => {
-  const registry = new Registry();
-  registry.applyDiscovery([
-    mkDiscovered({ syntheticId: "pi-unverified", agent: "pi", cwd: "/wt/pi-unverified" }),
-  ]);
-  const discovered = registry.getSession("pi-unverified") as Session;
-  const dispatcher = new Dispatcher(registry, undefined, {
-    waitForPiReady: async () => null,
-  });
-  const awaitReady = (
-    dispatcher as unknown as {
-      awaitReady(
-        cwd: string,
-        session: Session,
-        prepared: boolean,
-        piSessionId: string,
-      ): Promise<{
-        session: Session;
-        instrumented: boolean;
-        piTranscriptPath: string | null;
-      }>;
-    }
-  ).awaitReady.bind(dispatcher);
-
-  await assert.rejects(
-    awaitReady(
-      "/wt/pi-unverified",
-      discovered,
-      true,
-      "019f7d35-beb8-7ae4-8b33-049e4f65cacd",
-    ),
-    /pi session file never appeared before the initial prompt/,
-  );
-});
-
-test("pi prompt delivery is accepted by a new exact-transcript user message", async () => {
-  const registry = new Registry();
-  registry.applyDiscovery([
-    mkDiscovered({ syntheticId: "pi-accept", agent: "pi", cwd: "/wt/pi-accept" }),
-  ]);
-  const path = join(home, "pi-accept.jsonl");
-  writeFileSync(path, `${JSON.stringify({ type: "session", id: "pi-accept" })}\n`);
-  let sends = 0;
-  const dispatcher = new Dispatcher(registry, undefined, {
-    inject: async () => {
-      sends += 1;
-      appendFileSync(
-        path,
-        `${JSON.stringify({
-          type: "message",
-          id: "prompt-1",
-          timestamp: new Date().toISOString(),
-          message: { role: "user", content: [{ type: "text", text: "do the work" }] },
-        })}\n`,
-      );
-      return { ok: true, pasted: true, submitVerified: true };
-    },
-  });
-  const deliverIntent = (
-    dispatcher as unknown as {
-      deliverIntent(
-        id: string,
-        intent: string,
-        cwd: string,
-        instrumented: boolean,
-        piTranscriptPath: string,
-      ): Promise<void>;
-    }
-  ).deliverIntent.bind(dispatcher);
-
-  await deliverIntent("pi-accept", "do the work", "/wt/pi-accept", false, path);
-  assert.equal(sends, 1);
-});
-
-test("pi prompt delivery accepts a user record larger than the tail window", async () => {
-  const registry = new Registry();
-  registry.applyDiscovery([
-    mkDiscovered({ syntheticId: "pi-large", agent: "pi", cwd: "/wt/pi-large" }),
-  ]);
-  const path = join(home, "pi-large.jsonl");
-  writeFileSync(path, `${JSON.stringify({ type: "session", id: "pi-large" })}\n`);
-  let sends = 0;
-  const dispatcher = new Dispatcher(registry, undefined, {
-    inject: async () => {
-      sends += 1;
-      appendFileSync(
-        path,
-        `${JSON.stringify({
-          type: "message",
-          id: "prompt-large",
-          timestamp: new Date().toISOString(),
-          message: {
-            role: "user",
-            content: [{ type: "text", text: "x".repeat(600 * 1024) }],
-          },
-        })}\n`,
-      );
-      return { ok: true, pasted: true, submitVerified: true };
-    },
-  });
-  const deliverIntent = (
-    dispatcher as unknown as {
-      deliverIntent(
-        id: string,
-        intent: string,
-        cwd: string,
-        instrumented: boolean,
-        piTranscriptPath: string,
-      ): Promise<void>;
-    }
-  ).deliverIntent.bind(dispatcher);
-
-  await deliverIntent("pi-large", "do the work", "/wt/pi-large", false, path);
-  assert.equal(sends, 1);
-});
-
-test("pi prompt delivery rejects metadata-only transcript growth", async () => {
-  const registry = new Registry();
-  registry.applyDiscovery([
-    mkDiscovered({ syntheticId: "pi-metadata", agent: "pi", cwd: "/wt/pi-metadata" }),
-  ]);
-  const path = join(home, "pi-metadata.jsonl");
-  writeFileSync(path, `${JSON.stringify({ type: "session", id: "pi-metadata" })}\n`);
-  let sends = 0;
-  const dispatcher = new Dispatcher(registry, undefined, {
-    inject: async () => {
-      sends += 1;
-      appendFileSync(
-        path,
-        `${JSON.stringify({ type: "model_change", modelId: `gpt-${sends}` })}\n`,
-      );
-      return { ok: true, pasted: true, submitVerified: true };
-    },
-  });
-  const deliverIntent = (
-    dispatcher as unknown as {
-      deliverIntent(
-        id: string,
-        intent: string,
-        cwd: string,
-        instrumented: boolean,
-        piTranscriptPath: string,
-      ): Promise<void>;
-    }
-  ).deliverIntent.bind(dispatcher);
-
-  await assert.rejects(
-    deliverIntent("pi-metadata", "do the work", "/wt/pi-metadata", false, path),
-    /never acknowledged the initial prompt/,
-  );
-  assert.equal(sends, 2);
-});
-
-test("pi prompt delivery rejects silence even while registry state is working", async () => {
-  const registry = new Registry();
-  registry.applyDiscovery([
-    mkDiscovered({ syntheticId: "pi-silent", agent: "pi", cwd: "/wt/pi-silent" }),
-  ]);
-  const path = join(home, "pi-silent.jsonl");
-  writeFileSync(path, `${JSON.stringify({ type: "session", id: "pi-silent" })}\n`);
-  let sends = 0;
-  const dispatcher = new Dispatcher(registry, undefined, {
-    inject: async () => {
-      sends += 1;
-      return { ok: true, pasted: true, submitVerified: true };
-    },
-    waitForPiAcceptance: async () => false,
-  });
-  const deliverIntent = (
-    dispatcher as unknown as {
-      deliverIntent(
-        id: string,
-        intent: string,
-        cwd: string,
-        instrumented: boolean,
-        piTranscriptPath: string,
-      ): Promise<void>;
-    }
-  ).deliverIntent.bind(dispatcher);
-
-  assert.equal(registry.getSession("pi-silent")?.state, "working");
-  await assert.rejects(
-    deliverIntent("pi-silent", "do the work", "/wt/pi-silent", false, path),
-    /never acknowledged the initial prompt/,
-  );
-  assert.equal(sends, 2);
+  assert.deepEqual(settles, [2000]);
 });
 
 test("waitForReadySessionAtCwd does NOT resolve on discovery alone", async () => {

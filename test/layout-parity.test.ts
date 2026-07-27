@@ -29,6 +29,7 @@ const link: TaskEnsembleLink = {
   maxMembers: 3,
   status: "retained",
   resultLabel: "rank 1",
+  needsInput: false,
 };
 
 test("ensemble member tone reads standing, not run health", () => {

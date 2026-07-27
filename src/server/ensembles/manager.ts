@@ -3,6 +3,9 @@ import {
   ENSEMBLE_LIMITS,
   canonicalEnsembleJson,
   ensembleIsTerminal,
+  ensembleMemberAwaitsOperator,
+  ensembleMemberCounts,
+  ensembleNeedsAttention,
   ensemblePayload,
   ensembleStrategyKey,
   type CompiledEnsemblePlan,
@@ -12,6 +15,7 @@ import {
   type EnsembleDecision,
   type EnsembleJson,
   type EnsembleLaunchEstimate,
+  type EnsembleMemberCounts,
   type EnsembleReviewPersona,
   type EnsembleRun,
   type EnsembleRunDetail,
@@ -25,7 +29,7 @@ import {
   type EnsembleSubmissionClaims,
 } from "@shared/protocol.ts";
 import type { Registry } from "../registry.ts";
-import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType, type Session } from "@shared/types.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { agentBinPresent } from "../dispatcher.ts";
 import { resolveDispatchEffort } from "../harnesses.ts";
@@ -77,6 +81,33 @@ import {
  * can stay one exhaustive `Record<EnsembleStrategyId, …>` instead of a registry things
  * mutate at import time.
  */
+
+/**
+ * The session-side half of "waiting on the operator": this agent is holding a question.
+ *
+ * The two things a person has to answer, and no third: a pending review (the MCP ask channel, a
+ * plan, a diff) and a dialog read off the pane or pushed by a driver. Deliberately NOT the card's
+ * broader "needs you" tone, which also covers an idle agent and a failed gate - those are the
+ * fleet's business and say nothing about a question going unanswered.
+ *
+ * An exited session answers false. Its pending reviews are on their way to being orphaned by
+ * `ReviewManager` (which does that on `session_remove`), and a run reporting attention for a
+ * question whose agent is gone would be asking the operator to answer nothing.
+ */
+function sessionAwaitsOperator(session: Session): boolean {
+  return session.state !== "exited" && (session.pendingReviews > 0 || session.paneDialog !== null);
+}
+
+/**
+ * The derived member counts one run last put ON THE LIVE CHANNEL.
+ *
+ * Deliberately not every count on the summary: these three are the registry-derived ones, and they
+ * are what the session edge's guard has to compare against to know whether an emit is warranted.
+ */
+type PublishedMemberCounts = Pick<
+  EnsembleSummary,
+  "membersOut" | "membersNeedingInput" | "membersReady"
+>;
 
 /** Why a create was refused, in the terms a form can act on. */
 export type EnsembleCreateRefusal =
@@ -226,6 +257,29 @@ export class EnsembleManager {
    */
   private links = new Map<string, TaskEnsembleLink>();
 
+  /**
+   * The last DERIVED values this manager published, per run and per member task.
+   *
+   * Both the loop guard and the staleness detector for the session edge below, which is why they
+   * are two maps and not one: a run's counts can be unchanged while one member's own
+   * `needsInput` moved (a second member picking up the question the first one dropped in the same
+   * tick), and the chip is drawn from the per-member value. That swap is the case the counts cannot
+   * see, so it is the case that decides where these may be written.
+   *
+   * PUBLISHED means published. Each is set only where the value actually left this process -
+   * `refreshProjection` for the links it pushed onto sessions, `publish` / the boot install for the
+   * counts - and never by a path that merely recomputed them. A cache written by a silent rebuild
+   * describes a push that never happened, and the guard reading it then skips the emit the cards
+   * were waiting for. Derived values only, so a restart rebuilds both from the store and the
+   * registry.
+   */
+  private publishedCounts = new Map<string, PublishedMemberCounts>();
+  private publishedNeedsInput = new Map<string, boolean>();
+
+  /** Session ids with a deferred needs-input check already queued, so a burst costs one pass. */
+  private pendingSessionChecks = new Set<string>();
+  private stopped = false;
+
   constructor(
     private readonly registry: Registry,
     readonly store = new EnsembleStore(),
@@ -254,53 +308,281 @@ export class EnsembleManager {
       : null;
     // Boot-time catalog install, before SSE is served, so no incremental emit is needed -
     // the same shape `initializePersonas` / `initializeWorkflows` use.
-    this.registry.initializeEnsembles(this.summaries());
+    this.registry.initializeEnsembles(this.installedSummaries());
     // The task projection is REGISTERED rather than imported by the Registry, which keeps
     // the registry free of an ensemble dependency and keeps the lookup on the daemon side of
     // one seam. It is an in-memory map read, not a query: `taskSummaryFor` runs for every
     // session on every discovery sweep.
     this.store.onTaskLinksChanged(() => this.refreshLinks());
     this.refreshProjection();
+    // Two different signals share one subscription, and only one of them needs an engine.
+    //
     // A member Task changing durable state is the engine's wake signal: a task going idle is not a
     // submission and a task dying is not a completion, so the engine recomputes from durable rows on
-    // every wake rather than trusting the event. Only wired when there is an engine to wake.
-    if (this.engine) {
-      this.unsubscribe = this.registry.subscribe((event) => {
-        if (event.type !== "task_upsert" && event.type !== "task_remove") return;
-        const taskId = event.type === "task_upsert" ? event.task.id : event.id;
-        const member = this.store.memberForTask(taskId);
-        if (member) {
-          void this.engine!.wake(member.runId);
-          return;
-        }
-        // A non-member Task change may be a finalizing run's replacement winner coming up - that
-        // Task is a normal Task, so it fires no member event, and the handoff waiting on its
-        // session would otherwise never resume. Waking the (rare, transient) finalizing runs on
-        // such a change is the wake signal the member subscription cannot give.
-        for (const run of this.store.listFinalizingRuns()) void this.engine!.wake(run.id);
-      });
+    // every wake rather than trusting the event.
+    //
+    // A member SESSION changing is the invalidation edge for the derived needs-input values, and it
+    // is wired whether or not a Task gateway was injected - a read-only manager still owns the
+    // projection the browser reads, and a stale chip is a stale chip. Nothing else republishes an
+    // ensemble on a session change: reviews and dialogs reach the registry through
+    // `upsertReview` / `applyDriverDialog`, both of which emit `session_upsert` and neither of
+    // which touches a task or an ensemble row.
+    this.unsubscribe = this.registry.subscribe((event) => {
+      if (event.type === "session_upsert") {
+        this.scheduleMemberSessionCheck(event.session);
+        return;
+      }
+      if (!this.engine) return;
+      if (event.type !== "task_upsert" && event.type !== "task_remove") return;
+      const taskId = event.type === "task_upsert" ? event.task.id : event.id;
+      const member = this.store.memberForTask(taskId);
+      if (member) {
+        void this.engine.wake(member.runId);
+        return;
+      }
+      // A non-member Task change may be a finalizing run's replacement winner coming up - that
+      // Task is a normal Task, so it fires no member event, and the handoff waiting on its
+      // session would otherwise never resume. Waking the (rare, transient) finalizing runs on
+      // such a change is the wake signal the member subscription cannot give.
+      for (const run of this.store.listFinalizingRuns()) void this.engine.wake(run.id);
+    });
+  }
+
+  /**
+   * Every member Task whose live session is holding a question, keyed the way the CARD is keyed.
+   *
+   * Built from the session side, not by walking `Task.sessionId`, and that is the load-bearing
+   * choice. `Session.task` is the registry's own answer to "which task is this agent running",
+   * correlating an ASSIGNED task by that pointer and a DISPATCHED one - which every ensemble
+   * member is - by its worktree path. The pointer alone is empty for a member the daemon has
+   * rediscovered after a restart, so a count derived from it would silently read zero for exactly
+   * the runs a restart left mid-flight. Reading what the chip reads is also what makes the chip and
+   * the count agree by construction rather than by two lookups that happen to match.
+   *
+   * One pass over the live sessions per fold, not one lookup per member: the member roster is
+   * bounded by `maxMembers` but the loop below is bounded by the fleet, and doing it the other way
+   * around would be a fleet walk per candidate.
+   */
+  private sessionsAwaitingOperator(): Set<string> {
+    const blocked = new Set<string>();
+    for (const session of this.registry.liveSessions()) {
+      if (!sessionAwaitsOperator(session)) continue;
+      const taskId = session.task?.id ?? null;
+      if (taskId !== null) blocked.add(taskId);
     }
+    return blocked;
+  }
+
+  /**
+   * One run's member counts, folded from durable rows joined against live session state.
+   *
+   * `awaiting` is threaded rather than recomputed so a fold over MANY runs walks the fleet once:
+   * the set is a property of the sessions, not of the run, and computing it per run makes the
+   * catalog read quadratic in (runs x sessions) for an answer that cannot differ between them.
+   */
+  private memberCounts(runId: string, awaiting: ReadonlySet<string>): EnsembleMemberCounts {
+    return ensembleMemberCounts(
+      this.store.memberCountFacts(runId),
+      (fact) => fact.taskId !== null && awaiting.has(fact.taskId),
+    );
+  }
+
+  /**
+   * Join one store-shaped summary against live session state.
+   *
+   * Applied to EVERY summary that leaves this manager - the boot install, the HTTP catalog and
+   * action responses, and `publish` - because a derived field filled in on the live path alone is a
+   * snapshot that disagrees with the first event after it, which is the "right until you reload it"
+   * failure the SSE contract exists to rule out. The fold itself is shared with the store, so the
+   * decorated and undecorated answers differ in exactly one input: whether a member is waiting
+   * on you.
+   */
+  private decorateSummary(
+    summary: EnsembleSummary,
+    awaiting: ReadonlySet<string> = this.sessionsAwaitingOperator(),
+  ): EnsembleSummary {
+    const counts = this.memberCounts(summary.id, awaiting);
+    return {
+      ...summary,
+      membersOut: counts.membersOut,
+      membersNeedingInput: counts.membersNeedingInput,
+      membersReady: counts.membersReady,
+      // Recomputed rather than OR-ed onto the store's answer: attention is derived once, and a
+      // second derivation here is how the dot and the digest come to disagree.
+      attention: ensembleNeedsAttention({
+        status: summary.status,
+        unreadable: summary.unreadable,
+        membersNeedingInput: counts.membersNeedingInput,
+      }),
+    };
+  }
+
+  /**
+   * A member session was observed: check it AFTER the emit that reported it, never inside.
+   *
+   * The deferral is a correctness requirement, not a throttle, and it is the same shape as the
+   * `void engine.wake(...)` beside it. Reacting inline means calling `emitSession` from within
+   * `emitSession`, and a nested emit is delivered to every listener registered AFTER this one
+   * before the outer event is - so the SSE stream would carry the corrected session FIRST and the
+   * stale one second, and a browser that keeps the last write would show a member as unblocked
+   * for as long as nothing else touched it. (`refreshPendingCount` builds its session without
+   * recomputing the task chip, so the outer event genuinely does carry the old link; the fix has
+   * to be ordering, not a fresher lookup.) A microtask runs once the current emit has fully
+   * unwound, which puts the correction after the event it corrects.
+   *
+   * The synchronous part is the cheap filter: a Map lookup per session event, so a fleet with no
+   * ensembles pays almost nothing and never schedules anything.
+   */
+  private scheduleMemberSessionCheck(session: Session): void {
+    const taskId = session.task?.id ?? null;
+    if (taskId === null || !this.links.has(taskId)) return;
+    if (this.pendingSessionChecks.has(session.id)) return;
+    this.pendingSessionChecks.add(session.id);
+    queueMicrotask(() => {
+      if (this.stopped) return;
+      this.pendingSessionChecks.delete(session.id);
+      // Re-read rather than closing over the event's session: several events for one session can
+      // land in a single tick, and the last state is the one worth publishing.
+      const fresh = this.registry.getSession(session.id);
+      if (fresh) this.onMemberSessionObserved(fresh);
+    });
+  }
+
+  /**
+   * Refresh the link and republish the run, but only if something DERIVED actually changed.
+   *
+   * The guard is mandatory, not an optimization. `publish` -> `refreshProjection` ->
+   * `resyncSessionTask` emits `session_upsert` for every session whose task chip changed, which
+   * schedules this check again; without a guard that is an unbounded chain of microtasks. It
+   * terminates because those emits only QUEUE a check, and both caches are written before the
+   * queue drains: `refreshProjection` records what it pushed, `rememberPublished` records the
+   * counts, and the pre-seed below covers the counts even earlier. Every follow-up check therefore
+   * recomputes exactly what it finds cached and returns.
+   *
+   * Both derived values are checked. The counts alone would leave the member's own chip stale
+   * until an unrelated task event happened to rebuild the link map, since `refreshLinks` is
+   * otherwise driven only by `store.onTaskLinksChanged`.
+   */
+  private onMemberSessionObserved(session: Session): void {
+    // The task id off the card's own nested summary: an O(1) read of the thing that would be
+    // rendered, rather than a scan of every member task that ever existed. A member whose task the
+    // registry has not correlated yet has no chip to be stale, and the task event that binds it
+    // republishes anyway.
+    const taskId = session.task?.id ?? null;
+    if (taskId === null) return;
+    const link = this.links.get(taskId);
+    if (!link) return;
+    // The session is in hand, so this half needs no lookup - and it is the same two-part rule
+    // `refreshLinks` applies, which is what the guard is comparing against.
+    const needsInput =
+      sessionAwaitsOperator(session) && ensembleMemberAwaitsOperator(link.status);
+    const counts = this.memberCounts(link.runId, this.sessionsAwaitingOperator());
+    const cached = this.publishedCounts.get(link.runId);
+    const countsMoved =
+      cached === undefined ||
+      cached.membersNeedingInput !== counts.membersNeedingInput ||
+      cached.membersReady !== counts.membersReady ||
+      cached.membersOut !== counts.membersOut;
+    if (!countsMoved && this.publishedNeedsInput.get(taskId) === needsInput) return;
+    // Seeded before the emits, not after: `publish` writes it too, but only once its own resync has
+    // already re-entered this handler. See the loop argument above.
+    this.publishedCounts.set(link.runId, {
+      membersOut: counts.membersOut,
+      membersNeedingInput: counts.membersNeedingInput,
+      membersReady: counts.membersReady,
+    });
+    // `publish` refreshes the projection first, which is the required order: the link map is
+    // rebuilt, `resyncSessionTask` pushes the fresh `needsInput` onto the member's own card, and
+    // only then does the run's summary go out.
+    this.publish(link.runId);
   }
 
   /** Detach the wake subscription. The daemon owns the single process; tests call this to be tidy. */
   stop(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    // A queued check is a deferred emit, so dropping the subscription is not enough on its own: it
+    // would still publish once more from a manager the caller has finished with.
+    this.stopped = true;
+    this.pendingSessionChecks.clear();
   }
 
-  /** Rebuilt rather than patched: a member LOSING its task matters as much as gaining one. */
+  /**
+   * Rebuilt rather than patched: a member LOSING its task matters as much as gaining one.
+   *
+   * `needsInput` is injected here rather than in the store, which cannot see a session. A task that
+   * has stopped being a member drops out of the map, so a stale `true` cannot outlive the link that
+   * carried it.
+   *
+   * This deliberately does NOT touch `publishedNeedsInput`. Rebuilding the map is not pushing it:
+   * `store.onTaskLinksChanged` calls straight in here and emits nothing at all, so recording those
+   * values as published would describe a push that never happened - and the session edge's guard,
+   * comparing against them, would then decline to emit the correction the cards are waiting for.
+   * `refreshProjection` is where a rebuild actually reaches a session, so that is where it is
+   * recorded.
+   */
   private refreshLinks(): void {
-    this.links = new Map(this.store.listTaskLinks().map((row) => [row.taskId, row.link]));
+    const awaiting = this.sessionsAwaitingOperator();
+    const links = new Map<string, TaskEnsembleLink>();
+    for (const row of this.store.listTaskLinks()) {
+      // Both halves, the same two the count applies: the SESSION is holding a question and the
+      // MEMBER is one this run is still waiting on. A chip that answered only the first would
+      // light up a retained candidate the run has finished with.
+      const blocked =
+        awaiting.has(row.taskId) && ensembleMemberAwaitsOperator(row.link.status);
+      links.set(row.taskId, { ...row.link, needsInput: blocked });
+    }
+    this.links = links;
   }
 
+  /**
+   * Rebuild the links and push them onto every session whose chip they change.
+   *
+   * `registerEnsembleProjection` resyncs each session, so THIS is the moment a link reaches a card,
+   * and the per-member cache is recorded from what was pushed - after the resync, so the values are
+   * the ones that actually went out. The deferred checks those emits schedule read the cache later,
+   * on their own microtask, by which time it is current.
+   */
   private refreshProjection(): void {
     this.refreshLinks();
     this.registry.registerEnsembleProjection((taskId) => this.links.get(taskId) ?? null);
+    const pushed = new Map<string, boolean>();
+    for (const [taskId, link] of this.links) pushed.set(taskId, link.needsInput);
+    this.publishedNeedsInput = pushed;
   }
 
-  /** Every run, as the compact projection. */
+  /** Every run, as the compact projection - decorated, so an HTTP list matches the stream. */
   summaries(): EnsembleSummary[] {
-    return this.store.listSummaries();
+    const awaiting = this.sessionsAwaitingOperator();
+    return this.store.listSummaries().map((summary) => this.decorateSummary(summary, awaiting));
+  }
+
+  /** One run, as the compact projection an action response carries. Decorated for the same reason. */
+  private summaryOf(id: string): EnsembleSummary | null {
+    const summary = this.store.summary(id);
+    return summary === null ? null : this.decorateSummary(summary);
+  }
+
+  /**
+   * The boot install, and the baseline the session edge's guard starts from.
+   *
+   * The cache is written HERE and in `publish` and nowhere else, because it means "what the live
+   * channel last carried". Written from a plain HTTP read instead, it would record values nobody
+   * was ever sent, and the next session edge would compare against them, find no change, and skip
+   * the emit that was the whole point - stale until something unrelated moved.
+   */
+  private installedSummaries(): EnsembleSummary[] {
+    const summaries = this.summaries();
+    for (const summary of summaries) this.rememberPublished(summary);
+    return summaries;
+  }
+
+  private rememberPublished(summary: EnsembleSummary): void {
+    this.publishedCounts.set(summary.id, {
+      membersOut: summary.membersOut,
+      membersNeedingInput: summary.membersNeedingInput,
+      membersReady: summary.membersReady,
+    });
   }
 
   detail(id: string): EnsembleRunDetail | null {
@@ -847,15 +1129,15 @@ export class EnsembleManager {
     switch (action.kind) {
       case "retry_stage": {
         const ok = await this.retryStage(runId, action.stageId);
-        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that stage cannot be retried right now" };
+        return ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: "that stage cannot be retried right now" };
       }
       case "retry_member": {
         const ok = await this.retryMember(runId, action.memberId);
-        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be retried right now" };
+        return ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be retried right now" };
       }
       case "withdraw_member": {
         const ok = await this.withdrawMember(runId, action.memberId, null);
-        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be withdrawn right now" };
+        return ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: "that member cannot be withdrawn right now" };
       }
       case "decide": {
         const decided = await this.decide({
@@ -866,22 +1148,22 @@ export class EnsembleManager {
           rationale: action.rationale,
           actorId: null,
         });
-        if (decided.ok) return { ok: true, summary: this.store.summary(runId), decision: decided.decision, replayed: decided.replayed };
+        if (decided.ok) return { ok: true, summary: this.summaryOf(runId), decision: decided.decision, replayed: decided.replayed };
         const reason =
           decided.reason === "no_run" ? "not_found" : decided.reason === "wrong_state" || decided.reason === "conflict" ? "conflict" : "invalid";
         return { ok: false, reason, detail: decided.detail };
       }
       case "resolve_finalization": {
         const result = await this.resolveFinalization(runId, action.skipWorkflowHandoff);
-        return result.ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "finalization could not be resumed" };
+        return result.ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "finalization could not be resumed" };
       }
       case "cancel": {
         const ok = await this.cancelRun(runId, action.reason);
-        return ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: "that run cannot be cancelled right now" };
+        return ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: "that run cannot be cancelled right now" };
       }
       case "restore_artifact": {
         const result = await this.restoreArtifact(runId, action.artifactId);
-        return result.ok ? { ok: true, summary: this.store.summary(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "that artifact cannot be restored" };
+        return result.ok ? { ok: true, summary: this.summaryOf(runId) } : { ok: false, reason: "invalid", detail: result.detail ?? "that artifact cannot be restored" };
       }
     }
   }
@@ -1062,9 +1344,11 @@ export class EnsembleManager {
    */
   publish(id: string): EnsembleSummary | null {
     this.refreshProjection();
-    const summary = this.store.summary(id);
-    if (summary) this.registry.upsertEnsemble(summary);
-    return summary;
+    const decorated = this.summaryOf(id);
+    if (decorated === null) return null;
+    this.rememberPublished(decorated);
+    this.registry.upsertEnsemble(decorated);
+    return decorated;
   }
 
   /** Drop one run's history and stop describing it on the live channel. */
@@ -1072,6 +1356,7 @@ export class EnsembleManager {
     const removed = this.store.deleteRun(id);
     if (removed) {
       this.refreshLinks();
+      this.publishedCounts.delete(id);
       this.registry.removeEnsemble(id);
     }
     return removed;

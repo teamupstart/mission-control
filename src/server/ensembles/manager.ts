@@ -384,7 +384,7 @@ export class EnsembleManager {
    * Join one store-shaped summary against live session state.
    *
    * Applied to EVERY summary that leaves this manager - the boot install, the HTTP catalog and
-   * detail responses, and `publish` - because a derived field filled in on the live path alone is a
+   * action responses, and `publish` - because a derived field filled in on the live path alone is a
    * snapshot that disagrees with the first event after it, which is the "right until you reload it"
    * failure the SSE contract exists to rule out. The fold itself is shared with the store, so the
    * decorated and undecorated answers differ in exactly one input: whether a member is waiting

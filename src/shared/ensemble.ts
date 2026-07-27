@@ -1127,7 +1127,7 @@ export interface EnsembleSummary {
   outcomeKind: EnsembleOutcomeKind | null;
   /** The recoverability signal: set when this build cannot execute the stored snapshot. */
   unreadable: EnsembleUnreadable | null;
-  /** Derived: this run is terminal-failed, unreadable, or waiting on a person. */
+  /** Derived: this run is failed, cancelling, unreadable, awaiting a decision, or has a blocked member. */
   attention: boolean;
   error: string | null;
   createdAt: number;

@@ -58,6 +58,10 @@ Verified against `HEAD` at `0f5d045b`.
 - **The engine switches on node kind in four places**: `engine.ts:150` (session), 213
   (persona), 230 (session return), 256 (all_pass), 319 (end). A check node needs an arm
   beside the persona arm at 213 and a runnable-attempt path beside `runAttempt`.
+- **`pump()` currently acquires the review scheduler around every runnable attempt**
+  (`engine.ts:405`). A check limiter inside `runAttempt` would still consume a model-review
+  slot, so Phase 2 resolves node kind in `pump()` and selects exactly one scheduler before
+  either is acquired.
 - **The validator switches on node kind in five places**: the `sourcePorts` / `targetPorts`
   tables (`workflow-graph.ts:20-32`), the pass/fail route requirement (180), its label
   ternary (183, 186), and the Join predecessor kind check (198).
@@ -74,7 +78,21 @@ Verified against `HEAD` at `0f5d045b`.
   `workflow.archivedAt`, which is where the built-in gate joins.
 - **`WorkflowConfig` is `{ liveEnabled, repoAllowlist, retention }`**
   (`workflow.ts:486-509`), stored as an `app_config` blob and edited in
-  `WorkflowSettingsPanel.tsx`. Phase 2's command list and consent switch extend it.
+  `WorkflowSettingsPanel.tsx`. `WorkflowConfigSchema` uses `.default()`, not `.catch()`, so
+  Phase 2 adds no-throw recovery around the complete stored config while extending it.
+- **`run()` cannot provide the check output contract.** Its `execFile` implementation kills
+  the child at `maxBuffer`, retains output from the beginning, and cannot know the total
+  omitted bytes. Phase 2 owns a streaming `spawn` adapter with a bounded tail ring and an
+  exact byte count.
+- **The binding paths are identities, not a frozen execution directory.**
+  `sessionRepoRoot` names the shared main repository for linked worktrees, while
+  `sessionCwd` is the live mutable checkout. This is the normal dispatch shape because
+  sessions run under `~/.treehouse/`. Phase 2 materializes a detached temporary worktree at
+  the captured commit and owns cleanup after completion and restart.
+- **A trusted argv does not make branch code trusted.** Commands such as `npm test` load
+  scripts and source from the reviewed branch. Phase 2 requires repository allowlisting,
+  scrubs auth and credential-shaped environment variables, and makes the consent UI name the
+  daemon filesystem authority that remains. A full sandbox is deferred.
 - **Tests are flat `test/<feature>-<aspect>.test.ts`**, `node:test` plus
   `node:assert/strict`, React through `renderToStaticMarkup`. The Persona precedents are
   `builtin-personas.test.ts`, `builtin-personas-web.test.ts`, `personas-store.test.ts`,
@@ -147,6 +165,9 @@ Established by Phase 1, relied on by Phase 3:
   version.** This is what lets Phase 3 add check gates as version 2 while every binding
   pinned to version 1 keeps resolving. A single-version catalog would strand them, and it is
   cheaper to build the list now than to migrate to it later.
+- **Every built-in version is byte-identical for its lifetime, including Persona snapshots.**
+  A referenced Persona guidance change appends a new version in the same commit. A test pins
+  old versions and requires the newest snapshots to match the current Persona catalog.
 - **The addressable projection never shadows.** Binding and run resolution must find a
   built-in version by id even when an operator's same-named row hides the workflow from the
   library listing.

@@ -25,8 +25,10 @@ In scope:
 - `check` node kind in the draft and published graph types, and their zod schemas.
 - `WORKFLOW_CHECK_SLOTS`, append-only.
 - Slot-to-command configuration in `WorkflowConfig`, edited in Settings, plus a consent switch.
-- Execution: bounded, timed, in the bound session's repository root, on its own concurrency
-  limit.
+- Execution: bounded, timed, in a temporary detached worktree at the captured commit, on its
+  own concurrency limit, with teardown on completion and daemon restart.
+- A scrubbed child environment, repository allowlisting, and consent copy that names the
+  filesystem authority granted to branch-authored code.
 - Validation, Graph-view rendering, run-detail presentation, README, tests.
 
 Explicit non-goals:
@@ -36,21 +38,22 @@ Explicit non-goals:
 - **No built-in workflow uses a check yet.** Phase 3 ships version 2.
 - **No repository-file command source.** Settings only, per decision 5. The default-branch
   file is a named follow-up, not this phase.
-- **No shell.** `run()` uses `execFile`, so there is no shell to inject into and none is added.
+- **No shell.** The streaming check runner spawns an argv directly with `shell: false`.
 - **No DB migration.** The existing attempt row accommodates a check.
 - **No auto-fix.** A failing check returns findings to the Session through the same repair
   packet a Persona fail produces.
+- **No full execution sandbox.** Environment scrubbing reduces credential exposure, but the
+  command still has the daemon's filesystem authority. A full sandbox is a named follow-up.
 
 ## Repository findings this phase depends on
 
-- **`run()` (`src/server/util/exec.ts:68`) is the exec seam and it already models everything
-  needed**: `timeoutMs`, `cwd`, `maxBuffer`, and two narrowing flags. `outcomeUnknown` is
-  required rather than optional, and its doc comment explains why: "an optional boolean has a
-  default reading, and a default reading is a decision made by whoever forgot rather than by
-  whoever knew." `overflowed` says stdout exceeded the buffer, and that "retrying the same
-  command cannot produce less."
-- **`run()` uses `execFile`, not a shell.** A command is therefore an argv, not a string. This
-  removes shell injection as a category rather than mitigating it.
+- **`run()` (`src/server/util/exec.ts:68`) is not the check-command seam.** It uses
+  `execFile`, buffers from the start, and kills the child when `maxBuffer` is exceeded. It
+  cannot preserve the useful tail or report an exact omitted-byte count. Checks need a
+  streaming `spawn` adapter with a bounded byte ring; `run()` remains suitable for the
+  bounded git worktree setup and teardown commands.
+- **The streaming adapter uses `spawn` with `shell: false`.** A command is an argv, not a
+  string. This removes shell injection as a category rather than mitigating it.
 - **`onPath(bin)` (`exec.ts:17`) answers "is this command even there" from the filesystem**,
   without spawning. It is the cheap pre-check for a misconfigured slot.
 - **`workflow_node_attempts` needs no migration.** `persona_snapshot_json`, `runner_id`,
@@ -58,9 +61,11 @@ Explicit non-goals:
   already writes `input.persona === null ? null : ...` (`store.ts:2443`). This corrects the
   source plan, which left widening open.
 - **`ReviewScheduler` is explicitly a ceiling on tool-less MODEL calls**
-  (`llm/review-scheduler.ts`), and its comment defines membership that way. A shell command is
-  not one, and a three-minute test suite sharing a budget of three would starve Persona
-  reviews. Checks get their own limiter.
+  (`llm/review-scheduler.ts`), and its comment defines membership that way. Today
+  `WorkflowEngine.pump()` wraps every runnable attempt in that scheduler before
+  `runAttempt`, so adding an inner limiter would still make checks occupy review slots.
+  Scheduling must resolve the node kind and choose exactly one limiter before acquiring
+  either.
 - **The validator branches on node kind in five places**: the `sourcePorts` / `targetPorts`
   tables (`workflow-graph.ts:20-32`), the pass/fail route requirement (180), the label ternary
   (183, 186), and the Join predecessor kind check (198).
@@ -70,8 +75,10 @@ Explicit non-goals:
   fail verdict", with `MAX_INFRA_ATTEMPTS = 3` and exponential backoff. A check that could not
   run takes that path, not a fail.
 - **`WorkflowConfig`** is `{ liveEnabled, repoAllowlist, retention }` (`workflow.ts:486-509`),
-  an `app_config` blob edited by `WorkflowSettingsPanel.tsx`. The config schema `.catch()`es,
-  per `AGENTS.md`, because it is on the path of every workflow read.
+  an `app_config` blob edited by `WorkflowSettingsPanel.tsx`.
+  `WorkflowConfigSchema` uses `.default()`, not `.catch()`, so malformed persisted values
+  still throw. Phase 2 must add recovery for the complete stored config, not only its new
+  fields. This slightly widens the phase.
 - **`repoAllowlisted` (`@shared/allowlist.ts`)** is the shared consent predicate. Per
   `AGENTS.md`, "any additional consent gate extends `allowlist.ts`; it does not start a
   matcher."
@@ -102,7 +109,7 @@ Extend `WorkflowConfig`:
 export interface WorkflowCheckCommand {
   repoRoot: string;
   slot: WorkflowCheckSlot;
-  /** argv, not a shell string. `run()` uses execFile. */
+  /** argv, not a shell string. The check runner spawns it with shell: false. */
   command: string[];
 }
 
@@ -122,8 +129,11 @@ string | null` beside `workQueueBlockedReason`, returning a **sentence** and nev
 
 Add the `check` member to `WorkflowDraftNodeSchema` (2127) and `PublishedWorkflowNodeSchema`
 (2144), with `slot: z.enum(WORKFLOW_CHECK_SLOTS)`. Extend the workflow config schema with
-`checksEnabled` and `checkCommands`, both `.catch()`ing to the default for the reason the
-existing config schema does.
+`checksEnabled` and `checkCommands`, then make malformed persisted values recover across the
+complete `WorkflowConfig`, including `liveEnabled`, `repoAllowlist`, `retention`, and the two
+new fields. Missing fields still use `.default()` for upgrades; an outer
+`.catch(DEFAULT_WORKFLOW_CONFIG)` is the single no-throw boundary for unreadable stored
+blobs.
 
 Bound `command`: non-empty array, each element non-empty, a sane element count and total
 length. An unbounded argv is a durable blob nobody bounded.
@@ -155,8 +165,9 @@ New `src/server/workflows/checks.ts`:
 
 ```ts
 export interface CheckRunDeps {
-  run?: typeof run;          // the PaneDeps.pane seam, so a test drives the real adapter
+  spawn?: CheckSpawn;        // the PaneDeps.pane seam, so a test drives the real adapter
   onPath?: typeof onPath;
+  worktrees?: CheckWorkspaceDeps;
 }
 
 export interface CheckOutcome {
@@ -166,10 +177,17 @@ export interface CheckOutcome {
   exitCode: number | null;
   /** Bounded, tail-biased: a failure's last lines are the useful ones. */
   output: string;
+  /** Exact number of streamed stdout and stderr bytes omitted from output. */
   truncatedBytes: number;
   note: string;
 }
 ```
+
+The adapter consumes stdout and stderr as streams, counts every byte, and keeps only the last
+configured number of bytes in one bounded ring. `truncatedBytes` is the total streamed byte
+count minus retained bytes, so it is exact rather than inferred from an `execFile` overflow.
+If the implementation cannot preserve that invariant, replace the field with
+`truncated: boolean`; never invent a byte count.
 
 Rules, each of which has a stated failure it prevents:
 
@@ -185,10 +203,27 @@ Rules, each of which has a stated failure it prevents:
   matching the rule the engine already enforces for Personas.
 - **Exit 0: `passed`. Non-zero: `failed`**, with tail-biased bounded output.
 
-Execution context: `cwd` is the bound session's `sessionRepoRoot` from the binding, `timeoutMs`
-is bounded and configurable within limits, `maxBuffer` is set explicitly rather than defaulted.
-Environment is the daemon's, minus nothing; note in a comment that a check inherits the
-daemon's environment and that this is why consent is per repository root.
+Execution context: create a per-attempt directory under a dedicated check-worktrees state
+directory and materialize it with `git worktree add --detach <path> <captured-head-sha>`.
+Run the command with that directory as `cwd`. Never use `sessionRepoRoot` or `sessionCwd` as
+the execution directory. The former identifies the shared main repository for a linked
+worktree, while the latter remains mutable after evidence capture. Sessions normally run in
+pooled worktrees under `~/.treehouse/`, so choosing `sessionRepoRoot` would execute against
+an unrelated checkout in the common case.
+
+Use `sessionRepoRoot` only as repository identity for the git worktree operation. Reject a
+missing or invalid captured commit as infrastructure failure. Remove the temporary worktree
+in `finally` after every success or failure. Before scheduling attempts on startup, reap
+leftover check worktrees from interrupted runs through `git worktree remove --force`.
+The concurrency ceiling therefore also bounds disk use: at most one extra checkout per
+running check, plus restart leftovers until the startup reaper runs.
+
+Build the child environment through one pure scrubber. It removes the daemon auth token and
+the `MISSION_HOME` / `FLEET_HOME` / `HARNESS_HOME` aliases that locate it, plus variables
+whose names are credential-shaped, including token, secret, password, key, and credential
+suffixes. Preserve only ordinary process settings needed to locate and run tools. Checks
+still execute branch-authored code with the daemon's filesystem authority, so repository
+allowlisting remains mandatory. This is environment scrubbing, not a sandbox.
 
 New limiter: `createLimiter(DEFAULT_CHECK_CONCURRENCY)` with a small value (1 or 2), created
 in `src/server/index.ts` beside the review scheduler and injected. Do **not** reuse
@@ -199,8 +234,11 @@ test suite would starve Persona reviews.
 
 - Beside the persona arm at `:213`, insert a queued attempt for a `check` target with
   `persona: null`.
-- `runAttempt` dispatches on the node kind resolved from the graph: Personas go through the
-  existing path, checks through `checks.ts` under the check limiter.
+- In `pump()`, resolve each attempt's target node kind from its pinned graph before acquiring
+  a limiter. Persona attempts go directly through the existing review scheduler; check
+  attempts go directly through the check limiter. `runAttempt` dispatches to the appropriate
+  runner after that choice and never acquires another limiter. A check waiting or running
+  must not consume a model-review slot.
 - On completion write a synthetic verdict so downstream code, the Join, and the repair packet
   are unchanged:
   - pass: `{ verdict: "pass", summary: <note>, approvalDetails: { reason, evidence: [] }, confidence: 1 }`
@@ -218,8 +256,9 @@ test suite would starve Persona reviews.
 
 ### 7. Settings and web
 
-- `WorkflowSettingsPanel.tsx`: a `checksEnabled` switch with an explicit warning naming what
-  it authorizes, and a command table (repository root, slot, argv). Rows carry
+- `WorkflowSettingsPanel.tsx`: a `checksEnabled` switch whose consent copy says it authorizes
+  executing branch-authored code with the daemon's filesystem authority. It must not call
+  this a sandbox. Add a command table (repository root, slot, argv). Rows carry
   `data-anchor="workflows/<slug>"` and get entries in `lib/settings-search.ts`, per the
   settings registry rules.
 - The argv field accepts a typed string, splits it quote-aware, and **displays the parsed
@@ -238,7 +277,9 @@ test suite would starve Persona reviews.
 
 Extend the node vocabulary in `#workflows-and-personas` with Check: what it gates on, that it
 names a slot rather than a command and why, that an unconfigured slot passes with a note, and
-that it needs consent. Add the two Settings rows under Configuration.
+that it needs consent. Document the detached checkout, environment scrubbing, remaining
+filesystem authority, and deferred full sandbox. Add the two Settings rows under
+Configuration.
 
 ## Data, API and compatibility
 
@@ -256,14 +297,22 @@ that it needs consent. Add the two Settings rows under Configuration.
 
 `test/workflow-check-node.test.ts`:
 
-- The four `CheckOutcome` statuses from a stubbed `run`: exit 0 passes, non-zero fails with
-  bounded output, `outcomeUnknown` is an infrastructure failure and never a fail verdict,
-  `overflowed` reports truncation.
+- The four `CheckOutcome` statuses from a stubbed streaming adapter: exit 0 passes, non-zero
+  fails with bounded output, and a timeout or killed child is an infrastructure failure and
+  never a fail verdict.
+- The streaming runner retains the output tail under its byte cap and reports the exact
+  omitted-byte count across stdout and stderr.
 - No configured command produces `skipped` and a pass. **This is the contract Phase 3 depends
   on and is asserted explicitly.**
 - Consent absent produces `unavailable` and a pass carrying the sentence.
 - A binary absent from PATH produces `unavailable` without spawning.
-- The command is passed to `run` as argv with `cwd` set to the binding's repository root.
+- The command is passed to the streaming adapter as argv with `cwd` set to a detached
+  worktree at the captured commit, never the binding's main repository or mutable session
+  checkout.
+- Temporary worktrees are removed after pass, fail, timeout, and spawn failure. The startup
+  reaper removes a simulated leftover before attempts resume.
+- The scrubbed environment drops auth and credential-shaped variables while retaining the
+  ordinary process settings the runner needs.
 
 `test/workflow-graph.test.ts` additions: check ports accepted, a check missing a pass or fail
 route diagnoses, a check as a Join predecessor is accepted, and the diagnostic message says
@@ -273,11 +322,14 @@ route diagnoses, a check as a Join predecessor is accepted, and the diagnostic m
 `stageBlockers` explains why.
 
 `test/workflow-engine.test.ts`: a check node advances the graph, its verdict reaches the Join,
-and a failing check returns a repair packet to the Session.
+and a failing check returns a repair packet to the Session. Hold the review scheduler at
+capacity and prove a check can still run; hold the check limiter and prove a Persona can
+still run.
 
 `test/workflow-settings-panel.test.ts` and `test/workflow-config.test.ts`: the switch and the
-command table render, anchors are unique and name a real category, and an unreadable stored
-config falls back rather than throwing.
+command table render, the consent copy names branch-authored code and filesystem authority,
+anchors are unique and name a real category, and malformed values in every old and new
+stored config field fall back rather than throwing.
 
 Commands: `npm run typecheck`, `npm test`, `npm run build`.
 
@@ -292,6 +344,10 @@ detail. Confirm on your own Vite port.
 - An unconfigured, unauthorized, or missing-binary slot passes with a sentence and never
   blocks.
 - A timeout is an infrastructure failure, not a fail verdict.
+- Every command runs in a detached checkout at the captured commit, and temporary worktrees
+  are reclaimed after completion and restart.
+- The child environment contains no daemon auth token or credential-shaped variables, and
+  the consent UI names the remaining filesystem authority.
 - No shell is invoked anywhere in the path.
 - README updated in this change.
 
@@ -322,10 +378,10 @@ Phase 3 **must** change:
 - **Correction carried back into the index**: the source plan left open whether
   `workflow_node_attempts` needs widening. The repository answers it, so this phase adds no
   migration. Recorded in `phased-plan.md` under investigated findings.
-- **Scheduler boundary**: the first draft of this phase reused `ReviewScheduler`. Reading its
-  module comment showed that it is defined as a ceiling on tool-less model calls, and that a
-  slow command sharing a budget of three would starve Persona reviews. Corrected to a separate
-  limiter before writing Phase 3.
+- **Scheduler boundary**: the first draft of this phase reused `ReviewScheduler`. A separate
+  limiter inside `runAttempt` is still insufficient because `pump()` already acquires the
+  review scheduler around every attempt. Corrected so `pump()` resolves node kind and routes
+  to exactly one limiter before either is acquired.
 - **Verdict evidence**: flagged rather than silently decided, because adding an `EvidenceRef`
   kind is append-only and reaches durable verdict JSON. The implementing agent records the
   choice in the PR.

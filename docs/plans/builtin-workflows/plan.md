@@ -150,12 +150,13 @@ follow from Personas, restated for the parts that differ:
 - **Two projections, same split as Personas.** The display projection shadows a built-in
   behind a same-normalized-name operator row. The addressable projection never shadows,
   because a binding or run holding a built-in version id must always resolve it.
-- **The version is regenerated per build, not stored.** `personaSnapshotIsOutdated` already
-  special-cases `current.builtin` by comparing guidance Markdown rather than a revision
-  number. A built-in workflow whose version snapshots are recompiled from the current
-  built-in Persona catalog on every build therefore never reports as outdated, and an upgrade
-  that improves a Persona improves the shipped workflow with no operator gesture. This is the
-  same guarantee the README already makes for Personas.
+- **Every built-in version is immutable, including its Persona snapshots.** Version 1 freezes
+  the guidance from the build that introduces it. A change to any `docs/personas/*.md` file
+  referenced by a shipped built-in must append a new built-in workflow version in the same
+  commit, leaving every older version byte-identical. A catalog test enforces both halves:
+  older versions stay fixed, and the newest version's snapshots equal the current built-in
+  Persona catalog. `personaSnapshotIsOutdated` may therefore report an older built-in version
+  as outdated, which is the honest result for a binding that remains pinned to it.
 - **Writes are refused in the store, not at each caller.** `insertWorkflow`,
   `updateWorkflowCas`, `archiveWorkflowCas` and `publishWorkflow` gain a `"builtin"` refusal,
   matching the Persona methods. A caller-side check would drift.
@@ -169,7 +170,7 @@ flowchart LR
   MD[docs/personas/*.md] --> GEN[scripts/builtin-personas.ts]
   GEN --> GP[builtin-personas.generated.ts]
   GP --> BP[BUILTIN_PERSONAS]
-  BP --> BW[BUILTIN_WORKFLOWS<br/>graph + synthetic version]
+  BP --> BW[BUILTIN_WORKFLOWS<br/>snapshotted into appended versions]
   BW --> STORE[WorkflowStore merge]
   ROWS[(SQLite<br/>workflow_definitions<br/>workflow_versions)] --> STORE
   STORE --> SSE[Registry / SSE summaries]
@@ -267,13 +268,27 @@ check node in an unauthorized repository refuses with a sentence, in the same sh
 
 ### Execution
 
-The engine holds no checkout. Evidence capture is a read-only snapshot of the bound session's
-worktree, and that worktree has an agent working in it. The check therefore runs against the
-captured commit in the session's repository root, with bounded output, a timeout, and its
-result recorded on the existing `workflow_node_attempts` row. `workflow_node_attempts` is
-shaped around Personas (`persona_snapshot_json`, `runner_id`, `model_id`, `verdict_json`), so
-a check attempt needs either widened columns or a synthetic verdict; the phase plan decides
-which and owns the migration.
+The engine materializes a detached checkout for each check with `git worktree add --detach`
+at the submission's captured commit SHA, then runs the configured argv there. It never uses
+`sessionRepoRoot` or `sessionCwd` as the execution directory. This distinction is routine,
+not an edge case: dispatched sessions normally work in pooled checkouts under
+`~/.treehouse/`, while `sessionRepoRoot` names the shared main repository and `sessionCwd`
+continues changing after capture.
+
+The detached worktree is temporary disk state owned by the check attempt. It is removed after
+success or failure, and a startup reaper removes leftovers from an interrupted daemon before
+attempt scheduling resumes. This costs one additional checkout per concurrent check. Output
+is bounded, execution is timed, and the result is recorded on the existing
+`workflow_node_attempts` row, whose nullable Persona-specific columns already accommodate a
+check without a migration.
+
+The slot indirection trusts the command, not the code it executes. A command such as
+`npm test` still loads scripts and source from the branch under review. Checks therefore
+require repository allowlisting and receive a scrubbed child environment that removes the
+daemon auth token, its state-directory aliases, and credential-shaped variables instead of
+inheriting the daemon environment. The settings consent copy must say that authorization
+executes branch-authored code with the daemon's filesystem authority. This is not a sandbox.
+A full check-execution sandbox is a named follow-up.
 
 ### Where the command comes from
 
@@ -286,10 +301,9 @@ default branch. It is the better long-term answer because the configuration trav
 repository, and it is named here as a follow-up rather than rejected. It is not what this
 plan builds, for two reasons. It requires reading a blob from a branch other than the one
 under review, which is real git machinery this subsystem does not have today, and settings
-are strictly safer to start from: a command an operator typed into their own settings panel
-involves no parsing of branch-controlled content at all, which removes the entire class of
-problem the default-branch restriction exists to manage. Adding the file later is additive,
-with settings as the override.
+keep the argv itself out of branch control. They do not make execution branch-independent:
+the reviewed branch still supplies the scripts and source that argv loads. Adding the file
+later is additive, with settings as the override.
 
 A list of entries rather than a `Record<repoRoot, ...>` because repository roots are absolute
 paths and make poor object keys, and because the flat shape matches how `repoAllowlist`
@@ -305,7 +319,11 @@ already stores roots.
 - **No second built-in on day one.** Shipping a Live plus Foreman-complete variant is
   deferred until the check node exists, so it can be assembled once rather than twice.
 - **No change to Persona authoring.** `docs/personas/*.md` plus `npm run personas` is
-  unchanged.
+  unchanged, but changing guidance referenced by a built-in requires appending a new workflow
+  version in the same commit.
+- **No full sandbox for checks.** Phase 2 scrubs the child environment and requires
+  allowlisting, but branch-authored code retains the daemon's filesystem authority. A real
+  execution sandbox is deferred as a named follow-up.
 
 ## Final verification
 

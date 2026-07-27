@@ -102,10 +102,12 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [...];
 **The list is the cross-phase contract.** Phase 3 adds version 2. A single-version catalog
 would strand every binding pinned to version 1, and building the list now costs nothing.
 
-Persona snapshots are built from `BUILTIN_PERSONAS` at module load, so the shipped version
-always carries the guidance this build was made from and `personaSnapshotIsOutdated` never
-fires (it compares `guidanceMarkdown` for built-ins). Fail loudly at load if a referenced
-built-in Persona id is absent, rather than shipping a workflow whose node cannot resolve.
+Version 1 contains committed Persona snapshot literals frozen from `BUILTIN_PERSONAS` when
+this phase ships. It is never rebuilt from the current Persona catalog at module load. A
+later change to any referenced `docs/personas/*.md` file must append a new built-in workflow
+version in the same commit and leave version 1 byte-identical. Fail loudly at load if a
+referenced built-in Persona id is absent, rather than shipping a workflow whose node cannot
+resolve.
 
 Definition fields: `draftRevision: 1`, `archivedAt: null`, `createdAt: 0`, `updatedAt: 0`,
 `builtin: true`, `bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS`, and
@@ -199,8 +201,10 @@ Extend `WorkflowStoreWrite["reason"]` with `"builtin"`.
 A **Built-in workflows** subsection under `#workflows-and-personas`, beside Built-in Personas:
 what ships, that it is app data not operator data, that it is read-only with Duplicate as the
 customization path, that its name is reserved with the historical-shadowing exception, and
-that an upgrade improving a Persona improves it with no gesture. Update the sentence at line
-2016 that currently sends the reader to the plan document for the example workflow.
+that built-in versions and their Persona snapshots are immutable. Explain that a Persona
+guidance change appends a new current workflow version while existing bindings remain pinned.
+Update the sentence at line 2016 that currently sends the reader to the plan document for the
+example workflow.
 
 ## Data, API and compatibility
 
@@ -228,8 +232,11 @@ New `test/builtin-workflows.test.ts`:
   for null members.
 - Node and edge ids are stable across two module loads in the same test run, which is what
   catches a reintroduced `compileStages`-at-load-time.
-- Every persona node's `sourcePersonaId` exists in `BUILTIN_PERSONAS`, and every snapshot's
-  `guidanceMarkdown` equals the current built-in's, so `personaSnapshotIsOutdated` is false.
+- Every persona node's `sourcePersonaId` exists in `BUILTIN_PERSONAS`. The newest version's
+  snapshots equal the current built-in Persona catalog.
+- Each previously shipped version is asserted byte-for-byte against a committed fixture so a
+  Persona edit cannot mutate it in place. Changing referenced guidance without appending a
+  newest version fails the current-catalog assertion.
 - `completionPolicy` and `bindingDefaults` are exactly the adopted values.
 - Version ids follow `builtinWorkflowVersionId` and the catalog is ascending with
   `definition.currentVersionId` naming the newest.

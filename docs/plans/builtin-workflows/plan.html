@@ -139,7 +139,7 @@
 <p>A <code>builtin: boolean</code> on <code>WorkflowDefinition</code> and <code>WorkflowSummary</code>, a <code>BUILTIN_WORKFLOWS</code> catalog, and a merge in <code>WorkflowStore</code> mirroring the Persona merge. The design rules that follow from Personas, restated for the parts that differ:</p>
 <ul class="plain">
 <li><strong>Two projections, same split as Personas.</strong> The display projection shadows a built-in behind a same-normalized-name operator row. The addressable projection never shadows, because a binding or run holding a built-in version id must always resolve it.</li>
-<li><strong>The version is regenerated per build, not stored.</strong> <code>personaSnapshotIsOutdated</code> already special-cases <code>current.builtin</code> by comparing guidance Markdown rather than a revision number. A built-in workflow whose version snapshots are recompiled from the current built-in Persona catalog on every build therefore never reports as outdated, and an upgrade that improves a Persona improves the shipped workflow with no operator gesture.</li>
+<li><strong>Every built-in version is immutable, including its Persona snapshots.</strong> Version 1 freezes the guidance from the build that introduces it. A change to any <code>docs/personas/*.md</code> file referenced by a shipped built-in must append a new built-in workflow version in the same commit, leaving every older version byte-identical. A catalog test pins older versions and requires the newest version's snapshots to equal the current built-in Persona catalog. <code>personaSnapshotIsOutdated</code> may therefore report an older pinned version as outdated.</li>
 <li><strong>Writes are refused in the store, not at each caller.</strong> <code>insertWorkflow</code>, <code>updateWorkflowCas</code>, <code>archiveWorkflowCas</code> and <code>publishWorkflow</code> gain a <code>"builtin"</code> refusal, matching the Persona methods. A caller-side check would drift.</li>
 <li><strong>Bindings and runs are unaffected.</strong> They already store an opaque version id string. The only change is that resolving one may now hit the built-in catalog instead of a row.</li>
 </ul>
@@ -173,7 +173,7 @@
       <text x="276" y="52">BUILTIN_PERSONAS</text>
       <text x="276" y="68" fill="var(--muted)" font-size="11">compiled in</text>
       <text x="276" y="135">BUILTIN_WORKFLOWS</text>
-      <text x="276" y="151" fill="var(--muted)" font-size="11">graph + version</text>
+      <text x="276" y="151" fill="var(--muted)" font-size="11">appended versions</text>
       <text x="505" y="132" font-weight="600">WorkflowStore</text>
       <text x="505" y="150" fill="var(--muted)" font-size="11">merge, two</text>
       <text x="505" y="165" fill="var(--muted)" font-size="11">projections</text>
@@ -303,7 +303,12 @@
 <p>Running a command from a workflow is at least as consequential as Live delivery, so it is gated at least as hard: the existing <code>workflows.repoAllowlist</code> plus an explicit switch. A check node in an unauthorized repository refuses with a sentence, in the same shape <code>bindingModeBlock</code> already uses for Live and Foreman-complete.</p>
 
 <h3>Execution</h3>
-<p>The engine holds no checkout. Evidence capture is a read-only snapshot of the bound session's worktree, and that worktree has an agent working in it. The check therefore runs against the captured commit in the session's repository root, with bounded output, a timeout, and its result recorded on the existing <code>workflow_node_attempts</code> row.</p>
+<p>The engine materializes a detached checkout for each check with <code>git worktree add --detach</code> at the submission's captured commit SHA, then runs the configured argv there. It never uses <code>sessionRepoRoot</code> or <code>sessionCwd</code> as the execution directory. This distinction is routine, not an edge case: dispatched sessions normally work in pooled checkouts under <code>~/.treehouse/</code>, while <code>sessionRepoRoot</code> names the shared main repository and <code>sessionCwd</code> continues changing after capture.</p>
+<p>The detached worktree is temporary disk state owned by the check attempt. It is removed after success or failure, and a startup reaper removes leftovers from an interrupted daemon before attempt scheduling resumes. This costs one additional checkout per concurrent check. Output is bounded, execution is timed, and the result is recorded on the existing <code>workflow_node_attempts</code> row.</p>
+<div class="note warn">
+<h4>Authority boundary</h4>
+<p>The slot indirection trusts the command, not the code it executes. A command such as <code>npm test</code> still loads scripts and source from the branch under review. Checks therefore require repository allowlisting and receive a scrubbed child environment that removes the daemon auth token, its state-directory aliases, and credential-shaped variables instead of inheriting the daemon environment. The settings consent copy must say that authorization executes branch-authored code with the daemon's filesystem authority. This is not a sandbox. A full check-execution sandbox is a named follow-up.</p>
+</div>
 <div class="note">
 <h4>No migration needed</h4>
 <p><code>workflow_node_attempts</code> already has <code>persona_snapshot_json</code>, <code>runner_id</code>, <code>model_id</code> and <code>verdict_json</code> all nullable, and <code>insertAttempt</code> already accepts <code>persona: null</code>. A check attempt fits the existing row with the exit code and bounded output in <code>output_json</code>.</p>
@@ -311,7 +316,7 @@
 
 <h3>Where the command comes from</h3>
 <p><strong>Decided: Mission Control settings, keyed by repository root.</strong> <code>WorkflowConfig</code> gains a list of <code>{ repoRoot, slot, command }</code> entries beside the existing <code>repoAllowlist</code>, edited under <strong>Settings → Workflows</strong>.</p>
-<p>The alternative considered was no-mistakes' own model, a trusted file on the repository's default branch. It is the better long-term answer because the configuration travels with the repository, and it is named here as a follow-up rather than rejected. It is not what this plan builds, for two reasons. It requires reading a blob from a branch other than the one under review, which is real git machinery this subsystem does not have today, and settings are strictly safer to start from: a command an operator typed into their own settings panel involves no parsing of branch-controlled content at all, which removes the entire class of problem the default-branch restriction exists to manage. Adding the file later is additive, with settings as the override.</p>
+<p>The alternative considered was no-mistakes' own model, a trusted file on the repository's default branch. It is the better long-term answer because the configuration travels with the repository, and it is named here as a follow-up rather than rejected. It is not what this plan builds, for two reasons. It requires reading a blob from a branch other than the one under review, which is real git machinery this subsystem does not have today, and settings keep the argv itself out of branch control. They do not make execution branch-independent: the reviewed branch still supplies the scripts and source that argv loads. Adding the file later is additive, with settings as the override.</p>
 <p>A list of entries rather than a <code>Record&lt;repoRoot, ...&gt;</code> because repository roots are absolute paths and make poor object keys, and because the flat shape matches how <code>repoAllowlist</code> already stores roots.</p>
 
 <h2>What this plan does not do</h2>
@@ -319,7 +324,8 @@
 <li><strong>No new Personas.</strong> The four-role set is final, and the rejected fifth Lint/Housekeeping role stays rejected: a tool-less judge cannot run a linter, which is what the check node is for.</li>
 <li><strong>No workflow-owned delivery.</strong> No rebase, push, or PR node. The Inspector final gate consumes an adopted PR; it never creates one.</li>
 <li><strong>No second built-in on day one.</strong> Shipping a Live plus Foreman-complete variant is deferred until the check node exists, so it can be assembled once rather than twice.</li>
-<li><strong>No change to Persona authoring.</strong> <code>docs/personas/*.md</code> plus <code>npm run personas</code> is unchanged.</li>
+<li><strong>No change to Persona authoring.</strong> <code>docs/personas/*.md</code> plus <code>npm run personas</code> is unchanged, but changing guidance referenced by a built-in requires appending a new workflow version in the same commit.</li>
+<li><strong>No full sandbox for checks.</strong> Phase 2 scrubs the child environment and requires allowlisting, but branch-authored code retains the daemon's filesystem authority. A real execution sandbox is deferred as a named follow-up.</li>
 </ul>
 
 <h2>Final verification</h2>

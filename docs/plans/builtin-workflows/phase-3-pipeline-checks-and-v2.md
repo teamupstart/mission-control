@@ -159,8 +159,10 @@ Extend `test/workflow-stages.test.ts`:
 Extend `test/builtin-workflows.test.ts`:
 
 - The catalog holds versions 1 and 2, ascending, with `currentVersionId` naming 2.
-- **Version 1's graph is unchanged**, asserted against a literal, so a future edit to the v2
-  builder cannot silently rewrite history.
+- **Version 1's complete version artifact is unchanged**, including its Persona snapshots,
+  asserted against a literal so a future edit cannot silently rewrite history.
+- Version 2's Persona snapshots equal the current built-in Persona catalog. Any later
+  referenced guidance change must append another version rather than rewriting version 2.
 - v2 validates clean, projects to the three-stage pipeline above, and round-trips.
 - v2's check nodes name slots present in `WORKFLOW_CHECK_SLOTS`.
 

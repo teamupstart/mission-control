@@ -235,6 +235,14 @@ async function runWithRealArtifact(
     mkdirSync(join(repo, "src"));
     writeFileSync(join(repo, "src", "nested.ts"), "");
   } else {
+    // A directory BOTH commits hold and neither touches, committed into the base: the complete
+    // file list cannot tell it from a file nobody edited, so it is the case the route has to
+    // answer from the trees rather than from the difference.
+    mkdirSync(join(repo, "untouched"), { recursive: true });
+    writeFileSync(join(repo, "untouched", "stable.txt"), "committed before the base\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "a directory the difference never touches"]);
+    baseSha = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     writeFileSync(join(repo, "a.txt"), "first candidate file\n");
     writeFileSync(join(repo, "b.txt"), "second candidate file\n");
     mkdirSync(join(repo, "src"), { recursive: true });
@@ -310,6 +318,26 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
     ((await directory.json()) as { error: string }).error,
     /must name exactly one file.*"src" is a directory/,
   );
+
+  // A directory is refused whether or not the difference touched anything under it. Read off
+  // the file list alone this one looks exactly like an untouched file, and answering it with a
+  // 200 and an empty patch is a directory wearing a file's answer - which is the reading the
+  // whole exact-file rule exists to prevent.
+  const unchangedDirectory = await req(app, `${url}?path=untouched`, undefined, "GET");
+  assert.equal(unchangedDirectory.status, 400);
+  assert.match(
+    ((await unchangedDirectory.json()) as { error: string }).error,
+    /must name exactly one file.*"untouched" is a directory/,
+  );
+
+  // The FILE inside it is the other answer, and it must stay a 200: "this candidate did not
+  // touch that file" is a real result, not a refusal.
+  const untouchedFile = await req(app, `${url}?path=untouched%2Fstable.txt`, undefined, "GET");
+  assert.equal(untouchedFile.status, 200);
+  const untouchedBody = (await untouchedFile.json()) as { patch: string; patchPaths: string[]; files: unknown[] };
+  assert.equal(untouchedBody.patch, "");
+  assert.deepEqual(untouchedBody.patchPaths, ["untouched/stable.txt"]);
+  assert.equal(untouchedBody.files.length, 3, "and the statistics stay complete");
 
   // A repeated key is refused rather than reduced to the first: a caller that meant to batch
   // would otherwise get one file's diff labelled as the whole set, and never find out.

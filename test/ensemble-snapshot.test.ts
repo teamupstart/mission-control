@@ -16,7 +16,7 @@ import {
   snapshotPathRefusal,
   type SnapshotDiffDeps,
 } from "../src/server/git/ensemble-snapshot.ts";
-import { run } from "../src/server/util/exec.ts";
+import { run, stubRun } from "../src/server/util/exec.ts";
 
 // What is at stake: taking a picture of an agent's work without touching the work.
 //
@@ -582,6 +582,93 @@ test("a file-to-directory collision returns only the exact file section", async 
   assert.doesNotMatch(cut.patch, /src\/a\.ts/);
   assert.deepEqual(cut.files.map((file) => file.path).sort(), ["src", "src/a.ts"]);
   assert.deepEqual(cut.patchPaths, ["src"]);
+});
+
+test("a path naming two changed entries is refused, not resolved by list order", async () => {
+  // Today's argv cannot produce this: with `--find-renames` alone a path present in both
+  // commits is one modify entry, and a rename's source is absent from the snapshot, so no path
+  // is on two entries. That is an argument about git's pairing rules, not about this
+  // function's INPUT - `files` is parsed data, and `-B` or copy detection would end the
+  // argument while the code kept trusting it. So the file list is fed in through the exec seam
+  // exactly as a future flag could hand it over, and the answer must be a refusal rather than
+  // whichever entry came first: the caller could not tell the two apart afterwards.
+  const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("ambiguous-path");
+  const numstat = ["1\t1\t\0moves.txt\0moved.txt", "2\t0\tmoves.txt"].join("\0") + "\0";
+  const calls: string[][] = [];
+  const deps: SnapshotDiffDeps = {
+    run: (bin, args, opts) => {
+      calls.push(args);
+      if (args.includes("--numstat")) {
+        return Promise.resolve(stubRun({ stdout: numstat, stderr: "", code: 0 }));
+      }
+      return run(bin, args, opts);
+    },
+  };
+
+  for (const patch of [true, false]) {
+    calls.length = 0;
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["moves.txt"], patch }, deps),
+      /must name exactly one file.*names the rename "moves\.txt" -> "moved\.txt" and "moves\.txt"/,
+      `patch: ${patch}`,
+    );
+    assert.equal(calls.length, 1, "refused off the file list, before rendering anything");
+  }
+
+  // An unambiguous name in the same list still answers, so this refuses an ambiguous NAME
+  // rather than giving up on the cut whenever a rename is present.
+  const moved = await materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: ["moved.txt"] }, deps);
+  assert.deepEqual(moved.patchPaths, ["moved.txt"]);
+});
+
+test("a directory this difference never touched is still refused, not read as an untouched file", async () => {
+  // The complete file list can only spot a directory that CONTAINS a change. One both commits
+  // hold and neither modified matches no entry at all, so without asking the trees it would
+  // take the absent-file path and come back 200 with an empty patch - a directory wearing an
+  // untouched file's answer, which is the one reading the exact-file rule exists to prevent.
+  const { repo, member, baseSha } = mkRepoWithMember("unchanged-directory");
+  mkdirSync(join(member, "untouched"), { recursive: true });
+  writeFileSync(join(member, "untouched", "stable.txt"), "committed in the base\n");
+  git(member, "add", "-A");
+  git(member, "commit", "-qm", "a directory neither side of the difference touches");
+  const withDirectory = git(member, "rev-parse", "HEAD");
+  writeFileSync(join(member, "keep.txt"), "the only change in this difference\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  const diff = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha: withDirectory,
+    snapshotSha: captured.snapshotSha,
+  });
+  assert.deepEqual(diff.files.map((file) => file.path), ["keep.txt"], "nothing under the directory changed");
+
+  for (const patch of [true, false]) {
+    await assert.rejects(
+      materializeSnapshotDiff({
+        repoPath: repo,
+        baseSha: withDirectory,
+        snapshotSha: captured.snapshotSha,
+        paths: ["untouched"],
+        patch,
+      }),
+      /must name exactly one file.*"untouched" is a directory/,
+      `patch: ${patch}`,
+    );
+  }
+  // A FILE neither commit touched is a different answer and must stay a 200-shaped one.
+  const absent = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha: withDirectory,
+    snapshotSha: captured.snapshotSha,
+    paths: ["untouched/stable.txt"],
+  });
+  assert.equal(absent.patch, "", "an untouched file has no hunks");
+  assert.deepEqual(absent.patchPaths, ["untouched/stable.txt"]);
+  assert.deepEqual(absent.files.map((file) => file.path), ["keep.txt"], "and the statistics stay complete");
 });
 
 test("exact filenames with spaces and quoted characters keep one section", async () => {

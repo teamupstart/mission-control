@@ -294,11 +294,39 @@ function fileStatPaths(file: SnapshotFileStat): string[] {
   return file.oldPath === null ? [file.path] : [file.oldPath, file.path];
 }
 
-function exactPatchFiles(paths: string[], files: SnapshotFileStat[]): SnapshotFileStat[] {
+/** How one changed entry reads in a refusal - a rename is one file with two names. */
+function describeFileStat(file: SnapshotFileStat): string {
+  return file.oldPath === null ? `"${file.path}"` : `the rename "${file.oldPath}" -> "${file.path}"`;
+}
+
+/**
+ * Which changed entries the requested paths select, and which named nothing that changed.
+ *
+ * A path that names MORE THAN ONE entry is refused rather than resolved by list order. Today's
+ * argv cannot produce that - with `--find-renames` alone, a path present in both commits is one
+ * modify entry, and a rename's source is by definition absent from the snapshot, so no path
+ * appears twice. But that is an argument about git's pairing rules, not a property of this
+ * function's input: `files` is parsed data, and one flag away (`-B`, `--find-copies`) the
+ * argument stops holding. Picking the first match would then answer "the diff of a" with one of
+ * two entries, chosen by list order and indistinguishable from the other. Same rule as the
+ * directory case: a per-file cut answers about exactly one file, or it does not answer.
+ */
+function exactPatchFiles(
+  paths: string[],
+  files: SnapshotFileStat[],
+): { exact: SnapshotFileStat[]; unchanged: string[] } {
   const changedPaths = files.flatMap(fileStatPaths);
   const exact: SnapshotFileStat[] = [];
+  const unchanged: string[] = [];
   for (const path of paths) {
-    const file = files.find((candidate) => fileStatPaths(candidate).includes(path));
+    const matches = files.filter((candidate) => fileStatPaths(candidate).includes(path));
+    if (matches.length > 1) {
+      throw new SnapshotPathRefused(
+        path,
+        `a per-file patch path must name exactly one file; "${path}" names ${matches.map(describeFileStat).join(" and ")}`,
+      );
+    }
+    const file = matches[0];
     if (file !== undefined) {
       if (!exact.includes(file)) exact.push(file);
       continue;
@@ -312,8 +340,53 @@ function exactPatchFiles(paths: string[], files: SnapshotFileStat[]): SnapshotFi
         `a per-file patch path must name exactly one file; "${path}" is a directory containing "${nested}"`,
       );
     }
+    // Nothing in this difference is at or under it. That is either a file neither commit
+    // touched - an honest empty patch - or a directory neither commit touched, which the
+    // complete file list cannot tell apart. `refuseUnchangedDirectories` asks the trees.
+    unchanged.push(path);
   }
-  return exact;
+  return { exact, unchanged };
+}
+
+/**
+ * Refuse a path that names a DIRECTORY in either commit, even one this difference never
+ * touched.
+ *
+ * The complete file list answers "is this a directory?" only when something under it changed.
+ * A `src/` that both commits hold and neither modified matches no entry at all, so without
+ * this it would take the absent-file path and come back 200 with an empty patch - a directory
+ * masquerading as an untouched file, which is exactly the reading the one-file rule exists to
+ * prevent. The trees are the only place that answer lives.
+ *
+ * `<commit>:<path>` rather than a pathspec, deliberately: it is a literal lookup, so a
+ * filename that reads as pathspec magic cannot expand here either. Asked only for paths the
+ * file list could not settle - never on the hot path, where the caller names a file it read
+ * out of `files` - and the snapshot is asked first because a blob there ends the question.
+ */
+async function refuseUnchangedDirectories(
+  paths: string[],
+  input: { repoPath: string; baseSha: string; snapshotSha: string },
+  deps: SnapshotDiffDeps,
+): Promise<void> {
+  for (const path of paths) {
+    for (const [label, commit] of [["snapshot", input.snapshotSha], ["base", input.baseSha]] as const) {
+      const probe = await deps.run(
+        "git",
+        ["-C", input.repoPath, "cat-file", "-t", `${commit}:${path}`],
+        { timeoutMs: 60_000 },
+      );
+      // A path neither commit holds exits non-zero, and that is an answer: it names no file
+      // and no directory, so the empty patch is the honest reply.
+      const kind = probe.code === 0 ? probe.stdout.trim() : "";
+      if (kind === "tree") {
+        throw new SnapshotPathRefused(
+          path,
+          `a per-file patch path must name exactly one file; "${path}" is a directory in the ${label}`,
+        );
+      }
+      if (kind === "blob") break;
+    }
+  }
 }
 
 const GIT_C_ESCAPES = new Map<number, string>([
@@ -436,10 +509,16 @@ export async function materializeSnapshotDiff(
     maxPatchBytes?: number;
     /**
      * Restrict the PATCH to these exact repository-relative files. Absent or empty is the
-     * whole patch; a directory is refused, while a file absent from the difference yields an
-     * empty patch. A rename is one file, so either its old or new path selects the same rename
-     * diff and `patchPaths` echoes the path the caller requested. Each path is validated by
-     * `snapshotPathRefusal` and taken LITERALLY - see below.
+     * whole patch.
+     *
+     * Exactly one file, or a refusal: a directory is refused whether or not anything under it
+     * changed, and so is a path that names more than one changed entry (a rename's source is
+     * still a path, so `a` can name both the rename `a` -> `b` and a newly added `a`). A path
+     * that names a file neither commit touched is NOT an error - it yields an empty patch,
+     * because "this candidate did not touch that file" is a real answer. A rename is one file,
+     * so either its old or new path selects the same rename diff, and `patchPaths` echoes the
+     * path the caller requested. Each path is validated by `snapshotPathRefusal` and taken
+     * LITERALLY - see below.
      */
     paths?: string[];
     /**
@@ -471,7 +550,12 @@ export async function materializeSnapshotDiff(
   );
   requireOk("git diff --numstat", numstat);
   const files = parseNumstatZ(numstat.stdout);
-  const selectedFiles = exactPatchFiles(filter, files);
+  const { exact: selectedFiles, unchanged } = exactPatchFiles(filter, files);
+  // Before anything is rendered or skipped, so a directory is refused identically whether the
+  // caller wanted its hunks or only the file list.
+  if (unchanged.length > 0) {
+    await refuseUnchangedDirectories(unchanged, { repoPath: input.repoPath, baseSha, snapshotSha }, deps);
+  }
   const pathsInDifference = [...new Set(selectedFiles.flatMap(fileStatPaths))];
 
   const stats = {

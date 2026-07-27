@@ -68,7 +68,7 @@ and get your decision back.
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
 - **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
-  Markdown Personas, then arrange Session, Persona, all-pass Join, and End nodes on a
+  Markdown Personas, then arrange Session, Persona, all-pass Join, Check, and End nodes on a
   validated canvas. Drafts autosave with conflict protection and Publish captures immutable
   Persona snapshots. Bind a published version to a session and start a manual **Preview** to
   run concurrent, read-only Persona reviews against one immutable evidence snapshot. A

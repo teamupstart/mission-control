@@ -772,7 +772,7 @@ export function WorkflowLibrary({
                 </Tooltip>
                 {mode === "graph" && (
                   <>
-                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, Join, or End nodes" : "Select a Persona, Join, or End node first"}>
+                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Check, or End nodes" : "Select a Persona, All-pass Join, Check, or End node first"}>
                       <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
                         Duplicate nodes
                       </button>

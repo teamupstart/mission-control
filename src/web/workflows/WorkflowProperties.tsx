@@ -295,9 +295,9 @@ export function WorkflowProperties({
                   this is the panel where an operator would otherwise go looking for a field
                   to type `npm test` into. */}
               <p>
-                Runs whatever this repository configures for <code>{selectedNode.slot}</code> under
-                Settings › Workflows. A repository with no command configured passes with a note,
-                so a workflow carrying this gate is safe everywhere.
+                This node names the <code>{selectedNode.slot}</code> slot; what runs is whatever
+                Settings › Workflows configures for that slot in this repository. An unconfigured
+                or unauthorized slot, or one this build cannot run, passes with a note saying which.
               </p>
             </>
           )}

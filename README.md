@@ -177,14 +177,15 @@ every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
 that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
 (`node:sqlite`).
 
-That same sweep re-reads the branch each session's checkout is on, so a session follows
-the agent onto whatever branch it cuts mid-run. Sessions the daemon runs itself (Agent SDK
-`runtime`) have no process on a tty for the sweep to find, so their branch is re-read
-directly from their working directory on the same cadence. This is what keeps the **PR
-chip** honest for them: a pooled worktree is often leased with no branch at all, and the
-PR poller finds a session's pull request by asking `gh pr list --head <branch>`, so a
-branch captured once at launch would leave an embedded session's PR invisible for the
-whole run.
+That same sweep re-reads the mutable Git facts in each session's checkout: its branch and
+whether the repo is gated by no-mistakes. Sessions the daemon runs itself (Agent SDK
+`runtime`) have no process on a tty for the sweep to find, so those facts are read directly
+from their working directory at launch or restoration and refreshed on the same cadence.
+This keeps both the **PR chip** and [no-mistakes](#no-mistakes) status honest without a
+terminal session sharing the checkout. A pooled worktree is often leased with no branch at
+all, and the PR poller finds a session's pull request by asking
+`gh pr list --head <branch>`; similarly, the no-mistakes status poller visits only gated
+checkouts. Capturing either fact only once would leave live changes invisible.
 
 ### The title bar stays compact at half-screen
 

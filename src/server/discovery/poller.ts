@@ -5,13 +5,13 @@ import { gitInfo } from "../util/git.ts";
 import { discover } from "./correlate.ts";
 
 /**
- * Re-read the branch every driver-run session's checkout is on, and adopt it.
+ * Re-read the live Git facts for every driver-run session's checkout, and adopt them.
  *
  * Runs on the discovery cadence rather than a timer of its own because it answers the same
- * question the sweep already answers for pane-backed sessions - "what branch is this cwd on
- * now?" - through the same `gitInfo`, which is pure filesystem and explicitly cheap enough
- * to run for every session every poll. One cadence and one reader is what keeps the two
- * runtimes from disagreeing about a session's branch.
+ * questions the sweep already answers for pane-backed sessions - "what branch is this cwd
+ * on now, and is its repository gated by no-mistakes?" - through the same `gitInfo`, which
+ * is pure filesystem and explicitly cheap enough to run for every session every poll. One
+ * cadence and one reader is what keeps the two runtimes from disagreeing about Git state.
  *
  * Kept out of `applyDiscovery`: that takes what the process sweep found, and widening it to
  * carry sessions no process table can produce is exactly the scope creep its own comments
@@ -19,19 +19,19 @@ import { discover } from "./correlate.ts";
  * `discover()` / `applyDiscovery()` already makes. `read` is injected so a test can drive
  * the real reconciliation with no repository on disk.
  */
-export function refreshDriverBranches(
+export function refreshDriverGit(
   registry: Registry,
-  read: (cwd: string) => string | null = (cwd) => gitInfo(cwd).branch,
+  read: (cwd: string) => { branch: string | null; nomistakesGated: boolean } = gitInfo,
 ): void {
   const targets = registry.driverGitTargets();
   if (targets.length === 0) return;
-  registry.applyDriverBranches(new Map(targets.map((t) => [t.id, read(t.cwd)])));
+  registry.applyDriverGit(new Map(targets.map((t) => [t.id, read(t.cwd)])));
 }
 
 export async function pollOnce(
   registry: Registry,
   find: typeof discover = discover,
-  refresh: (registry: Registry) => void = refreshDriverBranches,
+  refresh: (registry: Registry) => void = refreshDriverGit,
 ): Promise<void> {
   try {
     const sessions = await find();
@@ -45,7 +45,7 @@ export async function pollOnce(
   try {
     refresh(registry);
   } catch (err) {
-    console.error("[poller] driver branch refresh failed:", err);
+    console.error("[poller] driver Git refresh failed:", err);
   }
 }
 

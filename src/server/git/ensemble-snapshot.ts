@@ -245,10 +245,24 @@ export const defaultSnapshotDiffDeps: SnapshotDiffDeps = { run };
  *
  * The rule is REFUSAL, never sanitization: a path that has been quietly rewritten still
  * returns a patch, and a caller comparing "the diff of src/a.ts" against a diff of something
- * else has no way to notice. Four things are refused - an empty path (names nothing), a NUL
+ * else has no way to notice. Six things are refused - an empty path (names nothing), a NUL
  * byte (cannot be passed as an argv entry), an absolute path (names something outside the
- * repository's own vocabulary), and a `..` segment (walks out of the tree the artifact is a
- * picture of).
+ * repository's own vocabulary), a `..` segment (walks out of the tree the artifact is a
+ * picture of), a `.` segment, and an empty segment.
+ *
+ * Those last two are the difference between two spellings of one file, and the reason they are
+ * refused rather than normalized is what happens when they are not. `files` spells a path
+ * exactly as git's `--numstat` does, so `./a.txt` matches no entry and reads as "not in this
+ * difference" - while `<commit>:./a.txt` resolves to the very blob that changed (measured).
+ * The answer would be a 200 with an empty patch for a file the candidate DID edit, labelled
+ * with the caller's own spelling, which is the most convincing possible way to be wrong.
+ * `a.txt/`, `a//b.txt` and `a/./b.txt` fail the other way - git resolves none of them - and
+ * produce the same misleading emptiness. Normalizing would work here and would also be the
+ * first crack in "refusal, never sanitization"; one canonical spelling per file keeps the
+ * numstat list and the request talking about the same thing.
+ *
+ * `/` only for those two, because that is what git splits `<commit>:<path>` and its pathspecs
+ * on: a backslash is an ordinary character in a POSIX filename, not a separator.
  *
  * Pathspec MAGIC (`:(glob)**`, `:!x`, `:/`) is deliberately NOT refused here: the invocation
  * that consumes these runs with `GIT_LITERAL_PATHSPECS=1`, so `:(glob)**` names a file called
@@ -264,6 +278,13 @@ export function snapshotPathRefusal(path: string): string | null {
   }
   if (path.split(/[\\/]/).includes("..")) {
     return `a patch path must not contain ".." segments, got "${path}"`;
+  }
+  const segments = path.split("/");
+  if (segments.includes(".")) {
+    return `a patch path must not contain "." segments, got "${path}"`;
+  }
+  if (segments.includes("")) {
+    return `a patch path must not contain empty segments, got "${path}"`;
   }
   return null;
 }

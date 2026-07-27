@@ -345,6 +345,16 @@ test("GET .../patch cuts to one path, refuses a list, and can skip the patch ent
   assert.equal(repeated.status, 400);
   assert.match(((await repeated.json()) as { error: string }).error, /one path per request/);
 
+  // A second spelling of a file that DID change is a 400, not a 200 with an empty patch:
+  // `./a.txt` matches no numstat entry while git resolves it to the very blob that changed, so
+  // answering it would report a file the candidate edited as untouched, in the caller's own
+  // spelling.
+  for (const alias of ["./a.txt", "a.txt/", "src/./nested.ts"]) {
+    const aliased = await req(app, `${url}?path=${encodeURIComponent(alias)}`, undefined, "GET");
+    assert.equal(aliased.status, 400, `should refuse ${alias}`);
+    assert.match(((await aliased.json()) as { error: string }).error, /must not contain/);
+  }
+
   // A path nobody can honour is the caller's mistake, so 400 rather than a 500 out of git.
   for (const bad of ["/etc/passwd", "../outside.txt", "nul\0path"]) {
     const refused = await req(app, `${url}?path=${encodeURIComponent(bad)}`, undefined, "GET");

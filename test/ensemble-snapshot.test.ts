@@ -671,6 +671,42 @@ test("a directory this difference never touched is still refused, not read as an
   assert.deepEqual(absent.files.map((file) => file.path), ["keep.txt"], "and the statistics stay complete");
 });
 
+test("a second spelling of a changed file is refused, never answered as untouched", async () => {
+  // The trap this closes: `files` spells paths exactly as `--numstat` does, so `./keep.txt`
+  // matches no entry and reads as "not in this difference" - while git resolves the same
+  // string to the very blob that changed. Answering that with a 200 and an empty patch would
+  // tell a comparison the candidate never touched a file it did edit, in the caller's own
+  // spelling. One canonical spelling per file is what keeps the list and the request talking
+  // about the same thing.
+  const { repo, member, baseSha } = mkRepoWithMember("dot-segments");
+  writeFileSync(join(member, "keep.txt"), "edited by the member\n");
+  const captured = await captureWorktreeSnapshot({
+    worktreePath: member,
+    ensembleId: randomUUID(),
+    artifactId: randomUUID(),
+  });
+
+  // git really does read the two spellings as one file - the aliasing is measured, not assumed.
+  assert.equal(git(repo, "cat-file", "-t", `${captured.snapshotSha}:./keep.txt`), "blob");
+  assert.equal(git(repo, "cat-file", "-t", `${captured.snapshotSha}:keep.txt`), "blob");
+
+  const canonical = await materializeSnapshotDiff({
+    repoPath: repo,
+    baseSha,
+    snapshotSha: captured.snapshotSha,
+    paths: ["keep.txt"],
+  });
+  assert.equal(patchSectionCount(canonical.patch), 1, "the canonical spelling answers");
+
+  for (const alias of ["./keep.txt", "keep.txt/", "./sub/../keep.txt"]) {
+    await assert.rejects(
+      materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha: captured.snapshotSha, paths: [alias] }),
+      /patch path must not contain/,
+      `should refuse: ${alias}`,
+    );
+  }
+});
+
 test("exact filenames with spaces and quoted characters keep one section", async () => {
   const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("quoted-paths");
   assert.equal(quoteGitDiffPath("a/space name.txt"), "a/space name.txt");
@@ -830,7 +866,18 @@ test("asking for the file list alone runs one git invocation and renders no patc
 test("an unusable patch path is refused rather than repaired", async () => {
   const { repo, baseSha, snapshotSha } = await capturedWithNastyNames("path-refusal");
 
-  for (const bad of ["/etc/passwd", "../outside.txt", "src/../../etc/passwd", "", "nul\0path"]) {
+  for (const bad of [
+    "/etc/passwd",
+    "../outside.txt",
+    "src/../../etc/passwd",
+    "",
+    "nul\0path",
+    "./keep.txt",
+    "a/./b.txt",
+    ".",
+    "keep.txt/",
+    "a//b.txt",
+  ]) {
     assert.ok(snapshotPathRefusal(bad), `the rule should refuse: ${JSON.stringify(bad)}`);
     await assert.rejects(
       materializeSnapshotDiff({ repoPath: repo, baseSha, snapshotSha, paths: [bad] }),

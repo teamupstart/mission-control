@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar 4 - Ledger</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>4. Ledger</h1>
+  <p>The instrument-panel reading. Two hairline-ruled tables, right-aligned mono
+  figures, no tint and no panel accent. Every window is a row, so a fourth harness or a fifth
+  window costs one line and reflows nothing. <b>Severity is a leading flag plus a coloured
+  figure</b>, never a coloured surface - so the bar stays quiet until something is actually
+  wrong, and this doubles as the accessible table view of the same data.</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html"><i>all</i> Compare all five</a>
+  <a href="01-spine.html"><i>1</i> Spine</a>
+  <a href="02-gauges.html"><i>2</i> Gauges</a>
+  <a href="03-day-track.html"><i>3</i> Day track</a>
+  <a href="04-ledger.html" aria-current="page"><i>4</i> Ledger</a>
+  <a href="05-triage.html"><i>5</i> Triage</a>
+</nav>
+
+<section class="showcase" id="ledger">
+  <h2><span>4</span> Ledger <em>136px · 31px more</em></h2>
+    <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u4">
+          <div class="u4-spend">
+            <h4>Today</h4>
+            <table>
+              <tr><td class="k">estimated cost</td><td class="v cost">$552.23</td><td class="aside">↑ 11%</td></tr>
+              <tr><td class="k">estimated rate</td><td class="v">$5.61/hr</td><td class="aside">last hour</td></tr>
+              <tr><td class="k">tokens</td><td class="v">856M</td><td class="aside">all tiers</td></tr>
+              <tr><td class="k">cost per PR</td><td class="v">$39.44</td><td class="aside">14 PRs</td></tr>
+            </table>
+          </div>
+          <div class="u4-windows">
+            <h4>Quota windows</h4>
+            <table>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-claude"></i>Claude 5-hr</td>
+                <td class="pct">31%</td>
+                <td class="bar"><span class="meter"><i style="width:31%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 2h 12m</td>
+              </tr>
+              <tr data-tone="high">
+                <td class="who"><span class="u4-flag">⚠</span><i class="agent-dot a-claude"></i>Claude 7-day</td>
+                <td class="pct">91%</td>
+                <td class="bar"><span class="meter"><i style="width:91%"></i></span></td>
+                <td class="run">~6h 51m</td>
+                <td class="rst">resets 3d 4h</td>
+              </tr>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-codex"></i>Codex 1-week</td>
+                <td class="pct">19%</td>
+                <td class="bar"><span class="meter"><i style="width:19%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 5d 9h</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Precision and growth. Five columns of aligned figures read
+    faster than five tooltips, the percentage stops being tooltip-only, and N windows is a
+    <code>map</code> over rows with no layout to re-tune.</p></div>
+    <div><h3>Costs</h3><p>Deliberately unglamorous, and the least glanceable at arm's length -
+    it rewards reading rather than seeing. Wants a real column ruler, so it is the variant most
+    likely to look cramped on a 13" screen.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> and its stylesheet section.
+    No new data. Also the cheapest to make accessible: it is already a table.</p></div>
+  </div>
+</section>
+
+<section class="showcase">
+  <h2>Narrow <span>940px</span> <em>laptop, or a window at half width</em></h2>
+  <p class="lede">Same bar in the width where the topbar's responsive ladder starts shedding ink.
+  What wraps first, and whether it still reads, is part of the choice.</p>
+  <div class="frame narrow">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u4">
+          <div class="u4-spend">
+            <h4>Today</h4>
+            <table>
+              <tr><td class="k">estimated cost</td><td class="v cost">$552.23</td><td class="aside">↑ 11%</td></tr>
+              <tr><td class="k">estimated rate</td><td class="v">$5.61/hr</td><td class="aside">last hour</td></tr>
+              <tr><td class="k">tokens</td><td class="v">856M</td><td class="aside">all tiers</td></tr>
+              <tr><td class="k">cost per PR</td><td class="v">$39.44</td><td class="aside">14 PRs</td></tr>
+            </table>
+          </div>
+          <div class="u4-windows">
+            <h4>Quota windows</h4>
+            <table>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-claude"></i>Claude 5-hr</td>
+                <td class="pct">31%</td>
+                <td class="bar"><span class="meter"><i style="width:31%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 2h 12m</td>
+              </tr>
+              <tr data-tone="high">
+                <td class="who"><span class="u4-flag">⚠</span><i class="agent-dot a-claude"></i>Claude 7-day</td>
+                <td class="pct">91%</td>
+                <td class="bar"><span class="meter"><i style="width:91%"></i></span></td>
+                <td class="run">~6h 51m</td>
+                <td class="rst">resets 3d 4h</td>
+              </tr>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-codex"></i>Codex 1-week</td>
+                <td class="pct">19%</td>
+                <td class="bar"><span class="meter"><i style="width:19%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 5d 9h</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

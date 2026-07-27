@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar 1 - Spine</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>1. Spine</h1>
+  <p>The panel goes away and the strip becomes one line of the topbar. Spend reads as
+  a sentence with one figure leading; each window collapses to a chip - agent dot, window token,
+  micro-meter, verdict - so "limit runway" is never written out. <b>The constrained chip tints
+  itself</b>, which is the only ink on the row that competes with the lead figure.</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html"><i>all</i> Compare all five</a>
+  <a href="01-spine.html" aria-current="page"><i>1</i> Spine</a>
+  <a href="02-gauges.html"><i>2</i> Gauges</a>
+  <a href="03-day-track.html"><i>3</i> Day track</a>
+  <a href="04-ledger.html"><i>4</i> Ledger</a>
+  <a href="05-triage.html"><i>5</i> Triage</a>
+</nav>
+
+<section class="showcase" id="spine">
+  <h2><span>1</span> Spine <em>38px · 67px less</em></h2>
+    <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u1">
+          <div class="u1-spend">
+            <span class="u1-lead">$552.23</span>
+            <svg class="spark u1-spark" width="66" height="20" viewBox="0 0 66 20" aria-hidden="true">
+              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
+              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
+              <circle cx="63" cy="5.8" r="2.6"/>
+            </svg>
+            <span class="u1-sec">
+              <span>today</span>
+              <s>·</s><b>$5.61</b><span>/hr</span>
+              <s>·</s><b>856M</b><span>tokens</span>
+              <s>·</s><b>$39.44</b><span>/PR</span>
+            </span>
+          </div>
+          <div class="u1-chips">
+            <span class="u1-chip" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-claude"></i><span class="win">5H</span>
+              <span class="meter"><i style="width:31%"></i></span>
+              <span class="val">clears</span>
+            </span>
+            <span class="u1-chip" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <i class="agent-dot a-claude"></i><span class="win">7D</span>
+              <span class="meter"><i style="width:91%"></i></span>
+              <span class="val">~6h 51m</span>
+            </span>
+            <span class="u1-chip" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-codex"></i><span class="win">1W</span>
+              <span class="meter"><i style="width:19%"></i></span>
+              <span class="val">clears</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Vertical space and glanceability. <b>Roughly half the height</b>
+    of today's strip, and it survives the topbar's responsive ladder by shedding the trailing
+    secondary figures, then the chips' meters, before it ever wraps.</p></div>
+    <div><h3>Costs</h3><p>No room for labels, so <code>5H</code> / <code>7D</code> / <code>1W</code>
+    have to be learned once, and the window's reset time moves into the tooltip. Least room to grow
+    if a fourth window appears.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> only, plus the
+    <code>.fleet-strip</code> section of <code>styles.css</code>. No new server data. A window
+    token has to come off the harness rather than the label string.</p></div>
+  </div>
+</section>
+
+<section class="showcase">
+  <h2>Narrow <span>940px</span> <em>laptop, or a window at half width</em></h2>
+  <p class="lede">Same bar in the width where the topbar's responsive ladder starts shedding ink.
+  What wraps first, and whether it still reads, is part of the choice.</p>
+  <div class="frame narrow">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u1">
+          <div class="u1-spend">
+            <span class="u1-lead">$552.23</span>
+            <svg class="spark u1-spark" width="66" height="20" viewBox="0 0 66 20" aria-hidden="true">
+              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
+              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
+              <circle cx="63" cy="5.8" r="2.6"/>
+            </svg>
+            <span class="u1-sec">
+              <span>today</span>
+              <s>·</s><b>$5.61</b><span>/hr</span>
+              <s>·</s><b>856M</b><span>tokens</span>
+              <s>·</s><b>$39.44</b><span>/PR</span>
+            </span>
+          </div>
+          <div class="u1-chips">
+            <span class="u1-chip" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-claude"></i><span class="win">5H</span>
+              <span class="meter"><i style="width:31%"></i></span>
+              <span class="val">clears</span>
+            </span>
+            <span class="u1-chip" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <i class="agent-dot a-claude"></i><span class="win">7D</span>
+              <span class="meter"><i style="width:91%"></i></span>
+              <span class="val">~6h 51m</span>
+            </span>
+            <span class="u1-chip" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-codex"></i><span class="win">1W</span>
+              <span class="meter"><i style="width:19%"></i></span>
+              <span class="val">clears</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

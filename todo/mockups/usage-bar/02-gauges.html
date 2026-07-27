@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar 2 - Gauges</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>2. Gauges</h1>
+  <p>Inverts the priority: the windows are the constraint, so they get the drawn form
+  and the dollars become a small block. Each arc is one window - <b>the arc is % consumed, the
+  figure in its mouth is the projection</b>, and the line under it carries the reset. This is what
+  the existing <code>view: "plan"</code> mode is reaching for when the dollars are notional.</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html"><i>all</i> Compare all five</a>
+  <a href="01-spine.html"><i>1</i> Spine</a>
+  <a href="02-gauges.html" aria-current="page"><i>2</i> Gauges</a>
+  <a href="03-day-track.html"><i>3</i> Day track</a>
+  <a href="04-ledger.html"><i>4</i> Ledger</a>
+  <a href="05-triage.html"><i>5</i> Triage</a>
+</nav>
+
+<section class="showcase" id="gauges">
+  <h2><span>2</span> Gauges <em>118px · 13px more</em></h2>
+    <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u2">
+          <div class="u2-spend">
+            <div class="u2-hero">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today <em>↑ 11% vs yesterday</em></span>
+            </div>
+            <svg class="spark" width="99" height="30" viewBox="0 0 66 20" aria-hidden="true">
+              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
+              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
+              <circle cx="63" cy="5.8" r="2.6"/>
+            </svg>
+            <div class="u2-mini">
+              <div><b>$5.61</b> per hour</div>
+              <div><b>856M</b> tokens</div>
+              <div><b>$39.44</b> per PR · 14 today</div>
+            </div>
+          </div>
+          <div class="u2-gauges">
+            <div class="u2-gauge" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="37.0 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</div>
+              <div class="rst">31% · resets 2h 12m</div>
+            </div>
+            <div class="u2-gauge" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="108.6 119.4"/>
+              </svg>
+              <div class="cap">~6h 51m</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 7-day</div>
+              <div class="rst">91% · resets 3d 4h</div>
+            </div>
+            <div class="u2-gauge" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="22.7 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-codex"></i>Codex 1-week</div>
+              <div class="rst">19% · resets 5d 9h</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Reading three windows as three states without comparing bar
+    lengths. An arc at 91% is unmistakable at any zoom, and the reset time is on the face rather
+    than in a tooltip.</p></div>
+    <div><h3>Costs</h3><p class="cost-note">The tallest of the five - taller than what ships now,
+    so it wants to be the folded-open state rather than the default. Arcs are also poor at
+    comparing two similar values, which bars do for free.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a small arc component. Nothing
+    new from the server: <code>usedPercentage</code>, <code>resetsAt</code> and
+    <code>projectRunway</code> already carry all three faces.</p></div>
+  </div>
+</section>
+
+<section class="showcase">
+  <h2>Narrow <span>940px</span> <em>laptop, or a window at half width</em></h2>
+  <p class="lede">Same bar in the width where the topbar's responsive ladder starts shedding ink.
+  What wraps first, and whether it still reads, is part of the choice.</p>
+  <div class="frame narrow">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u2">
+          <div class="u2-spend">
+            <div class="u2-hero">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today <em>↑ 11% vs yesterday</em></span>
+            </div>
+            <svg class="spark" width="99" height="30" viewBox="0 0 66 20" aria-hidden="true">
+              <path class="wash" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8 L63,19 L1,19 Z"/>
+              <path class="line" d="M1,13.4 L6.6,11.8 L12.2,12.6 L17.8,10.2 L23.5,11 L29.1,7.8 L34.7,9 L40.3,5.4 L45.9,7 L51.5,3.8 L57.1,5.2 L63,5.8"/>
+              <circle cx="63" cy="5.8" r="2.6"/>
+            </svg>
+            <div class="u2-mini">
+              <div><b>$5.61</b> per hour</div>
+              <div><b>856M</b> tokens</div>
+              <div><b>$39.44</b> per PR · 14 today</div>
+            </div>
+          </div>
+          <div class="u2-gauges">
+            <div class="u2-gauge" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="37.0 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</div>
+              <div class="rst">31% · resets 2h 12m</div>
+            </div>
+            <div class="u2-gauge" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="108.6 119.4"/>
+              </svg>
+              <div class="cap">~6h 51m</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 7-day</div>
+              <div class="rst">91% · resets 3d 4h</div>
+            </div>
+            <div class="u2-gauge" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="22.7 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-codex"></i>Codex 1-week</div>
+              <div class="rst">19% · resets 5d 9h</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

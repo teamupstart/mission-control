@@ -188,6 +188,34 @@ test("start persists a row, registers the card, and records the binding", async 
   }
 });
 
+test("a completed turn preserves durability while an accepted follow-up remains", async () => {
+  const handle = fakeHandle();
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    return "queued";
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+
+    handle.push({ kind: "state", state: "working", activity: null });
+    await waitFor(() => registry.getSession(session.id)?.state === "working");
+    assert.equal(await supervisor.send(session.id, { text: "follow up" }), "queued");
+    handle.push({ kind: "turn_done", usage: null });
+    await drain();
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+    assert.equal(registry.getSession(session.id)?.state, "working");
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    assert.equal(registry.getSession(session.id)?.state, "idle");
+  } finally {
+    fake.restore();
+  }
+});
+
 test("start registers an SDK checkout's no-mistakes gate immediately", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
@@ -431,6 +459,11 @@ test("a resume that fails still shows a card and takes it away, so the task sett
 
 test("a shutdown suspends rather than exits, and a suspended row is resumed", async () => {
   const handle = fakeHandle();
+  handle.stop = async () => {
+    handle.stopped = true;
+    handle.push({ kind: "turn_done", usage: null });
+    handle.push({ kind: "exited", reason: "interrupted", resumable: true });
+  };
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
@@ -528,6 +561,45 @@ test("live controls reach the handle and persist what restart will reuse", async
     assert.deepEqual(efforts, ["xhigh"]);
     assert.equal(getSdkSession(session.id)?.permissionMode, "acceptEdits");
     assert.equal(getSdkSession(session.id)?.effort, "xhigh");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a cleared replacement conversation is durably idle", async () => {
+  const handle = fakeHandle();
+  handle.clearContext = async () => {
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-cleared",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+      cleared: true,
+    });
+  };
+  const restored = fakeHandle();
+  const handles = [handle, restored];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-original",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-original");
+
+    assert.equal(await supervisor.clearContext(session.id), true);
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-cleared");
+    assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+
+    await supervisor.stopAll();
+    await new SdkSupervisor(new Registry()).restore();
+    assert.deepEqual(restored.sent, []);
   } finally {
     fake.restore();
   }

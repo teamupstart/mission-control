@@ -62,6 +62,8 @@ export class SdkSupervisor {
    */
   private sends = new Map<string, Promise<unknown>>();
   private pumps = new Map<string, Promise<void>>();
+  private unfinishedTurns = new Map<string, number>();
+  private acceptingTurns = new Set<string>();
   private stopping = new Set<string>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
@@ -207,6 +209,7 @@ export class SdkSupervisor {
       agentSessionId?: string | null;
       /** Carried on a resume; adopting a fresh handle must not forgive unfinished work. */
       turnInProgress: boolean;
+      acceptedTurns?: number;
     };
   }): Session {
     const { registration, handle, durable } = input;
@@ -231,6 +234,10 @@ export class SdkSupervisor {
     });
     const session = this.registry.registerSdkSession(registration);
     this.handles.set(registration.id, handle);
+    this.unfinishedTurns.set(
+      registration.id,
+      durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
+    );
     const pump = this.pump(registration.id, handle);
     this.pumps.set(registration.id, pump);
     void pump.catch((err) => {
@@ -278,12 +285,21 @@ export class SdkSupervisor {
    */
   send(id: string, turn: SdkTurn): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
-      const disposition = await handle.send(turn);
-      // Accepted first, persisted second: a rejected delivery must not become work a later
-      // daemon promises to continue. Driver `state: working` is the independent backstop
-      // for the narrow crash window between those two systems.
-      this.recordTurnInProgress(id, true);
-      return disposition;
+      this.acceptingTurns.add(id);
+      try {
+        const disposition = await handle.send(turn);
+        this.acceptingTurns.delete(id);
+        const unfinished = this.unfinishedTurns.get(id) ?? 0;
+        this.unfinishedTurns.set(
+          id,
+          disposition === "steered" ? Math.max(1, unfinished) : unfinished + 1,
+        );
+        this.recordTurnInProgress(id, true);
+        return disposition;
+      } catch (err) {
+        this.acceptingTurns.delete(id);
+        throw err;
+      }
     });
   }
 
@@ -549,6 +565,7 @@ export class SdkSupervisor {
         effort: row.effort,
         agentSessionId: row.agentSessionId,
         turnInProgress: row.turnInProgress,
+        acceptedTurns: 0,
       },
     });
     if (row.turnInProgress) {
@@ -621,20 +638,31 @@ export class SdkSupervisor {
     let outcome: SdkSessionStatus = "exited";
     try {
       for await (const evt of handle.events) {
+        let applyToRegistry = true;
         if (evt.kind === "bound") {
           recordSdkSessionBinding(id, evt.agentSessionId, evt.modelId);
+          if (evt.cleared) {
+            this.unfinishedTurns.set(id, 0);
+            this.recordTurnInProgress(id, false);
+          }
         }
         if (evt.kind === "state" && evt.state === "working") {
+          if ((this.unfinishedTurns.get(id) ?? 0) === 0 && !this.acceptingTurns.has(id)) {
+            this.unfinishedTurns.set(id, 1);
+          }
           this.recordTurnInProgress(id, true);
         }
-        if (evt.kind === "turn_done") {
-          this.recordTurnInProgress(id, false);
+        if (evt.kind === "turn_done" && !this.shuttingDown) {
+          const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
+          this.unfinishedTurns.set(id, remaining);
+          this.recordTurnInProgress(id, remaining > 0);
+          applyToRegistry = remaining === 0;
         }
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        if (!this.shuttingDown) this.registry.applyDriverEvent(id, evt);
+        if (!this.shuttingDown && applyToRegistry) this.registry.applyDriverEvent(id, evt);
         if (evt.kind === "exited") break;
       }
     } catch (err) {
@@ -644,6 +672,8 @@ export class SdkSupervisor {
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
+      this.unfinishedTurns.delete(id);
+      this.acceptingTurns.delete(id);
       this.stopping.delete(id);
       try {
         setSdkSessionStatus(id, outcome === "failed" ? "failed" : this.endStatus());

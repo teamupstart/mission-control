@@ -17,6 +17,7 @@ import type {
   SessionQueue,
   SkillsView,
   TaskPriority,
+  TranscriptMessage,
 } from "@shared/types.ts";
 import type {
   AwayConfig,
@@ -57,6 +58,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
+import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
   MissionSchedule,
   ScheduleHistoryPage,
@@ -541,6 +543,52 @@ export async function fetchQueue(
   }
 }
 
+/**
+ * The page of turns immediately before a byte offset - the conversation panel's
+ * scroll-back.
+ *
+ * The live stream deliberately opens on a bounded tail, so this is the only way to reach
+ * a turn older than it. Anchored in bytes because that is the one currency an
+ * append-only file indexes for free, and each page reports the `start` that anchors the
+ * next call - see `transcript-history.ts` for why the ranges must abut exactly.
+ */
+export async function fetchTranscriptBefore(
+  id: string,
+  before: number,
+  signal?: AbortSignal,
+): Promise<
+  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(id)}/transcript?before=${encodeURIComponent(String(before))}`,
+      { signal },
+    );
+    const data = (await res.json().catch(() => ({}))) as {
+      messages?: TranscriptMessage[];
+      start?: number;
+      end?: number;
+      atStart?: boolean;
+      error?: string;
+    };
+    if (!res.ok || !data.messages || typeof data.start !== "number" || typeof data.end !== "number") {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return {
+      ok: true,
+      messages: data.messages,
+      start: data.start,
+      end: data.end,
+      // A response that omits the flag is treated as "nothing older", which stops the
+      // scroll-back rather than looping on an anchor the server never moved.
+      atStart: data.atStart ?? true,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function fetchSessionFiles(
   id: string,
 ): Promise<{ ok: true; files: SessionFileEntry[] } | { ok: false; error: string }> {
@@ -581,6 +629,16 @@ export async function fetchSessionFile(
  */
 export const fetchOpenTargets = () =>
   fetchJson<{ targets: OpenTargetView[] }>("/api/open-targets");
+
+/**
+ * Which terminals the daemon's host can open a window in.
+ *
+ * Null on failure for `fetchOpenTargets`'s reason: an empty list would be a real answer,
+ * and drawing it for a dropped connection reads as "you have no terminals". See
+ * `useTerminalTargets`.
+ */
+export const fetchTerminalTargets = () =>
+  fetchJson<{ targets: TerminalTargetView[] }>("/api/terminal-targets");
 
 /**
  * Park a dropped image on the daemon's disk, resolving to the path an agent can
@@ -643,6 +701,19 @@ export const api = {
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
+  /**
+   * Open a terminal on this session's checkout - a shell, or its own agent CLI resumed on
+   * this conversation.
+   *
+   * `payload` picks between two argvs the DAEMON composes; nothing here becomes part of a
+   * command line, which is why this takes two enums and no strings.
+   */
+  launchTerminal: (
+    id: string,
+    backend: TerminalBackendId,
+    payload: "shell" | "agent",
+  ): Promise<ActionResult & { label?: string }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),

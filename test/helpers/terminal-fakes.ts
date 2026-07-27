@@ -37,6 +37,7 @@ export function fakeMultiplexer(over: Partial<Multiplexer> = {}): Multiplexer {
   return {
     id: "tmux",
     label: "tmux",
+    glyph: "▤",
     bin: MUX_BIN,
     list: async () => [],
     write: {
@@ -57,6 +58,7 @@ export function fakeEmulator(over: Partial<TerminalEmulator> = {}): TerminalEmul
   return {
     id: "wezterm",
     label: "WezTerm",
+    glyph: "▣",
     bin: EMU_BIN,
     list: null,
     // Null by default for the reason every other capability here is: these fakes exist to

@@ -1,5 +1,8 @@
 # Phase 1: Seed personas
 
+> Historical implementation record. Its import-and-own instructions were superseded after
+> this phase shipped; the README's Built-in Personas section owns the current behavior.
+
 ## 1. Outcome and value
 
 Four seed Persona files ship in-repo under `docs/personas/`, each importable from the
@@ -29,6 +32,7 @@ Non-goals (decided in the source plan's dashboard review, 2026-07-23):
 - No workflow-owned delivery nodes (push/PR/CI stay with no-mistakes and Inspector).
 - No auto-import, no built-in read-only Personas, no seeding into SQLite: the operator
   imports and owns their copies; the DB stays canonical.
+  **Superseded 2026-07-26**; see the README's Built-in Personas section.
 - No example-workflow fixture; the README describes the assembly, the operator builds it.
 
 ## 4. Repository findings and inherited contracts

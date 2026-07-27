@@ -1,3 +1,4 @@
+import { personaNameFromMarkdown } from "@shared/workflow.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 
 interface PersonaErrorBody {
@@ -24,10 +25,15 @@ export async function personaRequest<T>(path: string, init?: RequestInit): Promi
   return body;
 }
 
+/**
+ * The heading rule is shared with the built-in catalog, so importing a document by hand and
+ * shipping the same document produce one name rather than two spellings of it.
+ */
 export function deriveImportedPersonaName(filename: string, markdown: string): string {
-  const heading = /^#\s+(.+?)\r?$/m.exec(markdown)?.[1]?.trim();
-  if (heading) return heading;
-  return filename.replace(/\.md$/i, "").trim() || "Imported Persona";
+  return personaNameFromMarkdown(
+    markdown,
+    filename.replace(/\.md$/i, "").trim() || "Imported Persona",
+  );
 }
 
 export function personaMarkdownBlob(markdown: string): Blob {

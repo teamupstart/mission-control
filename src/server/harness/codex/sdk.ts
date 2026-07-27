@@ -1304,13 +1304,6 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       });
       return session;
     },
-    // Verified against codex-cli 0.145.0: `codex resume <SESSION_ID>` opens the interactive
-    // TUI on that exact thread, and an embedded session's thread id names the rollout in
-    // the same `~/.codex/sessions/` store the TUI reads. No `--model`, effort or sandbox
-    // flags ride along - a resumed thread carries its own, and re-stating them here would
-    // silently change a conversation the operator asked to CONTINUE. The picker's
-    // `--include-non-interactive` question does not arise: this resumes an id, not a list.
-    resumeArgv: (agentSessionId) => ["resume", agentSessionId],
   };
 }
 

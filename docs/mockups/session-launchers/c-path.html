@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session launchers · 03 Path row</title>
+    <link rel="stylesheet" href="launchers.css" />
+  </head>
+  <body data-option="c">
+    <div id="app"></div>
+
+    <template id="note">
+      <div class="note-card">
+        <h1>Attached to the path they open</h1>
+        <p>
+          The metadata row already prints the worktree. These two shrink to glyph buttons
+          and ride it, so "open a terminal <b>here</b>" is read directly off the
+          <i>here</i>. Nothing is spelled out, nothing takes a row, and the association
+          between the control and the directory is spatial instead of written.
+        </p>
+        <p>
+          It is the most compact answer and the least discoverable one - a bare
+          <code>❯_</code> next to a path is a guess until you hover it. It also breaks the
+          single-component story: the console pane's <code>.detail-sub</code> and the
+          card's <code>.card-meta</code> are different rows in different components, so
+          this is two placements maintained in parallel, and a fourth layout would need a
+          third. Flip the layout switch - the control moves, and it is not the same code
+          moving it.
+        </p>
+        <div class="tradeoffs">
+          <span class="up"><i>+</i>Costs no vertical space at all</span>
+          <span class="up"><i>+</i>Control sits on the thing it acts on</span>
+          <span class="down"><i>−</i>Two placements, one per renderer, kept in sync by hand</span>
+          <span class="down"><i>−</i>Icon-only: undiscoverable without a hover</span>
+          <span class="down"><i>−</i>Adds click targets to a row that was pure metadata</span>
+        </div>
+      </div>
+    </template>
+
+    <script src="launchers.js"></script>
+  </body>
+</html>

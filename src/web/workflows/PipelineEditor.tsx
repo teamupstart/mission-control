@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { personasForDisplay } from "@shared/workflow.ts";
 import type { PersonaView, WorkflowDraftGraph } from "@shared/workflow.ts";
 import {
   compileStages,
@@ -195,7 +196,7 @@ export function PipelineEditor({
 }): React.JSX.Element | null {
   const pipeline = useMemo(() => projectStages(graph), [graph]);
   const activePersonas = useMemo(
-    () => personas.filter((persona) => persona.archivedAt === null),
+    () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],
   );
   const [focusKey, setFocusKey] = useState("session");

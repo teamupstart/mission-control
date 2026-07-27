@@ -19,6 +19,7 @@ import {
   ENSEMBLE_STAGE_STATUSES,
   ENSEMBLE_STATUSES,
   ENSEMBLE_TERMINAL_STATUSES,
+  ensembleMemberCounts,
   ensembleNeedsAttention,
   knownDriverKey,
   missingDriverKeys,
@@ -40,6 +41,7 @@ import {
   type EnsembleLlmCallState,
   type EnsembleLlmPurpose,
   type EnsembleMember,
+  type EnsembleMemberFact,
   type EnsembleMemberStatus,
   type EnsembleOutcome,
   type EnsemblePayloadEnvelope,
@@ -946,8 +948,6 @@ const TERMINAL_LLM_CALL_STATES: readonly EnsembleLlmCallState[] = [
   "failed",
   "interrupted",
 ];
-const LAUNCHED_MEMBER_STATUSES: readonly EnsembleMemberStatus[] =
-  ENSEMBLE_MEMBER_STATUSES.filter((status) => status !== "pending");
 
 export class EnsembleStore {
   private readonly taskLinkListeners = new Set<() => void>();
@@ -1276,21 +1276,55 @@ export class EnsembleStore {
     return this.listRuns().map((run) => this.summaryFor(run));
   }
 
+  /**
+   * The bounded per-member facts the summary's member counts fold.
+   *
+   * Two indexed reads rather than one aggregate per count, because the caller that MATTERS is the
+   * manager: it has to know WHICH members own a ready artifact so it can exclude the ones waiting
+   * on the operator, and a SQL count cannot be narrowed by live session state. Bounded by the
+   * plan's `maxMembers` (16 at the hard limit), so this stays a summary read rather than the
+   * detail read `summaryFor` exists to avoid - the unbounded table here is `ensemble_artifacts`
+   * (a later strategy's pairwise evaluations), and it is only ever aggregated, never materialized.
+   */
+  memberCountFacts(runId: string): EnsembleMemberFact[] {
+    const ownsReady = new Set(
+      (
+        this.db
+          .prepare(
+            `SELECT DISTINCT a.member_id AS member_id
+               FROM ensemble_artifacts ar
+               JOIN ensemble_attempts a ON a.id = ar.attempt_id
+              WHERE ar.run_id = ? AND ar.status = 'ready'`,
+          )
+          .all(runId) as unknown as Array<{ member_id: string }>
+      ).map((row) => row.member_id),
+    );
+    return (
+      this.db
+        .prepare(
+          `SELECT id, task_id, status FROM ensemble_members WHERE run_id = ? ORDER BY ordinal ASC`,
+        )
+        .all(runId) as unknown as Array<{ id: string; task_id: string | null; status: string }>
+    ).map((row) => ({
+      id: row.id,
+      taskId: row.task_id === "" ? null : row.task_id,
+      // Degraded the same way `rowToMember` degrades it: a status a newer build wrote is null
+      // here too, so the fold cannot read it as launched, out or blocked.
+      status: readEnsembleEnum(ENSEMBLE_MEMBER_STATUSES, row.status),
+      ownsReadyArtifact: ownsReady.has(row.id),
+    }));
+  }
+
   private summaryFor(run: EnsembleRun): EnsembleSummary {
-    const launchedSlots = LAUNCHED_MEMBER_STATUSES.map(() => "?").join(",");
-    const counts = this.db
-      .prepare(
-        `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN status IN (${launchedSlots}) THEN 1 ELSE 0 END) AS launched
-           FROM ensemble_members WHERE run_id = ?`,
-      )
-      .get(...LAUNCHED_MEMBER_STATUSES, run.id) as unknown as
-      | { total: number; launched: number | null }
-      | undefined;
+    // The store has no registry, so no member can be reported as waiting on the operator here.
+    // That is the honest no-registry answer rather than a stub: `membersReady` is still complete
+    // and the three counts are still disjoint, and the manager's decoration only ever MOVES a
+    // member from ready to blocked. See `EnsembleManager.decorateSummary`.
+    const counts = ensembleMemberCounts(this.memberCountFacts(run.id), () => false);
     const ready = this.db
       .prepare(`SELECT COUNT(*) AS ready FROM ensemble_artifacts WHERE run_id = ? AND status = 'ready'`)
       .get(run.id) as unknown as { ready: number } | undefined;
-    const memberCount = counts?.total ?? 0;
+    const memberCount = counts.memberCount;
     const outcome = run.outcome;
     const selectedMemberId =
       outcome === null
@@ -1311,12 +1345,15 @@ export class EnsembleStore {
       status: run.status,
       activeStageId: run.activeStageId,
       memberCount,
-      launchedMembers: counts?.launched ?? 0,
+      launchedMembers: counts.launchedMembers,
       // The plan's own cap when it is readable, and the roster we actually have when it is
       // not - never a hard-coded default, which would tell an operator a run may grow to a
       // size its plan never allowed.
       maxMembers: run.plan?.budget.maxMembers ?? memberCount,
       readyArtifacts: ready?.ready ?? 0,
+      membersOut: counts.membersOut,
+      membersNeedingInput: counts.membersNeedingInput,
+      membersReady: counts.membersReady,
       selectedMemberId,
       outcomeKind: outcome?.kind ?? null,
       unreadable: run.unreadable,
@@ -1346,6 +1383,10 @@ export class EnsembleStore {
       maxMembers: summary.maxMembers,
       status: member.status,
       resultLabel: boundedOrNull(member.resultLabel, ENSEMBLE_LIMITS.resultLabel),
+      // False here for the same reason `membersNeedingInput` is 0 above: whether a session is
+      // holding a question is live state this module cannot see. `EnsembleManager.refreshLinks`
+      // is what fills it in on the projection the browser actually receives.
+      needsInput: false,
     };
   }
 

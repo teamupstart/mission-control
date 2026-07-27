@@ -13,10 +13,9 @@ import { isQuitting } from "./lifecycle.ts";
 let win: BrowserWindow | null = null;
 
 // The window has no native title bar, so the topbar doubles as one and gives up
-// its left edge to the traffic lights. With that inset its controls stay on one
-// row down to ~1280px; below that the session stats wrap to a second row, which
-// costs more height than removing the title bar saved. Open with room to spare -
-// but never wider than the display.
+// its left edge to the traffic lights. Open at a comfortable desktop size; the
+// topbar's container-query ladder handles narrower half-screen windows without
+// making this preferred width a responsive breakpoint. Never exceed the display.
 const PREFERRED = { width: 1400, height: 860 };
 
 function initialSize(): { width: number; height: number } {

@@ -197,11 +197,13 @@ The fix log is **not** gated on an active run - that is the entire point.
 
 ## UI
 
-`src/web/components/NomistakesFixLog.tsx`, rendered by `SessionCard` below the strip when
-`nomistakesFixes.length > 0`.
+`src/web/components/NomistakesFixLog.tsx`, rendered below the strip by `SessionCard` and
+by the shared Console/Board detail when `nomistakesFixes.length > 0`.
 
-- **Rollup row** (collapsed default): `◇ fixed by no-mistakes · review 5 · document 3` and
-  a count. This is the whole footprint at rest.
+- **Rollup row** (collapsed default): `◇ fixed by no-mistakes · review 5 · document 3`,
+  a count, and a bordered caret that makes the row visibly expandable. The clipped log
+  refuses flex shrink while collapsed, so this control stays visible in an over-full
+  detail pane; an open detail log may still shrink against its own minimum-height floor.
 - **Scroll region** (open): cards cap it at `208px`; Console and Board detail views cap it
   responsively with `clamp(160px, 42dvh, 480px)`, while preserving the Conversation
   transcript's `120px` minimum. The shared Gate tab uses the same responsive cap.

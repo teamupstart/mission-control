@@ -55,8 +55,8 @@ export interface ConsensusPromptInput {
   guidanceLabel: string;
   guidanceText: string;
   /**
-   * Whether the guidance text is fenced as data. A Persona's operator-authored Markdown is fenced
-   * so an instruction embedded in it cannot override the contract; the built-in guidance is our own
+   * Whether the guidance text is fenced as data. Persona Markdown is fenced so an instruction
+   * embedded in it cannot override the contract; the strategy's built-in guidance is our own
    * authoritative criteria and is presented as instructions.
    */
   guidanceFenced: boolean;

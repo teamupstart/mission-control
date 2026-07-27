@@ -5,6 +5,7 @@ import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import {
   AgentDot,
   InspectorRailMark,
+  PrRailMark,
   ScheduleOriginRailMark,
   WorkflowRailMark,
   EnsembleRailMark,
@@ -106,9 +107,7 @@ export function RailRow({
           <span className="rail-state">{st.label}</span>
           <span className="rail-meta">
             {marks.length > 0 && <span className="rail-marks">{marks.join(" ")}</span>}
-            {session.prNumber && (
-              <span className={`rail-pr pr-${session.prState ?? "open"}`}>#{session.prNumber}</span>
-            )}
+            <PrRailMark session={session} />
             {/* The rail is glyph-and-count only - it has one line of room and a name to fit
                 in it - so the Inspector shows as ⌕ plus its count, and nothing when there
                 is nothing outstanding. The DECISION and the tooltip are the shared ones;

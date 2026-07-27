@@ -967,9 +967,87 @@ test("the compact summary counts progress without loading the run's children", (
   summary = store.summary(run.id);
   assert.equal(summary?.launchedMembers, 1);
   assert.equal(summary?.readyArtifacts, 1);
+  // The member-level counts beside the artifact count, and the difference between them is the
+  // point: one ready ARTIFACT is one ready MEMBER here, and the store - which cannot see a
+  // session - reports nobody as waiting on the operator.
+  assert.equal(summary?.membersReady, 1);
+  assert.equal(summary?.membersNeedingInput, 0);
+  assert.equal(summary?.membersOut, 0);
 
   store.setRunStatus(run.id, ["planning"], "awaiting_decision");
   assert.equal(store.summary(run.id)?.attention, true, "a run waiting on a person needs attention");
+});
+
+test("membersOut counts the members a run LOST, and nothing terminal that still counts", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  assert.equal(store.summary(run.id)?.membersOut, 0);
+
+  // `eliminated`, `failed` and `withdrawn` are work the run lost. `retained` and `advanced` are
+  // terminal too and are work it still HAS - folding them together would draw a retained
+  // candidate as a casualty, and (worse) an eliminated one as an agent still thinking.
+  store.setMemberStatus(members[0]!.id, ["pending"], "active");
+  store.setMemberStatus(members[0]!.id, ["active"], "failed");
+  assert.equal(store.summary(run.id)?.membersOut, 1);
+
+  store.setMemberStatus(members[1]!.id, ["pending"], "active");
+  store.setMemberStatus(members[1]!.id, ["active"], "retained");
+  assert.equal(store.summary(run.id)?.membersOut, 1, "retained is not out");
+
+  store.setMemberStatus(members[1]!.id, ["retained"], "withdrawn");
+  assert.equal(store.summary(run.id)?.membersOut, 2);
+  // A count, never an attention signal: a lost member has its own terminal-run and retry
+  // surfaces, and a barrier that can no longer be met fails the RUN, which does alert.
+  assert.equal(store.summary(run.id)?.attention, false);
+});
+
+test("an eliminated member's ready artifact is counted out, not ready - it cannot be both", () => {
+  const store = new EnsembleStore(db);
+  const { run, members } = insert(store);
+  store.setMemberStatus(members[0]!.id, ["pending"], "active", { taskId: "task-out" });
+  const attempt = store.insertAttempt({
+    runId: run.id,
+    memberId: members[0]!.id,
+    attempt: 1,
+    taskId: "task-out",
+    sessionId: null,
+    agent: null,
+    requestedModel: null,
+    requestedEffort: null,
+    baseSha: null,
+    worktreePath: null,
+    branch: null,
+    status: "running",
+  });
+  store.recordArtifact({
+    runId: run.id,
+    attemptId: attempt.id,
+    kind: "commit",
+    formatVersion: 1,
+    attempt: 1,
+    status: "ready",
+    locator: {},
+    digest: "d",
+    metadata: {},
+    operationKey: "op-out-1",
+    readyAt: 1,
+  });
+  const submitted = store.summary(run.id);
+  assert.equal(submitted?.membersReady, 1);
+  assert.equal(submitted?.membersOut, 0);
+
+  // The loser of a decision keeps its refs - `readyArtifacts` still counts the artifact, because
+  // that is what a restore acts on - but the MEMBER is out, so a progress rendering cannot draw
+  // it twice or exceed `maxMembers`.
+  store.setMemberStatus(members[0]!.id, ["active"], "eliminated");
+  const decided = store.summary(run.id);
+  assert.equal(decided?.readyArtifacts, 1, "the artifact survives elimination");
+  assert.equal(decided?.membersReady, 0);
+  assert.equal(decided?.membersOut, 1);
+  assert.ok(
+    (decided?.membersOut ?? 0) + (decided?.membersNeedingInput ?? 0) + (decided?.membersReady ?? 0) <=
+      (decided?.launchedMembers ?? 0),
+  );
 });
 
 test("the compact summary does not treat an unknown member status as launched", () => {
@@ -1012,6 +1090,9 @@ test("the task projection names the member, its place in the roster, and nothing
     ordinal: 2,
     wave: 1,
     role: "candidate-2",
+    // Always false from the store: whether that member's session is holding a question is live
+    // state this module cannot see, and `EnsembleManager.refreshLinks` is what joins it in.
+    needsInput: false,
     launchedMembers: 1,
     maxMembers: 3,
     status: "active",

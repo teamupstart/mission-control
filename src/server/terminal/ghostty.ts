@@ -262,6 +262,8 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
   return {
     id: "ghostty",
     label: "Ghostty",
+    // An outlined window - an emulator, distinct from WezTerm at a glance.
+    glyph: "◫",
     bin: GHOSTTY_BIN,
 
     list: async () => {

@@ -8,6 +8,7 @@ import type {
   Harness,
   HookSpec,
   ModeLineSpec,
+  ResumeSpec,
   SdkSpec,
   TranscriptMessages,
   TranscriptSpec,
@@ -75,6 +76,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // when the operator turns it on: `control` above is still how a Claude session someone
     // else started is reached, because we do not own their pty.
     sdk: claudeSdk,
+    // `claude --resume <id>`. This argv used to live INSIDE `claudeSdk`, which made it
+    // reachable only for a harness that also had an embedded driver - see `ResumeSpec`.
+    resume: { argv: (agentSessionId) => ["--resume", agentSessionId] },
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -109,6 +113,12 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // whatever is highlighted now. See `codex/sdk.ts`. Paired with `runtimes` in
     // `HARNESS_CAPABILITIES.codex` (`harness-sdk.test.ts` fails until they agree).
     sdk: codexSdk,
+    // `codex resume <uuid>` - a SUBCOMMAND, not a flag, and the id is positional. Codex's
+    // interactive and programmatic surfaces share the same session store, so an app-server
+    // thread id reopens the same rollout in the TUI. No model, effort, or sandbox flags ride
+    // along: the resumed rollout carries its own settings. This remains separate from `sdk`;
+    // Pi's non-null `resume` beside `sdk: null` demonstrates why the split is load-bearing.
+    resume: { argv: (agentSessionId) => ["resume", agentSessionId] },
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -139,6 +149,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // structured needs-you evidence: its `hooks: null` and `workQueue: null` are both
     // consequences of having no push channel, and the driver IS one.
     sdk: null,
+    // `pi --session <id>`. NOT `--resume`, which opens pi's interactive picker and takes no
+    // id, and NOT `--fork`, which branches rather than continues. Three adjacent flags in
+    // `pi --help`, one of which is the right answer.
+    resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
   },
 };
 
@@ -208,6 +222,31 @@ export function sdkFor(agent: AgentType): SdkSpec | null {
 }
 
 const STREAM_JSON_CONTROL: ControlSpec = { kind: "stream-json" };
+
+/**
+ * How to continue one of this agent's conversations in a terminal, or null when its CLI
+ * cannot reopen one.
+ *
+ * Beside `sdkFor` and deliberately NOT part of it: the two answer different questions and
+ * every harness here answers this one while only Claude and Codex answer the other. See
+ * `ResumeSpec` for what welding them together cost.
+ */
+export function resumeFor(agent: AgentType): ResumeSpec | null {
+  return HARNESSES[agent].resume;
+}
+
+/**
+ * The full argv - binary included - that reopens `agentSessionId` for this agent, or null
+ * when the harness cannot.
+ *
+ * The one composer, so a caller never pairs `resolveAgentBin` with a hand-written flag.
+ * Both readers (the embedded handoff, and the conversation pane's agent launcher) go
+ * through here, which is what keeps them spawning the same command line.
+ */
+export function resumeArgvFor(agent: AgentType, agentSessionId: string): string[] | null {
+  const spec = resumeFor(agent);
+  return spec ? [resolveAgentBin(agent), ...spec.argv(agentSessionId)] : null;
+}
 
 /**
  * Whether Foreman may automate this session.

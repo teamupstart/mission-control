@@ -126,9 +126,9 @@ Inherits C1-C5. Additional findings binding this phase:
     than Claude-scoped so later drivers inherit it until phase 3 removes both guards.
 11. **Handoff (C8)**: `POST /api/sessions/:id/handoff` → supervisor graceful stop →
     `launchHome` (existing `terminal/home.ts`) in the session cwd using
-    `[resolveAgentBin(session.agent), ...sdk.resumeArgv(agentSessionId)]` → respond with
+    `resumeArgvFor(session.agent, agentSessionId)` → respond with
     the home name; discovery adopts the new process. The route reaches the harness-specific
-    command through `SdkSpec`, never by testing `session.agent`. Card/detail action +
+    command through `Harness.resume`, never by testing `session.agent`. Card/detail action +
     keyboard entry + README keyboard table row (AGENTS.md shortcut registry: `ActionId`,
     `ACTIONS`, dispatch branch, `CommandBar` keycap, `keybindings.test.ts`).
 12. **Tests**: `claude-sdk-adapter.test.ts` (scripted message stream: init→bound,
@@ -163,7 +163,7 @@ row landed in the same PR; default remains `"terminal"`.
 Phases 3/4/6 may rely on: the supervisor's start/answer/send/stop/restore semantics, the
 dispatch branch, C6's resolver, the answer-route runtime branching, and the Claude
 adapter as the reference `SdkSpec` implementation. Later drivers must fill
-`resumeArgv`, subtract any inherited terminal identity from their subprocess environment,
+`Harness.resume.argv`, subtract any inherited terminal identity from their subprocess environment,
 and either implement each nullable live control or refuse it. They must not bypass the
 supervisor to reach a handle or add per-dispatch runtime selection (resolved decision).
 

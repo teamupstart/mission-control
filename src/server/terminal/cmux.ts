@@ -307,6 +307,8 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
   return {
     id: "cmux",
     label: "cmux",
+    // Stacked panes, mirrored: same axis as tmux, different backend.
+    glyph: "▥",
     bin: CMUX_BIN,
 
     /**

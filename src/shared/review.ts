@@ -12,7 +12,7 @@
 export const REVIEW_LIMITS = {
   /** One fenced evidence section, in characters, before it announces its own truncation. */
   section: 240_000,
-  /** Exact operator-authored guidance interpolated into a review prompt. */
+  /** Exact Persona guidance interpolated into a review prompt. */
   guidance: 100_000,
 } as const;
 
@@ -41,7 +41,7 @@ export const REVIEW_NO_TOOLS = "Do not use tools or assume facts outside this sn
 export interface ReviewContractInput {
   /** What is under review, as the prompt names it ("the submitted snapshot"). */
   subject: string;
-  /** What the operator authored that may specialize the review ("Persona guidance"). */
+  /** The supplied guidance that may specialize the review ("Persona guidance"). */
   guidanceLabel: string;
   /** The evidence the reviewer must treat as data ("diff, transcript, and standards content"). */
   evidenceLabel: string;

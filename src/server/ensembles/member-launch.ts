@@ -60,6 +60,13 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
     }
   }
 
+  settleSuperseded(taskId: string, outcome: string): void {
+    // `complete`, not `cancel`: it records the outcome and deliberately performs no teardown, so the
+    // agent, worktree, branch and home all survive for the operator's confirmed Clean up. That is the
+    // whole distinction this method exists to make - see `EnsembleTaskGateway.settleSuperseded`.
+    this.tasks.complete(taskId, outcome);
+  }
+
   status(taskId: string): TaskGatewayStatus | null {
     return this.registry.getTask(taskId)?.status ?? null;
   }

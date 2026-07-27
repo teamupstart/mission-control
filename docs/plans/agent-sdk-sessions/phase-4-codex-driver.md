@@ -96,7 +96,7 @@ Inherits C1-C9 (C9 if phase 3 has merged; otherwise the interim refusal). Findin
 3. **Capability flips**: codex `runtimes: ["terminal", "sdk"]`,
    `HARNESSES.codex.sdk = codexSdk` (C4 contract test moves them together). The panel
    control appears with no panel edit (it folds over `runtimes`).
-4. **Handoff**: implement `SdkSpec.resumeArgv(threadId)` as `["resume", threadId]`
+4. **Handoff**: implement `Harness.resume.argv(threadId)` as `["resume", threadId]`
    (verify the exact argv against the pinned binary; the TUI picker's
    `--include-non-interactive` concern does not apply to a direct id resume). The phase 2
    route prepends `resolveAgentBin("codex")` without a Codex-specific branch.

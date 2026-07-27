@@ -46,6 +46,7 @@ const PERSONA: PersonaView = {
   archivedAt: null,
   createdAt: 1,
   updatedAt: 2,
+  builtin: false,
   execution: {
     runner: { id: "claude", source: "default", unknown: null },
     model: { id: "claude-sonnet-5", source: "default" },
@@ -234,6 +235,39 @@ test("dirty, conflict, and archived states are explicit and actionable", () => {
   assert.match(html, /Archived - this Persona is read-only/);
   assert.match(html, /readOnly=""/);
   assert.doesNotMatch(html, />Archive<\/button>/);
+});
+
+// A built-in is read-only for a different reason than an archived Persona, and the editor has
+// to say which: the operator archived one of them and did not archive the other, so an
+// "Archived" sentence over a shipped Persona sends them looking for a control to undo.
+test("a built-in Persona opens read-only, names why, and offers Duplicate instead of Archive", () => {
+  const builtin = { ...PERSONA, builtin: true, revision: 1 };
+  const html = renderToStaticMarkup(createElement(PersonaEditor, { persona: builtin, ...callbacks }));
+  assert.match(html, /Built-in - this Persona ships with Mission Control/);
+  assert.match(html, /Duplicate it to make a copy you own/);
+  assert.match(html, /Built-in Persona</, "the eyebrow reports provenance, not a revision");
+  assert.doesNotMatch(html, /Revision 1/);
+  assert.match(html, /readOnly=""/);
+  assert.match(html, />Duplicate<\/button>/);
+  assert.doesNotMatch(html, />Archive<\/button>/);
+  assert.match(html, /disabled=""/, "Save is disabled: there is nothing this editor could save");
+  assert.doesNotMatch(
+    renderToStaticMarkup(createElement(PersonaEditor, { persona: PERSONA, ...callbacks })),
+    /Built-in/,
+    "an ordinary Persona says nothing about being built in",
+  );
+});
+
+test("the library flags built-ins in the list so their read-only editor is not a surprise", () => {
+  const html = renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas: [PERSONA, { ...PERSONA, id: "b1", name: "Code Risk Reviewer", normalizedName: "code risk reviewer", builtin: true }],
+    providers: PROVIDERS,
+    defaults: null,
+    isOverlayOpen: () => false,
+    onDirtyChange: () => {},
+  }));
+  assert.match(html, /class="persona-list-tag">Built-in</);
+  assert.equal(html.match(/persona-list-tag/g)?.length, 1, "only the built-in carries the tag");
 });
 
 test("an unknown stored provider is reported and survives an unrelated edit", () => {

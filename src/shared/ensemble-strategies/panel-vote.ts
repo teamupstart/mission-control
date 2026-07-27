@@ -170,14 +170,14 @@ export type PanelVoteMember = z.infer<typeof PanelVoteMemberSchema>;
  *
  * `lens` is what the judge weighs when no Persona is named, and it is REQUIRED to be one this
  * build has - a panel whose judges all fell back to the same default rubric is the failure mode
- * this strategy exists to avoid. `personaId` overrides it with an operator-authored lens, resolved
- * to an exact revision at creation and snapshotted into the plan, exactly as Best-of-N resolves
- * its comparative Persona: the same drift a base-commit pin removes.
+ * this strategy exists to avoid. `personaId` overrides it with a catalog Persona, resolved to an
+ * exact snapshot at creation, exactly as Best-of-N resolves its comparative Persona: the same
+ * drift a base-commit pin removes.
  */
 export const PanelVoteJudgeSchema = z.object({
   lens: z.enum(PANEL_LENS_IDS).default("panel_correctness_v1"),
   /**
-   * An operator-authored Persona to judge with, replacing the lens above, or null to use it.
+   * A catalog Persona to judge with, replacing the lens above, or null to use it.
    *
    * A bare id here, resolved by the daemon at creation. The compiler refuses to compile an id it
    * was not handed a resolution for, so a Persona that has been deleted or archived fails visibly
@@ -185,9 +185,9 @@ export const PanelVoteJudgeSchema = z.object({
    */
   personaId: z.string().min(1).max(200).nullable().default(null),
   /**
-   * Optionally pin the Persona revision this request was built against. When set and the live
-   * Persona has moved on, creation is REFUSED rather than snapshotting newer guidance under the
-   * request that was made.
+   * Optionally pin the revision of an operator-authored Persona this request was built against.
+   * When set and the row has moved on, creation is REFUSED rather than snapshotting newer guidance.
+   * Built-ins have one build-local revision and their exact current guidance snapshots at creation.
    */
   personaRevision: z.number().int().positive().nullable().default(null),
   runner: z.enum(LLM_RUNNER_IDS).nullable().default(null),

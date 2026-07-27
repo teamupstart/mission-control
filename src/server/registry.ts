@@ -3017,6 +3017,59 @@ export class Registry extends EventEmitter {
     return out;
   }
 
+  /**
+   * Driver-run sessions whose checkout has to be re-read, with the cwd to read it in.
+   *
+   * The counterpart to `applyDiscovery` for the one runtime that never passes through it.
+   * A pane-backed session's `gitBranch` is re-resolved from its cwd on every sweep, so it
+   * follows the agent onto whatever branch it cuts; a driver-run session is registered
+   * once, from `wt.branch` at dispatch, and nothing ever asked again. A pooled worktree is
+   * routinely leased with no branch at all, so that snapshot is `null` for the whole life
+   * of the session while the agent works on - and opens a PR from - a branch the daemon
+   * cannot see. `prPollTargets` then reports `branch: null`, the poller never spends a `gh`
+   * call on it, and `reconcilePrs` reads the resulting absence as "provably no PR" and
+   * RETRACTS the chip a hook had set optimistically.
+   *
+   * Scoped to `runtime === "sdk"` for the same reason `applyDiscovery`'s unseen-means-exited
+   * loop is scoped to `"terminal"`: this is the arm for sessions the sweep cannot answer for,
+   * not a second answer for the ones it already does.
+   */
+  driverGitTargets(): { id: string; cwd: string }[] {
+    const out: { id: string; cwd: string }[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.runtime !== "sdk" || !s.cwd || s.state === "exited") continue;
+      out.push({ id: s.id, cwd: s.cwd });
+    }
+    return out;
+  }
+
+  /**
+   * Adopt the branch each driver-run session's checkout is actually on.
+   *
+   * `null` overwrites a known branch rather than being ignored, which is deliberate and is
+   * exactly what a pane-backed session already does: a detached HEAD (every `git rebase`
+   * passes through one) and a worktree that has gone away both read as "no branch", and
+   * `branchFromHead` returning null is what lets the first REAL branch be adopted in place
+   * instead of looking like a branch change that invalidates task ownership
+   * (`ensureWorkEpisode`). Making the driver arm agree with the pane arm is the fix; a
+   * special case that held the last value here would be a third answer to "what branch is
+   * this session on".
+   *
+   * Only `gitBranch` is written. `cwd` is fixed for the life of a driver-run session, so
+   * `gitRoot` and `repoRoot` cannot have changed, and the launch-time answers the
+   * supervisor recorded for them stay authoritative.
+   */
+  applyDriverBranches(branches: Map<string, string | null>): void {
+    for (const [id, branch] of branches) {
+      const s = this.sessions.get(id);
+      if (!s || s.runtime !== "sdk" || s.state === "exited") continue;
+      if (s.gitBranch === branch) continue;
+      const next: Session = { ...s, gitBranch: branch };
+      this.sessions.set(next.id, next);
+      if (!sessionEqual(s, next)) this.emitSession(next);
+    }
+  }
+
   prObservationFor(sessionId: string): PrObservation | null {
     return this.prObservations.get(sessionId) ?? null;
   }

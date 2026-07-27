@@ -359,6 +359,15 @@ export interface Multiplexer {
   id: MultiplexerId;
   /** Human label for UI and error text ("tmux"). */
   label: string;
+  /**
+   * Leading glyph for this backend's row in the conversation pane's terminal menu.
+   *
+   * Required, and on the ADAPTER rather than in a lookup table beside the ids, so a new
+   * backend does not compile until it has said what it looks like - the enforcement
+   * `Record<AgentType, …>` gives the harness axis. A character, never an image and never a
+   * vendor logo: the same rule that keeps vendor names out of `styles.css`.
+   */
+  glyph: string;
   bin: BinSpec;
   list(): Promise<MuxPane[]>;
   write: PaneWrite<MuxTarget>;
@@ -465,6 +474,8 @@ export interface TerminalEmulator {
   id: EmulatorId;
   /** Human label for UI and error text ("WezTerm"). */
   label: string;
+  /** Leading glyph for the terminal menu. Required - see `Multiplexer.glyph`. */
+  glyph: string;
   bin: BinSpec;
   list: (() => Promise<EmulatorPane[]>) | null;
   /**

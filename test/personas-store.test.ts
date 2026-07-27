@@ -18,7 +18,10 @@ const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workf
 const { normalizePersonaName } = await import("../src/shared/workflow.ts");
 
 const db = openDb();
-const store = new WorkflowStore(db);
+// No built-in catalog here on purpose: these cases are about what a ROW does, and the four
+// shipped Personas would put four constants inside every list assertion below. The merge and
+// its refusals are `builtin-personas.test.ts`.
+const store = new WorkflowStore(db, []);
 const exact = "# Code Quality\r\n\r\nKeep trailing spaces.  \r\nNo final newline";
 
 after(() => rmSync(home, { recursive: true, force: true }));

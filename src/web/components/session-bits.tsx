@@ -27,15 +27,14 @@ import type { TaskEnsembleLink } from "@shared/ensemble.ts";
  * reason even though they hang off a Task rather than a Session: the board's backlog
  * column and the roundup panel both draw them, and two copies is how they drift.
  *
- * Every surface is a consumer here, the card included: the card, the console's detail
- * pane and the board's tile each arrange these SAME bits rather than importing one
- * another or keeping a private copy of the PR-icon SVG or the rename flow. That matters
- * because the card is rendered by ONE layout while the detail serves two, so a private
- * copy means a fix lands in two layouts and silently misses the third.
+ * Every drawing is a consumer here, the card included: the card, console detail, board
+ * tile and rail row arrange these SAME bits rather than importing one another or keeping
+ * private copies. Compact drawings may use a different vocabulary, but their decision and
+ * leaf variant still live here. That matters because the card is rendered by ONE layout
+ * while the detail serves two, so a private copy can silently miss another layout.
  *
- * `test/session-leaf-parity.test.ts` pins this: it renders each bit standalone and
- * asserts all three surfaces contain that exact output, so a re-inlined copy fails as
- * soon as it drifts.
+ * `test/session-leaf-parity.test.ts` pins each drawing to its shared leaves;
+ * `test/pr-chip-parity.test.ts` pins the PR decision across all four.
  */
 
 /**
@@ -635,7 +634,7 @@ export function inspectorChipView(inspector: Session["inspector"]): InspectorChi
   };
 }
 
-/** The Inspector chip. Shared by all four session surfaces - see CLAUDE.md on parity. */
+/** The card/detail Inspector chip; all four drawings share `inspectorChipView`. */
 export function InspectorChip({ session }: { session: Session }): React.JSX.Element | null {
   const view = inspectorChipView(session.inspector);
   if (!view || !session.inspector) return null;
@@ -711,37 +710,76 @@ export function InspectorTileFlag({ session }: { session: Session }): React.JSX.
   );
 }
 
+export interface PrChipView {
+  url: string;
+  /** `#264`, or a bare `PR` when the URL carried no parsable number. */
+  label: string;
+  tone: string;
+  state: PrState;
+  failing: boolean;
+  /** Wording for the PR itself, independent of its checks. */
+  title: string;
+  /** Wording for the failing-checks affordance, wherever a surface has room for one. */
+  failingTitle: string;
+}
+
+/**
+ * The one "does this session have a pull request, and what does it say" decision, shared by
+ * all four session drawings the way `inspectorChipView` is.
+ *
+ * The gate is `prUrl` and nothing else. It used to be spelled twice: `PrChip` asked for the
+ * URL while the board tile and the rail asked for `prNumber`, so a pull request whose URL
+ * did not parse to a number drew a chip on the card and the console and NOTHING on the
+ * other two. They agree today only because `prNumber` is written exclusively as
+ * `prNumberFromUrl(prUrl)` beside the URL itself - which is also why the tile's old "a
+ * number but no URL yet" branch was unreachable, and is gone rather than restated here.
+ * `label` is where the missing number is absorbed, so a surface renders the PR it has
+ * rather than deciding for itself that it has none.
+ */
+export function prChipView(session: Session): PrChipView | null {
+  if (!session.prUrl) return null;
+  const state = session.prState ?? "open";
+  const label = session.prNumber ? `#${session.prNumber}` : "PR";
+  return {
+    url: session.prUrl,
+    label,
+    tone: `pr-${state}`,
+    state,
+    failing: session.prChecks === "failing",
+    title:
+      state === "merged"
+        ? `Pull request ${label} merged - open on GitHub`
+        : `Open pull request ${label} - open on GitHub`,
+    failingTitle: "A CI check failed on this pull request - open on GitHub",
+  };
+}
+
 /** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
-  if (!session.prUrl) return null;
+  const view = prChipView(session);
+  if (!view) return null;
   return (
     <>
-      <Tooltip
-        label={
-          session.prState === "merged"
-            ? "Pull request merged - open on GitHub"
-            : "Open pull request - open on GitHub"
-        }
-      >
+      <Tooltip label={view.title}>
         <a
-          className={`pr-chip pr-${session.prState ?? "open"}`}
-          href={session.prUrl}
+          className={`pr-chip ${view.tone}`}
+          href={view.url}
           target="_blank"
           rel="noreferrer"
           onClick={(e) => e.stopPropagation()}
         >
-          <PrStateIcon state={session.prState ?? "open"} />
-          <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "PR"}</span>
+          <PrStateIcon state={view.state} />
+          <span className="pr-num">{view.label}</span>
         </a>
       </Tooltip>
-      {session.prChecks === "failing" && (
-        <Tooltip label="A CI check failed on this PR - open on GitHub">
+      {view.failing && (
+        <Tooltip label={view.failingTitle}>
           <a
             className="pr-checks-alert"
-            href={session.prUrl}
+            href={view.url}
             target="_blank"
             rel="noreferrer"
-            aria-label="A CI check failed on this pull request - open on GitHub"
+            aria-label={view.failingTitle}
             onClick={(e) => e.stopPropagation()}
           >
             <ChecksFailedIcon />
@@ -753,40 +791,54 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
 }
 
 /**
+ * The rail's own vocabulary for the PR - the number alone, no icon and no separate checks
+ * affordance, because the rail has one line of room and a name to fit in it. Same shared
+ * decision as `PrChip` and `PrTileFlag`; only the rendering is this terse, exactly as
+ * `InspectorRailMark` is to `InspectorChip`.
+ *
+ * This lived inline in `RailRow` with its own `prNumber` gate, which is the drift
+ * `prChipView`'s comment describes. Failing checks fold into the tone the way the tile
+ * does rather than adding an element.
+ */
+export function PrRailMark({ session }: { session: Session }): React.JSX.Element | null {
+  const view = prChipView(session);
+  if (!view) return null;
+  const title = view.failing ? view.failingTitle : view.title;
+  return (
+    <Tooltip label={title}>
+      <span className={`rail-pr ${view.tone}`}>
+        {view.label}
+        {view.failing && " ⚠"}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
  * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
  * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
  * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
  * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
- * tile don't behave differently on hover. Renders nothing without a PR number, and a plain
- * unlinked flag (the tile's own long-standing escape hatch) when there's a number but no
- * URL yet - neither state has anything to hover for.
+ * tile don't behave differently on hover. Same shared `prChipView` gate as the other three
+ * drawings - see its comment for the `prNumber` gate this replaced.
  */
 export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
-  if (!session.prNumber) return null;
-  const tone = `pr-${session.prState ?? "open"}`;
-  const label = (
-    <>
-      #{session.prNumber}
-      {session.prChecks === "failing" && " ⚠"}
-    </>
-  );
-  if (!session.prUrl) return <span className={`tile-flag ${tone}`}>{label}</span>;
-  const title =
-    session.prChecks === "failing"
-      ? "A CI check failed on this pull request - open on GitHub"
-      : `Pull request #${session.prNumber} - open on GitHub`;
+  const view = prChipView(session);
+  if (!view) return null;
+  const title = view.failing ? view.failingTitle : view.title;
   return (
     <Tooltip label={title}>
       <a
-        className={`tile-flag tile-flag-link ${tone}`}
-        href={session.prUrl}
+        className={`tile-flag tile-flag-link ${view.tone}`}
+        href={view.url}
         target="_blank"
         rel="noreferrer"
         // Without this the click also reaches the tile's own onClick and opens the
         // console behind the new tab. stopPropagation only: the link still has to navigate.
         onClick={(e) => e.stopPropagation()}
       >
-        {label}
+        {view.label}
+        {view.failing && " ⚠"}
       </a>
     </Tooltip>
   );

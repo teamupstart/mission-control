@@ -158,6 +158,19 @@ export const ENSEMBLE_TERMINAL_MEMBER_STATUSES: readonly EnsembleMemberStatus[] 
       status === "retained",
   );
 
+/**
+ * The statuses that mean "this member is OUT" - it contributes nothing further to the run.
+ *
+ * A strict subset of the terminal set, and the difference is the point: `advanced` and
+ * `retained` are terminal AND still count as work the run has, while these three are work it
+ * lost. A progress rendering that folded them together would draw an eliminated candidate as
+ * a live one, or a retained one as a casualty.
+ */
+export const ENSEMBLE_OUT_MEMBER_STATUSES: readonly EnsembleMemberStatus[] =
+  ENSEMBLE_MEMBER_STATUSES.filter(
+    (status) => status === "eliminated" || status === "failed" || status === "withdrawn",
+  );
+
 /** One launch of one member. A retry is a new attempt, never a rewritten member. */
 export const ENSEMBLE_ATTEMPT_STATUSES = [
   "pending",
@@ -271,9 +284,10 @@ export type EnsembleWorkflowHandoffState = (typeof ENSEMBLE_WORKFLOW_HANDOFF_STA
  * Which finalization step a `finalizing` run has durably reached.
  *
  * Recovery reads THIS off the finalize stage attempt to resume rather than restart: a run
- * interrupted after its winner was made exact but before its losers were reaped must not
- * re-verify a decision or re-materialize a winner. Ordered by execution, so a later step
- * proves every earlier one durable. Append-only.
+ * interrupted after its winner was made exact but before its member Tasks were reconciled must not
+ * re-verify a decision or re-materialize a winner. `reaping_losers` also settles a superseded
+ * original winner on the replacement path; the persisted step id remains append-only. Ordered by
+ * execution, so a later step proves every earlier one durable.
  */
 export const ENSEMBLE_FINALIZATION_STEPS = [
   "verifying",
@@ -484,9 +498,9 @@ export interface EnsembleSubjectPolicy {
  *
  * The persona case carries the FULL guidance text, not just an id and a revision, and that
  * is load-bearing: it is embedded in the compiled plan, and recovery executes the compiled
- * plan rather than reloading the live Persona. An operator who edits or archives the Persona
- * after creation must not silently re-aim a run already judging against the text they chose,
- * exactly as a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
+ * plan rather than reloading the live Persona. A later edit, archive, or shipped built-in
+ * update must not silently re-aim a run already judging against its captured text, exactly as
+ * a published Workflow pins a `PersonaSnapshot`. The `builtin` case names a
  * versioned rubric id whose text is owned by the strategy that named it; a new rubric is a
  * new id beside the old one, so an old plan keeps the exact rubric it named.
  */
@@ -511,8 +525,9 @@ export type EnsembleEvaluatorGuidance =
  *
  * This is what a review-guidance resolver hands the compiler, and what the compiler pins into
  * the `persona` guidance case above. `id` here is the source Persona's id; the guidance case
- * spells it `personaId`. Resolving one reads SQLite, so it happens OUTSIDE the pure compiler -
- * the same reason the launch runtime, not the compiler, pins a base commit.
+ * spells it `personaId`. Resolving one reads the WorkflowStore catalog (a SQLite row or a
+ * compiled-in Persona), so it happens OUTSIDE the pure compiler - the same reason the launch
+ * runtime, not the compiler, pins a base commit.
  */
 export interface EnsembleReviewPersona {
   id: string;
@@ -824,7 +839,7 @@ export interface EnsembleFinalizationProgress {
   /** How the one exact winner was made available. */
   winner: { mode: "restored" | "replacement"; ready: boolean } | null;
   continuationInIntent: boolean;
-  /** True once every non-winner member is reconciled terminal through TaskManager. */
+  /** True once every loser is terminal and any superseded original winner has been settled. */
   losersReaped: boolean;
   /** Deterministic key for the one continuation message, so a restart cannot send it twice. */
   continuationDeliveryKey: string | null;
@@ -1075,11 +1090,44 @@ export interface EnsembleSummary {
   maxMembers: number;
   /** Artifacts in `ready`, which is what a barrier and a decision actually count. */
   readyArtifacts: number;
+  /**
+   * Members that are out: `eliminated`, `failed` or `withdrawn`.
+   *
+   * Pure row state, so the store answers it and no live context is needed. Without it a
+   * progress rendering built from this summary cannot tell a failed member from a working one
+   * and would draw a casualty as an agent still thinking.
+   */
+  membersOut: number;
+  /**
+   * Members waiting on the OPERATOR - a pending review, or a pane/driver dialog on their session.
+   *
+   * Derived from live session state at publish time, so it is 0 in any context with no registry
+   * (the store's own projection, and any consumer reading a persisted row). This is what makes a
+   * blocked member exist in the ensemble vocabulary at all: it ORs into `attention`, so the run
+   * row's dot lights up and the away digest reports it.
+   */
+  membersNeedingInput: number;
+  /**
+   * Members that own a ready artifact and are neither out nor waiting on you.
+   *
+   * Member-level and MUTUALLY EXCLUSIVE with the two counts above, unlike `readyArtifacts`
+   * (which counts artifacts and means what it always did): a `submitted` member with a pending
+   * review is ONE member, and a rendering that added `readyArtifacts` to the blocked count would
+   * draw it twice and could exceed `maxMembers`. Registry-derived for the same reason as
+   * `membersNeedingInput`, since it has to exclude exactly those members.
+   *
+   * `membersOut`, `membersNeedingInput` and `membersReady` are PAIRWISE DISJOINT - no member is
+   * in two of them - and all three are subsets of `launchedMembers`, but they are not a
+   * partition of it: a launching or active member with no ready artifact and no pending question
+   * is in none, and "working" is always the NON-NEGATIVE remainder a consumer computes
+   * (`launchedMembers` minus the three).
+   */
+  membersReady: number;
   selectedMemberId: string | null;
   outcomeKind: EnsembleOutcomeKind | null;
   /** The recoverability signal: set when this build cannot execute the stored snapshot. */
   unreadable: EnsembleUnreadable | null;
-  /** Derived: this run is terminal-failed, unreadable, or waiting on a person. */
+  /** Derived: this run is failed, cancelling, unreadable, awaiting a decision, or has a blocked member. */
   attention: boolean;
   error: string | null;
   createdAt: number;
@@ -1121,6 +1169,15 @@ export interface TaskEnsembleLink {
   maxMembers: number;
   status: EnsembleMemberStatus | null;
   resultLabel: string | null;
+  /**
+   * This member is waiting on the operator - a pending review or a pane/driver dialog.
+   *
+   * The same fact `EnsembleSummary.membersNeedingInput` counts, at the member end, so a session
+   * surface reads it off the link it already has instead of re-deriving it from a session it may
+   * not be holding. Derived from live session state when the projection is rebuilt, so it is
+   * `false` in any context with no registry.
+   */
+  needsInput: boolean;
 }
 
 // ---- operator authorities ----
@@ -1260,10 +1317,147 @@ export function missingDriverKeys(plan: CompiledEnsemblePlan): string[] {
 export function ensembleNeedsAttention(input: {
   status: EnsembleStatus | null;
   unreadable: EnsembleUnreadable | null;
+  /**
+   * Optional with a 0 default, so a caller holding only durable row state - the store, a
+   * persisted-row reader - compiles and reads unchanged. A run whose MEMBER is blocked needs
+   * the operator every bit as much as one parked on a decision: the run status still says
+   * `running` while a candidate sits on an unanswered question, which is exactly the
+   * disagreement between the red card and the "Active" run row this closes.
+   *
+   * `membersOut` deliberately does NOT feed attention: a lost member already has its terminal-run
+   * and retry surfaces, and a barrier that can no longer be met fails the run, which does.
+   */
+  membersNeedingInput?: number;
 }): boolean {
   if (input.unreadable !== null) return true;
   if (input.status === null) return true;
+  if ((input.membersNeedingInput ?? 0) > 0) return true;
   return input.status === "failed" || input.status === "awaiting_decision" || input.status === "cancelling";
+}
+
+/**
+ * One member's row state, plus whether it owns a ready artifact.
+ *
+ * The bounded input the counts below fold: everything the disjointness rule needs and nothing
+ * else, so the store can answer it in two indexed reads and a test can build it by hand.
+ */
+export interface EnsembleMemberFact {
+  id: string;
+  /** The Task this member is, or null before its wave is dispatched. */
+  taskId: string | null;
+  status: EnsembleMemberStatus | null;
+  /** Whether any attempt of this member produced an artifact in `ready`. */
+  ownsReadyArtifact: boolean;
+}
+
+/**
+ * Whether a member's live session state is still THIS RUN's problem.
+ *
+ * The member-side half of the needs-input rule, shared by the counts below and by the per-member
+ * `TaskEnsembleLink.needsInput`, because a chip that answered it differently from the count beside
+ * it is the disagreement this whole signal exists to remove. `pending` has no Task and so no
+ * session; a terminal member - retained, advanced, eliminated - may well have a dialog open on its
+ * pane, and the run has finished with it.
+ */
+export function ensembleMemberAwaitsOperator(status: EnsembleMemberStatus | null): boolean {
+  return (
+    status !== null && status !== "pending" && !ENSEMBLE_TERMINAL_MEMBER_STATUSES.includes(status)
+  );
+}
+
+/** The five member counts an `EnsembleSummary` publishes, in one fold. */
+export interface EnsembleMemberCounts {
+  memberCount: number;
+  launchedMembers: number;
+  membersOut: number;
+  membersNeedingInput: number;
+  membersReady: number;
+}
+
+/**
+ * The member counts a summary carries, decided ONCE.
+ *
+ * Two callers fold the same rows with different knowledge - the store, which has no registry and
+ * so reports no member as needing input, and the manager, which supplies live session state - and
+ * a second implementation of the rule is how the boot snapshot and the first live emit come to
+ * disagree about the same run. The `return`s inside the loop are what make the last three counts
+ * pairwise DISJOINT by construction rather than by three predicates that happen not to overlap:
+ * an eliminated member that owns a ready artifact is counted out, not ready, and a submitted
+ * member sitting on a question is counted blocked, not ready.
+ *
+ * All three are scoped to a LAUNCHED member, which is what makes
+ * `launchedMembers - (membersOut + membersNeedingInput + membersReady)` a NON-NEGATIVE remainder a
+ * consumer can render as "working". An unreadable (null) status is evidence of nothing - a build
+ * that cannot name the status cannot claim the member is out, blocked or done, and a ready artifact
+ * under one would otherwise be counted where no launch was - and a `pending` member holds no Task
+ * at all (`reserveAttempt` is what binds one, and it moves the row to `launching` in the same
+ * transaction), so there is no session for it to be waiting on.
+ */
+export function ensembleMemberCounts(
+  facts: readonly EnsembleMemberFact[],
+  needsInput: (fact: EnsembleMemberFact) => boolean,
+): EnsembleMemberCounts {
+  const counts: EnsembleMemberCounts = {
+    memberCount: 0,
+    launchedMembers: 0,
+    membersOut: 0,
+    membersNeedingInput: 0,
+    membersReady: 0,
+  };
+  for (const fact of facts) {
+    counts.memberCount += 1;
+    const status = fact.status;
+    if (status === null || status === "pending") continue;
+    counts.launchedMembers += 1;
+    if (ENSEMBLE_OUT_MEMBER_STATUSES.includes(status)) {
+      counts.membersOut += 1;
+      continue;
+    }
+    if (ensembleMemberAwaitsOperator(status) && needsInput(fact)) {
+      counts.membersNeedingInput += 1;
+      continue;
+    }
+    if (fact.ownsReadyArtifact) counts.membersReady += 1;
+  }
+  return counts;
+}
+
+/**
+ * What a run's status is called in operator words, exhaustively.
+ *
+ * A `Record` rather than a switch so a new `EnsembleStatus` fails typecheck until someone says
+ * what it is called, and ONE function so the run list, a session chip, a lane header and a digest
+ * line cannot each invent their own word for `evaluating`. It reads the summary and nothing else -
+ * the compiled plan is deliberately not on the wire, so a stage's own label is a detail read.
+ */
+const ENSEMBLE_STAGE_WORDS: Record<EnsembleStatus, string> = {
+  planning: "launching",
+  running: "working",
+  waiting: "waiting",
+  evaluating: "reviewing",
+  awaiting_decision: "waiting on you",
+  finalizing: "promoting",
+  cancelling: "cancelling",
+  completed: "done",
+  cancelled: "cancelled",
+  failed: "failed",
+};
+
+/**
+ * The operator word for where a run is.
+ *
+ * `outcomeKind` is part of the input contract even though today's words are decided by status
+ * alone: it is the only other thing a terminal word could legitimately be refined by ("done" for a
+ * selected winner against a declared no-consensus), and taking it now means that refinement lands
+ * in this function instead of at a call site that has the summary anyway. A null status - a row a
+ * newer build wrote - is `unreadable`, never a nearest match.
+ *
+ * Not a rival to the browser's `ensembleStatusLabel`, which title-cases the enum for the status
+ * CHIP ("Awaiting decision") - that names the state, this says what is happening to the operator's
+ * work. A surface wanting the second thing calls this rather than writing a third mapping.
+ */
+export function ensembleStageWord(summary: Pick<EnsembleSummary, "status" | "outcomeKind">): string {
+  return summary.status === null ? "unreadable" : ENSEMBLE_STAGE_WORDS[summary.status];
 }
 
 // ---- agent cost ----

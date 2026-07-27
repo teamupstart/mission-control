@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
@@ -31,6 +31,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { GOAL_UNSUPPORTED } = await import("../src/shared/goal.ts");
 const { readGoalWindow } = await import("../src/server/goal/source.ts");
+const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -146,6 +147,34 @@ test("a harness that CAN read messages still serves them through the capability"
     await app.request(`/api/sessions/${withFile.id}/transcript/size`, { headers: HEADERS })
   ).json()) as { size: number | null };
   assert.ok(size && size > 0, "a real file has a byte anchor to hand the queue");
+});
+
+test("scroll-back validates byte offsets and attributes injected turns", async () => {
+  const { withFile } = seedClaudeTranscript();
+  SESSIONS.set(withFile.id, withFile);
+  recordInjection(withFile.id, "fix the arrow keys", "foreman");
+  try {
+    const invalid = await app.request(
+      `/api/sessions/${withFile.id}/transcript?before=1.5`,
+      { headers: HEADERS },
+    );
+    assert.equal(invalid.status, 400);
+
+    const ordinary = (await (
+      await app.request(`/api/sessions/${withFile.id}/transcript?turns=48`, { headers: HEADERS })
+    ).json()) as { messages: Array<{ origin?: string }> };
+    assert.equal(ordinary.messages[0]?.origin, undefined);
+
+    const page = (await (
+      await app.request(
+        `/api/sessions/${withFile.id}/transcript?before=${statSync(withFile.transcriptPath!).size}`,
+        { headers: HEADERS },
+      )
+    ).json()) as { messages: Array<{ origin?: string }> };
+    assert.equal(page.messages[0]?.origin, "foreman");
+  } finally {
+    forgetInjections(withFile.id);
+  }
 });
 
 test("the goal reader takes the same answer from the same capability", () => {

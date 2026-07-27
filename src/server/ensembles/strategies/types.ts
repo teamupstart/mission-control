@@ -30,8 +30,8 @@ export interface StrategyCompileContext {
    *
    * A MAP rather than the single snapshot the first strategy needed, because a panel names one
    * Persona per judge and a compiler that could only be handed one would have had to resolve the
-   * rest itself - which it cannot do, since resolving reads SQLite. Which ids appear here is the
-   * descriptor's own answer (`personaRefs`), so the manager never has to know the shape of a
+   * rest itself - which it cannot do, since catalog resolution is impure. Which ids appear here is
+   * the descriptor's own answer (`personaRefs`), so the manager never has to know the shape of a
    * config it does not own.
    *
    * The whole snapshot - name, guidance text and runner/model overrides at the pinned revision -
@@ -50,8 +50,9 @@ export interface StrategyCompileContext {
  *
  * `path` is the dotted path into that strategy's OWN config (`evaluator.personaId`,
  * `judges.2.personaId`), so a refusal lands on the field the operator filled in rather than on the
- * config as a whole. `revision` is the operator's optional pin: set, and a live Persona that has
- * moved on is a refusal, never a newer snapshot under the request that was made.
+ * config as a whole. `revision` is an optional row-revision pin: an operator-authored Persona
+ * that has moved on is a refusal, never a newer snapshot under the request that was made.
+ * Built-ins have one revision per build and are snapshotted from the current catalog.
  */
 export interface StrategyPersonaRef {
   path: string;

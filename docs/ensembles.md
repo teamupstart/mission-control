@@ -41,6 +41,25 @@ rationale is in [`docs/plans/best-of-n-swarm-dispatch/plan.md`](plans/best-of-n-
 7. You confirm one eligible submission (or declare **no consensus**). Only then does anything
    destructive run.
 
+### Where the selected result lands
+
+Confirming a winner never re-implements it. The chosen submission is an immutable commit, and
+promotion makes that exact commit available in one of two ways:
+
+- **Restored** - the winner's own session is reset to its snapshot and handed a continuation. One
+  session, the one you were already watching.
+- **Replacement** - if that session is gone, busy, uninstrumented or holding a parked review, it
+  cannot be safely reused, so the run launches exactly one new task, `<run title> - selected
+  result`, provisioned at the winner's snapshot. Its checkout already contains the winning work;
+  its opening prompt carries the original task, the winner's own summary and the reviewer's
+  caveats, and asks it to check and ship - not to rebuild.
+
+On the replacement path the winner's original task is settled **done**, recording the task it was
+promoted into. Its agent, worktree and branch are deliberately **kept**: it may have done work
+after submitting, and that work exists nowhere else. Free it with a confirmed **Clean up** when you
+have looked. Until that click you will see two sessions for the winner - the promoted one, which is
+live, and the original, which now has no task.
+
 ## What Consensus does differently
 
 Steps 1-5 are identical - three to five attempts (not two), isolated, from one pinned commit,
@@ -72,13 +91,13 @@ the same isolated members and the same submission path. The difference is step 6
 
 6. When every live member has submitted or terminated and **at least two** produced a snapshot, the
    daemon convenes a **panel**: two to five judges, each scoring *every* submission from one lens
-   alone. A lens is a built-in rubric (Correctness, Maintainability, Risk, Evidence, Scope) or an
-   operator-authored Persona pinned to an exact revision at creation. All the judges are asked in
-   **parallel** against ONE shared anonymous evidence packet built once, so a judge that disagrees
-   is disagreeing about the submissions rather than about what it happened to be shown. Two judges
-   may not share a built-in lens - a panel that agrees by construction is not a panel. Repeating an
-   operator-authored Persona is allowed when the operator deliberately wants multiple samples of
-   the same guidance.
+   alone. A lens is a strategy rubric (Correctness, Maintainability, Risk, Evidence, Scope) or a
+   Persona from the catalog, including an app-owned built-in, snapshotted exactly at creation. All
+   the judges are asked in **parallel** against ONE shared anonymous evidence packet built once, so
+   a judge that disagrees is disagreeing about the submissions rather than about what it happened
+   to be shown. Two judges may not share a strategy rubric - a panel that agrees by construction is
+   not a panel. Repeating a Persona is allowed when the operator deliberately wants multiple
+   samples of the same guidance.
 7. Each judge that reaches a provider call gets its own `ensemble_evaluations` row: its lens
    snapshot, the runner and model actually resolved, its bounded input fingerprint, and its typed
    per-artifact scores. A malformed reply or provider failure fails **that row only**. A lens this
@@ -133,11 +152,12 @@ cancellation and worktree teardown.
 
 Finalization reaps loser **worktrees** but never loser **refs** - every candidate's snapshot is
 kept after completion or cancellation, and a **Restore** action can create a fresh task from any of
-them. There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit
-**Delete ensemble** action (confirmed by echoing the run id), which removes the run's private refs
-and history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting
-an ensemble never touches a task or any linked workflow state, and it resumes the same remaining
-refs after a crash.
+them. The **winner's** worktree is never reaped by finalization at all, on either promotion path.
+There is **no time-based pruning** in v1: a snapshot is deleted only through the explicit **Delete
+ensemble** action (confirmed by echoing the run id), which removes the run's private refs and
+history. **Deletion is irreversible** - the refs are the only copy of a loser's work. Deleting an
+ensemble never touches a task or any linked workflow state, and it resumes the same remaining refs
+after a crash.
 
 ## Costs
 
@@ -165,6 +185,21 @@ turning **unreadable**, or a `finalizing` run holding an error each raise an **a
 the Away digest. Each is edge-triggered by stable run identity, so a reconnect or a recovery never
 re-announces a decision you already saw. An ensemble toast deep-links to
 `#/workflows/ensembles/<id>`.
+
+A run needs your attention when it is **failed**, **cancelling**, parked on a **decision**,
+**unreadable** - or when **a member is waiting on your answer**. That last one is a question on a
+member's own session (a review from the ask channel, or a dialog on its pane), and it lights the run
+up wherever attention is read: the run row's dot, its attention-first sort, and the Away digest's
+count. It closes the disagreement where the candidate's card was red and asking a question while the
+run it belongs to still reported *working*.
+
+**A blocked member deliberately raises no alert of its own.** That member's session already fires
+the ordinary session-level review / needs-input alert, so a second ensemble notification would be
+the same fact asking to be dismissed twice. The signal is carried by the run's attention state
+instead - visible whenever you look, silent when you are not being interrupted. A member being
+**lost** (failed, withdrawn, eliminated) is likewise counted but never alerted: retry and restore
+are on the run's own surfaces, and a barrier that can no longer be met fails the run, which does
+alert.
 
 ## Restart and recovery
 

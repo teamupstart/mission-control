@@ -56,6 +56,7 @@ test("the interface admits an emulator that can only be launched into", () => {
   // path that ships broken.
   const launchOnly: Omit<TerminalEmulator, "id"> = {
     label: "Launch-only",
+    glyph: "▦",
     bin: { env: null, candidates: ["someterm"], dropEnv: [] },
     list: null,
     // Null because it cannot enumerate at all - there is nothing to correlate, so the

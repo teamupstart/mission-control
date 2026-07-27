@@ -4,6 +4,7 @@ import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/w
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
+import { dropHistory } from "./lib/transcript-history.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -129,8 +130,11 @@ export function useEventStream(): MissionState {
         case "session_remove":
           // The one signal that positively means a session is gone, rather than not
           // yet re-added: the daemon evicted it after a completed sweep. That makes
-          // this the only safe place to collect its half-written compose text.
+          // this the only safe place to collect its half-written compose text, and its
+          // accumulated conversation history, which is bound to the session the same way
+          // and would otherwise be re-hydrated into a reused id.
           dropSessionDrafts(msg.id);
+          dropHistory(msg.id);
           setSessions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);

@@ -178,6 +178,46 @@ export interface TranscriptStreamRead {
 }
 
 /**
+ * A contiguous run of turns, and the exact byte range they were read from.
+ *
+ * The range is what makes paging possible at all. A turn count cannot anchor the next
+ * read - the caller would have to say "the 80 turns before turn 80", which nothing on
+ * disk is indexed by - and a timestamp cannot either, because turns share them. Bytes
+ * are the only anchor an append-only file offers for free.
+ *
+ * `start` is a LINE boundary, and both halves of that matter. Handed back as the next
+ * read's `before` it yields a range that abuts this one exactly: no gap, so no turn is
+ * skipped, and no overlap, so no turn arrives twice. Overlap is not a cosmetic concern
+ * here - a harness whose records carry no id of their own synthesizes one per parse
+ * batch (see `parseSeq` in the Codex parser), so two overlapping reads de-dupe against
+ * nothing and the same turn is rendered twice.
+ */
+export interface TranscriptPage {
+  /** Turns in chronological order; empty when there is nothing older to read. */
+  messages: TranscriptMessage[];
+  /** Byte offset of the first returned turn - the anchor for the NEXT page back. */
+  start: number;
+  /** Byte offset just past the last returned turn. Equals the requested `before`. */
+  end: number;
+  /** True when `start` is the top of the file, so there is nothing older to ask for. */
+  atStart: boolean;
+}
+
+/** A live stream's opening history: turns, where to resume, and where to page back from. */
+export interface TranscriptInitialRead extends TranscriptStreamRead {
+  /**
+   * Byte offset of the first returned turn.
+   *
+   * The panel's back-paging anchor, and the reason this read may NOT trim its result to
+   * a turn count: a trimmed array's first turn no longer begins at the offset reported
+   * here, so the next page back would re-read - and re-render - everything trimmed.
+   */
+  start: number;
+  /** True when this window reaches the top of the file, so there is no older history. */
+  atStart: boolean;
+}
+
+/**
  * Reading a harness's file as CONVERSATION.
  *
  * Split from `TranscriptSpec` because "there is a file we can read runtime facts out of"
@@ -201,7 +241,20 @@ export interface TranscriptMessages {
    */
   size(path: string): number | null;
   /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
-  initial(path: string): TranscriptStreamRead;
+  initial(path: string): TranscriptInitialRead;
+  /**
+   * The turns immediately BEFORE a byte offset - how the conversation panel scrolls back
+   * through history the tail window did not reach.
+   *
+   * The counterpart to `since`, and the direction that was missing. Every other read here
+   * is a tail or a forward walk, so the oldest turn the dashboard could display was
+   * whatever `initial` happened to reach; on a long session that is a small fraction of a
+   * file that still holds all of it, and the operator sees history the agent appears to
+   * have lost.
+   *
+   * Returns an empty page with `atStart` when `before` is already the top of the file.
+   */
+  before(path: string, before: number, wantTurns?: number): TranscriptPage;
   /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
   appended(path: string, pos: number): TranscriptStreamRead;
   /**
@@ -504,23 +557,40 @@ export interface SdkSpec {
    * because the alternative is a card that looks dispatched and is running something else.
    */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+}
+
+/**
+ * How a conversation this harness already holds is CONTINUED interactively, in a terminal.
+ *
+ * This exists because every vendor here keeps one session store behind its programmatic and
+ * its interactive surfaces: a session writes the file (`~/.claude/projects/…`,
+ * `~/.codex/sessions/…`, pi's session dir) that `claude --resume <id>`, `codex resume <id>`
+ * and `pi --session <id>` read back. So "let me drive" is a handoff rather than a lost
+ * conversation, which is what stops an embedded session from being a trap.
+ *
+ * It lived on `SdkSpec` and was WRONG THERE, which is the reason to read this comment
+ * before moving it back. Only a harness with an embedded driver could answer it, so pi -
+ * whose session id and `--session` CLI are sufficient - could not say how to continue
+ * itself. Those are two unrelated capabilities: whether a harness can be driven
+ * programmatically, and whether its CLI can reopen a conversation. Every shipped harness
+ * answers this one; Claude and Codex currently answer the other.
+ *
+ * On the SPEC rather than composed at a route, for the rule the whole harness axis rests
+ * on: reach a capability through the registry, never by testing `s.agent`.
+ *
+ * `null` is a real answer - a harness whose CLI cannot reopen a conversation - and it is
+ * ONE FACT IN TWO FILES with `HarnessCapabilities.resumes`, which the browser reads to
+ * shape the control. `harness-resume.test.ts` fails until the two agree.
+ */
+export interface ResumeSpec {
   /**
-   * The argv - after this harness's own binary - that CONTINUES `agentSessionId`
-   * interactively, in a terminal.
+   * The argv AFTER this harness's own binary that continues `agentSessionId`.
    *
-   * This exists because both vendors keep one session store for their programmatic and
-   * their interactive surfaces: an embedded session writes the same file
-   * (`~/.claude/projects/…`, `~/.codex/sessions/…`) that `claude --resume <id>` and
-   * `codex resume <threadId>` read back. So "let me drive" is a handoff rather than a lost
-   * conversation, which is what stops the first embedded session an operator dispatches
-   * from being a trap.
-   *
-   * On the SPEC rather than composed at the handoff route, for the rule the whole harness
-   * axis rests on: reach a capability through the registry, never by testing `s.agent`. A
-   * driver that shipped without this would be a card offering an escape hatch that spawns
-   * the wrong command line.
+   * Measured against a real install for each harness, never read off release notes - the
+   * `HARNESSES.codex.tui` correction is what assuming costs. Claude takes a flag, Codex a
+   * subcommand, pi a different flag; the shape is not shared and must not be guessed.
    */
-  resumeArgv(agentSessionId: string): readonly string[];
+  argv(agentSessionId: string): readonly string[];
 }
 
 export interface SdkLaunchOptions {
@@ -854,4 +924,9 @@ export interface Harness extends HarnessCapabilities {
   control: ControlSpec;
   /** How to run this harness embedded, or null when no driver exists (yet). See `SdkSpec`. */
   sdk: SdkSpec | null;
+  /**
+   * How to continue one of this harness's conversations in a terminal, or null when its CLI
+   * cannot reopen one. See `ResumeSpec` - notably why this is NOT part of `sdk`.
+   */
+  resume: ResumeSpec | null;
 }

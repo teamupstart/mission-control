@@ -216,8 +216,22 @@ export interface EnsembleTaskGateway {
    * stuck launching. It does NOT wait for the agent to come up - the engine observes that durably.
    */
   dispatch(request: MemberDispatchRequest): Promise<void>;
-  /** Cancel a member Task through its owner. Tears the agent down; keeps the record and worktree. */
+  /** Cancel a member Task through its owner. Tears the agent down AND reclaims its worktree. */
   cancel(taskId: string): Promise<void>;
+  /**
+   * Settle a member Task terminally while KEEPING its agent, worktree, branch and home.
+   *
+   * Deliberately NOT `cancel`, and the asymmetry is the whole point. A loser's work was rejected,
+   * so cancel's teardown is right for it. The winner's ORIGINAL session, once its snapshot has been
+   * promoted into a replacement Task, is the opposite case: its work was chosen, and whatever it did
+   * after submitting exists only in that checkout - which is precisely why it was refused for rebind
+   * in the first place. Reaping there would run `git worktree remove --force` over work an operator
+   * never agreed to discard, the one thing `complete` already refuses to do.
+   *
+   * So this records an outcome and nothing else. Freeing the tree stays behind the operator's
+   * confirmed Clean up, exactly as it does for a task whose agent went away.
+   */
+  settleSuperseded(taskId: string, outcome: string): void;
   /** The current durable status of a member Task, or null if it is gone. */
   status(taskId: string): TaskGatewayStatus | null;
   /** The worktree a member Task is running in, once provisioned. */
@@ -2241,12 +2255,13 @@ export class EnsembleEngine {
    * Drive one finalize stage as far as it can go, idempotently, from its persisted receipts.
    *
    * The engine performs every destructive step itself, in the order the recovery contract requires:
-   * verify the winner ref, make one exact winner available, reap losers through TaskManager, then
-   * hand off to a Workflow or deliver a continuation, then complete. A step that cannot finish
-   * (a missing ref, a busy session, a Workflow conflict) leaves the run `finalizing` with an
-   * actionable error and returns; a later wake, `resolve_finalization`, or restart re-drives from
-   * the same receipts. Every step is safe to repeat, so re-driving never doubles an effect - which
-   * is what makes "interrupt at any point and resume" true rather than hoped for.
+   * verify the winner ref, make one exact winner available, reap losers and settle any superseded
+   * original winner through TaskManager, then hand off to a Workflow or deliver a continuation,
+   * then complete. A step that cannot finish (a missing ref, a busy session, a Workflow conflict)
+   * leaves the run `finalizing` with an actionable error and returns; a later wake,
+   * `resolve_finalization`, or restart re-drives from the same receipts. Every step is safe to
+   * repeat, so re-driving never doubles an effect - which is what makes "interrupt at any point and
+   * resume" true rather than hoped for.
    */
   private async serviceFinalizeStage(
     state: RunState,
@@ -2399,6 +2414,13 @@ export class EnsembleEngine {
     // STEP reaping losers: through TaskManager, then eliminate only once resources agree.
     const reaped = await this.reapLosers(state, plan.loserMemberIds);
     if (!reaped.ok) return this.parkFinalize(run.id, stageAttempt.id, progress, reaped.detail ?? "a loser could not be reaped");
+    // Same step, and it belongs here rather than beside the materialization that caused it: the
+    // winner's original Task is only superseded once the replacement it was superseded BY is a ready
+    // winner, so settling it earlier would strand it terminal around a dispatch that can still fail.
+    const superseded = this.settleSupersededWinner(state, winnerMember, winnerAttemptTaskId(state, winnerArtifact), ready.replacementTaskId);
+    if (!superseded.ok) {
+      return this.parkFinalize(run.id, stageAttempt.id, progress, superseded.detail ?? "the superseded winner Task could not be settled");
+    }
     progress = { ...progress, losersReaped: true, step: "handoff", error: null };
     this.store.setFinalizationProgress(stageAttempt.id, progress, this.now());
 
@@ -2454,6 +2476,14 @@ export class EnsembleEngine {
         sessionId: string | null;
         worktreePath: string | null;
         mode: "restored" | "replacement";
+        /**
+         * The Task the winner was promoted INTO, on the replacement path only, and null on the
+         * restored path - where the winner's original Task IS the promoted one and must stay
+         * running to receive its continuation. Reported by the step that chose it rather than
+         * re-read from the outcome downstream, so "which Task superseded the original" has one
+         * answer that cannot drift from the one actually dispatched.
+         */
+        replacementTaskId: string | null;
         continuationInIntent: boolean;
       }
     | {
@@ -2487,6 +2517,7 @@ export class EnsembleEngine {
           sessionId,
           worktreePath,
           mode: "restored",
+          replacementTaskId: null,
           continuationInIntent: false,
         };
       }
@@ -2512,6 +2543,7 @@ export class EnsembleEngine {
           sessionId,
           worktreePath,
           mode: "restored",
+          replacementTaskId: null,
           continuationInIntent: false,
         };
       }
@@ -2545,6 +2577,7 @@ export class EnsembleEngine {
           sessionId,
           worktreePath: worktree,
           mode: "restored",
+          replacementTaskId: null,
           continuationInIntent: false,
         };
       }
@@ -2569,6 +2602,7 @@ export class EnsembleEngine {
           sessionId: already.sessionId,
           worktreePath: already.worktreePath,
           mode: "replacement",
+          replacementTaskId,
           continuationInIntent: inIntent,
         };
       }
@@ -2640,6 +2674,7 @@ export class EnsembleEngine {
       sessionId: status.sessionId,
       worktreePath: status.worktreePath,
       mode: "replacement",
+      replacementTaskId,
       continuationInIntent,
     };
   }
@@ -2652,6 +2687,63 @@ export class EnsembleEngine {
       { resultLabel: "selected" },
       now,
     );
+  }
+
+  /**
+   * Settle the winner's ORIGINAL Task once its work has been promoted into a replacement.
+   *
+   * The replacement path exists because the winner's own session could not be safely rebound - it
+   * was busy, uninstrumented, or holding a parked review - so the run promotes the snapshot into a
+   * second Task instead. Without this, that original row stayed `running` for ever: a task claiming
+   * to be executing on an agent that will never report against it again, holding a worktree nothing
+   * would ever offer to reclaim. It is the same "row nothing will ever move" `reconcileTasksBoundTo`
+   * exists to rule out, reached by a path no session eviction can see, because the session is still
+   * alive and perfectly healthy - it simply has no task any more.
+   *
+   * `done` rather than `cancelled` because the claim is true: this member's work was compared, won,
+   * and was promoted. Cancelling would both misreport that and reap the checkout.
+   *
+   * Idempotent by construction, which is what lets the step be re-driven: settling is guarded on the
+   * Task still being LIVE, so a resume, a restart, or a parked handoff re-running this finds it
+   * already terminal and does nothing. A winner whose session had already vanished is likewise
+   * already terminal via `agentWentAway`, and is left exactly as that path settled it.
+   */
+  private settleSupersededWinner(
+    state: RunState,
+    winnerMember: EnsembleMember,
+    originalTaskId: string | null,
+    replacementTaskId: string | null,
+  ): { ok: boolean; detail?: string } {
+    // Restored path: the winner's original Task IS the promoted one, and it must stay running to
+    // receive its continuation. Only a replacement supersedes anything.
+    if (replacementTaskId === null || originalTaskId === null) return { ok: true };
+    if (originalTaskId === replacementTaskId) return { ok: true };
+    const status = this.tasks.status(originalTaskId);
+    if (status === null || !LIVE_TASK_STATUSES.includes(status)) return { ok: true };
+    try {
+      this.tasks.settleSuperseded(
+        originalTaskId,
+        `selected as the ensemble winner; promoted to task ${replacementTaskId}`,
+      );
+    } catch (err) {
+      // Transient by nature (a reschedule holding the row), so park and let a later wake re-drive
+      // rather than completing the run around a task still claiming to execute.
+      this.log("warn", {
+        event: "ensemble_superseded_winner_settle_failed",
+        runId: state.run.id,
+        memberId: winnerMember.id,
+        taskId: originalTaskId,
+        error: String(err),
+      });
+      return { ok: false, detail: `the superseded winner Task could not be settled: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    this.event(
+      state.run.id,
+      "winner_superseded",
+      { memberId: winnerMember.id, taskId: originalTaskId, replacementTaskId },
+      `winner_superseded:${state.run.id}:${originalTaskId}`,
+    );
+    return { ok: true };
   }
 
   /** Cancel every loser Task through TaskManager, eliminating each only once its resources agree. */
@@ -3115,6 +3207,19 @@ function deterministicUuid(seed: string): string {
   const hex = createHash("sha256").update(seed).digest("hex");
   const variant = ((parseInt(hex.charAt(16), 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * The Task the winning artifact was actually produced by, read off its own attempt.
+ *
+ * The ATTEMPT rather than the member, deliberately: `EnsembleMember.taskId` is the member's current
+ * Task, and a retried member has had more than one - so settling from the member could settle a
+ * retry's Task around an artifact an earlier attempt produced. The artifact names its attempt, and
+ * the attempt names the Task that made it, which is the only chain that cannot drift.
+ */
+function winnerAttemptTaskId(state: RunState, winnerArtifact: EnsembleArtifact): string | null {
+  if (winnerArtifact.attemptId === null) return null;
+  return state.attempts.find((a) => a.id === winnerArtifact.attemptId)?.taskId ?? null;
 }
 
 /**

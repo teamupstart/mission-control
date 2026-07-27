@@ -177,6 +177,30 @@ every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
 that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
 (`node:sqlite`).
 
+That same sweep re-reads the branch each session's checkout is on, so a session follows
+the agent onto whatever branch it cuts mid-run. Sessions the daemon runs itself (Agent SDK
+`runtime`) have no process on a tty for the sweep to find, so their branch is re-read
+directly from their working directory on the same cadence. This is what keeps the **PR
+chip** honest for them: a pooled worktree is often leased with no branch at all, and the
+PR poller finds a session's pull request by asking `gh pr list --head <branch>`, so a
+branch captured once at launch would leave an embedded session's PR invisible for the
+whole run.
+
+### The title bar stays compact at half-screen
+
+The **fleet pulse** is one readout, not a row of pills: the connection state leads it
+(`live`, or `reconnecting`, which dims the figures beside it because they are then stale),
+followed by the session counts and the reviews count, which is still clickable and still
+opens the review queue.
+
+When the desktop window narrows, the bar progressively collapses secondary labels instead
+of adding ragged rows. The filter becomes its **⌕** glyph; click it or press <kbd>/</kbd> to
+reopen it, and it stays open while a filter is active. **Dispatch keeps its label at every
+supported desktop width.** Collapsed controls keep their tooltips and accessible names.
+
+The result stays on one row down to roughly half of a desktop screen. Narrower windows may
+fall back to wrapping; phone layouts are not a supported target.
+
 ### Which terminal you use is declared, not assumed
 
 Discovery names no terminal. It asks each registered backend what panes it can see and
@@ -661,6 +685,45 @@ triaging from the board does not mean opening a session to change its permission
 Codex writes its first observable mode, the neutral `permissions` chip still opens the
 picker. When the pane cannot be written the chip stays read-only.
 
+### Open a terminal, or the agent's own CLI, on a session
+
+Above every conversation sits the worktree that session is working in, and two buttons.
+
+**Terminal** opens your login shell (`$SHELL`, else `/bin/sh`) in that worktree. Its menu
+lists the four registered backends - **tmux**, **cmux**, **WezTerm** and **Ghostty** - and
+reports which this machine can use. An unavailable backend stays listed with a **sentence**
+saying why, because "not installed" and "installed, but nothing here can show its windows"
+are different things to go and fix. tmux is the second of those: `tmux new-session` opens
+**detached**, so its row is enabled only when an emulator is present to raise it, and then
+says which one it will use. A button that reported success and put nothing on screen would
+be worse than no button.
+
+The **agent button** puts you on that conversation. Its shape follows what is safe: it is a
+plain button when a live pane can be focused, and otherwise opens the same terminal chooser
+as **Terminal** so you can pick where the resumed CLI appears.
+
+Its behavior changes with the session:
+
+- The session **already runs in a terminal** - it has a pane. Then the button has no menu
+  at all; it takes you to that terminal. Opening a second `--resume` beside a live pane would
+  put two agent processes on one conversation file, which no harness arbitrates.
+- The session is [embedded](#session-runtimes-terminal-or-the-agent-sdk). **Continue in
+  terminal** opens the chooser, stops the live driver, then reopens that exact conversation
+  through the existing handoff lifecycle in the backend you selected.
+- The agent has **exited**, but its checkout and conversation id survive. Its old pane
+  handles are stale, so the chooser resumes the CLI in the selected backend. The daemon
+  claims that resume exclusively and transfers any active task and terminal-resource
+  ownership before the replacement session appears.
+
+A session whose checkout the daemon could not read renders **Terminal** disabled with the
+reason. A handoff or resume is disabled until it has both a checkout and a conversation id;
+a live pane remains focusable without either. If the harness cannot resume the conversation,
+the disabled agent button says so.
+
+This appears on **every layout that shows a conversation** - Cards, Console detail, and the
+Board's drilled-in pane - because it lives in the conversation panel itself rather than in
+any one card.
+
 ### Answer a session's menu from the dashboard
 
 When a session stops on an option menu - a **permission prompt**, an `AskUserQuestion`
@@ -721,6 +784,31 @@ The one case that isn't a clean no-op is scrolling *while* an item is being deli
 prompt is pasted, then the Enter that submits it is swallowed. The text is sitting in the
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
+
+### Reading a session's whole conversation
+
+The Conversation tab opens on the session's **recent** turns, and scrolls back through the
+rest on demand. A card open reads a bounded tail rather than the file - a long session's
+transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
+open whatever the session has been doing.
+
+Scroll to the top of the log and the page above loads automatically, then the page above
+that, back to the session's first turn. **Load older messages** does the same on click,
+for when you would rather not scroll. Nothing appears once you reach the beginning: a
+short session shows no control at all.
+
+What you have scrolled back to is kept for recently viewed sessions, so switching to the
+Diff tab and back, collapsing a card, or moving between sessions usually returns you to
+the history you had - not to the tail again. The cache lasts for the browser tab; an
+evicted entry can always be fetched again by scrolling up.
+
+A dropped connection or a daemon restart costs you nothing either: the panel reconnects
+by telling the daemon how far it already has, and gets back only the turns written while
+it was away. Your place in the conversation does not move. It starts over from the recent
+turns in two cases only - the transcript was cleared or replaced under it (a `/clear`), or
+the agent wrote more than a reconnect can honestly be said to have missed. Both are the
+honest answer rather than a continuation with an invisible hole in it, and scrolling up
+re-reads whatever was dropped.
 
 ### Shadow reading: Claude's own session state
 
@@ -1708,8 +1796,10 @@ cleanup); make one exact winner available - either the original member's checkou
 snapshot through the same session-reset that clears its queue, drafts and context, or, if that
 session is gone or busy, exactly one replacement task launched at the snapshot (never two, across
 any restart); reap every loser through the normal task cancellation that reclaims its worktree;
-then either hand the winner to a workflow or type it one continuation - never both. A step that
-cannot finish leaves the run *finalizing* with an actionable error and is resumed by
+reconcile a superseded original winner as described in
+[Where the selected result lands](docs/ensembles.md#where-the-selected-result-lands); then either
+hand the winner to a workflow or type it one continuation - never both. A step that cannot finish
+leaves the run *finalizing* with an actionable error and is resumed by
 `resolve_finalization`; the run reaches *completed* only once the winner is exact, every loser is
 reconciled, and any workflow submission is captured. Every loser's private snapshot survives.
 
@@ -1896,10 +1986,10 @@ The top-bar button opens the graph library and restores the last active workflow
 in this browser when it is still available.
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
-or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
-name, description, optional provider and model overrides, and guidance are revisioned
-together. Saves use compare-and-swap, so a second tab editing an older revision gets an
-explicit conflict and keeps its local text. Archive is soft: archived Personas are
+or Inspector setting. Personas you create or import live in Mission Control's SQLite
+database. Their name, description, optional provider and model overrides, and guidance are
+revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
+gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
 normalized names.
 
@@ -1916,25 +2006,41 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 
-### Seed Personas you can import
+### Built-in Personas
 
-Four ready-made review roles ship in this repository under `docs/personas/`, distilled from
-the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. They are
-seeds, not built-ins: nothing imports them for you and nothing keeps your copy in sync with
-the file afterwards. Once imported they are ordinary Personas you own and can edit.
+Four ready-made review roles ship with the application, distilled from the
+[no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. Nothing has to be
+imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
+one immediately.
 
-| File | Imports as | What it judges |
-|---|---|---|
-| `docs/personas/intent-conformance-judge.md` | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
-| `docs/personas/code-risk-reviewer.md` | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
-| `docs/personas/test-evidence-auditor.md` | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
-| `docs/personas/documentation-steward.md` | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Persona | What it judges |
+|---|---|
+| Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
+| Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
+| Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
 
-**Import .md** in the Personas tab takes the whole file body as the guidance and the file's
-first level-one heading as the name, so each of these arrives named as the table says.
-Description stays empty and the provider and model overrides stay unset, which is the
-app-wide resolution above. Import each file once: a second import of the same file is
-refused, because the first already reserved that name.
+They are **app data, not your data**, and the Personas tab marks each one `Built-in`. Each
+carries exactly the guidance the build was made from. An upgrade that improves a role updates
+the current catalog, so drafts and newly published versions use the new guidance. Existing
+published versions keep the guidance they were published with and history marks them
+outdated. Adopting the changed guidance requires publishing a new version. Opening a
+built-in shows it read-only: Save is disabled, Archive is absent, and there is a line saying
+why. **Duplicate** is the way to a version you own - the copy is an ordinary Persona with
+its own name, editable, archivable, and never touched by an upgrade. Their guidance is still
+exactly as visible as any other: Copy Markdown, Download .md and the preview all work.
+
+Because they always exist, their names are reserved: creating or renaming a Persona to
+`Code Risk Reviewer` is refused the way any duplicate name is. The one exception is
+historical - a Persona you imported from these documents before they shipped built-in keeps
+the name it already reserved, and the built-in it shadows stays hidden behind your copy.
+Archive or rename your copy to see the built-in.
+
+The authored Markdown is in this repository under `docs/personas/`, one document per role,
+and it is compiled into the build - run `npm run personas` after editing one, and commit the
+generated module. Each document's first level-one heading is the Persona's name and the
+paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
+an imported Persona's description stays empty.
 
 The four are written to compose as the example workflow in
 `docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
@@ -1990,10 +2096,11 @@ Session-centered cycles, active Personas, graph limits, and finite bounded coord
 **Publish** is enabled only for a saved, conflict-free, valid revision. It is idempotent for
 that revision and creates an immutable version containing the exact name, description,
 Markdown, provider/model overrides, and revision of every Persona. Editing or archiving a
-Persona later never changes old versions; history marks its snapshot as outdated or its
-source as archived. To update a published design, edit the mutable draft and publish a new
-version. Opening a workflow fetches only bounded version metadata; selecting one history
-entry fetches that immutable graph and its exact Persona Markdown from the version route.
+Persona you own, or updating a shipped built-in in a later build, never changes old versions;
+history marks its snapshot as outdated or its source as archived. To update a published
+design, edit the mutable draft and publish a new version. Opening a workflow fetches only
+bounded version metadata; selecting one history entry fetches that immutable graph and its
+exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
@@ -2139,7 +2246,7 @@ round.
 **Foreman complete** lets an active binding claim Foreman's existing queue-drain or prompted
 completion proof. Foreman still runs as a separate HTTP-only worker and never reads workflow
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
-once-only guard in one transaction. A missing or failed claim endpoint fails closed—Foreman
+once-only guard in one transaction. A missing or failed claim endpoint fails closed - Foreman
 does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
 the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
 session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered
@@ -3142,10 +3249,8 @@ earns two surfaces a card has nowhere to put:
 
 ## How much conversation you see
 
-The Conversation panel opens on up to the session's **last 80 turns**, then streams new
-ones as the agent writes them. Its reader widens the transcript scan until it finds that
-many turns or reaches the 16 MB scan ceiling, so tool output and reasoning records in a
-Codex rollout do not crowd the conversation out of a fixed byte window.
+For the Conversation panel's complete, paged history, see
+[Reading a session's whole conversation](#reading-a-sessions-whole-conversation).
 
 One-shot context readers such as Foreman's reviewer and the goal refiner keep the opening
 turns plus the most recent ones, and mark the middle as elided when necessary. The work
@@ -3914,6 +4019,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
+npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 ```
 

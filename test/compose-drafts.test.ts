@@ -13,6 +13,7 @@ import {
 import { WorkQueue } from "../src/web/components/WorkQueue.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import type { Session } from "../src/shared/types.ts";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 // What a card is allowed to do to text you typed and haven't sent: nothing.
 //
@@ -25,25 +26,10 @@ import type { Session } from "../src/shared/types.ts";
 
 beforeEach(() => resetDrafts());
 
-function mkSession(over: Partial<Session> = {}): Session {
-  return {
-    id: "s1",
-    pid: 1,
-    agent: "claude",
-    name: "card",
-    nameSource: "tmux",
-    state: "idle",
-    cwd: "/repo",
-    startedAt: 0,
-    lastActivity: null,
-    instrumented: true,
-    hooksSeen: true,
-    activity: null,
-    pendingReviews: 0,
-    nomistakesFixes: [],
-    ...over,
-  } as Session;
-}
+// The SHARED fixture, not a local partial. This file used to build its own with an
+// `as Session` cast, which quietly let it omit fields the real type requires - and the
+// moment the transcript grew a toolbar that reads `terminals`, every render here crashed
+// on a session that had never been a complete one.
 
 // ---- the map ----
 
@@ -162,7 +148,7 @@ test("after a reset the reply box re-hydrates empty, not to the wiped text", () 
   writeDraft("s1", "reply", "text from before the reset");
   dropMessageDrafts("s1");
   const html = renderToStaticMarkup(
-    createElement(TranscriptPanel, { sessionId: "s1", agent: "claude", canSend: true }),
+    createElement(TranscriptPanel, { session: mkSession(), canSend: true }),
   );
   assert.ok(!html.includes("text from before the reset"), html);
 });
@@ -187,7 +173,7 @@ test("the work queue's add box comes back holding what you typed", () => {
 test("the reply box comes back holding what you typed", () => {
   writeDraft("s1", "reply", "half-written reply");
   const html = renderToStaticMarkup(
-    createElement(TranscriptPanel, { sessionId: "s1", agent: "claude", canSend: true }),
+    createElement(TranscriptPanel, { session: mkSession(), canSend: true }),
   );
   assert.match(html, /half-written reply/);
 });
@@ -197,7 +183,7 @@ test("a fresh card's boxes are empty, not haunted by the last card's draft", () 
   // panel that rendered someone else's reply would be worse than losing your own.
   writeDraft("other", "reply", "NOT FOR THIS CARD");
   const html = renderToStaticMarkup(
-    createElement(TranscriptPanel, { sessionId: "s1", agent: "claude", canSend: true }),
+    createElement(TranscriptPanel, { session: mkSession(), canSend: true }),
   );
   assert.ok(!html.includes("NOT FOR THIS CARD"), html);
 });

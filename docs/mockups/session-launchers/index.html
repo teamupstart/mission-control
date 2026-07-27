@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session launchers · four placements</title>
+    <link rel="stylesheet" href="launchers.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="lede">
+        <h1>Open a terminal, or the agent's own CLI, on a session</h1>
+        <p class="callout">
+          <b>Design archive.</b> These pages preserve the four placement alternatives that
+          were reviewed, including questions and proposals that were later resolved. Option
+          01 was selected; the implemented behavior is owned by
+          <a href="../../plans/session-launchers/plan.md">the session-launchers plan</a> and
+          the user-facing <a href="../../../README.md">README</a>.
+        </p>
+        <p>
+          Two controls on the conversation pane. <b>Terminal</b> opens a shell in the
+          session's worktree. <b>Claude Code</b> / <b>Codex</b> - labelled with whichever
+          harness this session actually runs - opens that CLI in the same worktree,
+          <i>resumed on this session's conversation</i>. Separate buttons, one shared
+          popover vocabulary, modelled on the files toolbar's <b>Open in</b> menu.
+        </p>
+        <p>
+          Each option is clickable: open either menu, pick a row, watch what it reports.
+          Every page has a <b>layout switch</b> so you can see the same control drawn by
+          the Console detail pane and by an expanded grid card - the two components that
+          show a conversation.
+        </p>
+
+        <p class="callout">
+          <b>The one design idea worth agreeing on first.</b> Both buttons open the same
+          list, because the choice a human is making is the same one - <i>which terminal</i>.
+          What differs is only the argv that terminal is handed: a shell, or
+          <code>claude --resume &lt;id&gt;</code>. So this is not a new registry. It is
+          <code>launchHome({ cwd, argv })</code>, which already exists and already knows
+          about tmux, cmux, WezTerm and Ghostty, called with two different
+          <code>argv</code>s from one new route. The rows below are those four real
+          backends, not invented ones.
+        </p>
+      </div>
+
+      <div class="cards">
+        <a class="m" style="--tone-color: var(--working)" href="a-toolbar.html">
+          <span class="m-head"><span class="m-n">01</span><h2>Conversation toolbar</h2></span>
+          <p class="m-idea">
+            <b>A strip at the top of the transcript.</b> Names the worktree on the left, the
+            two buttons on the right. The only placement that reaches every layout
+            <i>by construction</i>: it goes inside <code>TranscriptPanel</code>, which
+            <i>is</i> the conversation pane, so both renderers get it from one edit.
+          </p>
+          <span class="m-foot">costs ~34px of transcript<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m" style="--tone-color: var(--attention)" href="b-footer.html">
+          <span class="m-head"><span class="m-n">02</span><h2>Footer action row</h2></span>
+          <p class="m-idea">
+            <b>Two more buttons in <code>ActionBar</code>.</b> Beside focus / diff / reset /
+            kill. No new surface, but that row speaks two vocabularies (lowercase pills in
+            the footer, capitalised on the card), is already six wide, and forces the menus
+            to open upward.
+          </p>
+          <span class="m-foot">cheapest, most crowded<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m" style="--tone-color: var(--idle)" href="c-path.html">
+          <span class="m-head"><span class="m-n">03</span><h2>Path row</h2></span>
+          <p class="m-idea">
+            <b>Glyph buttons riding the worktree path.</b> Zero vertical cost, and the
+            control sits on the directory it opens. But the console pane and the card use
+            different metadata rows, so it is two placements maintained by hand - and a bare
+            <code>❯_</code> is a guess until hovered.
+          </p>
+          <span class="m-foot">most compact, least discoverable<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m" style="--tone-color: var(--purple)" href="d-default.html">
+          <span class="m-head"><span class="m-n">04</span><h2>Remembered default</h2></span>
+          <p class="m-idea">
+            <b>01's placement, as split buttons.</b> The wide half launches your last-used
+            terminal and says which; the caret re-opens the chooser. The two buttons
+            remember separately. The only option that gets cheaper with repetition - at the
+            cost of a stored preference.
+          </p>
+          <span class="m-foot">one click for the daily case<span class="m-open">Open →</span></span>
+        </a>
+      </div>
+
+      <div class="decisions">
+        <h2>What I need you to decide with the placement</h2>
+        <p>
+          These came out of reading the code rather than the mockups, and each one changes
+          what gets built. My recommendation is on each - happy to be overruled.
+        </p>
+
+        <div class="q">
+          <h3>1. What does the agent button do to a session that already has a terminal?</h3>
+          <p>
+            For an <b>embedded</b> session (<code>runtime: "sdk"</code>) this is settled:
+            the route already exists as <b>Continue in terminal</b> - it stops the driver and
+            hands the conversation to a real CLI. There is exactly one conversation
+            throughout.
+          </p>
+          <p>
+            For a session already running in a tmux pane, opening
+            <code>claude --resume &lt;id&gt;</code> starts a <b>second process on the same
+            conversation</b>. Two agents writing one session file is a corruption risk, and
+            the existing <b>focus</b> action already raises the pane the session is in.
+          </p>
+          <p class="rec">
+            <b>Recommend:</b> the agent button <i>focuses</i> a pane-backed session (what
+            you almost certainly want) and only <i>resumes</i> when there is no live pane -
+            an embedded session, or one whose agent has exited. Same button, and it says
+            which of the two it will do before you press it.
+          </p>
+        </div>
+
+        <div class="q">
+          <h3>2. Resume argv is coupled to the wrong capability</h3>
+          <p>
+            At design time the argv that resumed a conversation lived on
+            <code>SdkSpec.resumeArgv</code>. That coupled an interactive CLI capability to
+            an embedded driver and left pi unable to declare the <code>--session</code>
+            behavior its CLI already supported.
+          </p>
+          <p>
+            The honest fix is that resuming is a <b>harness</b> capability, not an embedded-driver
+            one. Lift <code>resumeArgv</code> out of <code>SdkSpec</code> onto the harness
+            proper, so a terminal-run Codex session can answer it too, and a harness that
+            genuinely cannot resume declares <code>null</code> and gets a sentence.
+          </p>
+          <p class="rec">
+            <b>Recommend:</b> lift it, and measure Codex's real flag against an install
+            before declaring it - the <code>tui: null</code> lesson in AGENTS.md is exactly
+            this mistake.
+          </p>
+        </div>
+
+        <div class="q">
+          <h3>3. tmux on its own opens nothing you can see</h3>
+          <p>
+            <code>spawnDetached</code> creates a <i>detached</i> tmux session - correct for a
+            dispatched agent, useless for "open me a terminal". Making it visible means
+            handing <code>tmux attach -t &lt;name&gt;</code> to an installed emulator, which
+            is the walk <b>focus</b> already does.
+          </p>
+          <p class="rec">
+            <b>Recommend:</b> a tmux row is offered only when some emulator can raise it,
+            and it says so on the row ("New session, raised in WezTerm") - otherwise it
+            carries the sentence explaining why not. Never a button that appears to work and
+            leaves nothing on screen.
+          </p>
+        </div>
+
+        <div class="q">
+          <h3>4. Only four terminals exist to Mission Control</h3>
+          <p>
+            tmux, cmux, WezTerm and Ghostty. Terminal.app, iTerm2, Kitty and Alacritty are
+            not "off" - there is no adapter, which is why the mockup shows iTerm2 as a
+            greyed row with that exact sentence rather than hiding it.
+          </p>
+          <p class="rec">
+            <b>Recommend:</b> ship with the four that exist and let the greyed row advertise
+            the extension point. If iTerm2 or Terminal.app matters to you day to day, say
+            so and I will scope an adapter as its own phase - it is a real piece of work
+            (an AppleScript backend, the way Ghostty is), not a line in a list.
+          </p>
+        </div>
+
+        <div class="q">
+          <h3>5. Sessions with no checkout</h3>
+          <p>
+            <code>Session.cwd</code> is nullable and genuinely null sometimes - discovery
+            could not read the process's cwd and no pane reported a path.
+          </p>
+          <p class="rec">
+            <b>Recommend:</b> both buttons render disabled with "this session has no
+            checkout to open" rather than disappearing, so the control does not flicker in
+            and out as discovery settles.
+          </p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

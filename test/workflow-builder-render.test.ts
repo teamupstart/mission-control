@@ -202,12 +202,44 @@ test("autosave conflict recovery offers reload and duplicate without overwriting
   assert.match(source, /if \(!draft\.conflict && !\(await draft\.saveNow\(\)\)\) return;/);
 });
 
+/** The exact `<button …>` whose text is `label`, so an attribute assertion cannot drift onto a neighbour. */
+function buttonFor(source: string, label: string): string {
+  const end = source.indexOf(`>${label}</button>`);
+  assert.notEqual(end, -1, `no ${label} button in WorkflowLibrary`);
+  const start = source.lastIndexOf("<button", end);
+  assert.notEqual(start, -1, `${label} button has no opening tag`);
+  return source.slice(start, end);
+}
+
 test("workflow transitions lock every editor surface until the latest draft is durable", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /transitionRef\.current = true/);
   assert.match(source, /await runTransition\(async \(\) => \{[\s\S]*await draft\.saveNow\(\)/);
   assert.match(source, /readOnly=\{transitioning \|\| workflow\.archivedAt !== null\}/);
-  assert.match(source, /disabled=\{transitioning \|\| workflow\.archivedAt !== null\}/);
+  // Every lifecycle control stands down mid-transition. Archived-ness is NOT among their
+  // disabled conditions any more: since Restore arrived, an archived workflow swaps Archive
+  // out for Restore instead of showing a dead Archive button, so that half of the old guard
+  // lives in the render branch asserted below.
+  for (const label of ["Delete", "Archive", "Restore"]) {
+    assert.match(buttonFor(source, label), /disabled=\{transitioning\}/, `${label} ignores transitioning`);
+  }
+  assert.match(source, /workflow\.archivedAt === null \? \(/);
+});
+
+test("delete is offered only before the first publish, and restore only when archived", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // The browser mirrors the daemon's `published` refusal so the operator never reaches a 409
+  // that only tells them what they cannot do.
+  assert.match(source, /const neverPublished = Boolean\(workflow\) && draft\.versions\.length === 0;/);
+  assert.match(source, /\{neverPublished && \(/);
+  // Delete is a POST to its own path: reusing `DELETE /api/workflows/:id` would make the
+  // destructive path reachable by any client that still means "archive" by that verb.
+  assert.match(source, /\/delete`, \{ method: "POST"/);
+  assert.match(source, /\/unarchive`, \{ method: "POST"/);
+  // Archive keeps its confirmation and so does Delete; Restore destroys nothing and has none.
+  assert.match(source, /title: "Delete workflow"/);
+  assert.match(source, /cannot be undone/);
+  assert.doesNotMatch(buttonFor(source, "Restore"), /setConfirm/);
 });
 
 test("generated create and duplicate names honor normalized durable uniqueness", () => {

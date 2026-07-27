@@ -71,6 +71,8 @@ import {
   ValidateWorkflowSchema,
   PublishWorkflowSchema,
   ArchiveWorkflowSchema,
+  UnarchiveWorkflowSchema,
+  DeleteWorkflowSchema,
   ArchiveWorkflowBindingSchema,
   CancelWorkflowRunSchema,
   CreateWorkflowBindingSchema,
@@ -202,6 +204,7 @@ import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
 import type {
   WorkflowManager,
+  WorkflowDeleteMutation,
   WorkflowMutation,
   WorkflowPublishMutation,
   WorkflowRuntimeMutation,
@@ -658,7 +661,10 @@ export function buildApp(
   // --- Workflow definitions: CAS drafts and immutable published versions ---
   const workflowFailure = (
     c: Context,
-    result: Exclude<WorkflowMutation | WorkflowPublishMutation | WorkflowValidationMutation, { ok: true }>,
+    result: Exclude<
+      WorkflowMutation | WorkflowDeleteMutation | WorkflowPublishMutation | WorkflowValidationMutation,
+      { ok: true }
+    >,
     expectedRevision?: number,
   ) => {
     if (result.reason === "not_found") {
@@ -759,6 +765,26 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const result = manager.archive(c.req.param("id"), parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  app.post("/api/workflows/:id/unarchive", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, UnarchiveWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.unarchive(c.req.param("id"), parsed.data.expectedDraftRevision);
+    return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
+  });
+  // Deliberately NOT `DELETE /api/workflows/:id`: that verb is spoken for by the soft archive
+  // above and has been since Phase 2, so reusing it would make the destructive path reachable
+  // by any older client that still means "archive" when it sends it. The two take the same
+  // body, which is exactly why they must not share a route.
+  app.post("/api/workflows/:id/delete", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, DeleteWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.remove(c.req.param("id"), parsed.data.expectedDraftRevision);
+    return result.ok ? c.json({ ok: true, id: result.id }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.post("/api/workflows/:id/validate", async (c) => {
     const manager = workflowManager();

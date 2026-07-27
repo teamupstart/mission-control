@@ -829,7 +829,28 @@ export type WorkflowStoreWrite =
   | { ok: true; workflow: WorkflowDefinition }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "active_binding";
+      reason:
+        | "not_found"
+        | "revision_conflict"
+        | "name_conflict"
+        | "archived"
+        | "not_archived"
+        | "active_binding";
+      current: WorkflowDefinition | null;
+    };
+
+/**
+ * A hard delete cannot report the row it removed as live state, so it says so in its own
+ * shape rather than borrowing `WorkflowStoreWrite`'s `workflow` - which every other caller
+ * reads as "the definition as it now stands" and hands to `summary()` for an SSE upsert.
+ * The removed row rides along only so the manager can name it in the `workflow_remove` event.
+ */
+export type WorkflowDeleteWrite =
+  | { ok: true; workflow: WorkflowDefinition }
+  | {
+      ok: false;
+      /** `published` is the one refusal a retry can never clear. */
+      reason: "not_found" | "revision_conflict" | "published";
       current: WorkflowDefinition | null;
     };
 
@@ -1316,6 +1337,78 @@ export class WorkflowStore {
           WHERE id = ? AND draft_revision = ? AND archived_at IS NULL`,
       ).run(archivedAt, archivedAt, id, expectedDraftRevision);
       return { ok: true, workflow: this.mustWorkflow(id) };
+    });
+  }
+
+  /**
+   * Lift an archive.
+   *
+   * There is no name conflict to resolve and no check for one, because
+   * `idx_workflow_definitions_normalized_name` covers archived rows too: archiving never
+   * released the name, so nothing can have taken it meanwhile. That is the same reservation
+   * Phase 1 chose deliberately for Personas, read from the other direction - it is what makes
+   * restoring safe rather than a second identity claiming a live one's name.
+   *
+   * `not_archived` is a distinct refusal rather than a silent success so a double-click from
+   * two tabs reports what actually happened instead of bumping the revision twice.
+   */
+  unarchiveWorkflowCas(id: string, expectedDraftRevision: number, updatedAt = Date.now()): WorkflowStoreWrite {
+    return transaction(this.db, () => {
+      const current = this.getWorkflowInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt === null) return { ok: false, reason: "not_archived", current };
+      if (current.draftRevision !== expectedDraftRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const result = this.db.prepare(
+        `UPDATE workflow_definitions
+            SET archived_at = NULL, updated_at = ?, draft_revision = draft_revision + 1
+          WHERE id = ? AND draft_revision = ? AND archived_at IS NOT NULL`,
+      ).run(updatedAt, id, expectedDraftRevision);
+      if (Number(result.changes) !== 1) {
+        return { ok: false, reason: "revision_conflict", current: this.getWorkflowInTransaction(id) };
+      }
+      return { ok: true, workflow: this.mustWorkflow(id) };
+    });
+  }
+
+  /**
+   * Remove a never-published workflow, row and all.
+   *
+   * The `published` guard is the entire reason this is ONE `DELETE` and not the eleven-table
+   * walk `runRetention` performs below. `workflow_bindings.workflow_version_id` and
+   * `workflow_runs.workflow_version_id` are both `NOT NULL` and both name a `workflow_versions`
+   * row, so a workflow with no versions can have no binding; no binding means no run, and no
+   * run means no submission, attempt, edge receipt, delivery, LLM call or event. Nothing is
+   * orphaned here because nothing can exist to orphan - which matters because this family
+   * declares no foreign keys, so SQLite would not have stopped us. Ensembles reach a workflow
+   * only through a PUBLISHED version (`EnsembleManager.resolveWorkflowVersion` refuses
+   * anything else), so `ensemble_runs.workflow_handoff_json` cannot name one of these either.
+   *
+   * Publish once and this refuses for good. An immutable version is audit history that
+   * bindings, runs and ensemble handoffs quote by id, and archive stays the way to retire it.
+   * The asymmetry is the feature: it is what keeps "delete" from ever meaning "rewrite the
+   * record of what already ran".
+   */
+  deleteWorkflowCas(id: string, expectedDraftRevision: number): WorkflowDeleteWrite {
+    return transaction(this.db, () => {
+      const current = this.getWorkflowInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.draftRevision !== expectedDraftRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      // Both halves deliberately. `current_version_id` is the cheap pointer, the table is the
+      // truth, and a row whose pointer was somehow cleared must still not lose its history.
+      const published = current.currentVersionId !== null
+        || this.db.prepare(`SELECT 1 FROM workflow_versions WHERE workflow_id = ? LIMIT 1`).get(id);
+      if (published) return { ok: false, reason: "published", current };
+      const result = this.db.prepare(
+        `DELETE FROM workflow_definitions WHERE id = ? AND draft_revision = ?`,
+      ).run(id, expectedDraftRevision);
+      if (Number(result.changes) !== 1) {
+        return { ok: false, reason: "revision_conflict", current: this.getWorkflowInTransaction(id) };
+      }
+      return { ok: true, workflow: current };
     });
   }
 

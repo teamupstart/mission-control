@@ -149,6 +149,10 @@ export function WorkflowLibrary({
     [personas, workflow?.completionPolicy, workflow?.draft],
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
+  // The same rule the daemon enforces in `deleteWorkflowCas`, asked of the version list this
+  // surface already holds. Gating the button on it keeps the refusal out of the operator's
+  // way rather than letting them reach a 409 that only tells them what they cannot do.
+  const neverPublished = Boolean(workflow) && draft.versions.length === 0;
   const activePersonas = useMemo(
     () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],
@@ -627,22 +631,54 @@ export function WorkflowLibrary({
                 )}
               </div>
               <div className="workflow-toolbar-group workflow-toolbar-ship">
-                <Tooltip label="Archive this workflow - published versions stay readable">
-                  <button className="btn btn-danger-ghost" disabled={transitioning || workflow.archivedAt !== null} onClick={() => setConfirm({
-                    title: "Archive workflow",
-                    body: `Archive ${workflow.name}? Published versions remain readable, and runs already bound to them keep working.`,
-                    confirmLabel: "Archive",
-                    confirmHint: "Archives the workflow - its published versions stay readable",
-                    danger: true,
-                    onConfirm: () => void runTransition(async () => {
-                      if (!(await draft.saveNow())) return;
+                {neverPublished && (
+                  <Tooltip label="Delete this workflow permanently - offered only before its first publish">
+                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                      title: "Delete workflow",
+                      body: `Delete ${workflow.name}? It has never been published, so there are no versions, bindings, or run history to keep. This cannot be undone.`,
+                      confirmLabel: "Delete",
+                      confirmHint: "Permanently deletes this never-published workflow",
+                      danger: true,
+                      onConfirm: () => void runTransition(async () => {
+                        if (!(await draft.saveNow())) return;
+                        const current = draft.current();
+                        if (!current) return;
+                        await workflowRequest(`/api/workflows/${current.id}/delete`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                        openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                      }),
+                    })}>Delete</button>
+                  </Tooltip>
+                )}
+                {workflow.archivedAt === null ? (
+                  <Tooltip label="Archive this workflow - published versions stay readable">
+                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                      title: "Archive workflow",
+                      body: `Archive ${workflow.name}? Published versions remain readable, and runs already bound to them keep working. You can restore it later.`,
+                      confirmLabel: "Archive",
+                      confirmHint: "Archives the workflow - its published versions stay readable",
+                      danger: true,
+                      onConfirm: () => void runTransition(async () => {
+                        if (!(await draft.saveNow())) return;
+                        const current = draft.current();
+                        if (!current) return;
+                        await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                        openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                      }),
+                    })}>Archive</button>
+                  </Tooltip>
+                ) : (
+                  // No confirmation: restoring destroys nothing, and the name it reclaims was
+                  // never released, so nothing else can be holding it.
+                  <Tooltip label="Restore this workflow to the active library">
+                    <button className="btn" disabled={transitioning} onClick={() => void runTransition(async () => {
                       const current = draft.current();
                       if (!current) return;
-                      await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
-                      openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
-                    }),
-                  })}>Archive</button>
-                </Tooltip>
+                      await workflowRequest(`/api/workflows/${current.id}/unarchive`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                      await draft.reload();
+                      setAnnouncement(`Restored ${current.name}`);
+                    })}>Restore</button>
+                  </Tooltip>
+                )}
                 <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
                   <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
                 </Tooltip>

@@ -2377,6 +2377,8 @@ export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
 export const PublishWorkflowSchema = ValidateWorkflowSchema;
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
+export const UnarchiveWorkflowSchema = ValidateWorkflowSchema;
+export const DeleteWorkflowSchema = ValidateWorkflowSchema;
 
 export const CreateWorkflowBindingSchema = z.object({
   workflowVersionId: WorkflowIdSchema,

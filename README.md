@@ -2078,6 +2078,24 @@ or Live delivery, and a repair-round limit. Manual plus Preview remains the defa
 optional Inspector final gate and its missing-PR and findings policies are immutable parts of
 each published version.
 
+### Retiring a workflow
+
+**Archive** is the way to retire a published workflow, and it is soft and reversible.
+Archived workflows leave the library listing, refuse edits, and cannot be bound, but their
+published versions stay readable and runs already bound to them keep working. Archiving is
+refused while any binding on the workflow is still active. **Restore** brings one back: the
+normalized name was never released while archived, so nothing can have taken it and there is
+no conflict to resolve. Show archived workflows with the checkbox under the library list.
+
+**Delete** is offered only for a workflow that has never been published, and it removes the
+row outright. That restriction is what makes it safe rather than careful. A binding names a
+published version and a run names a binding, so a workflow with no versions can have no
+binding, no run, and none of the submissions, attempts, deliveries or evidence hanging off
+one; there is nothing to orphan and nothing to cascade. Publish once and the workflow can
+only ever be archived, because an immutable version is audit history that bindings, runs and
+ensemble handoffs quote by id. Deleting also frees the name for reuse, which archiving does
+not. Delete asks for confirmation and cannot be undone.
+
 ### Manual Preview runs
 
 Bind a session to an exact published workflow version from the workflow history or from any

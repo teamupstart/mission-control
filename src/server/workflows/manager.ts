@@ -83,6 +83,7 @@ import {
 } from "./external-binding.ts";
 import {
   WorkflowStore,
+  type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
   type WorkflowStoreWrite,
 } from "./store.ts";
@@ -108,6 +109,11 @@ import { workflowLog } from "./log.ts";
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
   | Exclude<WorkflowStoreWrite, { ok: true }>;
+
+/** Success carries only the id: there is no row left to summarize. */
+export type WorkflowDeleteMutation =
+  | { ok: true; id: string }
+  | Exclude<WorkflowDeleteWrite, { ok: true }>;
 
 export type WorkflowPublishMutation =
   | {
@@ -422,6 +428,26 @@ export class WorkflowManager {
 
   archive(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowMutation {
     return this.finish(this.store.archiveWorkflowCas(id, expectedDraftRevision, now));
+  }
+
+  unarchive(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowMutation {
+    return this.finish(this.store.unarchiveWorkflowCas(id, expectedDraftRevision, now));
+  }
+
+  /**
+   * Hard-delete a never-published workflow. The store owns that refusal; see
+   * `deleteWorkflowCas` for why no cascade is needed.
+   *
+   * This is the only caller of the removal half of the Registry's workflow pair. Archive goes
+   * through `finish`, which UPSERTS, because an archived row is still live addressable state;
+   * a deleted one has to leave the browser's map, and `workflow_remove` is the event
+   * `useEventStream` already handles for exactly that.
+   */
+  remove(id: string, expectedDraftRevision: number): WorkflowDeleteMutation {
+    const result = this.store.deleteWorkflowCas(id, expectedDraftRevision);
+    if (!result.ok) return result;
+    this.registry.removeWorkflow(result.workflow.id);
+    return { ok: true, id: result.workflow.id };
   }
 
   validate(id: string, expectedDraftRevision: number): WorkflowValidationMutation {

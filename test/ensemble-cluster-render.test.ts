@@ -25,6 +25,7 @@ import {
   EnsembleProgressDots,
   ensembleClusterHeadline,
   ensembleDotCounts,
+  ensembleDotSummary,
 } from "../src/web/components/session-bits.tsx";
 import { mkEnsembleSummary, mkMemberSession, mkSession } from "./helpers/session-fixture.ts";
 
@@ -204,37 +205,57 @@ test("a blocked cluster header needs no run summary to show its actionable count
 });
 
 test("a cluster header's accessible name states everything the header shows", () => {
-  // Both densities pass `ensembleClusterHeadline`'s sentence as `aria-label`, which REPLACES
-  // their content for assistive tech - so anything visible and missing from it is invisible to a
-  // screen reader. Two things used to fall out during the SSE gap: the run's name (the branch
-  // said only "Open this ensemble run" while the header read "Best of N") and the attention
-  // count, which was read off the summary although `blockedHere` comes from member links.
+  // Both densities pass `ensembleClusterHeadline`'s sentence as `aria-label`, which REPLACES the
+  // button's whole subtree for assistive tech - so anything the header draws and this sentence
+  // omits is invisible to a screen reader, including what a nested child would have said for
+  // itself. Three things used to fall out: the run's name during the SSE gap ("Open this
+  // ensemble run" while the header read "Best of N"), the attention count (read off the summary
+  // though `blockedHere` comes from member links), and every dot state but "submitted" - the
+  // dots' own `role="img"` name is exactly what a labelled ancestor discards.
   const gap = ensembleClusterHeadline(null, "Best of N", 1);
   assert.equal(gap.title, "Best of N");
-  assert.match(gap.tooltip, /^Open Best of N - 1 waiting on your answer here$/);
-  assert.equal(ensembleClusterHeadline(null, "Best of N").tooltip, "Open Best of N");
+  assert.equal(gap.tooltip, "Open Best of N. Waiting on your answer: 1 in this column.");
+  assert.equal(ensembleClusterHeadline(null, "Best of N").tooltip, "Open Best of N.");
 
-  // With a summary, the facts lead and the attention clause says WHICH column it is about - the
-  // header is repeated per tone column, so an unqualified count points at the wrong tiles.
-  const summary = mkEnsembleSummary({ title: "Fix the parser", status: "evaluating", membersNeedingInput: 2 });
-  assert.match(
-    ensembleClusterHeadline(summary, "Best of N", 1).tooltip,
-    /^Open Fix the parser - Best of N, reviewing, 0 of 3 in, 1 waiting on your answer here, 1 waiting on your answer in another column$/,
+  // Every disposition the dots draw is named, from the SAME sentence the dots use.
+  const mixed = mkEnsembleSummary({
+    title: "Fix the parser",
+    status: "evaluating",
+    maxMembers: 5,
+    launchedMembers: 4,
+    membersReady: 1,
+    membersNeedingInput: 1,
+    membersOut: 1,
+  });
+  const full = ensembleClusterHeadline(mixed, "Best of N", 1).tooltip;
+  assert.equal(
+    full,
+    "Open Fix the parser - Best of N, reviewing. Roster of 5: 1 waiting on you, 1 submitted, " +
+      "1 working, 1 out, 1 not started. Waiting on your answer: 1 in this column.",
   );
+  assert.equal(full.includes(ensembleDotSummary(mixed)), true, "the roster clause IS the dot sentence");
+
+  // The attention clause states LOCATION, not a second copy of the count - the header is
+  // repeated per tone column, so an unqualified count points at the wrong tiles.
   assert.match(
-    ensembleClusterHeadline(summary, "Best of N", 0).tooltip,
-    /2 waiting on your answer in another column$/,
+    ensembleClusterHeadline(mixed, "Best of N", 0).tooltip,
+    /Waiting on your answer: 1 in another column\.$/,
   );
   assert.doesNotMatch(
     ensembleClusterHeadline(mkEnsembleSummary({ title: "Calm" }), "Best of N", 0).tooltip,
-    /waiting on your answer/,
+    /Waiting on your answer/,
   );
 
   // And it reaches the rendered headers as their name, in both densities.
-  const html = board({ sessions: [member(1), blockedMember(2)] });
-  assert.match(html, /class="board-cluster-head[^"]*" aria-label="Open Best of N - 1 waiting on your answer here"/);
-  const rail = consoleRail({ sessions: [blockedMember(2)] });
-  assert.match(rail, /class="rail-ensemble-group[^"]*" aria-label="Open Best of N - 1 waiting on your answer here"/);
+  const name = "Open Best of N. Waiting on your answer: 1 in this column.";
+  assert.match(
+    board({ sessions: [member(1), blockedMember(2)] }),
+    new RegExp(`class="board-cluster-head[^"]*" aria-label="${name}"`),
+  );
+  assert.match(
+    consoleRail({ sessions: [blockedMember(2)] }),
+    new RegExp(`class="rail-ensemble-group[^"]*" aria-label="${name}"`),
+  );
 });
 
 test("the console rail heads each cluster with a row that is not a session row", () => {

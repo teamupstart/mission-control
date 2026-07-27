@@ -500,26 +500,47 @@ export function ensembleDotCounts(
  * and inventing positions from them would be a picture the wire cannot support. The label says
  * so, so a reader cannot take the third square for candidate 3.
  */
-export function EnsembleProgressDots({
-  summary,
-}: {
-  summary: Pick<
-    EnsembleSummary,
-    "launchedMembers" | "maxMembers" | "membersOut" | "membersNeedingInput" | "membersReady"
-  > | null;
-}): React.JSX.Element | null {
-  if (!summary) return null;
-  const counts = ensembleDotCounts(summary);
-  const total = ENSEMBLE_DOT_KINDS.reduce((sum, kind) => sum + counts[kind], 0);
-  if (total === 0) return null;
+type EnsembleDotInput = Pick<
+  EnsembleSummary,
+  "launchedMembers" | "maxMembers" | "membersOut" | "membersNeedingInput" | "membersReady"
+>;
 
+/**
+ * The dot row said in words: "1 waiting on you, 2 submitted, 1 working, 1 not started".
+ *
+ * Shared because the dots are drawn in two ACCESSIBILITY situations, not one. In the Ensembles
+ * list row the dot span is an ordinary descendant, so its own `role="img"` name is announced.
+ * Inside a cluster header it is not: that header is a native `<button>` carrying an `aria-label`,
+ * and an element's label REPLACES its subtree in the accessibility tree - so the dots' own name
+ * is dropped and every state they draw goes with it. The header therefore folds this sentence
+ * into its own name (`ensembleClusterHeadline`) rather than relying on the nested element, and
+ * both readings come from here so they cannot describe the same dots differently.
+ *
+ * Empty string when there is nothing to say, so a caller can `filter(Boolean)` it into a list.
+ */
+export function ensembleDotSummary(summary: EnsembleDotInput | null): string {
+  if (!summary) return "";
+  const counts = ensembleDotCounts(summary);
   const said: string[] = [];
   if (counts.blocked > 0) said.push(`${counts.blocked} waiting on you`);
   if (counts.done > 0) said.push(`${counts.done} submitted`);
   if (counts.working > 0) said.push(`${counts.working} working`);
   if (counts.out > 0) said.push(`${counts.out} out`);
   if (counts.pending > 0) said.push(`${counts.pending} not started`);
-  const label = `${said.join(", ")} - counts, not positions: a dot names no candidate`;
+  return said.join(", ");
+}
+
+export function EnsembleProgressDots({
+  summary,
+}: {
+  summary: EnsembleDotInput | null;
+}): React.JSX.Element | null {
+  const said = ensembleDotSummary(summary);
+  if (!summary || !said) return null;
+  const counts = ensembleDotCounts(summary);
+  // The caveat rides on the DOTS and not on the header's sentence: a row of squares invites
+  // "the third one is candidate 3", where a spoken list of counts cannot be misread that way.
+  const label = `${said} - counts, not positions: a dot names no candidate`;
 
   return (
     <Tooltip label={label}>
@@ -547,16 +568,24 @@ export function EnsembleProgressDots({
  * frame in and out around tiles that never moved.
  *
  * It is also the header's ACCESSIBLE NAME - both densities pass it as `aria-label`, which
- * REPLACES their content for assistive tech - so it has to state everything the header shows.
- * Two things used to fall out of it. The no-summary branch dropped the title it had just
- * computed and said only "Open this ensemble run", while the header visibly read "Best of N";
- * and the attention clause was read off the summary alone, so during that same SSE gap a screen
- * reader missed a "1 needs you" badge that was on screen. Both are taken from `blockedHere`
- * now, which comes from member links and is known whether or not the summary has landed.
+ * REPLACES their subtree for assistive tech - so it has to state everything the header shows,
+ * including what its nested children would otherwise have said for themselves. Three things
+ * used to fall out of it:
+ *
+ *  - the run's name, because the no-summary branch said only "Open this ensemble run" while the
+ *    header visibly read "Best of N";
+ *  - the attention count, read off the summary alone, so during that same SSE gap a screen
+ *    reader missed a "1 needs you" badge that was on screen - it comes from `blockedHere` now,
+ *    which is derived from member links and known whether or not the summary has landed;
+ *  - every dot state but "submitted". The progress dots carry their own `role="img"` name, and
+ *    that name is dropped inside a labelled button, so a run with working, out or pending
+ *    members lost them entirely. The roster clause is `ensembleDotSummary`, the same sentence
+ *    the dots use, so the two readings of one row cannot drift.
  *
  * The attention clause distinguishes HERE from ELSEWHERE for the reason the badges do: a header
  * is repeated in every tone column its members landed in, and "1 waiting on your answer" said in
- * the column that holds none of them is a sentence pointing at the wrong tiles.
+ * the column that holds none of them is a sentence pointing at the wrong tiles. It states
+ * LOCATION rather than repeating the count the roster clause already gave.
  */
 export function ensembleClusterHeadline(
   summary: EnsembleSummary | null,
@@ -565,17 +594,19 @@ export function ensembleClusterHeadline(
 ): { title: string; tooltip: string } {
   const title = summary?.title ?? fallbackLabel;
   const { here, elsewhere } = ensembleAttentionInFrame(summary, blockedHere);
-  const attention = [
-    here > 0 ? `${here} waiting on your answer here` : "",
-    elsewhere > 0 ? `${elsewhere} waiting on your answer in another column` : "",
+  const roster = ensembleDotSummary(summary);
+  const where = [
+    here > 0 ? `${here} in this column` : "",
+    elsewhere > 0 ? `${elsewhere} in another column` : "",
   ]
     .filter(Boolean)
     .join(", ");
-  const facts = summary
-    ? `${summary.strategyLabel}, ${ensembleStageWord(summary)}, ${summary.membersReady} of ${summary.maxMembers} in`
-    : "";
-  const detail = [facts, attention].filter(Boolean).join(", ");
-  return { title, tooltip: detail ? `Open ${title} - ${detail}` : `Open ${title}` };
+  const sentences = [
+    summary ? `Open ${title} - ${summary.strategyLabel}, ${ensembleStageWord(summary)}` : `Open ${title}`,
+    roster ? `Roster of ${summary!.maxMembers}: ${roster}` : "",
+    where ? `Waiting on your answer: ${where}` : "",
+  ].filter(Boolean);
+  return { title, tooltip: `${sentences.join(". ")}.` };
 }
 
 function ensembleAttentionInFrame(

@@ -154,7 +154,9 @@ opened yet. The counts are pairwise disjoint on the wire - a member that submitt
 holding a question is counted once, as blocked - so the row is exactly `maxMembers` wide and never
 double-counts. They are **counts, not positions**: the third square does not mean candidate 3, and
 the hover copy says so. The same row is drawn by the Board's cluster header, the Console rail's,
-and the Ensembles list row.
+and the Ensembles list row. A cluster header states the row in words as part of its own accessible
+name rather than leaving the dots to announce themselves - a labelled button hides its subtree
+from assistive tech, so the states the squares carry would otherwise reach nobody using one.
 
 **Clusters.** Sibling members are ordered adjacent in every layout, under a header that opens the
 run - at two densities, which carry deliberately different fields. The **Board** frame's header

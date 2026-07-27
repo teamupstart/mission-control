@@ -260,6 +260,7 @@ test("workflow placement leaves unselected versions lazy", () => {
     warningCount: 0,
     nodeCount: 2,
     personaCount: 0,
+    builtin: false,
   };
   const html = render({ workflowSummaries: [workflow] });
   assert.match(html, /Review winner \(v1\)/);
@@ -315,6 +316,7 @@ test("workflow compatibility loads selected metadata by pinned version", () => {
     warningCount: 0,
     nodeCount: 2,
     personaCount: 0,
+    builtin: false,
   };
   const ensemble = {
     ...freshEnsembleDraft(),

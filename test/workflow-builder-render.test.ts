@@ -71,6 +71,7 @@ const workflow: WorkflowDefinition = {
   completionPolicy: { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" },
   bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
   draftRevision: 2, currentVersionId: null, archivedAt: null, createdAt: 1, updatedAt: 2,
+  builtin: false,
 };
 
 test("empty workflow library is an active Phase 2 builder, not a future-feature shell", () => {
@@ -232,14 +233,22 @@ test("workflow transitions lock every editor surface until the latest draft is d
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /transitionRef\.current = true/);
   assert.match(source, /await runTransition\(async \(\) => \{[\s\S]*await draft\.saveNow\(\)/);
-  assert.match(source, /readOnly=\{transitioning \|\| workflow\.archivedAt !== null\}/);
+  // One shared `readOnly`, reaching all four editing surfaces: the pipeline, the canvas and
+  // both properties rails. Four hand-written copies is how one of them keeps accepting edits.
+  assert.match(source, /const readOnly = !workflow \|\| workflow\.archivedAt !== null \|\| workflow\.builtin;/);
+  assert.equal(source.match(/readOnly=\{transitioning \|\| readOnly\}/g)?.length, 4);
   // Every lifecycle control stands down mid-transition. Archived-ness is NOT among their
   // disabled conditions any more: since Restore arrived, an archived workflow swaps Archive
   // out for Restore instead of showing a dead Archive button, so that half of the old guard
-  // lives in the render branch asserted below.
-  for (const label of ["Delete", "Archive", "Restore"]) {
+  // lives in the render branch asserted below. Archive spells the same guard through
+  // `workflowArchiveBlocked`, which is the one control that also has to refuse a built-in.
+  for (const label of ["Delete", "Restore"]) {
     assert.match(buttonFor(source, label), /disabled=\{transitioning\}/, `${label} ignores transitioning`);
   }
+  assert.match(
+    buttonFor(source, "Archive"),
+    /disabled=\{workflowArchiveBlocked\(\{ transitioning, archived: false, builtin: workflow\.builtin \}\)\}/,
+  );
   assert.match(source, /workflow\.archivedAt === null \? \(/);
 });
 
@@ -272,7 +281,7 @@ test("archive copy states the active-binding block, not just what survives", () 
   // the block as well as the reassurance. These said only "published versions stay readable",
   // which promised continuity for runs in a case the guard never permits.
   const archiveCopy = [
-    /label="Archive this workflow - blocked while a binding is active; published versions stay readable"/,
+    /"Archive this workflow - blocked while a binding is active; published versions stay readable"/,
     /body: `Archive \$\{workflow\.name\}\? Archiving is blocked while any binding is still active\./,
     /confirmHint: "Archives the workflow unless a binding is still active - its published versions stay readable"/,
   ];
@@ -283,8 +292,8 @@ test("archive copy states the active-binding block, not just what survives", () 
 
 test("generated create and duplicate names honor normalized durable uniqueness", () => {
   const summaries: WorkflowSummary[] = [
-    { id: "1", name: "Ｕｎｔｉｔｌｅｄ   Workflow", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
-    { id: "2", name: "Review COPY", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: 2, updatedAt: 2, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0 },
+    { id: "1", name: "Ｕｎｔｉｔｌｅｄ   Workflow", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0, builtin: false },
+    { id: "2", name: "Review COPY", description: "", draftRevision: 1, currentVersionId: null, publishedVersion: null, archivedAt: 2, updatedAt: 2, errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0, builtin: false },
   ];
   assert.equal(nextWorkflowName("Untitled workflow", summaries), "Untitled workflow 2");
   assert.equal(nextWorkflowName("Review copy", summaries), "Review copy 2");
@@ -319,7 +328,7 @@ test("workflow removal reconciles only a previously observed selected summary", 
   const active = [{
     id: "workflow-1", name: "Review", description: "", draftRevision: 1,
     currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
-    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0, builtin: false,
   }];
   const archived = { ...active[0]!, id: "workflow-archived", archivedAt: 2 };
   const observed = new Set(["workflow-removed"]);
@@ -393,7 +402,7 @@ test("last workflow restoration excludes archived history unless a version link 
   const active = [{
     id: "workflow-1", name: "Review", description: "", draftRevision: 1,
     currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
-    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0, builtin: false,
   }];
   const archived = { ...active[0]!, id: "workflow-archived", archivedAt: 2 };
   assert.equal(workflowSelectionRestore(false, null, active, "workflow-1"), "workflow-1");

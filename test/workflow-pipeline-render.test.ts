@@ -155,6 +155,7 @@ test("the pipeline rail states validation as a sentence, with no diagnostic code
     archivedAt: null,
     createdAt: 1,
     updatedAt: 1,
+    builtin: false,
   };
   const fresh = renderToStaticMarkup(createElement(WorkflowPipelineProperties, {
     workflow,

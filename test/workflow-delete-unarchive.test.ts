@@ -172,12 +172,15 @@ test("unarchive restores a workflow to the default listing", async () => {
   assert.equal((await archive(request, workflow.id, workflow.draftRevision)).status, 200);
   const archived = store.getWorkflow(workflow.id);
   assert.ok(archived?.archivedAt);
-  assert.equal(store.listWorkflows().length, 0);
+  // By id, not by count: the shipped built-in catalog is merged into every listing, so the
+  // claim is about THIS workflow leaving and returning, not about how many rows there are.
+  const listed = () => store.listWorkflows().some((item) => item.id === workflow.id);
+  assert.equal(listed(), false);
 
   const response = await unarchive(request, workflow.id, archived.draftRevision);
   assert.equal(response.status, 200);
   assert.equal(store.getWorkflow(workflow.id)?.archivedAt, null);
-  assert.equal(store.listWorkflows().length, 1);
+  assert.equal(listed(), true);
 });
 
 test("unarchive refuses a workflow that is not archived, and a stale revision", async () => {

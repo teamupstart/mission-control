@@ -2044,11 +2044,52 @@ generated module. Each document's first level-one heading is the Persona's name 
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
 an imported Persona's description stays empty.
 
-The four are written to compose as the example workflow in
-`docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
-gate, then the other three fanned out behind an All-pass Join. None of them restates the
-engine's own review contract or output format, which every Persona prompt already carries, so
-editing your copy changes what that role judges, not how it replies.
+The four are written to compose, and they ship already composed: **No-Mistakes Review** is the
+built-in workflow below. Intent Conformance Judge runs first as a cheap gate, then the other
+three fan out behind an All-pass Join. None of them restates the engine's own review contract
+or output format, which every Persona prompt already carries, so editing your copy changes
+what that role judges, not how it replies.
+
+### Built-in workflows
+
+One ready-made review workflow ships with the application: **No-Mistakes Review**, at version
+1. There is nothing to author and nothing to import - it is in the Workflows tab of a fresh
+install, already published, and can be bound to a session immediately.
+
+It is the four built-in Personas wired the way they were written to compose. Intent
+Conformance Judge is stage 1, the cheap gate: there is no point spending three deeper reviews
+on a change that has already drifted from what was asked. Code Risk Reviewer, Test Evidence
+Auditor and Documentation Steward are stage 2, running **in parallel on the same submission**
+and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
+the session for repair. A passed review is gated on the
+[Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
+findings restart the whole review, and a run with no pull request yet offers **Prepare PR in
+session** rather than waiting silently. It binds with the ordinary defaults, Manual trigger
+and Preview delivery, because Live delivery and Foreman-complete are consent-gated and are
+yours to turn on per binding.
+
+Like the built-in Personas it is **app data, not your data**, and the workflow list marks it
+`Built-in`. Opening it shows it read-only: it draws in the Pipeline view with every editing
+affordance off, Archive and Publish are disabled, the settings rail does not take an edit, and
+there is a line saying why. **Duplicate** is the way to a version you own - the copy is an
+ordinary workflow with its own name, editable, publishable, archivable, and never touched by
+an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
+bindable.
+
+Because it always exists, its name is reserved: creating or renaming a workflow to
+`No-Mistakes Review` is refused the way any duplicate name is. The one exception is
+historical - a workflow you authored under that name before it shipped built-in keeps the name
+it already reserved, and the built-in it shadows stays hidden behind your copy while remaining
+addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
+see the built-in.
+
+An upgrade that improves one of the four Personas improves this workflow too, with no gesture
+from you: it always carries the guidance and the graph the build was made from. Improving the
+shipped workflow itself appends a **new version** rather than editing the one you may be bound
+to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
+
+The graph is not stored in your database at all, which is what makes all of that true without
+a seeding step that could half-run. It is compiled into the build beside the Persona documents.
 
 ### Workflow drafts and published versions
 

@@ -13,6 +13,7 @@ const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workf
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { builtinWorkflowId } = await import("../src/server/workflows/builtin-workflows.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -102,8 +103,11 @@ test("Publish is idempotent and immutable versions are readable", async () => {
 
 test("workflow summaries are bounded SSE projections, not graph blobs", async () => {
   const { request, registry } = fixture();
-  await seedValid(request);
-  const summary = registry.snapshot().workflowSummaries[0]!;
+  const valid = await seedValid(request);
+  // By id: the shipped built-in sorts ahead of "Review" in the merged catalog, and this test
+  // is about the shape of a summary rather than about which one comes first.
+  const summary = registry.snapshot().workflowSummaries
+    .find((item) => item.id === valid.workflow.id)!;
   assert.equal(summary.nodeCount, 3);
   assert.equal(summary.errorCount, 0);
   assert.equal("draft" in summary, false);
@@ -251,5 +255,78 @@ test("version exports use a browser-download filename and immutable schema envel
   assert.equal(
     runResponse.headers.get("content-disposition"),
     'attachment; filename="workflow-run-browser-run.json"',
+  );
+});
+
+// A built-in workflow is read through the routes that already exist - there is no built-in
+// route, and adding one would be a second way to answer a question the catalog already
+// answers. What has to be true is that every read finds it and every write refuses it with a
+// sentence naming the way forward, because the refusal lives in the store and the route is
+// the only thing that turns it into something a human reads.
+const BUILTIN_ID = builtinWorkflowId("no-mistakes-review");
+
+test("the shipped workflow is readable through the existing workflow routes", async () => {
+  const { request } = fixture();
+  const list = await request("/api/workflows");
+  assert.equal(list.status, 200);
+  const summaries = await list.json() as Array<{ id: string; builtin: boolean; publishedVersion: number | null }>;
+  const shipped = summaries.find((item) => item.id === BUILTIN_ID);
+  assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
+  assert.equal(shipped.builtin, true);
+  assert.equal(shipped.publishedVersion, 1);
+
+  const detail = await request(`/api/workflows/${BUILTIN_ID}`);
+  assert.equal(detail.status, 200);
+  const detailBody = await detail.json() as {
+    workflow: { builtin: boolean; currentVersionId: string; draft: { nodes: unknown[] } };
+    versions: Array<{ version: number }>;
+  };
+  assert.equal(detailBody.workflow.builtin, true);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@1`);
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [1]);
+
+  const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
+  assert.equal(versions.status, 200);
+  const version = await request(`/api/workflows/${BUILTIN_ID}/versions/1`);
+  assert.equal(version.status, 200);
+  const versionBody = await version.json() as { id: string; graph: { nodes: unknown[] } };
+  assert.equal(versionBody.id, `${BUILTIN_ID}@1`);
+  assert.ok(versionBody.graph.nodes.length > 0);
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/2`)).status, 404);
+});
+
+test("every mutating workflow route 409s on the shipped workflow and names Duplicate", async () => {
+  const { request } = fixture();
+  const revision = JSON.stringify({ expectedDraftRevision: 1 });
+  const cases: Array<[string, RequestInit]> = [
+    [`/api/workflows/${BUILTIN_ID}`, { method: "PATCH", body: JSON.stringify({ expectedDraftRevision: 1, description: "mine" }) }],
+    // Archive, publish, restore and hard delete. The last two arrived after this catalog did,
+    // which is exactly why the refusal is one store guard rather than a per-route check: a new
+    // lifecycle path inherits it instead of having to remember it.
+    [`/api/workflows/${BUILTIN_ID}`, { method: "DELETE", body: revision }],
+    [`/api/workflows/${BUILTIN_ID}/publish`, { method: "POST", body: revision }],
+    [`/api/workflows/${BUILTIN_ID}/unarchive`, { method: "POST", body: revision }],
+    [`/api/workflows/${BUILTIN_ID}/delete`, { method: "POST", body: revision }],
+  ];
+  for (const [path, init] of cases) {
+    const response = await request(path, init);
+    assert.equal(response.status, 409, `${init.method} ${path}`);
+    const body = await response.json() as { code: string; error: string };
+    assert.equal(body.code, "workflow_builtin");
+    assert.match(body.error, /ships with Mission Control/);
+    assert.doesNotMatch(body.error, /already been published|no such workflow/);
+    assert.match(body.error, /Duplicate it to make a copy you own/);
+  }
+
+  // The name is reserved the way any duplicate name is, so a copy needs its own.
+  const taken = await request("/api/workflows", {
+    method: "POST",
+    body: JSON.stringify({ name: "ＮＯ-ＭＩＳＴＡＫＥＳ   Review" }),
+  });
+  assert.equal(taken.status, 409);
+  assert.equal((await taken.json() as { code: string }).code, "workflow_name_conflict");
+  assert.equal(
+    (await request("/api/workflows", { method: "POST", body: JSON.stringify({ name: "No-Mistakes Review copy" }) })).status,
+    201,
   );
 });

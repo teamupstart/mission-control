@@ -84,8 +84,18 @@ test("workflow summary snapshot, upsert, archive, and reconnect converge without
   const store = new WorkflowStore(db);
   new PersonaManager(registry, store);
   const manager = new WorkflowManager(registry, store);
-  assert.deepEqual(registry.snapshot().workflowSummaries, []);
+  // The shipped built-in catalog is in the snapshot from the first read and never arrives as
+  // an event, so the baseline claim is "no operator rows yet", not "nothing at all".
+  assert.deepEqual(
+    registry.snapshot().workflowSummaries.filter((summary) => !summary.builtin),
+    [],
+  );
   const events: ServerEvent[] = [];
+  // An SSE client starts from the snapshot and applies events to it. Reducing the events
+  // alone would only ever converge on a dashboard that had never been shown a built-in.
+  const reduced = new Map<string, WorkflowSummary>(
+    registry.snapshot().workflowSummaries.map((summary) => [summary.id, summary]),
+  );
   const unsubscribe = registry.subscribe((event) => events.push(event));
   const created = manager.create({
     name: "Review",
@@ -99,17 +109,26 @@ test("workflow summary snapshot, upsert, archive, and reconnect converge without
   manager.archive(created.workflow.id, 1, 200);
   unsubscribe();
   assert.deepEqual(events.map((event) => event.type), ["workflow_upsert", "workflow_upsert"]);
-  const reduced = new Map<string, WorkflowSummary>();
   for (const event of events) {
     if (event.type === "workflow_upsert") reduced.set(event.workflow.id, event.workflow);
     if (event.type === "workflow_remove") reduced.delete(event.id);
   }
-  assert.deepEqual([...reduced.values()], registry.snapshot().workflowSummaries);
-  assert.equal("draft" in registry.snapshot().workflowSummaries[0]!, false);
+  const byId = (summaries: readonly WorkflowSummary[]) =>
+    Object.fromEntries(summaries.map((summary) => [summary.id, summary]));
+  assert.deepEqual(
+    Object.fromEntries(reduced),
+    byId(registry.snapshot().workflowSummaries),
+  );
+  for (const summary of registry.snapshot().workflowSummaries) {
+    assert.equal("draft" in summary, false);
+  }
   const reconnect = new Registry();
   new PersonaManager(reconnect, store);
   new WorkflowManager(reconnect, store);
-  assert.deepEqual(reconnect.snapshot().workflowSummaries, registry.snapshot().workflowSummaries);
+  assert.deepEqual(
+    byId(reconnect.snapshot().workflowSummaries),
+    byId(registry.snapshot().workflowSummaries),
+  );
 });
 
 test("compact workflow run summaries converge through snapshot, incremental SSE, and reconnect", () => {

@@ -49,6 +49,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     resetNonces: {},
     registerEl: () => {},
     registerActions: () => {},
+    registerLaunchers: () => {},
     registerDetailScroll: () => {},
     registerReaderTab: () => {},
     renamingId: null,

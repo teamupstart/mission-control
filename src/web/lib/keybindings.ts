@@ -29,6 +29,8 @@ export type ActionId =
   | "files"
   | "filePicker"
   | "send"
+  | "terminal"
+  | "agent"
   | "focus"
   | "handoff"
   | "queue"
@@ -101,9 +103,8 @@ export const ACTIONS: readonly ActionDef[] = [
   },
   {
     // First in the tab strip, so first of the three tab chords here - this list is the
-    // order the settings panel shows. `g` because the obvious letters were taken twice
-    // over: `c` completes a task, and `t` is not a key a strip walked by Tab should
-    // claim.
+    // order the settings panel shows. `g` because the obvious letters are actions of
+    // their own: `c` completes a task and `t` opens its terminal launcher.
     id: "conversation",
     label: "Open conversation",
     description: "Show the selected session's conversation.",
@@ -136,6 +137,20 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Send message",
     description: "Compose and send a message to the selected session.",
     defaultBinding: "s",
+    group: "selection",
+  },
+  {
+    id: "terminal",
+    label: "Open terminal",
+    description: "Open a terminal shell in the selected session's worktree.",
+    defaultBinding: "t",
+    group: "selection",
+  },
+  {
+    id: "agent",
+    label: "Open Codex / Claude",
+    description: "Focus or reopen the selected session's Codex or Claude conversation.",
+    defaultBinding: "a",
     group: "selection",
   },
   {

@@ -209,6 +209,8 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("d")),
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("s")),
+    chordFromEvent(key("t")),
+    chordFromEvent(key("a")),
     chordFromEvent(key("f")),
     chordFromEvent(key("p")),
     chordFromEvent(key("P", { shift: true })),
@@ -494,4 +496,16 @@ test("handoff is a first-class selection action, bound beside focus", () => {
   assert.equal(handoff.group, "selection");
   const focus = ACTIONS.indexOf(ACTIONS.find((a) => a.id === "focus")!);
   assert.equal(ACTIONS.indexOf(handoff), focus + 1, "it reads next to focus in the panel");
+});
+
+test("the conversation launchers are customizable selection actions", () => {
+  const terminal = ACTIONS.find((a) => a.id === "terminal");
+  const agent = ACTIONS.find((a) => a.id === "agent");
+  assert.ok(terminal, "terminal launcher missing from the customizable registry");
+  assert.ok(agent, "agent launcher missing from the customizable registry");
+  assert.equal(terminal.defaultBinding, "t");
+  assert.equal(agent.defaultBinding, "a");
+  assert.equal(terminal.group, "selection");
+  assert.equal(agent.group, "selection");
+  assert.equal(ACTIONS.indexOf(agent), ACTIONS.indexOf(terminal) + 1);
 });

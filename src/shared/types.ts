@@ -91,6 +91,16 @@ export const SESSION_RUNTIMES = ["terminal", "sdk"] as const;
 export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 
 /**
+ * What an embedded driver's acknowledgement means for the submitted message.
+ *
+ * A busy Claude stream accepts a follow-up into its FIFO for the next turn, while Codex
+ * can steer input into the turn already running. Both are successful sends, but collapsing
+ * them into a bare `ok` leaves the operator unable to tell a queued message from one the
+ * active turn is already processing.
+ */
+export type SdkSendDisposition = "started" | "steered" | "queued";
+
+/**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
  * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
  * dispatch pickers need the same values as the wire schemas and launch adapters.

@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import type { AgentType, PermissionMode, Session, ThinkingLevel } from "@shared/types.ts";
+import type {
+  AgentType,
+  PermissionMode,
+  SdkSendDisposition,
+  Session,
+  ThinkingLevel,
+} from "@shared/types.ts";
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
 import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
@@ -249,7 +255,7 @@ export class SdkSupervisor {
    * Rejects when there is no handle rather than resolving: "delivered to nobody" is the
    * shape of failure the acked send exists to remove, so it must not be reintroduced here.
    */
-  send(id: string, turn: SdkTurn): Promise<void> {
+  send(id: string, turn: SdkTurn): Promise<SdkSendDisposition> {
     return this.serialize(id, (handle) => handle.send(turn));
   }
 

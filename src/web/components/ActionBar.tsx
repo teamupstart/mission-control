@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { canCycleMode } from "@shared/session.ts";
 import { canMessage, canWriteTo, muxHandle } from "@shared/pane.ts";
-import { api } from "../lib/api.ts";
+import { api, type ActionResult } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -109,7 +110,7 @@ export function ActionBar({
   const { bindings } = useKeybindings();
   const [composing, setComposing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Delivery, not pane mechanics: the Send box asks whether a turn can REACH this
@@ -135,12 +136,12 @@ export function ActionBar({
     ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
     : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
 
-  async function run(label: string, fn: () => Promise<{ ok: boolean; error?: string }>) {
+  async function run(label: string, fn: () => Promise<ActionResult>) {
     setBusy(label);
     const r = await fn();
     setBusy(null);
     if (!r.ok) {
-      setFlash(r.error ?? "failed");
+      setFlash({ text: r.error ?? "failed", ok: false });
       setTimeout(() => setFlash(null), 3500);
     }
     return r;
@@ -151,6 +152,11 @@ export function ActionBar({
     if (!text) return;
     const r = await run("send", () => api.sendText(session.id, text));
     if (r.ok) {
+      const confirmation = sdkDeliveryConfirmation(r.delivery);
+      if (confirmation) {
+        setFlash({ text: confirmation, ok: true });
+        setTimeout(() => setFlash(null), 5000);
+      }
       // Sent, so the draft is spent. On failure it stays: `run` has already put the
       // reason on screen next to the text it's about.
       clearDraft(session.id, "send");
@@ -407,7 +413,11 @@ export function ActionBar({
           )}
         </>
       )}
-      {flash && <span className="action-flash">{flash}</span>}
+      {flash && (
+        <span className={`action-flash${flash.ok ? " is-ok" : ""}`} role="status">
+          {flash.text}
+        </span>
+      )}
     </div>
   );
 }

@@ -1715,7 +1715,14 @@ export function buildApp(
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
     if (session.runtime === "sdk") {
       const sent = await deliverToDriver(sdkSessions, session, parsed.data.text);
-      return c.json({ ok: sent.ok, ...(sent.error ? { error: sent.error } : {}) }, sent.ok ? 200 : 500);
+      return c.json(
+        {
+          ok: sent.ok,
+          ...(sent.delivery ? { delivery: sent.delivery } : {}),
+          ...(sent.error ? { error: sent.error } : {}),
+        },
+        sent.ok ? 200 : 500,
+      );
     }
     const r = await sendText(
       session,

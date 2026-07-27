@@ -503,6 +503,7 @@ function viewFor(session: Session): SessionViewProps {
     resetNonces: {},
     registerEl: () => {},
     registerActions: () => {},
+    registerLaunchers: () => {},
     registerDetailScroll: () => {},
     registerReaderTab: () => {},
     renamingId: null,

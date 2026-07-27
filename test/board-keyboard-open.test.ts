@@ -78,6 +78,20 @@ test("a selection chord on the board's overview drills in and then runs", () => 
   assert.match(app, /if \(!pending \|\| pending\.id !== boardOpenId\) return;/);
 });
 
+test("launcher chords reveal Conversation before triggering its real buttons", () => {
+  const table = app.slice(
+    app.indexOf("const LAUNCHER_ACTIONS"),
+    app.indexOf("function gearDotPhrase"),
+  );
+  assert.match(table, /\["terminal", "openTerminal"\]/);
+  assert.match(table, /\["agent", "openAgent"\]/);
+  assert.match(
+    app,
+    /pendingLauncherAction\.current = \{ id: selectedId, run \};[\s\S]*?requestConversationTab\(selectedId\)/,
+  );
+  assert.match(app, /handle\[pending\.run\]\(\)/);
+});
+
 test("the board's drill-in is the selection, not a second id that can drift from it", () => {
   // A flag plus a derivation. Holding an id let another layout's arrows move the
   // selection out from under it, so returning to the board reopened the session you left.

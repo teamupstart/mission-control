@@ -14,6 +14,7 @@ import type {
   SessionFileDocument,
   SessionFileEntry,
   SessionFileSaveResult,
+  SdkSendDisposition,
   SessionQueue,
   SkillsView,
   TaskPriority,
@@ -78,6 +79,8 @@ import type { PersonaDefaultsView } from "@shared/workflow.ts";
 export interface ActionResult {
   ok: boolean;
   error?: string;
+  /** Present when an embedded driver acknowledged where it put the submitted turn. */
+  delivery?: SdkSendDisposition;
   /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
   status?: number;
 }

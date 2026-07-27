@@ -5,6 +5,7 @@ import type {
   PaneDialog,
   PaneOption,
   PermissionMode,
+  SdkSendDisposition,
   Session,
   SessionRequestQuestion,
   SessionState,
@@ -636,9 +637,12 @@ export interface SdkSessionHandle {
    *
    * That ack is the thing `injectPrompt` never had: no settle window, no paste
    * placeholder to read back, no Enter that a mention popup may have eaten. A driver that
-   * cannot ack must reject - "probably landed" is the failure mode this replaces.
+   * cannot ack must reject - "probably landed" is the failure mode this replaces. The
+   * disposition keeps "accepted into a busy driver's FIFO" distinct from "started" and
+   * "steered into the active turn", because those can look identical in the transcript
+   * until the current turn finishes.
    */
-  send(turn: SdkTurn): Promise<void>;
+  send(turn: SdkTurn): Promise<SdkSendDisposition>;
   interrupt(): Promise<void>;
   /** Resolve a pending `SessionRequest` (permission, question, plan, approval). */
   answer(requestId: string, answer: SessionRequestAnswer): Promise<void>;

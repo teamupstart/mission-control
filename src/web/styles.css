@@ -3551,6 +3551,9 @@ body {
   color: var(--exited);
   width: 100%;
 }
+.action-flash.is-ok {
+  color: var(--idle);
+}
 
 /* ---- review modal ---- */
 .modal-backdrop {

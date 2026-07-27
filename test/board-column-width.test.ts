@@ -66,6 +66,7 @@ function props(sessions: Session[]): SessionViewProps {
     resetNonces: {},
     registerEl: noop,
     registerActions: noop,
+    registerLaunchers: noop,
     registerDetailScroll: noop,
     registerReaderTab: noop,
     renamingId: null,

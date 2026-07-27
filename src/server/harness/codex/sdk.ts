@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   PaneOption,
   PermissionMode,
+  SdkSendDisposition,
   SessionRequestQuestion,
   ThinkingLevel,
 } from "@shared/types.ts";
@@ -354,16 +355,17 @@ class CodexSdkSession implements SdkSessionHandle {
    * comes back as an error and rejects here - the turn moved under the caller, exactly the
    * 409 a re-read pane menu produces.
    */
-  async send(turn: SdkTurn): Promise<void> {
+  async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     const threadId = this.requireThread();
     const input = turnInput(turn);
     const active = this.activeTurnId;
     if (active) {
       const params: TurnSteerParams = { threadId, input, expectedTurnId: active };
       await this.client.request<TurnSteerResponse>("turn/steer", params);
-      return;
+      return "steered";
     }
     await this.startTurn(threadId, input);
+    return "started";
   }
 
   /**
